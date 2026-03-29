@@ -15,7 +15,7 @@ option_group {group => 'webserver', category => "Web Server Options"} => sub {
         type => 'Scalar',
         default => sub {
             return 'Starman' if eval { require Starman; 1 };
-            die "'Starman' could not be loaded. Starman is required to launch a server from the yath CLI tool.\n";
+            return undef;
         },
         description => 'Command to use to launch the server (--server argument to Plack::Runner) ',
         notes => "You can pass custom args to the launcher after a '::' like `yath server [ARGS] [LOG FILES(s)] :: [LAUNCHER ARGS]`",
