@@ -2,7 +2,7 @@ package Test2::Harness::Collector::Auditor::Run;
 use strict;
 use warnings;
 
-our $VERSION = '2.000008';
+our $VERSION = '2.000009';
 
 use Time::HiRes qw/time/;
 use List::Util qw/min max sum0/;

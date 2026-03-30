@@ -2,7 +2,7 @@ package App::Yath::Resource::SharedJobSlots::Config;
 use strict;
 use warnings;
 
-our $VERSION = '2.000008';
+our $VERSION = '2.000009';
 
 use YAML::Tiny;
 use Sys::Hostname qw/hostname/;

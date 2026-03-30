@@ -2,7 +2,7 @@ package Test2::Harness::IPC::Protocol::AtomicPipe::Connection;
 use strict;
 use warnings;
 
-our $VERSION = '2.000008';
+our $VERSION = '2.000009';
 
 use IO::Select;
 use Atomic::Pipe;
