@@ -14,6 +14,7 @@ our $VERSION = '2.000007';
 use Importer Importer => 'import';
 
 use Importer 'Test2::Util::Times' => qw/render_duration/;
+use Test2::Util::UUID qw/looks_like_uuid/;
 
 our @EXPORT_OK = (
     qw{
@@ -43,6 +44,8 @@ our @EXPORT_OK = (
 
         clean_path
         find_in_updir
+
+        looks_like_uuid
     },
 );
 
