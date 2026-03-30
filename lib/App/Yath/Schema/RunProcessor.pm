@@ -5,7 +5,7 @@ use utf8;
 
 use feature qw/state/;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use DateTime;
 use Data::Dumper;

@@ -1,6 +1,6 @@
 use utf8;
 package App::Yath::Schema::MySQL::SessionHost;
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 package
     App::Yath::Schema::Result::SessionHost;

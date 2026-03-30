@@ -4,7 +4,7 @@ use warnings;
 
 use Getopt::Yath::Term qw/USE_COLOR/;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use Getopt::Yath;
 

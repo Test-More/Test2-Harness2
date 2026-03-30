@@ -2,7 +2,7 @@ package App::Yath::Options::WebClient;
 use strict;
 use warnings;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use Getopt::Yath;
 

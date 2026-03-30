@@ -2,7 +2,7 @@ package App::Yath::Plugin::Git;
 use strict;
 use warnings;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use IPC::Cmd qw/can_run/;
 use Capture::Tiny qw/capture/;

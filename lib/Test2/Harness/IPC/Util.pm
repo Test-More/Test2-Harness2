@@ -2,7 +2,7 @@ package Test2::Harness::IPC::Util;
 use strict;
 use warnings;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use Carp qw/croak confess longmess/;
 use Errno qw/ESRCH EINTR/;

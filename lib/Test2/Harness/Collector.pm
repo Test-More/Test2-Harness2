@@ -28,7 +28,7 @@ BEGIN {
     }
 }
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use Test2::Harness::Util::HashBase qw{
     merge_outputs

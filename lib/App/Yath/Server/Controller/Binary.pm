@@ -2,7 +2,7 @@ package App::Yath::Server::Controller::Binary;
 use strict;
 use warnings;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use App::Yath::Server::Response qw/resp error/;
 

@@ -2,7 +2,7 @@ package App::Yath::Command::db;
 use strict;
 use warnings;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use App::Yath::Server;
 use App::Yath::Schema::Util qw/schema_config_from_settings/;

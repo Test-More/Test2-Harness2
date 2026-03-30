@@ -2,7 +2,7 @@ package App::Yath::Server::Controller;
 use strict;
 use warnings;
 
-our $VERSION = '2.000009';
+our $VERSION = '2.000010';
 
 use Carp qw/croak/;
 
