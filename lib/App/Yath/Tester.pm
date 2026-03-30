@@ -59,7 +59,7 @@ sub yath {
     my $no_app_path = delete $params{no_app_path};
     my $lib = delete $params{lib} // [];
 
-    push @$lib => map { "-I$_" } @INC;
+    push @$lib => map { "-I$_" } grep { $_ ne '.' } @INC;
 
     if (keys %params) {
         croak "Unexpected parameters: " . join (', ', sort keys %params);
@@ -100,7 +100,7 @@ sub yath {
     my $yath = find_yath;
     my @cmd = ($^X, @$lib, @cover, $yath, @$pre, @dev, $cmd ? ($cmd) : (), @inc, @log, @$cli);
 
-    print "DEBUG: Command = " . join(' ' => @cmd) . "\n" if $debug;
+    print "DEBUG: Command = " . join(" \n" => @cmd) . "\n" if $debug;
 
 #    local %ENV = %ENV;
     $ENV{YATH_IPC_DIR} = $pdir;

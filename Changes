@@ -1,5 +1,9 @@
 {{$NEXT}}
 
+    - Fix undef error in some exception cases
+    - Fix . in @INC test
+    - Remove test file that should not exist
+
 2.000007  2026-03-29 21:19:04-07:00 America/Los_Angeles (TRIAL RELEASE)
 
     - Remove Carp::Always accidentally left in

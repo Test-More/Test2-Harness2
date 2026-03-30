@@ -119,7 +119,7 @@ sub includes {
         );
     }
 
-    push @$out => split /;/, $ENV{T2_HARNESS_INCLUDES} if $ENV{T2_HARNESS_INCLUDES};
+    push @$out => grep { $_ ne '.' } split /;/, $ENV{T2_HARNESS_INCLUDES} if $ENV{T2_HARNESS_INCLUDES};
     push @$out => '.' if $self->{+UNSAFE_INC};
 
     if (my $ch_dir = $self->{+CH_DIR}) {
