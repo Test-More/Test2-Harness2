@@ -1,5 +1,6 @@
 {{$NEXT}}
 
+    - Remove Carp::Always accidentally left in
     - Require updated Getopt::Yath
     - Require Starman for a CLI based web server
     - Removed old demo scripts
