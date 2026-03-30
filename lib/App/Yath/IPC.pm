@@ -89,7 +89,7 @@ sub _find_ipcs {
         my %ipc  = $self->parse_ipc_file($full);
 
         if (my $err = $ipc{error}) {
-            warn "Skipping '$full': $@";
+            warn "Skipping '$full': $err";
             next;
         }
 
