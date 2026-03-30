@@ -322,7 +322,7 @@ sub manage_tests {
 
         # Timeout if it takes too long to start
         if (!$job_data->{pid}) {
-            my $delta = time - $job_data;
+            my $delta = time - $job_data->{start};
             my $timeout = $self->runner->test_settings->event_timeout || 30;
 
             if ($delta > $timeout) {
