@@ -1,5 +1,5 @@
 package App::Yath::Schema::Overlay::ResourceType;
-our $VERSION = '2.000007';
+our $VERSION = '2.000008';
 
 package
     App::Yath::Schema::Result::ResourceType;

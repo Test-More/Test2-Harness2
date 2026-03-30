@@ -2,7 +2,7 @@ package App::Yath::Options::Runner;
 use strict;
 use warnings;
 
-our $VERSION = '2.000007';
+our $VERSION = '2.000008';
 
 use Test2::Util qw/IS_WIN32/;
 

@@ -3,7 +3,7 @@ package TAP::Harness::Yath::Aggregator;
 use strict;
 use warnings;
 
-our $VERSION = '2.000007';
+our $VERSION = '2.000008';
 
 BEGIN {
     require Test::Harness;

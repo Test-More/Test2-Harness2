@@ -2,7 +2,7 @@ package App::Yath::Options::Server;
 use strict;
 use warnings;
 
-our $VERSION = '2.000007';
+our $VERSION = '2.000008';
 use Getopt::Yath;
 
 option_group {group => 'server', category => "Server Options"} => sub {

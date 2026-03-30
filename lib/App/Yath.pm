@@ -4,7 +4,7 @@ use warnings;
 
 use feature 'state';
 
-our $VERSION = '2.000007';
+our $VERSION = '2.000008';
 
 use Test2::Harness::Util::HashBase qw{
     <config
