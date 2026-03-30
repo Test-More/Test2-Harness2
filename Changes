@@ -1,5 +1,7 @@
 {{$NEXT}}
 
+2.000008  2026-03-30 10:52:46-07:00 America/Los_Angeles (TRIAL RELEASE)
+
     - Fix undef error in some exception cases
     - Fix . in @INC test
     - Remove test file that should not exist
