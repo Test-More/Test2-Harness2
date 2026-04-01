@@ -2,7 +2,7 @@ package Test2::Harness::IPC::Protocol::IPSocket::Connection;
 use strict;
 use warnings;
 
-our $VERSION = '2.000010';
+our $VERSION = '2.000011';
 
 BEGIN { die "This protocol has not yet been implemented" }
 

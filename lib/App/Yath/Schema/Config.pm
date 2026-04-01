@@ -2,7 +2,7 @@ package App::Yath::Schema::Config;
 use strict;
 use warnings;
 
-our $VERSION = '2.000010';
+our $VERSION = '2.000011';
 
 use Test2::Harness::Util qw/mod2file/;
 

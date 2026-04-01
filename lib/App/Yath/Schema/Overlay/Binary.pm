@@ -1,5 +1,5 @@
 package App::Yath::Schema::Overlay::Binary;
-our $VERSION = '2.000010';
+our $VERSION = '2.000011';
 
 package
     App::Yath::Schema::Result::Binary;

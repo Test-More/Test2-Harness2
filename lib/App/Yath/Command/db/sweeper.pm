@@ -2,7 +2,7 @@ package App::Yath::Command::db::sweeper;
 use strict;
 use warnings;
 
-our $VERSION = '2.000010';
+our $VERSION = '2.000011';
 
 use App::Yath::Schema::Sweeper;
 

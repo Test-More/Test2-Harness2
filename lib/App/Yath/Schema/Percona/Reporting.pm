@@ -1,6 +1,6 @@
 use utf8;
 package App::Yath::Schema::Percona::Reporting;
-our $VERSION = '2.000010';
+our $VERSION = '2.000011';
 
 package
     App::Yath::Schema::Result::Reporting;

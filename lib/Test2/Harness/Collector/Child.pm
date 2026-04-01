@@ -2,7 +2,7 @@ package Test2::Harness::Collector::Child;
 use strict;
 use warnings;
 
-our $VERSION = '2.000010';
+our $VERSION = '2.000011';
 
 use Atomic::Pipe();
 use constant();
