@@ -145,7 +145,7 @@ sub run {
         }
         push @out => "\n\n";
         print @out;
-        sleep 0.1;
+        sleep 0.2;
     }
 
     return 0;

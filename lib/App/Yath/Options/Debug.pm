@@ -217,7 +217,7 @@ sub _post_process_interactive {
         for (1 .. 10) {
             last if open($fh, '>', $fifo);
             die "Could not open fifo ($fifo): $!" unless $! == EINTR;
-            sleep 1;
+            sleep 0.2;
         }
         die "Could not open fifo ($fifo): $!" unless $fh;
 
@@ -244,7 +244,7 @@ sub _post_process_interactive {
     open(STDIN, '<', '/dev/null');
 
     require Time::HiRes;
-    while (! -e $fifo) { Time::HiRes::sleep(0.1) };
+    while (! -e $fifo) { Time::HiRes::sleep(0.02) };
 }
 
 sub _post_process_version {
