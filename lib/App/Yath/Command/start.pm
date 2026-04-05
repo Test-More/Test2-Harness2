@@ -180,10 +180,12 @@ sub run {
         my $wstat = $?;
 
         my $count = 0;
+        seek($out_fh, 0, 1) if eof($out_fh);
         while (my $line = <$out_fh>) {
             $count++;
             print STDOUT $line;
         }
+        seek($err_fh, 0, 1) if eof($err_fh);
         while (my $line = <$err_fh>) {
             $count++;
             print STDERR $line;

@@ -54,10 +54,12 @@ sub run {
 
     while (1) {
         my $count = 0;
+        seek($out_fh, 0, 1) if eof($out_fh);
         while (my $line = <$out_fh>) {
             $count++;
             print STDOUT $line;
         }
+        seek($err_fh, 0, 1) if eof($err_fh);
         while (my $line = <$err_fh>) {
             $count++;
             print STDERR $line;
@@ -78,7 +80,9 @@ sub run {
         for my $file (sort keys %aux) {
             my $fh = $aux{$file};
             my $ofh = $file =~ m/STDERR/ ? \*STDERR : \*STDOUT;
+            seek($fh, 0, 1) if eof($fh);
             while (my $line = <$fh>) {
+                $count++;
                 print $ofh $line;
             }
         }

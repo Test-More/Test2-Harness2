@@ -69,7 +69,11 @@ sub read_line {
             die "Timed out at $caller[1] line $caller[2].\n";
         }
         seek($fh, 0,1) if eof($fh);
-        my $out = <$fh> // next;
+        my $out = <$fh>;
+        unless (defined $out) {
+            sleep 0.02;
+            next;
+        }
         chomp($out);
         return $out;
     }
