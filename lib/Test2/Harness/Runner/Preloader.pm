@@ -179,7 +179,7 @@ sub launch_stage {
 
     my $name = ref($stage) ? $stage->name : $stage;
 
-    my $pid = fork();
+    my $pid = fork // die "Could not fork: $!";
 
     return Test2::Harness::Runner::Preloader::Stage->new(
         pid => $pid,

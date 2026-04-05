@@ -144,7 +144,7 @@ sub _run_cmd_spwn {
         POSIX::_exit(127);
     };
 
-    swap_io(\*STDIN,  $stdin,  $die) if $stdin;
+    swap_io(\*STDERR, $stderr, $die) if $stderr;
     swap_io(\*STDOUT, $stdout, $die) if $stdout;
     $stdin ? swap_io(\*STDIN,  $stdin,  $die) : close(STDIN);
 

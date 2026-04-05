@@ -172,7 +172,7 @@ sub run {
 
     $self->set_sig_handlers($wpid);
 
-    open(my $wfh, '>>', "/proc/$mpid/fd/$win") or die "Could not open /proc/$wpid/fd/$win: $!";
+    open(my $wfh, '>>', "/proc/$mpid/fd/$win") or die "Could not open /proc/$mpid/fd/$win: $!";
     $wfh->autoflush(1);
     STDIN->blocking(0);
     while (0 < kill(0, $mpid)) {

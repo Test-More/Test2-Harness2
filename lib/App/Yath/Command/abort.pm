@@ -51,7 +51,7 @@ sub run {
 
     my $running = $state->running_tasks;
     for my $task (values %$running) {
-        my $pid = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;;
+        my $pid = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
         my $file = $task->{rel_file};
         print "Killing test $pid - $file...\n";
         kill('INT', $pid);

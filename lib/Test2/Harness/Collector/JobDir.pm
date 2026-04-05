@@ -506,6 +506,7 @@ sub events_files {
 
             $files->{$file} = $fh if $fh;
         }
+        closedir($dh);
     }
 
     return map { [$_->[2] => $buff->{$_->[0]}->{$_->[1]} ||= [], 'jsonl'] } values %$files;
@@ -673,8 +674,8 @@ sub _process_exit_line {
 
     chomp($value);
 
-    my $stdout = maybe_read_file(File::Spec->catfile($self->{+JOB_ROOT}, "stdout"));
-    my $stderr = maybe_read_file(File::Spec->catfile($self->{+JOB_ROOT}, "stderr"));
+    my $stdout = maybe_read_file(File::Spec->catfile($self->{+JOB_ROOT}, "stdout")) // '';
+    my $stderr = maybe_read_file(File::Spec->catfile($self->{+JOB_ROOT}, "stderr")) // '';
 
     $stdout =~ s/T2-HARNESS-\S+-(?:ESYNC|EVENT): .+\n//g;
     $stderr =~ s/T2-HARNESS-\S+-(?:ESYNC|EVENT): .+\n//g;

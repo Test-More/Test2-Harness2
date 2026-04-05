@@ -268,7 +268,7 @@ sub _scan {
         if ($dir eq 'meta') {
             @args = split /\s+/, $rest, 2;                              # Check for white space delimited
             @args = split(/[-]+/, $rest, 2) if scalar @args == 1;       # Check for dash delimited
-            $args[1] =~ s/\s+(?:#.*)?$//;                               # Strip trailing white space and comment if present
+            $args[1] =~ s/\s+(?:#.*)?$// if defined $args[1];             # Strip trailing white space and comment if present
         }
         elsif ($rest) {
             $rest =~ s/\s+(?:#.*)?$//;                                  # Strip trailing white space and comment if present

@@ -169,7 +169,7 @@ sub fields_action {
 
         die "Error parsing field specification '$field': $error\n" unless $ok;
         die "Fields must have a 'name' key (error in '$raw')\n"    unless $field->{name};
-        die "Fields must habe a 'details' key (error in '$raw')\n" unless $field->{details};
+        die "Fields must have a 'details' key (error in '$raw')\n" unless $field->{details};
 
         return push @$fields => $field;
     }
