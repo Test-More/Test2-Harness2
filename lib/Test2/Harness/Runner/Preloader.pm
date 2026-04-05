@@ -424,7 +424,7 @@ sub find_churn {
         $ok = eval { $fh = open_file($file) };
         $error = "LOOP $_: $@";
         last if $ok;
-        sleep 0.2;
+        sleep 0.02;
     }
 
     die $error // "Unknown error opening file '$file'" unless $fh;

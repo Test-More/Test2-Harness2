@@ -181,7 +181,7 @@ sub run {
             print $wfh $line;
         }
         else {
-            sleep 0.2;
+            sleep 0.02;
         }
     }
 
