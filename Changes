@@ -1,5 +1,7 @@
 {{$NEXT}}
 
+1.000165  2026-04-04 19:58:16-07:00 America/Los_Angeles (TRIAL RELEASE)
+
     - Bugfixes assited by an AI audit
     - Fixes to busy loops (AI Audit)
     - Fixes to reset EOF handles when needed (Some AI, one a PR)
