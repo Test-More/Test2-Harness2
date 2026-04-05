@@ -55,6 +55,9 @@ use Test2::Harness::Util::HashBase(
         <reload_state
 
         <observe
+
+        <last_job_activity
+        <total_started
     },
 );
 
@@ -115,6 +118,28 @@ sub done {
     return 0 unless $self->{+QUEUE_ENDED};
 
     return 1;
+}
+
+sub resource_timeout {
+    my $self = shift;
+    my ($timeout) = @_;
+
+    return 0 unless $timeout;
+
+    # Must have started at least one test already
+    return 0 unless $self->{+TOTAL_STARTED};
+
+    # Must have no tests currently running
+    return 0 if $self->{+RUNNING};
+
+    # Must still have pending tasks
+    return 0 unless keys %{$self->{+PENDING_TASKS} //= {}};
+
+    my $idle = time - ($self->{+LAST_JOB_ACTIVITY} // time);
+
+    return 0 unless $idle >= $timeout;
+
+    return $idle;
 }
 
 sub next_task {
@@ -397,6 +422,8 @@ sub _start_task {
 
     push @{$self->{+TASK_LIST}} => $task;
 
+    $self->{+LAST_JOB_ACTIVITY} = time;
+    $self->{+TOTAL_STARTED}++;
     $self->{+RUNNING}++;
     $self->{+RUNNING_CATEGORIES}->{$cat}++;
     $self->{+RUNNING_DURATIONS}->{$dur}++;
@@ -427,6 +454,7 @@ sub _stop_task {
     $_->release($job_id) for @{$self->{+RESOURCES}};
 
     my ($run_id, $smoke, $stage, $cat, $dur) = $self->task_fields($task);
+    $self->{+LAST_JOB_ACTIVITY} = time;
     $self->{+RUNNING}--;
     $self->{+RUNNING_CATEGORIES}->{$cat}--;
     $self->{+RUNNING_DURATIONS}->{$dur}--;

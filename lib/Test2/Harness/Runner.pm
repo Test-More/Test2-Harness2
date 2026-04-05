@@ -42,7 +42,7 @@ use Test2::Harness::Util::HashBase(
 
         <cover
 
-        <event_timeout <post_exit_timeout
+        <event_timeout <post_exit_timeout <resource_timeout
 
         <resources
 
@@ -316,6 +316,14 @@ sub spawn_scheduler {
         }
 
         flock($lock, LOCK_UN) or die "Could not release scheduler lock: $!";
+
+        if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
+            print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
+            print STDERR "There are pending tests but resources have not become available.\n";
+            print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
+            $state->truncate();
+            $self->{+SIGNAL} = 'TERM';
+        }
 
         if ($self->end_test_loop()) {
             $guard->dismiss;

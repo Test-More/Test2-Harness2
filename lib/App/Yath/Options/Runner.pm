@@ -195,6 +195,17 @@ option_group {prefix => 'runner', category => "Runner Options"} => sub {
         description  => 'Pass the specified switch to perl for each test. This is not compatible with preload.',
     );
 
+    option resource_timeout => (
+        alt => ['rt'],
+
+        type => 's',
+        default => 0,
+
+        long_examples  => [' SECONDS'],
+        short_examples => [' SECONDS'],
+        description    => 'Abort the test run if no tests have been able to start for SECONDS seconds while there are pending tests and none running. This is useful when a resource class is broken and always claims a resource will become available, preventing yath from ever finishing. (Default: 0, meaning no timeout)',
+    );
+
     option event_timeout => (
         alt => ['et'],
 
