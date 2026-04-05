@@ -1,5 +1,11 @@
 {{$NEXT}}
 
+    - Bugfixes assited by an AI audit
+    - Fixes to busy loops (AI Audit)
+    - Fixes to reset EOF handles when needed (Some AI, one a PR)
+    - Added the --resource-timeout option (AI Assisted)
+    - Note AI assisted in these changes, but I (Exodist) reviewed them carefully.
+
 1.000164  2026-03-31 21:49:47-07:00 America/Los_Angeles
 
     - Update to reindex after accidental 2.0 release
