@@ -127,6 +127,7 @@ sub yath {
             last;
         }
 
+        seek($rh, 0, SEEK_CUR); # CLEAR EOF
         while (my @new = <$rh>) {
             push @lines => @new;
             print map { chomp($_); "DEBUG: > $_\n" } @new if $debug > 1;
