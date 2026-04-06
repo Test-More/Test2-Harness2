@@ -106,7 +106,12 @@ sub killall {
 
     $self->check_for_fork();
 
-    kill($sig, keys %{$self->{+PROCS}});
+    if (USE_P_GROUPS) {
+        kill($sig, map { -$_ } keys %{$self->{+PROCS}});
+    }
+    else {
+        kill($sig, keys %{$self->{+PROCS}});
+    }
 }
 
 sub check_timeouts {}
