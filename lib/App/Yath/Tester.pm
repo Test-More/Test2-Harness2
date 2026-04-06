@@ -121,13 +121,25 @@ sub yath {
         open(my $rh, '<', $cfile) or die "Could not open output file: $!";
         apply_encoding($rh, $enc) if $enc;
         $rh->blocking(0);
+        my $start = time();
+        my $timeout = $ENV{YATH_TESTER_TIMEOUT} // 120;
         while (1) {
             seek($rh, 0, SEEK_CUR); # CLEAR EOF
             my @new = <$rh>;
             push @lines => @new;
             print map { chomp($_); "DEBUG: > $_\n" } @new if $debug > 1;
 
-            waitpid($pid, WNOHANG) or next;
+            waitpid($pid, WNOHANG) or do {
+                if ($timeout && time() - $start > $timeout) {
+                    kill('TERM', $pid);
+                    waitpid($pid, 0);
+                    $exit = $?;
+                    push @lines => "yath tester timeout after ${timeout}s\n";
+                    last;
+                }
+                sleep 0.02;
+                next;
+            };
             $exit = $?;
             last;
         }
