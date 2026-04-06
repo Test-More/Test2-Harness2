@@ -69,6 +69,7 @@ use Test2::Harness::Util::HashBase(
         <tmp_dir
 
         <rootpid
+        <scheduler_pid
     },
 );
 
@@ -291,11 +292,15 @@ sub spawn_scheduler {
     return unless $self->{+ROOTPID} == $$;
 
     my $pid = fork // die "Could not fork: $!";
-    return $self->watch_pid($pid) if $pid;
+    if ($pid) {
+        $self->{+SCHEDULER_PID} = $pid;
+        return $self->watch_pid($pid);
+    }
 
     my $guard = Scope::Guard->new(sub {
-        print STDERR "\n\nEscaped Scope!!!!\n\n";
-        print STDERR $@;
+        my $err = $@;
+        print STDERR "\n\n$$ $0 Scheduler escaped scope!\n";
+        print STDERR "$$ $0 Error: $err\n" if $err;
         exit 255;
     });
 
@@ -305,41 +310,52 @@ sub spawn_scheduler {
 
     my $lock = open_file($self->dispatch_lock_file, '>>');
 
-    while (1) {
-        $state->poll;
-
-        flock($lock, LOCK_EX) or die "Could not get scheduler lock: $!";
-
+    my $ok = eval {
         while (1) {
-            next if $state->advance;
-            last;
-        }
+            $state->poll;
 
-        flock($lock, LOCK_UN) or die "Could not release scheduler lock: $!";
+            flock($lock, LOCK_EX) or die "Could not get scheduler lock: $!";
 
-        if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
-            print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
-            print STDERR "There are pending tests but resources have not become available.\n";
-            print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
-            $state->truncate();
-            $self->{+SIGNAL} = 'TERM';
-        }
+            while (1) {
+                next if $state->advance;
+                last;
+            }
 
-        if ($self->end_test_loop()) {
-            $guard->dismiss;
-            exit(0);
-        }
+            flock($lock, LOCK_UN) or die "Could not release scheduler lock: $!";
 
-        my $slept = 0;
-        if ($self->{+WAIT_TIME}) {
-            # This sleep is often interrupted by signals.
-            while ($slept < $self->{+WAIT_TIME}) {
-                $slept += sleep($self->{+WAIT_TIME} - $slept);
+            if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
+                print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
+                print STDERR "There are pending tests but resources have not become available.\n";
+                print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
+                $state->truncate();
+                $self->{+SIGNAL} = 'TERM';
+            }
+
+            if ($self->end_test_loop()) {
+                $guard->dismiss;
+                exit(0);
+            }
+
+            my $slept = 0;
+            if ($self->{+WAIT_TIME}) {
+                # This sleep is often interrupted by signals.
+                while ($slept < $self->{+WAIT_TIME}) {
+                    $slept += sleep($self->{+WAIT_TIME} - $slept);
+                }
             }
         }
+
+        1;
+    };
+
+    unless ($ok) {
+        my $err = $@;
+        print STDERR "\n$$ $0 Scheduler error: $err\n";
+        $guard->dismiss;
+        exit 255;
     }
 
-    warn "Escaped scheduler loop";
+    warn "$$ $0 Escaped scheduler loop";
     exit 255;
 }
 
@@ -556,6 +572,21 @@ sub set_proc_exit {
             my ($name, @procs) = $self->preloader->_preload_stages($stage);
             $self->watch($_) for @procs;
             longjump "Stage-Runner" => $name unless $pid == $$;
+        }
+    }
+
+    if ($self->{+SCHEDULER_PID} && $proc->pid == $self->{+SCHEDULER_PID}) {
+        delete $self->{+SCHEDULER_PID};
+
+        if ($exit) {
+            my $e = parse_exit($exit);
+            print STDERR "\n$$ $0 Scheduler process (pid: @{[$proc->pid]}) exited unexpectedly (sig: $e->{sig}, err: $e->{err})!\n";
+            print STDERR "$$ $0 Aborting test run due to scheduler death.\n\n";
+            $self->{+SIGNAL} //= 'TERM';
+        }
+        elsif (!$self->{+SIGNAL} && !$self->state->done) {
+            print STDERR "\n$$ $0 Scheduler process (pid: @{[$proc->pid]}) exited prematurely (exit: 0) with pending work.\n\n";
+            $self->{+SIGNAL} //= 'TERM';
         }
     }
 
