@@ -293,6 +293,8 @@ sub spawn_scheduler {
     my $pid = fork // die "Could not fork: $!";
     return $self->watch_pid($pid) if $pid;
 
+    setpgrp(0, 0) if Test2::Harness::Util::IPC::USE_P_GROUPS();
+
     my $guard = Scope::Guard->new(sub {
         print STDERR "\n\nEscaped Scope!!!!\n\n";
         print STDERR $@;

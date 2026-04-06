@@ -9,6 +9,7 @@ use Carp qw/confess croak/;
 use Fcntl qw/LOCK_EX LOCK_UN/;
 use Time::HiRes qw/time sleep/;
 use Test2::Harness::Util qw/open_file file2mod mod2file lock_file unlock_file clean_path/;
+use Test2::Harness::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness::Runner::Reloader;
 use Test2::Harness::Runner::Preloader::Stage;
@@ -186,6 +187,7 @@ sub launch_stage {
         name => $name,
     ) if $pid;
 
+    setpgrp(0, 0) if USE_P_GROUPS;
     $0 .= "-$name";
     $ENV{T2_HARNESS_STAGE} = $name;
 
