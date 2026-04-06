@@ -310,8 +310,11 @@ sub spawn_scheduler {
 
     my $lock = open_file($self->dispatch_lock_file, '>>');
 
-    my $ok = eval {
-        while (1) {
+    my $consecutive_errors = 0;
+    my $max_errors = 5;
+
+    while (1) {
+        my $ok = eval {
             $state->poll;
 
             flock($lock, LOCK_EX) or die "Could not get scheduler lock: $!";
@@ -331,28 +334,37 @@ sub spawn_scheduler {
                 $self->{+SIGNAL} = 'TERM';
             }
 
-            if ($self->end_test_loop()) {
-                $guard->dismiss;
-                exit(0);
-            }
+            1;
+        };
 
-            my $slept = 0;
-            if ($self->{+WAIT_TIME}) {
-                # This sleep is often interrupted by signals.
-                while ($slept < $self->{+WAIT_TIME}) {
-                    $slept += sleep($self->{+WAIT_TIME} - $slept);
-                }
+        unless ($ok) {
+            my $err = $@;
+            $consecutive_errors++;
+            eval { flock($lock, LOCK_UN) };
+            print STDERR "\n$$ $0 Scheduler error ($consecutive_errors/$max_errors): $err\n";
+
+            if ($consecutive_errors >= $max_errors) {
+                print STDERR "$$ $0 Scheduler aborting after $consecutive_errors consecutive errors.\n";
+                $guard->dismiss;
+                exit 255;
             }
         }
+        else {
+            $consecutive_errors = 0;
+        }
 
-        1;
-    };
+        if ($self->end_test_loop()) {
+            $guard->dismiss;
+            exit(0);
+        }
 
-    unless ($ok) {
-        my $err = $@;
-        print STDERR "\n$$ $0 Scheduler error: $err\n";
-        $guard->dismiss;
-        exit 255;
+        my $slept = 0;
+        if ($self->{+WAIT_TIME}) {
+            # This sleep is often interrupted by signals.
+            while ($slept < $self->{+WAIT_TIME}) {
+                $slept += sleep($self->{+WAIT_TIME} - $slept);
+            }
+        }
     }
 
     warn "$$ $0 Escaped scheduler loop";

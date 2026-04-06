@@ -16,7 +16,7 @@ sub assign {
 
 sub record {
     my $self = shift;
-    $self->{_task_started} = 1;
+    $self->{_task_started}++;
 }
 
 sub release { }
@@ -32,6 +32,14 @@ sub tick {
     }
     elsif ($mode eq 'exit') {
         POSIX::_exit(0);
+    }
+    elsif ($mode eq 'recover') {
+        # Throw a few times then stop, simulating a transient error
+        $self->{_error_count} //= 0;
+        if ($self->{_error_count}++ < 2) {
+            die "Transient scheduler error for testing\n";
+        }
+        # After 2 errors, stop throwing — scheduler should recover
     }
 }
 
