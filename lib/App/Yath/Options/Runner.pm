@@ -195,6 +195,13 @@ option_group {prefix => 'runner', category => "Runner Options"} => sub {
         description  => 'Pass the specified switch to perl for each test. This is not compatible with preload.',
     );
 
+    option fail_on_resource_skip => (
+        type => 'b',
+        default => 0,
+        description => 'Treat resource-skipped tests as failures instead of skips. When enabled, tests that would be skipped due to unavailable resources will be marked as failing.',
+        long_examples => [''],
+    );
+
     option resource_timeout => (
         alt => ['rt'],
 

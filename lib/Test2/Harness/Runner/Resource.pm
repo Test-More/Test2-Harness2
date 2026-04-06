@@ -286,6 +286,11 @@ resource(s), and none are available, this should return false. If any resource
 class returns false it means the test cannot be run yet and the runner will
 look for another test to run.
 
+If C<available()> returns a negative value (e.g. C<-1>), the resource is
+considered permanently unavailable. By default the test will be skipped. If
+the C<--fail-on-resource-skip> runner option is enabled, the test will be
+marked as a failure instead.
+
 =head2 ASSIGN A RESOURCE
 
 If the runner has determined the test can be run, and all necessary resources
@@ -390,7 +395,9 @@ Returns false if the resource is not available, but will be in the future (IE
 in use by another test, but will be free when that test is done).
 
 Returns a negative value if the resource is not available and never will be.
-This will cause any tests dependent on the resource to be skipped.
+This will cause any tests dependent on the resource to be skipped. If the
+C<--fail-on-resource-skip> flag is set, these tests will be marked as failures
+instead of skips.
 
 The only key in C<\%task> hashref that most resources will care about is the
 C<'file'> key, which contains the test file to be run.

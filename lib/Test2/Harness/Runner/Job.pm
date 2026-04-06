@@ -119,8 +119,13 @@ sub spawn_params {
     my $task = $self->{+TASK};
 
     my $skip;
+    my $resource_skip_is_fail;
     $skip = 'dummy mode' if $self->{+SETTINGS}->debug->dummy;
-    $skip = "Some resources are not available: " . join(', ' => @{$self->{+TASK}->{resource_skip}}) if $self->{+TASK}->{resource_skip};
+    if ($self->{+TASK}->{resource_skip}) {
+        my $msg = "Some resources are not available: " . join(', ' => @{$self->{+TASK}->{resource_skip}});
+        $skip = $msg;
+        $resource_skip_is_fail = 1 if $self->{+SETTINGS}->runner->fail_on_resource_skip;
+    }
 
     my $command;
     if (!$skip && $task->{binary} || $task->{non_perl}) {
@@ -130,6 +135,14 @@ sub spawn_params {
         unshift @$command => $^X if $task->{non_perl} && !(-x $file)  && !$task->{binary};
     }
     else {
+        my @skip_or_fail;
+        if ($skip && $resource_skip_is_fail) {
+            @skip_or_fail = ('-e', "print \"1..1\\nnot ok 1 - $skip\\n\"");
+        }
+        elsif ($skip) {
+            @skip_or_fail = ('-e', "print \"1..0 # SKIP $skip\"");
+        }
+
         $command = [
             $^X,
             $self->cli_includes,
@@ -137,7 +150,7 @@ sub spawn_params {
             $self->switches,
             $self->cli_options,
 
-            $skip ? ('-e', "print \"1..0 # SKIP $skip\"") : (sub { $self->run_file }),
+            @skip_or_fail ? @skip_or_fail : (sub { $self->run_file }),
 
             $self->args,
         ];
@@ -761,7 +774,10 @@ True if the test is a priority smoke test.
 =item $hashref = $job->spawn_params
 
 Parameters for C<run_cmd()> in L<Test2::Harness::Util::IPC> when launching this
-job.
+job. If the task has a C<resource_skip> set (indicating permanently unavailable
+resources), the command will emit TAP to skip the test. When the
+C<--fail-on-resource-skip> runner option is enabled, the command will instead
+emit a TAP test failure.
 
 =item @list = $job->switches
 
