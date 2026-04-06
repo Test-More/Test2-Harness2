@@ -99,6 +99,11 @@ sub yath {
     print "DEBUG: Command = " . join(' ' => @cmd) . "\n" if $debug;
 
     local %ENV = %ENV;
+
+    # App::Yath::Script (2.0) prints a message and sets PERL_HASH_SEED when
+    # it is not already set, which pollutes captured output.
+    $ENV{PERL_HASH_SEED} //= POSIX::strftime('%Y%m%d', localtime);
+
     $ENV{YATH_PERSISTENCE_DIR} = $pdir;
     $ENV{YATH_CMD} = $cmd;
     $ENV{NESTED_YATH} = 1;
