@@ -1,55 +1,31 @@
-#!/usr/bin/perl
-# Do not use warnings/strict, we want to avoid contamination of the
+package App::Yath::Script::V1;
+use strict;
+use warnings;
 
-# '-D' and '--dev-lib' MUST be handled well in advance of loading ANYTHING.
-# These will get re-processed later, but they MUST come even before App::Yath
-# is loaded.
-BEGIN {
+our $VERSION = '1.000168';
+
+my ($RUN_SUB, @DEVLIBS, $NO_PLUGINS);
+
+sub do_begin {
+    my $class  = shift;
+    my %params = @_;
+
+    my $script      = $params{script};
+    my $argv        = $params{argv};
+    my $config_file = $params{config};
+    my $user_config_file = $params{user_config};
+
     local $.;
-    return if $^C;
-
-    package App::Yath::Script;
-    our $VERSION = '1.000156';
 
     my $ORIG_TMP;
     my $ORIG_TMP_PERMS;
-    my %ORIG_SIG = map { defined($SIG{$_}) ? ($_ => "$SIG{$_}") : ()} keys %SIG;
-    my @ORIG_ARGV = @ARGV;
+    my %ORIG_SIG = map { defined($SIG{$_}) ? ($_ => "$SIG{$_}") : () } keys %SIG;
+    my @ORIG_ARGV = @$argv;
     my @ORIG_INC = @INC;
-    my @DEVLIBS;
     my %CONFIG;
-    my $NO_PLUGINS;
 
-    our $SCRIPT;
+    @ARGV = @$argv;
 
-    # ==START TESTABLE CODE FIND_CONFIG_FILES==
-
-    my ($config_file, $user_config_file);
-
-    # Would be nice if we could use File::Spec, but we cannot load ANYTHING yet.
-    my %no_stat = (mswin32 => 1, vms => 1, riscos => 1, os2 => 1, cygwin => 1);
-    my %seen;
-    my $dir = './';
-    for (1 .. 100) {    # If we are more than 100 deep we have other problems
-        if ($no_stat{lc($^O)}) {
-            opendir(my $dh, $dir) or die "$!";
-            my $key = join ':' => sort readdir($dh);
-            last if $seen{$key}++;
-        }
-        else {
-            my ($dev, $ino) = stat $dir;
-            last if $seen{$dev}{$ino}++;
-        }
-
-        $config_file      //= "${dir}.yath.rc"      if -f "${dir}.yath.rc";
-        $user_config_file //= "${dir}.yath.user.rc" if -f "${dir}.yath.user.rc";
-
-        last if $config_file && $user_config_file;
-
-        $dir .= "../";
-    }
-
-    # ==END TESTABLE CODE FIND_CONFIG_FILES==
     # ==START TESTABLE CODE PARSE_CONFIG_FILES==
 
     my (@CONFIG_ARGS, @TO_CLEAN);
@@ -177,10 +153,9 @@ BEGIN {
     @ARGV = (@args, @ARGV);
 
     unshift @INC => @libs;
-    unshift @DEVLIBS => @libs;
+    @DEVLIBS = @libs;
 
     # ==END TESTABLE CODE PRE_PARSE_D_ARGS==
-    # ==START TESTABLE CODE EXEC==
 
     # Now it is safe/ok to load things.
     require Cwd;
@@ -188,19 +163,7 @@ BEGIN {
 
     $ORIG_TMP = File::Spec->tmpdir();
     $ORIG_TMP_PERMS = ((stat($ORIG_TMP))[2] & 07777);
-    $SCRIPT = Cwd::realpath(__FILE__) // File::Spec->rel2abs(__FILE__);
 
-    if ($maybe_exec && -e 'scripts/yath') {
-        my $script = Cwd::realpath('scripts/yath') // File::Spec->rel2abs('scripts/yath');
-
-        if ($SCRIPT ne $script) {
-            warn "\n** $maybe_exec was used, and scripts/yath is present, using exec to switch to it. **\n\n";
-            exec($script, @ORIG_ARGV);
-            die("Should not see this, exec failed!");
-        }
-    }
-
-    # ==END TESTABLE CODE EXEC==
     # ==START TESTABLE CODE CLEANUP_PATHS==
 
     if (@libs || @TO_CLEAN) {
@@ -239,7 +202,7 @@ BEGIN {
             orig_sig         => \%ORIG_SIG,
             orig_argv        => \@ORIG_ARGV,
             orig_inc         => \@ORIG_INC,
-            script           => $SCRIPT,
+            script           => $script,
             no_scan_plugins  => $NO_PLUGINS,
             dev_libs         => \@DEVLIBS,
             start            => Time::HiRes::time(),
@@ -255,16 +218,21 @@ BEGIN {
         settings => $settings,
     );
 
-    $app->generate_run_sub('App::Yath::Script::run');
+    $app->generate_run_sub('App::Yath::Script::V1::_run');
 
     # ==END TESTABLE CODE CREATE_APP==
+
+    # Reset these if we got this far.
+    $? = 0;
+    $@ = '';
 }
 
-# Reset these if we got this far.
-$? = 0;
-$@ = '';
+sub do_runtime {
+    my $class = shift;
+    return _run();
+}
 
-exit(App::Yath::Script::run());
+1;
 
 __END__
 
@@ -274,14 +242,54 @@ __END__
 
 =head1 NAME
 
-yath - Primary Command Line Interface (CLI) for Test2::Harness
+App::Yath::Script::V1 - V1 (Legacy) yath script handler for Test2::Harness
 
 =head1 DESCRIPTION
 
-This is the primary command line interface for App::Yath/Test2::Harness. Yath
-is essentially a shell around the components of L<Test2::Harness>.
-For usage instructions and examples,
-see L<App::Yath>.
+This is the V1 script handler for L<Test2::Harness>. It is used by
+L<App::Yath::Script> when a C<.yath.rc> file with no version marker (or an
+explicit C<# V1> marker) is found, or when V1 is the highest installed version.
+
+This module contains the logic that was previously embedded directly in the
+C<scripts/yath> script of L<Test2::Harness>.
+
+=head1 METHODS
+
+=over 4
+
+=item $class->do_begin(%params)
+
+Called during the C<BEGIN> phase. Parses configuration files, processes C<-D>
+and C<--no-scan-plugins> arguments, sets up C<@INC>, and initializes
+L<App::Yath>.
+
+Parameters:
+
+=over 4
+
+=item script => $path
+
+Path to the executing script.
+
+=item argv => \@argv
+
+Original command line arguments.
+
+=item config => $path
+
+Path to the C<.yath.rc> file, or C<undef>.
+
+=item user_config => $path
+
+Path to the C<.yath.user.rc> file, or C<undef>.
+
+=back
+
+=item $exit = $class->do_runtime()
+
+Called after C<BEGIN>. Executes the yath command and returns the exit code.
+
+=back
 
 =head1 SOURCE
 
