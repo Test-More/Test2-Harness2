@@ -1,5 +1,9 @@
 {{$NEXT}}
 
+    - Add --fail-on-resource-skip
+    - Detect and report scheduler death instead of hanging forever
+    - Make scheduler resilient to transient errors
+
 1.000167  2026-04-05 13:52:36-07:00 America/Los_Angeles
 
     - Change sleeps to be a bit more sensible
