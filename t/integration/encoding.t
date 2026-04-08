@@ -6,6 +6,11 @@ use Test2::Harness::Util::File::JSONL;
 
 use Test2::Harness::Util::JSON qw/decode_json/;
 
+use POSIX qw/locale_h/;
+my $locale = setlocale(LC_CTYPE) || '';
+skip_all "This test requires a UTF-8 locale (got: $locale)"
+    unless $locale =~ /utf-?8/i;
+
 my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;
 $dir =~ s{^\./}{};
