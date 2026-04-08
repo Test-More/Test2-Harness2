@@ -2,7 +2,7 @@ package Test2::Harness::Runner::Resource::SharedJobSlots;
 use strict;
 use warnings;
 
-our $VERSION = '1.000169';
+our $VERSION = '1.000170';
 
 use YAML::Tiny;
 use Test2::Harness::Runner::Resource::SharedJobSlots::State;
