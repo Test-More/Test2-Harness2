@@ -114,7 +114,8 @@ sub yath {
     my (@lines, $exit);
     if ($capture) {
         open(my $rh, '<', $cfile) or die "Could not open output file: $!";
-        apply_encoding($rh, $enc) if $enc;
+        # Do not apply encoding here — non-blocking reads can split
+        # multi-byte characters, corrupting the :utf8 decode.
         $rh->blocking(0);
         while (1) {
             seek($rh, 0, SEEK_CUR); # CLEAR EOF
@@ -127,10 +128,20 @@ sub yath {
             last;
         }
 
-        seek($rh, 0, SEEK_CUR); # CLEAR EOF
-        while (my @new = <$rh>) {
-            push @lines => @new;
-            print map { chomp($_); "DEBUG: > $_\n" } @new if $debug > 1;
+        # Child is done — re-read the complete file with proper encoding.
+        # This avoids partial multi-byte sequences from non-blocking reads.
+        if ($enc) {
+            open(my $fh, '<', $cfile) or die "Could not re-open output file: $!";
+            apply_encoding($fh, $enc);
+            @lines = <$fh>;
+            close($fh);
+        }
+        else {
+            seek($rh, 0, SEEK_CUR); # CLEAR EOF
+            while (my @new = <$rh>) {
+                push @lines => @new;
+                print map { chomp($_); "DEBUG: > $_\n" } @new if $debug > 1;
+            }
         }
     }
     else {
