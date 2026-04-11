@@ -1,5 +1,8 @@
 {{$NEXT}}
 
+    - Bump preload integration test watchdog from 15s to 60s to reduce
+      flakiness on slow CPAN testers hosts
+
 1.000170  2026-04-09 22:35:24-07:00 America/Los_Angeles
 
     - Fix encoding test flake: defer :utf8 decode until after child exits
