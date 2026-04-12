@@ -1,18 +1,18 @@
 # NAME
 
-Test2::Harness - AKA 'yath' Yet Another Test Harness, A modern alternative to prove.
+Test2::Harness2 - AKA 'yath' Yet Another Test Harness, A modern alternative to prove.
 
 # DESCRIPTION
 
-This is the primary documentation for the `yath` command, [Test2::Harness](https://metacpan.org/pod/Test2%3A%3AHarness),
-[App::Yath](https://metacpan.org/pod/App%3A%3AYath) and all other related components.
+This is the primary documentation for the `yath` command, [Test2::Harness2](https://metacpan.org/pod/Test2%3A%3AHarness2),
+[App::Yath2](https://metacpan.org/pod/App%3A%3AYath2) and all other related components.
 
 The `yath` command is an alternative to the `prove` command and
 [Test::Harness](https://metacpan.org/pod/Test%3A%3AHarness).
 
 # PLATFORM SUPPORT
 
-[Test2::Harness](https://metacpan.org/pod/Test2%3A%3AHarness)/[App::Yath](https://metacpan.org/pod/App%3A%3AYath) is is focused on unix-like platforms. Most
+[Test2::Harness2](https://metacpan.org/pod/Test2%3A%3AHarness2)/[App::Yath2](https://metacpan.org/pod/App%3A%3AYath2) is is focused on unix-like platforms. Most
 development happens on linux, but bsd, macos, etc should work fine as well.
 
 Patches are welcome for any/all platforms, but the primary author (Chad
@@ -196,7 +196,7 @@ modules:
 
 - [DBD::Pg](https://metacpan.org/pod/DBD%3A%3APg) and [DateTime::Format::Pg](https://metacpan.org/pod/DateTime%3A%3AFormat%3A%3APg)
 
-    PostgreSQL, the database engine [Test2::Harness](https://metacpan.org/pod/Test2%3A%3AHarness) is primarily written against.
+    PostgreSQL, the database engine [Test2::Harness2](https://metacpan.org/pod/Test2%3A%3AHarness2) is primarily written against.
 
     You can specify this one directly if you want to avoid database roulette:
 
@@ -463,7 +463,7 @@ define advanced preload behavior:
     use warnings;
 
     # Using this class will turn this into an advanced preload class
-    use Test2::Harness::Preload;
+    use Test2::Harness2::Preload;
 
     stage ONLY_MOOSE => sub {
         preload 'Moose';
@@ -492,7 +492,7 @@ define advanced preload behavior:
 
     1;
 
-Custom preload classes use the [Test2::Harness::Preload](https://metacpan.org/pod/Test2%3A%3AHarness%3A%3APreload) module to set up some
+Custom preload classes use the [Test2::Harness2::Preload](https://metacpan.org/pod/Test2%3A%3AHarness2%3A%3APreload) module to set up some
 key meta-information, then you can define preload "stages".
 
 A "stage" is a process with a preloaded state waiting for tests to run, when it

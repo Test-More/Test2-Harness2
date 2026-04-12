@@ -3,18 +3,18 @@ use Test2::IPC qw/cull/;
 # HARNESS-JOB-SLOTS
 
 use File::Find;
-use Test2::Harness;
-use Test2::Harness::Util qw/file2mod/;
+use Test2::Harness2;
+use Test2::Harness2::Util qw/file2mod/;
 use Parallel::Runner;
 
-use Test2::Harness::Util::Deprecated();
-$Test2::Harness::Util::Deprecated::IGNORE_IMPORT = 1;
+use Test2::Harness2::Util::Deprecated();
+$Test2::Harness2::Util::Deprecated::IGNORE_IMPORT = 1;
 
 my %SKIP = (
-    'lib/Test2/Harness/IPC/Protocol/IPSocket.pm'              => 1,
-    'lib/Test2/Harness/IPC/Protocol/IPSocket/Connection.pm'   => 1,
-    'lib/Test2/Harness/IPC/Protocol/UnixSocket.pm'            => 1,
-    'lib/Test2/Harness/IPC/Protocol/UnixSocket/Connection.pm' => 1,
+    'lib/Test2/Harness2/IPC/Protocol/IPSocket.pm'              => 1,
+    'lib/Test2/Harness2/IPC/Protocol/IPSocket/Connection.pm'   => 1,
+    'lib/Test2/Harness2/IPC/Protocol/UnixSocket.pm'            => 1,
+    'lib/Test2/Harness2/IPC/Protocol/UnixSocket/Connection.pm' => 1,
 );
 
 my $runner = Parallel::Runner->new(
@@ -40,10 +40,10 @@ sub wanted {
 
             if ($file =~ m{(MySQL|PostgreSQL|SQLite)}) {
                 my $schema = $1;
-                eval { require "App/Yath/Schema/DBIC/$schema.pm"; 1} or skip_all "Could not load $schema: $@";
+                eval { require "App/Yath2UI/Schema/DBIC/$schema.pm"; 1} or skip_all "Could not load $schema: $@";
             }
-            elsif ($file =~ m{App/Yath/Schema/DBIC\.pm$} || $file =~ m{Schema/DBIC/(Result)}) {
-                eval { require App::Yath::Schema::DBIC::SQLite; 1 } or skip_all "Could not load SQLite: $@";
+            elsif ($file =~ m{App/Yath2UI/Schema/DBIC\.pm$} || $file =~ m{Schema/DBIC/(Result)}) {
+                eval { require App::Yath2UI::Schema::DBIC::SQLite; 1 } or skip_all "Could not load SQLite: $@";
             }
 
             my $ok = eval { local $SIG{__WARN__} = sub { push @warnings => @_ }; require($file); 1 };
@@ -55,16 +55,16 @@ sub wanted {
 
             {
                 no warnings 'once';
-                ok($ok, "require $file (" . ($App::Yath::Schema::DBIC::LOADED // 'undef') . ")", $ok ? () : $err);
+                ok($ok, "require $file (" . ($App::Yath2UI::Schema::DBIC::LOADED // 'undef') . ")", $ok ? () : $err);
             }
             ok(!@warnings, "No Warnings", @warnings);
 
-            return if $file =~ m{Test2/Harness/UI/Schema};
+            return if $file =~ m{App/Yath2UI/Schema};
 
             my $mod = file2mod($file);
             my $sym = "$mod\::VERSION";
             no strict 'refs';
-            is($$sym, $Test2::Harness::VERSION, "Package $mod ($file) has the version number");
+            is($$sym, $Test2::Harness2::VERSION, "Package $mod ($file) has the version number");
         };
     }, 1);
 };

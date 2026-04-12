@@ -13,8 +13,8 @@ use TAP::Harness::Yath::Aggregator;
 
 our $SUMMARY;
 
-use App::Yath::Script;
-use Test2::Harness::Util::HashBase qw{
+use App::Yath2::Script;
+use Test2::Harness2::Util::HashBase qw{
     color
     ignore_exit
     jobs
@@ -43,7 +43,7 @@ sub runtests {
         @tests,
     );
 
-    my $got = App::Yath::Script::run(__FILE__, \@args);
+    my $got = App::Yath2::Script::run(__FILE__, \@args);
 
     my $files_total  = $SUMMARY->{'tests_seen'} //= 0;
     my $files_failed = $SUMMARY->{'failed'}     //= $got;

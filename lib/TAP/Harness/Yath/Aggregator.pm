@@ -10,7 +10,7 @@ BEGIN {
     Test::Harness->VERSION(3.49);
 }
 
-use Test2::Harness::Util::HashBase qw{
+use Test2::Harness2::Util::HashBase qw{
     files_total
     files_failed
     files_passed

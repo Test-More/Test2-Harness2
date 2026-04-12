@@ -8,7 +8,7 @@ chdir($ARGV[0]) or die "Could not chdir to $ARGV[0]";
 
 unshift @INC => './lib';
 
-require App::Yath::Command;
+require App::Yath2::Command;
 
 my @bad;
 for my $base ('./lib/App/Yath/Options', './lib/App/Yath/Plugin', './lib/App/Yath/Renderer') {

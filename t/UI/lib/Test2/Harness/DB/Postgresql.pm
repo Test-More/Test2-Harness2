@@ -1,11 +1,11 @@
-package Test2::Harness::DB::Postgresql;
+package Test2::Harness2::DB::Postgresql;
 use strict;
 use warnings;
 
 use Test2::API qw/context/;
 use Test2::Tools::QuickDB;
-use Test2::Harness::UI::Schema::PostgreSQL;
-use Test2::Harness::UI::Schema;
+use Test2::Harness2::UI::Schema::PostgreSQL;
+use Test2::Harness2::UI::Schema;
 
 sub new {
     my $class = shift;
@@ -14,10 +14,10 @@ sub new {
 
     my $db = get_db_or_skipall({driver => 'PostgreSQL', load_sql => [quickdb => 'schema/PostgreSQL.sql', quickdb => 'schema/postgresql_demo.sql']});
     my $dbh = $db->connect('quickdb', AutoCommit => 1, RaiseError => 1);
-    my $schema = Test2::Harness::UI::Schema->connect({dbh_maker => sub { $dbh }});
+    my $schema = Test2::Harness2::UI::Schema->connect({dbh_maker => sub { $dbh }});
 
-    require Test2::Harness::UI::Import;
-    my $import = Test2::Harness::UI::Import->new(schema => $schema);
+    require Test2::Harness2::UI::Import;
+    my $import = Test2::Harness2::UI::Import->new(schema => $schema);
 
     open(my $fh, '<', 't/simple.json') or die "Could not open simple.json: $!";
     my $json = join '' => <$fh>;

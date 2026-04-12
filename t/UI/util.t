@@ -1,6 +1,6 @@
 use Test2::V0;
 
-use App::Yath::Schema::Util qw/parse_duration format_duration/;
+use App::Yath2UI::Schema::Util qw/parse_duration format_duration/;
 
 imported_ok qw/parse_duration format_duration/;
 

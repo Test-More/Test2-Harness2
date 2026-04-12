@@ -50,7 +50,7 @@ sub need_stub {
 
     open(my $fh, '<', $file) or die "Could not open file '$file': $!";
     for my $line (<$fh>) {
-        next unless $line =~ m/^use Test2::Harness::Util::Deprecated/;
+        next unless $line =~ m/^use Test2::Harness2::Util::Deprecated/;
         print "No stub for deprecated file '$file\n";
         return;
     }

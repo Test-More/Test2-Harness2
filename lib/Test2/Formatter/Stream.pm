@@ -12,12 +12,12 @@ use Time::HiRes qw/time/;
 use Test2::Util qw/get_tid/;
 
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness::Util qw/hub_truth apply_encoding/;
+use Test2::Harness2::Util qw/hub_truth apply_encoding/;
 
-use Test2::Harness::Collector::Child qw/send_event/;
+use Test2::Harness2::Collector::Child qw/send_event/;
 
 use parent qw/Test2::Formatter/;
-use Test2::Harness::Util::HashBase qw{
+use Test2::Harness2::Util::HashBase qw{
     +encoding
     <no_header
     <no_numbers
@@ -216,7 +216,7 @@ Test2::Formatter::Stream - Test2 Formatter that directly writes events.
 
 =head1 DESCRIPTION
 
-Formatter used by default when L<App::Yath> runs tests.
+Formatter used by default when L<App::Yath2> runs tests.
 
 This formatter cannot be used directly, it only works under yath.
 

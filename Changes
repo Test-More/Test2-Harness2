@@ -1,5 +1,10 @@
 {{$NEXT}}
 
+    - Renamed distribution to Test2-Harness2.
+    - Split namespaces: Test2::Harness2 (runtime), App::Yath2 (CLI), App::Yath2UI (DB/web).
+    - External code referencing the old Test2::Harness or App::Yath namespaces must migrate.
+      The legacy Test2-Harness 1.x distribution on CPAN remains available unchanged.
+
 2.000010  2026-03-31 22:05:02-07:00 America/Los_Angeles (TRIAL RELEASE)
 
     - Add AI and LLM Policy

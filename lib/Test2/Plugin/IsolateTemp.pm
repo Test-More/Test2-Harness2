@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use Test2::Harness::Util qw/chmod_tmp/;
+use Test2::Harness2::Util qw/chmod_tmp/;
 use File::Temp qw/tempdir/;
 
 our $tempdir;
@@ -46,8 +46,8 @@ Test2::Plugin::IsolateTemp - Make sure a test uses an isolated temp dir.
 
 Make sure the test uses an isolated temp dir.
 
-B<NOTE:> This is a no-op when tests are run with yath (L<App::Yath> and
-L<Test2::Harness>) as yath will do this by default.
+B<NOTE:> This is a no-op when tests are run with yath (L<App::Yath2> and
+L<Test2::Harness2>) as yath will do this by default.
 
 =head1 SYNOPSIS
 

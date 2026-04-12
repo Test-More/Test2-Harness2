@@ -1,6 +1,6 @@
 use Test2::V0;
 
-use Test2::Harness::Util qw/file2mod/;
+use Test2::Harness2::Util qw/file2mod/;
 use File::Find;
 
 my @files;

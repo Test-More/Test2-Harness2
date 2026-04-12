@@ -1,8 +1,8 @@
 -D
--D=rel(t2/lib)
+-D=rel(t/Harness/selftest/lib)
 ;-pSelfTest
---project Test2-Harness
+--project Test2-Harness2
 
 [test]
--Irel(t2/lib)
+-Irel(t/Harness/selftest/lib)
 --default-search glob(t/*)

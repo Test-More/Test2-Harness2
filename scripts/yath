@@ -17,11 +17,11 @@ BEGIN {
         exec $^X, (map {('-I' => $_)} @INC), __FILE__, @ARGV;
     }
 
-    require App::Yath::Script;
-    App::Yath::Script::goto_alt_script('yath', __FILE__, './scripts/yath');
+    require App::Yath2::Script;
+    App::Yath2::Script::goto_alt_script('yath', __FILE__, './scripts/yath');
 }
 
-exit(App::Yath::Script::run(__FILE__, \@ARGV));
+exit(App::Yath2::Script::run(__FILE__, \@ARGV));
 
 __END__
 
@@ -31,8 +31,8 @@ __END__
 
 =head1 NAME
 
-yath - script to launch L<App::Yath> which is the frontend for
-L<Test2::Harness>.
+yath - script to launch L<App::Yath2> which is the frontend for
+L<Test2::Harness2>.
 
 =head1 DESCRIPTION
 
@@ -46,7 +46,7 @@ L<Test2::Harness>.
 
 =head1 SOURCE
 
-The source code repository for Test2-Harness can be found at
+The source code repository for Test2-Harness2 can be found at
 L<http://github.com/Test-More/Test2-Harness/>.
 
 =head1 MAINTAINERS
