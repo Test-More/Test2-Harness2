@@ -5,13 +5,18 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak confess/;
+use Cwd qw/realpath/;
 use Fcntl qw/LOCK_EX LOCK_UN/;
+use File::Spec;
 use Importer Importer => 'import';
 use Test2::Util qw/try_sig_mask do_rename/;
 
 our @EXPORT_OK = qw{
     apply_encoding
+    clean_path
     close_file
+    find_libraries
+    fqmod
     hub_truth
     load_module
     lock_file
@@ -59,6 +64,21 @@ sub tinysleep {
     return;
 }
 
+# Canonicalise $path to an absolute, symlink-resolved form. With $absolute
+# false, skip the realpath() step and just return File::Spec->rel2abs($path);
+# that mode is for callers that want an absolute path without collapsing
+# symlinks. Confesses on empty input.
+sub clean_path {
+    my ($path, $absolute) = @_;
+
+    confess "No path was provided to clean_path()" unless $path;
+
+    $absolute //= 1;
+    $path = realpath($path) // $path if $absolute;
+
+    return File::Spec->rel2abs($path);
+}
+
 sub mod2file {
     my ($mod) = @_;
     confess "No module name provided" unless $mod;
@@ -66,6 +86,123 @@ sub mod2file {
     $file =~ s{::}{/}g;
     $file .= ".pm";
     return $file;
+}
+
+# Resolve a short module name against one or more namespace prefixes. A
+# leading '+' bypasses the prefixes entirely and treats the rest as an
+# absolute module name. Otherwise each prefix is tried in order and the
+# first that loads wins. With no_require the module name is returned
+# without attempting to load it (only legal with a single prefix, since
+# there is no way to pick between candidates without loading).
+sub fqmod {
+    my ($input, $prefixes, %options) = @_;
+
+    croak "At least 1 prefix is required" unless $prefixes;
+
+    $prefixes = [$prefixes] unless ref($prefixes) eq 'ARRAY';
+
+    croak "At least 1 prefix is required" unless @$prefixes;
+    croak "Cannot use no_require when providing multiple prefixes" if $options{no_require} && @$prefixes > 1;
+
+    if ($input =~ m/^\+(.*)$/) {
+        my $mod = $1;
+        return $mod if $options{no_require};
+        return $mod if eval { require(mod2file($mod)); 1 };
+        confess($@);
+    }
+
+    my %tried;
+    for my $pre (@$prefixes) {
+        my $mod = $input =~ m/^\Q$pre\E/ ? $input : "$pre\::$input";
+
+        if ($options{no_require}) {
+            return $mod;
+        }
+        else {
+            return $mod if eval { require(mod2file($mod)); 1 };
+            ($tried{$mod}) = split /\n/, $@;
+            $tried{$mod} =~ s{^(Can't locate \S+ in \@INC).*$}{$1.};
+        }
+    }
+
+    my @caller = caller;
+
+    die "Could not locate a module matching '$input' at $caller[1] line $caller[2], the following were checked:\n" . join("\n", map { " * $_: $tried{$_}" } sort keys %tried) . "\n";
+}
+
+# Walk @paths (defaults to @INC) looking for .pm files matching the
+# namespace pattern $search. '*' wildcards in $search expand directory
+# entries at that level (e.g. 'App::Yath2::*' matches every immediate
+# child); literal segments traverse directly. Returns a hashref keyed by
+# discovered module name with the matching @INC-relative file path as
+# the value. Nested @INC entries are skipped during wildcard expansion
+# so a parent directory does not double-count modules reachable through
+# a child entry.
+sub find_libraries {
+    my ($search, @paths) = @_;
+    my @parts = grep $_, split /::(\*)?/, $search;
+
+    @paths = @INC unless @paths;
+
+    @paths = map { File::Spec->canonpath($_) } @paths;
+
+    my %prefixes = map { $_ => 1 } @paths;
+
+    my @found;
+    my @bases = ([map { [$_ => length($_)] } @paths]);
+    while (my $set = shift @bases) {
+        my $new_base = [];
+        my $part     = shift @parts;
+
+        for my $base (@$set) {
+            my ($dir, $prefix) = @$base;
+            if ($part ne '*') {
+                my $path = File::Spec->catdir($dir, $part);
+                if (@parts) {
+                    push @$new_base => [$path, $prefix] if -d $path;
+                }
+                elsif (-f "$path.pm") {
+                    push @found => ["$path.pm", $prefix];
+                }
+
+                next;
+            }
+
+            opendir(my $dh, $dir) or next;
+            for my $item (readdir($dh)) {
+                next if $item =~ m/^\./;
+                my $path = File::Spec->catdir($dir, $item);
+                if (@parts) {
+                    # Sometimes @INC dirs are nested in eachother.
+                    next if $prefixes{$path};
+
+                    push @$new_base => [$path, $prefix] if -d $path;
+                    next;
+                }
+
+                next unless -f $path && $path =~ m/\.pm$/;
+                push @found => [$path, $prefix];
+            }
+        }
+
+        push @bases => $new_base if @$new_base;
+    }
+
+    my %out;
+    for my $found (@found) {
+        my ($path, $prefix) = @$found;
+
+        my @file_parts = File::Spec->splitdir(substr($path, $prefix));
+        shift @file_parts if $file_parts[0] eq '';
+
+        my $file = join '/' => @file_parts;
+        $file_parts[-1] = substr($file_parts[-1], 0, -3);
+        my $module = join '::' => @file_parts;
+
+        $out{$module} //= $file;
+    }
+
+    return \%out;
 }
 
 sub apply_encoding {
@@ -277,6 +414,58 @@ Apply C<$encoding> to C<$fh> via C<binmode>. Returns immediately when
 C<$encoding> is false. Uses C<:utf8> for any C<utf-?8> spelling to avoid the
 thread segfault from C<:encoding(utf8)>; for any other encoding uses
 C<:encoding($encoding)>.
+
+=item $abs = clean_path($path)
+
+=item $abs = clean_path($path, $absolute)
+
+Return an absolute form of C<$path>. By default (C<$absolute> true) the
+path is first run through L<Cwd/realpath> to resolve symlinks, then
+through C<< File::Spec->rel2abs >>. Pass a false C<$absolute> to skip
+the C<realpath> step when you want an absolute path but do not want
+symlinks collapsed. Confesses when C<$path> is empty.
+
+=item $modules = find_libraries($search)
+
+=item $modules = find_libraries($search, @paths)
+
+Search for C<.pm> files matching the namespace pattern C<$search> under
+C<@paths> (defaults to C<@INC>). C<$search> is a C<::>-separated pattern
+in which C<*> segments are wildcards that expand to any immediate child
+directory or module at that level; literal segments traverse directly.
+Returns a hashref mapping each discovered module name to its path
+relative to the matching search root. Nested C<@INC> entries are not
+double-traversed during wildcard expansion, so a module reachable via
+both a parent and a child search root appears under only one of them.
+
+Example: C<find_libraries('App::Yath2::Command::*')> returns every
+C<App::Yath2::Command::Foo> module reachable through C<@INC>.
+
+=item $mod = fqmod($input, $prefix)
+
+=item $mod = fqmod($input, \@prefixes, %options)
+
+Resolve a short module name C<$input> against one or more namespace
+prefixes, returning the fully qualified module name. A leading C<'+'>
+on C<$input> bypasses the prefixes entirely and the remainder is
+treated as an absolute module name. Otherwise each prefix is tried in
+order and the first module that successfully C<require>s wins; an
+C<$input> that already starts with one of the prefixes is used as-is.
+
+Options:
+
+=over 4
+
+=item no_require
+
+Skip the C<require> step and return the resolved name without loading
+the module. Only legal with a single prefix (there is no way to pick
+between candidates without loading).
+
+=back
+
+Dies with a multi-line diagnostic listing each candidate module and
+why it failed to load when no prefix resolves.
 
 =item $name = load_module($module_name)
 
