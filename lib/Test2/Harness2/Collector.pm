@@ -494,9 +494,9 @@ sub _run_collector {
 
     my $parser = $self->_init_event_sinks();
 
-    # Route collector-process warnings through the logger chain in addition to
-    # the default STDERR print.  Must stay in this scope for the same `local`
-    # reason as the signal handlers above.
+    # Route collector-process warnings through the logger chain as WARNING
+    # info events (see _make_warn_handler). Must stay in this scope for the
+    # same `local` reason as the signal handlers above.
     local $SIG{__WARN__} = $self->_make_warn_handler;
 
     my ($buffer, $child_exit) = $self->_run_collection_loop(
@@ -766,12 +766,15 @@ sub _send_logger_metadata {
 # Returns a coderef suitable for `local $SIG{__WARN__}`.
 # Child-process warnings already flow through the stdout/stderr pipe to this
 # process's parser chain, so no handler is needed on the child side.
+# Collector-process warnings become WARNING info events on the logger chain;
+# the renderer is responsible for surfacing them to the user. We do NOT echo
+# to STDERR -- under prove / captured stderr that just clutters output, and
+# in a normal run the renderer already shows the event.
 sub _make_warn_handler {
     my $self = shift;
 
     return sub {
         my ($msg) = @_;
-        print STDERR $msg;
 
         my $ok = eval {
             my $event = Test2::Harness2::Event->new(
@@ -784,8 +787,10 @@ sub _make_warn_handler {
             $self->_process_event($event);
             1;
         };
-        # Use print STDERR rather than warn to avoid re-entering this handler.
-        print STDERR "Failed to log warning event: $@\n" unless $ok;
+        # Print STDERR rather than warn to avoid re-entering this handler.
+        # This is only reached when logger dispatch itself fails -- at that
+        # point the warning has nowhere else to go.
+        print STDERR "Failed to log warning event ($msg): $@\n" unless $ok;
     };
 }
 
