@@ -1,26 +1,50 @@
 # CLAUDE.md
 
-This project is a 2.0 port of Test2-Harness, built on `IPC::Manager`, `App::Yath::Script`, and `Getopt::Yath`.
+This project is a ground-up rewrite of yath 2.0, built on `IPC::Manager`, `App::Yath::Script`, and `Getopt::Yath`.
 
-You are expert Perl developer "Exodist" (Chad Granum). Write code following his patterns and style as seen throughout this codebase.
+- `legacy/` — code from yath 1.0. Reference only.
+- `old/` — a fairly complete 2.0 implementation with fundamental design decisions we want to correct. Much code will be copied wholesale from here.
+- `Borked/` — a failed refactor attempt. Reference only.
+
+All three directories are used as reference material during the rewrite.
+
+You are an expert Perl developer. Write code following the patterns and styles of "Exodist" (Chad Granum) as seen throughout this codebase.
+
+## Canonical sources of truth
+
+1. **`ARCHITECTURE.md`** — the single authoritative spec. Part I (§1–§15) covers process topology, IPC identities, collector and service lifecycle, event framing, artifact routing, preload-as-resource model, and the renderer contract. Part II (§16–§26) covers the module map, on-disk layout, utilities, external deps, coding conventions, and the test suite. Anything in `PLAN` or this file that conflicts with `ARCHITECTURE.md` is outdated. (The former `IPC_AND_LOGGERS` has been merged into Part I.)
+2. **`PLAN`** — stage-by-stage implementation backlog. References `ARCHITECTURE.md`. Stage scope and sequencing are authoritative here; protocol / topology / semantics are not — those live in `ARCHITECTURE.md`.
+3. **This file** — per-user Claude Code preferences (style, testing, worktree policy). Non-code-design guidance.
+
+If you're about to implement something that seems to conflict with `ARCHITECTURE.md`, stop and verify — it is very likely the other document is stale and you should follow `ARCHITECTURE.md` while flagging the inconsistency for a follow-up edit.
 
 ## Testing
 
 - Use `Test2::V0` in unit tests where possible.
 - Run tests with: `perl -Ilib yath -D test -j16`
 - When using `-v` for verbose output, drop `-j16`: `perl -Ilib yath -D test`
+- Tests that are substantially AI- or Claude-generated go under `t/AI/`, preserving the relative path beneath that prefix (e.g. `t/AI/unit/Foo.t`, `t/AI/integration/bar.t`). Anything outside `t/AI/` is reserved for tests originally written by humans; AI may modify those later as long as they stay readable. Tests copied in from `old/t/` or `legacy/t/` count as human-authored and do **not** move under `t/AI/`.
 
 ## Style
 
 - Use `Object::HashBase` for object attributes.
 - Use `Role::Tiny` / `Role::Tiny::With` for roles.
 - Use `Carp qw/croak/` for user-facing errors, `die` for internal re-throws.
-- Guard eval blocks: never silently swallow exceptions. Use `eval { ...; 1 } or warn $@` or `unless (eval { ...; 1 }) { warn $@; return }` patterns. The only exception is `viable()` methods which intentionally suppress errors for feature detection.
+- Never suppress or discard exceptions. Always rethrow (`die $@`) or warn (`warn $@`). The only exceptions are `viable()` methods (feature detection) and optional module loading where failure is expected.
+- Always use the return value of eval to check success, never the content of `$@`: `my $ok = eval { ...; 1 }`.
+- Simple one-way conditional where `$@` is used immediately: use short or postfix form. E.g. `warn $@ unless eval { ...; 1 };` or `unless (eval { ...; 1 }) { warn $@; exit(1); }`.
+- If/else branching on eval result: use three-step form. `my $ok = eval { ...; 1 }; my $err = $@; if ($ok) { ... } else { ... }`.
+- If the conditional block has statements before `$@` is used (e.g. an inner eval that would clobber it), save `$@` to a variable as the first statement in the block: `unless (eval { ...; 1 }) { my $err = $@; ... }`.
+- A multi-line eval block must never appear inside the parens of a conditional. Instead use the three-step form: `my $ok = eval { ...; 1 }; my $err = $@; if/unless ($ok) { ... }`. The postfix/inline forms are only for eval blocks short enough to fit on a single line.
 - Use `parent` for inheritance, not `base`.
 - Prefer `//=` for defaults.
 - No trailing whitespace. No emojis.
 - Use perltidy and the .perltidyrc on new or edited code
 - Use constants over package vars for "is module installed" gating
+- Always use `my $pid = fork // die "reason: $!"` to handle fork failure, never a separate conditional afterward. Fork failures are always `die`, not `croak`.
+- Single-statement conditional blocks must use postfix form: `do_thing() if $cond` or `do_thing() unless $cond`, never `if ($cond) { do_thing(); }`. Multi-statement blocks keep the block form.
+- When using `push`, separate the target array from the values with `=>` instead of a comma: `push @items => $thing`, `push @{$ref} => $thing`. The fat comma makes the destination visually distinct from the values being pushed.
+- Named subroutines (ones defined in a package namespace, not anonymous subs or subs assigned to a variable) in a module that defines an object class must be methods, not functions. Named subroutines are only allowed to be functions when the module is not an object class — e.g. a utility/export module or a plain `.pl` script. Imported named subs (e.g. from `use Carp qw/croak/`) stay as functions; this rule applies only to subs defined in the module itself.
 
 ## Dependency Rules
 
@@ -33,3 +57,28 @@ You are expert Perl developer "Exodist" (Chad Granum). Write code following his 
 
 - Make a distinct commit for each change.
 - Exception: if fixing a bug introduced by a recent commit that has not yet been pushed to origin, amend that commit instead of creating a new one.
+
+## Worktree Config Inheritance
+
+Both `/.claude/` and `/CLAUDE.md` are gitignored, so a freshly created worktree has no `.claude/` directory and (once the gitignore reaches its branch) no `CLAUDE.md` either. Claude Code running in the worktree would lose the project's per-project config — permissions, hooks, custom commands, agents, skills allowlist, and these very instructions. Superpowers and other locally-configured behaviors appear to "stop working" in worktrees for this reason.
+
+After `git worktree add <worktree-path> ...` succeeds, and before starting work in the worktree, mirror the primary repo's config into the new worktree using symlinks so that future updates to the primary config automatically flow through:
+
+    primary=/home/exodist/projects/Test2/Test2-Harness
+    wt=<worktree-path>
+    mkdir -p "$wt/.claude"
+    find "$primary/.claude" -mindepth 1 -maxdepth 1 -not -name worktrees -print0 \
+        | while IFS= read -r -d '' entry; do
+            name=$(basename "$entry")
+            [ -e "$wt/.claude/$name" ] && continue
+            ln -s "$entry" "$wt/.claude/$name"
+        done
+    [ -e "$wt/CLAUDE.md" ] || ln -s "$primary/CLAUDE.md" "$wt/CLAUDE.md"
+
+Rules:
+
+- Symlink, do not copy — updates to the primary `.claude/` and `CLAUDE.md` must reach existing worktrees without manual resync.
+- Never link `worktrees/` itself (would create a loop).
+- Skip any entry that already exists in the worktree (e.g. a `CLAUDE.md` still carried by a branch that predates the gitignore change).
+- Do this for every new worktree, not just the first one.
+- The symlinked `SessionStart` hook still fires inside a worktree, but its "if cwd is the primary repo" guard prevents recursive worktree creation — leave that guard in place.
