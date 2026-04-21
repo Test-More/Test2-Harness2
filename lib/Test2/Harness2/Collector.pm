@@ -585,7 +585,7 @@ sub _ipc_handle {
     # where the collector and its parent service race through startup.
     # If the target never comes up we still return the handle and let
     # individual sends fall through to the warn path.
-    eval { $handle->ready(5); 1 } or warn "Error waiting for ipc target '$target' to become ready: $@";
+    eval { $handle->ready(5); 1 } or warn "Error waiting for ipc target '$target' to become ready (from '" . $self->bus_id . "'): $@";
 
     return $self->{_ipc_handles}->{$target} = $handle;
 }
@@ -653,7 +653,13 @@ sub _send_to {
     return if $ok;
 
     my $err = $@;
-    warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "'): $err";
+    my $from = $self->bus_id // '?';
+    my $role;
+    $role = 'ipc_parent'  if defined $self->{+IPC_PARENT}  && $target eq $self->{+IPC_PARENT};
+    $role = 'ipc_run'     if defined $self->{+IPC_RUN}     && $target eq $self->{+IPC_RUN};
+    $role = 'ipc_harness' if defined $self->{+IPC_HARNESS} && $target eq $self->{+IPC_HARNESS};
+    my $to = defined $role ? "$target ($role)" : $target;
+    warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err";
     return;
 }
 
