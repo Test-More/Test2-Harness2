@@ -74,6 +74,16 @@ sub _instantiate_auditor { }
 # Collector::Test fills in the auditor's pass verdict and counts.
 sub _extend_exiting_payload_for_harness { }
 
+# True only in the harness's own top-of-tree interpose collector,
+# where ipc_harness points at the collector's own child (the harness
+# service). End-of-life and logger-metadata sends that would normally
+# target ipc_harness have nowhere useful to go in that case, and the
+# child has usually already _exit()'d by the time the collector
+# reaches EOF -- hitting the "Disconnected pipe" warn path. The
+# Service::Harness subclass overrides this to 1; the send sites
+# consult it to short-circuit self-addressed traffic.
+sub is_harness_collector { 0 }
+
 use constant IS_WIN32 => $^O eq 'MSWin32';
 
 sub init {
@@ -697,11 +707,16 @@ sub _send_collector_exiting {
 
     # Detailed report to the harness. Every collector reports its
     # child exit status; a Test subclass additionally fills in the
-    # auditor's pass verdict and counts via the extension hook.
-    my %harness_payload = %base;
-    $harness_payload{exit} = $self->{+CHILD_EXIT} if defined $self->{+CHILD_EXIT};
-    $self->_extend_exiting_payload_for_harness(\%harness_payload);
-    $self->_send_to($self->{+IPC_HARNESS}, \%harness_payload);
+    # auditor's pass verdict and counts via the extension hook. The
+    # harness's own interpose collector skips this: ipc_harness is
+    # its own child, which has already exited by the time we get
+    # here.
+    unless ($self->is_harness_collector) {
+        my %harness_payload = %base;
+        $harness_payload{exit} = $self->{+CHILD_EXIT} if defined $self->{+CHILD_EXIT};
+        $self->_extend_exiting_payload_for_harness(\%harness_payload);
+        $self->_send_to($self->{+IPC_HARNESS}, \%harness_payload);
+    }
 
     return;
 }
@@ -715,6 +730,10 @@ sub _send_collector_exiting {
 # (a preload stage, a resource service) has no use for the payload.
 sub _send_logger_metadata {
     my $self = shift;
+
+    # Harness interpose has ipc_run undef and ipc_harness == its own
+    # child service -- nowhere useful to route logger metadata.
+    return if $self->is_harness_collector;
 
     # Drop loggers that have nothing retrievable to report: a class with no
     # defined metadata does not appear at all, and a class keeps only the

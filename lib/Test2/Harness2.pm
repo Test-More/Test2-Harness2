@@ -247,8 +247,8 @@ sub start {
     # subclass's builder cannot derive a bus_id, so pass one
     # explicitly. The collector identifies by the harness's own
     # bus name.
-    require Test2::Harness2::Collector::Service;
-    Test2::Harness2::Collector::Service->interpose(
+    require Test2::Harness2::Collector::Service::Harness;
+    Test2::Harness2::Collector::Service::Harness->interpose(
         ipcm_info   => $self->ipcm_info,
         ipc_parent  => undef,
         ipc_run     => undef,
