@@ -4,7 +4,12 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use parent 'App::Yath2::Command';
+use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
+
+use Getopt::Yath;
+
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 
 sub args_include_tests { 0 }
 
