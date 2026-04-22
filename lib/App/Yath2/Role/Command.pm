@@ -1,4 +1,4 @@
-package App::Yath2::Command;
+package App::Yath2::Role::Command;
 use strict;
 use warnings;
 
@@ -8,7 +8,9 @@ use File::Spec;
 use Carp qw/croak/;
 use Test2::Harness2::Util qw/mod2file/;
 
-use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
+use Role::Tiny;
+
+requires 'options';
 
 sub accepts_dot_args   { 0 }
 sub args_include_tests { 0 }
@@ -62,17 +64,11 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Command - FIXME
+App::Yath2::Role::Command - Role for yath command classes
 
 =head1 DESCRIPTION
 
 =head1 SYNOPSIS
-
-=head1 EXPORTS
-
-=over 4
-
-=back
 
 =head1 SOURCE
 
@@ -105,9 +101,3 @@ modify it under the same terms as Perl itself.
 See L<http://dev.perl.org/licenses/>
 
 =cut
-
-
-=pod
-
-=cut POD NEEDS AUDIT
-
