@@ -43,9 +43,12 @@ use Object::HashBase qw{
     <loggers_lookup
     <parent_pids
     <kill_timeout
+    <logdir
+    <service_name
     <run_id
     <job_id
     <job_try
+    <is_run
     <ipcm_info
     <ipc_parent
     <ipc_run
@@ -258,15 +261,30 @@ sub _instantiate_loggers {
         my $logger_class = blessed($item) ? $item : $self->_spec_class($item);
         next unless $logger_class->applicable($self);
 
+        # service_name and job_id are mutually exclusive from the logger's
+        # point of view (the role's output_file_basename croaks on both).
+        # Service collectors identify by service_name; test collectors
+        # identify by job_id. Collector::init defaults a random job_id
+        # for every collector, so we must explicitly suppress it for
+        # service collectors rather than pass both.
+        my %identity = (
+            logdir  => $self->{+LOGDIR},
+            run_id  => $self->{+RUN_ID},
+            job_try => $self->{+JOB_TRY},
+            is_run  => $self->{+IS_RUN},
+        );
+        if (defined $self->{+SERVICE_NAME}) {
+            $identity{service_name} = $self->{+SERVICE_NAME};
+        }
+        else {
+            $identity{job_id} = $self->{+JOB_ID};
+        }
+
         my $inst;
         if (blessed($item)) {
             # Pre-constructed instance: stamp info onto it via setters
             # since we cannot re-run its constructor.
-            $item->set_process_info(
-                run_id  => $self->{+RUN_ID},
-                job_id  => $self->{+JOB_ID},
-                job_try => $self->{+JOB_TRY},
-            );
+            $item->set_process_info(%identity);
             $item->set_ipcm_info($self->{+IPCM_INFO});
             $item->set_auditor($self->auditor) if $self->auditor;
             $item->set_loggers_lookup($self->{+LOGGERS_LOOKUP});
@@ -275,9 +293,7 @@ sub _instantiate_loggers {
         elsif (ref($item) eq 'ARRAY') {
             my ($class, @args) = @$item;
             $inst = $class->new(
-                run_id         => $self->{+RUN_ID},
-                job_id         => $self->{+JOB_ID},
-                job_try        => $self->{+JOB_TRY},
+                %identity,
                 ipcm_info      => $self->{+IPCM_INFO},
                 loggers_lookup => $self->{+LOGGERS_LOOKUP},
                 (defined $self->auditor ? (auditor => $self->auditor) : ()),
@@ -286,14 +302,18 @@ sub _instantiate_loggers {
         }
         else {
             $inst = $item->new(
-                run_id         => $self->{+RUN_ID},
-                job_id         => $self->{+JOB_ID},
-                job_try        => $self->{+JOB_TRY},
+                %identity,
                 ipcm_info      => $self->{+IPCM_INFO},
                 loggers_lookup => $self->{+LOGGERS_LOOKUP},
                 (defined $self->auditor ? (auditor => $self->auditor) : ()),
             );
         }
+
+        # Every logger has its identity attributes now, so it can
+        # resolve its output path and create any directory trees its
+        # output files will need before startup opens them.
+        $inst->prepare_output_locations;
+
         $self->_add_logger($inst);
     }
 }

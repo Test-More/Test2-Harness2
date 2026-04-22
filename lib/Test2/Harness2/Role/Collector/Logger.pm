@@ -4,6 +4,10 @@ use warnings;
 
 our $VERSION = '2.000011';
 
+use Carp qw/croak/;
+use File::Basename qw/dirname/;
+use File::Path qw/make_path/;
+
 use Role::Tiny;
 
 # Consumers of this role may be plain classes (no new() method) or may be used
@@ -16,6 +20,18 @@ sub set_process_info   { }
 sub set_ipcm_info      { }
 sub set_auditor        { }
 sub set_loggers_lookup { }
+
+# Path-derivation attributes. Default no-op accessors returning undef;
+# consumers that want to drive the output_file_basename computation must
+# shadow these (typically via Object::HashBase slots). None of the
+# attributes is required at construction time, but output_file_basename
+# needs the appropriate subset to be populated before it runs.
+sub logdir       { undef }
+sub service_name { undef }
+sub job_id       { undef }
+sub run_id       { undef }
+sub job_try      { undef }
+sub is_run       { 0 }
 
 sub depends_on { () }
 
@@ -30,6 +46,70 @@ sub log_event { }
 sub startup  { }
 sub shutdown { }
 sub failing  { }
+
+# Build the extension-less output path for this logger from its data
+# attributes. Rules (see fix_log_paths / role POD):
+#
+#   service_name + !run_id              -> $logdir/services/$service_name
+#   service_name +  run_id + is_run     -> $logdir/runs/$run_id
+#   service_name +  run_id + !is_run    -> $logdir/runs/$run_id/services/$service_name
+#   job_id       (+ run_id, job_try)    -> $logdir/runs/$run_id/tests/$job_id
+#
+# Croaks on the ambiguous case where both service_name and job_id are
+# set (the role has no constructor in which to trap this earlier).
+# Each concrete logger is expected to take this basename and apply its
+# own adjustments (typically an extension) to produce a final path.
+sub output_file_basename {
+    my $self = shift;
+
+    my $logdir = $self->logdir
+        or croak "'logdir' is required to compute output_file_basename";
+
+    my $service_name = $self->service_name;
+    my $job_id       = $self->job_id;
+
+    croak "Cannot compute output_file_basename: both 'service_name' and 'job_id' are set"
+        if defined($service_name) && defined($job_id);
+
+    my $run_id = $self->run_id;
+
+    if (defined $job_id) {
+        croak "'run_id' is required when 'job_id' is set"
+            unless defined $run_id;
+        return "$logdir/runs/$run_id/tests/$job_id";
+    }
+
+    if (defined $service_name) {
+        return "$logdir/services/$service_name" unless defined $run_id;
+        return "$logdir/runs/$run_id" if $self->is_run;
+        return "$logdir/runs/$run_id/services/$service_name";
+    }
+
+    croak "Cannot compute output_file_basename: neither 'service_name' nor 'job_id' is set";
+}
+
+# Required: return the list of on-disk paths this logger will write to.
+# Empty list means "nothing to pre-create" (typical for loggers that
+# write via a caller-owned filehandle or that produce no files at all).
+# Concrete loggers override.
+sub output_files { () }
+
+# Ensure the parent directories of every file returned by output_files
+# exist. Called by the collector after logger attributes have been
+# populated, so the logger can cache its computed path before startup.
+sub prepare_output_locations {
+    my $self = shift;
+
+    my @files = $self->output_files;
+    for my $file (@files) {
+        next unless defined $file && length $file;
+        my $dir = dirname($file);
+        next unless defined $dir && length $dir && $dir ne '.';
+        make_path($dir);
+    }
+
+    return;
+}
 
 1;
 
@@ -52,33 +132,52 @@ A logger may be implemented as either a class (with class-method callbacks) or
 as an object (with instance-method callbacks). The collector accepts a mix of
 either form.
 
-=head1 SYNOPSIS
+=head1 PATH DERIVATION
 
-    package My::Logger;
-    use strict;
-    use warnings;
+Every logger exposes six data attributes that the role uses to compute a
+default output location. None is required at construction time; callers
+populate them before the logger needs its path (typically at construction,
+or via C<set_process_info> on a pre-built instance).
 
-    use Role::Tiny::With;
-    with 'Test2::Harness2::Role::Collector::Logger';
+=over 4
 
-    sub log_event {
-        my ($self, $event) = @_;
-        # handle $event...
-    }
+=item logdir
 
-    1;
+Base log directory, usually C<$workdir/logs>.
 
-Then pass it to the collector:
+=item service_name
 
-    Test2::Harness2::Collector->spawn(
-        launch      => ['perl', 'some_test.t'],
-        output_file => 'out.jsonl',
-        loggers     => [
-            'My::Logger',                       # class name
-            My::Logger->new(%args),             # instance
-            ['My::Logger', foo => 1, bar => 2], # class + constructor args
-        ],
-    );
+Logical name of the service this logger belongs to. Never combined with
+C<job_id>.
+
+=item job_id
+
+UUID of the test this logger belongs to. Never combined with C<service_name>.
+
+=item run_id
+
+Run UUID. Required when C<job_id> is set. Optional for services: set for
+services scoped to a run (including the run service itself), unset for
+services scoped to the whole harness (e.g. the harness service).
+
+=item job_try
+
+Integer attempt count. Always set when C<job_id> is set; C<0> is a valid
+value. Never set when C<service_name> is set.
+
+=item is_run
+
+Boolean flag. True only for the collector that interposes on a run service
+(where C<service_name> and C<run_id> happen to match). Callers set this
+explicitly rather than relying on C<eq>-comparison of the other attributes.
+
+=back
+
+L</output_file_basename> builds an extension-less path from those attributes
+(see source for the exact rules) and croaks on ambiguous combinations.
+Concrete loggers typically take the basename and append an extension (or
+otherwise adjust it) to produce the final path, then cache it into their
+own C<output_file> slot.
 
 =head1 METHODS
 
@@ -165,12 +264,12 @@ failing. Not called on processes that finish without ever being marked
 failing, and not called when no auditor is in use. A true value (currently
 C<1>) is passed as the sole argument.
 
-=item $logger->set_process_info(run_id => ..., job_id => ..., job_try => ...)
+=item $logger->set_process_info(logdir => ..., service_name => ..., job_id => ..., run_id => ..., job_try => ..., is_run => ...)
 
 Invoked by the collector when a pre-constructed logger instance is handed to
-it, so the collector can stamp its run/job identifiers onto the logger. The
-default is a no-op; loggers that want to retain these identifiers must
-override.
+it, so the collector can stamp its identifying data onto the logger. The
+default is a no-op; loggers that want to retain these attributes must
+override and write them to their own storage.
 
 =item $logger->set_ipcm_info($info)
 
@@ -193,6 +292,24 @@ cycle. The hash stays in sync with the collector's own state, so later
 additions are visible.
 
 The default implementation is a no-op.
+
+=item $path = $logger->output_file_basename
+
+Build the extension-less default output path from the logger's data
+attributes. Croaks when required attributes are missing or when
+C<service_name> and C<job_id> are both set.
+
+=item @paths = $logger->output_files
+
+Return the list of on-disk files this logger writes to. Empty list means
+nothing to pre-create. Concrete loggers override to include their
+computed (or overridden) output path.
+
+=item $logger->prepare_output_locations
+
+Ensure the parent directory of every file in C<output_files> exists.
+Called by the collector once the logger's attributes have been populated,
+before L</startup> opens any files.
 
 =back
 

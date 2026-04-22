@@ -10,9 +10,12 @@ use IO::Handle;
 use Object::HashBase qw{
     <output_file
     <fh
+    <logdir
+    <service_name
     <run_id
     <job_id
     <job_try
+    <is_run
     <ipcm_info
 };
 
@@ -27,9 +30,21 @@ sub init {
 
     croak "Pass either 'output_file' or 'fh', not both"
         if defined($self->{+OUTPUT_FILE}) && defined($self->{+FH});
+}
 
-    croak "Either 'output_file' or 'fh' is required"
-        unless defined($self->{+OUTPUT_FILE}) || defined($self->{+FH});
+# The concrete output path is either the caller-supplied output_file
+# override, or the role-computed basename with '.jsonl' appended.
+# Result is cached back into OUTPUT_FILE so later reads see a stable
+# path. When 'fh' is in use the logger writes to the caller's handle
+# and has no on-disk path to announce.
+sub output_files {
+    my $self = shift;
+
+    return () if defined $self->{+FH};
+
+    $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.jsonl';
+
+    return ($self->{+OUTPUT_FILE});
 }
 
 sub startup {
@@ -42,6 +57,11 @@ sub startup {
         $self->{_fh_borrowed} = 1;
         return;
     }
+
+    # Compute / fetch the cached path via output_files so the path
+    # rules live in one place; ignore the returned list, we just want
+    # the side effect of populating OUTPUT_FILE.
+    $self->output_files unless defined $self->{+OUTPUT_FILE};
 
     open(my $fh, '>', $self->{+OUTPUT_FILE})
         or croak "Could not open log file '$self->{+OUTPUT_FILE}': $!";
@@ -70,9 +90,12 @@ sub shutdown {
 
 sub set_process_info {
     my ($self, %info) = @_;
-    $self->{+RUN_ID}  = $info{run_id}  if exists $info{run_id};
-    $self->{+JOB_ID}  = $info{job_id}  if exists $info{job_id};
-    $self->{+JOB_TRY} = $info{job_try} if exists $info{job_try};
+    $self->{+LOGDIR}       = $info{logdir}       if exists $info{logdir};
+    $self->{+SERVICE_NAME} = $info{service_name} if exists $info{service_name};
+    $self->{+RUN_ID}       = $info{run_id}       if exists $info{run_id};
+    $self->{+JOB_ID}       = $info{job_id}       if exists $info{job_id};
+    $self->{+JOB_TRY}      = $info{job_try}      if exists $info{job_try};
+    $self->{+IS_RUN}       = $info{is_run}       if exists $info{is_run};
     return;
 }
 
