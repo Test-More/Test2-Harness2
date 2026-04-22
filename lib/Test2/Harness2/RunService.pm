@@ -198,7 +198,17 @@ sub request_handler_launch_job {
         JOB_ID  => $job_id,
         JOB_TRY => $job_try,
     );
-    my @logger_specs = map { _expand_logger_spec($_, \%ctx) } @$payload_loggers;
+
+    # Snapshot-style loggers (JSON sidecar) need a 'spec' object to
+    # serialize at startup. When the caller did not provide one,
+    # synthesize a minimal TestFile from the launch payload's
+    # test_file path so the resulting .json includes the relative
+    # and absolute test-file paths. Callers that supply their own
+    # spec are left alone.
+    require Test2::Harness2::TestFile;
+    my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
+
+    my @logger_specs = map { _expand_logger_spec($_, \%ctx, $test_file_spec) } @$payload_loggers;
 
     my $handle;
     my $spawn_ok = eval {
@@ -560,7 +570,7 @@ sub spawn {
 # alone; callers with richer argument shapes are responsible for
 # their own substitution.
 sub _expand_logger_spec {
-    my ($spec, $ctx) = @_;
+    my ($spec, $ctx, $test_file_spec) = @_;
 
     return $spec if blessed($spec);
     return $spec unless ref($spec) eq 'ARRAY';
@@ -569,6 +579,24 @@ sub _expand_logger_spec {
     for my $item (@$spec) {
         push @out => (defined($item) && !ref($item) ? _expand_placeholders($item, $ctx) : $item);
     }
+
+    # Auto-inject 'spec' for Logger::JSON when the caller did not
+    # provide one. Without a spec the snapshot file is written with
+    # only exit/pass and no identifying fields; injecting a TestFile
+    # here gives the .json the file / absolute / relative paths the
+    # consumer expects.
+    if ( $test_file_spec
+        && @out >= 1
+        && !ref($out[0])
+        && $out[0] eq 'Test2::Harness2::Collector::Logger::JSON')
+    {
+        my %args = @out[1 .. $#out];
+        unless (exists $args{spec}) {
+            $args{spec} = $test_file_spec;
+            @out = ($out[0], %args);
+        }
+    }
+
     return \@out;
 }
 
