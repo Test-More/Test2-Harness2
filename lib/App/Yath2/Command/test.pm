@@ -102,9 +102,12 @@ sub _aggregate_pass {
         chomp $line;
         next unless length $line;
         my $ev = $decode->($line);
-        next unless ref($ev) eq 'HASH' && ($ev->{kind} // '') eq 'job_completed';
+        my $harness = ref($ev) eq 'HASH' && ref($ev->{facet_data}) eq 'HASH'
+            ? $ev->{facet_data}->{harness}
+            : undef;
+        next unless ref($harness) eq 'HASH' && ($harness->{kind} // '') eq 'job_completed';
         $seen_any = 1;
-        $all_pass = 0 unless $ev->{pass};
+        $all_pass = 0 unless $harness->{pass};
     }
     close($fh);
 
