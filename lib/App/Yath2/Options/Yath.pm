@@ -5,7 +5,8 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Test2::Harness2::Util qw/find_libraries mod2file fqmod/;
-use Test2::Harness2::Util qw/find_in_updir clean_path/;
+use Test2::Harness2::Util qw/clean_path/;
+use App::Yath::Script qw/find_in_updir/;
 
 use Cwd();
 use File::Spec();
