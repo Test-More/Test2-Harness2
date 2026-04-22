@@ -101,11 +101,13 @@ sub init {
     $self->{+OWN_PGROUP}        //= 0;
 
     # log_file is the run service's own direct-JSONL audit trail;
-    # distinct from the configurable `loggers` slot. The default
-    # keeps the classic per-run layout under
-    # $logdir/runs/<run_id>/services/<log_name>.jsonl. Set it to
-    # undef explicitly to disable the audit trail.
-    $self->{+LOG_FILE}      //= "$svc_dir/$self->{+LOG_NAME}.jsonl";
+    # distinct from the configurable `loggers` slot. The run service
+    # is the "run's collector" special case (is_run =>1 in logger
+    # terms), so its JSONL sits next to its snapshot .json at
+    # $logdir/runs/<run_id>.jsonl -- not under the services/ subtree,
+    # which is reserved for other services scoped to the run. Set it
+    # to undef explicitly to disable the audit trail.
+    $self->{+LOG_FILE}      //= "$logdir/runs/$self->{+RUN_ID}.jsonl";
     $self->{+SNAPSHOT_FILE} //= "$logdir/runs/$self->{+RUN_ID}.json";
 
     # Logger specs. Both default to []; the caller (typically the
