@@ -57,11 +57,15 @@ subtest 'constructs with required attributes' => sub {
     is($svc->workdir,  $dir,      'workdir stored');
     ok(-d "$dir/logs/runs/r-1/services", 'services dir created at construction');
     is(
-        $svc->log_file,
-        "$dir/logs/runs/r-1/services/run.jsonl",
-        'log file path is runs/<id>/services/<log_name>.jsonl',
+        $svc->snapshot_file,
+        "$dir/logs/runs/r-1.json",
+        'snapshot file lives next to runs/<id>.jsonl (is_run layout)',
     );
-    is($svc->loggers,      [], 'loggers default is empty arrayref');
+    is(
+        $svc->loggers,
+        ['Test2::Harness2::Collector::Logger::JSONL'],
+        'loggers default is a single JSONL spec (JSON sidecar is written directly by the service)',
+    );
     is($svc->test_loggers, [], 'test_loggers default is empty arrayref');
 };
 
