@@ -5,8 +5,7 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Test2::Harness2::Util qw/find_libraries mod2file fqmod/;
-#use Test2::Harness2::Util qw/find_in_updir clean_path/;
-use Test2::Harness2::Util qw/clean_path/;
+use Test2::Harness2::Util qw/find_in_updir clean_path/;
 
 use Cwd();
 use File::Spec();
@@ -29,19 +28,19 @@ option_group {group => 'yath', category => 'Yath Options'} => sub {
         from_env_vars => [qw/YATH_USER USER/],
     );
 
-#    option base_dir => (
-#        type        => 'Scalar',
-#        description => "Root directory for the project being tested (usually where .yath.rc lives)",
-#        default     => sub {
-#            for my $dfile ('.yath.rc', '.yath.user.rc', '.git', '.svn', '.cvs') {
-#                my $base_file = find_in_updir($dfile) or next;
-#                my ($v, $d) = File::Spec->splitpath($base_file);
-#                return clean_path(File::Spec->catpath($v, $d));
-#            }
-#
-#            return clean_path(Cwd::getcwd());
-#        },
-#    );
+    option base_dir => (
+        type        => 'Scalar',
+        description => "Root directory for the project being tested (usually where .yath.rc lives)",
+        default     => sub {
+            for my $dfile ('.yath.rc', '.yath.user.rc', '.git', '.svn', '.cvs') {
+                my $base_file = find_in_updir($dfile) or next;
+                my ($v, $d) = File::Spec->splitpath($base_file);
+                return clean_path(File::Spec->catpath($v, $d));
+            }
+
+            return clean_path(Cwd::getcwd());
+        },
+    );
 
     option 'show-opts' => (
         type => 'Auto',
