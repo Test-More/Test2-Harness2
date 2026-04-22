@@ -59,17 +59,21 @@ sub run {
     my $workdir = $settings->workspace->workdir;
     my $logdir  = File::Spec->catdir($workdir, 'logs');
 
+    # Harness service path is derived by the JSONL logger from
+    # logdir + service_name ('harness'), which the harness fills in
+    # at interpose time. We just re-derive it here so we can read
+    # the log after $spawn->wait returns.
     my $harness_log = File::Spec->catfile($logdir, 'services', 'harness.jsonl');
 
     my $spawn = Test2::Harness2->spawn(
         workdir   => $workdir,
         resources => [Test2::Harness2::Resource::JobCount->new(slots => 16)],
         loggers   => [
-            ['Test2::Harness2::Collector::Logger::JSONL', output_file => $harness_log],
+            'Test2::Harness2::Collector::Logger::JSONL',
         ],
         test_loggers => [
-            ['Test2::Harness2::Collector::Logger::JSONL', output_file => '%LOG_DIR%/%JOB_TRY%.jsonl'],
-            ['Test2::Harness2::Collector::Logger::JSON',  output_file => '%LOG_DIR%/%JOB_TRY%.json'],
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
         ],
         test_run                 => {files => \@files},
         finish_after_initial_run => 1,

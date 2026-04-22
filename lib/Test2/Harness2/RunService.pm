@@ -179,25 +179,11 @@ sub request_handler_launch_job {
     # real test file when no override is present.
     $launch_cmd //= [$^X, '-Ilib', $test_file_abs];
 
-    # Per-job log directory exists for any logger that wants to write
-    # something per-try. Callers describe the path via %LOG_DIR% /
-    # %JOB_TRY% placeholders in their spec; we fill them in below.
-    my $log_dir = join '/', $self->{+LOGDIR}, 'runs', $run_id, $job_id;
-    make_path($log_dir);
-
     # Default the payload-level log_file only if the caller wants one;
     # loggers are otherwise driven entirely by the payload_loggers
     # specs. Kept for back-compat with callers that pass log_file
     # explicitly.
     $log_file //= undef;
-
-    my %ctx = (
-        LOGDIR  => $self->{+LOGDIR},
-        LOG_DIR => $log_dir,
-        RUN_ID  => $run_id,
-        JOB_ID  => $job_id,
-        JOB_TRY => $job_try,
-    );
 
     # Snapshot-style loggers (JSON sidecar) need a 'spec' object to
     # serialize at startup. When the caller did not provide one,
@@ -208,23 +194,24 @@ sub request_handler_launch_job {
     require Test2::Harness2::TestFile;
     my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
 
-    my @logger_specs = map { _expand_logger_spec($_, \%ctx, $test_file_spec) } @$payload_loggers;
+    my @logger_specs = map { _maybe_inject_test_file_spec($_, $test_file_spec) } @$payload_loggers;
 
     my $handle;
     my $spawn_ok = eval {
         require Test2::Harness2::Collector::Test;
         $handle = Test2::Harness2::Collector::Test->spawn(
-            launch      => $launch_cmd,
-            new_pgroup  => 1,
-            parent_pids => [$$],
-            env_vars    => {T2_FORMATTER => 'Stream2', %$env},
-            run_id      => $run_id,
-            job_id      => $job_id,
-            job_try     => $job_try,
-            ipcm_info   => $self->ipcm_info,
-            ipc_parent  => $self->{+NAME},
-            ipc_run     => $self->{+NAME},
-            ipc_harness => $self->{+HARNESS_NAME},
+            launch       => $launch_cmd,
+            new_pgroup   => 1,
+            parent_pids  => [$$],
+            env_vars     => {T2_FORMATTER => 'Stream2', %$env},
+            logdir       => $self->{+LOGDIR},
+            run_id       => $run_id,
+            job_id       => $job_id,
+            job_try      => $job_try,
+            ipcm_info    => $self->ipcm_info,
+            ipc_parent   => $self->{+NAME},
+            ipc_run      => $self->{+NAME},
+            ipc_harness  => $self->{+HARNESS_NAME},
             (defined $auditor ? (auditor => $auditor) : ()),
             loggers => [@logger_specs],
         );
@@ -563,49 +550,30 @@ sub spawn {
     POSIX::_exit(255);    # start() should never return
 }
 
-# Substitute %LOGDIR%, %LOG_DIR%, %RUN_ID%, %JOB_ID%, %JOB_TRY%
-# placeholders in a logger spec's string args. Blessed instances and
-# bare class names pass through untouched (no args to substitute).
-# Only scalar args are walked -- arrayref / hashref args are left
-# alone; callers with richer argument shapes are responsible for
-# their own substitution.
-sub _expand_logger_spec {
-    my ($spec, $ctx, $test_file_spec) = @_;
+# Auto-inject 'spec' for Logger::JSON when the caller did not
+# provide one. Without a spec the snapshot file is written with
+# only exit/pass and no identifying fields; injecting a TestFile
+# here gives the .json the file / absolute / relative paths the
+# consumer expects. Blessed instances pass through untouched.
+sub _maybe_inject_test_file_spec {
+    my ($spec, $test_file_spec) = @_;
 
     return $spec if blessed($spec);
-    return $spec unless ref($spec) eq 'ARRAY';
+    return $spec unless $test_file_spec;
 
-    my @out;
-    for my $item (@$spec) {
-        push @out => (defined($item) && !ref($item) ? _expand_placeholders($item, $ctx) : $item);
+    my $class = ref($spec) eq 'ARRAY' ? $spec->[0] : $spec;
+    return $spec unless defined $class && !ref($class);
+    return $spec unless $class eq 'Test2::Harness2::Collector::Logger::JSON';
+
+    if (ref($spec) eq 'ARRAY') {
+        my %args = @{$spec}[1 .. $#$spec];
+        return $spec if exists $args{spec};
+        $args{spec} = $test_file_spec;
+        return [$class, %args];
     }
 
-    # Auto-inject 'spec' for Logger::JSON when the caller did not
-    # provide one. Without a spec the snapshot file is written with
-    # only exit/pass and no identifying fields; injecting a TestFile
-    # here gives the .json the file / absolute / relative paths the
-    # consumer expects.
-    if ( $test_file_spec
-        && @out >= 1
-        && !ref($out[0])
-        && $out[0] eq 'Test2::Harness2::Collector::Logger::JSON')
-    {
-        my %args = @out[1 .. $#out];
-        unless (exists $args{spec}) {
-            $args{spec} = $test_file_spec;
-            @out = ($out[0], %args);
-        }
-    }
-
-    return \@out;
-}
-
-sub _expand_placeholders {
-    my ($str, $ctx) = @_;
-    return $str unless defined $str && index($str, '%') >= 0;
-
-    $str =~ s/%([A-Z_]+)%/exists $ctx->{$1} ? $ctx->{$1} : "%$1%"/ge;
-    return $str;
+    # Bare class-name spec: upgrade to [$class, spec => $tf].
+    return [$class, spec => $test_file_spec];
 }
 
 1;
