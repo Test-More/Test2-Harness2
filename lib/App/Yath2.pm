@@ -33,6 +33,8 @@ use App::Yath2::Options::Yath;
 #use App::Yath2::ConfigFile;
 #use App::Yath2::Util qw/paged_print/;
 
+use Role::Tiny ();
+
 use Carp qw/croak/;
 use Time::HiRes qw/time/;
 use Scalar::Util qw/blessed/;
@@ -342,11 +344,7 @@ sub check_command {
     my $cmd_class = "App::Yath2::Command::$cmd";
     my $cmd_file = mod2file($cmd_class);
 
-    require $cmd_file;
-
-    # FIXME
-    return 1;
-    unless (eval { require $cmd_file; die "$cmd_class does not subclass App::Yath2::Command.\n" unless $cmd_class->isa('App::Yath2::Command'); 1 }) {
+    unless (eval { require $cmd_file; die "$cmd_class does not consume App::Yath2::Role::Command.\n" unless Role::Tiny::does_role($cmd_class, 'App::Yath2::Role::Command'); 1 }) {
         return @{$check_cache{$cmd} = [0, $@]};
     }
 
