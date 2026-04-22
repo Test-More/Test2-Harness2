@@ -14,7 +14,7 @@ use Test2::Harness2::Event;
 
 use parent 'App::Yath2::Command::start';
 use parent 'App::Yath2::Command::run';
-use Test2::Harness2::Util::HashBase qw{
+use Object::HashBase qw{
     +renderers
 };
 
