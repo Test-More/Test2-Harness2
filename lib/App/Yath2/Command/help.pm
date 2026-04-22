@@ -16,7 +16,7 @@ use Object::HashBase qw{
 };
 
 use Test2::Harness2::Util qw/find_libraries mod2file/;
-use App::Yath2::Util qw/paged_print/;
+use App::Yath2::Util qw/paged_print yath_display_name/;
 use Role::Tiny ();
 use List::Util();
 use File::Spec();
@@ -96,7 +96,7 @@ sub run {
 
     return $self->command_help($args->[0]) if @$args;
 
-    my $script = File::Spec->abs2rel($self->settings->yath->script // $0);
+    my $script = yath_display_name($self->settings->yath->script // $0);
 
     paged_print(
         "\nUsage: $script help [-v] [COMMAND]\n",

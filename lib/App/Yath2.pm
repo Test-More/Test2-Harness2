@@ -31,7 +31,7 @@ use Getopt::Yath::Term qw/USE_COLOR color fit_to_width/;
 
 use App::Yath2::Options::Yath;
 #use App::Yath2::ConfigFile;
-#use App::Yath2::Util qw/paged_print/;
+use App::Yath2::Util qw/paged_print yath_display_name/;
 
 use Role::Tiny ();
 
@@ -115,7 +115,7 @@ sub cli_help {
 
     my $opts = $options->docs('cli', groups => {':{' => '}:'}, group => $params{group}, settings => $settings, color => $self->use_color);
 
-    my $script = File::Spec->abs2rel($settings->yath->script // $0);
+    my $script = yath_display_name($settings->yath->script // $0);
 
     my $colors = {reset => ''};
     if ($self->use_color) {
@@ -188,7 +188,7 @@ sub _render_groups {
     my $param = $params{param};
 
     my $settings = $self->settings;
-    my $script = File::Spec->abs2rel($settings->yath->script // $0);
+    my $script = yath_display_name($settings->yath->script // $0);
 
     my %color;
     if ($self->use_color) {
