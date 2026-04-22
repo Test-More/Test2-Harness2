@@ -59,7 +59,7 @@ sub run {
     my $workdir = $settings->workspace->workdir;
     my $logdir  = File::Spec->catdir($workdir, 'logs');
 
-    my $harness_log = File::Spec->catfile($workdir, 'harness.jsonl');
+    my $harness_log = File::Spec->catfile($logdir, 'services', 'harness.jsonl');
 
     my $spawn = Test2::Harness2->spawn(
         workdir   => $workdir,
