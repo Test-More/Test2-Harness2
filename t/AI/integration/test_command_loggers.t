@@ -1,11 +1,23 @@
 use Test2::V0;
 
 use File::Spec ();
-BEGIN { @INC = map { File::Spec->rel2abs($_) } @INC }
+BEGIN {
+    @INC = map { File::Spec->rel2abs($_) } @INC;
+    # Forked child processes spawned by the harness rely on PERL5LIB,
+    # not the parent's runtime @INC -- without this, test fixtures
+    # spawned after our chdir cannot find this worktree's modules.
+    $ENV{PERL5LIB} = join(
+        ':',
+        (grep { !ref } @INC),
+        (defined $ENV{PERL5LIB} ? ($ENV{PERL5LIB}) : ()),
+    );
+}
 
 use File::Temp qw/tempdir/;
+use Cwd qw/getcwd/;
 
 use App::Yath2::Command::test;
+use App::Yath2::LogArchive;
 
 package Fake::Workspace;
 sub new           { bless { workdir => $_[1] }, $_[0] }
@@ -24,34 +36,63 @@ open my $fh, '>', $tf or die $!;
 print $fh "use Test2::V0; ok(1); done_testing;\n";
 close $fh;
 
+# Use a separate cwd so the archive lands somewhere we control and can clean up.
+my $cwd_dir = "$tmp/cwd";
+mkdir $cwd_dir or die $!;
 my $work = "$tmp/work";
 mkdir $work or die $!;
+
+my $orig_cwd = getcwd();
+chdir $cwd_dir or die "chdir: $!";
 
 my $cmd = App::Yath2::Command::test->new(
     args     => [$tf],
     settings => Fake::Settings->new(Fake::Workspace->new($work)),
 );
 
-# Suppress the "Work directory: ..." line on stdout so prove output stays clean.
 my $captured = '';
+my $rc;
+my $err;
 {
     open(my $cap, '>', \$captured) or die $!;
-    my $orig = select $cap;
-    my $rc   = $cmd->run;
-    select $orig;
-    is($rc, 0, 'test command exits 0 on a passing test');
+    my $orig_out = select $cap;
+    my $ok = eval { $rc = $cmd->run; 1 };
+    $err = $@;
+    select $orig_out;
 }
 
-ok(-f "$work/logs/services/harness.jsonl", 'harness JSONL logger emitted file');
-ok(-f "$work/logs/services/harness.json",  'harness JSON  logger emitted file');
+chdir $orig_cwd;
+die $err unless defined $rc;
 
-my @per_job_jsonl = glob "$work/logs/runs/*/tests/*.jsonl";
-my @per_job_json  = glob "$work/logs/runs/*/tests/*.json";
-ok(scalar(@per_job_jsonl), 'per-job JSONL logger emitted at least one file');
-ok(scalar(@per_job_json),  'per-job JSON  logger emitted at least one file');
+is($rc, 0, 'test command exits 0 on a passing test');
 
-ok(-f "$work/logs/artifacts.json", 'global artifacts manifest written');
-my @run_manifests = glob "$work/logs/runs/*/artifacts.json";
-is(scalar(@run_manifests), 1, 'one per-run artifacts manifest written');
+unlike($captured, qr/Work directory:/, 'no Work directory: line printed');
+like($captured,   qr/Wrote archive: .*\.yath/, 'reported written archive');
+
+ok(!-d $work, 'workdir was removed after archiving');
+
+my @archives = glob "$cwd_dir/*.yath";
+is(scalar(@archives), 1, 'exactly one archive produced in cwd');
+my ($archive) = @archives;
+like($archive, qr{/\d{8}-\d{6}\.yath\z}, 'archive name uses YYYYMMDD-HHMMSS pattern');
+
+my $la = App::Yath2::LogArchive->new(path => $archive);
+my %files = map { $_ => 1 } $la->list_files;
+
+ok($files{'services/harness.jsonl'}, 'archive contains harness JSONL log');
+ok($files{'services/harness.json'},  'archive contains harness JSON  log');
+ok($files{'artifacts.json'},         'archive contains global artifacts manifest');
+ok(
+    (grep { m{^runs/[^/]+/artifacts\.json\z} } keys %files),
+    'archive contains a per-run artifacts manifest'
+);
+ok(
+    (grep { m{^runs/[^/]+/tests/[^/]+\.jsonl\z} } keys %files),
+    'archive contains at least one per-job JSONL'
+);
+ok(
+    (grep { m{^runs/[^/]+/tests/[^/]+\.json\z} } keys %files),
+    'archive contains at least one per-job JSON'
+);
 
 done_testing;

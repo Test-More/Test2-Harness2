@@ -6,10 +6,28 @@ use Carp qw/croak/;
 use Exporter qw/import/;
 use Fcntl qw/SEEK_END SEEK_SET/;
 
-our @EXPORT_OK = qw/detect_format reader_class_for writer_class_for TAR_ZIDX_MAGIC TAR_ZIDX_FOOTER_LEN/;
+our @EXPORT_OK = qw/
+    detect_format
+    reader_class_for
+    writer_class_for
+    default_writer_format
+    DEFAULT_WRITER_PREFERENCE
+    TAR_ZIDX_MAGIC
+    TAR_ZIDX_FOOTER_LEN
+/;
 
 use constant TAR_ZIDX_MAGIC      => "YZIDXv1\0";
 use constant TAR_ZIDX_FOOTER_LEN => 32;
+
+use constant DEFAULT_WRITER_PREFERENCE => ('tar.zidx', 'zip', '7z', 'tar.bz2', 'tar.gz');
+
+sub default_writer_format {
+    for my $candidate (DEFAULT_WRITER_PREFERENCE) {
+        return $candidate if eval { writer_class_for($candidate); 1 };
+    }
+    croak "no viable archive format available; install one of: "
+        . join(' ', DEFAULT_WRITER_PREFERENCE);
+}
 
 sub detect_format {
     my ($path) = @_;

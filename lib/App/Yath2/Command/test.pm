@@ -13,12 +13,16 @@ use Object::HashBase qw{
 };
 
 use File::Spec();
+use File::Path qw/remove_tree/;
 use Carp qw/croak/;
+use POSIX qw/strftime/;
 use Time::HiRes qw/sleep/;
 
 use Test2::Harness2();
 use Test2::Harness2::TestFile();
 use Test2::Harness2::Resource::JobCount();
+use App::Yath2::LogArchive();
+use App::Yath2::LogArchive::Format qw/default_writer_format/;
 
 use Getopt::Yath;
 include_options(
@@ -148,9 +152,31 @@ sub run {
     }
     $spawn->wait;
 
+    # Drop the Spawn handle now so its IPC client destructors (which
+    # try to unlink their FIFOs in pre_disconnect_hook) run while
+    # the workdir still exists. If we wait until the end of run()
+    # the workdir is gone and the destructors emit warnings.
+    undef $spawn;
+
+    # Hold onto the workdir until we have archived its logs ourselves.
     $settings->workspace->create_option(keep_dirs => 1);
 
-    print "Work directory: $workdir\n";
+    my $format  = default_writer_format();
+    my $archive = strftime('%Y%m%d-%H%M%S', localtime) . '.yath';
+    App::Yath2::LogArchive->create(
+        source => "$workdir/logs",
+        path   => $archive,
+        format => $format,
+    );
+    print "Wrote archive: $archive (format: $format)\n";
+
+    remove_tree($workdir, {error => \my $rm_errors});
+    if ($rm_errors && @$rm_errors) {
+        for my $e (@$rm_errors) {
+            my ($file, $msg) = %$e;
+            warn "Could not remove '$file': $msg\n";
+        }
+    }
 
     # If the service went away before reporting a final state, treat
     # the run as failed -- we lost the pass verdict and cannot guess.

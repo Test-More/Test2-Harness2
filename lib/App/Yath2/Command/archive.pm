@@ -7,7 +7,7 @@ our $VERSION = '2.000011';
 use POSIX qw/strftime/;
 
 use App::Yath2::LogArchive;
-use App::Yath2::LogArchive::Format qw/writer_class_for/;
+use App::Yath2::LogArchive::Format qw/writer_class_for default_writer_format DEFAULT_WRITER_PREFERENCE/;
 
 use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
@@ -21,9 +21,8 @@ sub group { 'log parsing' }
 sub summary  { "Archive a yath log directory into a single file" }
 sub cli_args { "[--] logdir [archive_filename [format]]" }
 
-my @FORMAT_PREFERENCE = qw/tar.zidx zip 7z tar.bz2 tar.gz/;
-
 sub description {
+    my @prefs = DEFAULT_WRITER_PREFERENCE;
     return <<"    EOT";
 Archive a yath log directory.
 
@@ -32,7 +31,7 @@ Required first argument: path to the log directory.
 Optional second argument: output archive filename. Defaults to
 "<YYYYMMDD-HHMMSS>.yath".
 
-Optional third argument: archive format. Must be one of: @FORMAT_PREFERENCE.
+Optional third argument: archive format. Must be one of: @prefs.
 Defaults to the first one whose backend is available on this system.
     EOT
 }
@@ -58,12 +57,7 @@ sub run {
         die "format '$format' is not viable on this system: $@" unless $ok;
     }
     else {
-        for my $candidate (@FORMAT_PREFERENCE) {
-            $format = $candidate, last
-                if eval { writer_class_for($candidate); 1 };
-        }
-        die "no viable archive format available; install one of: @FORMAT_PREFERENCE\n"
-            unless defined $format;
+        $format = default_writer_format();
     }
 
     die "extra arguments after format\n" if @$args;
