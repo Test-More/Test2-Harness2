@@ -256,7 +256,7 @@ subtest command_from_argv => sub {
     $one->settings->harness->vivify_field('persist_file');
     $one->settings->harness->vivify_field('project');
     $one->settings->harness->vivify_field('persist_dir');
-    my @ignore = warns { is($one->_command_from_argv(), "test", "Found 'test' command because we got a path") };
+    @ignore = warns { is($one->_command_from_argv(), "test", "Found 'test' command because we got a path") };
     is($one->_argv, ['-f', '--foo', __FILE__, '-b', '--bar'], "path was not removed");
 };
 

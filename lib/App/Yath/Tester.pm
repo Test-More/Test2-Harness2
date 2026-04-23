@@ -99,6 +99,11 @@ sub yath {
     print "DEBUG: Command = " . join(' ' => @cmd) . "\n" if $debug;
 
     local %ENV = %ENV;
+
+    # App::Yath::Script (2.0) prints a message and sets PERL_HASH_SEED when
+    # it is not already set, which pollutes captured output.
+    $ENV{PERL_HASH_SEED} //= POSIX::strftime('%Y%m%d', localtime);
+
     $ENV{YATH_PERSISTENCE_DIR} = $pdir;
     $ENV{YATH_CMD} = $cmd;
     $ENV{NESTED_YATH} = 1;
@@ -117,13 +122,25 @@ sub yath {
         # Do not apply encoding here — non-blocking reads can split
         # multi-byte characters, corrupting the :utf8 decode.
         $rh->blocking(0);
+        my $start = time();
+        my $timeout = $ENV{YATH_TESTER_TIMEOUT} // 120;
         while (1) {
             seek($rh, 0, SEEK_CUR); # CLEAR EOF
             my @new = <$rh>;
             push @lines => @new;
             print map { chomp($_); "DEBUG: > $_\n" } @new if $debug > 1;
 
-            waitpid($pid, WNOHANG) or next;
+            waitpid($pid, WNOHANG) or do {
+                if ($timeout && time() - $start > $timeout) {
+                    kill('TERM', $pid);
+                    waitpid($pid, 0);
+                    $exit = $?;
+                    push @lines => "yath tester timeout after ${timeout}s\n";
+                    last;
+                }
+                sleep 0.02;
+                next;
+            };
             $exit = $?;
             last;
         }

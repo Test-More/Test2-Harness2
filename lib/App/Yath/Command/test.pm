@@ -11,6 +11,7 @@ use Test2::Harness::Event;
 use Test2::Harness::Util::Queue;
 use Test2::Harness::Util::File::JSON;
 use Test2::Harness::IPC;
+use Test2::Harness::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness::Runner::State;
 
@@ -452,7 +453,7 @@ sub stop {
             my $pid = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
             my $file = $task->{rel_file};
             print "Killing test $pid - $file...\n";
-            kill('INT', $pid);
+            kill('INT', USE_P_GROUPS ? -$pid : $pid);
         }
     }
 

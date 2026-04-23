@@ -110,8 +110,8 @@ sub process_includes {
 
     @list = grep { !$seen{$_}++ } @list;
 
-    # If we ask for dot, or saw it during our processing, add it to the end.
-    push @list => '.' if delete($params{include_dot}) || $seen{'.'} > 1;
+    # If we ask for dot add it to the end.
+    push @list => '.' if delete($params{include_dot});
 
     confess "Invalid parameters: " . join(', ' => sort keys %params) if keys %params;
 

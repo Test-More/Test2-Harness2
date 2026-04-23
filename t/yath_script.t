@@ -13,16 +13,15 @@ my %sections;
 
 {
     local $.;
-    my ($script) = grep { -f $_ } 'scripts/yath', '../scripts/yath';
-    die "Could not find yath script" unless $script;
-    open(my $fh, '<', $script) or die "Could not open yath script: $!";
+    my ($script) = grep { -f $_ } 'lib/App/Yath/Script/V1.pm', '../lib/App/Yath/Script/V1.pm';
+    die "Could not find App::Yath::Script::V1 module" unless $script;
+    open(my $fh, '<', $script) or die "Could not open V1 module: $!";
 
     my ($tdir) = grep { -d $_ } 't/yath_script', 'yath_script';
     die "Could not find the t/yath_script directory" unless $tdir;
     chdir("$tdir/nested") or die "Could not change directory: $!";
 
     while (my $line = <$fh>) {
-        die "$script uses $1, it should not" if $line =~ m/^\s*use (strict|warnings)\b.*$/;
         chomp($line);
         if ($line =~ m/^\s*# ==START TESTABLE CODE (\S+)==\s*$/) {
             $in_section = $1;
@@ -48,19 +47,6 @@ sub ok($;$)    { push @RESULTS => ['ok',   [@_], [caller()]] }
 
 our %T;
 sub T() { \%T }
-
-test_find_config_files();
-sub test_find_config_files {
-    my ($config, $user_config);
-    eval delete($sections{find_config_files}) . <<'    EOT' or confess $@;
-        $config = $config_file;
-        $user_config = $user_config_file;
-        1;
-    EOT
-
-    is($config, './../.yath.rc', "Found .yath.rc in a higher dir");
-    is($user_config, './.yath.user.rc', "Found .yath.user.rc in the current dir");
-}
 
 test_parse_config_files();
 sub test_parse_config_files {
@@ -338,47 +324,6 @@ sub test_cleanup_paths {
     );
 }
 
-test_exec();
-sub test_exec {
-    no warnings 'once';
-    my $code = delete $sections{exec};
-
-    my @ORIG_ARGV = ('-xyz');
-    my $SCRIPT;
-    my ($exec, $die, @warn, $ORIG_TMP, $ORIG_TMP_PERMS, $config_file, $user_config_file);
-    my $maybe_exec = '-D';
-
-    my $res;
-    {
-        local *CORE::GLOBAL::exec = sub { $exec = [@_] };
-        local $SIG{__WARN__} = sub { push @warn => @_ };
-
-        $res = eval $code . "\n1;";
-        $die = $res ? $@ : undef;
-    }
-
-    Test2::V0::ok($SCRIPT, "Set SCRIPT");
-    Test2::V0::ok(-e $SCRIPT, "Valid path for script");
-    Test2::V0::ok(!$exec, "Did not exec");
-    Test2::V0::ok(!$die, "Did not die");
-    Test2::V0::ok(!@warn, "Did not warn");
-
-    $code =~ s/#line (\d+) ".*"/#line $1 "old_yath"/;
-
-    {
-        local *CORE::GLOBAL::exec = sub { $exec = [@_]; 1 };
-        local $SIG{__WARN__} = sub { push @warn => @_ };
-
-        $res = eval $code . "\n1;";
-        $die = $res ? undef : $@;
-    }
-
-    Test2::V0::like($SCRIPT, qr/old_yath$/, "Initial script is old");
-    Test2::V0::like($exec, [qr{scripts/yath$}, '-xyz'], "exec called new yath");
-    Test2::V0::like($die, qr/Should not see this, exec failed/, "Died when exec failed");
-    Test2::V0::like(\@warn, [qr{-D was used, and scripts/yath is present, using exec to switch to it\.}], "Warned about the exec");
-}
-
 test_create_app();
 sub test_create_app {
     my $code = delete $sections{create_app};
@@ -394,13 +339,13 @@ sub test_create_app {
     );
 
     my (%ORIG_SIG, @ORIG_ARGV, @ORIG_INC, @DEVLIBS, @ARGV, %CONFIG, $NO_PLUGINS, $ORIG_TMP, $ORIG_TMP_PERMS, $config_file, $user_config_file);
+    my $script = "foobar";
     $NO_PLUGINS = 2;
-    my $SCRIPT = "foobar";
     eval $code or die $@;
 
     my ($app, $symbol) = @$args;
     Test2::V0::isa_ok($app, 'App::Yath');
-    Test2::V0::is($symbol, 'App::Yath::Script::run', "Got correct symbol");
+    Test2::V0::is($symbol, 'App::Yath::Script::V1::_run', "Got correct symbol");
 
     Test2::V0::ref_is($app->_argv, \@ARGV, "Used ARGV");
     Test2::V0::ref_is($app->config, \%CONFIG, "Used CONFIG");
@@ -414,7 +359,7 @@ sub test_create_app {
                 orig_argv  => Test2::V0::exact_ref(\@ORIG_ARGV),
                 orig_inc   => Test2::V0::exact_ref(\@ORIG_INC),
                 dev_libs   => Test2::V0::exact_ref(\@DEVLIBS),
-                script     => $SCRIPT,
+                script     => $script,
                 no_scan_plugins => 2,
                 start      => Test2::V0::T(),
             },

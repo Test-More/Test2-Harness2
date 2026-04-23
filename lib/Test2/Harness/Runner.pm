@@ -297,6 +297,8 @@ sub spawn_scheduler {
         return $self->watch_pid($pid);
     }
 
+    setpgrp(0, 0) if Test2::Harness::Util::IPC::USE_P_GROUPS();
+
     my $guard = Scope::Guard->new(sub {
         my $err = $@;
         print STDERR "\n\n$$ $0 Scheduler escaped scope!\n";
