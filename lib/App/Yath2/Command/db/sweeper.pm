@@ -12,7 +12,8 @@ sub summary     { "Sweep a database" }
 sub description { "Deletes old data from a database" }
 sub group       { "database" }
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Getopt::Yath;
 
 include_options(

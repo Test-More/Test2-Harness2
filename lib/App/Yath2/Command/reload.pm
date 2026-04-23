@@ -4,7 +4,8 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 use Getopt::Yath;
@@ -25,18 +26,8 @@ Reload the persistent test runner.
 }
 
 sub run {
-    my $self = shift;
-
-    my $settings = $self->settings;
-
-    require App::Yath2::Client;
-    my $client = App::Yath2::Client->new(settings => $settings);
-
-    print "Requesting reload...\n";
-    $client->reload;
-    print "Request sent.\n";
-
-    return 0;
+    # XXX TODO: App::Yath2::Client removed (PR #390); reimplment once IPC layer is restored
+    die "ERROR: 'yath reload' is not yet functional — IPC layer removed (PR #390).\n";
 }
 
 1;

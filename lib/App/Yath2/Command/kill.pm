@@ -4,9 +4,10 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use App::Yath2::Client;
+# XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 sub group { 'daemon' }
@@ -27,12 +28,8 @@ include_options(
 );
 
 sub run {
-    my $self = shift;
-
-    my $settings = $self->settings;
-    my $client = App::Yath2::Client->new(settings => $settings);
-
-    $client->kill();
+    # XXX TODO: App::Yath2::Client removed (PR #390); reimplment once IPC layer is restored
+    die "ERROR: 'yath kill' is not yet functional — IPC layer removed (PR #390).\n";
 }
 
 1;

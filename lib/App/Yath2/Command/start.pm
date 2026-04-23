@@ -4,21 +4,22 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use App::Yath2::IPC;
+# XXX TODO: App::Yath2::IPC removed (PR #390) — start/daemon functionality needs new IPC
+# XXX TODO: Test2::Harness2::Instance removed (PR #390) — instance management needs reimplementing
+# XXX TODO: Test2::Harness2::IPC::Protocol removed (PR #390) — protocol layer is gone
 
-use Test2::Harness2::Instance;
-use Test2::Harness2::TestSettings;
-use Test2::Harness2::IPC::Protocol;
+use Getopt::Yath::Settings;
 use Test2::Harness2::Collector;
-use Test2::Harness2::Collector::IOParser;
+use Test2::Harness2::Collector::Parser::IOParser;
 
 use Test2::Harness2::Util qw/mod2file/;
-use Test2::Harness2::IPC::Util qw/pid_is_running set_procname/;
+use Test2::Harness2::Util::IPC qw/pid_is_running set_procname/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 
 use File::Path qw/remove_tree/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase qw{
     +log_file
 
@@ -29,6 +30,8 @@ use Object::HashBase qw{
     +resources
     +instance
     +collector
+    <args
+    <settings
 };
 
 sub option_modules {
@@ -102,6 +105,11 @@ sub munge_settings {
 
 sub run {
     my $self = shift;
+
+    # XXX TODO: App::Yath2::IPC, Test2::Harness2::Instance, and
+    # Test2::Harness2::IPC::Protocol are all gone (PR #390). The daemon/start
+    # architecture needs to be reimplemented before this command can work.
+    die "ERROR: 'yath start' is not yet functional — the IPC/Instance layer has been removed (PR #390).\n";
 
     $self->check_argv();
 
@@ -222,7 +230,7 @@ sub collector {
     open(my $log, '>', $out_file) or die "Could not open '$out_file' for writing: $!";
     $log->autoflush(1);
 
-    my $parser = Test2::Harness2::Collector::IOParser->new(job_id => 0, job_try => 0, run_id => 0, type => 'runner');
+    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(job_id => 0, job_try => 0, run_id => 0, type => 'runner');
     return $self->{+COLLECTOR} = Test2::Harness2::Collector->new(
         parser       => $parser,
         job_id       => 0,
@@ -240,39 +248,20 @@ sub collector {
 }
 
 sub instance {
-    my $self = shift;
-
-    return $self->{+INSTANCE} if $self->{+INSTANCE};
-
-    my $settings = $self->settings;
-
-    my $ipc       = $self->ipc();
-    my $runner    = $self->runner();
-    my $scheduler = $self->scheduler();
-    my $resources = $self->resources();
-    my $plugins = $self->plugins();
-
-    return $self->{+INSTANCE} = Test2::Harness2::Instance->new(
-        ipc        => $ipc,
-        scheduler  => $scheduler,
-        runner     => $runner,
-        resources  => $resources,
-        plugins    => $plugins,
-        log_file   => $self->log_file,
-        single_run => 1,
-    );
+    # XXX TODO: Test2::Harness2::Instance is gone (PR #390); needs reimplementing
+    die "Test2::Harness2::Instance has been removed (PR #390); yath start is not yet functional\n";
 }
 
 sub start_daemon_runner { 1 }
 
 sub yath_ipc {
-    my $self = shift;
-    return $self->{+YATH_IPC} //= App::Yath2::IPC->new(settings => $self->settings);
+    # XXX TODO: App::Yath2::IPC is gone (PR #390); needs reimplementing
+    die "App::Yath2::IPC has been removed (PR #390); yath start is not yet functional\n";
 }
 
 sub ipc {
-    my $self = shift;
-    return $self->{+IPC} //= $self->yath_ipc->start(daemon => $self->start_daemon_runner);
+    # XXX TODO: depends on App::Yath2::IPC which is gone (PR #390)
+    die "App::Yath2::IPC has been removed (PR #390); yath start is not yet functional\n";
 }
 
 sub scheduler {
@@ -302,7 +291,7 @@ sub runner {
     my $class    = $runner_s->class;
     require(mod2file($class));
 
-    my $ts = Test2::Harness2::TestSettings->new($settings->tests->all);
+    my $ts = Getopt::Yath::Settings->new($settings->tests->all);
 
     return $self->{+RUNNER} = $class->new($runner_s->all, test_settings => $ts, workdir => $settings->workspace->workdir, plugins => $plugins, is_daemon => $self->start_daemon_runner);
 }

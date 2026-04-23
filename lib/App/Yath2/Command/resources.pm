@@ -8,10 +8,11 @@ use Term::Table();
 use File::Spec();
 use Time::HiRes qw/sleep/;
 
-use App::Yath2::Client;
-use Test2::Harness2::Util qw/mod2file render_status_data/;
+# XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
+use Test2::Harness2::Util qw/mod2file/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 use Getopt::Yath;
@@ -32,11 +33,15 @@ A look at the state and resources used by a runner.
 }
 
 sub run {
+    # XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390);
+    # reimplment once IPC is restored.
+    die "ERROR: 'yath resources' is not yet functional — IPC layer removed (PR #390).\n";
+
     my $self = shift;
 
     my $settings = $self->settings;
 
-    my $client = App::Yath2::Client->new(settings => $settings);
+    my $client = undef; # XXX TODO: App::Yath2::Client->new(settings => $settings);
 
     return 0 if eval {
         while (1) { $self->render($client); sleep 0.1 }
@@ -67,8 +72,8 @@ sub render {
         my ($class, $data) = @$resource;
         next unless $data;
 
-        my $text = render_status_data($data);
-        push @out => "\nResource: $class\n$text\n";
+        # XXX Maybe need to reimplement render_status_data in App::Yath2::Util?
+        push @out => "\nResource: $class\n$data\n";
     }
 
     print @out;

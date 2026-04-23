@@ -4,7 +4,8 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 use Test2::Harness2::Util::JSON qw/decode_json/;

@@ -75,7 +75,10 @@ sub command_info_hash {
             next;
         }
 
-        next unless Role::Tiny::does_role($lib, 'App::Yath2::Role::Command');
+        # This should throw if it doesn't instead of being silent,
+        # it will alert people writing new commands as to what to do
+        my $role = 'App::Yath2::Role::Command';
+        die "$lib does not have a role of $role" unless Role::Tiny::does_role($lib, $role);
         my $internal = $lib->internal_only;
         next if $internal && !$hs->verbose;
         my $name = $lib->name;

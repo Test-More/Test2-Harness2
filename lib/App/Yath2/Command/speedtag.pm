@@ -10,7 +10,8 @@ use Test2::Harness2::Util::File::JSON;
 
 use Cwd qw/getcwd/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase qw{
     <log_file
     <max_short

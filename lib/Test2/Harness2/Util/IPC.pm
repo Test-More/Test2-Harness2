@@ -21,6 +21,7 @@ use Importer Importer => 'import';
 our @EXPORT_OK = qw{
     pid_is_running
     set_procname
+    start_process
     swap_io
     list_direct_children
 };
@@ -52,6 +53,22 @@ sub set_procname {
     $name = "${prefix}-${name}" unless $name =~ m/^\Q$prefix\E-/;
 
     $0 = $name;
+}
+
+sub start_process {
+    my ($cmd, $post_fork) = @_;
+
+    confess "cmd is required and must be an arrayref with content" unless $cmd && @$cmd;
+    confess "cmd may not contain undefined values" if grep { !defined($_) } @$cmd;
+
+    my $pid = fork // die "Could not fork: $!";
+    return $pid if $pid;
+
+    $post_fork->() if $post_fork;
+
+    { no warnings; exec(@$cmd) }
+    print STDERR "Failed to exec " . join(' ', @$cmd) . ": $!\n";
+    exit(255);
 }
 
 sub swap_io {

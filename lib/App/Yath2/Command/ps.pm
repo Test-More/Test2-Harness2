@@ -5,12 +5,13 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Time::HiRes qw/time/;
-use App::Yath2::Client;
+# XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
 use Term::Table();
 
 use Test2::Util::Times qw/render_duration/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 sub group { 'daemon' }
@@ -31,28 +32,8 @@ include_options(
 );
 
 sub run {
-    my $self = shift;
-
-    my $settings = $self->settings;
-    my $client = App::Yath2::Client->new(settings => $settings);
-
-    my $procs = $client->process_list();
-
-    my @rows;
-    my %seen;
-    for my $proc (sort { $a->{stamp} <=> $b->{stamp} } @$procs) {
-        next if $seen{$proc->{pid}}++;
-        push @rows => [@{$proc}{qw/pid type name/}, render_duration(time - $proc->{stamp})];
-    }
-
-    my $process_table = Term::Table->new(
-        collapse => 1,
-        header => [qw/pid type name age/],
-        rows => \@rows,
-    );
-
-    print "\n**** Running Processes ****\n";
-    print "$_\n" for $process_table->render;
+    # XXX TODO: App::Yath2::Client removed (PR #390); reimplment once IPC layer is restored
+    die "ERROR: 'yath ps' is not yet functional — IPC layer removed (PR #390).\n";
 }
 
 1;
