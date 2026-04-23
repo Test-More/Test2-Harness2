@@ -18,6 +18,18 @@ You are an expert Perl developer. Write code following the patterns and styles o
 
 If you're about to implement something that seems to conflict with `ARCHITECTURE.md`, stop and verify — it is very likely the other document is stale and you should follow `ARCHITECTURE.md` while flagging the inconsistency for a follow-up edit.
 
+## AI task documentation
+
+Whenever an AI-assisted task is merged, write a document to `AI_DOCS/` describing:
+
+- What the task was and what triggered it.
+- Decisions made during the task, including design alternatives considered and why they were rejected.
+- Any architectural changes introduced by the task.
+
+Filename convention: `AI_DOCS/<YYYY-MM-DD>-<short-slug>.md`.
+
+Any decision to deviate from `ARCHITECTURE.md` must also be recorded as an addendum section appended to `ARCHITECTURE.md` itself. The addendum must explain the deviation and justify it. `ARCHITECTURE.md` remains the authoritative spec; addenda exist so the spec stays self-contained and anyone reading it sees the deviation and its reasoning in one place.
+
 ## Testing
 
 - Use `Test2::V0` in unit tests where possible.
