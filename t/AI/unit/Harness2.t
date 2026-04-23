@@ -232,7 +232,7 @@ subtest 'queue_test_run does not write the runs/<id>.json snapshot (run service 
     ok(!-e $path, 'no snapshot at queue time -- run service owns the file');
 };
 
-subtest 'queue_test_run emits run_queued and job_queued events' => sub {
+subtest 'queue_test_run emits run_queued only (job_queued moved to run service)' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
@@ -245,25 +245,11 @@ subtest 'queue_test_run emits run_queued and job_queued events' => sub {
 
     $h->request_handler_queue_test_run({files => _tfs('t/x.t', 't/y.t')});
 
-    is(scalar @emitted,   3,            'one run_queued + two job_queued events');
-    is($emitted[0]{kind}, 'run_queued', 'first event is run_queued');
+    is(scalar @emitted,   1,            'exactly one event emitted');
+    is($emitted[0]{kind}, 'run_queued', 'event is run_queued');
     ok($emitted[0]{run_data},         'run_queued has run_data');
     ok($emitted[0]{run_data}{run_id}, 'run_data carries run_id');
     ok($emitted[0]{run_data}{jobs},   'run_data inlines jobs');
-
-    is($emitted[1]{kind}, 'job_queued', 'second event is job_queued');
-    ok($emitted[1]{job_data}{job_id}, 'job_data carries job_id');
-    ok($emitted[1]{job_data}{run_id}, 'job_data carries run_id');
-    like(
-        $emitted[1]{job_data}{test_file}{file}, qr{/t/x\.t$},
-        'job_data carries test_file absolute path',
-    );
-
-    is($emitted[2]{kind}, 'job_queued', 'third event is job_queued');
-    like(
-        $emitted[2]{job_data}{test_file}{file}, qr{/t/y\.t$},
-        'second job_data carries test_file absolute path',
-    );
 };
 
 subtest 'queue_test_run rejects when state is not running' => sub {
@@ -398,7 +384,7 @@ subtest 'run_on_all commits no resource when any is unavailable' => sub {
     is(scalar @{$h->{queue}},             1, 'run still queued, job still pending');
 };
 
-subtest 'test_job_completed IPC from a run service advances the harness scheduler' => sub {
+subtest 'job_release + run_state_update advance the harness scheduler' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
@@ -409,7 +395,6 @@ subtest 'test_job_completed IPC from a run service advances the harness schedule
     my ($job)  = grep { $_->job_id eq $job_id } @{$run->jobs};
     $run->mark_running($job_id);
 
-    # Pre-assign a slot so we can verify it gets released.
     my ($res) = @{$h->{resources}};
     my %env;
     $res->assign(id => 'test-assign', job => $job, env => \%env);
@@ -423,23 +408,34 @@ subtest 'test_job_completed IPC from a run service advances the harness schedule
         assigned_resources => [$res],
     };
 
-    # Simulate the run service dispatching test_job_completed over IPC.
+    # job_release alone only releases resources and drops the tracking
+    # entry -- the done-ness transition is driven by run_state_update.
     $h->run_on_general_message(
         Test::FakeIpcMsg->new({
-            kind   => 'test_job_completed',
+            kind   => 'job_release',
             run_id => $run->run_id,
             job_id => $job_id,
-            pid    => 91234,
-            exit   => 0,
         }),
     );
 
-    ok(!keys %{$h->{running_jobs}}, 'running_jobs cleared after test_job_completed');
-    is(scalar @{$run->done}, 1, 'job marked done');
-    is($res->used,           0, 'JobCount slot released');
+    ok(!keys %{$h->{running_jobs}}, 'running_jobs cleared after job_release');
+    is($res->used, 0, 'JobCount slot released');
+
+    # run_state_update replaces the mirror Run's pending / running /
+    # done lists with the run service's authoritative snapshot.
+    $h->run_on_general_message(
+        Test::FakeIpcMsg->new({
+            kind     => 'run_state_update',
+            run_id   => $run->run_id,
+            run_data => {pending => [], running => [], done => [$job_id]},
+        }),
+    );
+
+    is(scalar @{$run->done},    1, 'mirror Run marks job done');
+    is(scalar @{$run->running}, 0, 'mirror Run clears running');
 };
 
-subtest 'run_on_all emits run_started + job_started for the first job' => sub {
+subtest 'run_on_all emits run_started for the first job; no job_started' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
@@ -469,19 +465,15 @@ subtest 'run_on_all emits run_started + job_started for the first job' => sub {
     }
 
     my @kinds = map { $_->{kind} } @emitted;
-    ok((grep { $_ eq 'run_started' } @kinds), 'run_started emitted');
-    ok((grep { $_ eq 'job_started' } @kinds), 'job_started emitted');
+    ok((grep { $_ eq 'run_started' } @kinds),  'run_started emitted');
+    ok(!(grep { $_ eq 'job_started' } @kinds), 'job_started NOT emitted (run service owns it)');
+    ok(!(grep { $_ eq 'job_queued' } @kinds),  'job_queued NOT emitted (run service owns it)');
 
     my ($rs) = grep { $_->{kind} eq 'run_started' } @emitted;
     is($rs->{run_data}, {run_id => $h->{queue}[0]->run_id}, 'run_started carries only run_id');
-
-    my ($js) = grep { $_->{kind} eq 'job_started' } @emitted;
-    ok($js->{job_info}{run_id}, 'job_started carries run_id');
-    ok($js->{job_info}{job_id}, 'job_started carries job_id');
-    is($js->{job_info}{job_try}, 0, 'job_started carries job_try=0');
 };
 
-subtest 'test_job_completed IPC emits job_completed and run_ended' => sub {
+subtest 'run_state_update to the last-done state emits run_ended' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
@@ -499,76 +491,22 @@ subtest 'test_job_completed IPC emits job_completed and run_ended' => sub {
 
     my @emitted;
     no warnings 'redefine';
-    local *Test2::Harness2::emit_service_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted => \%fields;
-    };
+    local *Test2::Harness2::emit_service_event    = sub { push @emitted => {@_[1 .. $#_]} };
     local *Test2::Harness2::_teardown_run_service = sub { };
 
     $h->run_on_general_message(
         Test::FakeIpcMsg->new({
-            kind    => 'test_job_completed',
-            run_id  => $run->run_id,
-            job_id  => $job->job_id,
-            job_try => 0,
-            pid     => 1,
-            exit    => 0,
+            kind     => 'run_state_update',
+            run_id   => $run->run_id,
+            run_data => {pending => [], running => [], done => [$job->job_id]},
         }),
     );
 
     my @kinds = map { $_->{kind} } @emitted;
-    is(\@kinds, ['job_completed', 'run_ended'], 'both completion events in order');
+    is(\@kinds, ['run_ended'], 'only run_ended is emitted; job_completed moved to run service');
 
-    my $jc = $emitted[0];
-    is($jc->{job_info}{run_id},  $run->run_id, 'job_completed run_id');
-    is($jc->{job_info}{job_id},  $job->job_id, 'job_completed job_id');
-    is($jc->{job_info}{job_try}, 0,            'job_completed job_try');
-    is($jc->{pass},              1,            'pass=1 for exit 0');
-    is($jc->{exit}{err},         0,            'exit.err=0');
-    is($jc->{exit}{sig},         0,            'exit.sig=0');
-
-    my $re = $emitted[1];
+    my ($re) = @emitted;
     is($re->{run_data}, {run_id => $run->run_id}, 'run_ended carries only run_id');
-};
-
-subtest 'job_complete IPC reports pass=0 for non-zero exit' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    my $run = Test2::Harness2::Run->from_files(files => _tfs('/abs/fail.t'));
-    push @{$h->{queue}} => $run;
-    my ($job) = @{$run->jobs};
-    $run->mark_running($job->job_id);
-
-    $h->{running_jobs}{$job->job_id} = {
-        run        => $run,
-        job        => $job,
-        pid        => 2,
-        started_at => time,
-    };
-
-    my @emitted;
-    no warnings 'redefine';
-    local *Test2::Harness2::emit_service_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted => \%fields;
-    };
-    local *Test2::Harness2::_teardown_run_service = sub { };
-
-    $h->run_on_general_message(
-        Test::FakeIpcMsg->new({
-            kind    => 'test_job_completed',
-            run_id  => $run->run_id,
-            job_id  => $job->job_id,
-            job_try => 0,
-            pid     => 2,
-            exit    => (1 << 8),               # raw wait status for exit code 1
-        }),
-    );
-
-    my ($jc) = grep { $_->{kind} eq 'job_completed' } @emitted;
-    is($jc->{pass},      0, 'pass=0 for non-zero exit');
-    is($jc->{exit}{err}, 1, 'exit.err=1');
 };
 
 subtest 'perform_hard_stop TERMs tracked pids and reaps them' => sub {
@@ -649,7 +587,9 @@ subtest 'run_on_general_message - job_complete_notify is a no-op' => sub {
     is(\@warnings, [], 'no warnings for known kind');
 };
 
-subtest 'run_on_general_message - collector_artifacts emits job_loggers event' => sub {
+subtest 'run_on_general_message - collector_artifacts is now silent on harness' => sub {
+    # Handled by the run service now; a stray copy reaching the harness
+    # must be dropped without emitting anything and without warning.
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
@@ -660,34 +600,19 @@ subtest 'run_on_general_message - collector_artifacts emits job_loggers event' =
         run_id  => 'R',
         job_id  => 'J',
         job_try => 0,
-        loggers => {
-            'Test2::Harness2::Collector::Logger::JSONL' => [
-                {jsonl_file => '/abs/run/J/0.jsonl'},
-            ],
-        },
+        loggers => {'Test2::Harness2::Collector::Logger::JSONL' => [{jsonl_file => '/x'}]},
     } };
 
     my @emitted;
+    my @warnings;
     no warnings 'redefine';
-    local *Test2::Harness2::emit_service_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted => \%fields;
-    };
+    local *Test2::Harness2::emit_service_event = sub { push @emitted => {@_[1 .. $#_]} };
+    local $SIG{__WARN__} = sub { push @warnings => @_ };
 
     $h->run_on_general_message($fake_msg);
 
-    is(scalar @emitted,   1,             'one service event emitted');
-    is($emitted[0]{kind}, 'job_loggers', 'event kind is job_loggers');
-    is(
-        $emitted[0]{job_info},
-        {run_id => 'R', job_id => 'J', job_try => 0},
-        'job_info carries run/job/try ids'
-    );
-    is(
-        $emitted[0]{loggers}{'Test2::Harness2::Collector::Logger::JSONL'},
-        [{jsonl_file => '/abs/run/J/0.jsonl'}],
-        'loggers payload passed through'
-    );
+    is(scalar @emitted,  0, 'no service event emitted on the harness');
+    is(scalar @warnings, 0, 'no warning about the message kind');
 };
 
 subtest 'run_on_general_message - resource state messages flip the named resource' => sub {
@@ -1158,23 +1083,35 @@ subtest 'broken_resource_behavior=abort fails every remaining job in the run' =>
         $h,
         sub {
             # One call per scheduler tick; the single-slot limiter
-            # only lets one synth-fail run at a time, so we have to
-            # drain them by synthesizing test_job_completed IPCs between
-            # ticks.
-            while (my $cur = (values %{$h->{running_jobs}})[0] || 1) {
+            # only lets one synth-fail run at a time, so drain them
+            # by feeding the harness the IPC pair it now expects
+            # (job_release + run_state_update) between ticks.
+            while (keys %{$h->{running_jobs}} || @{$h->{queue}}) {
                 $h->run_on_all({});
                 last unless keys %{$h->{running_jobs}};
+
                 for my $jid (keys %{$h->{running_jobs}}) {
-                    my $entry   = $h->{running_jobs}{$jid};
-                    my $payload = {
-                        kind    => 'test_job_completed',
-                        run_id  => $entry->{run}->run_id,
-                        job_id  => $entry->{job}->job_id,
-                        job_try => 0,
-                        pid     => $entry->{pid},
-                        exit    => {sig => 0, err => 255, dmp => 0, all => 0xff00},
-                    };
-                    $h->_handle_job_complete($payload);
+                    my $entry = $h->{running_jobs}{$jid};
+                    my $run   = $entry->{run};
+
+                    $h->run_on_general_message(Test::FakeIpcMsg->new({
+                        kind   => 'job_release',
+                        run_id => $run->run_id,
+                        job_id => $entry->{job}->job_id,
+                    }));
+
+                    # Run service's view: this job now in done, others
+                    # still pending until the scheduler launches them.
+                    $run->mark_done($entry->{job}->job_id);
+                    $h->run_on_general_message(Test::FakeIpcMsg->new({
+                        kind     => 'run_state_update',
+                        run_id   => $run->run_id,
+                        run_data => {
+                            pending => [@{$run->pending}],
+                            running => [@{$run->running}],
+                            done    => [@{$run->done}],
+                        },
+                    }));
                 }
             }
         }
@@ -1360,140 +1297,6 @@ subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
     ok(
         (grep { /orphaned test pid/ } @warnings),
         'warned about orphan path',
-    );
-};
-
-subtest 'collector_exiting arms the pid-gone grace timer' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    my $run    = Test2::Harness2::Run->from_files(files => _tfs('/abs/e.t'));
-    my $job_id = $run->jobs->[0]->job_id;
-    push @{$h->{queue}} => $run;
-    $run->mark_running($job_id);
-
-    $h->{running_jobs}{$job_id} = {
-        run                => $run,
-        job                => $run->jobs->[0],
-        pid                => 62345,
-        started_at         => time,
-        assigned_resources => [],
-    };
-
-    $h->run_on_general_message(
-        Test::FakeIpcMsg->new({
-            kind    => 'collector_exiting',
-            run_id  => $run->run_id,
-            job_id  => $job_id,
-            job_try => 0,
-            pid     => 62345,
-        }),
-    );
-
-    ok(
-        defined $h->{running_jobs}{$job_id}{pid_gone_since},
-        'pid_gone_since stamped by collector_exiting'
-    );
-
-    # Running-jobs entry stays put until job_complete arrives OR the
-    # grace window elapses; this message alone does not delete it.
-    ok(
-        exists $h->{running_jobs}{$job_id},
-        'running_jobs entry is not cleared by collector_exiting alone'
-    );
-};
-
-subtest 'pid-liveness watchdog synthesizes job_complete after the grace window' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    my $run    = Test2::Harness2::Run->from_files(files => _tfs('/abs/g.t'));
-    my $job_id = $run->jobs->[0]->job_id;
-    push @{$h->{queue}} => $run;
-    $run->mark_running($job_id);
-
-    my ($res) = @{$h->{resources}};
-    $res->assign(id => 'grace-assign', job => $run->jobs->[0], env => {});
-
-    # Use our own process's pid so kill 0 succeeds on the first pass,
-    # then rewrite pid_gone_since far enough back to force a grace
-    # expiry on the next call without actually killing anyone.
-    $h->{running_jobs}{$job_id} = {
-        run                => $run,
-        job                => $run->jobs->[0],
-        pid                => $$,
-        started_at         => time,
-        assign_id          => 'grace-assign',
-        assigned_resources => [$res],
-    };
-
-    $h->_check_running_job_pids;
-    ok(
-        !defined $h->{running_jobs}{$job_id}{pid_gone_since},
-        'alive pid does not arm the grace timer'
-    );
-    ok(exists $h->{running_jobs}{$job_id}, 'running_jobs entry still present');
-
-    # Pretend the pid vanished Grace+1 seconds ago. Next check must
-    # synthesize a job_complete and release the slot.
-    $h->{running_jobs}{$job_id}{pid_gone_since} = time - (Test2::Harness2::JOB_PID_GRACE_SECS() + 1);
-
-    my @emits;
-    my @warnings;
-    {
-        no warnings 'redefine';
-        local *Test2::Harness2::emit_service_event    = sub { push @emits => {@_[1 .. $#_]} };
-        local *Test2::Harness2::_teardown_run_service = sub { };
-        local $SIG{__WARN__}                          = sub { push @warnings => @_ };
-        $h->_check_running_job_pids;
-    }
-
-    ok(!exists $h->{running_jobs}{$job_id}, 'entry cleared by synthesized job_complete');
-    is($res->used, 0, 'resource released');
-    ok((grep { $_->{kind} eq 'job_completed' } @emits), 'job_completed event emitted');
-    ok(
-        (grep { /synthesizing test_job_completed/ } @warnings),
-        'watchdog warned about the synthesized completion'
-    );
-};
-
-subtest 'pid-liveness watchdog is pid-reuse safe once the pid is seen gone' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    my $run    = Test2::Harness2::Run->from_files(files => _tfs('/abs/r.t'));
-    my $job_id = $run->jobs->[0]->job_id;
-    push @{$h->{queue}} => $run;
-    $run->mark_running($job_id);
-
-    # Use a pid that's definitely alive (ours), but pretend we already
-    # noticed it was gone 5 minutes ago. A pid-reuse-buggy implementation
-    # would peek at kill(0) again, see "alive", and clear pid_gone_since;
-    # ours must leave the stamp alone.
-    my $stamp = time - 300;
-    $h->{running_jobs}{$job_id} = {
-        run                => $run,
-        job                => $run->jobs->[0],
-        pid                => $$,
-        started_at         => time,
-        pid_gone_since     => $stamp,
-        assigned_resources => [],
-    };
-
-    # Grace is well under 5 minutes, so this pass should synthesize a
-    # job_complete. Stub the event/teardown paths so we only care about
-    # whether the stamp was respected, not the downstream side effects.
-    {
-        no warnings 'redefine';
-        local *Test2::Harness2::emit_service_event    = sub { };
-        local *Test2::Harness2::_teardown_run_service = sub { };
-        local $SIG{__WARN__}                          = sub { };
-        $h->_check_running_job_pids;
-    }
-
-    ok(
-        !exists $h->{running_jobs}{$job_id},
-        'pid seen gone, grace elapsed -> synthesized job_complete (no second liveness check)'
     );
 };
 

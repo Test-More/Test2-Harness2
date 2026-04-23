@@ -66,6 +66,12 @@ sub queue_test_run {
 sub status { $_[0]->_send_request('status') }
 sub finish { $_[0]->_send_request('finish') }
 
+sub run_results {
+    my $self = shift;
+    my %args = @_ == 1 && !ref($_[0]) ? (run_id => $_[0]) : @_;
+    return $self->_send_request('run_results', \%args);
+}
+
 sub terminate {
     my $self = shift;
     my $res  = $self->_send_request('terminate');
@@ -187,6 +193,16 @@ Queue a test run.  C<files> key is required.
 =item $status = $spawn->status
 
 Return the current service status hashref.
+
+=item $results = $spawn->run_results($run_id)
+
+=item $results = $spawn->run_results(run_id => $run_id)
+
+Query the harness for a run's final pass/fail verdict and per-job
+results. A completed run returns C<< { state => 'complete', pass
+=> 0|1, results => { job_id => { pass, exit, codes, ... }, ... },
+done => [ ... ] } >>. A still-running run returns C<< { state =>
+'running', run_id => $run_id } >>; poll it.
 
 =item $res = $spawn->finish
 

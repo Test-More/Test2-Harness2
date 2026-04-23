@@ -12,13 +12,6 @@ use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util qw/parse_exit tinysleep/;
 use POSIX qw/WNOHANG/;
 
-# When a test collector's pid is first noticed to be gone (either via a
-# liveness check or a collector_exiting IPC message), the scheduler waits
-# this many seconds for a real test_job_completed to arrive from the run
-# service before synthesizing one. Short enough to keep the scheduler
-# unblocked, long enough to cover normal IPC latency on a busy host.
-use constant JOB_PID_GRACE_SECS => 5;
-
 use Atomic::Pipe;
 use IPC::Manager qw/ipcm_spawn/;
 use IPC::Manager::Service::Handle;
@@ -50,6 +43,7 @@ use Object::HashBase qw{
     +running_jobs
     <resource_services
     +run_services
+    +completed_runs
     +finish_after_initial_run
     +emitter
     watch_pids
@@ -126,7 +120,8 @@ sub init {
     $self->{+RUNNING_JOBS}      //= {};
     $self->{+RESOURCE_SERVICES} //= {};
     $self->{+RUN_SERVICES}      //= {};
-    $self->{+WATCH_PIDS}    //= [@{$self->{+PARENT_PIDS}}];
+    $self->{+COMPLETED_RUNS}    //= {};
+    $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
@@ -363,12 +358,9 @@ sub request_handler_queue_test_run {
         run_data => $run->TO_JSON,
     );
 
-    for my $job (@{$run->jobs}) {
-        $self->emit_service_event(
-            kind     => 'job_queued',
-            job_data => $job->TO_JSON,
-        );
-    }
+    # job_queued events are emitted by the run service once it has
+    # started, so the per-job lifecycle stream lives in the run's own
+    # .jsonl and not in the harness's service log.
 
     return {ok => 1, run_id => $run->run_id};
 }
@@ -419,6 +411,29 @@ sub request_handler_finish {
     return {ok => 1};
 }
 
+# Per-run pass/fail + per-job verdicts. A completed run's final
+# snapshot is stashed in COMPLETED_RUNS by _handle_run_state_update
+# at the moment it sees the run close out; this handler serves from
+# that cache. A still-running run returns state => 'running' with
+# no pass/fail so callers can poll.
+sub request_handler_run_results {
+    my ($self, $payload) = @_;
+
+    my $run_id = $payload->{run_id};
+    return {ok => 0, error => "'run_id' is required"}
+        unless defined $run_id;
+
+    if (my $info = $self->{+COMPLETED_RUNS}->{$run_id}) {
+        return {ok => 1, %$info};
+    }
+
+    if (grep { $_->run_id eq $run_id } @{$self->{+QUEUE} // []}) {
+        return {ok => 1, state => 'running', run_id => $run_id};
+    }
+
+    return {ok => 0, error => "unknown run '$run_id'"};
+}
+
 sub run_on_general_message {
     my ($self, $msg) = @_;
 
@@ -430,38 +445,27 @@ sub run_on_general_message {
     # else to do.
     return if defined $kind && $kind eq 'job_complete_notify';
 
-    # A per-run RunService reports a test job's final exit status here so
-    # the harness can release resources and advance its scheduler.
-    return $self->_handle_job_complete($content)
-        if defined $kind && $kind eq 'test_job_completed';
+    # Run-service aggregation: the run service owns the authoritative
+    # Run state and sends us a full-snapshot mutation on every change.
+    # We mirror it into the Run we're tracking so the scheduler sees
+    # the same pending / running / done the run service sees.
+    return $self->_handle_run_state_update($content)
+        if defined $kind && $kind eq 'run_state_update';
 
-    # A collector reports its own end-of-life with kind/role info and,
-    # for test collectors, the auditor's pass/fail verdict + child
-    # exit code. The harness uses this to arm a pid-gone grace timer
-    # (so the scheduler advances even when the RunService's reap
-    # message is delayed or lost) and to override the coarse exit-
-    # code-based pass inference with the auditor's real verdict.
-    return $self->_handle_collector_exiting($content)
-        if defined $kind && $kind eq 'collector_exiting';
+    # Run-service aggregation: per-job release signal. The scheduler
+    # needs resource release and a wake-up; the final verdict already
+    # flowed through the run_state_update channel (and is logged in
+    # the run's own jsonl, not here).
+    return $self->_handle_job_release($content)
+        if defined $kind && $kind eq 'job_release';
 
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
-    if (defined $kind && $kind eq 'collector_artifacts') {
-        # A collector has reported the artifacts its loggers produce.
-        # Emit a service-level lifecycle event the command's
-        # artifact-reading layer can observe. See IPC_AND_LOGGERS §8.
-        $self->emit_service_event(
-            kind     => 'job_loggers',
-            job_info => {
-                run_id  => $content->{run_id},
-                job_id  => $content->{job_id},
-                job_try => $content->{job_try},
-            },
-            loggers => $content->{loggers} // {},
-        );
-        return;
-    }
+    # collector_artifacts now flows to the run service (which logs it
+    # as job_loggers on the run's own emitter). Ignore if anything
+    # else still sends it to us.
+    return if defined $kind && $kind eq 'collector_artifacts';
 
     warn "Test2::Harness2: unhandled general message kind: " . (defined $kind ? "'$kind'" : '(none)') . "\n";
 
@@ -498,104 +502,94 @@ sub request_handler_detach {
     return {ok => 1};
 }
 
-# A collector has reached end-of-life and is sending its final
-# summary. Two things to do:
+# Run-service aggregation: replace our mirror Run's pending /
+# running / done lists with the run service's authoritative
+# snapshot. When that replacement closes the run out (nothing
+# pending, nothing running), tear down the run service and emit
+# run_ended.
 #
-#   1. Arm the pid-gone grace timer so the scheduler can advance
-#      even if the RunService's own SIGCHLD reap message is delayed
-#      or dropped -- test_job_completed from the RunService still wins if
-#      it arrives first, otherwise we synthesize one on grace expiry.
-#
-#   2. For test-kind collectors, record the auditor's pass verdict
-#      in the running_jobs entry. _handle_job_complete, when it
-#      runs, prefers this verdict over the coarse exit-code-based
-#      pass inference -- the auditor knows about failed assertions
-#      that did not change the exit code, which exit-code alone can
-#      miss.
-#
-# Non-test collectors (role => 'service', resource service
-# collectors, ...) are informational only; the payload's exit code
-# is enough for anything else that wants it.
-sub _handle_collector_exiting {
+# run_data is the full Run->TO_JSON payload; we reach into the
+# shadow Run and overwrite just the three lists so any other fields
+# the harness stamped at queue time (resources objects, logger
+# intent slots, launch_job_timeout) survive. Resources in
+# particular are live Perl objects that cannot round-trip through
+# JSON.
+sub _handle_run_state_update {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $run_id = $content->{run_id};
+    my $data   = $content->{run_data};
+    return unless defined $run_id && ref($data) eq 'HASH';
+
+    my ($run) = grep { $_->run_id eq $run_id } @{$self->{+QUEUE} // []};
+    return unless $run;
+
+    for my $slot (qw/pending running done/) {
+        my $list = $data->{$slot};
+        next unless ref($list) eq 'ARRAY';
+        $run->{$slot} = [@$list];
+    }
+
+    if (ref($data->{results}) eq 'HASH') {
+        $run->{results} = {%{$data->{results}}};
+    }
+
+    if ($run->is_complete) {
+        $self->{+COMPLETED_RUNS}->{$run_id} = $self->_snapshot_run_results($run);
+
+        $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
+        $self->_teardown_run_service($run);
+        $self->emit_service_event(
+            kind     => 'run_ended',
+            run_data => {run_id => $run_id},
+        );
+        $self->{+STATE} = 'finishing'
+            if $self->{+FINISH_AFTER_INITIAL_RUN}
+            && $self->{+STATE} eq 'running';
+    }
+
+    return;
+}
+
+# Build the "final" snapshot stashed into COMPLETED_RUNS so that
+# callers can query pass/fail via IPC after a run ends but before
+# the harness itself exits. Aggregate pass is true when every job
+# that reported a result passed; skipped jobs have no result entry
+# and therefore do not fail the aggregate.
+sub _snapshot_run_results {
+    my ($self, $run) = @_;
+
+    my $results = $run->results // {};
+    my $all_pass = 1;
+    for my $jid (keys %$results) {
+        $all_pass = 0 unless $results->{$jid}{pass};
+    }
+
+    return {
+        run_id  => $run->run_id,
+        state   => 'complete',
+        pass    => $all_pass ? 1 : 0,
+        results => {%$results},
+        done    => [@{$run->done}],
+    };
+}
+
+# Run-service aggregation: per-job release. Looks up the job's
+# tracking entry for its assigned resources, releases them, and
+# drops the entry. The mark_done transition is driven by
+# run_state_update, not here.
+sub _handle_job_release {
     my ($self, $content) = @_;
     return unless ref($content) eq 'HASH';
 
     my $job_id = $content->{job_id};
     return unless defined $job_id;
 
-    my $cur = $self->{+RUNNING_JOBS}->{$job_id} or return;
-    $cur->{pid_gone_since} //= time;
-
-    # Only test-job collectors include a pass verdict in their
-    # collector_exiting payload (Collector::Test's
-    # _extend_exiting_payload_for_harness hook). Service collectors
-    # do not carry one.
-    if (exists $content->{pass}) {
-        $cur->{auditor_pass} = $content->{pass} ? 1 : 0;
-    }
-
-    return;
-}
-
-sub _handle_job_complete {
-    my ($self, $content) = @_;
-
-    my $job_id = ref($content) eq 'HASH' ? $content->{job_id} : undef;
-    return unless defined $job_id;
-
     my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
     return unless $cur;
 
-    # The run service reports exit in the IPC payload (a raw wait status).
-    # Parse it once, then emit a job_completed lifecycle event for any
-    # listeners following the harness's own log.
-    my $raw_exit = ref($content) eq 'HASH' ? $content->{exit}      : undef;
-    my $exit     = defined($raw_exit)      ? parse_exit($raw_exit) : undef;
-
-    # Prefer the auditor's verdict (recorded via collector_exiting)
-    # when it was reported; fall back to the coarse exit-code check.
-    # A test can have failed assertions while still exiting 0, which
-    # exit-code alone cannot see.
-    my $pass;
-    if (exists $cur->{auditor_pass}) {
-        $pass = $cur->{auditor_pass} ? 1 : 0;
-    }
-    else {
-        $pass = defined($exit) && $exit->{err} == 0 && $exit->{sig} == 0 ? 1 : 0;
-    }
-
-    $self->emit_service_event(
-        kind     => 'job_completed',
-        job_info => {
-            run_id  => $cur->{run}->run_id,
-            job_id  => $cur->{job}->job_id,
-            job_try => $cur->{job}->job_try,
-        },
-        exit => $exit,
-        pass => $pass,
-    );
-
-    # Release any resources this job had assigned and advance the run.
     $self->_release_job_resources($cur);
-    $cur->{run}->mark_done($job_id);
-
-    if ($cur->{run}->is_complete) {
-        my $run    = $cur->{run};
-        my $run_id = $run->run_id;
-        $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
-
-        $self->_teardown_run_service($run);
-
-        $self->emit_service_event(
-            kind     => 'run_ended',
-            run_data => {run_id => $run_id},
-        );
-
-        $self->{+STATE} = 'finishing'
-            if $self->{+FINISH_AFTER_INITIAL_RUN}
-            && $self->{+STATE} eq 'running';
-    }
-
     return;
 }
 
@@ -697,21 +691,38 @@ sub run_on_pid {
 
     # Orphan test-collector exit: a test whose run service died mid-run
     # may reparent to us (via subreaper or by init). Normally the run
-    # service would have sent test_job_completed first; only reach this branch
-    # if that didn't happen. Release resources and mark the job done so
-    # the scheduler doesn't wait forever.
+    # service's watchdog would synthesize completion for us and emit
+    # run_state_update + job_release; only reach this branch if its
+    # whole process went away without unwinding. Release resources
+    # and mark the job done on the mirror Run so the scheduler doesn't
+    # wait forever.
     for my $job_id (keys %{$self->{+RUNNING_JOBS} // {}}) {
         my $cur = $self->{+RUNNING_JOBS}->{$job_id};
         next unless $cur->{pid} && $cur->{pid} == $pid;
 
         warn "Test2::Harness2: orphaned test pid $pid exited with $exit (job $job_id); " . "its run service died before reporting\n";
-        $self->_handle_job_complete({
-            kind   => 'test_job_completed',
-            run_id => $cur->{run}->run_id,
-            job_id => $job_id,
-            pid    => $pid,
-            exit   => $exit,
-        });
+
+        my $run = $cur->{run};
+        delete $self->{+RUNNING_JOBS}->{$job_id};
+        $self->_release_job_resources($cur);
+
+        my $ok  = eval { $run->mark_done($job_id); 1 };
+        my $err = $@;
+        warn "orphan fallback could not mark job '$job_id' done: $err" unless $ok;
+
+        if ($run->is_complete) {
+            my $run_id = $run->run_id;
+            $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
+            $self->_teardown_run_service($run);
+            $self->emit_service_event(
+                kind     => 'run_ended',
+                run_data => {run_id => $run_id},
+            );
+            $self->{+STATE} = 'finishing'
+                if $self->{+FINISH_AFTER_INITIAL_RUN}
+                && $self->{+STATE} eq 'running';
+        }
+
         return;
     }
 
@@ -796,79 +807,16 @@ sub TO_JSON {
 sub run_on_all {
     my ($self, $activity) = @_;
 
-    # Job completion is driven by the test_job_completed IPC message the run
-    # services send when a test collector exits (see _handle_job_complete),
-    # backstopped by the pid-liveness watchdog in run_on_interval. Here
-    # we only drive the scheduler forward.
+    # Job completion flows through the run service: test collectors
+    # emit test_job_completed to the run service, which aggregates
+    # and sends us job_release (for resource release + wake) plus
+    # run_state_update (to mirror the Run). The run service's own
+    # watchdog synthesizes completion on collector death. Nothing
+    # here beyond driving the scheduler forward.
     return if $self->{+STATE} eq 'terminating';
 
     # Launch as many pending jobs as the active resources permit this tick.
     1 while $self->_try_launch_next_pending;
-}
-
-# IPC::Manager calls run_on_interval every $self->interval seconds
-# (0.2s by default), which is where we park our per-job pid-liveness
-# watchdog. The check protects the scheduler from hanging forever when
-# a test_job_completed fails to land (crashed run service, test spawned
-# outside the run's tree, IPC bus hiccup, ...).
-sub run_on_interval {
-    my $self = shift;
-    $self->_check_running_job_pids;
-    return;
-}
-
-# Walk each running_jobs entry and make sure the collector's pid is
-# still alive. The state machine has three rungs:
-#
-#   * No pid_gone_since: do one kill(0, $pid) check. If the pid is
-#     gone, stamp pid_gone_since and move on. PID numbers get recycled,
-#     so we never perform another liveness check after this stamp is
-#     set -- a later "live" reading from kill(0) would be against a
-#     process that just happens to have taken the slot.
-#
-#   * pid_gone_since set, within the grace window: do nothing and wait
-#     for the real test_job_completed to arrive.
-#
-#   * pid_gone_since set, grace window elapsed: synthesize a
-#     test_job_completed so the scheduler can release resources and advance.
-#     We log a warning because a missing test_job_completed is an unusual
-#     path (collector crashed or reparented outside the run service's
-#     reach), worth flagging in the harness log.
-sub _check_running_job_pids {
-    my $self = shift;
-
-    my $now     = time;
-    my $running = $self->{+RUNNING_JOBS} // {};
-
-    for my $job_id (keys %$running) {
-        my $cur = $running->{$job_id};
-        my $pid = $cur->{pid};
-        next unless defined $pid;
-
-        unless (defined $cur->{pid_gone_since}) {
-            next if kill 0, $pid;
-            $cur->{pid_gone_since} = $now;
-            next;
-        }
-
-        next if ($now - $cur->{pid_gone_since}) < JOB_PID_GRACE_SECS;
-
-        warn sprintf(
-            "Test2::Harness2: synthesizing test_job_completed for job %s (pid %d): " . "pid gone for %ds without a test_job_completed report\n",
-            $job_id, $pid, JOB_PID_GRACE_SECS,
-        );
-
-        $self->_handle_job_complete({
-            kind        => 'test_job_completed',
-            run_id      => $cur->{run}->run_id,
-            job_id      => $job_id,
-            pid         => $pid,
-            exit        => undef,                  # raw wait status unknown
-            synthesized => 1,
-        });
-    }
-
-    return;
 }
 
 sub _try_launch_next_pending {
@@ -1185,9 +1133,10 @@ sub _wait_for_run_service_ready {
 sub _teardown_run_service {
     my ($self, $run) = @_;
 
-    # Called from three sites: _handle_job_complete (normal run
-    # completion), _try_launch_next_pending (all-skipped completion),
-    # and run_on_cleanup (runs left in the queue at shutdown). The
+    # Called from three sites: _handle_run_state_update (normal run
+    # completion observed via the run service's aggregated snapshot),
+    # _try_launch_next_pending (all-skipped completion), and
+    # run_on_cleanup (runs left in the queue at shutdown). The
     # resources_torn_down flag below makes each call idempotent.
     return if $run->{resources_torn_down};
     $run->{resources_torn_down} = 1;
@@ -1213,20 +1162,14 @@ sub _launch_job {
     my $run_id = $run->run_id;
     my $job_id = $job->job_id;
 
-    # First job of this run -- announce run_started before the job_started.
+    # First job of this run -- announce run_started. The per-job
+    # job_started event is emitted by the run service now (fired
+    # from its TestObserver aggregation path), so the harness log
+    # only carries the run-level lifecycle bracket.
     $self->emit_service_event(
         kind     => 'run_started',
         run_data => {run_id => $run_id},
     ) if !@{$run->running} && !@{$run->done};
-
-    $self->emit_service_event(
-        kind     => 'job_started',
-        job_info => {
-            run_id  => $run_id,
-            job_id  => $job_id,
-            job_try => $job->job_try,
-        },
-    );
 
     my $assign_id = gen_uuid();
     my %env;
