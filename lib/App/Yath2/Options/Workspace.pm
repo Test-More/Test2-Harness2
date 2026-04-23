@@ -6,7 +6,7 @@ our $VERSION = '2.000011';
 
 use File::Spec();
 
-use Test2::Harness2::Util qw/find_libraries mod2file clean_path chmod_tmp/;
+use Test2::Harness2::Util qw/clean_path/;
 use File::Path qw/remove_tree/;
 use File::Temp qw/tempdir/;
 
@@ -40,7 +40,7 @@ option_group {group => 'workspace', category => 'Workspace Options'} => sub {
                 mkdir($workdir) or die "Could not create workdir: $!";
             }
 
-            chmod_tmp($workdir);
+            # chmod_tmp($workdir); # TODO: port chmod_tmp from 2.0_borked2 / old/
 
             return;
         },
@@ -57,7 +57,7 @@ option_group {group => 'workspace', category => 'Workspace Options'} => sub {
                 CLEANUP => 0,
             );
 
-            chmod_tmp($workdir);
+            # chmod_tmp($workdir); # TODO: port chmod_tmp from 2.0_borked2 / old/
 
             return $workdir;
         },
@@ -81,7 +81,7 @@ option_group {group => 'workspace', category => 'Workspace Options'} => sub {
                 mkdir($dir) or die "Could not mkdir($dir): $!";
             }
 
-            chmod_tmp($dir);
+            # chmod_tmp($dir); # TODO: port chmod_tmp
             return $dir;
         },
     );
