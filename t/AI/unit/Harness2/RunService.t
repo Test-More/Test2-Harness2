@@ -56,16 +56,11 @@ subtest 'constructs with required attributes' => sub {
     is($svc->run_id,   'r-1',     'run_id derived from run');
     is($svc->workdir,  $dir,      'workdir stored');
     ok(-d "$dir/logs/runs/r-1/services", 'services dir created at construction');
-    is(
-        $svc->snapshot_file,
-        "$dir/logs/runs/r-1.json",
-        'snapshot file lives next to runs/<id>.jsonl (is_run layout)',
-    );
-    is(
-        $svc->loggers,
-        ['Test2::Harness2::Collector::Logger::JSONL'],
-        'loggers default is a single JSONL spec (JSON sidecar is written directly by the service)',
-    );
+
+    # No default loggers: caller (harness, typically) decides what
+    # artifacts to write for a run. Empty loggers means no run.jsonl
+    # / run.json at all unless explicitly requested.
+    is($svc->loggers,      [], 'loggers default is empty arrayref');
     is($svc->test_loggers, [], 'test_loggers default is empty arrayref');
 };
 
@@ -218,6 +213,95 @@ subtest 'terminate handler transitions to terminating' => sub {
     is($rv,           {ok => 1},     'terminate accepted');
     is($svc->{state}, 'terminating', 'state moved to terminating');
     ok($svc->run_should_end, 'run_should_end true after terminate with no children');
+};
+
+{
+
+    package Test::RunSvc::FakeMsg;
+    sub new     { my ($c, $body) = @_; bless {body => $body}, $c }
+    sub content { $_[0]->{body} }
+}
+
+subtest 'aggregation: test_job_started marks running and broadcasts' => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $run = Test2::Harness2::Run->from_files(
+        files  => [Test2::Harness2::TestFile->new(file => '/tmp/x.t')],
+        run_id => 'r-agg',
+    );
+    my $svc = Test2::Harness2::RunService->new(workdir => $dir, run => $run);
+    my $jid = $run->pending->[0];
+
+    my @to_harness;
+    no warnings 'redefine';
+    local *Test2::Harness2::RunService::_send_to_harness = sub {
+        my ($self, $msg) = @_;
+        push @to_harness => $msg;
+    };
+    my @emits;
+    local *Test2::Harness2::RunService::_emit_run_log_event = sub {
+        shift;
+        push @emits => {@_};
+    };
+
+    $svc->run_on_general_message(
+        Test::RunSvc::FakeMsg->new({
+            kind    => 'test_job_started',
+            run_id  => 'r-agg',
+            job_id  => $jid,
+            job_try => 0,
+        }),
+    );
+
+    is($run->running, [$jid], 'job moved from pending to running');
+    is($run->pending, [],     'pending drained');
+
+    my @run_state = grep { $_->{kind} eq 'run_state_update' } @to_harness;
+    is(scalar @run_state,                1,      'exactly one run_state_update IPC to harness');
+    is($run_state[0]{run_data}{running}, [$jid], 'snapshot carries running list');
+
+    my @muts = grep { $_->{kind} eq 'run_mutation' } @emits;
+    is(scalar @muts, 1, 'exactly one run_mutation event emitted');
+
+    my @starts = grep { $_->{kind} eq 'job_started' } @emits;
+    is(scalar @starts, 1, 'job_started lifecycle event emitted');
+};
+
+subtest 'aggregation: test_job_completed is idempotent (observer + watchdog race)' => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $run = Test2::Harness2::Run->from_files(
+        files  => [Test2::Harness2::TestFile->new(file => '/tmp/x.t')],
+        run_id => 'r-idem',
+    );
+    my $svc = Test2::Harness2::RunService->new(workdir => $dir, run => $run);
+    my $jid = $run->pending->[0];
+    $run->mark_running($jid);
+
+    my @emits;
+    no warnings 'redefine';
+    local *Test2::Harness2::RunService::_send_to_harness    = sub { };
+    local *Test2::Harness2::RunService::_emit_run_log_event = sub {
+        shift;
+        push @emits => {@_};
+    };
+
+    my $first = sub {
+        $svc->run_on_general_message(
+            Test::RunSvc::FakeMsg->new({
+                kind   => 'test_job_completed',
+                run_id => 'r-idem',
+                job_id => $jid,
+                exit   => 0,
+            }),
+        );
+    };
+
+    $first->();
+    my $n_after_first = scalar @emits;
+    ok($svc->{completed_job_ids}{$jid}, 'completion flag set');
+
+    $first->();
+    is(scalar @emits, $n_after_first, 'second completion message is a no-op');
+    is($run->done,    [$jid],         'job marked done exactly once');
 };
 
 subtest 'status handler returns a sensible snapshot' => sub {

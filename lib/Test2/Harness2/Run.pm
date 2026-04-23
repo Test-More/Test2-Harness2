@@ -22,6 +22,7 @@ use Object::HashBase qw{
     <pending
     <running
     <done
+    <results
     <resources
     <aborted_reason
     <loggers
@@ -49,6 +50,7 @@ sub init {
     $self->{+PENDING}            //= [map { $_->job_id } @{$self->{+JOBS}}];
     $self->{+RUNNING}            //= [];
     $self->{+DONE}               //= [];
+    $self->{+RESULTS}            //= {};
     $self->{+RESOURCES}          //= [];
     $self->{+LAUNCH_JOB_TIMEOUT} //= DEFAULT_LAUNCH_JOB_TIMEOUT_SECS;
 
