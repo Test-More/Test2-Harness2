@@ -973,10 +973,12 @@ subtest 'construction validation' => sub {
         "dies when loggers is not an arrayref"
     );
 
-    like(
-        dies { Test2::Harness2::Collector::Logger::JSONL->new(ipcm_info => {}) },
-        qr/output_file/,
-        "JSONL logger dies without output_file"
+    # Logger-paths refactor: output_file is now derived from the
+    # collector's identity attributes, so Logger::JSONL no longer
+    # requires output_file up front at construction time.
+    ok(
+        Test2::Harness2::Collector::Logger::JSONL->new(ipcm_info => {}),
+        "JSONL logger constructs without an explicit output_file"
     );
 };
 

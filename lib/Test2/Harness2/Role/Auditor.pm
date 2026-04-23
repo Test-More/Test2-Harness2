@@ -19,6 +19,13 @@ sub failing { $_[0]->fail_count }
 sub set_process_info { }
 sub set_ipcm_info    { }
 
+# Lifecycle hooks. Both may return zero or more Test2::Harness2::Event
+# objects; the collector feeds those through the observer chain and
+# then into the loggers (see _init_event_sinks / _finalize_collection).
+# Default no-op: return an empty list.
+sub startup  { () }
+sub shutdown { () }
+
 1;
 
 __END__

@@ -9,6 +9,8 @@ use Scalar::Util qw/blessed/;
 
 use parent 'Test2::Harness2::Collector';
 
+use Test2::Harness2::Collector::Observer::TestObserver;
+
 # Test-job collectors carry an auditor. The auditor slot shadows the
 # base class's no-op `auditor` accessor; _auditor_spec holds the
 # validated (but not yet instantiated) spec that _instantiate_auditor
@@ -18,6 +20,14 @@ use Object::HashBase qw{
 
     +_auditor_spec
 };
+
+# Every test-job collector gets a TestObserver by default. It fires
+# the test_job_* IPC messages the run service relies on for its
+# aggregated Run state. Callers that pass an explicit observers list
+# (e.g. unit tests) override this default.
+sub _default_observers {
+    return ('Test2::Harness2::Collector::Observer::TestObserver');
+}
 
 # Bus-id derivation for a test-job collector identifies the collector
 # by the job_id of the test it is watching. There is no intermediate
@@ -90,20 +100,6 @@ sub _instantiate_auditor {
     $self->{+AUDITOR} = $inst;
 }
 
-# When the test-job collector exits, stamp the auditor's verdict and
-# counts onto the harness-bound exit payload.
-sub _extend_exiting_payload_for_harness {
-    my ($self, $payload) = @_;
-
-    my $auditor = $self->{+AUDITOR};
-    return unless ref($auditor) && $auditor->can('pass');
-
-    $payload->{pass}       = $auditor->pass ? 1 : 0;
-    $payload->{pass_count} = $auditor->pass_count if $auditor->can('pass_count');
-    $payload->{fail_count} = $auditor->fail_count if $auditor->can('fail_count');
-    return;
-}
-
 1;
 
 __END__
@@ -133,9 +129,8 @@ C<_build_collector_bus_id> pinned to C<collector:E<lt>job_idE<gt>>
 
 =item *
 
-An C<_extend_exiting_payload_for_harness> hook that stamps the
-auditor's C<pass> / C<pass_count> / C<fail_count> onto the
-C<collector_exiting> payload addressed to the harness.
+A default C<TestObserver> observer that emits the run-service /
+harness IPC messages each test-job collector is expected to send.
 
 =back
 

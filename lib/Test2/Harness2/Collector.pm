@@ -41,6 +41,8 @@ use Object::HashBase qw{
     <parser
     <loggers
     <loggers_lookup
+    <observers
+    +_observers_spec
     <parent_pids
     <kill_timeout
     <logdir
@@ -72,10 +74,6 @@ sub auditor              { undef }
 sub _auditor_spec        { undef }
 sub _normalize_auditor   { }
 sub _instantiate_auditor { }
-
-# Test-specific exit payload hook. The base emits no extra fields;
-# Collector::Test fills in the auditor's pass verdict and counts.
-sub _extend_exiting_payload_for_harness { }
 
 # True only in the harness's own top-of-tree interpose collector,
 # where ipc_harness points at the collector's own child (the harness
@@ -129,6 +127,7 @@ sub init {
     # Auditor first: loggers may need to consult it, and validation should run
     # in the same order as instantiation below.
     $self->_normalize_auditor();
+    $self->_normalize_observers();
     $self->_normalize_loggers();
 
     my $has_launch = defined $self->{+LAUNCH};
@@ -207,6 +206,79 @@ sub _validate_spec {
 
     croak ucfirst($kind) . " '$name' does not implement $role"
         unless Role::Tiny::does_role($name, $role);
+}
+
+# Default observer spec accessor. Subclasses may override to install
+# default observers (e.g. Collector::Test installs TestObserver).
+sub _default_observers { () }
+
+# Validate the observers spec list. Each entry must be a class name
+# (or [class, @args] / blessed instance) implementing the Observer
+# role. Like loggers, instances are built lazily in the collector
+# child process via _instantiate_observers.
+sub _normalize_observers {
+    my $self = shift;
+
+    my $observers = $self->{+OBSERVERS};
+    if (!defined($observers)) {
+        $observers = $self->{+OBSERVERS} = [$self->_default_observers];
+    }
+
+    croak "'observers' must be an arrayref" unless ref($observers) eq 'ARRAY';
+
+    my $role = 'Test2::Harness2::Role::Collector::Observer';
+
+    for my $item (@$observers) {
+        $self->_validate_spec($item, 'observer', $role);
+    }
+
+    $self->{+_OBSERVERS_SPEC} = [@$observers];
+}
+
+# Build observer instances inside the collector child process. Mirrors
+# _instantiate_loggers: blessed instances get identity / ipcm_info
+# stamped on via setters; class / [class, @args] specs go through new()
+# with the standard identity hash.
+sub _instantiate_observers {
+    my $self = shift;
+
+    my $specs = $self->{+_OBSERVERS_SPEC} //= [];
+
+    $self->{+OBSERVERS} = [];
+
+    for my $item (@$specs) {
+        my %identity = (
+            run_id  => $self->{+RUN_ID},
+            job_id  => $self->{+JOB_ID},
+            job_try => $self->{+JOB_TRY},
+        );
+
+        my $inst;
+        if (blessed($item)) {
+            $item->set_process_info(%identity);
+            $item->set_ipcm_info($self->{+IPCM_INFO});
+            $item->set_auditor($self->auditor) if $self->auditor;
+            $inst = $item;
+        }
+        elsif (ref($item) eq 'ARRAY') {
+            my ($class, @args) = @$item;
+            $inst = $class->new(
+                %identity,
+                ipcm_info => $self->{+IPCM_INFO},
+                (defined $self->auditor ? (auditor => $self->auditor) : ()),
+                @args,
+            );
+        }
+        else {
+            $inst = $item->new(
+                %identity,
+                ipcm_info => $self->{+IPCM_INFO},
+                (defined $self->auditor ? (auditor => $self->auditor) : ()),
+            );
+        }
+
+        push @{$self->{+OBSERVERS}} => $inst;
+    }
 }
 
 # Pure validation: confirm each entry is a well-formed spec whose class
@@ -434,6 +506,13 @@ sub _spawn_collector_win32 {
         $params{auditor} = $self->_auditor_spec;
     }
 
+    # Observers: same Windows-serialization constraint as loggers.
+    for my $item (@{$self->{+_OBSERVERS_SPEC} // []}) {
+        croak "Blessed observer instances cannot be passed to a Windows collector; use class name or [class, \@args] form"
+            if blessed($item);
+    }
+    $params{observers} = $self->{+_OBSERVERS_SPEC} if $self->{+_OBSERVERS_SPEC};
+
     my $json_file = encode_json_file(\%params);
 
     # Build the command: current perl, all @INC paths, load this module,
@@ -567,10 +646,38 @@ sub _init_event_sinks {
     # constructor argument (for new() specs) or via set_auditor() (for
     # pre-blessed instances, handled in _instantiate_loggers).
     $self->_instantiate_auditor();
+    $self->_instantiate_observers();
     $self->_instantiate_loggers();
+
+    # Lifecycle startup ordering matters: the auditor must be fully
+    # started before observe_event ever sees an auditor-emitted event,
+    # and every observer must be fully started before an auditor-
+    # startup event reaches its observe_event. So we collect both
+    # sources first (auditor events, then each observer's startup
+    # events), *then* pipe the auditor events through the observer
+    # chain, then concatenate the observers' own startup events, then
+    # bring loggers up and replay the accumulated list.
+    my @auditor_startup;
+    if (my $auditor = $self->auditor) {
+        @auditor_startup = grep { $_ } $auditor->startup($self);
+    }
+
+    my @observer_startup;
+    for my $obs (@{$self->{+OBSERVERS} // []}) {
+        push @observer_startup => grep { $_ } $obs->startup($self);
+    }
+
+    my @startup_events = $self->_pipe_through_observers(@auditor_startup);
+    push @startup_events => @observer_startup;
 
     $_->startup($self) for @{$self->{+LOGGERS}};
     $self->{+_EVENT_LOGGERS} = [grep { $_->log_events } @{$self->{+LOGGERS}}];
+
+    if (@startup_events && $self->{+_EVENT_LOGGERS} && @{$self->{+_EVENT_LOGGERS}}) {
+        for my $e (@startup_events) {
+            $_->log_event($e) for @{$self->{+_EVENT_LOGGERS}};
+        }
+    }
 
     # Once every logger has started (and knows its final locators, e.g. an
     # opened output file), report their metadata to the harness so it can
@@ -661,6 +768,16 @@ sub _compose_bus_id {
     return $id;
 }
 
+# Public helper for observers: send to any known target using the
+# collector's cached IPC handle pool and warn-on-failure semantics.
+# Thin wrapper around _send_to so the underscore name stays
+# internal. Observers that want to address ipc_run / ipc_harness /
+# some other bus name go through here.
+sub send_ipc {
+    my ($self, $target, $content) = @_;
+    return $self->_send_to($target, $content);
+}
+
 # Fire-and-forget send to a specific target service. Every send a
 # collector performs goes UP the tree -- to ipc_parent, ipc_run, or
 # ipc_harness -- and a collector never outlives its targets: a
@@ -682,7 +799,7 @@ sub _send_to {
     };
     return if $ok;
 
-    my $err = $@;
+    my $err  = $@;
     my $from = $self->bus_id // '?';
     my $role;
     $role = 'ipc_parent'  if defined $self->{+IPC_PARENT}  && $target eq $self->{+IPC_PARENT};
@@ -690,54 +807,6 @@ sub _send_to {
     $role = 'ipc_harness' if defined $self->{+IPC_HARNESS} && $target eq $self->{+IPC_HARNESS};
     my $to = defined $role ? "$target ($role)" : $target;
     warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err";
-    return;
-}
-
-# Collector exit notifications. Two recipients:
-#
-#   1. ipc_parent (if set): a brief "collector_exiting" signal
-#      telling whichever service spawned us that we are shutting
-#      down. For per-job test collectors this is the RunService;
-#      for resource-service collectors their host service; for the
-#      harness interpose collector it is undef (no parent service).
-#
-#   2. ipc_harness: a richer "collector_exiting" event addressed
-#      directly to the main harness. Payload carries enough for
-#      the harness to update its tracking without another IPC hop
-#      -- for a test collector, the auditor's pass/fail verdict
-#      and the child exit code are included here. The harness
-#      uses these to advance its scheduler and aggregate per-run
-#      tallies.
-#
-# Called once, at the end of the collector's lifecycle, after
-# logger shutdowns have flushed.
-sub _send_collector_exiting {
-    my $self = shift;
-
-    my %base = (
-        kind    => 'collector_exiting',
-        run_id  => $self->{+RUN_ID},
-        job_id  => $self->{+JOB_ID},
-        job_try => $self->{+JOB_TRY} // 0,
-        pid     => $$,
-    );
-
-    # Brief upward signal to the spawning service (if any).
-    $self->_send_to($self->{+IPC_PARENT}, {%base}) if defined $self->{+IPC_PARENT};
-
-    # Detailed report to the harness. Every collector reports its
-    # child exit status; a Test subclass additionally fills in the
-    # auditor's pass verdict and counts via the extension hook. The
-    # harness's own interpose collector skips this: ipc_harness is
-    # its own child, which has already exited by the time we get
-    # here.
-    unless ($self->is_harness_collector) {
-        my %harness_payload = %base;
-        $harness_payload{exit} = $self->{+CHILD_EXIT} if defined $self->{+CHILD_EXIT};
-        $self->_extend_exiting_payload_for_harness(\%harness_payload);
-        $self->_send_to($self->{+IPC_HARNESS}, \%harness_payload);
-    }
-
     return;
 }
 
@@ -978,14 +1047,31 @@ sub _finalize_collection {
         $self->_process_event($exit_event);
     }
 
-    $_->shutdown($self) for @{$self->{+LOGGERS}};
+    # Lifecycle shutdown: mirrors the startup ordering. Auditor
+    # shuts down first so its emitted events can still flow through
+    # observe_event; each observer then shuts down with its events
+    # going straight to the loggers. Loggers must not shut down
+    # until every produced shutdown event has been log_event()'d.
+    my @auditor_shutdown;
+    if (my $auditor = $self->auditor) {
+        @auditor_shutdown = grep { $_ } $auditor->shutdown($self);
+    }
 
-    # Tell the peer service we are about to exit so the scheduler can
-    # arm its pid-gone grace timer immediately. Still critical path,
-    # still independent of whatever loggers were (or were not)
-    # configured. Fires after logger shutdown so any last logger
-    # messages flush first through the same shared handle.
-    $self->_send_collector_exiting;
+    my @observer_shutdown;
+    for my $obs (@{$self->{+OBSERVERS} // []}) {
+        push @observer_shutdown => grep { $_ } $obs->shutdown($self);
+    }
+
+    my @shutdown_events = $self->_pipe_through_observers(@auditor_shutdown);
+    push @shutdown_events => @observer_shutdown;
+
+    if (@shutdown_events && $self->{+_EVENT_LOGGERS} && @{$self->{+_EVENT_LOGGERS}}) {
+        for my $e (@shutdown_events) {
+            $_->log_event($e) for @{$self->{+_EVENT_LOGGERS}};
+        }
+    }
+
+    $_->shutdown($self) for @{$self->{+LOGGERS}};
 
     return;
 }
@@ -1317,6 +1403,30 @@ sub _emit_collector_error {
     warn "Additionally, failed to log collector error: $@\n";
 }
 
+# Thread a list of events through the configured observer chain.
+# Each observer sees one event at a time and returns the list it
+# wants handed downstream; the next observer then sees each of
+# those. Same semantic as what _process_event applies per-event,
+# exposed as a helper so startup / shutdown can reuse it on the
+# lifecycle-event lists.
+sub _pipe_through_observers {
+    my ($self, @events) = @_;
+
+    my $observers = $self->{+OBSERVERS} or return @events;
+    return @events unless @$observers;
+
+    for my $obs (@$observers) {
+        my @out;
+        for my $e (@events) {
+            next unless $e;
+            push @out => $obs->observe_event($e);
+        }
+        @events = @out;
+    }
+
+    return @events;
+}
+
 sub _process_event {
     my $self = shift;
     my ($event) = @_;
@@ -1335,6 +1445,13 @@ sub _process_event {
     else {
         @events = ($event);
     }
+
+    # Observer chain: same contract as the auditor -- each observer
+    # sees one event at a time and returns the list it wants handed
+    # downstream (normally the incoming event plus any synth). The
+    # pipeline threads observers in listed order: observer N sees
+    # whatever observer N-1 returned.
+    @events = $self->_pipe_through_observers(@events);
 
     my $loggers = $self->{+_EVENT_LOGGERS} or return;
     return unless @$loggers;
