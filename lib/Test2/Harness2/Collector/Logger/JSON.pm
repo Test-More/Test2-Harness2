@@ -33,19 +33,16 @@ sub init {
     croak "'ipcm_info' is a required attribute"
         unless defined $self->{+IPCM_INFO};
 
-    # spec is optional: when present it gets serialized at startup so
-    # the sidecar has identity data; when absent the sidecar carries
-    # only exit status and (if an auditor is attached) the pass/fail
-    # verdict recorded at shutdown.
+    # spec is entirely optional now: the logger either consumes
+    # run_mutation events (the run-service snapshot stream) or falls
+    # back to a spec->TO_JSON shot at startup / shutdown. Both are
+    # valid ways to feed the sidecar.
     if (defined $self->{+SPEC}) {
         croak "'spec' must be an object that implements TO_JSON"
             unless blessed($self->{+SPEC}) && $self->{+SPEC}->can('TO_JSON');
     }
 }
 
-# Resolve the concrete output path: either the caller-supplied override
-# or the role-computed basename with '.json' appended. Cached into
-# OUTPUT_FILE so later reads see a stable path.
 sub output_files {
     my $self = shift;
     $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.json';
@@ -75,41 +72,56 @@ sub set_auditor {
     return;
 }
 
-# Nothing to stream: the whole job of this logger is one snapshot at start
-# and one atomic-swap at shutdown.
-sub log_events { 0 }
+# Event stream is now the source of truth when we're running under a
+# run service: every run_mutation event carries the authoritative Run
+# snapshot and we cache whichever was most recent. If nothing with a
+# run_data payload comes through the event stream, the shutdown path
+# falls back to spec->TO_JSON.
+sub log_events { 1 }
 
-# The .json file is the retrievable product; let downstream consumers know
-# where to read it.
+sub log_event {
+    my ($self, $event) = @_;
+
+    my $fd = $event->facet_data or return;
+    my $h  = $fd->{harness}     or return;
+
+    return unless defined $h->{kind} && $h->{kind} eq 'run_mutation';
+    my $run_data = $h->{run_data};
+    return unless ref($run_data) eq 'HASH';
+
+    $self->{+_DATA} = {%$run_data};
+    return;
+}
+
 sub metadata {
     my $self = shift;
     return {json_file => $self->{+OUTPUT_FILE}};
 }
 
-# Take a snapshot of the spec at startup so shutdown can publish the
-# original data plus exit/pass details regardless of any mutation the
-# spec underwent during collection. When no spec was supplied we skip
-# the initial snapshot; shutdown will still publish exit/pass.
+# Startup snapshot: write whatever we already have (spec->TO_JSON if
+# a spec was supplied, otherwise an empty stub) so downstream readers
+# see a file from the very first moment. run_mutation events will
+# overwrite it as they arrive; shutdown cements the final state.
 sub startup {
     my $self = shift;
 
-    return unless defined $self->{+SPEC};
+    $self->output_files unless defined $self->{+OUTPUT_FILE};
 
-    my $data = $self->{+SPEC}->TO_JSON;
+    my $data = defined $self->{+SPEC} ? $self->{+SPEC}->TO_JSON : {};
     $self->{+_DATA} = $data;
 
-    $self->output_files unless defined $self->{+OUTPUT_FILE};
     write_json_file_atomic($self->{+OUTPUT_FILE}, $data);
 }
 
-# At shutdown, overwrite the file with the original startup data plus the
-# collected process's exit status and (when an auditor is attached) the
-# auditor's pass/fail verdict. When no spec and no cached data are
-# available, start from an empty hash.
 sub shutdown {
     my $self = shift;
     my ($collector) = @_;
 
+    # Final snapshot: prefer the latest cached run_mutation payload
+    # (the event stream is authoritative once it's flowing); fall
+    # back to spec->TO_JSON if no event ever arrived; else write an
+    # empty stub. Stamp exit / pass onto whatever shape we end up
+    # with if the caller still wants per-collector metadata.
     my $base =
           defined $self->{+_DATA} ? $self->{+_DATA}
         : defined $self->{+SPEC}  ? $self->{+SPEC}->TO_JSON
@@ -143,50 +155,33 @@ Test2::Harness2::Collector::Logger::JSON - Snapshot-style JSON sidecar logger.
 
 =head1 DESCRIPTION
 
-A collector logger that captures a one-shot snapshot of whatever it is
-collecting and drops it into a C<.json> file next to the streaming log.
+A collector logger that writes a C<.json> file next to the streaming
+L<JSONL|Test2::Harness2::Collector::Logger::JSONL> log. The file is
+always the current "full snapshot" of whatever state the logger is
+tracking, written atomically so readers never see a partial write.
 
-Unlike L<Test2::Harness2::Collector::Logger::JSONL>, this logger does not
-process per-event callbacks.  It acts only at lifecycle boundaries:
+Two feeding modes:
 
 =over 4
 
-=item startup
+=item Event-driven (run services, harness service)
 
-Serialize C<< $spec->TO_JSON >> and write it atomically to C<output_file>.
+The run-service collector emits a C<run_mutation> event every time
+the run's state changes, carrying the full C<Run->TO_JSON> payload.
+Logger::JSON caches whichever was most recent and overwrites the
+sidecar on shutdown. The initial snapshot at startup comes from the
+(optional) C<spec> or from an empty stub.
 
-=item shutdown
+=item Static (snapshot from a spec)
 
-Re-publish the same data with two additions: the collected process's
-wait-status parsed via L<Test2::Harness2::Util/parse_exit> (as C<exit>),
-and -- when an auditor is attached -- the auditor's boolean verdict (as
-C<pass>, C<1> for passing, C<0> for failing).  The file is replaced via
-an atomic C<rename> so readers never see a partial write.
+If no C<run_mutation> events ever arrive -- for example, per-job
+collectors where the test job itself has no mutating state -- the
+logger falls back to whatever C<spec> was passed in at construction.
+If neither is present, the shutdown write carries only the
+collector's exit status and (when an auditor is attached) the
+auditor's pass/fail verdict.
 
 =back
-
-Typical use is alongside a JSONL event logger: consumers of the workdir
-see a C<.json> sidecar describing I<what> is being collected (the test
-job, the harness service, ...) and a C<.jsonl> file streaming I<what
-happened>.  The JSON sidecar's shutdown write closes the loop with the
-exit status and pass/fail verdict.
-
-=head1 SYNOPSIS
-
-    Test2::Harness2::Collector->spawn(
-        launch  => ['perl', 'some_test.t'],
-        loggers => [
-            [
-                'Test2::Harness2::Collector::Logger::JSONL',
-                output_file => "$workdir/runs/$run_id/$job_id/0.jsonl",
-            ],
-            [
-                'Test2::Harness2::Collector::Logger::JSON',
-                output_file => "$workdir/runs/$run_id/$job_id/0.json",
-                spec        => $job,
-            ],
-        ],
-    );
 
 =head1 ATTRIBUTES
 
@@ -194,30 +189,26 @@ exit status and pass/fail verdict.
 
 =item ipcm_info (required)
 
-IPC::Manager route info, forwarded from the collector.  Not used by this
-logger itself but required by the role contract so blessed instances
-receive it consistently.
+IPC::Manager route info forwarded from the collector.
 
-=item output_file (required)
+=item output_file (optional)
 
-Path to the C<.json> file to create.  The logger writes a sibling
-tempfile in the same directory and C<rename>s it over this path.
+Explicit path for the C<.json> file. When omitted, the logger role's
+path derivation builds one from the collector's identity
+(C<logdir> / C<run_id> / C<job_id> / C<service_name>, etc.).
 
-=item spec (required)
+=item spec (optional)
 
-The object to serialize at startup (and re-serialize at shutdown).  Must
-implement a C<TO_JSON> method returning a plain hashref.  For a test job
-collector this is a L<Test2::Harness2::Run::Job>; for the harness
-service's own interpose collector this is the L<Test2::Harness2>
-instance itself.
+An object implementing C<TO_JSON>. Used for the startup snapshot
+and as a shutdown fallback when no C<run_mutation> events arrived.
 
 =back
 
 =head1 METADATA
 
 L</metadata> returns C<< { json_file => $output_file } >> so the
-C<job_loggers> event the harness service publishes includes a locator
-for the sidecar.
+C<collector_artifacts> message published at collector startup carries
+a locator for the sidecar.
 
 =head1 SEE ALSO
 
