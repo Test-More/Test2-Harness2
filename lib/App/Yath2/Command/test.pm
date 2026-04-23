@@ -14,6 +14,7 @@ use Object::HashBase qw{
 
 use File::Spec();
 use Carp qw/croak/;
+use Time::HiRes qw/sleep/;
 
 use Test2::Harness2();
 use Test2::Harness2::TestFile();
@@ -35,9 +36,9 @@ sub summary            { 'Run a list of test files' }
 sub description {
     return <<"    EOT";
 Minimal test runner. Pass a list of test files; they are executed via a
-Test2::Harness2 child service with 16-slot job concurrency, JSON and JSONL
-loggers, and no cleanup of the work directory. Exits 0 if every test passed,
-non-zero otherwise.
+Test2::Harness2 child service with 16-slot job concurrency. Exits 0 if every
+test passed, non-zero otherwise. The pass/fail verdict is retrieved from the
+harness service via IPC -- log files are not consulted.
     EOT
 }
 
@@ -57,68 +58,44 @@ sub run {
     }
 
     my $workdir = $settings->workspace->workdir;
-    my $logdir  = File::Spec->catdir($workdir, 'logs');
-
-    # Harness service path is derived by the JSONL logger from
-    # logdir + service_name ('harness'), which the harness fills in
-    # at interpose time. We just re-derive it here so we can read
-    # the log after $spawn->wait returns.
-    my $harness_log = File::Spec->catfile($logdir, 'services', 'harness.jsonl');
 
     my $spawn = Test2::Harness2->spawn(
         workdir   => $workdir,
         resources => [Test2::Harness2::Resource::JobCount->new(slots => 16)],
-        loggers   => [
-            'Test2::Harness2::Collector::Logger::JSONL',
-        ],
-        test_loggers => [
-            'Test2::Harness2::Collector::Logger::JSONL',
-            'Test2::Harness2::Collector::Logger::JSON',
-        ],
-        test_run                 => {files => \@files},
-        finish_after_initial_run => 1,
     );
 
-    $spawn->wait;
+    my $queued = $spawn->queue_test_run(files => \@files);
+    die "Could not queue run: " . ($queued->{error} // '(no error)') . "\n"
+        unless $queued->{ok};
+    my $run_id = $queued->{run_id};
 
-    my $pass = $self->_aggregate_pass($harness_log);
+    # Poll the harness's run_results handler until the run
+    # completes. The handler returns state => 'running' while there
+    # is still work in the queue and state => 'complete' with the
+    # aggregate pass verdict once run_state_update has observed the
+    # final mutation.
+    my $final;
+    while (1) {
+        my $resp = $spawn->run_results(run_id => $run_id);
+        die "run_results rejected: " . ($resp->{error} // '(no error)') . "\n"
+            unless $resp->{ok};
+
+        if (($resp->{state} // '') eq 'complete') {
+            $final = $resp;
+            last;
+        }
+
+        sleep(0.05);
+    }
+
+    $spawn->finish;
+    $spawn->wait;
 
     $settings->workspace->create_option(keep_dirs => 1);
 
     print "Work directory: $workdir\n";
-    print "Harness log:    $harness_log\n";
 
-    return $pass ? 0 : 1;
-}
-
-sub _aggregate_pass {
-    my $self = shift;
-    my ($harness_log) = @_;
-
-    open(my $fh, '<', $harness_log) or die "Could not open '$harness_log': $!";
-
-    require Test2::Harness2::Util::JSON;
-    my $decode = \&Test2::Harness2::Util::JSON::decode_json;
-
-    my $seen_any = 0;
-    my $all_pass = 1;
-    while (my $line = <$fh>) {
-        chomp $line;
-        next unless length $line;
-        my $ev = $decode->($line);
-        my $harness = ref($ev) eq 'HASH' && ref($ev->{facet_data}) eq 'HASH'
-            ? $ev->{facet_data}->{harness}
-            : undef;
-        next unless ref($harness) eq 'HASH' && ($harness->{kind} // '') eq 'job_completed';
-        $seen_any = 1;
-        $all_pass = 0 unless $harness->{pass};
-    }
-    close($fh);
-
-    die "Harness log contained no job_completed events; run produced no results.\n"
-        unless $seen_any;
-
-    return $all_pass;
+    return $final->{pass} ? 0 : 1;
 }
 
 1;
