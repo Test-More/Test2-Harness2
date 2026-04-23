@@ -7,9 +7,10 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 use File::Path qw/make_path/;
 use File::Spec ();
+use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util qw/parse_exit tinysleep/;
+use Test2::Harness2::Util qw/parse_exit tinysleep load_module/;
 use POSIX qw/WNOHANG/;
 
 use Atomic::Pipe;
@@ -22,6 +23,7 @@ use Test2::Harness2::Role::Service;
 use Test2::Harness2::Run;
 use Test2::Harness2::RunService;
 use Test2::Harness2::Util::EventEmitter;
+use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
 
 use Object::HashBase qw{
     <workdir
@@ -46,6 +48,7 @@ use Object::HashBase qw{
     +completed_runs
     +finish_after_initial_run
     +emitter
+    +artifacts
     watch_pids
     own_pgroup
 };
@@ -123,6 +126,7 @@ sub init {
     $self->{+COMPLETED_RUNS}    //= {};
     $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
+    $self->{+ARTIFACTS}         //= {};
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
     croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
@@ -462,10 +466,16 @@ sub run_on_general_message {
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
-    # collector_artifacts now flows to the run service (which logs it
-    # as job_loggers on the run's own emitter). Ignore if anything
-    # else still sends it to us.
-    return if defined $kind && $kind eq 'collector_artifacts';
+    # Run-scoped collector_artifacts (run_id defined) flow to the run
+    # service, which logs them as job_loggers on the run's own emitter.
+    # Global collector_artifacts (no run_id -- e.g. from a resource-
+    # service collector) are handled here: merged into %artifacts and
+    # flushed to logs/artifacts.json.
+    if (defined $kind && $kind eq 'collector_artifacts') {
+        return $self->_handle_global_collector_artifacts($content)
+            unless defined $content->{run_id};
+        return;
+    }
 
     warn "Test2::Harness2: unhandled general message kind: " . (defined $kind ? "'$kind'" : '(none)') . "\n";
 
@@ -490,6 +500,103 @@ sub _handle_resource_state_message {
         $res->mark_resumed unless $res->is_permanent_broken;
     }
 
+    return;
+}
+
+sub _seed_artifacts_from_loggers {
+    my $self = shift;
+
+    # Harness LOGGERS are final after service init: no logger added or
+    # removed after this point reaches the harness's own interpose
+    # collector (already forked). We build metadata eagerly here so the
+    # global artifacts.json reflects the full configured logger set,
+    # including arrayref specs ([$class, %args]) which the collector
+    # child otherwise instantiates independently in its own process.
+    for my $item (@{$self->{+LOGGERS} // []}) {
+        my $inst = $self->_logger_instance_for_metadata($item) or next;
+        next unless $inst->can('metadata');
+        $inst->prepare_output_locations;
+        my $meta = $inst->metadata;
+        next unless ref($meta) eq 'HASH';
+        $self->_merge_artifacts({ref($inst) => [$meta]});
+    }
+
+    $self->_write_artifacts_manifest;
+    return;
+}
+
+# Return an instance suitable for calling metadata()/prepare_output_locations.
+# Blessed specs are returned as-is. Arrayref specs are instantiated with
+# harness-scope identity so metadata() resolves output paths the same way
+# the interpose collector's own instantiation would. This does not open
+# file handles (loggers defer that to startup()), so it is fork-safe.
+sub _logger_instance_for_metadata {
+    my ($self, $item) = @_;
+
+    return $item if blessed($item);
+    return undef unless ref($item) eq 'ARRAY';
+
+    my ($class, @args) = @$item;
+
+    my %identity = (
+        logdir       => $self->{+LOGDIR},
+        service_name => $self->{+NAME},
+        ipcm_info    => $self->ipcm_info,
+    );
+
+    my $inst;
+    my $ok  = eval { load_module($class); $inst = $class->new(%identity, @args); 1 };
+    my $err = $@;
+    unless ($ok) {
+        warn "Test2::Harness2: failed to pre-instantiate logger '$class' for metadata: $err";
+        return undef;
+    }
+
+    return $inst;
+}
+
+sub _merge_artifacts {
+    my ($self, $loggers) = @_;
+
+    my $logdir    = $self->{+LOGDIR};
+    my $artifacts = $self->{+ARTIFACTS} //= {};
+
+    for my $class (keys %$loggers) {
+        for my $meta (@{$loggers->{$class}}) {
+            for my $key (keys %$meta) {
+                next unless $key =~ /_file\z/;
+                my $abs = $meta->{$key};
+                next unless defined $abs && length $abs;
+                my $rel = File::Spec->abs2rel($abs, $logdir);
+                if (exists $artifacts->{$rel} && $artifacts->{$rel} ne $class) {
+                    warn "Test2::Harness2: artifact '$rel' already claimed by $artifacts->{$rel}, ignoring duplicate from $class\n";
+                    next;
+                }
+                $artifacts->{$rel} = $class;
+            }
+        }
+    }
+
+    return;
+}
+
+sub _write_artifacts_manifest {
+    my $self = shift;
+
+    my $path = "$self->{+LOGDIR}/artifacts.json";
+
+    my $ok  = eval { write_json_file_atomic($path, $self->{+ARTIFACTS}); 1 };
+    my $err = $@;
+    warn "Test2::Harness2: failed to write $path: $err" unless $ok;
+
+    return;
+}
+
+sub _handle_global_collector_artifacts {
+    my ($self, $content) = @_;
+
+    $self->_merge_artifacts($content->{loggers} // {});
+    $self->_write_artifacts_manifest;
     return;
 }
 
@@ -560,7 +667,7 @@ sub _handle_run_state_update {
 sub _snapshot_run_results {
     my ($self, $run) = @_;
 
-    my $results = $run->results // {};
+    my $results  = $run->results // {};
     my $all_pass = 1;
     for my $jid (keys %$results) {
         $all_pass = 0 unless $results->{$jid}{pass};
@@ -758,6 +865,7 @@ sub run_should_end {
 # we only supply the harness-specific startup step.
 sub service_on_start {
     my $self = shift;
+    $self->_seed_artifacts_from_loggers;
     $self->start_resource_services($self->{+RESOURCES}, scope => 'global');
     return;
 }
