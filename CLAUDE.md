@@ -2,9 +2,9 @@
 
 This project is a ground-up rewrite of yath 2.0, built on `IPC::Manager`, `App::Yath::Script`, and `Getopt::Yath`.
 
-- `legacy/` — code from yath 1.0. Reference only.
-- `old/` — a fairly complete 2.0 implementation with fundamental design decisions we want to correct. Much code will be copied wholesale from here.
-- `Borked/` — a failed refactor attempt. Reference only.
+- `reference/legacy/` — code from yath 1.0. Reference only.
+- `reference/old2/` — a fairly complete 2.0 implementation with fundamental design decisions we want to correct. Much code will be copied wholesale from here.
+- `reference/botched/` — a failed refactor attempt. Reference only.
 
 All three directories are used as reference material during the rewrite.
 
@@ -23,7 +23,7 @@ If you're about to implement something that seems to conflict with `ARCHITECTURE
 - Use `Test2::V0` in unit tests where possible.
 - Run tests with: `perl -Ilib yath -D test -j16`
 - When using `-v` for verbose output, drop `-j16`: `perl -Ilib yath -D test`
-- Tests that are substantially AI- or Claude-generated go under `t/AI/`, preserving the relative path beneath that prefix (e.g. `t/AI/unit/Foo.t`, `t/AI/integration/bar.t`). Anything outside `t/AI/` is reserved for tests originally written by humans; AI may modify those later as long as they stay readable. Tests copied in from `old/t/` or `legacy/t/` count as human-authored and do **not** move under `t/AI/`.
+- Tests that are substantially AI- or Claude-generated go under `t/AI/`, preserving the relative path beneath that prefix (e.g. `t/AI/unit/Foo.t`, `t/AI/integration/bar.t`). Anything outside `t/AI/` is reserved for tests originally written by humans; AI may modify those later as long as they stay readable. Tests copied in from `reference/old2/t/` or `reference/legacy/t/` count as human-authored and do **not** move under `t/AI/`.
 
 ## Style
 

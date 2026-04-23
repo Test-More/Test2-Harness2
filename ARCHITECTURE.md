@@ -611,7 +611,7 @@ child stage may do additional loading in the usual way after the
 fork. The "fresh + BEGIN + Long::Jump + goto::file" requirement
 applies only to the root.
 
-The existing implementation in `old/lib/` is the reference for
+The existing implementation in `reference/old2/lib/` is the reference for
 this mechanism — specifically where it uses `goto::file` to
 swap in a test script from a preload point. The new preload
 resource must preserve those semantics even as the surrounding
@@ -836,7 +836,7 @@ Two initial implementations ship:
   expensive than the inotify path but portable.
 
 Reference implementations of the watcher + reload logic
-already exist in `old/lib/` and should be the starting
+already exist in `reference/old2/lib/` and should be the starting
 point for the new role's implementations. The new code
 only needs to surface the behaviour behind the
 `ChangeWatcher` role interface so the preload resource can
@@ -1373,11 +1373,11 @@ integrations, and the harness's own test suite.
 The repo also carries three reference trees that are **not** part of
 the shipped distribution:
 
-| Path        | Origin                              | Status                  |
-|-------------|-------------------------------------|-------------------------|
-| `legacy/`   | `yath` 1.0 source                   | Read-only reference     |
-| `old/`      | First 2.0 attempt (mostly complete) | Donor code, read-only   |
-| `botched/`  | Failed refactor                     | Read-only reference     |
+| Path                  | Origin                              | Status                  |
+|-----------------------|-------------------------------------|-------------------------|
+| `reference/legacy/`   | `yath` 1.0 source                   | Read-only reference     |
+| `reference/old2/`     | First 2.0 attempt (mostly complete) | Donor code, read-only   |
+| `reference/botched/`  | Failed refactor                     | Read-only reference     |
 
 Code is copied wholesale out of these trees as the rewrite catches up;
 nothing in `lib/` should `use` anything from them.
@@ -2113,7 +2113,7 @@ Verbose runs drop `-j24`.
 - **All other `t/` locations** — reserved for tests originally written
   by humans. AI may modify these tests later as long as they remain
   clear and readable.
-- Tests copied into `t/` from `old/` or `legacy/` count as
+- Tests copied into `t/` from `reference/old2/` or `reference/legacy/` count as
   human-authored (those trees were originally authored by humans) and
   do **not** need to live under `t/AI/`.
 
