@@ -75,6 +75,21 @@ sub harness_events_for {
     return read_jsonl("$dir/logs/services/harness.jsonl");
 }
 
+# Under the run-service aggregation topology, per-job lifecycle
+# events (job_started / job_completed / job_loggers) live in the
+# run's own .jsonl, not the harness log.
+sub run_events_for {
+    my ($dir) = @_;
+    opendir my $dh, "$dir/logs/runs" or return ();
+    my @logs = grep { /\.jsonl$/ } readdir $dh;
+    closedir $dh;
+    my @out;
+    for my $l (@logs) {
+        push @out => read_jsonl("$dir/logs/runs/$l");
+    }
+    return @out;
+}
+
 subtest 'skip (default): broken resource -> synth skip_all path runs' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
@@ -85,9 +100,13 @@ subtest 'skip (default): broken resource -> synth skip_all path runs' => sub {
 
     my $broken = Test::BrokenRes->new;
     my $spawn  = Test2::Harness2->spawn(
-        workdir      => $dir,
-        resources    => [$broken],
-        loggers      => classic_harness_loggers($dir),
+        workdir         => $dir,
+        resources       => [$broken],
+        loggers         => classic_harness_loggers($dir),
+        service_loggers => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
         test_loggers => classic_test_loggers(),
     );
     $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
@@ -98,9 +117,9 @@ subtest 'skip (default): broken resource -> synth skip_all path runs' => sub {
     # calling skip_all (the harness log records the job_completed
     # event; a real skip_all test exits with the same status under
     # this collector, preexisting behavior).
-    my @events    = harness_events_for($dir);
+    my @events    = run_events_for($dir);
     my @completed = grep { facet_kind($_) eq 'job_completed' } @events;
-    is(scalar @completed, 1, 'exactly one job_completed event in the harness log');
+    is(scalar @completed, 1, 'exactly one job_completed event in the run log');
 };
 
 subtest 'fail: broken resource -> synth die, non-zero exit' => sub {
@@ -117,17 +136,23 @@ subtest 'fail: broken resource -> synth die, non-zero exit' => sub {
         resources                => [$broken],
         broken_resource_behavior => 'fail',
         loggers                  => classic_harness_loggers($dir),
-        test_loggers             => classic_test_loggers(),
+        service_loggers          => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
+        test_loggers => classic_test_loggers(),
     );
     $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
     run_harness_until_drained($dir, $spawn);
 
-    my @events    = harness_events_for($dir);
+    my @events    = run_events_for($dir);
     my @completed = grep { facet_kind($_) eq 'job_completed' } @events;
-    is(scalar @completed, 1, 'exactly one job_completed event in the harness log');
+    is(scalar @completed, 1, 'exactly one job_completed event in the run log');
 
-    my $exit = $completed[0]{facet_data}{harness}{exit};
-    isnt($exit->{err}, 0, 'fail synth exits non-zero (die)');
+    # Run service now emits the raw wait-status int under 'exit' and
+    # the parsed { err, sig, dmp } hash under 'codes'.
+    my $codes = $completed[0]{facet_data}{harness}{codes};
+    isnt($codes->{err}, 0, 'fail synth exits non-zero (die)');
 };
 
 subtest 'abort: every queued job gets synth-launched even for multiple tests' => sub {
@@ -146,7 +171,11 @@ subtest 'abort: every queued job gets synth-launched even for multiple tests' =>
         resources                => [$broken],
         broken_resource_behavior => 'abort',
         loggers                  => classic_harness_loggers($dir),
-        test_loggers             => classic_test_loggers(),
+        service_loggers          => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
+        test_loggers => classic_test_loggers(),
     );
     $spawn->queue_test_run(
         files => [
@@ -155,7 +184,7 @@ subtest 'abort: every queued job gets synth-launched even for multiple tests' =>
     );
     run_harness_until_drained($dir, $spawn, 30);
 
-    my @events    = harness_events_for($dir);
+    my @events    = run_events_for($dir);
     my @completed = grep { facet_kind($_) eq 'job_completed' } @events;
     is(scalar @completed, 3, 'every job produced a job_completed event under abort');
 };

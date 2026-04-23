@@ -8,7 +8,6 @@ use Importer Importer => 'import';
 
 our @EXPORT_OK = qw{
     classic_harness_loggers
-    classic_run_service_loggers
     classic_test_loggers
     classic_logger_specs
 };
@@ -41,37 +40,14 @@ sub classic_harness_loggers {
     return \@out;
 }
 
-# Per-run service logger specs. Uses the RunService's %LOGDIR%,
-# %RUN_ID%, %LOG_NAME% semantics -- but since LOG_NAME isn't part of
-# the RunService placeholder set (yet), callers typically know the
-# run_id up-front and just hardcode the path.
-sub classic_run_service_loggers {
-    my ($workdir, $run_id, $log_name) = @_;
-    $log_name //= 'run';
-    return [
-        [
-            'Test2::Harness2::Collector::Logger::JSONL',
-            output_file => "$workdir/logs/runs/$run_id/services/$log_name.jsonl",
-        ],
-    ];
-}
-
-# Per-test-job logger specs. These use RunService placeholders so the
-# same list can be reused across every job the run launches.
-# Logger::JSON's 'spec' attr is optional; omitting it here means the
-# 0.json starts empty and is overwritten with exit / pass data at
-# shutdown -- enough for the Command::test tally (which only looks
-# at 'pass').
+# Per-test-job logger specs. output_file is omitted on purpose: the
+# logger role derives the path from the collector's identity attrs
+# (logdir / run_id / job_id / job_try), which is how every per-job
+# collector wires up after the logger-paths refactor.
 sub classic_test_loggers {
     return [
-        [
-            'Test2::Harness2::Collector::Logger::JSONL',
-            output_file => '%LOG_DIR%/%JOB_TRY%.jsonl',
-        ],
-        [
-            'Test2::Harness2::Collector::Logger::JSON',
-            output_file => '%LOG_DIR%/%JOB_TRY%.json',
-        ],
+        'Test2::Harness2::Collector::Logger::JSONL',
+        'Test2::Harness2::Collector::Logger::JSON',
     ];
 }
 

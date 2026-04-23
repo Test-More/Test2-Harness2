@@ -40,11 +40,15 @@ subtest 'run service writes its own jsonl log under runs/<run_id>/services' => s
     close $fh;
 
     my $spawn = Test2::Harness2->spawn(
-        workdir      => $dir,
-        loggers      => classic_harness_loggers($dir),
+        workdir         => $dir,
+        loggers         => classic_harness_loggers($dir),
+        service_loggers => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
         test_loggers => classic_test_loggers(),
     );
-    my $q     = $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
+    my $q = $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
     ok($q->{ok}, 'queued') or diag explain $q;
 
     # Drain the run.
@@ -60,15 +64,15 @@ subtest 'run service writes its own jsonl log under runs/<run_id>/services' => s
     $spawn->wait;
 
     # Find the run_id directory under runs/.
+    # Under the logger-paths refactor the per-run .jsonl lives at
+    # runs/<run_id>.jsonl (derived from identity attrs), not in a
+    # services/ subdirectory.
     opendir my $rdh, "$dir/logs/runs" or die "open $dir/runs: $!";
-    my @runs = grep { !/^\./ && !/\.json$/ } readdir $rdh;
+    my @runs = grep { /\.jsonl$/ } readdir $rdh;
     closedir $rdh;
-    is(scalar @runs, 1, 'one run dir written');
-    my $run_dir = "$dir/logs/runs/$runs[0]";
-
-    ok(-d "$run_dir/services", 'per-run services dir created');
-
-    my $run_log = "$run_dir/services/run.jsonl";
+    is(scalar @runs, 1, 'one run jsonl written');
+    my ($run_id) = $runs[0] =~ /^(.+)\.jsonl$/;
+    my $run_log = "$dir/logs/runs/$runs[0]";
     ok(-e $run_log, 'per-run run.jsonl exists');
 
     my @events = read_jsonl($run_log);
@@ -86,8 +90,12 @@ subtest "run service runs in its own process and is a child of the harness" => s
     close $fh;
 
     my $spawn = Test2::Harness2->spawn(
-        workdir      => $dir,
-        loggers      => classic_harness_loggers($dir),
+        workdir         => $dir,
+        loggers         => classic_harness_loggers($dir),
+        service_loggers => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
         test_loggers => classic_test_loggers(),
     );
     $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
@@ -104,11 +112,11 @@ subtest "run service runs in its own process and is a child of the harness" => s
     $spawn->finish;
     $spawn->wait;
 
-    # Dig the run-id directory out, read both logs.
+    # Dig the run-id jsonl out, read both logs.
     opendir my $rdh, "$dir/logs/runs" or die "open $dir/runs: $!";
-    my @runs = grep { !/^\./ && !/\.json$/ } readdir $rdh;
+    my @runs = grep { /\.jsonl$/ } readdir $rdh;
     closedir $rdh;
-    my $run_log  = "$dir/logs/runs/$runs[0]/services/run.jsonl";
+    my $run_log  = "$dir/logs/runs/$runs[0]";
     my $harn_log = "$dir/logs/services/harness.jsonl";
 
     my @run_started = grep { ($_->{facet_data}{harness}{kind} // '') eq 'service_started' } read_jsonl($run_log);

@@ -41,13 +41,16 @@ is($exit, 0, 'service exited cleanly');
 
 ok(-e "$dir/logs/services/harness.jsonl", 'service log written');
 
-# Find the run_id directory (peers with the logs/runs/<id>.json snapshot).
+# The run's services/ scratch dir is still created at RunService
+# construction (resources scoped to the run land under there), so a
+# run_id directory is visible even with no service loggers.
 opendir my $dh, "$dir/logs/runs" or die "Cannot open $dir/logs/runs: $!";
 my @run_dirs = grep { !/^\./ && -d "$dir/logs/runs/$_" } readdir $dh;
 closedir $dh;
 is(scalar @run_dirs, 1, 'one run dir');
 
-ok(-f "$dir/logs/runs/$run_dirs[0].json", 'logs/runs/<id>.json sidecar written');
+# No .json / .jsonl assertion here: this test does not pass any
+# service_loggers, so the run service deliberately writes nothing.
 
 # Read the service log and confirm key events are present.
 open my $slog, '<', "$dir/logs/services/harness.jsonl" or die "Cannot open harness.jsonl: $!";
