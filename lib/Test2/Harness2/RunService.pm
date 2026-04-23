@@ -15,7 +15,8 @@ use IPC::Manager::Service::Handle;
 use Test2::Harness2::Collector;
 use Test2::Harness2::Role::ResourceServiceHost;
 use Test2::Harness2::Role::Service;
-use Test2::Harness2::Util::JSON qw/encode_json write_json_file_atomic/;
+use Test2::Harness2::Util::EventEmitter;
+use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
 
 use Object::HashBase qw{
     <workdir
@@ -24,7 +25,6 @@ use Object::HashBase qw{
     <log_name
     <run_id
     <job_id
-    <log_file
     <snapshot_file
     <kill_timeout
     <ipcm_info
@@ -36,7 +36,7 @@ use Object::HashBase qw{
     state
     <resource_services
     +test_jobs
-    +log_fh
+    +emitter
     watch_pids
     own_pgroup
 };
@@ -100,31 +100,40 @@ sub init {
     $self->{+WATCH_PIDS}    //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
 
-    # log_file is the run service's own direct-JSONL audit trail;
-    # distinct from the configurable `loggers` slot. The default
-    # keeps the classic per-run layout under
-    # $logdir/runs/<run_id>/services/<log_name>.jsonl. Set it to
-    # undef explicitly to disable the audit trail.
-    $self->{+LOG_FILE}      //= "$svc_dir/$self->{+LOG_NAME}.jsonl";
+    # The run's snapshot .json lives next to the run's .jsonl and is
+    # written directly by RunService (not via a logger) because the
+    # .json must reflect the run's mutating state at run_on_cleanup
+    # time, which only the run-service child sees -- the collector
+    # parent that runs logger shutdown has only the pre-fork copy.
     $self->{+SNAPSHOT_FILE} //= "$logdir/runs/$self->{+RUN_ID}.json";
 
-    # Logger specs. Both default to []; the caller (typically the
-    # harness) supplies them at spawn time.
-    $self->{+LOGGERS}      //= [];
+    # Logger specs. Default test_loggers to []; loggers defaults to a
+    # JSONL targetting the run-service's own .jsonl via the logger
+    # role's path derivation (Collector::Service::Run forces is_run).
+    # Apply the default both when the caller passed nothing at all
+    # and when they passed an empty arrayref (which is what
+    # $run->effective_service_loggers returns when no logger config
+    # was supplied).
+    $self->{+LOGGERS} //= [];
     $self->{+TEST_LOGGERS} //= [];
 
     croak "'loggers' must be an arrayref"
         unless ref($self->{+LOGGERS}) eq 'ARRAY';
     croak "'test_loggers' must be an arrayref"
         unless ref($self->{+TEST_LOGGERS}) eq 'ARRAY';
+
+    $self->{+LOGGERS} = [
+        'Test2::Harness2::Collector::Logger::JSONL',
+    ] unless @{$self->{+LOGGERS}};
 }
 
 # Atomic-swap the runs/<run_id>.json snapshot with the run's current
 # TO_JSON. Called once at startup (initial state) and once at cleanup
 # (final state); the atomic write means downstream readers always see a
-# consistent file, never a partial one. This is what the upstream
-# 'reimplement-resource-classes'-branch comments in Test2::Harness2
-# referred to as "the run service's JSON logger takes over".
+# consistent file, never a partial one. The run-service collector
+# cannot do this via the JSON logger because the collector process is
+# forked from the service before any jobs have run, and only the
+# service-side Run object accumulates state as jobs complete.
 sub _write_snapshot {
     my $self = shift;
     write_json_file_atomic($self->{+SNAPSHOT_FILE}, $self->{+RUN}->TO_JSON);
@@ -179,42 +188,39 @@ sub request_handler_launch_job {
     # real test file when no override is present.
     $launch_cmd //= [$^X, '-Ilib', $test_file_abs];
 
-    # Per-job log directory exists for any logger that wants to write
-    # something per-try. Callers describe the path via %LOG_DIR% /
-    # %JOB_TRY% placeholders in their spec; we fill them in below.
-    my $log_dir = join '/', $self->{+LOGDIR}, 'runs', $run_id, $job_id;
-    make_path($log_dir);
-
     # Default the payload-level log_file only if the caller wants one;
     # loggers are otherwise driven entirely by the payload_loggers
     # specs. Kept for back-compat with callers that pass log_file
     # explicitly.
     $log_file //= undef;
 
-    my %ctx = (
-        LOGDIR  => $self->{+LOGDIR},
-        LOG_DIR => $log_dir,
-        RUN_ID  => $run_id,
-        JOB_ID  => $job_id,
-        JOB_TRY => $job_try,
-    );
-    my @logger_specs = map { _expand_logger_spec($_, \%ctx) } @$payload_loggers;
+    # Snapshot-style loggers (JSON sidecar) need a 'spec' object to
+    # serialize at startup. When the caller did not provide one,
+    # synthesize a minimal TestFile from the launch payload's
+    # test_file path so the resulting .json includes the relative
+    # and absolute test-file paths. Callers that supply their own
+    # spec are left alone.
+    require Test2::Harness2::TestFile;
+    my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
+
+    my @logger_specs = map { _maybe_inject_test_file_spec($_, $test_file_spec) } @$payload_loggers;
 
     my $handle;
     my $spawn_ok = eval {
         require Test2::Harness2::Collector::Test;
         $handle = Test2::Harness2::Collector::Test->spawn(
-            launch      => $launch_cmd,
-            new_pgroup  => 1,
-            parent_pids => [$$],
-            env_vars    => {T2_FORMATTER => 'Stream2', %$env},
-            run_id      => $run_id,
-            job_id      => $job_id,
-            job_try     => $job_try,
-            ipcm_info   => $self->ipcm_info,
-            ipc_parent  => $self->{+NAME},
-            ipc_run     => $self->{+NAME},
-            ipc_harness => $self->{+HARNESS_NAME},
+            launch       => $launch_cmd,
+            new_pgroup   => 1,
+            parent_pids  => [$$],
+            env_vars     => {T2_FORMATTER => 'Stream2', %$env},
+            logdir       => $self->{+LOGDIR},
+            run_id       => $run_id,
+            job_id       => $job_id,
+            job_try      => $job_try,
+            ipcm_info    => $self->ipcm_info,
+            ipc_parent   => $self->{+NAME},
+            ipc_run      => $self->{+NAME},
+            ipc_harness  => $self->{+HARNESS_NAME},
             (defined $auditor ? (auditor => $auditor) : ()),
             loggers => [@logger_specs],
         );
@@ -452,31 +458,14 @@ sub service_post_hard_stop {
 sub emit_service_event {
     my ($self, %fields) = @_;
 
-    my $fh = $self->{+LOG_FH} or return;    # no log in unit tests
+    my $em = $self->{+EMITTER} or return;    # no emitter in unit tests
+    $em->emit_event(
+        job_id  => $self->{+JOB_ID},
+        run_id  => $self->{+RUN_ID},
+        job_try => 0,
+        %fields,
+    );
 
-    my $event_id = gen_uuid();
-    my $stamp    = time;
-    my $event    = {
-        event_id   => $event_id,
-        stamp      => $stamp,
-        pid        => $$,
-        facet_data => {
-            harness => {
-                event_id => $event_id,
-                stamp    => $stamp,
-                job_id   => $self->{+JOB_ID},
-                run_id   => $self->{+RUN_ID},
-                job_try  => 0,
-                %fields,
-            },
-        },
-    };
-
-    my $ok = eval {
-        print $fh encode_json($event), "\n";
-        1;
-    };
-    warn "run service event emit failed: $@" unless $ok;
     return;
 }
 
@@ -484,46 +473,58 @@ sub emit_service_event {
 # Entry points
 # ----------------------------------------------------------------------
 
-# Take over the current process as a run service. Unlike the harness
-# service, the run service does NOT interpose a Collector around its
-# own stdout / stderr -- it writes JSONL events directly to its log
-# file. That keeps the process tree flat (one fork per spawn, not
-# two), and means spawn()'s returned pid is the run service itself
-# rather than a collector wrapping it.
-#
-# stdout / stderr in the run-service process inherit from the caller
-# (typically the harness). Anything the run service prints there
-# (perl warnings, uncaught diagnostics) lands wherever the harness's
-# own stdout / stderr point. That's acceptable for now: structured
-# events go to the JSONL log, and unstructured output is rare.
+# Take over the current process as a run service. Mirrors the harness
+# service's interpose pattern: fork once so the parent becomes the
+# run-service collector (with the configured loggers writing the
+# run's .jsonl and .json sidecars via the logger role's path rules),
+# and the child continues as the actual run-service event loop with
+# its STDOUT/STDERR piped through the collector.
 sub start {
     my ($class, %args) = @_;
 
     croak "'ipcm_info' is required" unless defined $args{ipcm_info};
 
+    my $caller_pid = $$;
+    $args{parent_pids} //= [$caller_pid];
+
     my $self = $class->new(%args);
 
-    my $log_fh;
-    if (defined $self->{+LOG_FILE}) {
-        open($log_fh, '>>', $self->{+LOG_FILE})
-            or croak "cannot open run-service log '$self->{+LOG_FILE}': $!";
-        $log_fh->autoflush(1);
-        $self->{+LOG_FH} = $log_fh;
-    }
+    my $loggers = $self->{+LOGGERS};
 
-    # The harness signals run-service shutdown with SIGTERM. The
-    # service loop checks run_should_end each tick, so flipping state
-    # to 'terminating' here is enough -- run_on_cleanup cascades TERMs
-    # to the tracked resource services and test collectors via
-    # perform_hard_stop before the process exits.
-    my $self_ref = $self;
-    local $SIG{TERM} = sub { $self_ref->{+STATE} = 'terminating' };
+    # Everything the interpose child needs after the pipes are wired up.
+    my $run_service = sub {
+        # The EventEmitter wraps STDOUT (and, when the interpose
+        # collector advertises separate pipes via T2_HARNESS2_PIPE_COUNT,
+        # STDERR) for the sync marker. We use the process-wide cached
+        # instance so anything else in this service that emits shares
+        # one wrapper around the real FDs.
+        $self->{+EMITTER} = Test2::Harness2::Util::EventEmitter->std;
 
-    my $exit = $self->run;
+        my $self_ref = $self;
+        local $SIG{TERM} = sub { $self_ref->{+STATE} = 'terminating' };
 
-    close($log_fh) if $log_fh;
+        my $exit = $self->run;
+        POSIX::_exit($exit // 0);
+    };
 
-    POSIX::_exit($exit // 0);
+    require Test2::Harness2::Collector::Service::Run;
+    Test2::Harness2::Collector::Service::Run->interpose(
+        ipcm_info    => $self->ipcm_info,
+        ipc_parent   => $self->{+HARNESS_NAME},
+        ipc_run      => $self->{+NAME},
+        ipc_harness  => $self->{+HARNESS_NAME},
+        bus_id       => "collector:" . $self->{+NAME},
+        logdir       => $self->{+LOGDIR},
+        service_name => $self->{+RUN_ID},
+        run_id       => $self->{+RUN_ID},
+        loggers      => $loggers,
+        parser       => 'Test2::Harness2::Collector::Parser::IOParser',
+        parent_pids  => [$caller_pid],
+    );
+
+    # Reached only in the interpose child; the interpose parent becomes
+    # the collector and exits from _interpose_parent before returning.
+    $run_service->();
 }
 
 # Fork a run service from the calling process (typically the harness).
@@ -553,31 +554,30 @@ sub spawn {
     POSIX::_exit(255);    # start() should never return
 }
 
-# Substitute %LOGDIR%, %LOG_DIR%, %RUN_ID%, %JOB_ID%, %JOB_TRY%
-# placeholders in a logger spec's string args. Blessed instances and
-# bare class names pass through untouched (no args to substitute).
-# Only scalar args are walked -- arrayref / hashref args are left
-# alone; callers with richer argument shapes are responsible for
-# their own substitution.
-sub _expand_logger_spec {
-    my ($spec, $ctx) = @_;
+# Auto-inject 'spec' for Logger::JSON when the caller did not
+# provide one. Without a spec the snapshot file is written with
+# only exit/pass and no identifying fields; injecting a TestFile
+# here gives the .json the file / absolute / relative paths the
+# consumer expects. Blessed instances pass through untouched.
+sub _maybe_inject_test_file_spec {
+    my ($spec, $test_file_spec) = @_;
 
     return $spec if blessed($spec);
-    return $spec unless ref($spec) eq 'ARRAY';
+    return $spec unless $test_file_spec;
 
-    my @out;
-    for my $item (@$spec) {
-        push @out => (defined($item) && !ref($item) ? _expand_placeholders($item, $ctx) : $item);
+    my $class = ref($spec) eq 'ARRAY' ? $spec->[0] : $spec;
+    return $spec unless defined $class && !ref($class);
+    return $spec unless $class eq 'Test2::Harness2::Collector::Logger::JSON';
+
+    if (ref($spec) eq 'ARRAY') {
+        my %args = @{$spec}[1 .. $#$spec];
+        return $spec if exists $args{spec};
+        $args{spec} = $test_file_spec;
+        return [$class, %args];
     }
-    return \@out;
-}
 
-sub _expand_placeholders {
-    my ($str, $ctx) = @_;
-    return $str unless defined $str && index($str, '%') >= 0;
-
-    $str =~ s/%([A-Z_]+)%/exists $ctx->{$1} ? $ctx->{$1} : "%$1%"/ge;
-    return $str;
+    # Bare class-name spec: upgrade to [$class, spec => $tf].
+    return [$class, spec => $test_file_spec];
 }
 
 1;

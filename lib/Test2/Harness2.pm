@@ -249,14 +249,16 @@ sub start {
     # bus name.
     require Test2::Harness2::Collector::Service::Harness;
     Test2::Harness2::Collector::Service::Harness->interpose(
-        ipcm_info   => $self->ipcm_info,
-        ipc_parent  => undef,
-        ipc_run     => undef,
-        ipc_harness => $self->{+NAME},
-        bus_id      => "collector:" . $self->{+NAME},
-        loggers     => $loggers,
-        parser      => 'Test2::Harness2::Collector::Parser::IOParser',
-        parent_pids => [$caller_pid],
+        ipcm_info    => $self->ipcm_info,
+        ipc_parent   => undef,
+        ipc_run      => undef,
+        ipc_harness  => $self->{+NAME},
+        bus_id       => "collector:" . $self->{+NAME},
+        logdir       => $self->{+LOGDIR},
+        service_name => $self->{+NAME},
+        loggers      => $loggers,
+        parser       => 'Test2::Harness2::Collector::Parser::IOParser',
+        parent_pids  => [$caller_pid],
         (defined($jump_to) ? (jump_to => $jump_to, jump_payload => $run_service) : ()),
     );
 

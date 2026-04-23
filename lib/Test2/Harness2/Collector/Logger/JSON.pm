@@ -13,6 +13,12 @@ use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
 use Object::HashBase qw{
     <output_file
     <spec
+    <logdir
+    <service_name
+    <run_id
+    <job_id
+    <job_try
+    <is_run
     <ipcm_info
     +auditor
     +_data
@@ -27,9 +33,6 @@ sub init {
     croak "'ipcm_info' is a required attribute"
         unless defined $self->{+IPCM_INFO};
 
-    croak "'output_file' is a required attribute"
-        unless defined $self->{+OUTPUT_FILE};
-
     # spec is optional: when present it gets serialized at startup so
     # the sidecar has identity data; when absent the sidecar carries
     # only exit status and (if an auditor is attached) the pass/fail
@@ -38,6 +41,26 @@ sub init {
         croak "'spec' must be an object that implements TO_JSON"
             unless blessed($self->{+SPEC}) && $self->{+SPEC}->can('TO_JSON');
     }
+}
+
+# Resolve the concrete output path: either the caller-supplied override
+# or the role-computed basename with '.json' appended. Cached into
+# OUTPUT_FILE so later reads see a stable path.
+sub output_files {
+    my $self = shift;
+    $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.json';
+    return ($self->{+OUTPUT_FILE});
+}
+
+sub set_process_info {
+    my ($self, %info) = @_;
+    $self->{+LOGDIR}       = $info{logdir}       if exists $info{logdir};
+    $self->{+SERVICE_NAME} = $info{service_name} if exists $info{service_name};
+    $self->{+RUN_ID}       = $info{run_id}       if exists $info{run_id};
+    $self->{+JOB_ID}       = $info{job_id}       if exists $info{job_id};
+    $self->{+JOB_TRY}      = $info{job_try}      if exists $info{job_try};
+    $self->{+IS_RUN}       = $info{is_run}       if exists $info{is_run};
+    return;
 }
 
 sub set_ipcm_info {
@@ -75,6 +98,7 @@ sub startup {
     my $data = $self->{+SPEC}->TO_JSON;
     $self->{+_DATA} = $data;
 
+    $self->output_files unless defined $self->{+OUTPUT_FILE};
     write_json_file_atomic($self->{+OUTPUT_FILE}, $data);
 }
 
@@ -101,6 +125,7 @@ sub shutdown {
         $data->{pass} = $auditor->pass ? 1 : 0;
     }
 
+    $self->output_files unless defined $self->{+OUTPUT_FILE};
     write_json_file_atomic($self->{+OUTPUT_FILE}, $data);
 }
 
