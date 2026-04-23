@@ -68,6 +68,14 @@ sub run {
     my $spawn = Test2::Harness2->spawn(
         workdir   => $workdir,
         resources => [Test2::Harness2::Resource::JobCount->new(slots => 16)],
+        loggers   => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
+        test_loggers => [
+            'Test2::Harness2::Collector::Logger::JSONL',
+            'Test2::Harness2::Collector::Logger::JSON',
+        ],
     );
 
     my $queued = $spawn->queue_test_run(files => \@files);
