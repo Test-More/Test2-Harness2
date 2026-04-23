@@ -705,26 +705,28 @@ sub _init_event_sinks {
 # collector sends only UPWARD (to its parent service or to the
 # harness); it never holds a handle into the IPC identity of the
 # process it is monitoring.
-sub _ipc_handle {
+sub _ipc_client {
+    my $self = shift;
+    return $self->{_ipc_client} if $self->{_ipc_client};
+
+    require IPC::Manager;
+    return $self->{_ipc_client} = IPC::Manager->connect($self->bus_id, $self->{+IPCM_INFO});
+}
+
+# Wait briefly for $target to register on the bus so the first
+# message we send to it actually lands. Matters mainly in the
+# service-interpose flow where the collector and its parent
+# service race through startup. Gated per-target so we only pay
+# the wait once per peer; if the target never comes up we mark
+# it "checked" anyway and let the next send_message fall through
+# to the warn path.
+sub _wait_for_ipc_target {
     my ($self, $target) = @_;
-    return $self->{_ipc_handles}->{$target}
-        if $self->{_ipc_handles} && $self->{_ipc_handles}->{$target};
+    return if $self->{_ipc_target_ready}->{$target}++;
 
-    require IPC::Manager::Service::Handle;
-    my $handle = IPC::Manager::Service::Handle->new(
-        service_name => $target,
-        ipcm_info    => $self->{+IPCM_INFO},
-        name         => $self->bus_id,
-    );
-
-    # Wait briefly for the target to register so the first message
-    # actually lands; matters mainly in the service-interpose flow
-    # where the collector and its parent service race through startup.
-    # If the target never comes up we still return the handle and let
-    # individual sends fall through to the warn path.
-    eval { $handle->ready(5); 1 } or warn "Error waiting for ipc target '$target' to become ready (from '" . $self->bus_id . "'): $@";
-
-    return $self->{_ipc_handles}->{$target} = $handle;
+    my $client = $self->_ipc_client;
+    eval { $client->peer_active($target, 5); 1 }
+        or warn "Error waiting for ipc target '$target' to become ready (from '" . $self->bus_id . "'): $@";
 }
 
 # Collector's own identity on the IPC bus. Per IPC_AND_LOGGERS §5.4
@@ -792,9 +794,10 @@ sub _send_to {
     my ($self, $target, $content) = @_;
     return unless defined $target;
 
+    $self->_wait_for_ipc_target($target);
+
     my $ok = eval {
-        my $handle = $self->_ipc_handle($target);
-        $handle->client->send_message($target, $content);
+        $self->_ipc_client->send_message($target, $content);
         1;
     };
     return if $ok;
