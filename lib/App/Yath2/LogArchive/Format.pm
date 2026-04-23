@@ -4,8 +4,12 @@ use warnings;
 
 use Carp qw/croak/;
 use Exporter qw/import/;
+use Fcntl qw/SEEK_END SEEK_SET/;
 
-our @EXPORT_OK = qw/detect_format reader_class_for writer_class_for/;
+our @EXPORT_OK = qw/detect_format reader_class_for writer_class_for TAR_ZIDX_MAGIC TAR_ZIDX_FOOTER_LEN/;
+
+use constant TAR_ZIDX_MAGIC      => "YZIDXv1\0";
+use constant TAR_ZIDX_FOOTER_LEN => 32;
 
 sub detect_format {
     my ($path) = @_;
@@ -16,11 +20,25 @@ sub detect_format {
 
     open(my $fh, '<', $path) or croak "LogArchive: cannot open $path: $!";
     binmode $fh;
+
+    if ((-s $path) >= TAR_ZIDX_FOOTER_LEN) {
+        seek($fh, -TAR_ZIDX_FOOTER_LEN, SEEK_END);
+        my $foot = '';
+        read($fh, $foot, TAR_ZIDX_FOOTER_LEN);
+        if (length($foot) == TAR_ZIDX_FOOTER_LEN
+            && substr($foot, 0, length(TAR_ZIDX_MAGIC)) eq TAR_ZIDX_MAGIC)
+        {
+            close($fh);
+            return 'tar.zidx';
+        }
+        seek($fh, 0, SEEK_SET);
+    }
+
     my $buf = '';
     read($fh, $buf, 512);
     close($fh);
 
-    return 'zip'     if substr($buf, 0, 4) eq "PK\x03\x04";
+    return 'zip'     if length($buf) >= 4 && substr($buf, 0, 4) eq "PK\x03\x04";
     return '7z'      if length($buf) >= 6 && substr($buf, 0, 6) eq "7z\xBC\xAF\x27\x1C";
     return 'tar.gz'  if length($buf) >= 2 && substr($buf, 0, 2) eq "\x1f\x8b";
     return 'tar.bz2' if length($buf) >= 3 && substr($buf, 0, 3) eq "BZh";
@@ -30,12 +48,13 @@ sub detect_format {
 }
 
 my %READERS = (
-    directory => ['App::Yath2::LogArchive::Directory'],
-    tar       => [qw/App::Yath2::LogArchive::Tar::External App::Yath2::LogArchive::Tar::PP/],
-    'tar.gz'  => [qw/App::Yath2::LogArchive::TarGz::External App::Yath2::LogArchive::TarGz::PP/],
-    'tar.bz2' => [qw/App::Yath2::LogArchive::TarBz2::External App::Yath2::LogArchive::TarBz2::PP/],
-    zip       => [qw/App::Yath2::LogArchive::Zip::External App::Yath2::LogArchive::Zip::PP/],
-    '7z'      => [qw/App::Yath2::LogArchive::SevenZip::External App::Yath2::LogArchive::SevenZip::PP/],
+    directory  => ['App::Yath2::LogArchive::Directory'],
+    tar        => [qw/App::Yath2::LogArchive::Tar::External App::Yath2::LogArchive::Tar::PP/],
+    'tar.gz'   => [qw/App::Yath2::LogArchive::TarGz::External App::Yath2::LogArchive::TarGz::PP/],
+    'tar.bz2'  => [qw/App::Yath2::LogArchive::TarBz2::External App::Yath2::LogArchive::TarBz2::PP/],
+    'tar.zidx' => [qw/App::Yath2::LogArchive::TarZIdx::External App::Yath2::LogArchive::TarZIdx::PP/],
+    zip        => [qw/App::Yath2::LogArchive::Zip::External App::Yath2::LogArchive::Zip::PP/],
+    '7z'       => [qw/App::Yath2::LogArchive::SevenZip::External App::Yath2::LogArchive::SevenZip::PP/],
 );
 
 sub reader_class_for {
@@ -57,11 +76,12 @@ sub _module_path {
 }
 
 my %WRITERS = (
-    tar       => [qw/App::Yath2::LogArchive::Writer::Tar/],
-    'tar.gz'  => [qw/App::Yath2::LogArchive::Writer::Tar/],
-    'tar.bz2' => [qw/App::Yath2::LogArchive::Writer::Tar/],
-    zip       => [qw/App::Yath2::LogArchive::Writer::Zip::External App::Yath2::LogArchive::Writer::Zip::PP/],
-    '7z'      => [qw/App::Yath2::LogArchive::Writer::SevenZip/],
+    tar        => [qw/App::Yath2::LogArchive::Writer::Tar/],
+    'tar.gz'   => [qw/App::Yath2::LogArchive::Writer::Tar/],
+    'tar.bz2'  => [qw/App::Yath2::LogArchive::Writer::Tar/],
+    'tar.zidx' => [qw/App::Yath2::LogArchive::Writer::TarZIdx/],
+    zip        => [qw/App::Yath2::LogArchive::Writer::Zip::External App::Yath2::LogArchive::Writer::Zip::PP/],
+    '7z'       => [qw/App::Yath2::LogArchive::Writer::SevenZip/],
 );
 
 sub writer_class_for {
