@@ -42,6 +42,7 @@ use Object::HashBase qw{
     <broken_resource_behavior
     state
     +queue
+    +scheduler
     +running_jobs
     <resource_services
     +run_services
@@ -120,6 +121,7 @@ sub init {
     $self->{+PARENT_PIDS}       //= [];
     $self->{+STATE}             //= 'running';
     $self->{+QUEUE}             //= [];
+    $self->{+SCHEDULER}         //= {};
     $self->{+RUNNING_JOBS}      //= {};
     $self->{+RESOURCE_SERVICES} //= {};
     $self->{+RUN_SERVICES}      //= {};
@@ -350,6 +352,7 @@ sub request_handler_queue_test_run {
             %run_logger_opts,
         );
         push @{$self->{+QUEUE}} => $run;
+        $self->_scheduler_queue_run($run);
         1;
     };
     my $err = $@;
@@ -642,19 +645,10 @@ sub _handle_run_state_update {
         $run->{results} = {%{$data->{results}}};
     }
 
-    if ($run->is_complete) {
-        $self->{+COMPLETED_RUNS}->{$run_id} = $self->_snapshot_run_results($run);
-
-        $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
-        $self->_teardown_run_service($run);
-        $self->emit_service_event(
-            kind     => 'run_ended',
-            run_data => {run_id => $run_id},
-        );
-        $self->{+STATE} = 'finishing'
-            if $self->{+FINISH_AFTER_INITIAL_RUN}
-            && $self->{+STATE} eq 'running';
-    }
+    # Finalization is scheduler-driven: only consider the run done
+    # when the scheduler has both no pending jobs and no running
+    # jobs of its own. The Run mirror's is_complete is informational.
+    $self->_finalize_run_if_complete($run);
 
     return;
 }
@@ -683,9 +677,10 @@ sub _snapshot_run_results {
 }
 
 # Run-service aggregation: per-job release. Looks up the job's
-# tracking entry for its assigned resources, releases them, and
-# drops the entry. The mark_done transition is driven by
-# run_state_update, not here.
+# tracking entry for its assigned resources, releases them, drops
+# the entry, and tells the scheduler the job is done. The Run
+# mirror's done list is filled in independently from
+# run_state_update broadcasts.
 sub _handle_job_release {
     my ($self, $content) = @_;
     return unless ref($content) eq 'HASH';
@@ -696,7 +691,13 @@ sub _handle_job_release {
     my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
     return unless $cur;
 
+    my $run_id = $cur->{run}->run_id;
+    $self->_scheduler_mark_done($run_id, $job_id);
     $self->_release_job_resources($cur);
+
+    # The job that just finished may have been the last one for
+    # its run; check from the scheduler's own perspective.
+    $self->_finalize_run_if_complete($cur->{run});
     return;
 }
 
@@ -812,23 +813,9 @@ sub run_on_pid {
         my $run = $cur->{run};
         delete $self->{+RUNNING_JOBS}->{$job_id};
         $self->_release_job_resources($cur);
+        $self->_scheduler_mark_done($run->run_id, $job_id);
 
-        my $ok  = eval { $run->mark_done($job_id); 1 };
-        my $err = $@;
-        warn "orphan fallback could not mark job '$job_id' done: $err" unless $ok;
-
-        if ($run->is_complete) {
-            my $run_id = $run->run_id;
-            $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
-            $self->_teardown_run_service($run);
-            $self->emit_service_event(
-                kind     => 'run_ended',
-                run_data => {run_id => $run_id},
-            );
-            $self->{+STATE} = 'finishing'
-                if $self->{+FINISH_AFTER_INITIAL_RUN}
-                && $self->{+STATE} eq 'running';
-        }
+        $self->_finalize_run_if_complete($run);
 
         return;
     }
@@ -912,6 +899,88 @@ sub TO_JSON {
     };
 }
 
+# Scheduler state. The harness keeps its own pending/running view
+# of every queued run, populated once at queue time from the run's
+# initial job list and mutated only by the harness's own scheduling
+# decisions (launch, skip, completion). It deliberately never
+# reads or writes the Run object's pending/running/done arrays
+# (those mirror what the run service broadcasts back, which the
+# scheduler should not depend on -- the broadcasts can race and
+# would otherwise resurrect already-launched jobs into the
+# pending list).
+sub _scheduler_queue_run {
+    my ($self, $run) = @_;
+    my $rid = $run->run_id;
+    $self->{+SCHEDULER}->{$rid} = {
+        pending => [map { $_->job_id } @{$run->jobs}],
+        running => {},
+        started => 0,
+    };
+    return;
+}
+
+sub _scheduler_pending_for_run {
+    my ($self, $run_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return [];
+    return $s->{pending};
+}
+
+sub _scheduler_is_running {
+    my ($self, $run_id, $job_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return 0;
+    return $s->{running}->{$job_id} ? 1 : 0;
+}
+
+sub _scheduler_started {
+    my ($self, $run_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return 0;
+    return $s->{started};
+}
+
+sub _scheduler_mark_running {
+    my ($self, $run_id, $job_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return;
+    $s->{pending} = [grep { $_ ne $job_id } @{$s->{pending}}];
+    $s->{running}->{$job_id} = 1;
+    $s->{started} = 1;
+    return;
+}
+
+sub _scheduler_mark_done {
+    my ($self, $run_id, $job_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return;
+    delete $s->{running}->{$job_id};
+    return;
+}
+
+sub _scheduler_skip {
+    my ($self, $run_id, $job_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return;
+    $s->{pending} = [grep { $_ ne $job_id } @{$s->{pending}}];
+    $s->{started} = 1;
+    return;
+}
+
+sub _scheduler_drop_run {
+    my ($self, $run_id) = @_;
+    delete $self->{+SCHEDULER}->{$run_id};
+    return;
+}
+
+sub _scheduler_run_complete {
+    my ($self, $run_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id};
+    return 1 unless $s;    # already dropped
+    return 0 if @{$s->{pending}};
+    return 0 if keys %{$s->{running}};
+
+    # The scheduler has nothing left of its own to do for the run,
+    # but the run is only really finished once we have also seen
+    # the started flag flip -- otherwise an empty queue at startup
+    # would look "complete" to us before we ever launched anything.
+    return $s->{started} ? 1 : 0;
+}
+
 sub run_on_all {
     my ($self, $activity) = @_;
 
@@ -932,73 +1001,106 @@ sub _try_launch_next_pending {
 
     return 0 unless @{$self->{+QUEUE} // []};
 
+    # Runs are processed serially in the order they were queued.
+    # The scheduler iterates QUEUE (an ordered arrayref) and finds
+    # the first run that is not yet complete from the scheduler's
+    # perspective; that becomes the head run for this tick. Other
+    # queued runs are not even considered until the head run has
+    # drained its own pending+running. We never run a later run
+    # ahead of an earlier one.
+    my $head_run;
     for my $run (@{$self->{+QUEUE}}) {
-        next if $run->is_complete;
+        next if $self->_scheduler_run_complete($run->run_id);
+        $head_run = $run;
+        last;
+    }
+    return 0 unless $head_run;
 
-        # Lazy per-run resource startup: the first time this run is
-        # considered for launch we spin up its resource services.
-        $self->_ensure_run_service_started($run);
+    my $run_id = $head_run->run_id;
 
-        for my $job_id (@{$run->pending}) {
-            my ($job) = grep { $_->job_id eq $job_id } @{$run->jobs};
-            next unless $job;
+    # Lazy per-run resource startup: the first time this run is
+    # considered for launch we spin up its resource services.
+    $self->_ensure_run_service_started($head_run);
 
-            # Run-level abort state (see _handle_broken_resource):
-            # once a run is aborted, every remaining job takes the
-            # synthetic-fail path, whether or not that specific job
-            # needed the broken resource. The aborted flag on the
-            # decision distinguishes the original trigger (aborted=0)
-            # from follow-ups swept up by the abort (aborted=1).
-            my ($decision, $arg, %dec_opts);
-            if (defined $run->{aborted_reason}) {
-                ($decision, $arg) = ('broken', $run->{aborted_reason});
-                $dec_opts{aborted} = 1;
-            }
-            else {
-                ($decision, $arg) = $self->_evaluate_resources_for($run, $job);
-            }
+    # Iterate the scheduler's own pending list, not $run->pending.
+    # The scheduler's list is the authoritative view of what we
+    # have not yet attempted to launch; $run->pending mirrors
+    # the run service and can lag behind reality.
+    for my $job_id (@{$self->_scheduler_pending_for_run($run_id)}) {
+        my ($job) = grep { $_->job_id eq $job_id } @{$head_run->jobs};
+        next unless $job;
 
-            if ($decision eq 'skip') {
-                # The resource set can never satisfy this job. Drop
-                # it from pending; no synthesized completion event
-                # (this is not a failure, the job just could not
-                # run).
-                $run->mark_skipped($job_id);
-                $self->_finalize_run_if_complete($run);
-                return 1;
-            }
+        # Run-level abort state (see _handle_broken_resource):
+        # once a run is aborted, every remaining job takes the
+        # synthetic-fail path, whether or not that specific job
+        # needed the broken resource. The aborted flag on the
+        # decision distinguishes the original trigger (aborted=0)
+        # from follow-ups swept up by the abort (aborted=1).
+        my ($decision, $arg, %dec_opts);
+        if (defined $head_run->{aborted_reason}) {
+            ($decision, $arg) = ('broken', $head_run->{aborted_reason});
+            $dec_opts{aborted} = 1;
+        }
+        else {
+            ($decision, $arg) = $self->_evaluate_resources_for($head_run, $job);
+        }
 
-            if ($decision eq 'broken') {
-                # A needed resource has been permanently broken (or
-                # the run has been aborted wholesale).
-                # broken_resource_behavior decides how the job is
-                # dispatched; the synth launch shares the job-limiter
-                # pool and may defer if the pool is saturated.
-                my $outcome = $self->_handle_broken_resource($run, $job, $arg, %dec_opts);
-                return 1 if $outcome eq 'launched' || $outcome eq 'skip';
-                next;    # 'defer' -- try the next job/run
-            }
-
-            next if $decision eq 'defer';
-
-            $self->_launch_job($run, $job, $arg);
+        if ($decision eq 'skip') {
+            # The resource set can never satisfy this job. Drop
+            # it from the scheduler's pending; no synthesized
+            # completion event (this is not a failure, the job
+            # just could not run).
+            $self->_scheduler_skip($run_id, $job_id);
+            $self->_finalize_run_if_complete($head_run);
             return 1;
         }
+
+        if ($decision eq 'broken') {
+            # A needed resource has been permanently broken (or
+            # the run has been aborted wholesale).
+            # broken_resource_behavior decides how the job is
+            # dispatched; the synth launch shares the job-limiter
+            # pool and may defer if the pool is saturated.
+            my $outcome = $self->_handle_broken_resource($head_run, $job, $arg, %dec_opts);
+            return 1 if $outcome eq 'launched' || $outcome eq 'skip';
+            next;    # 'defer' -- try the next job in this run
+        }
+
+        next if $decision eq 'defer';
+
+        $self->_launch_job($head_run, $job, $arg);
+        return 1;
     }
 
     return 0;
 }
 
-# Finalize the run if it's complete: drop it from the queue, tear
-# down its per-run service, and transition the harness to finishing
-# if we're in finish_after_initial_run mode.
+# Finalize the run if it's complete: snapshot final results from
+# the Run mirror, drop the run from the queue, tear down its per-
+# run service, and transition the harness to finishing if we're
+# in finish_after_initial_run mode.
+#
+# Finalization is gated by the Run mirror's is_complete: that is
+# the run service's authoritative "all jobs done, here are the
+# final results" signal. The scheduler's own pending+running
+# view is for launch decisions, not finalization -- it can reach
+# empty before the mirror has the results we need to snapshot.
 sub _finalize_run_if_complete {
     my ($self, $run) = @_;
+    my $run_id = $run->run_id;
     return unless $run->is_complete;
 
-    my $run_id = $run->run_id;
+    # Idempotent: if we already finalized this run, do nothing.
+    return if $self->{+COMPLETED_RUNS}->{$run_id};
+
+    $self->{+COMPLETED_RUNS}->{$run_id} = $self->_snapshot_run_results($run);
     $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
+    $self->_scheduler_drop_run($run_id);
     $self->_teardown_run_service($run);
+    $self->emit_service_event(
+        kind     => 'run_ended',
+        run_data => {run_id => $run_id},
+    );
     $self->{+STATE} = 'finishing'
         if $self->{+FINISH_AFTER_INITIAL_RUN}
         && $self->{+STATE} eq 'running';
@@ -1101,7 +1203,7 @@ sub _launch_synthetic_job {
     for my $res (@limiters) {
         my $av = $res->available(job => $job, min => 1, max => 1, need => 1);
         if ($av < 0) {
-            $run->mark_skipped($job->job_id);
+            $self->_scheduler_skip($run->run_id, $job->job_id);
             $self->_finalize_run_if_complete($run);
             return 'skip';
         }
@@ -1286,7 +1388,7 @@ sub _launch_job {
     $self->emit_service_event(
         kind     => 'run_started',
         run_data => {run_id => $run_id},
-    ) if !@{$run->running} && !@{$run->done};
+    ) unless $self->_scheduler_started($run_id);
 
     my $assign_id = gen_uuid();
     my %env;
@@ -1326,7 +1428,7 @@ sub _launch_job {
         die "launch_job rejected: " . (ref($resp) eq 'HASH' ? ($resp->{error} // '(no error given)') : '(no response)')
             unless ref($resp) eq 'HASH' && $resp->{ok};
 
-        $run->mark_running($job_id);
+        $self->_scheduler_mark_running($run_id, $job_id);
 
         $self->{+RUNNING_JOBS}->{$job_id} = {
             run                => $run,
