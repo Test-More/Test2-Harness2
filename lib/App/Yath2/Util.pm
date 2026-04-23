@@ -9,6 +9,7 @@ use File::ShareDir();
 
 use Test2::Harness2::Util qw/clean_path/;
 use App::Yath::Script qw/script/;
+use IPC::Cmd qw/can_run/;
 
 use Importer Importer => 'import';
 use Config qw/%Config/;
@@ -33,7 +34,19 @@ our @EXPORT_OK = qw{
     find_yath
     share_dir share_file
     paged_print
+    yath_display_name
 };
+
+sub yath_display_name {
+    my ($script) = @_;
+    return 'yath' unless defined $script;
+
+    my $path_yath = can_run('yath') or return $script;
+
+    return 'yath' if clean_path($script) eq clean_path($path_yath);
+
+    return $script;
+}
 
 sub share_file {
     my ($file) = @_;

@@ -31,7 +31,9 @@ use Getopt::Yath::Term qw/USE_COLOR color fit_to_width/;
 
 use App::Yath2::Options::Yath;
 #use App::Yath2::ConfigFile;
-#use App::Yath2::Util qw/paged_print/;
+use App::Yath2::Util qw/paged_print yath_display_name/;
+
+use Role::Tiny ();
 
 use Carp qw/croak/;
 use Time::HiRes qw/time/;
@@ -113,7 +115,7 @@ sub cli_help {
 
     my $opts = $options->docs('cli', groups => {':{' => '}:'}, group => $params{group}, settings => $settings, color => $self->use_color);
 
-    my $script = File::Spec->abs2rel($settings->yath->script // $0);
+    my $script = yath_display_name($settings->yath->script // $0);
 
     my $colors = {reset => ''};
     if ($self->use_color) {
@@ -186,7 +188,7 @@ sub _render_groups {
     my $param = $params{param};
 
     my $settings = $self->settings;
-    my $script = File::Spec->abs2rel($settings->yath->script // $0);
+    my $script = yath_display_name($settings->yath->script // $0);
 
     my %color;
     if ($self->use_color) {
@@ -342,11 +344,7 @@ sub check_command {
     my $cmd_class = "App::Yath2::Command::$cmd";
     my $cmd_file = mod2file($cmd_class);
 
-    require $cmd_file;
-
-    # FIXME
-    return 1;
-    unless (eval { require $cmd_file; die "$cmd_class does not subclass App::Yath2::Command.\n" unless $cmd_class->isa('App::Yath2::Command'); 1 }) {
+    unless (eval { require $cmd_file; die "$cmd_class does not consume App::Yath2::Role::Command.\n" unless Role::Tiny::does_role($cmd_class, 'App::Yath2::Role::Command'); 1 }) {
         return @{$check_cache{$cmd} = [0, $@]};
     }
 

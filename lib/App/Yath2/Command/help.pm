@@ -6,11 +6,18 @@ use Term::Table();
 
 our $VERSION = '2.000011';
 
-use parent 'App::Yath2::Command';
-use Object::HashBase qw/<_command_info_hash/;
+use Object::HashBase qw{
+    <settings
+    <args
+    <env_vars
+    <option_state
+    <plugins
+    <_command_info_hash
+};
 
 use Test2::Harness2::Util qw/find_libraries mod2file/;
-use App::Yath2::Util qw/paged_print/;
+use App::Yath2::Util qw/paged_print yath_display_name/;
+use Role::Tiny ();
 use List::Util();
 use File::Spec();
 
@@ -34,6 +41,9 @@ option_group {group => 'help', category => "Help Options"} => sub {
         initialize => 0,
     );
 };
+
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 
 sub command_info_hash {
     my $self = shift;
@@ -65,7 +75,7 @@ sub command_info_hash {
             next;
         }
 
-        next unless $lib->isa('App::Yath2::Command');
+        next unless Role::Tiny::does_role($lib, 'App::Yath2::Role::Command');
         my $internal = $lib->internal_only;
         next if $internal && !$hs->verbose;
         my $name = $lib->name;
@@ -86,7 +96,7 @@ sub run {
 
     return $self->command_help($args->[0]) if @$args;
 
-    my $script = File::Spec->abs2rel($self->settings->yath->script // $0);
+    my $script = yath_display_name($self->settings->yath->script // $0);
 
     paged_print(
         "\nUsage: $script help [-v] [COMMAND]\n",
