@@ -1511,7 +1511,7 @@ $workdir/
       <name>.jsonl          service-lifecycle event stream (default name=harness)
       <name>.json           service JSON snapshot (init fields + final verdict)
     runs/
-      <run_id>.json         per-run JSON snapshot (transitional; see note below)
+      <run_id>.json         per-run JSON snapshot (Logger::JSON on the run-service collector; see note below)
       <run_id>/
         services/
           run.jsonl         per-run-service event stream
@@ -1530,14 +1530,14 @@ supplies a JSONL + JSON pair on every collector as a placeholder
 while the CLI-arg-driven logger-selection layer is being built; see
 §12.2.
 
-The per-run `<run_id>.json` sidecar is **transitional**. It is
-currently written directly by the harness, which is a violation of
-the "functional state flows via IPC, not files" architectural
-rule (see §13.0 and `PLAN`'s "State and control flow" section).
-The planned migration is for each run's own service to own its
-snapshot file via a logger, eliminating the direct-write path and
-bringing the run's state into the normal query-via-IPC flow. A
-`TODO` in the code tracks the migration.
+The per-run `<run_id>.json` sidecar is now produced by a
+`Logger::JSON` attached to the run service's own collector. The
+run service emits a `run_mutation` event carrying the full
+`Run->TO_JSON` payload on every state change; the JSON logger
+caches the most recent snapshot and writes it atomically at
+shutdown. There is no longer a direct file write from the
+harness, so the "functional state flows via IPC, not files" rule
+(see §13.0) holds end-to-end. See §19 of `AI_DOCS/2026-04-23-run-service-aggregation.md`.
 
 ## 20. Collector Subsystem
 
@@ -1904,8 +1904,8 @@ UTF-8, `convert_blessed`, `allow_nonref`. Exports `encode_json`,
 `encode_pretty_json` (canonical sort for human-facing files),
 `decode_json`, file-level `encode_json_file` / `decode_json_file`,
 `write_json_file_atomic($path, \%data)` (pretty-printed atomic write
-via `Util::write_file_atomic` — used by `Logger::JSON` and by the
-harness's per-run sidecar), and `json_true` / `json_false` boolean
+via `Util::write_file_atomic` — used by `Logger::JSON` for every
+snapshot file it owns), and `json_true` / `json_false` boolean
 values.
 
 ### `Test2::Harness2::Event`
@@ -1951,18 +1951,23 @@ configured them.
   functional state (see §13.0): callers query pass/fail via IPC,
   not by reading this file.
 
-### Per-run snapshot (`logs/runs/<run_id>.json`) — transitional
+### Per-run snapshot (`logs/runs/<run_id>.json`)
 
-Currently written directly by the harness (not by a logger) via
-`Util::JSON::write_json_file_atomic`. Rewritten twice: once at
-`run_queued` time with the initial `Run->TO_JSON`, and once at
-`run_ended` time with the final state.
+Written by a `Logger::JSON` attached to the run service's own
+collector (§19), not by the harness. The run service emits a
+`run_mutation` harness event carrying the full `Run->TO_JSON`
+payload on every state change (initial broadcast at
+`service_on_start`, then each `_handle_test_job_*` transition,
+final broadcast at `run_on_cleanup`). The JSON logger consumes
+those events (`log_events = 1`), caches the most recent
+`run_data` payload, and atomically rewrites the sidecar at
+collector shutdown — stamped with the collector's `exit` and the
+auditor's `pass` if either is available.
 
-This is a **TODO** — the intent is to retire it in favour of a
-per-run-service snapshot owned by a `Logger::JSON` instance on the
-run service's own collector, so the rule "no file written by a
-logger is functionally load-bearing, and services don't bypass
-loggers" (see §13.0) holds end-to-end.
+This artifact is **not** load-bearing for functional state
+(see §13.0): callers query authoritative run state from the run
+service via IPC. The sidecar exists for after-the-fact inspection
+and renderer replay.
 
 ### Per-run-service logs (`logs/runs/<run_id>/services/*.jsonl`)
 
