@@ -1,5 +1,6 @@
 {{$NEXT}}
 
+    - Depend on the App::Yath::Script dist for the yath script
     - Bump preload integration test watchdog from 15s to 60s to reduce
       flakiness on slow CPAN testers hosts
 
