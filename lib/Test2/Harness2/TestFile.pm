@@ -63,6 +63,7 @@ sub _scan {
 
     my $comment = $self->{+COMMENT} // '#';
 
+    my $retry_set;
     my $fh = open_file($self->{+ABSOLUTE});
     for (my $ln = 1; my $line = <$fh>; $ln++) {
         next if $line =~ m/^\s*$/;
@@ -98,6 +99,7 @@ sub _scan {
             my $feature = lc(join '_' => @args);
             if ($feature eq 'retry') {
                 $self->{+RETRY} = 0;
+                $retry_set = 1;
             }
             else {
                 $self->{+FEATURES}{$feature} = 0;
@@ -107,8 +109,33 @@ sub _scan {
             my $feature = lc(join '_' => @args);
             $self->{+FEATURES}{$feature} = 1;
         }
+        elsif ($dir eq 'smoke') {
+            $self->{+FEATURES}{smoke} = 1;
+        }
+        elsif ($dir eq 'retry') {
+            if (@args) {
+                for my $arg (@args) {
+                    if ($arg =~ m/^\d+$/) {
+                        $self->{+RETRY} = int $arg;
+                        $retry_set = 1;
+                    }
+                    elsif ($arg =~ m/^iso/i) {
+                        $self->{+RETRY}          = 1 unless $retry_set;
+                        $self->{+RETRY_ISOLATED} = 1;
+                        $retry_set               = 1;
+                    }
+                    else {
+                        warn "Unknown 'HARNESS-RETRY' argument '$arg' at $self->{+FILE} line $ln.\n";
+                    }
+                }
+            }
+            elsif (!$retry_set) {
+                $self->{+RETRY} = 1;
+                $retry_set = 1;
+            }
+        }
         else {
-            # Remaining directive arms land in Stages E-G.
+            # Remaining directive arms land in Stages F-G.
             warn "Unknown harness directive '$dir' at $self->{+FILE} line $ln.\n";
         }
     }
