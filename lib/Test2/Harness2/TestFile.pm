@@ -6,7 +6,7 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 use File::Spec();
-use List::Util qw/uniq/;
+use List::Util qw/any uniq/;
 
 use Test2::Harness2::Util qw/open_file/;
 
@@ -239,6 +239,59 @@ sub _parse_shbang {
 
     return \%shbang;
 }
+
+# Per-feature defaults consulted by check_feature when the caller
+# supplies no explicit default and the user's .t file has no directive
+# touching the feature. Ports reference/legacy/.../TestFile.pm:89-98.
+my %DEFAULTS = (
+    timeout   => 1,
+    fork      => 1,
+    preload   => 1,
+    stream    => 1,
+    run       => 1,
+    isolation => 0,
+    smoke     => 0,
+    io_events => 1,
+);
+
+sub check_feature {
+    my ($self, $feature, $default) = @_;
+    $self->scan;
+    $default = $DEFAULTS{$feature} unless defined $default;
+
+    # Fork and preload cannot be honoured for non-perl / binary tests
+    # or for perl tests with any switch other than -w. The safety
+    # override fires before the user's explicit features->{fork|preload}
+    # is consulted, matching reference/old2/.../TestFile.pm:418-430.
+    if ($feature eq 'fork' || $feature eq 'preload') {
+        return 0 if $self->{+NON_PERL} || $self->{+IS_BINARY};
+        return 0 if any { $_ !~ m/^-w$/ } @{$self->{+SWITCHES} || []};
+    }
+
+    my $set = $self->{+FEATURES}{$feature};
+    return $default unless defined $set;
+    return $set ? 1 : 0;
+}
+
+sub check_duration {
+    my $self = shift;
+    $self->scan;
+    return $self->{+DURATION} if defined $self->{+DURATION};
+    return 'long' unless $self->check_feature('timeout');
+    return 'medium';
+}
+
+sub check_category {
+    my $self = shift;
+    $self->scan;
+    return $self->{+CATEGORY} if defined $self->{+CATEGORY};
+    return 'isolation'        if $self->check_feature('isolation');
+    return 'general';
+}
+
+sub check_stage     { $_[0]->scan; $_[0]->{+STAGE} }
+sub check_min_slots { $_[0]->scan; $_[0]->{+MIN_SLOTS} }
+sub check_max_slots { $_[0]->scan; $_[0]->{+MAX_SLOTS} }
 
 1;
 
