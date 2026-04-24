@@ -43,16 +43,11 @@ for my $rid (qw/RP RF/) {
     close $jf;
 }
 
-# Top-level artifacts manifest merging both runs.
-write_json_file_atomic(
-    "$logs/artifacts.json",
-    {
-        "runs/RP/run.json"        => 'Test2::Harness2::Collector::Logger::JSON',
-        "runs/RP/tests/J.jsonl"   => 'Test2::Harness2::Collector::Logger::JSONL',
-        "runs/RF/run.json"        => 'Test2::Harness2::Collector::Logger::JSON',
-        "runs/RF/tests/J.jsonl"   => 'Test2::Harness2::Collector::Logger::JSONL',
-    },
-);
+# Top-level artifacts manifest: harness-scope entries only.
+# Run-scoped files live in runs/$RID/artifacts.json; listing them
+# here would cause Streamer::Static's global reader pass to re-emit
+# run events even when the caller filters to a single run.
+write_json_file_atomic("$logs/artifacts.json", {});
 
 my $archive = "$tmp/run.yath";
 App::Yath2::LogArchive->create(

@@ -25,7 +25,7 @@ sub init {
     $self->{+NAME}                 //= 'harness';
     $self->{+TERMINATE_ON_DESTROY} //= 1;
     $self->{+_WAITED}              //= 0;
-    $self->{_creator_pid}           = $$;
+    $self->{_creator_pid} = $$;
 }
 
 sub handle {
@@ -67,7 +67,28 @@ sub queue_test_run {
 }
 
 sub status { $_[0]->_send_request('status') }
-sub finish { $_[0]->_send_request('finish') }
+
+# Patterns surfaced by IPC::Manager::Service::Handle::sync_request when the
+# peer is gone.  Both are expected outcomes when the service exits before
+# its ACK reaches the caller.
+# TODO: replace string match with typed exception check once IPC::Manager
+#       exports a proper exception class (see upstream feature request).
+our $PEER_GONE = qr/peer .* went away|is not a valid message recipient/i;
+
+# Like _send_request, but absorbs the peer-gone race: if the service exits
+# before its ACK reaches us, return undef instead of dying.  Any other
+# exception is rethrown unchanged.
+sub _send_request_race_safe {
+    my ($self, $name, $payload) = @_;
+    my $res;
+    my $ok  = eval { $res = $self->_send_request($name, $payload); 1 };
+    my $err = $@;
+    return $res if $ok;
+    return      if $err =~ $PEER_GONE;
+    die $err;
+}
+
+sub finish { $_[0]->_send_request_race_safe('finish') }
 
 # Ask the harness to forward state and/or artifact updates to this
 # handle's IPC client. %params are the harness's subscribe payload:
@@ -102,9 +123,12 @@ sub run_results {
 
 sub terminate {
     my $self = shift;
-    my $res  = $self->_send_request('terminate');
-    $self->wait;
-    return $res;
+    my $res;
+    my $ok  = eval { $res = $self->_send_request_race_safe('terminate'); 1 };
+    my $err = $@;
+    $self->wait;    # always reap, even on error
+    return $res if $ok;
+    die $err;
 }
 
 sub detach {
@@ -135,8 +159,10 @@ sub DESTROY {
     return unless $$ == $self->{_creator_pid};
     return unless $self->{+TERMINATE_ON_DESTROY};
     return unless kill 0, $self->{+PID};
-    my $ok = eval { $self->terminate; 1 };
-    warn "Spawn DESTROY terminate failed: $@" unless $ok;
+    my $ok  = eval { $self->terminate; 1 };
+    my $err = $@;
+    return if $ok;
+    warn "Spawn DESTROY terminate failed: $err";
 }
 
 1;
