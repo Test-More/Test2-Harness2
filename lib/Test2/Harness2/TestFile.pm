@@ -86,7 +86,31 @@ sub _scan {
         next if $line =~ m/^\s*(?:use|require|BEGIN|package)\b/;
         last unless $line =~ m/^\s*\Q$comment\E\s*HARNESS-(.+)$/;
 
-        # Stages D-G will dispatch the matched directive here.
+        my ($dir, $rest) = split /[-\s]+/, $1, 2;
+        $dir = lc($dir);
+        my @args;
+        if ($rest) {
+            $rest =~ s/\s+(?:#.*)?$//;
+            @args = split /[-\s]+/, $rest;
+        }
+
+        if ($dir eq 'no') {
+            my $feature = lc(join '_' => @args);
+            if ($feature eq 'retry') {
+                $self->{+RETRY} = 0;
+            }
+            else {
+                $self->{+FEATURES}{$feature} = 0;
+            }
+        }
+        elsif ($dir eq 'yes' || $dir eq 'use') {
+            my $feature = lc(join '_' => @args);
+            $self->{+FEATURES}{$feature} = 1;
+        }
+        else {
+            # Remaining directive arms land in Stages E-G.
+            warn "Unknown harness directive '$dir' at $self->{+FILE} line $ln.\n";
+        }
     }
 
     return;
