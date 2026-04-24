@@ -65,8 +65,8 @@ subtest 'role provides per-attribute default methods' => sub {
     my $tf = T::Role::TestFile::Bare->new(file => '/x');
     is($tf->min_slots,         1,         'min_slots => 1');
     is($tf->max_slots,         undef,     'max_slots => undef');
-    is($tf->category,          'general', 'category => general');
-    is($tf->duration,          'medium',  'duration => medium');
+    is($tf->category,          undef,     'category => undef (raw default)');
+    is($tf->duration,          undef,     'duration => undef (raw default)');
     is($tf->stage,             undef,     'stage => undef');
     is($tf->conflicts,         [],        'conflicts => []');
     is($tf->smoke,             0,         'smoke => 0');

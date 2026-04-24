@@ -63,8 +63,6 @@ sub init {
     # HashBase accessor returns the documented default when no value was
     # supplied.
     $self->{+MIN_SLOTS}      //= 1;
-    $self->{+CATEGORY}       //= 'general';
-    $self->{+DURATION}       //= 'medium';
     $self->{+CONFLICTS}      //= [];
     $self->{+SMOKE}          //= 0;
     $self->{+ISOLATION}      //= 0;

@@ -48,8 +48,8 @@ PERL
     $tf->scan;
     is($opens, 1, 'second scan is a no-op (idempotent)');
 
-    is($tf->category, 'general', 'no dispatch yet: category defaulted');
-    is($tf->duration, 'medium',  'no dispatch yet: duration defaulted');
+    is($tf->category, undef, 'no dispatch yet: category still undef');
+    is($tf->duration, undef, 'no dispatch yet: duration still undef');
     is($tf->features, {},        'no dispatch yet: features empty');
     is($tf->switches, [],        'no dispatch yet: switches empty');
 };
@@ -68,7 +68,8 @@ subtest 'missing file returns silently' => sub {
     my $tf      = Test2::Harness2::TestFile->new(file => $missing);
 
     ok(lives { $tf->scan }, 'scan on missing file lives') or diag $@;
-    is($tf->category, 'general', 'missing file keeps role defaults');
+    is($tf->category, undef, 'missing file keeps role defaults');
+    is($tf->duration, undef, 'missing file keeps role defaults');
 };
 
 subtest 'non-# comment character' => sub {
@@ -101,8 +102,8 @@ subtest 'role defaults intact after scan with no directives' => sub {
 
     is($tf->min_slots,        1,         'min_slots default');
     is($tf->max_slots,        undef,     'max_slots default');
-    is($tf->category,         'general', 'category default');
-    is($tf->duration,         'medium',  'duration default');
+    is($tf->category,         undef,     'category stays undef: no directive seen');
+    is($tf->duration,         undef,     'duration stays undef: no directive seen');
     is($tf->stage,            undef,     'stage default');
     is([$tf->conflicts_list], [],        'conflicts empty');
     is($tf->features,         {},        'features empty');

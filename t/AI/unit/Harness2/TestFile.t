@@ -10,8 +10,8 @@ subtest 'defaults fill in sensibly' => sub {
     is($tf->relative,         't/foo.t', 'relative preserved as given');
     is($tf->min_slots,        1,         'min_slots defaults to 1');
     is($tf->max_slots,        undef,     'max_slots defaults to undef');
-    is($tf->category,         'general', 'category default');
-    is($tf->duration,         'medium',  'duration default');
+    is($tf->category,         undef,     'category default (undef until directive sets it)');
+    is($tf->duration,         undef,     'duration default (undef until directive sets it)');
     is([$tf->conflicts_list], [],        'no conflicts by default');
     ok(!$tf->has_conflicts, 'has_conflicts false by default');
     is($tf->features, {}, 'features empty');
