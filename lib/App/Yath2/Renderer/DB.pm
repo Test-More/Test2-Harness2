@@ -17,7 +17,7 @@ use YAML::Tiny;
 use Time::HiRes qw/time/;
 
 use Test2::Harness2::Util qw/clean_path find_in_updir/;
-use Test2::Harness2::IPC::Util qw/start_process/;
+use Test2::Harness2::Util::IPC qw/start_process/;
 use Test2::Harness2::Util::JSON qw/encode_json_file encode_json decode_json_file/;
 use Test2::Util::UUID qw/gen_uuid/;
 

@@ -10,9 +10,10 @@ use File::Spec();
 use List::Util qw/max/;
 use Time::HiRes qw/sleep/;
 
-use App::Yath2::IPC;
+# XXX TODO: App::Yath2::IPC removed (PR #390) — this command is non-functional
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 use Getopt::Yath;
@@ -33,30 +34,8 @@ List all active local runners, persistent or otherwise.
 }
 
 sub run {
-    my $self = shift;
-
-    my $settings = $self->settings;
-
-    my $ipc = App::Yath2::IPC->new(settings => $settings);
-    my @daemon = $ipc->find(qw/daemon/);
-    my @oneoff = $ipc->find(qw/one/);
-
-    unless (@daemon || @oneoff) {
-        print "\nNo instances of yath found.\n";
-        return 0;
-    }
-
-    if (@oneoff) {
-        print "\nSingle-run Instances:\n";
-        $self->render_ipc($_) for @oneoff;
-    }
-
-    if (@daemon) {
-        print "\nPersistent (Daemon) Instances:\n";
-        $self->render_ipc($_) for @daemon;
-    }
-
-    return 0;
+    # XXX TODO: App::Yath2::IPC is gone (PR #390); reimplment once IPC layer is restored
+    die "ERROR: 'yath list' is not yet functional — App::Yath2::IPC has been removed (PR #390).\n";
 }
 
 sub render_ipc {

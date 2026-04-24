@@ -10,6 +10,7 @@ use Fcntl qw/LOCK_EX LOCK_UN/;
 use File::Spec;
 use Importer Importer => 'import';
 use Test2::Util qw/try_sig_mask do_rename/;
+use Test2::Util::UUID qw/looks_like_uuid/;
 
 our @EXPORT_OK = qw{
     apply_encoding
@@ -20,6 +21,7 @@ our @EXPORT_OK = qw{
     hub_truth
     load_module
     lock_file
+    looks_like_uuid
     maybe_open_file
     maybe_read_file
     mod2file

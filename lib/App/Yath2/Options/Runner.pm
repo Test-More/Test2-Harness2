@@ -82,8 +82,8 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         autofill => sub {
             my ($opt, $settings) = @_;
 
-            require Test2::Harness2::TestSettings;
-            my $ts = Test2::Harness2::TestSettings->new($settings->tests->all);
+            require Getopt::Yath::Settings;
+            my $ts = Getopt::Yath::Settings->new($settings->tests->all);
 
             return map { clean_path($_) } @{$ts->includes};
         },

@@ -9,25 +9,28 @@ use Time::HiRes qw/sleep time/;
 
 use Scope::Guard;
 
-use App::Yath2::Client;
+# XXX TODO: App::Yath2::Client removed (PR #390) — run command is non-functional until reimplemented
+# XXX TODO: Test2::Harness2::Collector::Auditor::Run removed (PR #390) — auditor needs a replacement
 
 use Test2::Harness2::Event;
 use Test2::Harness2::Run;
 use Test2::Harness2::Run::Job;
-use Test2::Harness2::Collector::Auditor::Run;
-use Test2::Harness2::Util::LogFile;
 
 use Test2::Harness2::Util qw/mod2file write_file_atomic/;
 use Test2::Harness2::Util::JSON qw/encode_json encode_pretty_json/;
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::IPC::Util qw/set_procname/;
+use Test2::Harness2::Util::IPC qw/set_procname/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase qw{
     +find_tests
     +auditor
     +renderers
     +annotate_plugins
+    <args
+    <settings
+    <option_state
 };
 
 use Getopt::Yath;
@@ -64,6 +67,11 @@ Run a set of tests on an existing yath daemon.
 sub run {
     my $self = shift;
 
+    # XXX TODO: App::Yath2::Client is gone (PR #390); this command cannot run
+    # tests against a daemon until the IPC layer is reimplemented.
+    die "ERROR: 'yath run' requires App::Yath2::Client which has been removed (PR #390).\n"
+      . "Use 'yath test' to run tests without a persistent daemon.\n";
+
     my $settings = $self->settings;
 
     set_procname(
@@ -77,13 +85,13 @@ sub run {
     my $search = $self->{+ARGS} // [];
     my $tests  = $self->find_tests(@$search) || return $self->no_tests;
 
-    my $client = App::Yath2::Client->new(settings => $settings);
+    my $client = undef; # XXX TODO: App::Yath2::Client->new(settings => $settings);
 
     my $run_id = $settings->run->run_id;
 
     my $jobs = [map { Test2::Harness2::Run::Job->new(test_file => $_) } @$tests];
 
-    my $ts = Test2::Harness2::TestSettings->new($settings->tests->all, clear => $self->{+OPTION_STATE}->{cleared}->{tests});
+    my $ts = Getopt::Yath::Settings->new($settings->tests->all, clear => $self->{+OPTION_STATE}->{cleared}->{tests});
 
     my $run = Test2::Harness2::Run->new(
         $settings->run->all,
@@ -115,7 +123,7 @@ sub run {
     die "API Failure: " . encode_pretty_json($res->{api})
         unless $res->{api}->{success};
 
-    my $lf = Test2::Harness2::Util::LogFile->new(client => $client);
+    # XXX TODO replace this with App::Yath::LogArchive at some point?
 
     my $run_complete;
     while (!$run_complete) {
@@ -124,10 +132,7 @@ sub run {
 
         $run_complete //= 1 unless $client->active;
 
-        for my $event ($lf->poll) {
-            $run_complete = 1 unless defined $event;
-            $self->handle_event($event);
-        }
+        # XXX TODO replace the poller loop with App::Yath::LogArchive usage somewhere?
 
         while (my $msg = $client->get_message(blocking => !$run_complete, timeout => 0.2)) {
             if ($msg->terminate || $msg->run_complete) {
@@ -262,6 +267,9 @@ sub auditor {
     my $settings = $self->settings;
     my $run = $settings->run;
     my $class = $run->run_auditor;
+
+    # XXX TODO: Test2::Harness2::Collector::Auditor::Run is gone (PR #390).
+    # The run_auditor option default still points to it; a replacement is needed.
     require(mod2file($class));
 
     return $self->{+AUDITOR} //= $class->new();

@@ -14,7 +14,8 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use App::Yath2UI::Schema::RunProcessor;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 use Getopt::Yath;

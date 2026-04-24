@@ -8,7 +8,8 @@ use Test2::Util::Times qw/render_duration/;
 
 use Test2::Harness2::Util::File::JSONL;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase qw{
     <log_file
     <fields

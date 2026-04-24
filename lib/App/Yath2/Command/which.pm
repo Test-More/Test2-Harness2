@@ -4,9 +4,10 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use App::Yath2::IPC;
+# XXX TODO: App::Yath2::IPC removed (PR #390) — this command is non-functional
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 sub group { 'daemon' }
@@ -26,21 +27,8 @@ include_options(
 );
 
 sub run {
-    my $self = shift;
-
-    my $ipc = App::Yath2::IPC->new(settings => $self->settings);
-    my ($found) = $ipc->find('daemon');
-
-    unless ($found) {
-        print "\nNo persistent harness was found for the current project.\n\n";
-        return 0;
-    }
-
-    print "\nFound a persistent runner:\n";
-    print "  $_: $found->{$_}\n" for reverse sort grep { defined $found->{$_} } keys %$found;
-    print "\n";
-
-    return 0;
+    # XXX TODO: App::Yath2::IPC is gone (PR #390); reimplment once IPC layer is restored
+    die "ERROR: 'yath which' is not yet functional — App::Yath2::IPC has been removed (PR #390).\n";
 }
 
 1;

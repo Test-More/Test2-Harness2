@@ -9,8 +9,7 @@ use Getopt::Yath;
 
 our @EXPORT_OK = qw/ set_dot_args /;
 
-use Test2::Harness2::TestSettings;
-my $DEFAULT_COVER_ARGS = Test2::Harness2::TestSettings->default_cover_args;
+my $DEFAULT_COVER_ARGS = '-silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl';
 
 ###############################################################################
 # *********** NOTE !!!! ***************************************************** #

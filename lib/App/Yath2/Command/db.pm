@@ -7,7 +7,8 @@ our $VERSION = '2.000011';
 use App::Yath2UI::Server;
 use App::Yath2UI::Schema::Util qw/schema_config_from_settings/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 sub summary     { "Start a yath database server" }

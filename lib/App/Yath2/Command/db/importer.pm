@@ -10,7 +10,8 @@ sub group       { "database" }
 
 use App::Yath2UI::Schema::Util qw/schema_config_from_settings/;
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Getopt::Yath;
 
 include_options(

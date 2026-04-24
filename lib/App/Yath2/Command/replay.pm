@@ -13,6 +13,7 @@ use Object::HashBase qw{
     <log_file
     <tests_seen
     <asserts_seen
+    <settings
 };
 
 use Getopt::Yath;
@@ -26,6 +27,7 @@ include_options(
 );
 
 option_group {group => 'run', category => "Run Options"} => sub {
+    # XXX TODO: Test2::Harness2::Collector::Auditor::Run removed (PR #390); needs a replacement
     option run_auditor => (
         type => 'Scalar',
         default => 'Test2::Harness2::Collector::Auditor::Run',

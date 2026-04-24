@@ -25,6 +25,7 @@ sub init {
     $self->{+NAME}                 //= 'harness';
     $self->{+TERMINATE_ON_DESTROY} //= 1;
     $self->{+_WAITED}              //= 0;
+    $self->{_creator_pid}           = $$;
 }
 
 sub handle {
@@ -106,6 +107,7 @@ sub wait {
 
 sub DESTROY {
     my $self = shift;
+    return unless $$ == $self->{_creator_pid};
     return unless $self->{+TERMINATE_ON_DESTROY};
     return unless kill 0, $self->{+PID};
     my $ok = eval { $self->terminate; 1 };

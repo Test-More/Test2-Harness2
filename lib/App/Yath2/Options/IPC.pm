@@ -33,6 +33,7 @@ option_group {group => 'ipc', category => 'IPC Options'} => sub {
         default => sub { 'IPC' },
     );
 
+    # XXX TODO: Test2::Harness2::IPC::Protocol removed (PR #390); protocol option needs updating
     option protocol => (
         name    => 'ipc-protocol',
         type    => 'Scalar',

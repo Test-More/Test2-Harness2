@@ -6,9 +6,8 @@ our $VERSION = '2.000011';
 
 use Term::Table();
 
-use Test2::Harness2::Util qw/render_status_data/;
-
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 use Getopt::Yath;
@@ -29,16 +28,10 @@ This command will provide health details and a process list for the runner.
 }
 
 sub run {
-    my $self = shift;
-
-    my $settings = $self->settings;
-
-    require App::Yath2::Client;
-    my $client = App::Yath2::Client->new(settings => $settings);
-
-    my $data = $client->overall_status;
-    my $text = render_status_data($data);
-    print "\n$text\n";
+    # XXX TODO: App::Yath2::Client depends on App::Yath2::IPC and
+    # Test2::Harness2::Client, both removed in PR #390. Reimplment once
+    # the IPC layer is restored.
+    die "ERROR: 'yath status' is not yet functional — IPC layer removed (PR #390).\n";
 }
 
 1;

@@ -17,7 +17,7 @@ use App::Yath2::Util qw/find_yath/;
 use Test2::Harness2::Util qw/clean_path apply_encoding/;
 use Test2::Harness2::Util::File::JSONL;
 
-use Test2::Harness2::IPC::Util qw/start_process swap_io/;
+use Test2::Harness2::Util::IPC qw/start_process swap_io/;
 
 use Importer Importer => 'import';
 our @EXPORT = qw/yath make_example_dir/;

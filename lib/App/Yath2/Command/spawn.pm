@@ -9,9 +9,10 @@ use File::Temp qw/tempfile/;
 
 use Test2::Harness2::Util qw/parse_exit/;
 
-use App::Yath2::Client;
+# XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
 sub group { 'daemon' }
@@ -68,35 +69,8 @@ include_options(
 );
 
 sub run {
-    my $self = shift;
-
-    my $args = $self->args;
-    shift(@$args) if @$args && $args->[0] eq '--';
-
-    my ($script, @argv) = @$args;
-
-    my $settings = $self->settings;
-    my $client = App::Yath2::Client->new(settings => $settings);
-
-    $client->spawn(
-        script => $script,
-        argv   => \@argv,
-        stage  => $settings->spawn->stage,
-        env    => $self->env,
-        io_pid => $$,
-    );
-
-    my $pid = $client->get_message(blocking => 1)->{'pid'};
-
-    local $SIG{TERM} = sub { kill('TERM', $pid) };
-    local $SIG{INT}  = sub { kill('INT',  $pid) };
-    local $SIG{HUP}  = sub { kill('HUP',  $pid) };
-
-    my $exit = $client->get_message(blocking => 1)->{'exit'};
-
-    kill($exit->{sig}, $$) if $exit->{sig};
-
-    return $exit->{err} // 0;
+    # XXX TODO: App::Yath2::Client removed (PR #390); reimplment once IPC/preload layer is restored
+    die "ERROR: 'yath spawn' is not yet functional — IPC layer removed (PR #390).\n";
 }
 
 sub env {

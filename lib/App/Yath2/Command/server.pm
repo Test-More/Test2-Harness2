@@ -14,7 +14,8 @@ use Test2::Harness2::Util qw/clean_path/;
 
 our $VERSION = '2.000011';
 
-use parent 'App::Yath2::Command';
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
 use Object::HashBase qw{
     <server
     <config

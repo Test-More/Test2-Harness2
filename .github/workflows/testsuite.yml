@@ -72,15 +72,6 @@ jobs:
         uses: perl-actions/install-with-cpm@v2
         with:
           cpanfile: "cpanfile"
-      - name: install App::Yath::Script from script branch
-        # App-Yath-Script is not yet on CPAN; it lives on the `script`
-        # branch of this same repo. cpm cannot install from that branch
-        # because it has no META.json/META.yml, so use cpanm which
-        # configures the distribution via Makefile.PL.
-        uses: perl-actions/install-with-cpanm@v2
-        with:
-          install: "https://github.com/Test-More/Test2-Harness.git@script"
-          local-lib: local
       - run: perl Makefile.PL
       - run: make
       - run: make test
@@ -168,15 +159,6 @@ jobs:
         with:
           cpanfile: "cpanfile"
           global: true
-          sudo: false
-      - name: install App::Yath::Script from script branch
-        # App-Yath-Script is not yet on CPAN; it lives on the `script`
-        # branch of this same repo. cpm cannot install from that branch
-        # because it has no META.json/META.yml, so use cpanm which
-        # configures the distribution via Makefile.PL.
-        uses: perl-actions/install-with-cpanm@v2
-        with:
-          install: "https://github.com/Test-More/Test2-Harness.git@script"
           sudo: false
       - run: perl Makefile.PL
       - run: make

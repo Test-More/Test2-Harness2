@@ -3,7 +3,7 @@ use Config;
 use POSIX qw/_exit/;
 use Time::HiRes qw/usleep/;
 
-use Test2::Harness2::Util::IPC qw/list_direct_children/;
+use Test2::Harness2::Util::IPC qw/list_direct_children start_process pid_is_running set_procname swap_io/;
 
 # Pure parsers -- these are the heart of the cross-platform logic and
 # can be exercised without touching /proc or forking.
@@ -236,6 +236,158 @@ subtest '_list_direct_children_ps does not report its own ps child' => sub {
         my @kids = Test2::Harness2::Util::IPC::_list_direct_children_ps($$);
         is(\@kids, [], "iteration $_: ps fallback returned no phantom pids");
     }
+};
+
+subtest 'start_process: basic fork+exec' => sub {
+    skip_all "fork required" unless $Config{d_fork};
+
+    pipe(my $r, my $w) or die "pipe: $!";
+
+    my $pid = start_process([$^X, '-e', 'syswrite(STDOUT, "ok"); exit 0'], sub {
+        close $r;
+        open(STDOUT, '>&', $w) or _exit(1);
+    });
+
+    close $w;
+    ok($pid > 0, "start_process returns a positive pid ($pid)");
+
+    my $buf = '';
+    sysread($r, $buf, 16);
+    close $r;
+
+    is($buf, 'ok', 'child wrote expected output, confirming exec ran');
+
+    waitpid($pid, 0);
+    is($? >> 8, 0, 'child exited 0');
+};
+
+subtest 'start_process: post_fork callback fires in child only' => sub {
+    skip_all "fork required" unless $Config{d_fork};
+
+    my $fired_in_parent = 0;
+
+    pipe(my $r, my $w) or die "pipe: $!";
+    my $pid = start_process([$^X, '-e', 'exit 0'], sub {
+        # This runs only in the child; parent returns immediately after fork
+        close $r;
+        syswrite($w, "child");
+        close $w;
+    });
+
+    close $w;
+    my $buf = '';
+    sysread($r, $buf, 16);
+    close $r;
+
+    is($buf, 'child',        'post_fork callback ran in child');
+    is($fired_in_parent, 0,  'callback did not set parent variable');
+
+    waitpid($pid, 0);
+};
+
+subtest 'start_process: dies on empty command' => sub {
+    like(
+        dies { start_process([]) },
+        qr/cmd is required/,
+        'dies when cmd is an empty arrayref',
+    );
+    like(
+        dies { start_process(undef) },
+        qr/cmd is required/,
+        'dies when cmd is undef',
+    );
+};
+
+subtest 'start_process: dies on undef values in cmd' => sub {
+    skip_all "fork required" unless $Config{d_fork};
+    like(
+        dies { start_process([$^X, undef, '-e', '1']) },
+        qr/may not contain undefined/,
+        'dies when cmd contains an undef element',
+    );
+};
+
+subtest 'pid_is_running: running process' => sub {
+    # $$ is always running and we own it.
+    my $rc = pid_is_running($$);
+    ok($rc == 1 || $rc == -1, "own pid returns 1 or -1 (running)");
+};
+
+subtest 'pid_is_running: nonexistent process' => sub {
+    is(pid_is_running(999_999_999), 0, 'implausible pid returns 0');
+};
+
+subtest 'pid_is_running: dies without argument' => sub {
+    like(
+        dies { pid_is_running(0) },
+        qr/A pid is required/,
+        'dies when pid is 0',
+    );
+    like(
+        dies { pid_is_running(undef) },
+        qr/A pid is required/,
+        'dies when pid is undef',
+    );
+};
+
+subtest 'set_procname: sets $0 with prefix' => sub {
+    my $old = $0;
+    set_procname(set => ['TestWorker']);
+    like($0, qr/Test2-Harness2-TestWorker/, 'prefix+name applied to $0');
+    $0 = $old;
+};
+
+subtest 'set_procname: does not double-prefix' => sub {
+    my $old = $0;
+    set_procname(set => ['TestWorker']);
+    my $first = $0;
+    set_procname(set => ['TestWorker']);
+    is($0, $first, 'second call does not accumulate another prefix');
+    $0 = $old;
+};
+
+subtest 'set_procname: append mode' => sub {
+    my $old = $0;
+    set_procname(set => ['Base']);
+    set_procname(append => ['extra']);
+    like($0, qr/extra/, 'appended token appears in $0');
+    $0 = $old;
+};
+
+subtest 'swap_io: redirects handle to a pipe' => sub {
+    skip_all "fork required" unless $Config{d_fork};
+
+    pipe(my $r, my $w) or die "pipe: $!";
+
+    # Redirect STDOUT into $w; write through it; read from $r.
+    open(my $saved_stdout, '>&', \*STDOUT) or die "dup STDOUT: $!";
+
+    swap_io(\*STDOUT, $w);
+    print STDOUT "swap_io_test";
+    close $w;
+
+    # Restore STDOUT before reading so any TAP output goes to the real terminal.
+    open(STDOUT, '>&', $saved_stdout) or die "restore STDOUT: $!";
+    close $saved_stdout;
+
+    my $buf = '';
+    sysread($r, $buf, 64);
+    close $r;
+
+    is($buf, 'swap_io_test', 'output reached the pipe after swap_io');
+};
+
+subtest 'swap_io: croaks when fd cannot be preserved' => sub {
+    # swap_io croaks when the reopened handle lands on the wrong fd.
+    # We cannot easily trigger that without OS help, so we just verify
+    # it croaks on a completely closed handle (no fd at all).
+    open(my $dummy, '<', '/dev/null') or skip_all "/dev/null unavailable";
+    close $dummy;
+    like(
+        dies { swap_io($dummy, \*STDOUT) },
+        qr/Could not get fd for handle/,
+        'croaks when source handle is closed',
+    );
 };
 
 done_testing;

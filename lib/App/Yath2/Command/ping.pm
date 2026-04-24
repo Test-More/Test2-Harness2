@@ -4,12 +4,13 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use App::Yath2::Client;
+# XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
 
 use Time::HiRes qw/sleep time/;
 
-use parent 'App::Yath2::Command';
-use Object::HashBase;
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
+use Object::HashBase qw{<settings};
 
 use Getopt::Yath;
 include_options(
@@ -30,22 +31,8 @@ This command can be used to test communication with a persistent runner
 }
 
 sub run {
-    my $self = shift;
-
-    my $client = App::Yath2::Client->new(settings => $self->{+SETTINGS});
-
-    while (1) {
-        my $start = time;
-        print "\n=== ping ===\n";
-        my $res = $client->ping();
-
-        print "=== $res ===\n";
-        print "=== " . sprintf("%-02.4f", time - $start) . " ===\n";
-
-        sleep 4;
-    }
-
-    return 0;
+    # XXX TODO: App::Yath2::Client removed (PR #390); reimplment once IPC layer is restored
+    die "ERROR: 'yath ping' is not yet functional — IPC layer removed (PR #390).\n";
 }
 
 1;

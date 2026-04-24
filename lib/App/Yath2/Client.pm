@@ -7,11 +7,10 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 use File::Spec;
 
-use App::Yath2::IPC;
+# XXX TODO: App::Yath2::IPC, Test2::Harness2::IPC::Protocol, and
+# Test2::Harness2::Client have been removed (see PR #390). This entire
+# module needs to be reimplemented against the new IPC architecture.
 
-use Test2::Harness2::IPC::Protocol;
-
-use parent 'Test2::Harness2::Client';
 use Object::HashBase qw{
     <settings
     <ipc <connect
@@ -21,44 +20,14 @@ use Object::HashBase qw{
 };
 
 sub init {
-    my $self = shift;
-
-    my $settings = $self->{+SETTINGS} or croak "'settings' is a required attribute";
-    croak "'ipc' is not set, and there is no 'ipc' category in the settings"
-        unless $self->{+IPC} or $settings->ipc;
-
-    my $types = $self->{+TYPES} //= ['daemon'];
-
-    my $yipc = $self->{+YATH_IPC} //= App::Yath2::IPC->new(settings => $settings);
-    my ($ipc, $con) = $yipc->connect(@$types);
-
-    $self->{+IPC} = $ipc;
-    $self->{+CONNECT} = $con;
-
-    $self->SUPER::init();
+    # XXX TODO: reimplment against new IPC architecture; App::Yath2::IPC and
+    # Test2::Harness2::Client are gone (PR #390).
+    die "App::Yath2::Client is not yet implemented\n";
 }
 
 sub ipc_text {
-    my $self = shift;
-
-    my $ipc_s = $self->yath_ipc->connected;
-
-    my $out = "Harness instance pid " . $ipc_s->{peer_pid};
-    if (my $prot = $ipc_s->{protocol}) {
-        $prot =~ s/^Test2::Harness2::IPC::Protocol:://;
-        $out .= " $prot";
-
-        if (my $addr = $ipc_s->{address}) {
-            $addr = File::Spec->abs2rel($addr) if -e $addr;
-            $out .= " $addr";
-
-            if (my $port = $ipc_s->{port}) {
-                $out .= ":$port";
-            }
-        }
-    }
-
-    return $out;
+    # XXX TODO: needs reimplementing once App::Yath2::Client is restored
+    die "App::Yath2::Client is not yet implemented\n";
 }
 
 1;
