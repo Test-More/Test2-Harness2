@@ -9,6 +9,7 @@ use Cwd qw/realpath/;
 use Fcntl qw/LOCK_EX LOCK_UN/;
 use File::Spec;
 use Importer Importer => 'import';
+use Importer 'Test2::Util::Times' => qw/render_duration/;
 use Test2::Util qw/try_sig_mask do_rename/;
 use Test2::Util::UUID qw/looks_like_uuid/;
 
@@ -28,6 +29,7 @@ our @EXPORT_OK = qw{
     open_file
     parse_exit
     read_file
+    render_status_data
     tinysleep
     unlock_file
     write_file
@@ -356,6 +358,79 @@ sub unlock_file {
     }
 
     return $fh;
+}
+
+# Render structured status data into a human-readable string.
+# $data is an arrayref of group hashrefs, each containing:
+#   title   - optional heading printed as "*** title ***"
+#   tables  - arrayref of table hashrefs (header, rows, title, format, term_table_opts)
+#   lines   - arrayref of plain-text lines printed below the tables
+# Columns with format entry 'duration' are run through render_duration().
+# Returns the formatted string, or undef when $data is empty.
+sub render_status_data {
+    my ($data) = @_;
+    croak "must pass in a data array or undef" unless @_;
+
+    return unless @$data;
+
+    require Term::Table;
+
+    my $out = "";
+
+    for my $group (@$data) {
+        my $gout = "\n";
+        $gout .= "**** $group->{title} ****\n\n" if defined $group->{title};
+
+        for my $table (@{$group->{tables} || []}) {
+            my $rows = $table->{rows};
+
+            if (my $format = $table->{format}) {
+                my $rows2 = [];
+
+                for my $row (@$rows) {
+                    my $row2 = [];
+                    for (my $i = 0; $i < @$row; $i++) {
+                        my $val = $row->[$i];
+                        my $fmt = $format->[$i];
+
+                        $val = defined($val) ? render_duration($val) : '--'
+                            if $fmt && $fmt eq 'duration';
+
+                        push @$row2 => $val;
+                    }
+                    push @$rows2 => $row2;
+                }
+
+                $rows = $rows2;
+            }
+
+            next unless $rows && @$rows;
+
+            my $tt = Term::Table->new(
+                header => $table->{header},
+                rows   => $rows,
+
+                sanitize     => 1,
+                collapse     => 1,
+                auto_columns => 1,
+
+                %{$table->{term_table_opts} || {}},
+            );
+
+            $gout .= "** $table->{title} **\n" if defined $table->{title};
+            $gout .= "$_\n" for $tt->render;
+            $gout .= "\n";
+        }
+
+        if ($group->{lines} && @{$group->{lines}}) {
+            $gout .= "$_\n" for @{$group->{lines}};
+            $gout .= "\n";
+        }
+
+        $out .= $gout;
+    }
+
+    return $out;
 }
 
 # Write @content to "$file.pend" and then do_rename() it over $file.  Signal
