@@ -92,6 +92,38 @@ sub feature {
     return $self->features->{$name};
 }
 
+sub check_feature {
+    my ($self, $name, $default) = @_;
+    return $default unless defined $name;
+    my $features = $self->features // {};
+    return $features->{$name} // $default;
+}
+
+sub check_duration {
+    my $self = shift;
+    return $self->defaults->{duration} // 'medium';
+}
+
+sub check_category {
+    my $self = shift;
+    return $self->defaults->{category} // 'general';
+}
+
+my %RANK = (
+    smoke      => 1,
+    immiscible => 10,
+    long       => 20,
+    medium     => 50,
+    short      => 80,
+    isolation  => 100,
+);
+
+sub rank {
+    my $self = shift;
+    return $RANK{smoke}                  if $self->check_feature('smoke');
+    return $RANK{$self->check_category} || $RANK{$self->check_duration} || 1;
+}
+
 sub conflicts_list {
     my $self = shift;
     my $c    = $self->conflicts;

@@ -17,6 +17,9 @@ use Test2::Harness2::Util::File::JSONL;
 use Test2::Harness2::TestFile;
 use File::Spec;
 
+use Role::Tiny::With;
+with 'App::Yath2::Role::Finder';
+
 use Object::HashBase qw{
     +duration_data
     search
@@ -47,7 +50,13 @@ sub init {
 
     delete $self->{class};
 
+    $self->{+DEFAULT_SEARCH}    //= [];
+    $self->{+DEFAULT_AT_SEARCH} //= [];
+    $self->{+EXTENSIONS}        //= [qw/t t2/];
+    $self->{+EXCLUDE_PATTERNS}  //= [];
+
     $self->{+EXCLUDE_FILES} = { map {( $_ => 1 )} @{$self->{+EXCLUDE_FILES}} } if ref($self->{+EXCLUDE_FILES}) eq 'ARRAY';
+    $self->{+EXCLUDE_FILES} //= {};
 
     if (my $plugins = $self->{+RERUN_PLUGINS}) {
         for (@$plugins) {
@@ -588,7 +597,7 @@ sub find_project_files {
 
     my $settings = $self->settings;
     my $default_search = [@{$self->default_search}];
-    push @$default_search => @{$self->default_at_search} if $settings->check_group('run') && $settings->run->author_testing;
+    push @$default_search => @{$self->default_at_search} if $settings && $settings->check_group('run') && $settings->run->author_testing;
 
     $_->munge_search($input, $default_search, $settings) for @$plugins;
 
