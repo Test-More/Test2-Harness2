@@ -6,6 +6,7 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 use File::Spec();
+use List::Util qw/uniq/;
 
 use Test2::Harness2::Util qw/open_file/;
 
@@ -64,6 +65,7 @@ sub _scan {
     my $comment = $self->{+COMMENT} // '#';
 
     my $retry_set;
+    my $job_slots_set;
     my $fh = open_file($self->{+ABSOLUTE});
     for (my $ln = 1; my $line = <$fh>; $ln++) {
         next if $line =~ m/^\s*$/;
@@ -90,7 +92,14 @@ sub _scan {
         my ($dir, $rest) = split /[-\s]+/, $1, 2;
         $dir = lc($dir);
         my @args;
-        if ($rest) {
+        if ($dir eq 'meta') {
+            if (defined $rest) {
+                @args = split /\s+/,  $rest, 2;
+                @args = split /[-]+/, $rest, 2 if @args == 1;
+                $args[1] =~ s/\s+(?:#.*)?$// if defined $args[1];
+            }
+        }
+        elsif ($rest) {
             $rest =~ s/\s+(?:#.*)?$//;
             @args = split /[-\s]+/, $rest;
         }
@@ -152,8 +161,47 @@ sub _scan {
                 $self->{+CATEGORY} = $name;
             }
         }
+        elsif ($dir eq 'timeout') {
+            my ($type, $num, $extra) = @args;
+            $type = lc($type);
+            $num  = lc($num) if defined $num;
+
+            ($type, $num) = ('postexit', $extra)
+                if $type eq 'post' && defined $num && $num eq 'exit';
+
+            if ($type !~ m/^(?:event|postexit)$/) {
+                warn "'" . uc($type) . "' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at $self->{+FILE} line $ln.\n";
+                next;
+            }
+
+            if ($type eq 'event') {
+                $self->{+EVENT_TIMEOUT} = $num;
+            }
+            else {
+                $self->{+POST_EXIT_TIMEOUT} = $num;
+            }
+        }
+        elsif ($dir eq 'job' && defined $rest && $rest =~ m/slots\s+(\d+)(?:\s+(\d+))?$/i) {
+            # Legacy uses //= against a fresh %headers hash so the first
+            # JOB-SLOTS wins. Our init() pre-seeds MIN_SLOTS from role
+            # defaults, so a scan-local tracker carries the "first-wins"
+            # semantic.
+            next if $job_slots_set;
+            $self->{+MIN_SLOTS} = $1;
+            $self->{+MAX_SLOTS} = $2 || $1;
+            $job_slots_set      = 1;
+        }
+        elsif ($dir eq 'conflicts') {
+            $self->{+CONFLICTS} ||= [];
+            push @{$self->{+CONFLICTS}} => map { lc($_) } @args;
+            @{$self->{+CONFLICTS}} = uniq @{$self->{+CONFLICTS}};
+        }
+        elsif ($dir eq 'meta') {
+            my ($key, $val) = @args;
+            $key = lc($key);
+            push @{$self->{+META}{$key}} => $val;
+        }
         else {
-            # Remaining directive arms land in Stage G.
             warn "Unknown harness directive '$dir' at $self->{+FILE} line $ln.\n";
         }
     }
