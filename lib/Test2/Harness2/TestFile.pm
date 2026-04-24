@@ -60,7 +60,15 @@ sub _scan {
     for (my $ln = 1; my $line = <$fh>; $ln++) {
         next if $line =~ m/^\s*$/;
 
-        # Stage B will parse shebang here when $ln == 1.
+        if ($ln == 1 && $line =~ m/^#!/) {
+            my $shbang = $self->_parse_shbang($line);
+            if ($shbang && %$shbang) {
+                $self->{+_SHBANG}  = $shbang;
+                $self->{+SWITCHES} = $shbang->{switches} if $shbang->{switches};
+                $self->{+NON_PERL} = 1                   if $shbang->{non_perl};
+                next;
+            }
+        }
 
         next if $line =~ m/^\s*\Q$comment\E/ && $line !~ m/^\s*\Q$comment\E\s*HARNESS-.+/;
         next if $line =~ m/^\s*(?:use|require|BEGIN|package)\b/;
@@ -70,6 +78,37 @@ sub _scan {
     }
 
     return;
+}
+
+sub _parse_shbang {
+    my $self = shift;
+    my $line = shift;
+
+    return {} if !defined $line;
+
+    my %shbang;
+
+    # NOTE: dashes are intentionally included with the switches.
+    my $shbang_re = qr{
+        ^
+          \#!.*perl.*?        # the perl path
+          (?: \s (-.+) )?     # the switches, maybe
+          \s*
+        $
+    }xi;
+
+    if ($line =~ $shbang_re) {
+        my @switches;
+        @switches         = grep { m/\S/ } split /\s+/, $1 if defined $1;
+        $shbang{switches} = \@switches;
+        $shbang{line}     = $line;
+    }
+    elsif ($line =~ m/^#!/ && $line !~ m/perl/i) {
+        $shbang{line}     = $line;
+        $shbang{non_perl} = 1;
+    }
+
+    return \%shbang;
 }
 
 1;
