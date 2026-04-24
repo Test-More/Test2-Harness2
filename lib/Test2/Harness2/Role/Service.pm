@@ -12,7 +12,7 @@ use Role::Tiny;
 use Test2::Harness2::Util qw/tinysleep/;
 use Test2::Harness2::Util::IPC qw/list_direct_children/;
 
-use constant IS_WIN32            => $^O eq 'MSWin32';
+use Test2::Util qw/IS_WIN32/;
 use constant HAS_CHILD_SUBREAPER => eval {
     require Test2::Harness2::ChildSubReaper;
     Test2::Harness2::ChildSubReaper::have_subreaper_support() ? 1 : 0;

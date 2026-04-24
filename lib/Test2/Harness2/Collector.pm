@@ -85,7 +85,7 @@ sub _instantiate_auditor { }
 # consult it to short-circuit self-addressed traffic.
 sub is_harness_collector { 0 }
 
-use constant IS_WIN32 => $^O eq 'MSWin32';
+use Test2::Util qw/IS_WIN32/;
 
 sub init {
     my $self = shift;
