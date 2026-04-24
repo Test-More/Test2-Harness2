@@ -20,15 +20,27 @@ If you're about to implement something that seems to conflict with `ARCHITECTURE
 
 ## AI task documentation
 
-Whenever an AI-assisted task is merged, write a document to `AI_DOCS/` describing:
+AI_DOCS are for durable context that the code and commit history cannot carry on their own. Default: **do not** write one. Only write an AI_DOC when the task falls into one of these categories:
+
+- A new significant feature or a full PLAN stage.
+- An architectural change (process topology, IPC, event framing, service lifecycle, renderer contract, etc.).
+- A non-trivial refactor that changes module boundaries, public interfaces, or coding patterns across multiple files.
+
+Do **not** write an AI_DOC for:
+
+- Bug fixes. Instead, if the fix directly contradicts or extends what an existing AI_DOC or `ARCHITECTURE.md` section already says, update that document in place. Otherwise the commit message is the only record.
+- Test-only work (adding tests, fixing flakes, test refactors, moving tests under `t/AI/`). Commit messages only.
+- Trivial cleanups (typos, whitespace, perltidy passes, comment tweaks).
+
+When an AI_DOC is warranted, it should describe:
 
 - What the task was and what triggered it.
-- Decisions made during the task, including design alternatives considered and why they were rejected.
-- Any architectural changes introduced by the task.
+- Decisions made, including alternatives considered and why they were rejected.
+- Any architectural changes introduced.
 
 Filename convention: `AI_DOCS/<YYYY-MM-DD>-<short-slug>.md`.
 
-Any decision to deviate from `ARCHITECTURE.md` must also be recorded as an addendum section appended to `ARCHITECTURE.md` itself. The addendum must explain the deviation and justify it. `ARCHITECTURE.md` remains the authoritative spec; addenda exist so the spec stays self-contained and anyone reading it sees the deviation and its reasoning in one place.
+Any decision to deviate from `ARCHITECTURE.md` must **also** be recorded as an addendum section appended to `ARCHITECTURE.md` itself, explaining and justifying the deviation. `ARCHITECTURE.md` remains the authoritative spec; addenda exist so anyone reading it sees the deviation and its reasoning in one place. This rule applies regardless of whether an AI_DOC is also written.
 
 ## Testing
 
