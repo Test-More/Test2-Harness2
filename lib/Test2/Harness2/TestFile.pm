@@ -52,6 +52,13 @@ sub _scan {
 
     return if $self->{+_SCANNED}++;
     return unless -e $self->{+ABSOLUTE};
+
+    if (-B _ && !-z _) {
+        $self->{+IS_BINARY} = 1;
+        $self->{+NON_PERL}  = 1;
+        return;
+    }
+
     return if $self->{+IS_BINARY};
 
     my $comment = $self->{+COMMENT} // '#';
@@ -68,6 +75,11 @@ sub _scan {
                 $self->{+NON_PERL} = 1                   if $shbang->{non_perl};
                 next;
             }
+        }
+
+        if ($line =~ m/^\s*#\s*THIS IS A GENERATED YATH RUNNER TEST/) {
+            $self->{+FEATURES}{run} = 0;
+            next;
         }
 
         next if $line =~ m/^\s*\Q$comment\E/ && $line !~ m/^\s*\Q$comment\E\s*HARNESS-.+/;
