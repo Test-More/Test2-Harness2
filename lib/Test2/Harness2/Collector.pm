@@ -66,6 +66,7 @@ use Object::HashBase qw{
     <child_exit
 
     +_win32_job
+    +_start_times
 };
 
 # Default auditor accessors for the base class. Test2::Harness2::Collector::Test
@@ -115,6 +116,8 @@ sub init {
 
     $self->{+JOB_ID}  //= gen_uuid();
     $self->{+JOB_TRY} //= 0;
+
+    $self->{+_START_TIMES} = [times()];
 
     $self->{+KILL_TIMEOUT} //= 15;
     $self->{+ENV_VARS}     //= {};
@@ -1052,11 +1055,18 @@ sub _finalize_collection {
     if (defined $child_exit) {
         $self->{+CHILD_EXIT} = $child_exit;
 
+        my $end_times   = [times()];
+        my $start_times = $self->{+_START_TIMES};
+        my @cpu_times   = map { $end_times->[$_] - $start_times->[$_] } 0 .. 3;
+
+        my $px = parse_exit($child_exit);
+        $px->{times} = \@cpu_times;
+
         my $exit_event = Test2::Harness2::Event->new(
             event_id   => gen_uuid(),
             stamp      => time,
             facet_data => {
-                harness_process_exit => parse_exit($child_exit),
+                harness_process_exit => $px,
             },
         );
         $self->_process_event($exit_event);

@@ -403,6 +403,7 @@ sub _subtest_process {
             exit    => $px->{all},
             codes   => $px,
             stamp   => $event->{stamp} // $f->{harness}->{stamp} // time,
+            (defined $px->{times} ? (times => $px->{times}) : ()),
         };
 
         push @{$f->{errors}} => $self->fail_error_facet_list;
