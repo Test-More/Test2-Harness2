@@ -7,13 +7,14 @@ our $VERSION = '2.000011';
 use parent 'App::Yath2::Renderer';
 use Object::HashBase;
 
+sub desired_filters { () }    # render_event is a no-op; no filtering needed
+
 sub render_event {}
 
 sub finish {
     my $self = shift;
-    my ($auditor) = @_;
-
-    $TAP::Harness::Yath::SUMMARY = $auditor->summary;
+    # No-op in the new model: the auditor summary is no longer available
+    # via the renderer lifecycle. $TAP::Harness::Yath::SUMMARY is left unset.
 }
 
 1;

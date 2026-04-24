@@ -6,14 +6,14 @@ our $VERSION = '2.000011';
 
 use Getopt::Yath::Term qw/term_size USE_COLOR/;
 use App::Yath2::Renderer::Default::Composer();
-use Test2::Harness2::Util qw/hub_truth apply_encoding mod2file fqmod/;
-use Test2::Harness2::Util::JSON qw/encode_pretty_json/;
+use App::Yath2::Theme;
+use Test2::Harness2::Util qw/hub_truth apply_encoding/;
 
 use File::Spec();
 use IO::Handle;
 use Scalar::Util qw/blessed/;
 use Storable qw/dclone/;
-use Test2::Util qw/IS_WIN32 clone_io/;
+use Test2::Util qw/clone_io/;
 use Time::HiRes qw/time/;
 
 use parent 'App::Yath2::Renderer';
@@ -29,7 +29,7 @@ use Object::HashBase qw{
     +color
     -progress
     -tty
-    -no_wrap
+    -wrap
     -verbose
     -job_length
     -ecount
@@ -42,6 +42,12 @@ use Object::HashBase qw{
     +jobnum_counter
     <start_time
     <theme
+    -show_job_end
+    -show_job_launch
+    -show_job_info
+    -show_run_info
+    -show_run_fields
+    -show_times
 };
 
 sub TAG_WIDTH() { 8 }
@@ -70,13 +76,14 @@ sub init {
 
     $self->{+JOB_LENGTH} ||= 2;
 
-    my $use_color = $self->{+COLOR} ? 1 : 0;
-    $use_color = $self->{+TTY} unless defined $use_color;
-    $self->{+COLOR} = $use_color;
+    $self->{+COLOR} //= $self->{+TTY} ? 1 : 0;
+    my $use_color = $self->{+COLOR};
 
     $self->{+SHOW_BUFFER} //= $use_color && USE_COLOR;
 
     $self->{+ECOUNT} //= 0;
+
+    $self->{+THEME} //= App::Yath2::Theme->new(use_color => $use_color);
 
     my $theme = $self->{+THEME};
     my $reset = $theme->get_term_color('reset');
@@ -91,97 +98,46 @@ sub init {
     };
 }
 
+# Return the filter chain appropriate for this renderer's verbosity level.
+# quiet  → only job-summary and run-summary events
+# verbose → all meaningful events (no explicit filter, handled by caller)
+# default → all meaningful events with the Verbose filter
+sub desired_filters {
+    my $self = shift;
+    my $settings = $self->{+SETTINGS} // {};
+    my $level    = $settings->{log_level} // 'default';
+    return ('App::Yath2::Filter::Quiet')   if $level eq 'quiet';
+    return ('App::Yath2::Filter::Verbose') if $level eq 'verbose';
+    return ('App::Yath2::Filter::Verbose');
+}
+
 sub render_event {
     my $self = shift;
     my ($event) = @_;
 
-    # We modify the event, which would be bad if there are multiple renderers,
-    # so we deep clone it.
+    # Deep clone — we modify facet_data to inject display hints, which
+    # must not bleed through to other renderers sharing the same event.
     $event = dclone($event);
 
-    my $f = $event->{facet_data}; # Optimization
+    my $f = $event->{facet_data};
 
-    $f->{harness} = {%$event};
-    delete $f->{harness}->{facet_data};
-
-    if ($self->{+SHOW_RUN_INFO} && $f->{harness_run}) {
-        my $run = $f->{harness_run};
-
-        push @{$f->{info}} => {
-            tag       => 'RUN INFO',
-            details   => encode_pretty_json($run),
-        };
-    }
-
-    if ($self->{+SHOW_RUN_FIELDS}) {
-        if (my $fields = $f->{harness_run_fields}) {
-            for my $field (@$fields) {
-                push @{$f->{info}} => {
-                    tag     => 'RUN  FLD',
-                    details => encode_pretty_json($field),
-                };
-            }
-        }
-    }
-
-    if ($f->{harness_job_launch}) {
-        my $job = $f->{harness_job};
-
-        $f->{harness}->{job_id} ||= $job->{job_id};
-
-        if ($self->{+SHOW_JOB_LAUNCH}) {
-            push @{$f->{info}} => {
-                tag       => $f->{harness_job_launch}->{retry} ? 'RETRY' : 'LAUNCH',
-                debug     => 0,
-                important => 1,
-                details   => File::Spec->abs2rel($job->{test_file}->{file}),
-            };
-        }
-
-        if ($self->{+SHOW_JOB_INFO}) {
-            push @{$f->{info}} => {
-                tag     => 'JOB INFO',
-                details => encode_pretty_json($job),
-            };
-        }
-    }
-
-    if ($f->{harness_job_end}) {
-        my $job  = $f->{harness_job};
-        my $skip = $f->{harness_job_end}->{skip};
-        my $fail = $f->{harness_job_end}->{fail};
-        my $file = $f->{harness_job_end}->{file};
-        my $retry = $f->{harness_job_end}->{retry};
-
-        my $job_id = $f->{harness}->{job_id} ||= $job->{job_id};
-
-        # Make the times important if they were requested
-        if ($self->show_times && $f->{info}) {
-            for my $info (@{$f->{info}}) {
-                next unless $info->{tag} eq 'TIME';
-                $info->{important} = 1;
-            }
-        }
+    # Inject a PASSED / FAILED info line when a job completes.
+    if (my $je = $f->{harness_job_end}) {
+        my $pass = !$je->{fail};
 
         if ($self->{+SHOW_JOB_END}) {
-            my $name = File::Spec->abs2rel($file);
-            $name .= "  -  $skip" if $skip;
-
-            my $tag = 'PASSED';
-            $tag = 'SKIPPED'  if $skip;
-            $tag = 'FAILED'   if $fail;
-            $tag = 'TO RETRY' if $retry;
-
+            my $job_id = $je->{job_id};
+            my $tag    = $pass ? 'PASSED' : 'FAILED';
             unshift @{$f->{info}} => {
                 tag       => $tag,
-                debug     => $fail,
+                debug     => $pass ? 0 : 1,
                 important => 1,
-                details   => $name,
+                details   => $job_id // $je->{rel_file} // '(unknown job)',
             };
         }
     }
 
-    my $num = $f->{assert} && $f->{assert}->{number} ? $f->{assert}->{number} : undef;
+    my $num = $f->{assert} && $f->{assert}{number} ? $f->{assert}{number} : undef;
 
     $self->write($event, $num, $f);
 }
@@ -194,18 +150,16 @@ sub write {
 
     $self->{+ECOUNT}++;
 
-    my $job_id = $f->{harness}->{job_id};
-    $self->encoding($f->{control}->{encoding}, $job_id) if $f->{control}->{encoding};
+    my $job_id = $self->_event_job_id($f);
+    $self->encoding($f->{control}{encoding}, $job_id) if $f->{control} && $f->{control}{encoding};
 
-    my $hf = hub_truth($f);
+    my $hf    = hub_truth($f);
     my $depth = $hf->{nested} || 0;
 
     my $also_show;
     unless ($depth) {
-        my $lines = delete $self->{+_BUFFER}->{$job_id};
-        if ($f->{errors} && @{$f->{errors}}) {
-            $also_show = $lines;
-        }
+        my $lines = defined($job_id) ? delete $self->{+_BUFFER}->{$job_id} : undef;
+        $also_show = $lines if $f->{errors} && @{$f->{errors}};
     }
 
     my $lines;
@@ -226,7 +180,7 @@ sub write {
         return unless $self->{+SHOW_BUFFER} || $self->{+PROGRESS} || $also_show;
     }
     else {
-        my $tree = $self->render_tree($f,);
+        my $tree = $self->render_tree($f);
         $lines = $self->build_event($f, $tree);
     }
 
@@ -251,7 +205,6 @@ sub write {
     my $io = $self->io($job_id);
     if (my $buffered = delete $self->{+_BUFFERED}) {
         print $io "\r";
-
         print $io "\e[K" unless $buffered eq 'peek';
     }
 
@@ -363,38 +316,30 @@ sub update_active_disp {
 
     return $out unless $f;
 
-    if (my $task = $f->{harness_job_queued}) {
-        $self->{+JOB_NUMBERS}->{$task->{job_id}} //= $self->{+JOBNUM_COUNTER}++;
-        $stats->{total}++;
+    if ($f->{harness_job_queued}) {
         $stats->{todo}++;
+        $stats->{total}++;
+        $should_show = 1;
     }
 
-    if ($f->{harness_job_launch}) {
-        my $job = $f->{harness_job};
-        $self->{+ACTIVE_FILES}->{File::Spec->abs2rel($job->{file})} = $self->{+JOB_NUMBERS}->{$job->{job_id}} //= $self->{+JOBNUM_COUNTER}++;
-        $should_show = 1;
+    if ($f->{harness_job_start}) {
+        $stats->{started}  //= 1;
         $stats->{running}++;
-        $stats->{todo}--;
-        $stats->{started} //= 1;
+        $stats->{todo}-- if $stats->{todo} > 0;
+        $should_show = 1;
     }
 
-    if ($f->{harness_job_end}) {
-        my $file = $f->{harness_job_end}->{file};
-        delete $self->{+ACTIVE_FILES}->{File::Spec->abs2rel($file)};
-        $should_show = 1;
-        $stats->{running}--;
-
-        if ($f->{harness_job_end}->{fail}) {
-            $stats->{failed}++;
-        }
-        else {
-            $stats->{passed}++;
-        }
+    if (my $je = $f->{harness_job_end}) {
+        $should_show      = 1;
+        $stats->{started} //= 1;
+        $stats->{running}-- if $stats->{running} > 0;
+        if (!$je->{fail}) { $stats->{passed}++ }
+        else              { $stats->{failed}++ }
     }
 
     return $out unless $should_show;
 
-    my $theme = $self->{+THEME};
+    my $theme    = $self->{+THEME};
     my $statline = join '|' => (
         $self->_highlight($stats->{passed},  'P', $theme->get_term_color(state => 'passed')),
         $self->_highlight($stats->{failed},  'F', $theme->get_term_color(state => 'failed')),
@@ -404,20 +349,7 @@ sub update_active_disp {
 
     $statline = "[$statline]";
 
-    my $active = $self->{+ACTIVE_FILES};
-
-    return $self->{+_ACTIVE_DISP} = [$statline, ''] unless $active && keys %$active;
-
-    my $reset = $self->reset;
-
-    my $str .= "(";
-    {
-        no warnings 'numeric';
-        $str .= join(' ' => map { m{([^/]+)$}; "$active->{$_}:$1" } sort { ($active->{$a} || 0) <=> ($active->{$b} || 0) or $a cmp $b } keys %$active);
-    }
-    $str .= ")";
-
-    $self->{+_ACTIVE_DISP} = [$statline, $str];
+    $self->{+_ACTIVE_DISP} = [$statline, ''];
 
     return 1;
 }
@@ -428,10 +360,10 @@ sub update_spinner {
 
     my $theme = $self->{+THEME};
 
-    $stats->{spinner} //= '|';
+    $stats->{spinner}      //= '|';
     $stats->{spinner_time} //= time - 1;
-    $stats->{blink_time} //= time - 1;
-    $stats->{blink} //= '';
+    $stats->{blink_time}   //= time - 1;
+    $stats->{blink}        //= '';
 
     my $msg     = $theme->get_term_color(status => 'message_a');
     my $cmd     = $theme->get_term_color(status => 'command');
@@ -448,7 +380,7 @@ sub update_spinner {
         $stats->{spinner} = '/'  if $start eq '|';
         $stats->{spinner} = '|'  if $start eq '\\';
     }
-    elsif(time - $stats->{blink_time} > 0.5) {
+    elsif (time - $stats->{blink_time} > 0.5) {
         $stats->{blink_time} = time;
         $msg = $theme->get_term_color(status => 'message_b') if $stats->{blink};
     }
@@ -490,7 +422,6 @@ sub _highlight {
     return sprintf('%s%s:%d%s', $color, $label, $val, $self->reset);
 }
 
-
 sub colorstrip {
     my $self = shift;
     my ($str) = @_;
@@ -505,7 +436,7 @@ sub render_status {
 
     my $theme = $self->theme;
 
-    my $reset = $self->reset;
+    my $reset   = $self->reset;
     my $message = $theme->get_term_color(status => 'default') || '';
 
     my $str = "$self->{+_ACTIVE_DISP}->[0] Events: $self->{+ECOUNT} ${message}$self->{+_ACTIVE_DISP}->[1]${reset}";
@@ -587,14 +518,25 @@ sub reset {
     return $self->{+THEME}->get_term_color('reset');
 }
 
+sub _event_job_id {
+    my ($self, $f) = @_;
+    return $f->{harness}{job_id} if $f->{harness} && defined $f->{harness}{job_id};
+    for my $k (qw/harness_job_end harness_job_start harness_job_queued harness_job_exit/) {
+        return $f->{$k}{job_id}
+            if ref($f->{$k}) eq 'HASH' && defined $f->{$k}{job_id};
+    }
+    return undef;
+}
+
 sub render_tree {
     my $self = shift;
     my ($f, $char) = @_;
     $char ||= '|';
 
     my $job = '';
-    if ($f->{harness}) {
-        my $id = $f->{harness}->{job_id} // 0;
+    my $jid = $self->_event_job_id($f);
+    if (defined $jid || $f->{harness}) {
+        my $id     = $jid // 0;
         my $number = $id ? $self->{+JOB_NUMBERS}->{$id} //= $self->{+JOBNUM_COUNTER}++ : $id;
 
         my $theme = $self->{+THEME};
@@ -609,13 +551,13 @@ sub render_tree {
             $len = $self->{+JOB_LENGTH};
         }
 
-        $len += 4; # "job "
+        $len += 4;    # "job "
         $len = 6 unless $len >= 6;
 
         $job = sprintf("%s%-${len}s%s", $color, ($id ? "job $number" : "RUNNER"), $reset || '');
     }
 
-    my $hf = hub_truth($f);
+    my $hf    = hub_truth($f);
     my $depth = $hf->{nested} || 0;
 
     my @pipes = ('', map $char, 1 .. $depth);
@@ -638,10 +580,10 @@ sub build_line {
     $tag = substr($tag, 0 - TAG_WIDTH, TAG_WIDTH) if length($tag) > TAG_WIDTH;
 
     my $use_color = $self->{+COLOR};
-    my $max = $self->{+TTY} && $self->{+WRAP} ? (term_size() || 80) : undef;
-    my $theme = $self->{+THEME};
-    my $reset = $self->reset;
-    my $tcolor = $theme->get_term_color(tag => $tag) || $theme->get_term_color(facet => $facet) || '';
+    my $max       = $self->{+TTY} && $self->{+WRAP} ? (term_size() || 80) : undef;
+    my $theme     = $self->{+THEME};
+    my $reset     = $self->reset;
+    my $tcolor    = $theme->get_term_color(tag => $tag) || $theme->get_term_color(facet => $facet) || '';
 
     my ($ps, $pe) = @{$theme->get_borders($facet)};
 
@@ -650,8 +592,8 @@ sub build_line {
     if ($length > TAG_WIDTH) {
         $tag = substr($tag, 0, TAG_WIDTH);
     }
-    elsif($length < TAG_WIDTH) {
-        my $pad = (TAG_WIDTH - $length) / 2;
+    elsif ($length < TAG_WIDTH) {
+        my $pad  = (TAG_WIDTH - $length) / 2;
         my $padl = $pad + (TAG_WIDTH - $length) % 2;
         $tag = (' ' x $padl) . $tag . (' ' x $pad);
     }
@@ -682,7 +624,7 @@ sub build_line {
 
     my @out;
     for my $line (@lines) {
-        if(@lines > 1 && $max && length("$ps$tag$pe $tree$line") > $max) {
+        if (@lines > 1 && $max && length("$ps$tag$pe $tree$line") > $max) {
             @out = ();
             last;
         }
@@ -703,7 +645,6 @@ sub build_line {
                 "${tcolor}${text}${reset}",
                 "$start${blob}------ END ------$reset",
             );
-
         }
         else {
             @out = (
@@ -726,19 +667,16 @@ sub render_parent {
     my @out;
     for my $sf (@{$f->{parent}->{children}}) {
         $sf->{harness} ||= $f->{harness};
-        my $tree = $self->render_tree($sf);
-        push @out => @{$self->$meth($sf, $tree)};
+        my $stree = $self->render_tree($sf);
+        push @out => @{$self->$meth($sf, $stree)};
     }
 
     return unless @out;
 
-    push @out => (
-        $self->build_line("$tree^", 'parent', '', ''),
-    );
+    push @out => ($self->build_line("$tree^", 'parent', '', ''));
 
     return @out;
 }
-
 
 sub DESTROY {
     my $self = shift;
@@ -763,14 +701,16 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Renderer::Default - Default renderer for L<App::Yath2>.
+App::Yath2::Renderer::Default - Default human-readable renderer for L<App::Yath2>.
 
 =head1 DESCRIPTION
 
 This renderer is the primary renderer used for final result rendering when you
-use L<App::Yath2>. This renderer is NOT designed to have its output consumed by
-code/machine/harnesses. The goal of this renderer is to have output that is
-easily read by humans.
+use L<App::Yath2>. It formats the event stream from the
+L<App::Yath2::OutputManager> into coloured, tree-structured terminal output.
+
+Filtering decisions (quiet vs. verbose) are the responsibility of the filter
+chain declared by C<desired_filters>. This renderer only handles formatting.
 
 =head1 SOURCE
 
@@ -803,8 +743,3 @@ modify it under the same terms as Perl itself.
 See L<http://dev.perl.org/licenses/>
 
 =cut
-
-=pod
-
-=cut POD NEEDS AUDIT
-

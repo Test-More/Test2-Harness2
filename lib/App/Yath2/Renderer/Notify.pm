@@ -22,6 +22,8 @@ use Object::HashBase qw{
     +text_mod_fail
 };
 
+sub desired_filters { ('App::Yath2::Filter::Verbose') }
+
 # Notifications only apply to commands which build a run.
 sub applicable {
     my ($option, $options) = @_;

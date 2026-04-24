@@ -3,7 +3,6 @@ use strict;
 use warnings;
 
 use Test2::Util::Table qw/table/;
-use Getopt::Yath::Term qw/USE_COLOR/;
 use Test2::Harness2::Util qw/clean_path/;
 use Test2::Harness2::Util::JSON qw/json_true json_false/;
 
@@ -14,6 +13,8 @@ our $VERSION = '2.000011';
 use parent 'App::Yath2::Renderer';
 use Object::HashBase qw{
     <file
+    +_run_end
+    +_failed_jobs
 };
 
 use Getopt::Yath;
@@ -43,65 +44,78 @@ option_group {group => 'summary', category => "Summary Options"} => sub {
     );
 };
 
+sub desired_filters { () }    # must see harness_run_end and harness_job_end — no pre-filtering
+
 sub args_from_settings {
     my $class = shift;
     my %params = @_;
     return $params{settings}->summary->all;
 }
 
-sub weight { -99 }
-
-sub exit_hook {
+sub init {
     my $self = shift;
-    my ($auditor) = @_;
-
-    my $final_data = $auditor->final_data;
-    my $summary    = $auditor->summary;
-
-    $self->render_final_data($final_data);
-    $self->render_summary($summary);
-    $self->write_summary_file($summary, $final_data);
+    $self->SUPER::init();
+    $self->{+_FAILED_JOBS} //= [];
 }
 
-sub render_event {}
+sub weight { -99 }
+
+sub render_event {
+    my $self  = shift;
+    my ($event) = @_;
+
+    my $f = $event->{facet_data} // {};
+
+    if (my $re = $f->{harness_run_end}) {
+        $self->{+_RUN_END} = $re;
+    }
+
+    if (my $je = $f->{harness_job_end}) {
+        push @{$self->{+_FAILED_JOBS}} => [$je->{job_id}, $je->{rel_file} // $je->{file}]
+            if $je->{fail};
+    }
+}
+
+sub finish {
+    my $self = shift;
+
+    my $run_end = $self->{+_RUN_END} // {};
+
+    $self->render_summary($run_end);
+    $self->write_summary_file($run_end);
+}
 
 sub render_summary {
     my $self = shift;
-    my ($summary) = @_;
+    my ($run_end) = @_;
 
-    my $pass         = $summary->{pass};
-    my $time_data    = $summary->{time_data};
-    my $cpu_usage    = $summary->{cpu_usage};
-    my $failures     = $summary->{failures};
-    my $tests_seen   = $summary->{tests_seen};
-    my $asserts_seen = $summary->{asserts_seen};
+    my $pass       = $run_end->{pass};
+    my $pass_count = $run_end->{pass_count} // 0;
+    my $fail_count = $run_end->{fail_count} // 0;
+    my $total      = $pass_count + $fail_count;
 
-    return if $self->quiet > 1;
+    if (my $rows = $self->{+_FAILED_JOBS}) {
+        if (@$rows) {
+            print "\nThe following jobs failed:\n";
+            print join "\n" => table(
+                header => ['Job ID', 'Test File'],
+                rows   => [sort { $a->[1] cmp $b->[1] } @$rows],
+            );
+            print "\n";
+        }
+    }
 
     my @summary = (
-        $failures ? ("     Fail Count: $failures") : (),
-        "     File Count: $tests_seen",
-        "Assertion Count: $asserts_seen",
-        $time_data
-        ? (
-            sprintf("      Wall Time: %.2f seconds",                                                       $time_data->{wall}),
-            sprintf("       CPU Time: %.2f seconds (usr: %.2fs | sys: %.2fs | cusr: %.2fs | csys: %.2fs)", @{$time_data}{qw/cpu user system cuser csystem/}),
-            sprintf("      CPU Usage: %i%%",                                                               $cpu_usage),
-            )
-        : (),
+        $fail_count ? ("     Fail Count: $fail_count") : (),
+        "     File Count: $total",
     );
 
     my $res = "    -->  Result: " . (defined($pass) ? $pass ? 'PASSED' : 'FAILED' : 'N/A') . "  <--";
-    if ($self->color && USE_COLOR) {
-        my $color = $self->theme->get_term_color(tag => defined($pass) ? $pass ? 'passed' : 'failed' : 'skipped');
-        my $reset = $self->theme->get_term_color('reset');
-        $res = "$color$res$reset";
-    }
     push @summary => $res;
 
     my $msg    = "Yath Result Summary";
     my $length = max map { length($_) } @summary;
-    my $prefix = ($length - length($msg)) / 2;
+    my $prefix = int(($length - length($msg)) / 2);
 
     print "\n";
     print " " x $prefix;
@@ -112,75 +126,23 @@ sub render_summary {
     print "\n";
 }
 
-sub render_final_data {
-    my $self = shift;
-    my ($final_data) = @_;
-
-    return if $self->quiet > 1;
-
-    if (my $rows = $final_data->{retried}) {
-        print "\nThe following jobs failed at least once:\n";
-        print join "\n" => table(
-            header => ['Job ID', 'Times Run', 'Test File', "Succeeded Eventually?"],
-            rows   => [sort { $a->[2] cmp $b->[2] } @$rows],
-        );
-        print "\n";
-    }
-
-    if (my $rows = $final_data->{failed}) {
-        print "\nThe following jobs failed:\n";
-        print join "\n" => table(
-            collapse => 1,
-            header   => ['Job ID', 'Test File', 'Subtests'],
-            rows     => [map { my $r = [@{$_}]; $r->[2] = join("\n", @{$r->[2]}) if $r->[2]; $r } sort { $a->[1] cmp $b->[1] } @$rows],
-        );
-        print "\n";
-    }
-
-    if (my $rows = $final_data->{halted}) {
-        print "\nThe following jobs requested all testing be halted:\n";
-        print join "\n" => table(
-            header => ['Job ID', 'Test File', "Reason"],
-            rows   => [sort { $a->[1] cmp $b->[1] } @$rows],
-        );
-        print "\n";
-    }
-
-    if (my $rows = $final_data->{unseen}) {
-        print "\nThe following jobs never ran:\n";
-        print join "\n" => table(
-            header => ['Job ID', 'Test File'],
-            rows   => [sort { $a->[1] cmp $b->[1] } @$rows],
-        );
-        print "\n";
-    }
-}
-
 sub write_summary_file {
     my $self = shift;
-    my ($summary, $final_data) = @_;
+    my ($run_end) = @_;
 
     my $file = $self->{+FILE} or return;
 
-    my $pass         = $summary->{pass};
-    my $time_data    = $summary->{time_data};
-    my $cpu_usage    = $summary->{cpu_usage};
-    my $failures     = $summary->{failures};
-    my $tests_seen   = $summary->{tests_seen};
-    my $asserts_seen = $summary->{asserts_seen};
+    my $pass       = $run_end->{pass};
+    my $pass_count = $run_end->{pass_count} // 0;
+    my $fail_count = $run_end->{fail_count} // 0;
 
     my %data = (
-        %$final_data,
-
         pass => $pass ? json_true : json_false,
 
-        total_failures => $failures     // 0,
-        total_tests    => $tests_seen   // 0,
-        total_asserts  => $asserts_seen // 0,
+        total_failures => $fail_count,
+        total_tests    => $pass_count + $fail_count,
 
-        cpu_usage => $cpu_usage,
-
-        times => $time_data,
+        failed => $self->{+_FAILED_JOBS},
     );
 
     require Test2::Harness2::Util::File::JSON;

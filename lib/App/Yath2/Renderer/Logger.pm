@@ -20,6 +20,8 @@ use Object::HashBase qw{
     <lastlog
 };
 
+sub desired_filters { () }    # log every event — no pre-filtering
+
 use Getopt::Yath;
 
 include_options(

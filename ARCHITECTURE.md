@@ -1122,111 +1122,184 @@ service stdout/stderr
   → loggers  (no auditor — service collectors don't have verdicts)
 ```
 
-## 13. Artifacts and renderer event feeding
+## 13. Artifacts and the output pipeline
 
-Renderers run in the **command process**. They are not services
-on the bus and do **not** issue IPC queries themselves.
-Renderers are **passive input**: they consume a stream of
-events someone else hands them.
+Events produced by tests flow through collectors into on-disk
+artifacts (JSONL files). The **output pipeline** in the command
+process reads those artifacts, filters the event stream
+per-renderer, and delivers events to one or more renderers that
+format and emit output.
 
-### 13.0 What renderers can and can't do
+The pipeline has three distinct stages:
 
-- **Input**: a single event stream, handed to the renderer by the
-  command-side layer described below. Renderers do **not** read
-  artifacts directly. They do **not** subscribe to the IPC bus.
-  They do **not** query the harness. All of that happens in the
-  artifact-reading layer inside the command, which translates
-  what it finds into events and feeds them to the renderer.
-- **Output**: free. A renderer may produce a terminal TUI, write
-  files on disk, push rows into a database, POST to a web
-  service, emit another event stream to a downstream consumer
-  — whatever its job is. The prohibition is only on **reading**
-  inputs from anywhere other than the event stream handed in;
-  on the output side the renderer owns whatever destination it
-  renders to.
+```
+ArtifactLayer  (TBD — dispatches every event, no mode filtering)
+    │
+    ▼
+OutputManager
+    │  (groups renderers by filter chain; each chain runs once)
+    ├─► [Filter chain A] ──► Renderer A  (e.g. Default TUI)
+    │                   └──► Renderer B  (same chain, one run)
+    └─► [Filter chain B] ──► Renderer C  (e.g. DB / JUnit)
+```
 
-There is a layer **between the harness and the renderer**,
-inside the command, that is responsible for:
+### 13.0 ArtifactLayer — reading and replaying
 
-1. **Learning what artifacts exist**, by asking the harness
-   (over IPC, using the handle the command already holds).
-2. **Deciding which artifacts to read, and when**, based on the
-   user's command-line options (verbose, quiet, qvf, …) and
-   the state of the run.
-3. **Turning artifact contents and harness state queries into
-   events**, and handing those events to the renderers.
+**Not yet implemented.** `App::Yath2::ArtifactLayer` will bridge
+the harness and the `OutputManager`. It learns when individual
+jobs complete, reads the corresponding per-job JSONL artifacts
+from disk, and dispatches every event it finds via
+`$output_manager->dispatch($event)`.
 
-This layer is the only component that reads artifacts and is
-the only component that knows about the user's mode selection.
+**The ArtifactLayer makes no filtering decisions.** It does not
+know or care which renderers are active or what modes they
+operate in. When a job JSONL file exists it is replayed in full;
+when no JSONL exists a synthesised `test_job_completed` event
+is dispatched as a fallback so renderers can still print a
+summary. A final synthesised `run_complete` event is dispatched
+after all jobs are done.
 
-### 13.1 Harness IPC requests the command-side layer uses
+The preferred mechanism for learning when jobs complete is a
+subscription to the harness event stream (§6.3). Until §6.3
+lands a polling approach over IPC is an acceptable interim
+implementation.
+
+### 13.1 Harness IPC requests the ArtifactLayer uses
 
 These are requests the harness answers; the **command** (not the
-renderer) is the caller. They exist because the command needs a
-way to enumerate artifacts the harness has learned about from
-`collector_artifacts` announcements (§8).
+renderer or the OutputManager) is the caller.
 
-- `list_global_artifacts` → returns the artifacts for every
-  non-run-scoped collector the harness knows about (the
-  harness's own service collector, global resource-service
+- `list_global_artifacts` → artifacts for every non-run-scoped
+  collector (harness collector, global resource-service
   collectors, global preload stage collectors).
-- `list_run_artifacts(run_id => $id)` → returns the artifacts
-  for every collector associated with that run (the run
-  service's own collector, run-scoped resource-service
-  collectors, run-scoped preload stage collectors, test-job
-  collectors launched under that run — including ones
-  launched from a detached preload stage).
-- `get_run_status(run_id => $id)` / `list_run_final_state(run_id
-  => $id)` → returns aggregate run state (pass_count, fail_count,
-  duration, per-job verdicts) when no artifacts exist and the
-  layer still needs to surface a summary to the renderer.
+- `list_run_artifacts(run_id => $id)` → artifacts for every
+  collector associated with that run.
 
-All three responses use the shape from §8.1 for the artifact
-parts (`{collector_id => {loggers => {Class => [...]}, ...}}`)
-and reuse the `run_complete`-shaped payload for the final-state
-query.
+### 13.2 OutputManager — shared filter chains, multiple renderers
 
-### 13.2 How the command-side layer feeds renderers
+`App::Yath2::OutputManager` holds
+an ordered list of pipelines. Each pipeline owns a filter chain
+and a list of one or more renderers that share it.
 
-The layer runs a small state machine while a run is in flight:
+**Building a pipeline.** When `add_renderer($renderer)` is
+called the manager calls `$renderer->desired_filters` to obtain
+an ordered list of filter class names or pre-built instances. A
+pipeline key is derived from the spec list (class names
+contribute their name; pre-built instances contribute their
+stringified address). If an existing pipeline has an identical
+key the renderer is appended to it — the chain runs only once
+per event for all renderers in that group. Otherwise a new
+pipeline is created. `start()` is called on the renderer
+immediately at registration.
 
-- It opens a subscription to the harness's event stream (the same
-  events produced by the harness's own service collector — status
-  transitions, `test_job_started`, `test_job_completed`, etc.).
-- When an event tells the layer that a test has reached a
-  terminal state, the layer decides what to emit to the renderer
-  based on the user's mode:
-    - **quiet**: only emit a final `run_complete`-shaped summary
-      event at the very end of the run.
-    - **qvf (quiet, verbose on failure)**: on a passing test,
-      emit just the short "job X passed" event. On a failing
-      test, open the test's `0.jsonl` artifact and replay every
-      event from it through the renderer.
-    - **verbose**: replay every event from every test's `0.jsonl`
-      artifact, in order, as soon as each one is available.
-    - **default / middle ground**: custom mix per the mode's
-      rules.
-- If no artifacts exist for a given scope (because the active
-  logger set produced nothing observable — e.g. running with
-  `--no-log`), the layer falls back to the harness's
-  final-state queries and emits synthesised events to the
-  renderer so the renderer can still print a summary.
+```
+$manager->add_renderer($r1);   # desired_filters => ('Filter::Verbose')
+$manager->add_renderer($r2);   # desired_filters => ('Filter::Verbose')
+# result: one pipeline, key='Filter::Verbose', renderers=[$r1,$r2]
 
-The renderer's interface is a single "here is an event" entry
-point. The same renderer works for every mode; only the layer's
-filter differs.
+$manager->add_renderer($r3);   # desired_filters => ('Filter::Quiet')
+# result: second pipeline, key='Filter::Quiet', renderers=[$r3]
+```
 
-### 13.3 Why this split
+**Dispatching an event.** For each pipeline, the manager runs
+the filter chain once. If the event survives, it is handed to
+every renderer in that pipeline's renderer list:
 
-- Renderers stay trivial to write and to test — they consume a
-  single event stream and produce output, full stop.
-- The command owns mode selection; the command knows the CLI
-  flags the user set.
-- The harness does not need to know about renderer modes; it
-  just exposes artifact listings and final state.
-- The layer between them can be reused across multiple
-  renderers (default TUI, Formatter, JUnit, …) by swapping the
-  renderer instance while keeping the artifact-reading logic.
+```
+for my $pipeline (@pipelines) {
+    my $ev = $event;
+    for my $f (@{$pipeline->{filters}}) {
+        $ev = $f->filter_event($ev);
+        last unless defined $ev;
+    }
+    next unless defined $ev;
+    $_->render_event($ev) for @{$pipeline->{renderers}};
+}
+```
+
+**Lifecycle.** `start()` fires on each renderer at `add_renderer`
+time. `finish()` fires on all renderers when the `OutputManager`
+is destroyed (via `DESTROY`) or when `finish()` is called
+explicitly; a guard prevents double-firing. `signal` and
+`end_of_events` are forwarded to every renderer. Filters are
+not involved in lifecycle.
+
+### 13.3 Filters — per-event pass / drop
+
+A filter is a lightweight stateless (or minimally stateful)
+object that inspects one event at a time and returns either the
+(possibly transformed) event or `undef` to drop it.
+
+**Interface** (`App::Yath2::Filter` base class):
+
+```perl
+# Returns $event to pass it downstream, undef to drop it.
+sub filter_event { croak "override me" }
+```
+
+Filters are declared by renderers, not by the command. The
+renderer reads its settings (log level, verbosity, etc.) in its
+constructor and returns the appropriate filter list from
+`desired_filters`. A renderer with no opinion returns `()`.
+
+**Built-in filters:**
+
+- `App::Yath2::Filter::Verbose` — passes events that carry
+  meaningful displayable content (assertions, diagnostics, plan,
+  errors, job/run summaries). Drops pure framework-housekeeping
+  events that carry no user-visible output.
+- `App::Yath2::Filter::Quiet` — passes only job-level and
+  run-level summary events (`test_job_completed`,
+  `run_complete`). Drops individual test assertions and
+  diagnostics.
+
+**QVF note.** "Quiet-verbose-on-failure" buffering — hold all
+of a job's events and flush only if the job fails — is a
+stateful operation that requires knowing when a job ends. This
+is handled upstream in the `ArtifactLayer` or a dedicated
+command-level component, **not** in the filter layer. Filters
+are for stateless (or near-stateless) event selection only.
+
+### 13.4 Renderers — format and emit
+
+A renderer receives a pre-filtered event stream and is
+responsible only for **formatting** that stream and **writing**
+it to its destination (STDOUT, a file, a database, a web
+service, etc.).
+
+Renderers **must not** make filtering decisions themselves —
+that separation is what makes renderers composable with
+different filter chains without modification.
+
+**Base class** (`App::Yath2::Renderer`):
+
+```perl
+sub desired_filters { () }          # override to declare filter chain
+sub render_event { croak "override" }
+sub start        { }
+sub finish       { }
+sub signal       { }
+sub end_of_events { }
+sub is_async     { 0 }
+```
+
+### 13.5 Why this split
+
+- **ArtifactLayer** (TBD) is dumb about renderers: it just reads
+  and dispatches. Adding a new renderer never requires touching
+  the artifact layer.
+- **OutputManager** is dumb about what filters and renderers do:
+  it just runs each chain once and fans out. Adding a new filter
+  or renderer never requires touching the manager.
+- **Filters** are independent modules: the same `Quiet` filter
+  can be used by the Default TUI renderer, a JUnit renderer, or
+  a custom renderer. Renderers with identical filter chains
+  automatically share a single chain run.
+- **Renderers** are dumb about filtering: they only format and
+  emit. They are trivial to write and test in isolation.
+- **QVF** is kept out of the filter layer intentionally: its
+  buffering semantics belong upstream where full job context is
+  available.
 
 ## 14. Scheduler
 
@@ -2139,14 +2212,12 @@ spec:
   wrapper that opens STDOUT / STDERR as mixed-mode
   `Atomic::Pipe`s, accepts structured events, emits an event
   burst on STDOUT, and drops the paired sync record on STDERR.
-- **Command-side artifact-to-renderer layer** (§13). The
-  `list_global_artifacts` / `list_run_artifacts` / final-state
-  query requests exist to serve this layer; the layer itself —
-  the one that reads artifacts, picks events based on mode, and
-  feeds renderers — still has to be implemented. The renderer
-  interface is trivial (single `event_in` entry point); the
-  artifact-to-event translation logic is the real work.
+- **Command-side artifact-to-renderer layer** (§13). Not yet
+  implemented. The `OutputManager`, filter classes, and renderer
+  base are in place and ready to receive events from whatever
+  event source is built here.
 - **CLI surfacing of the `launch_job` retry interval** (§14).
   The value lives in run data with a 5 s default today. A
   future CLI flag needs to be added when the options layer
   grows to support it.
+

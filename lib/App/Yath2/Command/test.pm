@@ -24,6 +24,8 @@ use Test2::Harness2::Resource::JobCount();
 use App::Yath2::LogArchive();
 use App::Yath2::LogArchive::Format qw/default_writer_format/;
 use App::Yath2::Streamer::Live();
+use App::Yath2::OutputManager();
+use App::Yath2::Renderer::Default();
 
 use Getopt::Yath;
 include_options(
@@ -92,6 +94,9 @@ sub run {
         unless $queued->{ok};
     my $run_id = $queued->{run_id};
 
+    my $om = App::Yath2::OutputManager->new;
+    $om->add_renderer(App::Yath2::Renderer::Default->new);
+
     # Stream events synthesized from the harness's IPC state updates
     # (plus any general events its loggers record) and print them as
     # JSON lines to stdout. The stream's own harness_run_end event is
@@ -122,6 +127,8 @@ sub run {
         },
         exit_if => sub { $seen_end ? 1 : 0 },
     );
+
+    $om->finish;
 
     # Unsubscribe + finish while the harness is still up. We only
     # leave the stream loop because we just saw harness_run_end from

@@ -16,7 +16,8 @@ use YAML::Tiny;
 
 use Time::HiRes qw/time/;
 
-use Test2::Harness2::Util qw/clean_path find_in_updir/;
+use Test2::Harness2::Util qw/clean_path/;
+use App::Yath::Script qw/find_in_updir/;
 use Test2::Harness2::Util::IPC qw/start_process/;
 use Test2::Harness2::Util::JSON qw/encode_json_file encode_json decode_json_file/;
 use Test2::Util::UUID qw/gen_uuid/;
@@ -27,6 +28,9 @@ use Object::HashBase qw{
     <writer
     <stopped
 };
+
+sub desired_filters { () }    # stores every event in the database — no pre-filtering
+sub is_async        { 1  }    # forks a child process in start()
 
 use Getopt::Yath;
 
