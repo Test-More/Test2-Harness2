@@ -134,8 +134,26 @@ sub _scan {
                 $retry_set = 1;
             }
         }
+        elsif ($dir eq 'stage') {
+            my ($name) = @args;
+            $self->{+STAGE} = $name;
+        }
+        elsif ($dir eq 'duration' || $dir eq 'dur') {
+            my ($name) = @args;
+            $self->{+DURATION} = lc($name);
+        }
+        elsif ($dir eq 'category' || $dir eq 'cat') {
+            my ($name) = @args;
+            $name = lc($name);
+            if ($name =~ m/^(?:long|medium|short)$/) {
+                $self->{+DURATION} = $name;
+            }
+            else {
+                $self->{+CATEGORY} = $name;
+            }
+        }
         else {
-            # Remaining directive arms land in Stages F-G.
+            # Remaining directive arms land in Stage G.
             warn "Unknown harness directive '$dir' at $self->{+FILE} line $ln.\n";
         }
     }

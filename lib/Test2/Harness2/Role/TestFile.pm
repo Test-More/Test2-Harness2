@@ -26,8 +26,8 @@ sub defaults {
     return {
         min_slots         => 1,
         max_slots         => undef,
-        category          => 'general',
-        duration          => 'medium',
+        category          => undef,
+        duration          => undef,
         stage             => undef,
         conflicts         => [],
         smoke             => 0,
@@ -120,7 +120,7 @@ my %RANK = (
 
 sub rank {
     my $self = shift;
-    return $RANK{smoke}                  if $self->check_feature('smoke');
+    return $RANK{smoke} if $self->check_feature('smoke');
     return $RANK{$self->check_category} || $RANK{$self->check_duration} || 1;
 }
 
@@ -332,8 +332,12 @@ min_slots" or "as many as are free", per resource).
 
 =item category, duration, stage
 
-Scheduler hints. Defaults: C<category =E<gt> 'general'>, C<duration =E<gt>
-'medium'>, C<stage =E<gt> undef>.
+Scheduler hints. Defaults: C<category =E<gt> undef>, C<duration =E<gt>
+undef>, C<stage =E<gt> undef>. The raw attributes stay undef until a
+C<HARNESS-CATEGORY-*> / C<HARNESS-DURATION-*> / C<HARNESS-STAGE-*>
+directive sets them. The C<check_category> and C<check_duration>
+helpers fall back to C<'general'> / C<'medium'> respectively when the
+raw attribute is still undef.
 
 =item conflicts
 
