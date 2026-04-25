@@ -7,6 +7,7 @@ requires "B" => "0";
 requires "Capture::Tiny" => "0.48";
 requires "Carp" => "0";
 requires "Class::C3" => "0.35";
+requires "Compress::Zstd" => "0.20";
 requires "Consumer::NonBlock" => "0.002";
 requires "Cpanel::JSON::XS" => "4.38";
 requires "Crypt::Eksblowfish::Bcrypt" => "0";
@@ -142,7 +143,6 @@ on 'configure' => sub {
 
 on 'develop' => sub {
   requires "Class::XSAccessor" => "1.19";
-  requires "Compress::Zstd" => "0";
   requires "DBD::MariaDB" => "0";
   requires "DBD::Pg" => "0";
   requires "DBD::SQLite" => "0";
