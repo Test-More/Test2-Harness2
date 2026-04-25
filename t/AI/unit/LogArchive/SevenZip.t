@@ -18,13 +18,20 @@ sub _build_7z {
     return $? == 0;
 }
 
+my @CLASSES;
 for my $class (qw/App::Yath2::LogArchive::SevenZip::External App::Yath2::LogArchive::SevenZip::PP/) {
     unless (eval "require $class; 1") {
         diag("skip $class: $@");
         next;
     }
     next unless $class->viable;
+    push @CLASSES => $class;
+}
 
+plan skip_all => 'no viable 7z backend (install p7zip or Archive::SevenZip)'
+    unless @CLASSES;
+
+for my $class (@CLASSES) {
     subtest $class => sub {
         my $src = tempdir(CLEANUP => 1);
         open my $fh, '>', "$src/a.txt" or die $!;

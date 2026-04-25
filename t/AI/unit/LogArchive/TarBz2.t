@@ -25,7 +25,8 @@ for my $class (qw/App::Yath2::LogArchive::TarBz2::External App::Yath2::LogArchiv
 
         my $la = $class->new(path => $out, format => 'tar.bz2');
         my @files = sort $la->list_files;
-        @files = grep { $_ ne '.' && $_ ne './' } @files;
+        s{^\./}{} for @files;
+        @files = grep { $_ ne '.' && $_ ne './' && $_ !~ m{(?:^|/)\._} } @files;
         is(\@files, [qw/a.txt b.txt/], "$class list_files");
 
         ok($la->has_file('a.txt'), 'has_file');
