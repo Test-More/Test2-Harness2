@@ -232,6 +232,31 @@ wrapping that L</emit_event> provides.
 
 =back
 
+=head2 ORDERING NOTE
+
+C<Atomic::Pipe> in C<mixed_data_mode> does B<not> guarantee FIFO ordering
+between plain C<print>/C<warn> writes and C<write_message> calls on the
+same pipe fd, even when both come from the same process.  This is a
+kernel-level property: a raw C<print> and an immediately following
+C<write_message> may arrive at the reader in either order under scheduler
+pressure.
+
+Consequently, callers of this module must B<not> interleave raw C<print>
+calls on the same underlying fd (e.g. C<STDOUT>) with C<emit_*> calls and
+then rely on strict arrival-order at the reader.  The sync-marker contract
+(every STDOUT event is paired with a STDERR sync marker) allows the
+Collector to order STDOUT events relative to STDERR lines, but it cannot
+reorder items that have already been delivered out of sequence within the
+same stream.
+
+In practice this limitation only matters in contrived test scenarios that
+drive a tight C<print> / C<write_message> loop on the same pipe fd.  Normal
+test processes (via C<Test2::Formatter::Stream2>) and normal service code
+produce coarser interleaving and are not affected.
+
+See C<ARCHITECTURE.md> Addendum A (GH#389) for the full investigation
+notes, including the Collector read-loop analysis.
+
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at

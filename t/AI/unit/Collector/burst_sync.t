@@ -73,12 +73,17 @@ sub spawn_writer {
                 $fh->flush if $fh->can('flush');
             }
             # Pace the writer so the reader can drain between steps.
-            # Back-to-back line+message writes on the same pipe race in
-            # Atomic::Pipe mixed_data_mode under slow CI (observed on
-            # containerized Perl 5.* matrix jobs): the message burst
-            # can land at the reader before the preceding line, which
-            # breaks the strict FIFO ordering this subtest asserts. A
-            # 10ms pause is enough to serialize the kernel-level reads.
+            # Atomic::Pipe mixed_data_mode does not guarantee FIFO ordering
+            # between a plain print+flush (line write) and an immediately
+            # following write_message call on the same pipe fd.  Under
+            # scheduler pressure on slow CI (containerized Perl 5.14–5.26
+            # matrix jobs) the message burst can overtake the preceding
+            # print+flush line, breaking the strict FIFO ordering the
+            # 'sync marker orders...' subtest below asserts.  A 10 ms pause
+            # is enough to serialize the kernel-level reads in CI.  The
+            # 'sync marker' subtest is wrapped in a todo{} to document the
+            # non-guarantee without failing the suite.
+            # See ARCHITECTURE.md Addendum A and GH#389.
             sleep 0.01;
         }
 
