@@ -64,6 +64,8 @@ use Object::HashBase qw{
     +_loggers_spec
     +_failing_notified
     <child_exit
+
+    +_win32_job
 };
 
 # Default auditor accessors for the base class. Test2::Harness2::Collector::Test
@@ -529,12 +531,16 @@ sub _spawn_collector_win32 {
     );
 
     my $pid;
-    my $ok  = eval { $pid = system 1, @cmd; 1 };
+    my $ok  = eval { $pid = $self->_win32_spawn(@cmd); 1 };
     my $err = $@;
 
-    if (!$ok || !$pid || $pid < 0) {
+    if (!$ok) {
         unlink($json_file);
-        croak "Failed to spawn collector process: " . ($err || $!);
+        croak "Failed to spawn collector process (eval died): $err";
+    }
+    if (!defined $pid || $pid <= 0) {
+        unlink($json_file);
+        croak "Failed to spawn collector process (spawn returned ${\($pid // 'undef')}): $!";
     }
 
     return $pid;
@@ -1191,16 +1197,29 @@ sub _launch_child_unix {
     return $pid;
 }
 
+sub _win32_spawn {
+    my $self = shift;
+    # system(1, @cmd) on Win32 is _spawnvp(P_NOWAIT, ...) which returns the
+    # pseudo-process ID (a positive integer) on success, or -1 on failure.
+    # This is NOT the exit code — it is the PID to pass to waitpid().
+    # Isolated in its own method so tests can override it without patching
+    # CORE::GLOBAL::system (which does not intercept already-compiled opcodes).
+    return system 1, @_;
+}
+
 sub _check_new_pgroup_supported_on_win32 {
     my $self = shift;
 
-    # new_pgroup is not yet wired up on Windows. The spec calls for
-    # Win32::Job (AssignProcessToJobObject + TerminateJobObject) to
-    # replace system(1, @cmd) with an atomically-terminable spawn path.
-    # Until that work lands, fail fast rather than silently ignoring the
-    # isolation request -- the harness relies on it for Invariant 1.
-    if ($self->{+NEW_PGROUP}) {
-        croak "new_pgroup => 1 is not yet supported on Windows; install Win32::Job " . "and implement the Collector Win32 launch path that uses it";
+    return unless $self->{+NEW_PGROUP};
+
+    # Win32::Job (AssignProcessToJobObject + TerminateJobObject) provides
+    # the Windows equivalent of a process group: spawning into a job object
+    # lets us terminate the child and all its descendants atomically, which
+    # is required for Invariant 1 (child-process isolation).
+    my $has_win32_job = eval { require Win32::Job; 1 };
+    unless ($has_win32_job) {
+        croak "new_pgroup => 1 on Windows requires Win32::Job (not installed); "
+            . "install Win32::Job to enable process-group isolation";
     }
 }
 
@@ -1211,6 +1230,13 @@ sub _launch_child_win32 {
     $self->_check_new_pgroup_supported_on_win32();
 
     my $cmd = $self->{+LAUNCH};
+
+    # When new_pgroup is requested, use Win32::Job so the child and all its
+    # descendants can be terminated atomically (the Windows equivalent of
+    # kill(0 - $pgid)).  _check_new_pgroup_supported_on_win32() already
+    # verified that Win32::Job is loadable, so require it unconditionally here.
+    return $self->_launch_child_win32_job($cmd, $out_w, $err_w)
+        if $self->{+NEW_PGROUP};
 
     # On Windows there is no fork. Redirect STDOUT/STDERR to the pipe write
     # ends, spawn via system(1, @cmd) (P_NOWAIT) which returns the child PID
@@ -1225,7 +1251,7 @@ sub _launch_child_win32 {
     {
         my %env = $self->_child_env_overrides;
         local @ENV{keys %env} = values %env;
-        $ok = eval { $pid = system 1, @$cmd; 1 };
+        $ok = eval { $pid = $self->_win32_spawn(@$cmd); 1 };
     }
     my $err = $@;
 
@@ -1233,10 +1259,77 @@ sub _launch_child_win32 {
     open(STDOUT, '>&', $orig_stdout) or croak "Could not restore STDOUT: $!";
     open(STDERR, '>&', $orig_stderr) or croak "Could not restore STDERR: $!";
 
-    croak "Failed to spawn '@$cmd': " . ($err || $!)
-        if !$ok || !$pid || $pid < 0;
+    croak "Failed to spawn '@$cmd' (eval died): $err"
+        if !$ok;
+    croak "Failed to spawn '@$cmd' (spawn returned ${\($pid // 'undef')}): $!"
+        if !defined $pid || $pid <= 0;
 
     return $pid;
+}
+
+sub _launch_child_win32_job {
+    my $self = shift;
+    my ($cmd, $out_w, $err_w) = @_;
+
+    # Win32::Job was already verified loadable by _check_new_pgroup_supported_on_win32.
+    require Win32::Job;
+
+    my $job = Win32::Job->new()
+        or croak "Failed to create Win32::Job object: $^E";
+
+    # Build a properly-quoted command line string for CreateProcess.
+    # Win32::Job->spawn() takes ($exe, $cmdline, \%opts).  The first element
+    # of @$cmd is the executable; the full quoted string is the command line
+    # (CreateProcess convention: argv[0] is embedded in it).
+    my $exe     = $cmd->[0];
+    my $cmdline = join(' ', map { $self->_win32_quote_arg($_) } @$cmd);
+
+    my %env = $self->_child_env_overrides;
+
+    # Merge overrides into the current environment for the spawn call.
+    # Win32::Job->spawn inherits the parent environment; we simulate
+    # local-env by temporarily setting the vars before spawning.
+    local @ENV{keys %env} = values %env;
+
+    # Pass the pipe write ends as the child's stdout/stderr.
+    # Win32::Job->spawn accepts filehandles for stdin/stdout/stderr and
+    # marks them inheritable before calling CreateProcess.
+    my $pid = $job->spawn($exe, $cmdline, {
+        stdout => $out_w->wh,
+        stderr => $err_w->wh,
+    });
+
+    croak "Win32::Job->spawn('$exe') failed: $^E"
+        unless defined $pid && $pid > 0;
+
+    # Store the job object on the instance.  The job's lifetime is tied to
+    # $self: when the Collector is destroyed, Win32::Job goes out of scope,
+    # the job handle is closed, and Windows terminates all processes still
+    # assigned to it — matching the Unix kill(0 - $pgid) semantics.
+    $self->{+_WIN32_JOB} = $job;
+
+    return $pid;
+}
+
+# Quoted-string helper for Win32 CreateProcess command lines.
+# Rules: if the argument contains spaces or double-quotes, wrap it in
+# double-quotes and escape any embedded double-quotes with a backslash.
+sub _win32_quote_arg {
+    my $self = shift;
+    my ($arg) = @_;
+    return $arg unless $arg =~ /[ \t"]/;
+    $arg =~ s/"/\\"/g;
+    return qq{"$arg"};
+}
+
+sub DESTROY {
+    my $self = shift;
+    # Release the Win32::Job handle explicitly.  When the last reference is
+    # dropped, Windows closes the job handle.  Processes already assigned to
+    # the job are terminated only if the job was created with
+    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE — Win32::Job sets this flag by
+    # default, so all descendants are reaped atomically.
+    delete $self->{+_WIN32_JOB};
 }
 
 sub _wrap_handle {
