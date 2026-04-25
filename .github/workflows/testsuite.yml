@@ -82,6 +82,64 @@ jobs:
       - run: make test
 
   #
+  # Same as `ubuntu`, but installs App::Yath::Script from the unreleased
+  # `script` branch of this repo instead of CPAN, so PRs that touch the
+  # wrapper get smoke-tested against the unreleased code before any
+  # release is cut.
+  #
+
+  ubuntu-script-branch:
+    name: "Simple TestRun (App::Yath::Script @ origin/script)"
+    env:
+      PERL_USE_UNSAFE_INC: 0
+      AUTHOR_TESTING: 0
+      AUTOMATED_TESTING: 1
+      RELEASE_TESTING: 1
+      PERL_CARTON_PATH: $GITHUB_WORKSPACE/local
+      YATH_TEST_TIMEOUT: 480
+      YATH_RUN_SERVICE_READY_TIMEOUT: 60
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Need the full history so origin/script is reachable.
+          fetch-depth: 0
+      - run: perl -V
+      - name: Get cache week number
+        id: cache-week
+        run: echo "week=$(date +%Y-W%V)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v5
+        with:
+          path: local
+          key: cpan-ubuntu-script-${{ hashFiles('cpanfile') }}-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            cpan-ubuntu-script-${{ hashFiles('cpanfile') }}-
+            cpan-ubuntu-script-
+      - name: install App::Yath::Script from origin/script
+        run: |
+          git fetch origin script:script || git fetch origin script
+          perl author/install-yath-script --force
+      - name: install dependencies from cpanfile (all groups)
+        uses: perl-actions/install-with-cpm@v2
+        with:
+          cpanfile: "cpanfile"
+          # Install runtime + test + configure + develop. The develop
+          # group carries the modules that used to live in
+          # .github/cpanfile.ci plus optional backends (e.g.
+          # Compress::Zstd) that gate LogArchive test coverage.
+          # Do NOT pass --with-suggests: RuntimeSuggests includes
+          # Win32::Console::ANSI / Win32::Job, which fail to configure
+          # on Linux runners ("OS unsupported").
+          args: "--with-develop"
+          retries: 3
+      - run: perl Makefile.PL
+      - run: make
+      - run: make test
+
+  #
   # Determine which Perl versions to test
   #
 

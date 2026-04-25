@@ -33,6 +33,20 @@ sub cover {
     return '-MDevel::Cover=-silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl';
 }
 
+# Test-side init hook. Only fires when an integration test (or its
+# wrapper, t/lib/Test2/Harness2/Test/Yath.pm) has set
+# YATH_TESTER_INIT=1 in BEGIN. Outside that env, Tester is inert
+# for downstream consumers. The hook lives in t/lib so dev code
+# carries no assertion logic.
+if ($ENV{YATH_TESTER_INIT}) {
+    my $tlib = File::Spec->catdir($apppath, File::Spec->updir, 't', 'lib');
+    if (-d $tlib) {
+        require lib;
+        lib->import($tlib);
+        require Test2::Harness2::Test::Init;
+    }
+}
+
 sub yath {
     my %params = @_;
 
@@ -109,6 +123,11 @@ sub yath {
     $ENV{NESTED_YATH} = 1;
     $ENV{T2_HARNESS_PROC_PREFIX} = "nested";
     $ENV{'YATH_SELF_TEST'} = 1;
+    # Pin the spawned yath's @INC: App::Yath::Script::do_begin's
+    # inject_includes() will splat @INC from this list before the V2
+    # require, so a stale CPAN install can't outrace our in-tree
+    # lib/App/Yath/Script/V2.pm via Perl's default search path.
+    $ENV{T2_HARNESS_INCLUDES} = join ';' => $apppath, grep { $_ ne '.' } @INC;
     $ENV{$_} = $env->{$_} for keys %$env;
     $ENV{YATH_COLOR} = 0;
     my $pid = start_process \@cmd => sub {

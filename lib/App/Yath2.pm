@@ -47,7 +47,7 @@ use Test2::Harness2::Util qw/find_libraries clean_path mod2file read_file/;
 use Test2::Harness2::Util::JSON qw/encode_pretty_json decode_json/;
 
 my $APP_PATH = __FILE__;
-$APP_PATH =~ s{App\S+Yath\.pm$}{}g;
+$APP_PATH =~ s{App\S+Yath\d*\.pm$}{}g;
 $APP_PATH = clean_path($APP_PATH);
 sub app_path { $APP_PATH }
 

@@ -48,6 +48,7 @@ Any decision to deviate from `ARCHITECTURE.md` must **also** be recorded as an a
 - Run tests with: `perl -Ilib yath -D test -j16`
 - When using `-v` for verbose output, drop `-j16`: `perl -Ilib yath -D test`
 - Tests that are substantially AI- or Claude-generated go under `t/AI/`, preserving the relative path beneath that prefix (e.g. `t/AI/unit/Foo.t`, `t/AI/integration/bar.t`). Anything outside `t/AI/` is reserved for tests originally written by humans; AI may modify those later as long as they stay readable. Tests copied in from `reference/old2/t/` or `reference/legacy/t/` count as human-authored and do **not** move under `t/AI/`.
+- The `App::Yath::Script` wrapper (which ships the `yath` binary) is a separate distribution. By default `cpanfile` pulls the released CPAN version; to test against the unreleased code on `origin/script`, run `perl author/install-yath-script` (idempotent, only reinstalls when the branch SHA changes). The `ubuntu-script-branch` CI job runs the suite against that unreleased version on every PR.
 
 ## Style
 
