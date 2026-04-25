@@ -8,6 +8,8 @@ use Cwd();
 use File::Spec();
 use Time::HiRes qw/time/;
 
+use Test2::Util::UUID qw/gen_uuid/;
+
 use Test2::Harness2::Util qw/clean_path/;
 use Getopt::Yath::Settings;
 use App::Yath2;
@@ -15,7 +17,7 @@ use App::Yath2;
 my $INSTANCE;
 
 sub do_begin {
-    my $class = shift;
+    my $class  = shift;
     my %params = @_;
 
     my $script      = $params{script};
@@ -31,7 +33,11 @@ sub do_begin {
     my $orig_inc       = [@INC];
 
     my $base_file = $config || $user_config;
-    my $cwd = clean_path(Cwd::getcwd());
+    my $cwd       = clean_path(Cwd::getcwd());
+
+    my $uuid_full = gen_uuid();
+    $uuid_full =~ tr/-//d;
+    my $instance_uuid = lc substr($uuid_full, -8);
 
     my $base_dir;
     if ($base_file) {
@@ -65,6 +71,8 @@ sub do_begin {
 
             cwd   => $cwd,
             start => time(),
+
+            instance_uuid => $instance_uuid,
         },
     );
 
@@ -75,5 +83,9 @@ sub do_begin {
 }
 
 sub do_runtime { $INSTANCE->run() }
+
+sub _test_instance_settings_yath {
+    return $INSTANCE->{settings}->yath;
+}
 
 1;
