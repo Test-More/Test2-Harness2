@@ -213,6 +213,7 @@ sub _apply_run_state {
                         stamp    => $now->{completed_at},
                         (defined $now->{exit}  ? (exit  => $now->{exit})  : ()),
                         (defined $now->{codes} ? (codes => $now->{codes}) : ()),
+                        (defined $now->{times} ? (times => $now->{times}) : ()),
                     },
                     harness_job_exit => {
                         job_id => $jid,
@@ -309,10 +310,34 @@ sub _harness_run_end_facet {
     my $results  = ref($state->{results}) eq 'HASH' ? $state->{results} : {};
     my $all_pass = 1;
     my ($fail_count, $pass_count) = (0, 0);
+    my @cpu_agg    = (0, 0, 0, 0);
+    my $have_times = 0;
+
     for my $jid (keys %$results) {
         next unless defined $results->{$jid}{completed_at};
         if ($results->{$jid}{pass}) { $pass_count++ }
         else                        { $fail_count++; $all_pass = 0 }
+        if (my $t = $results->{$jid}{times}) {
+            $cpu_agg[$_] += $t->[$_] for 0 .. 3;
+            $have_times = 1;
+        }
+    }
+
+    my $stamp     = _max_completed_at($results) // time;
+    my $wall_time = defined $state->{created_at} ? ($stamp - $state->{created_at}) : undef;
+
+    my %timing;
+    if ($have_times) {
+        my $cpu_total = $cpu_agg[0] + $cpu_agg[1] + $cpu_agg[2] + $cpu_agg[3];
+        %timing = (
+            wall_time => $wall_time,
+            cpu_times => \@cpu_agg,
+            cpu_total => $cpu_total,
+            cpu_usage => ($wall_time && $wall_time > 0) ? int($cpu_total / $wall_time * 100) : 0,
+        );
+    }
+    elsif (defined $wall_time) {
+        %timing = (wall_time => $wall_time);
     }
 
     return {
@@ -320,7 +345,8 @@ sub _harness_run_end_facet {
         pass       => $all_pass ? 1 : 0,
         pass_count => $pass_count,
         fail_count => $fail_count,
-        stamp      => _max_completed_at($results) // time,
+        stamp      => $stamp,
+        %timing,
     };
 }
 

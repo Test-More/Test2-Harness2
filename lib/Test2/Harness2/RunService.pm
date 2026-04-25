@@ -542,6 +542,7 @@ sub _handle_test_job_completed {
     $r->{codes}        = $content->{codes};
     $r->{pass_count}   = $content->{pass_count};
     $r->{fail_count}   = $content->{fail_count};
+    $r->{times}        = $content->{times} if $content->{times};
     $r->{stamp}        = $completed_at;
     $r->{completed_at} = $completed_at;
 

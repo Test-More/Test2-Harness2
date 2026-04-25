@@ -93,6 +93,10 @@ sub render_summary {
     my $pass_count = $run_end->{pass_count} // 0;
     my $fail_count = $run_end->{fail_count} // 0;
     my $total      = $pass_count + $fail_count;
+    my $wall_time  = $run_end->{wall_time};
+    my $cpu_times  = $run_end->{cpu_times};
+    my $cpu_total  = $run_end->{cpu_total};
+    my $cpu_usage  = $run_end->{cpu_usage};
 
     if (my $rows = $self->{+_FAILED_JOBS}) {
         if (@$rows) {
@@ -108,6 +112,21 @@ sub render_summary {
     my @summary = (
         $fail_count ? ("     Fail Count: $fail_count") : (),
         "     File Count: $total",
+        (defined $wall_time)
+        ? (
+            sprintf("      Wall Time: %.2f seconds", $wall_time),
+            ($cpu_times
+                ? (
+                    sprintf(
+                        "       CPU Time: %.2f seconds (usr: %.2fs | sys: %.2fs | cusr: %.2fs | csys: %.2fs)",
+                        $cpu_total, @{$cpu_times}[0 .. 3]
+                    ),
+                    sprintf("      CPU Usage: %i%%", $cpu_usage),
+                )
+                : ()
+            ),
+          )
+        : (),
     );
 
     my $res = "    -->  Result: " . (defined($pass) ? $pass ? 'PASSED' : 'FAILED' : 'N/A') . "  <--";
@@ -143,6 +162,11 @@ sub write_summary_file {
         total_tests    => $pass_count + $fail_count,
 
         failed => $self->{+_FAILED_JOBS},
+
+        (defined $run_end->{wall_time} ? (wall_time => $run_end->{wall_time}) : ()),
+        (defined $run_end->{cpu_total} ? (cpu_total => $run_end->{cpu_total}) : ()),
+        (defined $run_end->{cpu_usage} ? (cpu_usage => $run_end->{cpu_usage}) : ()),
+        (defined $run_end->{cpu_times} ? (cpu_times => $run_end->{cpu_times}) : ()),
     );
 
     require Test2::Harness2::Util::File::JSON;

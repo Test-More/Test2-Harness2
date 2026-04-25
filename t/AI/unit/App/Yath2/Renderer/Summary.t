@@ -63,6 +63,28 @@ subtest 'render_summary prints pass result' => sub {
     like($buf, qr/File Count: 3/, 'file count shown');
 };
 
+subtest 'render_summary shows timing when present' => sub {
+    my $r   = make_renderer();
+    my $buf = '';
+    local *STDOUT;
+    open(STDOUT, '>', \$buf) or die "Cannot redirect STDOUT: $!";
+    $r->render_summary({
+        pass       => 1,
+        pass_count => 2,
+        fail_count => 0,
+        wall_time  => 10.5,
+        cpu_times  => [2.1, 0.3, 5.0, 0.1],
+        cpu_total  => 7.5,
+        cpu_usage  => 71,
+    });
+    close STDOUT;
+    open(STDOUT, '>&', \*STDERR);
+    like($buf, qr/Wall Time.*10\.50 seconds/, 'wall time shown');
+    like($buf, qr/CPU Time/, 'cpu time shown');
+    like($buf, qr/CPU Usage.*71%/, 'cpu usage shown');
+    like($buf, qr/usr:.*2\.10/, 'user time shown');
+};
+
 subtest 'render_summary prints fail result' => sub {
     my $r   = make_renderer();
     my $buf = '';

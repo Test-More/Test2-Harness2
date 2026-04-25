@@ -228,6 +228,8 @@ sub _emit_completed {
         $payload{fail_count} = $auditor->fail_count   if $auditor->can('fail_count');
     }
 
+    $payload{times} = $exit_facet->{times} if $exit_facet->{times};
+
     $self->_send_to_run(\%payload);
 
     $self->_send_to_harness({
