@@ -175,9 +175,10 @@ sub write {
         my $tree = $self->render_tree($f, '>');
         $lines = $self->build_buffered_event($f, $tree);
 
-        push @{$self->{+_BUFFER}->{$job_id} //= []} => @$lines;
-
-        return unless $self->{+SHOW_BUFFER} || $self->{+PROGRESS} || $also_show;
+        if (defined $job_id) {
+            push @{$self->{+_BUFFER}->{$job_id} //= []} => @$lines;
+            return unless $self->{+SHOW_BUFFER} || $self->{+PROGRESS} || $also_show;
+        }
     }
     else {
         my $tree = $self->render_tree($f);
