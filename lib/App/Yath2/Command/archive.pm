@@ -7,7 +7,6 @@ our $VERSION = '2.000011';
 use POSIX qw/strftime/;
 
 use App::Yath2::LogArchive;
-use App::Yath2::LogArchive::Format qw/writer_class_for default_writer_format DEFAULT_WRITER_PREFERENCE/;
 
 use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
@@ -19,20 +18,22 @@ with 'App::Yath2::Role::Command';
 sub group { 'log parsing' }
 
 sub summary  { "Archive a yath log directory into a single file" }
-sub cli_args { "[--] logdir [archive_filename [format]]" }
+sub cli_args { "[--] logdir [archive_filename]" }
 
 sub description {
-    my @prefs = DEFAULT_WRITER_PREFERENCE;
     return <<"    EOT";
-Archive a yath log directory.
+Archive a yath log directory into a single tar.zidx file.
 
 Required first argument: path to the log directory.
 
 Optional second argument: output archive filename. Defaults to
 "<YYYYMMDD-HHMMSS>.yath".
 
-Optional third argument: archive format. Must be one of: @prefs.
-Defaults to the first one whose backend is available on this system.
+yath only produces tar.zidx archives. The on-disk shape is a tar
+(ustar) with per-file zstd compression and a trailing index for
+random-access reads. The archive bundles whatever zstd dictionary
+was active for the run (copied from \$logdir/zstd-dict.bin) so
+extracts and replays do not depend on the recipient's install.
     EOT
 }
 
@@ -51,23 +52,13 @@ sub run {
     my $archive = shift @$args;
     $archive //= strftime('%Y%m%d-%H%M%S', localtime) . '.yath';
 
-    my $format = shift @$args;
-    if (defined $format) {
-        my $ok = eval { writer_class_for($format); 1 };
-        die "format '$format' is not viable on this system: $@" unless $ok;
-    }
-    else {
-        $format = default_writer_format();
-    }
+    die "extra arguments after archive filename\n" if @$args;
 
-    die "extra arguments after format\n" if @$args;
-
-    print "Archiving '$logdir' as '$archive' (format: $format)\n";
+    print "Archiving '$logdir' as '$archive'\n";
 
     App::Yath2::LogArchive->create(
         source => $logdir,
         path   => $archive,
-        format => $format,
     );
 
     print "Wrote archive: $archive\n";

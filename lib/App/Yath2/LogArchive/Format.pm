@@ -19,15 +19,14 @@ our @EXPORT_OK = qw/
 use constant TAR_ZIDX_MAGIC      => "YZIDXv1\0";
 use constant TAR_ZIDX_FOOTER_LEN => 32;
 
-use constant DEFAULT_WRITER_PREFERENCE => ('tar.zidx', 'zip', '7z', 'tar.bz2', 'tar.gz');
+# Yath ships exactly one archive format on disk: tar.zidx. The
+# multi-format dispatch the codebase used to carry (tar / tar.gz /
+# tar.bz2 / zip / 7z) was deleted as part of the zstd-loggers spec --
+# Compress::Zstd is now a hard prereq and tar.zidx is pure-Perl end
+# to end, so there is no reason to ship the alternatives.
+use constant DEFAULT_WRITER_PREFERENCE => ('tar.zidx');
 
-sub default_writer_format {
-    for my $candidate (DEFAULT_WRITER_PREFERENCE) {
-        return $candidate if eval { writer_class_for($candidate); 1 };
-    }
-    croak "no viable archive format available; install one of: "
-        . join(' ', DEFAULT_WRITER_PREFERENCE);
-}
+sub default_writer_format { return 'tar.zidx' }
 
 sub detect_format {
     my ($path) = @_;
@@ -49,30 +48,15 @@ sub detect_format {
             close($fh);
             return 'tar.zidx';
         }
-        seek($fh, 0, SEEK_SET);
     }
 
-    my $buf = '';
-    read($fh, $buf, 512);
     close($fh);
-
-    return 'zip'     if length($buf) >= 4 && substr($buf, 0, 4) eq "PK\x03\x04";
-    return '7z'      if length($buf) >= 6 && substr($buf, 0, 6) eq "7z\xBC\xAF\x27\x1C";
-    return 'tar.gz'  if length($buf) >= 2 && substr($buf, 0, 2) eq "\x1f\x8b";
-    return 'tar.bz2' if length($buf) >= 3 && substr($buf, 0, 3) eq "BZh";
-    return 'tar'     if length($buf) >= 262 && substr($buf, 257, 5) eq 'ustar';
-
-    croak "LogArchive: unknown format for $path";
+    croak "LogArchive: unknown archive format for '$path' (yath only produces tar.zidx)";
 }
 
 my %READERS = (
     directory  => ['App::Yath2::LogArchive::Directory'],
-    tar        => [qw/App::Yath2::LogArchive::Tar::External App::Yath2::LogArchive::Tar::PP/],
-    'tar.gz'   => [qw/App::Yath2::LogArchive::TarGz::External App::Yath2::LogArchive::TarGz::PP/],
-    'tar.bz2'  => [qw/App::Yath2::LogArchive::TarBz2::External App::Yath2::LogArchive::TarBz2::PP/],
-    'tar.zidx' => [qw/App::Yath2::LogArchive::TarZIdx::External App::Yath2::LogArchive::TarZIdx::PP/],
-    zip        => [qw/App::Yath2::LogArchive::Zip::External App::Yath2::LogArchive::Zip::PP/],
-    '7z'       => [qw/App::Yath2::LogArchive::SevenZip::External App::Yath2::LogArchive::SevenZip::PP/],
+    'tar.zidx' => [qw/App::Yath2::LogArchive::TarZIdx/],
 );
 
 sub reader_class_for {
@@ -94,22 +78,21 @@ sub _module_path {
 }
 
 my %WRITERS = (
-    tar        => [qw/App::Yath2::LogArchive::Writer::Tar/],
-    'tar.gz'   => [qw/App::Yath2::LogArchive::Writer::Tar/],
-    'tar.bz2'  => [qw/App::Yath2::LogArchive::Writer::Tar/],
     'tar.zidx' => [qw/App::Yath2::LogArchive::Writer::TarZIdx/],
-    zip        => [qw/App::Yath2::LogArchive::Writer::Zip::External App::Yath2::LogArchive::Writer::Zip::PP/],
-    '7z'       => [qw/App::Yath2::LogArchive::Writer::SevenZip/],
 );
+
+# The writer class lives in the consolidated TarZIdx.pm file
+# (alongside the reader), so requiring the writer class's own
+# filename does not work. Pre-load the consolidated module before
+# any class-name dispatch.
+require App::Yath2::LogArchive::TarZIdx;
 
 sub writer_class_for {
     my ($format) = @_;
     my $candidates = $WRITERS{$format}
         or croak "LogArchive: no writer for format '$format'";
     for my $class (@$candidates) {
-        my $path = _module_path($class);
-        my $ok   = eval { require $path; $class->viable($format) };
-        return $class if $ok;
+        return $class if $class->viable($format);
     }
     croak "LogArchive: no writer available for format '$format'";
 }

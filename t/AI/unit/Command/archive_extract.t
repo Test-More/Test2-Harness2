@@ -9,11 +9,12 @@ use Cwd qw/getcwd/;
 use App::Yath2::Command::archive;
 use App::Yath2::Command::extract;
 use App::Yath2::LogArchive;
-use App::Yath2::LogArchive::Format qw/writer_class_for/;
 
-my $HAVE_TAR_ZIDX = eval { writer_class_for('tar.zidx'); 1 };
-my $HAVE_TAR_BZ2  = eval { writer_class_for('tar.bz2');  1 };
-
+# Build a logdir-shaped tree the archive command can serialise. The
+# archive writer treats every regular file under $logdir as content
+# to bundle and never re-compresses .zst entries (per spec section
+# 4.7), so the tiny artifacts.json file written here lands inside
+# the archive verbatim.
 sub _make_logdir {
     my $dir = tempdir(CLEANUP => 1);
     mkdir "$dir/services" or die $!;
@@ -40,16 +41,12 @@ sub _run_cmd {
     return ($rc, $out, $err);
 }
 
-subtest 'archive: explicit format works and round-trips through extract' => sub {
-    plan skip_all => 'tar.zidx writer not viable (need Compress::Zstd or zstd binary)'
-        unless $HAVE_TAR_ZIDX;
-
+subtest 'archive + extract round-trip via tar.zidx' => sub {
     my $logdir = _make_logdir();
     my $work   = tempdir(CLEANUP => 1);
-    my $arc    = "$work/out.tar.zidx";
+    my $arc    = "$work/out.yath";
 
-    my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive',
-        $logdir, $arc, 'tar.zidx');
+    my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive', $logdir, $arc);
     is($err, '', 'archive: no exception');
     is($rc,  0,  'archive: rc=0');
     ok(-s $arc, 'archive: output file non-empty');
@@ -91,11 +88,11 @@ subtest 'archive: bad logdir errors' => sub {
     like($err, qr/is not a directory/, 'bad logdir rejected');
 };
 
-subtest 'archive: invalid format errors' => sub {
+subtest 'archive: extra positional arg errors' => sub {
     my $logdir = _make_logdir();
     my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive',
-        $logdir, 'foo.out', 'made.up');
-    like($err, qr/format 'made\.up' is not viable/, 'bad format rejected');
+        $logdir, 'foo.yath', 'extra-arg');
+    like($err, qr/extra arguments/, 'third positional arg rejected');
 };
 
 subtest 'extract: missing archive errors' => sub {
@@ -109,15 +106,11 @@ subtest 'extract: nonexistent archive errors' => sub {
 };
 
 subtest 'extract: existing destination errors' => sub {
-    plan skip_all => 'tar.bz2 writer not viable'
-        unless $HAVE_TAR_BZ2;
-
     my $logdir = _make_logdir();
     my $work   = tempdir(CLEANUP => 1);
-    my $arc    = "$work/out.tar.bz2";
+    my $arc    = "$work/out.yath";
 
-    my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive',
-        $logdir, $arc, 'tar.bz2');
+    my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive', $logdir, $arc);
     is($err, '', 'archive ok');
 
     mkdir "$work/dest" or die $!;
@@ -126,15 +119,11 @@ subtest 'extract: existing destination errors' => sub {
 };
 
 subtest 'extract: default destination is ./logs' => sub {
-    plan skip_all => 'tar.bz2 writer not viable'
-        unless $HAVE_TAR_BZ2;
-
     my $logdir = _make_logdir();
     my $work   = tempdir(CLEANUP => 1);
-    my $arc    = "$work/out.tar.bz2";
+    my $arc    = "$work/out.yath";
 
-    my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive',
-        $logdir, $arc, 'tar.bz2');
+    my ($rc, $out, $err) = _run_cmd('App::Yath2::Command::archive', $logdir, $arc);
     is($err, '', 'archive ok');
 
     my $orig_cwd = getcwd();

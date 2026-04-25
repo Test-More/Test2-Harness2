@@ -28,10 +28,12 @@ sub create {
     my ($class, %args) = @_;
     my $source = $args{source} // croak "source is required";
     croak "source '$source' is not a directory" unless -d $source;
-
-    my $format = $args{format} // 'tar.bz2';
     $args{path} // croak "path is required";
 
+    # tar.zidx is the only archive format yath produces. Anything in
+    # the args called 'format' is ignored.
+    delete $args{format};
+    my $format       = 'tar.zidx';
     my $writer_class = writer_class_for($format);
     return $writer_class->new(%args, format => $format)->write_archive;
 }
@@ -42,19 +44,35 @@ sub artifacts {
     my $self = shift;
     my ($run_id, %opts) = $self->_parse_scope_args(@_);
 
-    my $rel = defined $run_id ? "runs/$run_id/artifacts.json.zst" : 'artifacts.json.zst';
-    return {} unless $self->has_file($rel);
+    # Live logdirs and tar.zidx archives carry artifacts.json.zst
+    # (zstd-compressed JSON). Extracted trees produced by
+    # `yath extract` carry artifacts.json (plaintext, with .zst
+    # stripped from key paths to match the on-disk layout). Try the
+    # compressed shape first; fall back to the plaintext shape.
+    my $rel_zst = defined $run_id ? "runs/$run_id/artifacts.json.zst" : 'artifacts.json.zst';
+    my $rel_pln = defined $run_id ? "runs/$run_id/artifacts.json"     : 'artifacts.json';
 
-    my $fh   = $self->read_file($rel);
-    my $bytes = do { local $/; <$fh> };
-    close $fh;
+    if ($self->has_file($rel_zst)) {
+        my $fh    = $self->read_file($rel_zst);
+        my $bytes = do { local $/; <$fh> };
+        close $fh;
 
-    my $dict_bytes = $self->can('dict_bytes') ? $self->dict_bytes : undef;
-    my $json = decompress_blob(
-        $bytes,
-        ($dict_bytes ? (dict_bytes => $dict_bytes) : ()),
-    );
-    return decode_json($json);
+        my $dict_bytes = $self->can('dict_bytes') ? $self->dict_bytes : undef;
+        my $json = decompress_blob(
+            $bytes,
+            ($dict_bytes ? (dict_bytes => $dict_bytes) : ()),
+        );
+        return decode_json($json);
+    }
+
+    if ($self->has_file($rel_pln)) {
+        my $fh   = $self->read_file($rel_pln);
+        my $json = do { local $/; <$fh> };
+        close $fh;
+        return decode_json($json);
+    }
+
+    return {};
 }
 
 sub runs {
@@ -68,7 +86,11 @@ sub runs {
             $runs{$id} = 1;
         }
         else {
-            $runs{$id} = 1 if $path eq "runs/$id/artifacts.json.zst";
+            # Accept either the live (.zst) or extracted (plain)
+            # manifest filename; both shapes are valid sources.
+            $runs{$id} = 1
+                if $path eq "runs/$id/artifacts.json.zst"
+                || $path eq "runs/$id/artifacts.json";
         }
     }
     return sort keys %runs;
@@ -103,6 +125,7 @@ sub rogue_files {
         for my $f (@all) {
             next unless index($f, $prefix) == 0;
             next if $f eq "${prefix}artifacts.json.zst";
+            next if $f eq "${prefix}artifacts.json";
             next if $known{$f};
             push @rogue => $f;
         }
@@ -111,6 +134,7 @@ sub rogue_files {
         for my $f (@all) {
             next if $f =~ m{^runs/};
             next if $f eq 'artifacts.json.zst';
+            next if $f eq 'artifacts.json';
             next if $f eq 'zstd-dict.bin';
             next if $known{$f};
             push @rogue => $f;

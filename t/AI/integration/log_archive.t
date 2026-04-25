@@ -72,19 +72,18 @@ ok(scalar(keys %$run), 'per-run manifest non-empty');
 my $dir_la = App::Yath2::LogArchive->new(path => "$dir/logs");
 isa_ok($dir_la, 'App::Yath2::LogArchive::Directory');
 
-my (undef, $archive) = tempfile(OPEN => 0, SUFFIX => '.tar.bz2', UNLINK => 1);
+my (undef, $archive) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
 unlink $archive;
 App::Yath2::LogArchive->create(
     source => "$dir/logs",
     path   => $archive,
-    format => 'tar.bz2',
 );
 ok(-s $archive, 'archive non-empty');
 
 my $arc_la = App::Yath2::LogArchive->new(path => $archive);
 ok(
-    ref($arc_la) =~ /^App::Yath2::LogArchive::TarBz2::/,
-    'opened tar.bz2 backend (' . ref($arc_la) . ')'
+    ref($arc_la) =~ /^App::Yath2::LogArchive::TarZIdx/,
+    'opened tar.zidx backend (' . ref($arc_la) . ')'
 );
 
 is($arc_la->artifacts,          $dir_la->artifacts,          'global artifacts round-trip');

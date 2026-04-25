@@ -64,7 +64,12 @@ sub runs {
             $runs{$id} = 1;
         }
         else {
-            $runs{$id} = 1 if $path eq "runs/$id/artifacts.json";
+            # Live logdirs key the manifest by '.json.zst'; extracted
+            # trees (post-`yath extract`) drop the suffix. Accept
+            # either shape so a Directory backend works for both.
+            $runs{$id} = 1
+                if $path eq "runs/$id/artifacts.json.zst"
+                || $path eq "runs/$id/artifacts.json";
         }
     }
 

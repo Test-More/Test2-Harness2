@@ -4,11 +4,7 @@ use File::Temp qw/tempdir tempfile/;
 use App::Yath2::LogArchive;
 use App::Yath2::LogArchive::Format qw/detect_format/;
 
-my $writer_class = eval { require App::Yath2::LogArchive::Writer::TarZIdx; 1 }
-    && App::Yath2::LogArchive::Writer::TarZIdx->viable('tar.zidx')
-    ? 'App::Yath2::LogArchive::Writer::TarZIdx'
-    : undef;
-skip_all 'no viable tar.zidx writer' unless $writer_class;
+use App::Yath2::LogArchive::TarZIdx;
 
 my $src = tempdir(CLEANUP => 1);
 mkdir "$src/sub" or die $!;
@@ -25,15 +21,15 @@ close $fh;
 my (undef, $out) = tempfile(OPEN => 0, SUFFIX => '.tar.zidx', UNLINK => 1);
 unlink $out;
 
-App::Yath2::LogArchive->create(source => $src, path => $out, format => 'tar.zidx');
+App::Yath2::LogArchive->create(source => $src, path => $out);
 ok(-s $out, 'output non-empty');
 
 is(detect_format($out), 'tar.zidx', 'magic-byte detection finds tar.zidx');
 
 my $la = App::Yath2::LogArchive->new(path => $out);
 ok(
-    ref($la) =~ /^App::Yath2::LogArchive::TarZIdx::/,
-    'reader resolves to a TarZIdx backend (' . ref($la) . ')'
+    ref($la) eq 'App::Yath2::LogArchive::TarZIdx',
+    'reader resolves to TarZIdx backend (' . ref($la) . ')'
 );
 
 my @files = sort $la->list_files;
