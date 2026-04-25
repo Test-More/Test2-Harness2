@@ -8,9 +8,27 @@ use File::Spec();
 
 use Test2::Harness2::Util qw/clean_path/;
 use File::Path qw/remove_tree/;
-use File::Temp qw/tempdir/;
 
 use Getopt::Yath;
+
+sub _workdir_default {
+    return sub {
+        my (undef, $settings) = @_;
+
+        my $uuid = $settings->yath->instance_uuid
+            or die "instance_uuid not set in settings; " . "App::Yath::Script::V2::do_begin() must run first";
+
+        my $sys_tmp = File::Spec->tmpdir();
+        my $workdir = File::Spec->catdir($sys_tmp, "yath-$uuid");
+
+        unless (-d $workdir) {
+            mkdir($workdir) or die "Could not create workdir '$workdir': $!";
+        }
+
+        return $workdir;
+    };
+}
+
 option_group {group => 'workspace', category => 'Workspace Options'} => sub {
     option keep_dirs => (
         type        => 'Bool',
@@ -45,22 +63,7 @@ option_group {group => 'workspace', category => 'Workspace Options'} => sub {
             return;
         },
 
-        default => sub {
-            my $opt = shift;
-            my ($settings) = @_;
-
-            my $template = join '-' => ("yath", $$, "XXXX");
-
-            my $workdir = tempdir(
-                $template,
-                TMPDIR => 1,
-                CLEANUP => 0,
-            );
-
-            # chmod_tmp($workdir); # TODO: port chmod_tmp from 2.0_borked2 / old/
-
-            return $workdir;
-        },
+        default => _workdir_default(),
     );
 
     option tmpdir => (
@@ -77,7 +80,7 @@ option_group {group => 'workspace', category => 'Workspace Options'} => sub {
 
             my $dir = File::Spec->catdir($settings->workspace->workdir, 'tmp');
 
-            unless(-d $dir) {
+            unless (-d $dir) {
                 mkdir($dir) or die "Could not mkdir($dir): $!";
             }
 
@@ -87,7 +90,7 @@ option_group {group => 'workspace', category => 'Workspace Options'} => sub {
     );
 
     option clear => (
-        type    => 'Bool',
+        type        => 'Bool',
         short       => 'C',
         description => 'Clear the work directory if it is not already empty',
     );

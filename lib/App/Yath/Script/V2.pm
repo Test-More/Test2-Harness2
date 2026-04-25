@@ -88,4 +88,8 @@ sub _test_instance_settings_yath {
     return $INSTANCE->{settings}->yath;
 }
 
+sub _test_instance_settings {
+    return $INSTANCE->{settings};
+}
+
 1;
