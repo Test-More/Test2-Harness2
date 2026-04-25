@@ -24,7 +24,23 @@ use Object::HashBase qw{
     <formatter
     <io <io_err
     <do_step
+    -color
+    -verbose
+    -quiet
+    -wrap
+    -progress
+    -interactive
+    -is_persistent
+    -show_times
+    <theme
+    +show_job_end
+    +show_run_info
+    +show_run_fields
+    +show_job_launch
+    +show_job_info
 };
+
+sub desired_filters { ('App::Yath2::Filter::Verbose') }
 
 sub step {
     my $self = shift;
@@ -116,36 +132,36 @@ sub render_event {
         }
     }
 
-    if ($f->{harness_job_launch}) {
-        my $job = $f->{harness_job};
+    if ($f->{harness_job_start}) {
+        my $jst = $f->{harness_job_start};
 
-        $f->{harness}->{job_id} ||= $job->{job_id};
+        $f->{harness}->{job_id} ||= $jst->{job_id};
 
         if ($self->{+SHOW_JOB_LAUNCH}) {
             push @{$f->{info}} => {
-                tag       => $f->{harness_job_launch}->{retry} ? 'RETRY' : 'LAUNCH',
+                tag       => 'LAUNCH',
                 debug     => 0,
                 important => 1,
-                details   => File::Spec->abs2rel($job->{test_file}->{file}),
+                details   => $jst->{rel_file} // $jst->{abs_file} // $jst->{job_id},
             };
         }
 
         if ($self->{+SHOW_JOB_INFO}) {
             push @{$f->{info}} => {
                 tag     => 'JOB INFO',
-                details => encode_pretty_json($job),
+                details => encode_pretty_json($jst),
             };
         }
     }
 
     if ($f->{harness_job_end}) {
-        my $job  = $f->{harness_job};
-        my $skip = $f->{harness_job_end}->{skip};
-        my $fail = $f->{harness_job_end}->{fail};
-        my $file = $f->{harness_job_end}->{file};
-        my $retry = $f->{harness_job_end}->{retry};
+        my $je    = $f->{harness_job_end};
+        my $skip  = $je->{skip};
+        my $fail  = $je->{fail};
+        my $file  = $je->{file};
+        my $retry = $je->{retry};
 
-        my $job_id = $f->{harness}->{job_id} ||= $job->{job_id};
+        my $job_id = $f->{harness}->{job_id} ||= $je->{job_id};
 
         # Make the times important if they were requested
         if ($self->show_times && $f->{info}) {
@@ -176,8 +192,6 @@ sub render_event {
     my $num = $f->{assert} && $f->{assert}->{number} ? $f->{assert}->{number} : undef;
 
     $self->{+FORMATTER}->write($event, $num, $f);
-
-    $self->render_final_data($f->{final_data}) if $f->{final_data};
 }
 
 sub TO_JSON {

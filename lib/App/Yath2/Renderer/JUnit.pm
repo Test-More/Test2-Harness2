@@ -6,17 +6,13 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-# This is used frequently during development to determine what different events look like so we can determine how to capture test data.
-use Data::Dumper;
-$Data::Dumper::Sortkeys = 1;
-
 use File::Spec;
 use POSIX ();
 use Storable qw/dclone/;
 use XML::Generator ();
-use Carp           ();
+use Carp qw/croak/;
 
-BEGIN { require App::Yath2::Renderer; our @ISA = ('App::Yath2::Renderer') }
+use parent 'App::Yath2::Renderer';
 use Object::HashBase qw{
   -io -io_err
   -formatter
@@ -26,6 +22,8 @@ use Object::HashBase qw{
   -show_job_end
   -times
 };
+
+sub desired_filters { ('App::Yath2::Filter::Verbose') }
 
 sub init {
     my $self = shift;
@@ -51,33 +49,40 @@ sub render_event {
     # We modify the event, which would be bad if there were multiple renderers,
     # so we deep clone it.
     $event = dclone($event);
-    my $f       = $event->{facet_data};
-    my $job     = $f->{harness_job};
-    my $job_id  = $f->{'harness'}->{'job_id'} or return;
-    my $job_try = $f->{'harness'}->{'job_try'} // 0;
-    my $stamp   = $event->{'stamp'};
+    my $f  = $event->{facet_data};
 
-    if ( !defined $stamp ) {
-        $f //= 'unknown facet_data';
-        die "No time stamp found for event '$f' ?!?!?!? ...\n" . "Event:\n" . Dumper($event) . "\n" . Carp::longmess();
-    }
+    # job_id lives in the harness sub-facet for general (JSONL) events, or
+    # inside the top-level lifecycle facet for Streamer-synthesised events.
+    my $job_id =
+           ($f->{'harness'}         && $f->{'harness'}{'job_id'})
+        // ($f->{'harness_job_start'} && $f->{'harness_job_start'}{'job_id'})
+        // ($f->{'harness_job_end'}   && $f->{'harness_job_end'}{'job_id'})
+        // ($f->{'harness_job_exit'}  && $f->{'harness_job_exit'}{'job_id'})
+        or return;
+
+    my $job_try = ($f->{'harness_job_start'} && $f->{'harness_job_start'}{'job_try'})
+        // ($f->{'harness'} && $f->{'harness'}{'job_try'})
+        // 0;
+
+    my $stamp = $event->{'stamp'} or return;    # Streamer always sets stamp
 
     # Throw out job events if they are for a previous run and we've already started collecting job
     # information for a successive run.
     return if $self->{'tests'}->{$job_id} && $job_try < ( $self->{'tests'}->{$job_id}->{'job_try'} // 0 );
 
-    # At job launch we need to start collecting a new junit testdata section.
-    # We throw out anything we've collected to date on a previous run.
-    if ( $f->{'harness_job_launch'} ) {
-        my $full_test_name = $job->{'file'};
-        my $test_file      = File::Spec->abs2rel($full_test_name);
+    # At job launch (harness_job_start from the Streamer) start a new test section.
+    # Throw out anything collected for a previous retry of the same job.
+    if ( $f->{'harness_job_start'} ) {
+        my $jst      = $f->{'harness_job_start'};
+        my $abs_file = $jst->{'abs_file'} // $jst->{'file'} // $job_id;
+        my $rel_file = $jst->{'rel_file'} // File::Spec->abs2rel($abs_file);
 
         $self->{'tests'}->{$job_id} = {
-            'name'           => $job->{'file'},
-            'file'           => _squeaky_clean($test_file),
+            'name'           => $abs_file,
+            'file'           => _squeaky_clean($rel_file),
             'job_id'         => $job_id,
             'job_try'        => $job_try,
-            'job_name'       => $f->{'harness_job'}->{'job_name'},
+            'job_name'       => $rel_file,
             'testcase'       => [],
             'system-out'     => '',
             'system-err'     => '',
@@ -87,8 +92,8 @@ sub render_event {
                 'errors'   => 0,
                 'failures' => 0,
                 'tests'    => 0,
-                'name'     => _get_testsuite_name($test_file),
-                'id'       => $job_id,                           # add a UID in the XML output
+                'name'     => _get_testsuite_name($rel_file),
+                'id'       => $job_id,
             },
         };
 
@@ -182,8 +187,6 @@ sub render_event {
         $test->{'testsuite'}->{'tests'}++;
 
         $self->close_open_failure_testcase( $test, $test_num );
-
-        warn Dumper $event unless $stamp;
 
         my $run_time = $stamp - $test->{'last_job_start'};
         $test->{'last_job_start'} = $stamp;

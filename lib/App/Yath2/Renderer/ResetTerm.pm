@@ -7,11 +7,7 @@ our $VERSION = '2.000011';
 use parent 'App::Yath2::Renderer';
 use Object::HashBase;
 
-sub args_from_settings {
-    my $class = shift;
-    my %params = @_;
-    return $params{settings}->summary->all;
-}
+sub desired_filters { () }    # render_event is a no-op; no filtering needed
 
 sub weight { -99999999 }
 sub finish { print "\e[0m\e[=l" if -t STDOUT }
