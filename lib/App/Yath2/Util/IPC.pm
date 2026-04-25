@@ -9,6 +9,8 @@ use Carp qw/croak/;
 use File::Spec();
 use IPC::Manager::Serializer::JSON();
 use Fcntl qw/O_WRONLY O_CREAT O_EXCL/;
+use Sys::Hostname qw/hostname/;
+use Test2::Harness2::Util::IPC qw/pid_is_running/;
 
 use Importer Importer => 'import';
 
@@ -16,6 +18,7 @@ our @EXPORT_OK = qw{
     resolve_ipc_filename
     resolve_ipc_dir
     write_ipc_file read_ipc_file unlink_ipc_file
+    find_ipc_files
 };
 
 my %VALID_TYPE = (nonce => 1, persistent => 1);
@@ -130,7 +133,7 @@ sub unlink_ipc_file {
     return unless defined $path && length $path;
     return unless -e $path;
 
-    if (defined $expect_pid && $$ != $expect_pid) {
+    if (@_ >= 2 && defined $expect_pid && $$ != $expect_pid) {
         # Different process (most likely a forked child) is trying to
         # clean up a file the parent registered. Skip.
         return;
@@ -138,6 +141,86 @@ sub unlink_ipc_file {
 
     unlink $path or warn "unlink '$path': $!";
     return;
+}
+
+my $FILENAME_RX = qr{
+    \A
+    \.?yath
+    -(?<type>nonce|persistent)
+    -(?<disambig>.+)
+    -(?<pid>\d+)
+    -(?<uuid>[0-9a-f]{8})
+    \z
+}x;
+
+sub _scan_dir {
+    my ($dir) = @_;
+    return () unless -d $dir;
+    opendir(my $dh, $dir) or return ();
+    my @hits;
+    while (defined(my $entry = readdir($dh))) {
+        next unless $entry =~ $FILENAME_RX;
+        push @hits => File::Spec->catfile($dir, $entry);
+    }
+    closedir $dh;
+    return @hits;
+}
+
+sub find_ipc_files {
+    my %p = @_;
+
+    my $dirs = $p{dirs}
+        or croak "'dirs' is required (caller should pass resolve_ipc_dir result or override)";
+
+    my $want_type = exists $p{type} ? $p{type} : undef;
+    my %want_types;
+    if (defined $want_type) {
+        my @t = ref($want_type) eq 'ARRAY' ? @$want_type : ($want_type);
+        $want_types{$_} = 1 for @t;
+    }
+
+    my $self_host = hostname();
+    my $want_host;
+    if (exists $p{host}) {
+        $want_host = $p{host};    # may be undef on purpose -> no host filter
+    }
+    else {
+        $want_host = $self_host;
+    }
+
+    my $live = exists $p{live} ? $p{live} : 1;
+
+    my @records;
+    for my $dir (@$dirs) {
+        for my $path (_scan_dir($dir)) {
+            my $rec;
+            my $ok = eval { $rec = read_ipc_file($path); 1 };
+            unless ($ok) {
+                # Unreadable / corrupt entry. Leave it; let an operator
+                # investigate. We do not unlink here -- only liveness
+                # cleanup is automatic.
+                next;
+            }
+            $rec->{_path} = $path;
+
+            next if %want_types && !$want_types{$rec->{type} // ''};
+            if (defined $want_host) {
+                next if ($rec->{hostname} // '') ne $want_host;
+            }
+
+            if ($live && ($rec->{hostname} // '') eq $self_host) {
+                if (!pid_is_running($rec->{pid})) {
+                    unlink_ipc_file($path);    # no pid arg = unconditional
+                    next;
+                }
+            }
+
+            push @records => $rec;
+        }
+    }
+
+    @records = sort { ($b->{created_at} // 0) <=> ($a->{created_at} // 0) } @records;
+    return \@records;
 }
 
 1;
