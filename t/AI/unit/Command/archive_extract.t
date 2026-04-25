@@ -9,6 +9,10 @@ use Cwd qw/getcwd/;
 use App::Yath2::Command::archive;
 use App::Yath2::Command::extract;
 use App::Yath2::LogArchive;
+use App::Yath2::LogArchive::Format qw/writer_class_for/;
+
+my $HAVE_TAR_ZIDX = eval { writer_class_for('tar.zidx'); 1 };
+my $HAVE_TAR_BZ2  = eval { writer_class_for('tar.bz2');  1 };
 
 sub _make_logdir {
     my $dir = tempdir(CLEANUP => 1);
@@ -37,6 +41,9 @@ sub _run_cmd {
 }
 
 subtest 'archive: explicit format works and round-trips through extract' => sub {
+    plan skip_all => 'tar.zidx writer not viable (need Compress::Zstd or zstd binary)'
+        unless $HAVE_TAR_ZIDX;
+
     my $logdir = _make_logdir();
     my $work   = tempdir(CLEANUP => 1);
     my $arc    = "$work/out.tar.zidx";
@@ -102,6 +109,9 @@ subtest 'extract: nonexistent archive errors' => sub {
 };
 
 subtest 'extract: existing destination errors' => sub {
+    plan skip_all => 'tar.bz2 writer not viable'
+        unless $HAVE_TAR_BZ2;
+
     my $logdir = _make_logdir();
     my $work   = tempdir(CLEANUP => 1);
     my $arc    = "$work/out.tar.bz2";
@@ -116,6 +126,9 @@ subtest 'extract: existing destination errors' => sub {
 };
 
 subtest 'extract: default destination is ./logs' => sub {
+    plan skip_all => 'tar.bz2 writer not viable'
+        unless $HAVE_TAR_BZ2;
+
     my $logdir = _make_logdir();
     my $work   = tempdir(CLEANUP => 1);
     my $arc    = "$work/out.tar.bz2";
