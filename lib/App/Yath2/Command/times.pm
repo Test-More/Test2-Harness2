@@ -4,14 +4,21 @@ use warnings;
 
 our $VERSION = '2.000011';
 
+use Carp qw/croak/;
+
 use Test2::Util::Times qw/render_duration/;
 
-use Test2::Harness2::Util::File::JSONL;
+use App::Yath2::Streamer::Static();
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
 use Object::HashBase qw{
-    <log_file
+    <settings
+    <args
+    <env_vars
+    <option_state
+    <plugins
+    <log
     <fields
 };
 
@@ -20,21 +27,32 @@ include_options(
     'App::Yath2::Options::Yath',
 );
 
-sub summary { "Get times from a test log" }
+sub args_include_tests { 0 }
+
+sub summary { "Get per-test durations from a recorded log archive" }
 
 sub group { 'log parsing' }
 
-sub cli_args { "[--] event_log.jsonl[.gz|.bz2] [Field1] [Field2]" }
+sub cli_args { "[--] LOG [Field1] [Field2]" }
 
 sub description {
     return <<"    EOT";
-This command will consume the log of a previous run, and output all timing data
-from shortest test to longest. You can specify a sort order by listing fields
-in your desired order after the log file on the command line.
+Reads a recorded yath log and prints per-test durations sorted from shortest
+to longest. LOG is either a .yath archive file or a directory that looks like
+\$workdir/logs.
+
+Available sort fields are 'total' (numeric, the wall-clock duration of each
+test) and 'file' (alphabetic). Optional Field arguments override the default
+sort precedence; subsequent fields break ties from earlier ones.
+
+Per-test durations are derived from harness_job_start / harness_job_end
+stamps emitted by App::Yath2::Streamer::Static. The granular startup/events/
+cleanup breakdown that lived in the legacy log format is not present in the
+new event stream.
     EOT
 }
 
-my @NUMERIC = qw/total startup events cleanup/;
+my @NUMERIC = qw/total/;
 my %NUMERIC = map { $_ => 1 } @NUMERIC;
 
 my @ALPHA = qw/file/;
@@ -50,9 +68,10 @@ sub run {
 
     shift @$args if @$args && $args->[0] eq '--';
 
-    $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file" unless -f $self->{+LOG_FILE};
-    die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
+    my $log = shift @$args
+        or die "You must specify a log archive or directory\n";
+    die "Log source '$log' does not exist\n" unless -e $log;
+    $self->{+LOG} = $log;
 
     my %seen;
     my @fields;
@@ -62,32 +81,51 @@ sub run {
         die "'$field' is not a valid field\n" unless $FIELDS{$field};
         push @fields => $field;
     }
-
     $self->{+FIELDS} = \@fields;
 
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
+    require App::Yath2::LogArchive;
+    my @runs = App::Yath2::LogArchive->new(path => $log)->runs;
+    die "No runs found in '$log'\n" unless @runs;
 
+    my $streamer = App::Yath2::Streamer::Static->new(
+        log    => $log,
+        runs   => [@runs],
+        global => 1,
+    );
+
+    my %job_state;
     my @jobs;
-    while (1) {
-        my @events = $stream->poll(max => 1000) or last;
+    $streamer->stream(
+        callback => sub {
+            my ($event) = @_;
+            my $f = $event->facet_data // {};
 
-        for my $event (@events) {
-            my $stamp  = $event->{stamp}      or next;
-            my $job_id = $event->{job_id}     or next;
-            my $f      = $event->{facet_data} or next;
+            if (my $start = $f->{harness_job_start}) {
+                my $jid = $start->{job_id} // $event->{job_id} // return;
+                $job_state{$jid}{start} //= $start->{stamp}    // $event->stamp;
+                $job_state{$jid}{file}  //= $start->{rel_file} // $start->{file};
+                return;
+            }
 
-            next unless $f->{harness_job_end};
+            return unless my $end = $f->{harness_job_end};
 
-            my $job = {};
-            $job->{file} = $f->{harness_job_end}->{rel_file}        if $f->{harness_job_end} && $f->{harness_job_end}->{rel_file};
-            $job->{time} = $f->{harness_job_end}->{times}->{totals} if $f->{harness_job_end} && $f->{harness_job_end}->{times};
+            my $jid  = $end->{job_id}   // $event->{job_id} // return;
+            my $file = $end->{rel_file} // $end->{file}     // $job_state{$jid}{file};
+            return unless $file;
 
-            push @jobs => $job;
-        }
-    }
+            my $start = $job_state{$jid}{start};
+            my $stop  = $end->{stamp} // $event->stamp;
+            return unless defined $start && defined $stop;
+
+            my $total = $stop - $start;
+            return unless $total >= 0;
+
+            push @jobs => {file => $file, time => {total => $total}};
+        },
+    );
 
     my @rows;
-    my $totals = {file => 'TOTAL'};
+    my $totals = {file => 'TOTAL', total => 0};
 
     @jobs = sort { $self->sort_compare($a, $b) } @jobs;
 
@@ -128,8 +166,8 @@ sub sort_compare {
     my $tb = $jb->{time};
 
     for my $field (@$order) {
-        my $fa = $ta->{$field};
-        my $fb = $tb->{$field};
+        my $fa = $field eq 'file' ? $ja->{file} : $ta->{$field};
+        my $fb = $field eq 'file' ? $jb->{file} : $tb->{$field};
 
         my $da = defined $fa;
         my $db = defined $fb;
