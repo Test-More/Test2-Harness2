@@ -103,45 +103,44 @@ sub run {
         ],
     );
 
-    my $info_path;
-    {
-        my $explicit = $settings->ipc->file;
-        my ($dir, $is_tmp);
-        if ($explicit) {
-            my ($vol, $dirs) = File::Spec->splitpath($explicit);
-            $dir       = File::Spec->catdir(File::Spec->splitdir($dirs));
-            $is_tmp    = 0;
-            $info_path = $explicit;
-        }
-        else {
-            ($dir, $is_tmp) = resolve_ipc_dir($settings);
-            my $name = resolve_ipc_filename(
-                type    => 'nonce',
-                host    => hostname(),
-                user    => ($ENV{USER} // (getpwuid($<))[0] // 'unknown'),
-                pid     => $spawn->pid,
-                uuid    => $settings->yath->instance_uuid,
-                tempdir => $is_tmp,
-            );
-            $info_path = File::Spec->catfile($dir, $name);
-        }
+    my $host = hostname();
+    my $user = $ENV{USER} // (getpwuid($<))[0] // 'unknown';
+    my $uuid = $settings->yath->instance_uuid;
 
-        write_ipc_file(
-            $info_path,
-            {
-                yath_version => $App::Yath2::VERSION,
-                type         => 'nonce',
-                hostname     => hostname(),
-                user         => ($ENV{USER} // (getpwuid($<))[0] // 'unknown'),
-                pid          => $spawn->pid,
-                uuid         => $settings->yath->instance_uuid,
-                created_at   => time(),
-                workdir      => $workdir,
-                project      => $settings->yath->base_dir,
-                ipcm_info    => $spawn->ipcm_info,
-            },
-        );
+    my $info_path;
+    if (my $explicit = $settings->ipc->file) {
+        $info_path = $explicit;
     }
+    else {
+        my ($dir, $is_tmp) = resolve_ipc_dir($settings);
+        my $name = resolve_ipc_filename(
+            type    => 'nonce',
+            host    => $host,
+            user    => $user,
+            pid     => $spawn->pid,
+            uuid    => $uuid,
+            tempdir => $is_tmp,
+        );
+        $info_path = File::Spec->catfile($dir, $name);
+    }
+
+    write_ipc_file(
+        $info_path,
+        {
+            yath_version => $App::Yath2::VERSION,
+            type         => 'nonce',
+            hostname     => $host,
+            user         => $user,
+            # pid: harness service pid (not $$ writer); used by
+            # find_ipc_files for liveness checks.
+            pid          => $spawn->pid,
+            uuid         => $uuid,
+            created_at   => time(),
+            workdir      => $workdir,
+            project      => $settings->yath->base_dir,
+            ipcm_info    => $spawn->ipcm_info,
+        },
+    );
 
     my $writer_pid = $$;
     my $ipc_guard  = Scope::Guard::guard(sub {
