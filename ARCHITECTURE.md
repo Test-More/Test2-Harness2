@@ -2221,3 +2221,132 @@ spec:
   future CLI flag needs to be added when the options layer
   grows to support it.
 
+
+
+## Addendum: zstd-compressed log artifacts (2026-04-25)
+
+This addendum covers the zstd-loggers change. Full spec:
+`docs/superpowers/plans/2026-04-25-zstd-loggers-spec.md` (gitignored
+local plan); commits on the `zstd-loggers` branch; durable summary at
+`AI_DOCS/2026-04-25-zstd-loggers.md`.
+
+### Architectural mandate
+
+Every text file written under `workdir/logs/` is zstd-compressed.
+Plaintext text files in the live logdir are not allowed.
+Pre-compressed binary content (images, video, audio, etc.) is out of
+scope -- producers store it verbatim. The bundled
+`$logdir/zstd-dict.bin` is the only other exception (the dictionary
+must stay raw because it is the bytes a decoder needs *before*
+anything else can be decompressed).
+
+This is enforced by `t/AI/integration/logdir_all_zstd.t`, which walks
+`$logdir` post-run and asserts every regular file ends in `.zst`,
+is `zstd-dict.bin`, or sniffs as a known binary content type.
+Future producers landing new binary types add to that test's
+allowlist.
+
+### File extensions and shapes
+
+| Live logdir path                   | On-disk shape                                   |
+|------------------------------------|-------------------------------------------------|
+| `$logdir/zstd-dict.bin`            | Raw bytes. Copied from the active dictionary at run start. |
+| `$logdir/artifacts.json.zst`       | One zstd frame holding the harness manifest.   |
+| `$logdir/runs/$rid/artifacts.json.zst` | One zstd frame holding the per-run manifest. |
+| `$logdir/.../*.json.zst`           | One zstd frame per snapshot (whole-file rewrite). |
+| `$logdir/.../*.jsonl.zst`          | Multi-frame: one self-contained zstd frame per jsonl line, append-safe. |
+
+The `.jsonl.zst` shape is the load-bearing one for live tail. Each
+line is its own frame, so concurrent writers can append safely as
+long as a frame fits in `PIPE_BUF` (4 KiB on Linux). Readers tail
+new frames as they land via `Test2::Harness2::Util::Zstd`'s
+`open_zstd_reader`.
+
+### Dictionary distribution
+
+Dicts are not embedded in zstd frames; the frame header carries a
+4-byte dictID, and the decoder needs byte-identical dictionary
+bytes to decode. Dict locations:
+
+| Location                      | When written                                       | Authoritative for                 |
+|-------------------------------|----------------------------------------------------|-----------------------------------|
+| `share/other/zstd.dict`       | Install time (or `author/train_zstd_dict`).        | Default for new runs only.        |
+| `$logdir/zstd-dict.bin`       | At `Test2::Harness2::init`, copied from the resolved dict. | Every reader / writer for the lifetime of that logdir. |
+| `tar.zidx::zstd-dict.bin`     | At `yath archive` time; copied verbatim from the source logdir. | Every reader of that archive.    |
+| `<extract-dest>/zstd-dict.bin`| At `yath extract` time; copied verbatim out of the archive.    | Every reader of the extracted tree. |
+
+Each step in the resolution order below is *definitive when reached*,
+not a fallback to the next on failure. A `tar.zidx` archive whose
+index has no `zstd-dict.bin` entry is dict-less by design; the reader
+caches `dict_bytes => undef` and decompresses every entry without a
+dict, never falling through to the install share or the per-logdir
+copy.
+
+1. Caller-supplied dict path (programmatic argument or CLI override
+   via `--zstd-dict PATH`).
+2. Per-logdir copy at `$logdir/zstd-dict.bin` when the file being
+   read is inside a logdir.
+3. Bundled archive entry `zstd-dict.bin` when the file came from a
+   `tar.zidx`.
+4. Install share `share/other/zstd.dict` via `File::ShareDir` (only
+   for ad-hoc CLI / test use outside any logdir or archive).
+5. None: dict-less mode. Frames whose dictID is set hard-fail; frames
+   without dictID decode normally.
+
+### Single archive format: `tar.zidx`
+
+The multi-format archive support (`tar`, `tar.gz`, `tar.bz2`, `zip`,
+`7z`) was deleted with this spec. `tar.zidx` is the single in-tree
+archive format yath produces or reads. Tar manipulation is pure Perl
+(hand-rolled ustar packing); zstd is via `Compress::Zstd` (hard
+prereq). Normal write / read flow never spawns an external process.
+
+The `tar.zidx` reader and writer live in a single consolidated
+module at `lib/App/Yath2/LogArchive/TarZIdx.pm`. Per-entry index
+entries gain an `inner` field (`"zstd"` for plaintext sources
+wrapped in an inner zstd frame, `"none"` for already-`.zst` source
+files and the bundled dict stored verbatim).
+
+### Dual-mode reader contract
+
+Live logdirs are uniformly compressed; extracted trees are
+plaintext. The file-reader classes split into base (plaintext) and
+`::Zstd` subclass (compressed):
+
+* `Test2::Harness2::Util::File::JSON` -- plaintext, used by
+  extracted output and tests.
+* `Test2::Harness2::Util::File::JSON::Zstd` -- subclass, used by
+  the live logger and any consumer reading `.json.zst`.
+* `Test2::Harness2::Util::File::JSONL` -- plaintext.
+* `Test2::Harness2::Util::File::JSONL::Zstd` -- subclass.
+
+Logger and streamer code picks which to instantiate based on the
+file path's `.zst` suffix. The plaintext base classes never see
+compressed bytes; the `::Zstd` subclasses never see plaintext.
+
+### `Compress::Zstd` is a hard prereq
+
+Promoted from develop-only to a hard runtime requirement. The
+project no longer has a `zstd`/`unzstd` binary fallback for
+compress / decompress; compressed log artifacts depend on the
+in-process module. `author/train_zstd_dict` still requires the
+`zstd` CLI on PATH because the Perl module exposes no `--train`
+API; that is the only place in the codebase that spawns a zstd
+process.
+
+### `yath extract` + `--no-decompress`
+
+`yath extract` decompresses every zstd-compressed archive entry on
+the way out and strips the trailing `.zst` suffix from the output
+filename. The bundled `zstd-dict.bin` is written out verbatim so
+the extracted tree is itself logdir-shaped. `--no-decompress`
+preserves the byte-for-byte form for debugging or training-input
+pipelines.
+
+### Options library
+
+`App::Yath2::Options::LogArchive` declares `--zstd-dict PATH` (with
+the install-shipped default at `share/other/zstd.dict`) and
+`--no-zstd-dict`. yath commands that spawn the harness pre-resolve
+the chosen path and thread it in via the harness's `dict_path`
+constructor field.
