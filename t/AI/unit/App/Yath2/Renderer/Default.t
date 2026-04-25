@@ -33,14 +33,14 @@ subtest 'desired_filters default returns Verbose filter' => sub {
 };
 
 subtest 'desired_filters quiet returns Quiet filter' => sub {
-    my ($r) = make_renderer(settings => {log_level => 'quiet'});
+    my ($r) = make_renderer(settings => {quiet => 1});
     my @f = $r->desired_filters;
     is(scalar @f, 1, 'one filter');
     is($f[0], 'App::Yath2::Filter::Quiet', 'Quiet filter');
 };
 
-subtest 'desired_filters verbose returns Verbose filter' => sub {
-    my ($r) = make_renderer(settings => {log_level => 'verbose'});
+subtest 'desired_filters non-quiet returns Verbose filter' => sub {
+    my ($r) = make_renderer(settings => {quiet => 0});
     my @f = $r->desired_filters;
     is(scalar @f, 1, 'one filter');
     is($f[0], 'App::Yath2::Filter::Verbose', 'Verbose filter');
