@@ -16,10 +16,13 @@ use Carp qw/croak/;
 
 use App::Yath2::LogArchive();
 use App::Yath2::Streamer::Static();
+use App::Yath2::OutputManager();
+use App::Yath2::Options::Renderer();
 
 use Getopt::Yath;
 include_options(
     'App::Yath2::Options::Yath',
+    'App::Yath2::Options::Renderer',
 );
 
 use Role::Tiny::With;
@@ -39,9 +42,8 @@ an artifacts.json manifest at the top level). RUN_IDs, if any, restrict the
 replay to the listed runs; with none, every run stored in the archive is
 replayed.
 
-Each event is printed as one JSON object per line. Output matches what 'yath
-test' prints live, so anything that consumes the live stream will also consume
-a replay.
+Output is rendered through the same renderer pipeline as 'yath test', so
+colors, formatting, and summary output match a live run.
 
 Exit code is 0 when every replayed run passed, non-zero otherwise (or when
 the archive has no runs at all).
@@ -79,6 +81,11 @@ sub run {
         global => 1,
     );
 
+    my $settings  = $self->{+SETTINGS};
+    my $om        = App::Yath2::OutputManager->new;
+    my $renderers = App::Yath2::Options::Renderer->init_renderers($settings);
+    $om->add_renderer($_) for @$renderers;
+
     my $fail_runs = 0;
     my %seen_end;
     $streamer->stream(
@@ -90,11 +97,14 @@ sub run {
                 $seen_end{$rid} = 1 if defined $rid;
                 $fail_runs++ unless $end->{pass};
             }
-            print $event->as_json, "\n";
+            $om->dispatch($event);
         },
         # Exit when we have seen a run_end for every requested run.
         exit_if => sub { keys(%seen_end) >= scalar(@requested) ? 1 : 0 },
     );
+
+    $om->end_of_events;
+    $om->finish;
 
     # Any requested run that never produced a run_end counts as a
     # failure. The static replay cannot synthesise a terminal state
