@@ -6,6 +6,7 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 
+use App::Yath2();
 use File::Spec();
 use IPC::Manager::Serializer::JSON();
 use Sys::Hostname qw/hostname/;
@@ -19,6 +20,7 @@ our @EXPORT_OK = qw{
     resolve_ipc_dir
     write_ipc_file read_ipc_file unlink_ipc_file
     find_ipc_files
+    publish_ipc_file
 };
 
 my %VALID_TYPE = (nonce => 1, persistent => 1);
@@ -53,22 +55,21 @@ sub _writable_dir {
 sub _dir_for_symbol {
     my ($sym, $settings) = @_;
 
+    return $settings->yath->cwd if $sym eq 'cwd';
+    return File::Spec->tmpdir() if $sym eq 'tempdir';
+
     if ($sym eq 'user_rc') {
         my $f = $settings->yath->user_config_file or return undef;
         my ($vol, $dirs) = File::Spec->splitpath($f);
         return File::Spec->catdir(File::Spec->splitdir($dirs));
     }
+
     if ($sym eq 'project_rc') {
         my $f = $settings->yath->config_file or return undef;
         my ($vol, $dirs) = File::Spec->splitpath($f);
         return File::Spec->catdir(File::Spec->splitdir($dirs));
     }
-    if ($sym eq 'cwd') {
-        return $settings->yath->cwd;
-    }
-    if ($sym eq 'tempdir') {
-        return File::Spec->tmpdir();
-    }
+
     # Raw path. Caller's responsibility to make sense of it.
     return $sym;
 }
@@ -104,6 +105,66 @@ sub write_ipc_file {
     # ipcm_info string inside is sufficient to dial the harness's IPC
     # bus, so non-owner read access is a credential leak.
     write_file_atomic_mode($path, 0600, $json);
+
+    return $path;
+}
+
+# publish_ipc_file is the producer-side entry point: a yath command
+# that has just spawned a harness service hands settings + spawn +
+# workdir + type, and the helper resolves where to write the IPC info
+# file, builds the JSON payload, and writes it atomically with
+# owner-only perms. Returns the on-disk path so the caller can
+# register a cleanup guard against it. Both `yath test` (type
+# 'nonce') and the future `yath start` (type 'persistent') share this
+# code path.
+sub publish_ipc_file {
+    my %p = @_;
+
+    my $type     = $p{type}     // croak "'type' is required";
+    my $settings = $p{settings} // croak "'settings' is required";
+    my $spawn    = $p{spawn}    // croak "'spawn' is required";
+    my $workdir  = $p{workdir}  // croak "'workdir' is required";
+
+    croak "Unknown type '$type'" unless $VALID_TYPE{$type};
+
+    my $host = hostname();
+    my $user = $ENV{USER} // (getpwuid($<))[0] // 'unknown';
+    my $uuid = $settings->yath->instance_uuid;
+
+    my $path;
+    if (my $explicit = $settings->ipc->file) {
+        $path = $explicit;
+    }
+    else {
+        my ($dir, $is_tmp) = resolve_ipc_dir($settings);
+        my $name = resolve_ipc_filename(
+            type    => $type,
+            host    => $host,
+            user    => $user,
+            pid     => $spawn->pid,
+            uuid    => $uuid,
+            tempdir => $is_tmp,
+        );
+        $path = File::Spec->catfile($dir, $name);
+    }
+
+    write_ipc_file(
+        $path,
+        {
+            yath_version => $App::Yath2::VERSION,
+            type         => $type,
+            hostname     => $host,
+            user         => $user,
+            # pid: harness service pid (not $$ writer); used by
+            # find_ipc_files for liveness checks.
+            pid          => $spawn->pid,
+            uuid         => $uuid,
+            created_at   => time(),
+            workdir      => $workdir,
+            project      => $settings->yath->base_dir,
+            ipcm_info    => $spawn->ipcm_info,
+        },
+    );
 
     return $path;
 }
@@ -164,21 +225,13 @@ sub find_ipc_files {
     my $dirs = $p{dirs}
         or croak "'dirs' is required (caller should pass resolve_ipc_dir result or override)";
 
-    my $want_type = exists $p{type} ? $p{type} : undef;
-    my %want_types;
-    if (defined $want_type) {
-        my @t = ref($want_type) eq 'ARRAY' ? @$want_type : ($want_type);
-        $want_types{$_} = 1 for @t;
-    }
-
     my $self_host = hostname();
-    my $want_host;
-    if (exists $p{host}) {
-        $want_host = $p{host};    # may be undef on purpose -> no host filter
-    }
-    else {
-        $want_host = $self_host;
-    }
+
+    # may be undef on purpose -> no host filter
+    my $want_host = exists $p{host} ? $p{host} : $self_host;
+
+    # May not want any specific type.
+    my $want_types = $p{type} ? {map { ($_ => 1) } (ref($p{type}) ? @{$p{type}} : $p{type})} : undef;
 
     my $live = exists $p{live} ? $p{live} : 1;
 
@@ -196,15 +249,15 @@ sub find_ipc_files {
                 warn "skipping unreadable IPC info file '$path': $err";
                 next;
             }
+
             $rec->{_path} = $path;
+            $rec->{hostname} //= '';
 
-            next if %want_types && !$want_types{$rec->{type} // ''};
-            if (defined $want_host) {
-                next if ($rec->{hostname} // '') ne $want_host;
-            }
+            next if $want_types && !$want_types->{$rec->{type} // ''};
+            next if defined($want_host) && $rec->{hostname} ne $want_host;
 
-            if ($live && ($rec->{hostname} // '') eq $self_host) {
-                if (!pid_is_running($rec->{pid})) {
+            if ($live && $rec->{hostname} eq $self_host) {
+                unless (pid_is_running($rec->{pid})) {
                     unlink_ipc_file($path);    # no pid arg = unconditional
                     next;
                 }

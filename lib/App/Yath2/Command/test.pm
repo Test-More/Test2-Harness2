@@ -17,18 +17,16 @@ use File::Path qw/remove_tree/;
 use Carp qw/croak/;
 use POSIX qw/strftime/;
 use Time::HiRes qw/sleep/;
-use Sys::Hostname qw/hostname/;
 
 use Test2::Harness2();
 use Test2::Harness2::TestFile();
 use Test2::Harness2::Resource::JobCount();
 use App::Yath2::LogArchive();
 use App::Yath2::LogArchive::Format qw/default_writer_format/;
-use App::Yath2();
 use App::Yath2::Streamer::Live();
 use App::Yath2::OutputManager();
 use App::Yath2::Renderer::Default();
-use App::Yath2::Util::IPC qw/resolve_ipc_dir resolve_ipc_filename write_ipc_file unlink_ipc_file/;
+use App::Yath2::Util::IPC qw/publish_ipc_file unlink_ipc_file/;
 use Scope::Guard ();
 
 use Getopt::Yath;
@@ -104,43 +102,11 @@ sub run {
         ],
     );
 
-    my $host = hostname();
-    my $user = $ENV{USER} // (getpwuid($<))[0] // 'unknown';
-    my $uuid = $settings->yath->instance_uuid;
-
-    my $info_path;
-    if (my $explicit = $settings->ipc->file) {
-        $info_path = $explicit;
-    }
-    else {
-        my ($dir, $is_tmp) = resolve_ipc_dir($settings);
-        my $name = resolve_ipc_filename(
-            type    => 'nonce',
-            host    => $host,
-            user    => $user,
-            pid     => $spawn->pid,
-            uuid    => $uuid,
-            tempdir => $is_tmp,
-        );
-        $info_path = File::Spec->catfile($dir, $name);
-    }
-
-    write_ipc_file(
-        $info_path,
-        {
-            yath_version => $App::Yath2::VERSION,
-            type         => 'nonce',
-            hostname     => $host,
-            user         => $user,
-            # pid: harness service pid (not $$ writer); used by
-            # find_ipc_files for liveness checks.
-            pid          => $spawn->pid,
-            uuid         => $uuid,
-            created_at   => time(),
-            workdir      => $workdir,
-            project      => $settings->yath->base_dir,
-            ipcm_info    => $spawn->ipcm_info,
-        },
+    my $info_path = publish_ipc_file(
+        type     => 'nonce',
+        settings => $settings,
+        spawn    => $spawn,
+        workdir  => $workdir,
     );
 
     my $writer_pid = $$;
