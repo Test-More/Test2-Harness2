@@ -4,75 +4,55 @@ use warnings;
 
 our $VERSION = '2.000011';
 
-use Test2::Harness2::Util qw/fqmod/;
-
 use Getopt::Yath;
 include_options(
     'App::Yath2::Options::Yath',
 );
 
-option_group {group => 'ipc', category => 'IPC Options'} => sub {
-    option dir_order => (
-        name => 'ipc-dir-order',
-        type => 'List',
-        description => "When finding ipc-dir automatically, search in this order, default: ['base', 'temp']",
-        default => sub { qw/base temp/ },
-    );
+sub _normalize_protocol {
+    my ($v) = @_;
+    return $v unless defined $v && length $v;
+    return $1 if $v =~ /^\+(.*)$/s;
+    return $v if $v =~ /^IPC::Manager::Client::/;
+    return "IPC::Manager::Client::$v";
+}
 
+option_group {group => 'ipc', category => 'IPC Options'} => sub {
     option dir => (
-        name => 'ipc-dir',
-        type => 'Scalar',
-        description => "Directory for ipc files",
+        name          => 'ipc-dir',
+        type          => 'Scalar',
+        description   => "Directory for IPC info files (overrides dir-order)",
         from_env_vars => [qw/T2_HARNESS_IPC_DIR YATH_IPC_DIR/],
     );
 
-    option prefix => (
-        name => 'ipc-prefix',
-        type => 'Scalar',
-        description => "Prefix for ipc files",
-        default => sub { 'IPC' },
+    option dir_order => (
+        name        => 'ipc-dir-order',
+        type        => 'List',
+        description => "Symbolic search order when --ipc-dir is unset. " . "Symbols: 'user_rc', 'project_rc', 'cwd', 'tempdir'. " . "Raw paths are also accepted.",
+        default     => sub { [qw/user_rc project_rc cwd tempdir/] },
     );
 
-    # XXX TODO: Test2::Harness2::IPC::Protocol removed (PR #390); protocol option needs updating
     option protocol => (
-        name    => 'ipc-protocol',
-        type    => 'Scalar',
-
-        long_examples => [' AtomicPipe', ' +Test2::Harness2::IPC::Protocol::AtomicPipe', ' UnixSocket', ' IPSocket'],
-        description   => 'Specify what IPC Protocol to use. Use the "+" prefix to specify a fully qualified namespace, otherwise Test2::Harness2::IPC::Protocol::XXX namespace is assumed.',
-
-        normalize => sub { fqmod($_[0], 'Test2::Harness2::IPC::Protocol') },
-    );
-
-    option address => (
-        name => 'ipc-address',
-        type => 'Scalar',
-        description => 'IPC address to use (usually auto-generated or discovered)',
+        name          => 'ipc-protocol',
+        type          => 'Scalar',
+        description   => 'IPC::Manager client driver (default AtomicPipe). ' . 'Use "+Some::Class" to force a fully qualified namespace.',
+        long_examples => [
+            ' AtomicPipe',
+            ' UnixSocket',
+            ' JSONFile',
+            ' MessageFiles',
+            ' SharedMem',
+            ' SQLite',
+            ' +Custom::Driver',
+        ],
+        default   => sub { 'IPC::Manager::Client::AtomicPipe' },
+        normalize => \&_normalize_protocol,
     );
 
     option file => (
-        name => 'ipc-file',
-        type => 'Scalar',
-        description => 'IPC file used to locate instances (usually auto-generated or discovered)',
-    );
-
-    option port => (
-        name => 'ipc-port',
-        type => 'Scalar',
-        description => 'Some IPC protocols require a port, otherwise this should be left empty',
-    );
-
-    option peer_pid => (
-        name => 'ipc-peer-pid',
-        type => 'Scalar',
-        description => 'Optionally a peer PID may be provided',
-    );
-
-    option allow_multiple => (
-        name => 'ipc-allow-multiple',
-        type => 'Bool',
-        default => 0,
-        description => 'Normally yath will prevent you from starting multiple persistent runners in the same project, this option will allow you to start more than one.',
+        name        => 'ipc-file',
+        type        => 'Scalar',
+        description => 'Explicit IPC info file path. When set, the writer ' . 'writes here regardless of dir-order, and consumer ' . 'commands skip discovery and read this path directly.',
     );
 };
 
@@ -86,41 +66,12 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Options::IPC - FIXME
+App::Yath2::Options::IPC - IPC option group for yath commands
 
 =head1 DESCRIPTION
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
-
-=head1 SOURCE
-
-The source code repository for Test2-Harness can be found at
-L<http://github.com/Test-More/Test2-Harness/>.
-
-=head1 MAINTAINERS
-
-=over 4
-
-=item Chad Granum E<lt>exodist@cpan.orgE<gt>
-
-=back
-
-=head1 AUTHORS
-
-=over 4
-
-=item Chad Granum E<lt>exodist@cpan.orgE<gt>
-
-=back
-
-=head1 COPYRIGHT
-
-Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
-
-This program is free software; you can redistribute it and/or
-modify it under the same terms as Perl itself.
-
-See L<http://dev.perl.org/licenses/>
+Provides --ipc-dir, --ipc-dir-order, --ipc-protocol, and --ipc-file
+options. Driven by the IPC info file design (see
+docs/superpowers/specs/2026-04-25-ipc-info-file-design.md).
 
 =cut
-
