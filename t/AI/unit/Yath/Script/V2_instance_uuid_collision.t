@@ -1,6 +1,18 @@
 use Test2::V0;
+use Test2::Require::AuthorTesting;
 use Test2::Util::UUID qw/gen_uuid/;
 
+# Last-8 hex of a UUID v7 = the trailing 32 bits of rand_b, which
+# carries 32 bits of randomness. Birthday-collision probability over
+# N draws against 2^32 buckets is ~ 1 - exp(-N^2 / (2 * 2^32)):
+#
+#   N=10000 -> ~1.2%   (flakes 1-in-80 even at this size)
+#   N= 1000 -> ~0.012%
+#
+# Even with N=1000 the test is statistically flaky (~1-in-8000), so
+# gate it behind AUTHOR_TESTING -- it stays useful as a hand-run
+# regression sentinel for the tail-substring rule in
+# App::Yath::Script::V2 without burning CI on rare false-positives.
 my $N = 10_000;
 
 my (@last8, @first8);
