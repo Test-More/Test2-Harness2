@@ -5,7 +5,9 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
+use File::Copy qw/cp/;
 use File::Path qw/make_path/;
+use File::ShareDir ();
 use File::Spec ();
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
@@ -28,6 +30,7 @@ use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
 use Object::HashBase qw{
     <workdir
     <logdir
+    <dict_path
     <name
     <ipc_parent
     <job_id
@@ -116,6 +119,38 @@ sub init {
     }
 
     make_path("$logdir/services");
+
+    # Resolve the active zstd dictionary for the run. An explicit
+    # dict_path (set by the caller, typically the yath command after
+    # parsing --zstd-dict) wins. Otherwise fall back to the
+    # install-shipped dictionary at share/other/zstd.dict via
+    # File::ShareDir. If neither is available the run is dict-less:
+    # files are still zstd-compressed, just without a pre-trained
+    # dictionary.
+    #
+    # We resolve via File::ShareDir directly rather than going
+    # through App::Yath2::Util to honor the CLAUDE.md rule that
+    # Test2::Harness2 must not load App::Yath2 modules. The yath
+    # command layer can still pre-resolve via App::Yath2::Util if
+    # it has a custom path; the result is passed in here.
+    if (exists $self->{+DICT_PATH}) {
+        my $dict = $self->{+DICT_PATH};
+        if (defined $dict) {
+            croak "dict_path '$dict' does not exist or is not readable"
+                unless -f $dict && -r _;
+        }
+    }
+    else {
+        my $share = eval {
+            File::ShareDir::dist_file('Test2-Harness2', 'other/zstd.dict');
+        };
+        $self->{+DICT_PATH} = (defined $share && -f $share) ? $share : undef;
+    }
+
+    if (defined $self->{+DICT_PATH}) {
+        cp($self->{+DICT_PATH}, "$logdir/zstd-dict.bin")
+            or croak "cp '$self->{+DICT_PATH}' -> '$logdir/zstd-dict.bin': $!";
+    }
 
     $self->{+NAME}              //= 'harness';
     $self->{+JOB_ID}            //= gen_uuid();
