@@ -732,16 +732,26 @@ sub _ipc_client {
 # message we send to it actually lands. Matters mainly in the
 # service-interpose flow where the collector and its parent
 # service race through startup. Gated per-target so we only pay
-# the wait once per peer; if the target never comes up we mark
-# it "checked" anyway and let the next send_message fall through
-# to the warn path.
+# the wait once per peer.
+#
+# Returns truthy if the peer is registered (or was once -- a peer
+# that came up and then disappeared still counts as "we saw it"),
+# falsy if the wait timed out without the peer ever registering.
+# Caller can use the return value to decide whether to attempt the
+# send at all.
 sub _wait_for_ipc_target {
     my ($self, $target) = @_;
-    return if $self->{_ipc_target_ready}->{$target}++;
+    return $self->{_ipc_target_seen}->{$target}
+        if $self->{_ipc_target_ready}->{$target}++;
 
     my $client = $self->_ipc_client;
-    eval { $client->peer_active($target, 5); 1 }
-        or warn "Error waiting for ipc target '$target' to become ready (from '" . $self->bus_id . "'): $@";
+    my $active;
+    my $ok = eval { $active = $client->peer_active($target, 5); 1 };
+    unless ($ok) {
+        warn "Error waiting for ipc target '$target' to become ready (from '" . $self->bus_id . "'): $@";
+        return $self->{_ipc_target_seen}->{$target} = 0;
+    }
+    return $self->{_ipc_target_seen}->{$target} = $active ? 1 : 0;
 }
 
 # Collector's own identity on the IPC bus. Per IPC_AND_LOGGERS §5.4
@@ -809,22 +819,40 @@ sub _send_to {
     my ($self, $target, $content) = @_;
     return unless defined $target;
 
-    $self->_wait_for_ipc_target($target);
+    my $client = $self->_ipc_client;
 
-    my $ok = eval {
-        $self->_ipc_client->send_message($target, $content);
-        1;
-    };
-    return if $ok;
+    # Send with one retry. The MessageFiles protocol's send_message
+    # croaks "Client does not exist" if the target's peer directory
+    # is missing at send time; that can race with peer registration
+    # at startup or peer teardown at shutdown. Re-check peer_active
+    # once before giving up so the legitimately-late but still-alive
+    # case stops emitting spurious warnings.
+    for my $attempt (1, 2) {
+        my $ready = $self->_wait_for_ipc_target($target);
 
-    my $err  = $@;
-    my $from = $self->bus_id // '?';
-    my $role;
-    $role = 'ipc_parent'  if defined $self->{+IPC_PARENT}  && $target eq $self->{+IPC_PARENT};
-    $role = 'ipc_run'     if defined $self->{+IPC_RUN}     && $target eq $self->{+IPC_RUN};
-    $role = 'ipc_harness' if defined $self->{+IPC_HARNESS} && $target eq $self->{+IPC_HARNESS};
-    my $to = defined $role ? "$target ($role)" : $target;
-    warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err";
+        my $ok = eval { $client->send_message($target, $content); 1 };
+        return if $ok;
+
+        my $err = $@;
+
+        # On retry, force another peer_active poll the next time
+        # around by clearing the gating cache for this target.
+        if ($attempt == 1 && $ready) {
+            delete $self->{_ipc_target_ready}->{$target};
+            delete $self->{_ipc_target_seen}->{$target};
+            next;
+        }
+
+        my $from = $self->bus_id // '?';
+        my $role;
+        $role = 'ipc_parent'  if defined $self->{+IPC_PARENT}  && $target eq $self->{+IPC_PARENT};
+        $role = 'ipc_run'     if defined $self->{+IPC_RUN}     && $target eq $self->{+IPC_RUN};
+        $role = 'ipc_harness' if defined $self->{+IPC_HARNESS} && $target eq $self->{+IPC_HARNESS};
+        my $to = defined $role ? "$target ($role)" : $target;
+        warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err";
+        return;
+    }
+
     return;
 }
 
