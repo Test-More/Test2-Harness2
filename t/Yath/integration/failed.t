@@ -1,0 +1,47 @@
+# HARNESS-CONFLICTS YATH
+use Test2::V0;
+plan skip_all => "TODO: failed command not yet wired against current log format";
+__END__
+
+use Test2::V0;
+
+use File::Temp qw/tempdir/;
+use File::Spec;
+
+use lib 't/lib';
+use Test2::Harness2::Test::Yath qw/yath/;
+use Test2::Harness2::Util::File::JSONL;
+
+use Test2::Harness2::Util::JSON qw/decode_json/;
+my $dir = __FILE__;
+$dir =~ s{\.t$}{}g;
+$dir =~ s{^\./}{};
+
+yath(
+    command => 'test',
+    args    => [$dir, '--ext=tx'],
+    log     => 1,
+    exit    => T(),
+    test    => sub {
+        my $out     = shift;
+        my $logfile = $out->{log}->name;
+
+        $out = yath(
+            command => 'failed',
+            args    => [$logfile],
+            env     => {TABLE_TERM_SIZE => 1000, TS_TERM_SIZE => 1000},
+            exit    => 0,
+            test    => sub {
+                my $out = shift;
+
+                ok(!$out->{exit}, "'failed' command exits true");
+                like($out->{output}, qr{fail\.tx}, "'fail.tx' was seen as a failure when reading the log");
+                unlike($out->{output}, qr{pass\.tx}, "'pass.tx' was not seen as a failure when reading the log");
+            },
+        );
+    },
+);
+
+
+
+done_testing;
