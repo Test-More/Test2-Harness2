@@ -194,11 +194,14 @@ sub find_ipc_files {
     for my $dir (@$dirs) {
         for my $path (_scan_dir($dir)) {
             my $rec;
-            my $ok = eval { $rec = read_ipc_file($path); 1 };
+            my $ok  = eval { $rec = read_ipc_file($path); 1 };
+            my $err = $@;
             unless ($ok) {
-                # Unreadable / corrupt entry. Leave it; let an operator
-                # investigate. We do not unlink here -- only liveness
-                # cleanup is automatic.
+                # Unreadable / corrupt entry. Leave it on disk for an
+                # operator to investigate; we do not unlink here, only
+                # liveness cleanup is automatic. Warn so the anomaly is
+                # not invisible.
+                warn "skipping unreadable IPC info file '$path': $err";
                 next;
             }
             $rec->{_path} = $path;
