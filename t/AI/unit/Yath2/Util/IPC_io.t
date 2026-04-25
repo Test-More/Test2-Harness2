@@ -48,4 +48,28 @@ unlink_ipc_file($path, $other_pid);
 ok(-e $path, 'unlink with mismatched pid does NOT remove file');
 unlink $path;
 
+# Hostile umask must not strip owner bits. A umask of 0277 would
+# otherwise sysopen-create the file as 0400 (no owner-write), which
+# defeats unlink-on-cleanup. write_ipc_file masks group/other only.
+{
+    my $hostile_path = File::Spec->catfile($dir, '.yath-nonce-h-2-deadbeef');
+    my $old          = umask 0277;
+    write_ipc_file($hostile_path, \%payload);
+    umask $old;
+
+    my $hmode = (stat $hostile_path)[2] & 07777;
+    is(sprintf('%04o', $hmode), '0600',
+        'permissions are 0600 even under hostile umask 0277');
+    unlink $hostile_path;
+}
+
+# Other-readable group/other bits never appear on the file.
+{
+    my $other_path = File::Spec->catfile($dir, '.yath-nonce-h-3-cafef00d');
+    write_ipc_file($other_path, \%payload);
+    my $omode = (stat $other_path)[2] & 07777;
+    is(($omode & 0077), 0, 'no group or other bits set on IPC info file');
+    unlink $other_path;
+}
+
 done_testing;

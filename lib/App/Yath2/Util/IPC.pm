@@ -100,17 +100,29 @@ sub write_ipc_file {
 
     my $pend = "${path}.pend";
 
-    sysopen(my $fh, $pend, O_WRONLY | O_CREAT | O_EXCL, 0600)
-        or croak "open '$pend' for write: $!";
+    # Force owner-only perms regardless of the caller's umask. sysopen
+    # honours umask so a paranoid umask of e.g. 0277 would otherwise
+    # drop the owner-write bit and we could not unlink the file later.
+    # A local 0077 umask ensures group/other bits are masked but owner
+    # bits are kept; the chmod after rename pins the mode in place
+    # against any race between the creating sysopen and a concurrent
+    # umask change.
+    my $old_umask = umask 0077;
+    my $ok        = sysopen(my $fh, $pend, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    my $err       = $!;
+    umask $old_umask;
+    croak "open '$pend' for write: $err" unless $ok;
 
     my $json = IPC::Manager::Serializer::JSON->serialize($data);
     print {$fh} $json;
     close $fh or croak "close '$pend': $!";
 
+    chmod 0600, $pend or croak "chmod 0600 '$pend': $!";
+
     rename($pend, $path) or do {
-        my $err = $!;
+        my $rerr = $!;
         unlink $pend;
-        croak "rename '$pend' to '$path': $err";
+        croak "rename '$pend' to '$path': $rerr";
     };
 
     return $path;
