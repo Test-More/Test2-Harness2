@@ -8,8 +8,8 @@ use Carp qw/croak/;
 
 use File::Spec();
 use IPC::Manager::Serializer::JSON();
-use Fcntl qw/O_WRONLY O_CREAT O_EXCL/;
 use Sys::Hostname qw/hostname/;
+use Test2::Harness2::Util qw/write_file_atomic_mode/;
 use Test2::Harness2::Util::IPC qw/pid_is_running/;
 
 use Importer Importer => 'import';
@@ -98,32 +98,12 @@ sub write_ipc_file {
     croak "'path' required" unless defined $path && length $path;
     croak "'data' required" unless ref $data eq 'HASH';
 
-    my $pend = "${path}.pend";
-
-    # Force owner-only perms regardless of the caller's umask. sysopen
-    # honours umask so a paranoid umask of e.g. 0277 would otherwise
-    # drop the owner-write bit and we could not unlink the file later.
-    # A local 0077 umask ensures group/other bits are masked but owner
-    # bits are kept; the chmod after rename pins the mode in place
-    # against any race between the creating sysopen and a concurrent
-    # umask change.
-    my $old_umask = umask 0077;
-    my $ok        = sysopen(my $fh, $pend, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    my $err       = $!;
-    umask $old_umask;
-    croak "open '$pend' for write: $err" unless $ok;
-
     my $json = IPC::Manager::Serializer::JSON->serialize($data);
-    print {$fh} $json;
-    close $fh or croak "close '$pend': $!";
 
-    chmod 0600, $pend or croak "chmod 0600 '$pend': $!";
-
-    rename($pend, $path) or do {
-        my $rerr = $!;
-        unlink $pend;
-        croak "rename '$pend' to '$path': $rerr";
-    };
+    # 0600: only the user who ran yath may read or write the file. The
+    # ipcm_info string inside is sufficient to dial the harness's IPC
+    # bus, so non-owner read access is a credential leak.
+    write_file_atomic_mode($path, 0600, $json);
 
     return $path;
 }

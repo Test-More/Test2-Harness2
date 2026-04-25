@@ -6,7 +6,7 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak confess/;
 use Cwd qw/realpath/;
-use Fcntl qw/LOCK_EX LOCK_UN/;
+use Fcntl qw/LOCK_EX LOCK_UN O_WRONLY O_CREAT O_EXCL/;
 use File::Spec;
 use Importer Importer => 'import';
 use Importer 'Test2::Util::Times' => qw/render_duration/;
@@ -34,6 +34,7 @@ our @EXPORT_OK = qw{
     unlock_file
     write_file
     write_file_atomic
+    write_file_atomic_mode
 };
 
 # Load a Perl module by its :: name, idempotently. Returns the module
@@ -445,6 +446,51 @@ sub write_file_atomic {
 
     my ($ok, $err) = try_sig_mask {
         write_file($pend, @content);
+        my ($ren_ok, $ren_err) = do_rename($pend, $file);
+        die "$pend -> $file: $ren_err" unless $ren_ok;
+    };
+
+    unless ($ok) {
+        unlink($pend);
+        die $err;
+    }
+
+    return @content;
+}
+
+# write_file_atomic with explicit POSIX mode bits on the result file.
+# Use this when the file must have specific permissions regardless of
+# the caller's umask (e.g. credential-bearing IPC info files that must
+# stay 0600). The mode is enforced three ways:
+#   - sysopen(.pend, ..., $mode) under a temporary 'umask 0' so umask
+#     cannot strip bits from the create-time mode;
+#   - chmod($mode, .pend) before the rename pins the mode in place
+#     against any umask race after sysopen;
+#   - the rename keeps the inode (and its mode) intact, so the final
+#     file inherits .pend's mode exactly.
+# The whole sequence runs under try_sig_mask so a SIGINT during the
+# sysopen-chmod-rename window cannot leave a partially-permissioned
+# file in the wrong place.
+sub write_file_atomic_mode {
+    my ($file, $mode, @content) = @_;
+
+    croak "write_file_atomic_mode: 'mode' must be defined"
+        unless defined $mode;
+
+    my $pend = "$file.pend";
+
+    my ($ok, $err) = try_sig_mask {
+        my $old_umask = umask 0;
+        my $created   = sysopen(my $fh, $pend, O_WRONLY | O_CREAT | O_EXCL, $mode);
+        my $serr      = $!;
+        umask $old_umask;
+        die "open '$pend' for write: $serr" unless $created;
+
+        print {$fh} @content;
+        close_file($fh, $pend);
+
+        chmod($mode, $pend) or die sprintf("chmod 0%o '$pend': $!", $mode);
+
         my ($ren_ok, $ren_err) = do_rename($pend, $file);
         die "$pend -> $file: $ren_err" unless $ren_ok;
     };

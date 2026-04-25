@@ -14,6 +14,7 @@ can_ok(
         read_file
         write_file
         write_file_atomic
+        write_file_atomic_mode
     }
 );
 
