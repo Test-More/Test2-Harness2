@@ -107,6 +107,29 @@ sub service_post_hard_stop { }
 sub run_on_start {
     my $self = shift;
 
+    # Register on the IPC bus EAGERLY -- before emit_service_event,
+    # before service_on_start, before anything that might block this
+    # process. The base IPC::Manager::Role::Service::run() lazily
+    # initializes the client when it first touches peer_delta, AFTER
+    # run_on_start completes; doing it here closes a startup race
+    # against an interpose-collector parent that wants to send us a
+    # message during its own startup. Without this eager connect:
+    #
+    #   * parent collector's _wait_for_ipc_target polls for our peer
+    #     directory / pidfile, which only appear once we (the child)
+    #     enter the run() loop;
+    #   * we (the child) block in emit_service_event waiting for the
+    #     collector's STDERR sync ack;
+    #   * the collector's parser is not draining yet (it runs after
+    #     _send_logger_metadata, which is the one waiting on us).
+    #
+    # The two processes deadlock for the full peer_active timeout.
+    # Touching $self->client here breaks the cycle: registration is
+    # cheap (mkdir + write pidfile) and never blocks on IPC, so the
+    # collector's wait completes before our emit_service_event call
+    # makes any I/O.
+    eval { $self->client; 1 } or warn "Failed to initialise IPC client in run_on_start: $@";
+
     # Own our pgroup so signals from managed children (tests, resource
     # services) can't reach us via pgroup delivery. Signals go out by
     # pid, never by pgroup, so pgroup isolation is enough.
