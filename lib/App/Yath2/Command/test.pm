@@ -29,8 +29,18 @@ use App::Yath2::Renderer::Default();
 
 use Getopt::Yath;
 include_options(
-    'App::Yath2::Options::Workspace',
     'App::Yath2::Options::Yath',
+    'App::Yath2::Options::Harness',
+    'App::Yath2::Options::Workspace',
+    'App::Yath2::Options::Finder',
+    'App::Yath2::Options::IPC',
+    'App::Yath2::Options::Renderer',
+    'App::Yath2::Options::Resource',
+    'App::Yath2::Options::Run',
+    'App::Yath2::Options::Runner',
+    'App::Yath2::Options::Scheduler',
+    'App::Yath2::Options::Term',
+    'App::Yath2::Options::Tests',
 );
 
 use Role::Tiny::With;

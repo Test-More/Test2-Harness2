@@ -1,0 +1,114 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+# Install App::Yath::Script from this repo's `script` branch.
+#
+# The App::Yath::Script distribution lives on its own branch in this repo
+# (origin/script) and is also published to CPAN. The cpanfile pulls the
+# released version by default; this helper exists for author/dev/CI runs
+# that want to validate the *unreleased* code on origin/script before
+# tagging a release.
+#
+# SHA-pinned: re-running with no upstream changes is a no-op.
+
+use File::Path qw/make_path/;
+use File::Spec;
+use File::Temp qw/tempdir/;
+
+my $REPO_ROOT  = repo_root();
+my $LOCAL_DIR  = File::Spec->catdir($REPO_ROOT, 'local');
+my $SHA_FILE   = File::Spec->catfile($LOCAL_DIR, '.app-yath-script-sha');
+my $SCRIPT_REF = $ENV{YATH_SCRIPT_REF} // 'origin/script';
+my $FORCE      = grep { $_ eq '--force' || $_ eq '-f' } @ARGV;
+
+sub run {
+    my @cmd = @_;
+    print STDERR "+ @cmd\n";
+    system(@cmd) == 0 or die "Command failed (exit @{[$? >> 8]}): @cmd\n";
+}
+
+sub capture {
+    my @cmd = @_;
+    open my $fh, '-|', @cmd or die "Could not run @cmd: $!";
+    my $out = do { local $/; <$fh> };
+    close $fh;
+    return ($?, $out);
+}
+
+sub repo_root {
+    my ($exit, $out) = capture(qw/git rev-parse --show-toplevel/);
+    die "Not inside a git repository\n" if $exit;
+    chomp $out;
+    return $out;
+}
+
+sub resolve_sha {
+    my ($ref) = @_;
+    my ($exit, $out) = capture('git', 'rev-parse', '--verify', "$ref^{commit}");
+    return undef if $exit;
+    chomp $out;
+    return $out;
+}
+
+sub read_sha_file {
+    return undef unless -f $SHA_FILE;
+    open my $fh, '<', $SHA_FILE or return undef;
+    my $sha = <$fh>;
+    close $fh;
+    chomp $sha if defined $sha;
+    return $sha;
+}
+
+sub write_sha_file {
+    my ($sha) = @_;
+    make_path($LOCAL_DIR) unless -d $LOCAL_DIR;
+    open my $fh, '>', $SHA_FILE or die "Could not write $SHA_FILE: $!\n";
+    print $fh "$sha\n";
+    close $fh;
+}
+
+sub installer_cmd {
+    return ('cpm', 'install', '--global', '--show-build-log-on-failure') if can_run('cpm');
+    return ('cpanm', '--notest')                                         if can_run('cpanm');
+    die "Need either `cpm` or `cpanm` on PATH to install App::Yath::Script.\n";
+}
+
+sub can_run {
+    my ($prog) = @_;
+    my ($exit) = capture('sh', '-c', "command -v $prog >/dev/null 2>&1 && echo y || echo n");
+    return $exit == 0;
+}
+
+my $target_sha = resolve_sha($SCRIPT_REF)
+    or die "Could not resolve $SCRIPT_REF -- run `git fetch origin script` first.\n";
+
+my $current_sha = read_sha_file();
+
+if (!$FORCE && defined $current_sha && $current_sha eq $target_sha) {
+    print "App::Yath::Script already at $target_sha (from $SCRIPT_REF). Nothing to do.\n";
+    exit 0;
+}
+
+print "Installing App::Yath::Script from $SCRIPT_REF ($target_sha)...\n";
+
+my $worktree_dir = tempdir("yath-script-XXXXXX", TMPDIR => 1, CLEANUP => 0);
+# Ensure we always remove the worktree, even on error.
+END {
+    if ($worktree_dir && -d $worktree_dir) {
+        system('git', 'worktree', 'remove', '--force', $worktree_dir);
+    }
+}
+
+run('git', 'worktree', 'add', '--detach', $worktree_dir, $target_sha);
+
+my @install = installer_cmd();
+my $cwd = $REPO_ROOT;
+chdir $worktree_dir or die "chdir $worktree_dir: $!";
+run(@install, '.');
+chdir $cwd or die "chdir $cwd: $!";
+
+write_sha_file($target_sha);
+
+print "Installed App::Yath::Script $target_sha. SHA recorded at $SHA_FILE.\n";
+exit 0;
