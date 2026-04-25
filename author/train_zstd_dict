@@ -9,7 +9,7 @@ use warnings;
 # training samples, and feeds them to `zstd --train` to produce a
 # pre-trained dictionary suitable for jsonl-per-line frame compression.
 #
-# The default output path is share/zstd/jsonl.dict (relative to the
+# The default output path is share/other/zstd.dict (relative to the
 # repo root, or wherever --out points). The default training output
 # is a 32K dictionary, which is comfortably below ZSTD_initCStream's
 # default window size while still giving useful gains on short jsonl
@@ -19,7 +19,7 @@ use warnings;
 #   author_scripts/train_zstd_dict [options] LOG_OR_ARCHIVE [LOG_OR_ARCHIVE ...]
 #
 # Options:
-#   --out PATH        Output dictionary path. Default: share/zstd/jsonl.dict
+#   --out PATH        Output dictionary path. Default: share/other/zstd.dict
 #   --maxdict SIZE    Pass through to zstd --maxdict. Default: 32K
 #   --level N         Compression level used during training. Default: 3
 #   --force           Overwrite an existing output dictionary
@@ -42,6 +42,7 @@ use IPC::Cmd qw/can_run/;
 use FindBin qw/$RealBin/;
 use lib "$RealBin/../lib";
 
+use App::Yath2::LogArchive;
 use App::Yath2::Streamer::Static;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 
@@ -75,7 +76,7 @@ my $zstd = can_run('zstd')
     or die "error: 'zstd' binary not found on PATH; required for training\n";
 
 my $repo_root = abs_path("$RealBin/..");
-my $out_path  = $opt{out} // "$repo_root/share/zstd/jsonl.dict";
+my $out_path  = $opt{out} // "$repo_root/share/other/zstd.dict";
 
 if (-e $out_path && !$opt{force}) {
     die "error: refusing to overwrite '$out_path' without --force\n";
@@ -101,9 +102,18 @@ for my $src (@sources) {
 
     print STDERR "Scanning '$src'...\n";
 
+    # The streamer subscribes by scope: 'global' covers harness- and
+    # service-scope events only; per-test events live under each
+    # run_id. Subscribe to every run the archive knows about so the
+    # training corpus includes test-event jsonl, not just the few
+    # harness-scope frames.
+    my $la   = App::Yath2::LogArchive->new(path => $src);
+    my @runs = $la->runs(include_empty => 1);
+
     my $streamer = App::Yath2::Streamer::Static->new(
         log    => $src,
         global => 1,
+        (@runs ? (runs => \@runs) : ()),
     );
 
     my $sample_idx = 0;
@@ -180,11 +190,11 @@ Usage: $script [options] LOG_OR_ARCHIVE [LOG_OR_ARCHIVE ...]
 
 Trains a zstd dictionary from one or more yath log directories or
 .yath archives via the static streamer, then writes the dictionary
-to share/zstd/jsonl.dict (or --out PATH).
+to share/other/zstd.dict (or --out PATH).
 
 Options:
   --out PATH         Output dictionary path
-                     (default: <repo>/share/zstd/jsonl.dict)
+                     (default: <repo>/share/other/zstd.dict)
   --maxdict SIZE     zstd --maxdict argument (default: 32K)
   --level N          zstd compression level used during training
                      (default: 3)
