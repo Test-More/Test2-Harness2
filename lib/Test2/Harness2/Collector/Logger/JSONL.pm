@@ -5,8 +5,11 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
+use File::Spec ();
 use IO::Handle;
 use Test2::Harness2::Util::File::JSONL;
+use Test2::Harness2::Util::File::JSONL::Zstd;
+use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 
 use Object::HashBase qw{
     <output_file
@@ -43,9 +46,18 @@ sub output_files {
 
     return () if defined $self->{+FH};
 
-    $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.jsonl';
+    $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.jsonl.zst';
 
     return ($self->{+OUTPUT_FILE});
+}
+
+# Locate the per-logdir zstd dictionary if one is present. Returns
+# undef when the run was started dict-less.
+sub _dict_path {
+    my $self = shift;
+    my $logdir = $self->{+LOGDIR} or return undef;
+    my $path = "$logdir/zstd-dict.bin";
+    return -f $path ? $path : undef;
 }
 
 sub startup {
@@ -53,6 +65,8 @@ sub startup {
 
     # When the caller hands us an open filehandle we use it as-is, so the
     # caller controls its lifetime and we must not close it on shutdown.
+    # Caller-supplied handles are written to as plaintext jsonl -- the
+    # caller decides what they want on the other end of that handle.
     if ($self->{+FH}) {
         $self->{+FH}->autoflush(1);
         $self->{_fh_borrowed} = 1;
@@ -64,10 +78,20 @@ sub startup {
     # the side effect of populating OUTPUT_FILE.
     $self->output_files unless defined $self->{+OUTPUT_FILE};
 
-    open(my $fh, '>', $self->{+OUTPUT_FILE})
-        or croak "Could not open log file '$self->{+OUTPUT_FILE}': $!";
-    $fh->autoflush(1);
-    $self->{+FH} = $fh;
+    my $path = $self->{+OUTPUT_FILE};
+    if ($path =~ /\.zst\z/) {
+        my $dict = $self->_dict_path;
+        $self->{+FH} = open_zstd_writer(
+            $path,
+            ($dict ? (dict_path => $dict) : ()),
+        );
+    }
+    else {
+        open(my $fh, '>', $path)
+            or croak "Could not open log file '$path': $!";
+        $fh->autoflush(1);
+        $self->{+FH} = $fh;
+    }
 }
 
 sub log_event {
@@ -75,7 +99,16 @@ sub log_event {
     my ($event) = @_;
 
     my $fh = $self->{+FH} or return;
-    print $fh $event->as_json, "\n";
+
+    # The zstd writer wrapper exposes ->print; native filehandles use
+    # the print operator. Both compress/append-on-print behavior is
+    # identical from the caller's point of view.
+    if (ref($fh) && $fh->isa('Test2::Harness2::Util::Zstd::Writer')) {
+        $fh->print($event->as_json . "\n");
+    }
+    else {
+        print $fh $event->as_json, "\n";
+    }
 }
 
 sub shutdown {
@@ -86,7 +119,12 @@ sub shutdown {
     # Caller-owned handles are left open for the caller to manage.
     return if delete $self->{_fh_borrowed};
 
-    close($fh);
+    if (ref($fh) && $fh->isa('Test2::Harness2::Util::Zstd::Writer')) {
+        $fh->close;
+    }
+    else {
+        close($fh);
+    }
 }
 
 sub set_process_info {
@@ -128,6 +166,22 @@ sub records_general_events { 1 }
 sub log_reader {
     my $class = shift;
     my ($path) = @_;
+    if ($path =~ /\.zst\z/) {
+        my $dict;
+        my (undef, $dir) = File::Spec->splitpath($path);
+        if (defined $dir) {
+            my @parts = File::Spec->splitdir($dir);
+            while (@parts) {
+                my $candidate = File::Spec->catfile(File::Spec->catdir(@parts), 'zstd-dict.bin');
+                if (-f $candidate) { $dict = $candidate; last; }
+                pop @parts;
+            }
+        }
+        return Test2::Harness2::Util::File::JSONL::Zstd->new(
+            name      => $path,
+            dict_path => $dict,
+        );
+    }
     return Test2::Harness2::Util::File::JSONL->new(name => $path);
 }
 

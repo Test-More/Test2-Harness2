@@ -45,7 +45,20 @@ sub wait_until {
 
 sub read_jsonl {
     my ($path) = @_;
-    open my $fh, '<', $path or die "open $path: $!";
+    # Live logdirs now produce .jsonl.zst; tolerate either shape so
+    # the test does not need to know which extension to ask for.
+    my $zst   = ($path =~ /\.zst\z/) ? $path : "$path.zst";
+    my $plain = $path =~ s/\.zst\z//r;
+    if (-f $zst) {
+        require Test2::Harness2::Util::File::JSONL::Zstd;
+        (my $dict = $zst) =~ s{/logs/.*}{/logs/zstd-dict.bin};
+        my $f = Test2::Harness2::Util::File::JSONL::Zstd->new(
+            name => $zst,
+            (-f $dict ? (dict_path => $dict) : ()),
+        );
+        return $f->poll;
+    }
+    open my $fh, '<', $plain or die "open $plain: $!";
     my @events = map { decode_json($_) } grep { /\S/ } <$fh>;
     close $fh;
     return @events;
@@ -82,11 +95,13 @@ sub harness_events_for {
 sub run_events_for {
     my ($dir) = @_;
     opendir my $dh, "$dir/logs/runs" or return ();
-    my @logs = grep { /\.jsonl$/ } readdir $dh;
+    my @logs = grep { /\.jsonl(?:\.zst)?$/ } readdir $dh;
     closedir $dh;
     my @out;
     for my $l (@logs) {
-        push @out => read_jsonl("$dir/logs/runs/$l");
+        my $path = "$dir/logs/runs/$l";
+        $path =~ s/\.zst\z//;
+        push @out => read_jsonl($path);
     }
     return @out;
 }

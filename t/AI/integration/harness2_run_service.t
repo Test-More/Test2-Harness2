@@ -23,8 +23,19 @@ sub wait_until {
 
 sub read_jsonl {
     my ($path) = @_;
-    return () unless -e $path;
-    open my $fh, '<', $path or return ();
+    my $zst = ($path =~ /\.zst\z/) ? $path : "$path.zst";
+    my $plain = $path =~ s/\.zst\z//r;
+    if (-f $zst) {
+        require Test2::Harness2::Util::File::JSONL::Zstd;
+        (my $dict = $zst) =~ s{/logs/.*}{/logs/zstd-dict.bin};
+        my $f = Test2::Harness2::Util::File::JSONL::Zstd->new(
+            name => $zst,
+            (-f $dict ? (dict_path => $dict) : ()),
+        );
+        return $f->poll;
+    }
+    return () unless -e $plain;
+    open my $fh, '<', $plain or return ();
     my @events = map { decode_json($_) } grep { /\S/ } <$fh>;
     close $fh;
     return @events;
@@ -68,10 +79,10 @@ subtest 'run service writes its own jsonl log under runs/<run_id>/services' => s
     # runs/<run_id>.jsonl (derived from identity attrs), not in a
     # services/ subdirectory.
     opendir my $rdh, "$dir/logs/runs" or die "open $dir/runs: $!";
-    my @runs = grep { /\.jsonl$/ } readdir $rdh;
+    my @runs = grep { /\.jsonl(?:\.zst)?$/ } readdir $rdh;
     closedir $rdh;
     is(scalar @runs, 1, 'one run jsonl written');
-    my ($run_id) = $runs[0] =~ /^(.+)\.jsonl$/;
+    my ($run_id) = $runs[0] =~ /^(.+)\.jsonl(?:\.zst)?$/;
     my $run_log = "$dir/logs/runs/$runs[0]";
     ok(-e $run_log, 'per-run run.jsonl exists');
 
@@ -113,7 +124,7 @@ subtest "run service runs in its own process and is a child of the harness" => s
 
     # Dig the run-id jsonl out, read both logs.
     opendir my $rdh, "$dir/logs/runs" or die "open $dir/runs: $!";
-    my @runs = grep { /\.jsonl$/ } readdir $rdh;
+    my @runs = grep { /\.jsonl(?:\.zst)?$/ } readdir $rdh;
     closedir $rdh;
     my $run_log  = "$dir/logs/runs/$runs[0]";
     my $harn_log = "$dir/logs/services/harness.jsonl";
