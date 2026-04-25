@@ -20,9 +20,34 @@ sub new           { bless { workdir => $_[1] }, $_[0] }
 sub workdir       { $_[0]->{workdir} }
 sub create_option { }
 
+package Fake::IPC2;
+sub new       { bless {}, $_[0] }
+sub file      { undef }
+sub dir       { undef }
+sub dir_order { [qw/cwd tempdir/] }
+sub protocol  { undef }
+
+package Fake::Yath2;
+sub new              { bless {uuid => $_[1], cwd => $_[2]}, $_[0] }
+sub instance_uuid    { $_[0]->{uuid} }
+sub base_dir         { '' }
+sub cwd              { $_[0]->{cwd} }
+sub user_config_file { '' }
+sub config_file      { '' }
+
 package Fake::Settings2;
-sub new       { bless { workspace => $_[1] }, $_[0] }
+
+sub new {
+    my ($class, $workspace, $uuid, $cwd) = @_;
+    bless {
+        workspace => $workspace,
+        ipc       => Fake::IPC2->new,
+        yath      => Fake::Yath2->new($uuid, $cwd),
+    } => $class;
+}
 sub workspace { $_[0]->{workspace} }
+sub ipc       { $_[0]->{ipc} }
+sub yath      { $_[0]->{yath} }
 
 package main;
 
@@ -43,7 +68,7 @@ chdir $cwd_dir or die "chdir cwd_dir: $!";
 
 my $cmd = App::Yath2::Command::test->new(
     args     => [$tf],
-    settings => Fake::Settings2->new(Fake::Workspace2->new($work)),
+    settings => Fake::Settings2->new(Fake::Workspace2->new($work), 'a1b2c3d4', $cwd_dir),
 );
 
 # Renderer::Default clones the real STDOUT fd via clone_io(\*STDOUT), so
