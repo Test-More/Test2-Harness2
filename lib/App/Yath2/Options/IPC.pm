@@ -29,7 +29,7 @@ option_group {group => 'ipc', category => 'IPC Options'} => sub {
         name        => 'ipc-dir-order',
         type        => 'List',
         description => "Symbolic search order when --ipc-dir is unset. " . "Symbols: 'user_rc', 'project_rc', 'cwd', 'tempdir'. " . "Raw paths are also accepted.",
-        default     => sub { [qw/user_rc project_rc cwd tempdir/] },
+        default     => sub { qw/user_rc project_rc cwd tempdir/ },
     );
 
     option protocol => (
