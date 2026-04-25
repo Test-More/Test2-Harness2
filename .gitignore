@@ -17,6 +17,7 @@
 .yath-persist.json
 /*.gz
 /*.jsonl
+/*.yath
 /*.zip
 /.build
 /.build/
@@ -56,6 +57,7 @@ lastlog.*
 nytprof.out
 pm_to_blib
 t/integration/test-broken-symlinks/broken-symlink.tx
+t/Yath/integration/test-broken-symlinks/broken-symlink.tx
 t2/non_perl/test.binary
 t2_lib
 test-logs/
