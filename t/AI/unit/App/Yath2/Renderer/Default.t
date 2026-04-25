@@ -1,4 +1,5 @@
 use Test2::V0;
+use Test2::Plugin::NoWarnings;
 
 use App::Yath2::Renderer::Default;
 use App::Yath2::OutputManager;
@@ -78,6 +79,18 @@ subtest 'render_event writes plan output' => sub {
     $r->render_event(ev(plan => {count => 3}));
     like($$buf, qr/PLAN/, 'plan tag written');
     like($$buf, qr/3/, 'plan count written');
+};
+
+subtest 'write() emits no warnings for nested event with undef job_id in verbose mode' => sub {
+    # Regression: push @{$self->{+_BUFFER}->{$job_id}} warned when $job_id was
+    # undef for harness-level events that carry a hub with nested > 0 but no
+    # job_id facet (e.g. runner-internal subtests).
+    my ($r, $buf) = make_renderer();    # VERBOSE defaults to 1
+    $r->render_event(ev(
+        hubs   => [{nested => 1}],
+        assert => {pass => 1, details => 'nested event without job_id'},
+    ));
+    ok(1, 'no warnings from write() for nested event with undef job_id');
 };
 
 subtest 'finish does not die' => sub {
