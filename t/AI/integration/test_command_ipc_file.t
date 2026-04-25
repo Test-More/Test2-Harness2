@@ -44,15 +44,36 @@ sub new           { bless {workdir => $_[1]}, $_[0] }
 sub workdir       { $_[0]->{workdir} }
 sub create_option { }
 
+package Fake::RendererGroup;
+sub new { bless {verbose => 0, @_[1..$#_]} => $_[0] }
+sub theme   { 'App::Yath2::Theme::Default' }
+sub qvf     { 0 }
+sub verbose { $_[0]->{verbose} }
+sub quiet   { 0 }
+sub wrap    { 1 }
+sub server  { undef }
+sub classes { {'App::Yath2::Renderer::Default' => []} }
+sub all     { %{$_[0]} }
+
+package Fake::TermGroup;
+sub new { bless {color => 0, @_[1..$#_]} => $_[0] }
+sub color { $_[0]->{color} }
+sub all   { %{$_[0]} }
+
 package Fake::Settings;
 
 sub new {
     my ($class, %a) = @_;
+    $a{renderer} //= Fake::RendererGroup->new;
+    $a{term}     //= Fake::TermGroup->new;
     return bless \%a => $class;
 }
-sub workspace { $_[0]->{workspace} }
-sub ipc       { $_[0]->{ipc} }
-sub yath      { $_[0]->{yath} }
+sub workspace   { $_[0]->{workspace} }
+sub ipc         { $_[0]->{ipc} }
+sub yath        { $_[0]->{yath} }
+sub renderer    { $_[0]->{renderer} }
+sub term        { $_[0]->{term} }
+sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;
 

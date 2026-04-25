@@ -35,19 +35,42 @@ sub cwd              { $_[0]->{cwd} }
 sub user_config_file { '' }
 sub config_file      { '' }
 
+package Fake::Renderer2;
+# Forced verbose=>1 so the renderer emits per-assert lines (this test
+# inspects the assertion text).
+sub new { bless {verbose => 1, @_[1..$#_]} => $_[0] }
+sub theme   { 'App::Yath2::Theme::Default' }
+sub qvf     { 0 }
+sub verbose { $_[0]->{verbose} }
+sub quiet   { 0 }
+sub wrap    { 1 }
+sub server  { undef }
+sub classes { {'App::Yath2::Renderer::Default' => []} }
+sub all     { %{$_[0]} }
+
+package Fake::Term2;
+sub new { bless {color => 0, @_[1..$#_]} => $_[0] }
+sub color { $_[0]->{color} }
+sub all   { %{$_[0]} }
+
 package Fake::Settings2;
 
 sub new {
-    my ($class, $workspace, $uuid, $cwd) = @_;
+    my ($class, $workspace, $uuid, $cwd, %extras) = @_;
     bless {
         workspace => $workspace,
         ipc       => Fake::IPC2->new,
         yath      => Fake::Yath2->new($uuid, $cwd),
+        renderer  => Fake::Renderer2->new(%{$extras{renderer} // {}}),
+        term      => Fake::Term2->new(%{$extras{term}     // {}}),
     } => $class;
 }
-sub workspace { $_[0]->{workspace} }
-sub ipc       { $_[0]->{ipc} }
-sub yath      { $_[0]->{yath} }
+sub workspace   { $_[0]->{workspace} }
+sub ipc         { $_[0]->{ipc} }
+sub yath        { $_[0]->{yath} }
+sub renderer    { $_[0]->{renderer} }
+sub term        { $_[0]->{term} }
+sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;
 

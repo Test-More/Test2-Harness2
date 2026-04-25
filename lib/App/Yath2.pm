@@ -286,18 +286,21 @@ sub _process_global_args {
     my $self = shift;
     my ($args, %params) = @_;
 
+    # Pass-through unknown options at this stage rather than erroring.
+    # Top-level options are intentionally a small set; everything else
+    # (renderer, runner, finder, ...) is command-scoped. Letting unknown
+    # forms fall through here lets users put e.g. `-v` before the
+    # command (`yath -D -v test ...`) and have it bind to the renderer
+    # at command-level parsing, matching 1.0's passthrough behavior.
+    # Genuinely invalid options surface a clear, command-specific error
+    # later in _process_command_args.
     return $self->_process_args(
         $args,
         %params,
 
-        skip_posts => 1,
-        stop_at_non_opts => 1,
-
-        invalid_opt_callback => sub {
-            my ($opt) = @_;
-            print STDERR "\nERROR: '$opt' is not a valid yath option.\nSee `yath --help` for a list of available options.\n(Command specific options must come after the command, did you forget to specify a command?)\n\n";
-            exit 255;
-        },
+        skip_posts        => 1,
+        stop_at_non_opts  => 1,
+        skip_invalid_opts => 1,
     );
 }
 

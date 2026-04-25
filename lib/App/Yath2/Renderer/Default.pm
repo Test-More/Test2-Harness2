@@ -99,15 +99,23 @@ sub init {
 }
 
 # Return the filter chain appropriate for this renderer's verbosity level.
-# quiet  → only job-summary and run-summary events
-# verbose → all meaningful events (no explicit filter, handled by caller)
-# default → all meaningful events with the Verbose filter
+# quiet (-q)  → only job-summary and run-summary events
+# default     → all meaningful events with the Verbose filter
 sub desired_filters {
     my $self = shift;
-    my $settings = $self->{+SETTINGS} // {};
-    my $level    = $settings->{log_level} // 'default';
-    return ('App::Yath2::Filter::Quiet')   if $level eq 'quiet';
-    return ('App::Yath2::Filter::Verbose') if $level eq 'verbose';
+    my $s = $self->{+SETTINGS};
+
+    my $quiet = 0;
+    if ($s) {
+        if (blessed($s) && $s->can('check_group')) {
+            $quiet = $s->renderer->quiet ? 1 : 0 if $s->check_group('renderer');
+        }
+        elsif (ref($s) eq 'HASH') {
+            $quiet = $s->{quiet} ? 1 : 0;
+        }
+    }
+
+    return ('App::Yath2::Filter::Quiet') if $quiet;
     return ('App::Yath2::Filter::Verbose');
 }
 
@@ -126,13 +134,12 @@ sub render_event {
         my $pass = !$je->{fail};
 
         if ($self->{+SHOW_JOB_END}) {
-            my $job_id = $je->{job_id};
-            my $tag    = $pass ? 'PASSED' : 'FAILED';
+            my $tag = $pass ? 'PASSED' : 'FAILED';
             unshift @{$f->{info}} => {
                 tag       => $tag,
                 debug     => $pass ? 0 : 1,
                 important => 1,
-                details   => $job_id // $je->{rel_file} // '(unknown job)',
+                details   => $je->{rel_file} // $je->{file} // $je->{job_id} // '(unknown job)',
             };
         }
     }
@@ -552,16 +559,23 @@ sub render_tree {
             $len = $self->{+JOB_LENGTH};
         }
 
-        $len += 4;    # "job "
-        $len = 6 unless $len >= 6;
-
-        $job = sprintf("%s%-${len}s%s", $color, ($id ? "job $number" : "RUNNER"), $reset || '');
+        # Match 1.0's spacing: "job  1" (number right-aligned within the
+        # max number width) or "RUNNER" left-aligned to the same width as
+        # "job <number>".
+        my $label_width = 4 + $len;    # "job " + max number width
+        $label_width = 6 if $label_width < 6;
+        if ($id) {
+            $job = sprintf("%sjob %${len}s%s ", $color, $number, $reset || '');
+        }
+        else {
+            $job = sprintf("%s%-${label_width}s%s ", $color, 'RUNNER', $reset || '');
+        }
     }
 
     my $hf    = hub_truth($f);
     my $depth = $hf->{nested} || 0;
 
-    my @pipes = ('', map $char, 1 .. $depth);
+    my @pipes = (' ', map $char, 1 .. $depth);
     return join(' ' => $job, @pipes) . " ";
 }
 

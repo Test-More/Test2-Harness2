@@ -40,19 +40,40 @@ sub cwd              { $_[0]->{cwd} }
 sub user_config_file { '' }
 sub config_file      { '' }
 
+package Fake::Renderer;
+sub new { bless {verbose => 0, @_[1..$#_]} => $_[0] }
+sub theme   { 'App::Yath2::Theme::Default' }
+sub qvf     { 0 }
+sub verbose { $_[0]->{verbose} }
+sub quiet   { 0 }
+sub wrap    { 1 }
+sub server  { undef }
+sub classes { {'App::Yath2::Renderer::Default' => []} }
+sub all     { %{$_[0]} }
+
+package Fake::Term;
+sub new { bless {color => 0, @_[1..$#_]} => $_[0] }
+sub color { $_[0]->{color} }
+sub all   { %{$_[0]} }
+
 package Fake::Settings;
 
 sub new {
-    my ($class, $workspace, $uuid, $cwd) = @_;
+    my ($class, $workspace, $uuid, $cwd, %extras) = @_;
     bless {
         workspace => $workspace,
         ipc       => Fake::IPC->new,
         yath      => Fake::Yath->new($uuid, $cwd),
+        renderer  => Fake::Renderer->new(%{$extras{renderer} // {}}),
+        term      => Fake::Term->new(%{$extras{term}     // {}}),
     } => $class;
 }
-sub workspace { $_[0]->{workspace} }
-sub ipc       { $_[0]->{ipc} }
-sub yath      { $_[0]->{yath} }
+sub workspace   { $_[0]->{workspace} }
+sub ipc         { $_[0]->{ipc} }
+sub yath        { $_[0]->{yath} }
+sub renderer    { $_[0]->{renderer} }
+sub term        { $_[0]->{term} }
+sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;
 

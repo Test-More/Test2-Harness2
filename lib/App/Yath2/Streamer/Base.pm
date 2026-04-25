@@ -257,12 +257,30 @@ sub _drain_event_readers {
     my $self = shift;
 
     for my $rel (keys %{$self->{+EVENT_READERS}}) {
+        # Per-job test logs live at runs/<run_id>/tests/<job_id>.<ext>;
+        # the on-disk events don't carry job_id inside each record, so
+        # inject it here from the artifact path. Without this the
+        # renderer attributes test asserts to "RUNNER" instead of the
+        # owning job.
+        my ($injected_run_id, $injected_job_id);
+        if ($rel =~ m{^runs/([^/]+)/tests/([^/]+)\.[^/]+$}) {
+            ($injected_run_id, $injected_job_id) = ($1, $2);
+        }
+
         for my $pair (@{$self->{+EVENT_READERS}->{$rel}}) {
             my ($class, $reader) = @$pair;
             next unless $class->ready($reader);
             my @events = $class->fetch_events($reader);
             for my $hash (@events) {
                 next unless ref($hash) eq 'HASH';
+                if (defined $injected_job_id) {
+                    $hash->{run_id}  //= $injected_run_id;
+                    $hash->{job_id}  //= $injected_job_id;
+                    my $fd = $hash->{facet_data} //= {};
+                    my $h  = $fd->{harness}      //= {};
+                    $h->{run_id} //= $injected_run_id;
+                    $h->{job_id} //= $injected_job_id;
+                }
                 push @{$self->{+EVENT_QUEUE}} => $self->_bless_event($hash);
             }
         }
