@@ -4,19 +4,21 @@ Test2::Harness2 - Top-level test harness service.
 
 # SYNOPSIS
 
-    # Run once, then exit
-    Test2::Harness2->start(
-        workdir                  => '/path/to/wd',
-        test_run                 => {files => ['t/a.t', 't/b.t']},
-        finish_after_initial_run => 1,
-    );
+```perl
+# Run once, then exit
+Test2::Harness2->start(
+    workdir                  => '/path/to/wd',
+    test_run                 => {files => ['t/a.t', 't/b.t']},
+    finish_after_initial_run => 1,
+);
 
-    # Spawn as a persistent daemon, keep queuing
-    my $spawn = Test2::Harness2->spawn(workdir => '/path/to/wd');
-    $spawn->queue_test_run(files => ['t/c.t']);
-    my $status = $spawn->status;
-    $spawn->finish;
-    $spawn->wait;
+# Spawn as a persistent daemon, keep queuing
+my $spawn = Test2::Harness2->spawn(workdir => '/path/to/wd');
+$spawn->queue_test_run(files => ['t/c.t']);
+my $status = $spawn->status;
+$spawn->finish;
+$spawn->wait;
+```
 
 # DESCRIPTION
 
@@ -41,20 +43,22 @@ the service runs from a clean stack frame, so exceptions and stack traces
 are tidier and an accidental `return` out of the service cannot resume
 execution anywhere unintended.
 
-    use Long::Jump qw/setjump/;
+```perl
+use Long::Jump qw/setjump/;
 
-    my $ret = setjump 'harness' => sub {
-        Test2::Harness2->start(
-            workdir => $wd,
-            jump_to => 'harness',
-            # ... other start() args ...
-        );
-        # unreachable in the service child; the parent becomes the
-        # collector and exits without returning here either.
-    };
+my $ret = setjump 'harness' => sub {
+    Test2::Harness2->start(
+        workdir => $wd,
+        jump_to => 'harness',
+        # ... other start() args ...
+    );
+    # unreachable in the service child; the parent becomes the
+    # collector and exits without returning here either.
+};
 
-    my ($run_service) = @$ret;
-    $run_service->();   # never returns; service calls _exit
+my ($run_service) = @$ret;
+$run_service->();   # never returns; service calls _exit
+```
 
 If `jump_to` is set but no matching setjump is active, `start()` croaks
 before forking. Without `jump_to`, `start()` behaves exactly as before.
