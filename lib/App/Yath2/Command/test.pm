@@ -12,9 +12,8 @@ use Object::HashBase qw{
     <plugins
 };
 
-use File::Spec();
 use File::Path qw/remove_tree/;
-use Carp qw/croak/;
+use File::Spec();
 use POSIX qw/strftime/;
 use Time::HiRes qw/sleep/;
 
@@ -36,6 +35,7 @@ include_options(
     'App::Yath2::Options::Workspace',
     'App::Yath2::Options::Finder',
     'App::Yath2::Options::IPC',
+    'App::Yath2::Options::Logging',
     'App::Yath2::Options::Renderer',
     'App::Yath2::Options::Resource',
     'App::Yath2::Options::Run',
@@ -177,6 +177,8 @@ sub run {
         global => 1,
     );
 
+    # User-visible logging (-L / --log-file / --log-dir) is handled by
+    # the LogArchive write below at end-of-run; nothing to do here.
     my $final_pass;
     my $seen_end;
     $streamer->stream(
@@ -217,8 +219,30 @@ sub run {
     # Hold onto the workdir until we have archived its logs ourselves.
     $settings->workspace->create_option(keep_dirs => 1);
 
+    # Archive destination resolution:
+    #   1. --log-file PATH      use verbatim
+    #   2. --log-dir DIR        DIR/<stamp>.yath
+    #   3. neither              <stamp>.yath in CWD (today's behaviour;
+    #                           t/AI/integration/test_command_loggers.t
+    #                           pins the stamp+yath naming)
+    # -L on its own is a forward-compat opt-in; it has no effect here
+    # because we always produce the archive anyway.
     my $format  = default_writer_format();
-    my $archive = strftime('%Y%m%d-%H%M%S', localtime) . '.yath';
+    my $stamp   = strftime('%Y%m%d-%H%M%S', localtime);
+    my $archive;
+    if (eval { $settings->can('check_group') && $settings->check_group('logging') }) {
+        my $logging = $settings->logging;
+        my $log_file = $logging->file;
+        my $log_dir  = $logging->dir;
+        if (defined($log_file) && length $log_file) {
+            $archive = $log_file;
+        }
+        elsif (defined($log_dir) && length $log_dir) {
+            $archive = File::Spec->catfile($log_dir, "$stamp.yath");
+        }
+    }
+    $archive //= "$stamp.yath";
+
     App::Yath2::LogArchive->create(
         source => "$workdir/logs",
         path   => $archive,

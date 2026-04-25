@@ -156,9 +156,18 @@ sub init_renderers {
 
         my $params = $r_classes->{$class};
 
+        # Renderers can opt into pulling their own option group's
+        # settings via the `args_from_settings` class method (e.g.
+        # Renderer::Summary -> $settings->summary). Without this hook
+        # the renderer is constructed with only renderer/term settings.
+        my @extra = $class->can('args_from_settings')
+            ? $class->args_from_settings(settings => $settings)
+            : ();
+
         my $r = $class->new(
             $settings->renderer->all,
             $settings->term->all,
+            @extra,
             @$params,
             %params,
             settings => $settings,

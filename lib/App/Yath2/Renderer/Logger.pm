@@ -81,10 +81,9 @@ option_group {group => 'logging', category => "Logging Options", applicable => \
 
     option lastlog => (
         type => 'Bool',
-        default => 1,
-        description => "Symlink the log to a file named lastlog.jsonl[.COMPRESSION]",
-        from_env_vars => [qw/!YATH_NO_LASTLOG YATH_LINK_LASTLOG/],
-        set_env_vars  => [qw/YATH_NO_LASTLOG/], # Set this negated one if we ARE doing laslog so that nested yaths do not also do lastlog
+        default => 0,
+        description => "Symlink the log to a file named lastlog.jsonl[.COMPRESSION] in the current directory. Off by default; pass --lastlog or set YATH_LINK_LASTLOG=1 to opt in.",
+        from_env_vars => [qw/YATH_LINK_LASTLOG/],
     );
 
     option log => (
@@ -168,7 +167,9 @@ option_group {group => 'logging', category => "Logging Options", applicable => \
 sub args_from_settings {
     my $class = shift;
     my %params = @_;
-    return $params{settings}->logging->all;
+    my $settings = $params{settings};
+    return unless $settings->check_group('logging');
+    return $settings->logging->all;
 }
 
 sub start {
