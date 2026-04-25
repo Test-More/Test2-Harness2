@@ -277,13 +277,16 @@ sub spawn {
 
     my $test_run     = delete $args{test_run};
     my $finish_after = delete $args{finish_after_initial_run};
+    my $protocol     = delete $args{protocol};
 
     $args{parent_pids} //= [$$];
 
     # Spawn the IPC bus in the parent so both parent and child share the same
     # connection info.  Use guard => 0 so the parent does not try to tear down
     # the bus when the Spawn object goes out of scope; the child owns it.
-    my $ipcm = ipcm_spawn(guard => 0);
+    my @ipcm_args = (guard => 0);
+    push @ipcm_args => (protocol => $protocol) if defined $protocol && length $protocol;
+    my $ipcm = ipcm_spawn(@ipcm_args);
     $args{ipcm_info} = $ipcm->info;
 
     my $pid = fork // die "fork: $!";

@@ -29,6 +29,7 @@ sub new       { bless {dir => $_[1], dir_order => $_[2]}, $_[0] }
 sub file      { undef }
 sub dir       { $_[0]->{dir} }
 sub dir_order { $_[0]->{dir_order} }
+sub protocol  { undef }
 
 package Fake::YathGroup;
 sub new              { bless {uuid => $_[1], base_dir => $_[2], cwd => $_[3]}, $_[0] }

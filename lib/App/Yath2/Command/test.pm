@@ -88,6 +88,7 @@ sub run {
 
     my $spawn = Test2::Harness2->spawn(
         workdir   => $workdir,
+        protocol  => $settings->ipc->protocol,
         resources => [Test2::Harness2::Resource::JobCount->new(slots => 16)],
         loggers   => [
             'Test2::Harness2::Collector::Logger::JSONL',
@@ -146,6 +147,15 @@ sub run {
     my $ipc_guard  = Scope::Guard::guard(sub {
         unlink_ipc_file($info_path, $writer_pid);
     });
+
+    # Scope::Guard does not fire on signal-driven exits (Perl shortcuts
+    # via the C runtime without unwinding scopes). Install handlers so
+    # Ctrl-C / TERM still cleans up the IPC info file before the
+    # process dies. Each handler unlinks then re-raises with the
+    # default disposition so the caller observes a normal signal exit.
+    local $SIG{INT}  = sub { unlink_ipc_file($info_path, $writer_pid); $SIG{INT}  = 'DEFAULT'; kill INT  => $$ };
+    local $SIG{TERM} = sub { unlink_ipc_file($info_path, $writer_pid); $SIG{TERM} = 'DEFAULT'; kill TERM => $$ };
+    local $SIG{HUP}  = sub { unlink_ipc_file($info_path, $writer_pid); $SIG{HUP}  = 'DEFAULT'; kill HUP  => $$ };
 
     my $queued = $spawn->queue_test_run(files => \@files);
     die "Could not queue run: " . ($queued->{error} // '(no error)') . "\n"

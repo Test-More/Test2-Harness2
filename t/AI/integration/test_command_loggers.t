@@ -30,6 +30,7 @@ sub new       { bless {}, $_[0] }
 sub file      { undef }
 sub dir       { undef }
 sub dir_order { [qw/cwd tempdir/] }
+sub protocol  { undef }
 
 package Fake::Yath;
 sub new              { bless {uuid => $_[1], cwd => $_[2]}, $_[0] }
