@@ -7,12 +7,15 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 
 use File::Spec();
+use IPC::Manager::Serializer::JSON();
+use Fcntl qw/O_WRONLY O_CREAT O_EXCL/;
 
 use Importer Importer => 'import';
 
 our @EXPORT_OK = qw{
     resolve_ipc_filename
     resolve_ipc_dir
+    write_ipc_file read_ipc_file unlink_ipc_file
 };
 
 my %VALID_TYPE = (nonce => 1, persistent => 1);
@@ -85,6 +88,56 @@ sub resolve_ipc_dir {
     }
 
     croak "no writable IPC directory found in resolution chain";
+}
+
+sub write_ipc_file {
+    my ($path, $data) = @_;
+    croak "'path' required" unless defined $path && length $path;
+    croak "'data' required" unless ref $data eq 'HASH';
+
+    my $pend = "${path}.pend";
+
+    sysopen(my $fh, $pend, O_WRONLY | O_CREAT | O_EXCL, 0600)
+        or croak "open '$pend' for write: $!";
+
+    my $json = IPC::Manager::Serializer::JSON->serialize($data);
+    print {$fh} $json;
+    close $fh or croak "close '$pend': $!";
+
+    rename($pend, $path) or do {
+        my $err = $!;
+        unlink $pend;
+        croak "rename '$pend' to '$path': $err";
+    };
+
+    return $path;
+}
+
+sub read_ipc_file {
+    my ($path) = @_;
+    croak "'path' required" unless defined $path && length $path;
+
+    open(my $fh, '<', $path) or croak "open '$path' for read: $!";
+    local $/;
+    my $body = <$fh>;
+    close $fh or croak "close '$path': $!";
+
+    return IPC::Manager::Serializer::JSON->deserialize($body);
+}
+
+sub unlink_ipc_file {
+    my ($path, $expect_pid) = @_;
+    return unless defined $path && length $path;
+    return unless -e $path;
+
+    if (defined $expect_pid && $$ != $expect_pid) {
+        # Different process (most likely a forked child) is trying to
+        # clean up a file the parent registered. Skip.
+        return;
+    }
+
+    unlink $path or warn "unlink '$path': $!";
+    return;
 }
 
 1;
