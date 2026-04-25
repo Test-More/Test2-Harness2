@@ -14,15 +14,15 @@ B).
 
 ## What the repro script showed
 
-`scripts/atomic_pipe_repro.pl` was written to verify the race outside the
-harness test suite.  It mirrors the exact production interleaving pattern:
-a `Atomic::Pipe->from_fh('>&=', ...)` dup (matching `EventEmitter`'s
+A repro script was written to verify the race outside the harness test
+suite.  It mirrors the exact production interleaving pattern: an
+`Atomic::Pipe->from_fh('>&=', ...)` dup (matching `EventEmitter`'s
 `_as_atomic_pipe`) rather than a fresh `->pair`, so the same underlying
 kernel fd is shared.  The script was not run in a container during this
 investigation session (macOS desktop), but the CI evidence (sleep-stabilized
 test on Linux) is sufficient to confirm the race is real on Linux under
-load.  The script is committed so it can be run in a `perl:5.38-slim`
-container to gather a numeric "N/20 runs reorder" figure when needed.
+load.  The script was removed from `scripts/` since it is a dev-only
+diagnostic tool and should not be shipped in the distribution.
 
 ## Which outcome was chosen and why
 
@@ -46,8 +46,7 @@ gap, confirming the guarantee has not been added upstream.
 
 ## Architectural changes introduced
 
-None to the production call graph.  Changes are documentation-only plus one
-new diagnostic script:
+None to the production call graph.  Changes are documentation-only:
 
 - **`ARCHITECTURE.md` Addendum A**: records the investigation outcome,
   explains the kernel-level reason for the race, describes the Collector
@@ -57,9 +56,6 @@ new diagnostic script:
   `print` and `emit_*` calls on the same pipe fd.
 - **`t/AI/unit/Collector/burst_sync.t`** (lines 75–86): replaced the brief
   comment with a more complete one that links to Addendum A and GH#389.
-- **`scripts/atomic_pipe_repro.pl`**: new diagnostic script (not a harness
-  test) that can be run in a Linux container to reproduce and quantify the
-  race.
 
 ## Collector read-loop finding (3B-3)
 
