@@ -127,7 +127,16 @@ sub yath {
     # inject_includes() will splat @INC from this list before the V2
     # require, so a stale CPAN install can't outrace our in-tree
     # lib/App/Yath/Script/V2.pm via Perl's default search path.
-    $ENV{T2_HARNESS_INCLUDES} = join ';' => $apppath, grep { $_ ne '.' } @INC;
+    # Append rather than clobber so a caller-set T2_HARNESS_INCLUDES
+    # (used e.g. by t/Yath/integration/nested_includes.t to inject
+    # paths into the spawned test child's @INC) survives.
+    {
+        my $tester_inc = join ';' => $apppath, grep { $_ ne '.' } @INC;
+        my $caller_inc = $ENV{T2_HARNESS_INCLUDES};
+        $ENV{T2_HARNESS_INCLUDES} = (defined $caller_inc && length $caller_inc)
+            ? "$caller_inc;$tester_inc"
+            : $tester_inc;
+    }
     $ENV{$_} = $env->{$_} for keys %$env;
     $ENV{YATH_COLOR} = 0;
     my $pid = start_process \@cmd => sub {

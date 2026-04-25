@@ -79,10 +79,12 @@ sub run {
     # Build the extension filter from --ext / --extensions / --extension
     # (App::Yath2::Options::Finder), defaulting to t and t2. Used only
     # when an arg is a directory; explicit file paths are always
-    # accepted regardless of extension.
-    my @ext = $settings->check_group('finder')
-        ? @{ $settings->finder->extensions // [qw/t t2/] }
-        : qw/t t2/;
+    # accepted regardless of extension. Be defensive: unit tests pass
+    # in mock settings objects that may not implement check_group.
+    my @ext = qw/t t2/;
+    if (eval { $settings->can('check_group') && $settings->check_group('finder') }) {
+        @ext = @{ $settings->finder->extensions // [qw/t t2/] };
+    }
     my $ext_re = join '|', map { quotemeta } @ext;
 
     my @files;

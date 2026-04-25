@@ -1,9 +1,5 @@
 # HARNESS-CONFLICTS YATH
 use Test2::V0;
-plan skip_all => "TODO: nested includes / HARNESS-* parsing not aligned with current finder";
-__END__
-
-use Test2::V0;
 
 use File::Temp qw/tempdir/;
 use File::Spec;

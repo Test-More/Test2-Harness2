@@ -1765,6 +1765,12 @@ sub _launch_job {
 
     my $assign_id = gen_uuid();
     my %env;
+    # Forward T2_HARNESS_INCLUDES from the parent environment to the
+    # spawned test child so callers can inject paths into the child's
+    # @INC without resorting to per-test CLI flags. Mirrors
+    # reference/old2/lib/Test2/Harness2/TestSettings.pm:122.
+    $env{T2_HARNESS_INCLUDES} = $ENV{T2_HARNESS_INCLUDES}
+        if defined $ENV{T2_HARNESS_INCLUDES} && length $ENV{T2_HARNESS_INCLUDES};
     my %assign_args = %{$opts{assign_args} // {}};
     for my $res (@$resources) {
         $res->assign(id => $assign_id, job => $job, env => \%env, %assign_args);

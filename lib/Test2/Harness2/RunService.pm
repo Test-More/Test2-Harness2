@@ -191,8 +191,20 @@ sub request_handler_launch_job {
 
     # The harness's synthetic-skip / synthetic-fail paths hand us an
     # explicit launch command (perl -e '...'). Default to running the
-    # real test file when no override is present.
-    $launch_cmd //= [$^X, '-Ilib', $test_file_abs];
+    # real test file when no override is present. When the launch
+    # payload's env carries T2_HARNESS_INCLUDES (forwarded by
+    # Test2::Harness2::_launch_job), turn it into -I flags so the
+    # child's @INC actually picks the paths up -- the env var alone
+    # is not enough since exec(perl ...) starts a fresh interpreter.
+    if (!defined $launch_cmd) {
+        my @extra_inc;
+        if (my $payload_env = $payload->{env}) {
+            my $inc = $payload_env->{T2_HARNESS_INCLUDES};
+            @extra_inc = grep { length && $_ ne '.' } split /;/, $inc
+                if defined $inc && length $inc;
+        }
+        $launch_cmd = [$^X, (map { "-I$_" } @extra_inc), '-Ilib', $test_file_abs];
+    }
 
     # Default the payload-level log_file only if the caller wants one;
     # loggers are otherwise driven entirely by the payload_loggers
