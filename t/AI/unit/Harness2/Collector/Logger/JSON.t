@@ -2,10 +2,16 @@ use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Spec ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::File::JSON::Zstd;
 use Test2::Harness2::Collector::Logger::JSON;
 
 my $CLASS = 'Test2::Harness2::Collector::Logger::JSON';
+
+# Read back a snapshot file written by Logger::JSON.
+sub read_snapshot {
+    my ($path) = @_;
+    return Test2::Harness2::Util::File::JSON::Zstd->new(name => $path)->read;
+}
 
 # A minimal fake with a TO_JSON method we can verify round-trips cleanly.
 {
@@ -37,7 +43,7 @@ subtest 'required attributes' => sub {
     my $src = make_source(foo => 1);
 
     like(
-        dies { $CLASS->new(output_file => '/tmp/x.json', spec => $src) },
+        dies { $CLASS->new(output_file => '/tmp/x.json.zst', spec => $src) },
         qr/ipcm_info/,
         'ipcm_info required',
     );
@@ -51,7 +57,7 @@ subtest 'required attributes' => sub {
     );
 
     ok(
-        $CLASS->new(ipcm_info => {}, output_file => '/tmp/x.json'),
+        $CLASS->new(ipcm_info => {}, output_file => '/tmp/x.json.zst'),
         'spec is optional -- without it the sidecar records exit/pass only',
     );
 
@@ -59,7 +65,7 @@ subtest 'required attributes' => sub {
         dies {
             $CLASS->new(
                 ipcm_info   => {},
-                output_file => '/tmp/x.json',
+                output_file => '/tmp/x.json.zst',
                 spec        => 'not-an-object',
             )
         },
@@ -80,8 +86,8 @@ subtest 'output_file is lazily resolved from identity attributes' => sub {
     );
 
     my ($path) = $logger->output_files;
-    is($path, "$dir/runs/R1.json",
-        'output_files derives $logdir/runs/<run_id>.json when is_run is set');
+    is($path, "$dir/runs/R1.json.zst",
+        'output_files derives $logdir/runs/<run_id>.json.zst when is_run is set');
 
     my $bare = $CLASS->new(ipcm_info => {});
     like(
@@ -95,7 +101,7 @@ subtest 'log_events is true (consumes run_mutation events)' => sub {
     my $dir    = tempdir(CLEANUP => 1);
     my $logger = $CLASS->new(
         ipcm_info   => {},
-        output_file => "$dir/snapshot.json",
+        output_file => "$dir/snapshot.json.zst",
         spec        => make_source(kind => 'job'),
     );
     ok($logger->log_events, 'log_events returns true');
@@ -103,7 +109,7 @@ subtest 'log_events is true (consumes run_mutation events)' => sub {
 
 subtest 'run_mutation events are cached and win over the startup spec' => sub {
     my $dir  = tempdir(CLEANUP => 1);
-    my $path = "$dir/mut.json";
+    my $path = "$dir/mut.json.zst";
 
     my $logger = $CLASS->new(
         ipcm_info   => {},
@@ -113,7 +119,7 @@ subtest 'run_mutation events are cached and win over the startup spec' => sub {
     $logger->startup;
 
     # After startup the file carries the spec's TO_JSON.
-    my $at_start = decode_json(do { open my $fh, '<', $path or die; local $/; <$fh> });
+    my $at_start = read_snapshot($path);
     is($at_start->{pending}, [qw/a b/], 'startup wrote the spec snapshot');
 
     # A run_mutation event arrives with a fresher snapshot.
@@ -132,7 +138,7 @@ subtest 'run_mutation events are cached and win over the startup spec' => sub {
     $logger->log_event($fake_event);
     $logger->shutdown;
 
-    my $at_end = decode_json(do { open my $fh, '<', $path or die; local $/; <$fh> });
+    my $at_end = read_snapshot($path);
     is($at_end->{pending}, ['b'], 'shutdown wrote the latest run_mutation payload');
     is($at_end->{running}, ['a'], 'running list from run_mutation');
 };
@@ -141,18 +147,18 @@ subtest 'metadata reports json_file' => sub {
     my $dir    = tempdir(CLEANUP => 1);
     my $logger = $CLASS->new(
         ipcm_info   => {},
-        output_file => "$dir/meta.json",
+        output_file => "$dir/meta.json.zst",
         spec        => make_source(job_id => 'J1'),
     );
     is(
-        $logger->metadata, {json_file => "$dir/meta.json"},
+        $logger->metadata, {json_file => "$dir/meta.json.zst"},
         'metadata carries json_file locator'
     );
 };
 
 subtest 'startup writes the source snapshot atomically' => sub {
     my $dir  = tempdir(CLEANUP => 1);
-    my $path = "$dir/snapshot.json";
+    my $path = "$dir/snapshot.json.zst";
 
     my $src    = make_source(job_id => 'J1', test_file => 't/foo.t');
     my $logger = $CLASS->new(
@@ -164,8 +170,7 @@ subtest 'startup writes the source snapshot atomically' => sub {
     $logger->startup;
 
     ok(-e $path, 'snapshot file exists after startup');
-    my $json = do { open my $fh, '<', $path or die; local $/; <$fh> };
-    my $data = decode_json($json);
+    my $data = read_snapshot($path);
     is(
         $data, {job_id => 'J1', test_file => 't/foo.t'},
         'file contains the source TO_JSON verbatim'
@@ -175,12 +180,12 @@ subtest 'startup writes the source snapshot atomically' => sub {
     opendir my $dh, $dir or die;
     my @entries = grep { !/^\./ } readdir $dh;
     closedir $dh;
-    is(\@entries, ['snapshot.json'], 'no tempfile residue in the directory');
+    is(\@entries, ['snapshot.json.zst'], 'no tempfile residue in the directory');
 };
 
 subtest 'shutdown appends exit status and pass verdict' => sub {
     my $dir  = tempdir(CLEANUP => 1);
-    my $path = "$dir/job.json";
+    my $path = "$dir/job.json.zst";
 
     my $src = make_source(
         job_id    => 'J1',
@@ -197,8 +202,7 @@ subtest 'shutdown appends exit status and pass verdict' => sub {
     $logger->startup;
     $logger->shutdown(T2H2_JSON_FakeCollector->new(child_exit => 0));
 
-    my $json = do { open my $fh, '<', $path or die; local $/; <$fh> };
-    my $data = decode_json($json);
+    my $data = read_snapshot($path);
 
     is($data->{job_id},    'J1',      'original field preserved');
     is($data->{test_file}, 't/foo.t', 'original field preserved');
@@ -211,7 +215,7 @@ subtest 'shutdown appends exit status and pass verdict' => sub {
 
 subtest 'shutdown without auditor or exit still writes the snapshot' => sub {
     my $dir  = tempdir(CLEANUP => 1);
-    my $path = "$dir/noaudit.json";
+    my $path = "$dir/noaudit.json.zst";
 
     my $src    = make_source(kind => 'service');
     my $logger = $CLASS->new(
@@ -223,8 +227,7 @@ subtest 'shutdown without auditor or exit still writes the snapshot' => sub {
     $logger->startup;
     $logger->shutdown(T2H2_JSON_FakeCollector->new);    # no child_exit
 
-    my $json = do { open my $fh, '<', $path or die; local $/; <$fh> };
-    my $data = decode_json($json);
+    my $data = read_snapshot($path);
 
     is($data->{kind}, 'service', 'original data preserved');
     ok(!exists $data->{exit}, 'no exit key when collector has no child_exit');
@@ -233,7 +236,7 @@ subtest 'shutdown without auditor or exit still writes the snapshot' => sub {
 
 subtest 'shutdown reflects non-zero exit and failing auditor' => sub {
     my $dir  = tempdir(CLEANUP => 1);
-    my $path = "$dir/fail.json";
+    my $path = "$dir/fail.json.zst";
 
     my $src    = make_source(job_id => 'J-fail');
     my $logger = $CLASS->new(
@@ -246,8 +249,7 @@ subtest 'shutdown reflects non-zero exit and failing auditor' => sub {
     $logger->startup;
     $logger->shutdown(T2H2_JSON_FakeCollector->new(child_exit => 1 << 8));
 
-    my $json = do { open my $fh, '<', $path or die; local $/; <$fh> };
-    my $data = decode_json($json);
+    my $data = read_snapshot($path);
 
     is($data->{exit}{err}, 1, 'exit.err captures non-zero status');
     is($data->{pass},      0, 'pass is 0 for failing auditor');

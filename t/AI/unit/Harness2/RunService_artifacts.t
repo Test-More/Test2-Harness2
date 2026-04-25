@@ -4,7 +4,7 @@ use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 use Test2::Harness2::Run;
 use Test2::Harness2::RunService;
-use Test2::Harness2::Util::JSON qw/decode_json_file/;
+use Test2::Harness2::Util::JSON qw/decode_json_zst_file/;
 
 my $wd = tempdir(CLEANUP => 1);
 make_path("$wd/logs/runs/R1/services");
@@ -48,7 +48,7 @@ $svc->_handle_collector_artifacts({
     },
 });
 
-my $data = decode_json_file("$wd/logs/runs/R1/artifacts.json");
+my $data = decode_json_zst_file("$wd/logs/runs/R1/artifacts.json.zst", -f "$wd/logs/zstd-dict.bin" ? (dict_path => "$wd/logs/zstd-dict.bin") : ());
 is(
     $data,
     {

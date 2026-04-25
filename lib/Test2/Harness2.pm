@@ -25,7 +25,7 @@ use Test2::Harness2::Role::Service;
 use Test2::Harness2::Run;
 use Test2::Harness2::RunService;
 use Test2::Harness2::Util::EventEmitter;
-use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
+use Test2::Harness2::Util::JSON qw/write_json_zst_file_atomic/;
 
 use Object::HashBase qw{
     <workdir
@@ -671,9 +671,15 @@ sub _merge_artifacts {
 sub _write_artifacts_manifest {
     my $self = shift;
 
-    my $path = "$self->{+LOGDIR}/artifacts.json";
+    my $path = "$self->{+LOGDIR}/artifacts.json.zst";
 
-    my $ok  = eval { write_json_file_atomic($path, $self->{+ARTIFACTS}); 1 };
+    my $dict = "$self->{+LOGDIR}/zstd-dict.bin";
+    my @dict_args = -f $dict ? (dict_path => $dict) : ();
+
+    my $ok  = eval {
+        write_json_zst_file_atomic($path, $self->{+ARTIFACTS}, @dict_args);
+        1;
+    };
     my $err = $@;
     warn "Test2::Harness2: failed to write $path: $err" unless $ok;
 

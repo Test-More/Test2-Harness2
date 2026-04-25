@@ -7,6 +7,7 @@ use File::Spec ();
 
 use App::Yath2::LogArchive::Format qw/detect_format reader_class_for writer_class_for/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::Zstd qw/decompress_blob/;
 
 sub new {
     my ($class, %args) = @_;
@@ -41,12 +42,18 @@ sub artifacts {
     my $self = shift;
     my ($run_id, %opts) = $self->_parse_scope_args(@_);
 
-    my $rel = defined $run_id ? "runs/$run_id/artifacts.json" : 'artifacts.json';
+    my $rel = defined $run_id ? "runs/$run_id/artifacts.json.zst" : 'artifacts.json.zst';
     return {} unless $self->has_file($rel);
 
     my $fh   = $self->read_file($rel);
-    my $json = do { local $/; <$fh> };
+    my $bytes = do { local $/; <$fh> };
     close $fh;
+
+    my $dict_bytes = $self->can('dict_bytes') ? $self->dict_bytes : undef;
+    my $json = decompress_blob(
+        $bytes,
+        ($dict_bytes ? (dict_bytes => $dict_bytes) : ()),
+    );
     return decode_json($json);
 }
 
@@ -61,7 +68,7 @@ sub runs {
             $runs{$id} = 1;
         }
         else {
-            $runs{$id} = 1 if $path eq "runs/$id/artifacts.json";
+            $runs{$id} = 1 if $path eq "runs/$id/artifacts.json.zst";
         }
     }
     return sort keys %runs;
@@ -95,7 +102,7 @@ sub rogue_files {
         my $prefix = "runs/$run_id/";
         for my $f (@all) {
             next unless index($f, $prefix) == 0;
-            next if $f eq "${prefix}artifacts.json";
+            next if $f eq "${prefix}artifacts.json.zst";
             next if $known{$f};
             push @rogue => $f;
         }
@@ -103,7 +110,8 @@ sub rogue_files {
     else {
         for my $f (@all) {
             next if $f =~ m{^runs/};
-            next if $f eq 'artifacts.json';
+            next if $f eq 'artifacts.json.zst';
+            next if $f eq 'zstd-dict.bin';
             next if $known{$f};
             push @rogue => $f;
         }

@@ -126,19 +126,19 @@ like($archive, qr{/\d{8}-\d{6}\.yath\z}, 'archive name uses YYYYMMDD-HHMMSS patt
 my $la    = App::Yath2::LogArchive->new(path => $archive);
 my %files = map { $_ => 1 } $la->list_files;
 
-ok($files{'services/harness.jsonl'}, 'archive contains harness JSONL log');
-ok($files{'services/harness.json'},  'archive contains harness JSON  log');
-ok($files{'artifacts.json'},         'archive contains global artifacts manifest');
+ok($files{'services/harness.jsonl.zst'}, 'archive contains harness JSONL log');
+ok($files{'services/harness.json.zst'},  'archive contains harness JSON  log');
+ok($files{'artifacts.json.zst'},         'archive contains global artifacts manifest');
 ok(
-    (grep { m{^runs/[^/]+/artifacts\.json\z} } keys %files),
+    (grep { m{^runs/[^/]+/artifacts\.json\.zst\z} } keys %files),
     'archive contains a per-run artifacts manifest'
 );
 ok(
-    (grep { m{^runs/[^/]+/tests/[^/]+\.jsonl\z} } keys %files),
+    (grep { m{^runs/[^/]+/tests/[^/]+\.jsonl\.zst\z} } keys %files),
     'archive contains at least one per-job JSONL'
 );
 ok(
-    (grep { m{^runs/[^/]+/tests/[^/]+\.json\z} } keys %files),
+    (grep { m{^runs/[^/]+/tests/[^/]+\.json\.zst\z} } keys %files),
     'archive contains at least one per-job JSON'
 );
 

@@ -17,7 +17,7 @@ use Test2::Harness2::Collector;
 use Test2::Harness2::Role::ResourceServiceHost;
 use Test2::Harness2::Role::Service;
 use Test2::Harness2::Util::EventEmitter;
-use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
+use Test2::Harness2::Util::JSON qw/write_json_zst_file_atomic/;
 
 use Object::HashBase qw{
     <workdir
@@ -639,9 +639,15 @@ sub _write_artifacts_manifest {
     my $self = shift;
 
     my $dir  = "$self->{+LOGDIR}/runs/$self->{+RUN_ID}";
-    my $path = "$dir/artifacts.json";
+    my $path = "$dir/artifacts.json.zst";
 
-    my $ok  = eval { write_json_file_atomic($path, $self->{+ARTIFACTS}); 1 };
+    my $dict = "$self->{+LOGDIR}/zstd-dict.bin";
+    my @dict_args = -f $dict ? (dict_path => $dict) : ();
+
+    my $ok  = eval {
+        write_json_zst_file_atomic($path, $self->{+ARTIFACTS}, @dict_args);
+        1;
+    };
     my $err = $@;
     warn "Test2::Harness2::RunService: failed to write $path: $err" unless $ok;
 

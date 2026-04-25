@@ -3,7 +3,7 @@ use Test2::V0;
 use File::Temp qw/tempdir/;
 use Test2::Harness2;
 use Test2::Harness2::Collector::Logger::JSONL ();
-use Test2::Harness2::Util::JSON qw/decode_json_file/;
+use Test2::Harness2::Util::JSON qw/decode_json_zst_file/;
 
 subtest blessed_and_injected => sub {
     my $wd = tempdir(CLEANUP => 1);
@@ -36,7 +36,7 @@ subtest blessed_and_injected => sub {
         },
     });
 
-    my $data = decode_json_file("$wd/logs/artifacts.json");
+    my $data = decode_json_zst_file("$wd/logs/artifacts.json.zst", -f "$wd/logs/zstd-dict.bin" ? (dict_path => "$wd/logs/zstd-dict.bin") : ());
     is(
         $data,
         {
@@ -65,10 +65,10 @@ subtest arrayref_spec_instantiated => sub {
 
     $h->_seed_artifacts_from_loggers;
 
-    my $data = decode_json_file("$wd/logs/artifacts.json");
+    my $data = decode_json_zst_file("$wd/logs/artifacts.json.zst", -f "$wd/logs/zstd-dict.bin" ? (dict_path => "$wd/logs/zstd-dict.bin") : ());
     is(
         $data,
-        {'services/h.jsonl' => 'Test2::Harness2::Collector::Logger::JSONL'},
+        {'services/h.jsonl.zst' => 'Test2::Harness2::Collector::Logger::JSONL'},
         'arrayref logger spec contributes to artifacts.json',
     );
 };

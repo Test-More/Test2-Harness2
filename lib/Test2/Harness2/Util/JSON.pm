@@ -15,6 +15,7 @@ our @EXPORT_OK = qw{
     decode_json
     decode_json_file
     decode_json_no_null
+    decode_json_zst_file
     encode_json
     encode_json_file
     encode_pretty_json
@@ -24,6 +25,7 @@ our @EXPORT_OK = qw{
     stream_json_l_file
     stream_json_l_url
     write_json_file_atomic
+    write_json_zst_file_atomic
 };
 
 my $json   = Cpanel::JSON::XS->new->utf8(1)->convert_blessed(1)->allow_nonref(1);
@@ -80,6 +82,43 @@ sub write_json_file_atomic {
 
     write_file_atomic($path, encode_pretty_json($data));
     return;
+}
+
+# Sibling of write_json_file_atomic that compresses the encoded JSON
+# with zstd before the atomic rename. %opts accepts dict_path /
+# dict_bytes / dict_cdict for the per-frame dictionary. Used by every
+# logger / service that writes a snapshot to a path under $logdir/
+# (.json.zst by convention).
+sub write_json_zst_file_atomic {
+    my ($path, $data, %opts) = @_;
+
+    croak "path is required"         unless defined $path;
+    croak "data hashref is required" unless defined $data;
+
+    require Test2::Harness2::Util::Zstd;
+    Test2::Harness2::Util::Zstd::compress_file_atomic(
+        $path,
+        encode_pretty_json($data),
+        %opts,
+    );
+    return;
+}
+
+# Sibling of decode_json_file that reads a zstd-compressed JSON file.
+# %opts accepts dict_path / dict_bytes / dict_ddict for the dict.
+sub decode_json_zst_file {
+    my ($file, %opts) = @_;
+
+    croak "file is required" unless defined $file;
+
+    require Test2::Harness2::Util::Zstd;
+    my $bytes = Test2::Harness2::Util::Zstd::decompress_file($file, %opts);
+
+    if ($opts{unlink}) {
+        unlink($file) or warn "Could not unlink '$file': $!";
+    }
+
+    return decode_json($bytes);
 }
 
 sub json_true  { Cpanel::JSON::XS->true }

@@ -7,9 +7,12 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
 
+use File::Spec ();
+
 use Test2::Harness2::Util qw/parse_exit/;
-use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
+use Test2::Harness2::Util::JSON qw/write_json_zst_file_atomic/;
 use Test2::Harness2::Util::File::JSON;
+use Test2::Harness2::Util::File::JSON::Zstd;
 
 use Object::HashBase qw{
     <output_file
@@ -46,8 +49,18 @@ sub init {
 
 sub output_files {
     my $self = shift;
-    $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.json';
+    $self->{+OUTPUT_FILE} //= $self->output_file_basename . '.json.zst';
     return ($self->{+OUTPUT_FILE});
+}
+
+# Locate the per-logdir zstd dictionary if one is present. Returns
+# undef when the run was started dict-less (in which case the harness
+# never copied a dict into $logdir/zstd-dict.bin).
+sub _dict_path {
+    my $self = shift;
+    my $logdir = $self->{+LOGDIR} or return undef;
+    my $path = "$logdir/zstd-dict.bin";
+    return -f $path ? $path : undef;
 }
 
 sub set_process_info {
@@ -111,7 +124,11 @@ sub startup {
     my $data = defined $self->{+SPEC} ? $self->{+SPEC}->TO_JSON : {};
     $self->{+_DATA} = $data;
 
-    write_json_file_atomic($self->{+OUTPUT_FILE}, $data);
+    write_json_zst_file_atomic(
+        $self->{+OUTPUT_FILE},
+        $data,
+        ($self->_dict_path ? (dict_path => $self->_dict_path) : ()),
+    );
 }
 
 sub shutdown {
@@ -139,7 +156,11 @@ sub shutdown {
     }
 
     $self->output_files unless defined $self->{+OUTPUT_FILE};
-    write_json_file_atomic($self->{+OUTPUT_FILE}, $data);
+    write_json_zst_file_atomic(
+        $self->{+OUTPUT_FILE},
+        $data,
+        ($self->_dict_path ? (dict_path => $self->_dict_path) : ()),
+    );
 }
 
 # ----------------------------------------------------------------------
@@ -154,6 +175,26 @@ sub records_general_events { 0 }
 
 sub log_reader {
     my ($class, $path) = @_;
+    if ($path =~ /\.zst\z/) {
+        my $dict;
+        my (undef, $dir) = (File::Spec->splitpath($path));
+        my $candidate;
+        # Walk up to find an adjacent zstd-dict.bin; the snapshot's
+        # logdir copy lives at $logdir/zstd-dict.bin, with the
+        # snapshot itself at varying depth ($logdir/.../foo.json.zst).
+        if (defined $dir) {
+            my @parts = File::Spec->splitdir($dir);
+            while (@parts) {
+                my $candidate = File::Spec->catfile(File::Spec->catdir(@parts), 'zstd-dict.bin');
+                if (-f $candidate) { $dict = $candidate; last; }
+                pop @parts;
+            }
+        }
+        return Test2::Harness2::Util::File::JSON::Zstd->new(
+            name      => $path,
+            dict_path => $dict,
+        );
+    }
     return Test2::Harness2::Util::File::JSON->new(name => $path);
 }
 

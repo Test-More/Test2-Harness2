@@ -7,7 +7,7 @@ use lib 't/lib';
 use Test2::Harness2::TestFile;
 use Test2::Harness2::Test::Loggers qw/classic_harness_loggers classic_test_loggers/;
 use Test2::Harness2;
-use Test2::Harness2::Util::JSON qw/decode_json_file/;
+use Test2::Harness2::Util::JSON qw/decode_json_zst_file/;
 use App::Yath2::LogArchive;
 
 sub wait_until {
@@ -47,11 +47,15 @@ wait_until(
 $spawn->finish;
 $spawn->wait;
 
-ok(-f "$dir/logs/artifacts.json", 'global manifest written');
-my @run_manifests = glob "$dir/logs/runs/*/artifacts.json";
+my @dict_args = -f "$dir/logs/zstd-dict.bin"
+    ? (dict_path => "$dir/logs/zstd-dict.bin")
+    : ();
+
+ok(-f "$dir/logs/artifacts.json.zst", 'global manifest written');
+my @run_manifests = glob "$dir/logs/runs/*/artifacts.json.zst";
 is(scalar(@run_manifests), 1, 'exactly one per-run manifest');
 
-my $global = decode_json_file("$dir/logs/artifacts.json");
+my $global = decode_json_zst_file("$dir/logs/artifacts.json.zst", @dict_args);
 ok(scalar(keys %$global), 'global manifest has entries');
 ok(
     (grep { m{^services/} } keys %$global),
@@ -59,10 +63,10 @@ ok(
 );
 
 my ($run_path) = @run_manifests;
-my ($run_id)   = $run_path =~ m{/runs/([^/]+)/artifacts\.json\z};
+my ($run_id)   = $run_path =~ m{/runs/([^/]+)/artifacts\.json\.zst\z};
 ok(defined $run_id, "extracted run_id ($run_id)");
 
-my $run = decode_json_file($run_path);
+my $run = decode_json_zst_file($run_path, @dict_args);
 ok(scalar(keys %$run), 'per-run manifest non-empty');
 
 my $dir_la = App::Yath2::LogArchive->new(path => "$dir/logs");
