@@ -73,14 +73,43 @@ sub run {
     my $settings = $self->{+SETTINGS};
     my $args     = $self->{+ARGS} // [];
 
-    die "No test files supplied.\nUsage: yath test FILE [FILE ...]\n"
+    die "No test files supplied.\nUsage: yath test FILE-OR-DIR [...]\n"
         unless @$args;
 
-    my @files;
-    for my $file (@$args) {
-        die "Not a readable test file: $file\n" unless -f $file && -r _;
-        push @files => Test2::Harness2::TestFile->new(file => $file);
+    # Build the extension filter from --ext / --extensions / --extension
+    # (App::Yath2::Options::Finder), defaulting to t and t2. Used only
+    # when an arg is a directory; explicit file paths are always
+    # accepted regardless of extension. Be defensive: unit tests pass
+    # in mock settings objects that may not implement check_group.
+    my @ext = qw/t t2/;
+    if (eval { $settings->can('check_group') && $settings->check_group('finder') }) {
+        @ext = @{ $settings->finder->extensions // [qw/t t2/] };
     }
+    my $ext_re = join '|', map { quotemeta } @ext;
+
+    my @files;
+    for my $arg (@$args) {
+        if (-d $arg) {
+            require File::Find;
+            File::Find::find(
+                {
+                    no_chdir => 1,
+                    wanted   => sub {
+                        return unless -f $_ && -r _;
+                        return unless /\.(?:$ext_re)\z/;
+                        no strict 'refs';
+                        push @files => Test2::Harness2::TestFile->new(file => ${'File::Find::name'});
+                    },
+                },
+                $arg,
+            );
+            next;
+        }
+        die "Not a readable test file or directory: $arg\n" unless -f $arg && -r _;
+        push @files => Test2::Harness2::TestFile->new(file => $arg);
+    }
+
+    die "No test files matched extensions (@ext) under: @$args\n" unless @files;
 
     my $workdir = $settings->workspace->workdir;
 
