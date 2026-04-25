@@ -123,10 +123,12 @@ sub run {
                 $seen_end   = 1;
                 $final_pass = $end->{pass};
             }
-            print $event->as_json, "\n";
+            $om->dispatch($event);
         },
         exit_if => sub { $seen_end ? 1 : 0 },
     );
+
+    $om->end_of_events;
 
     $om->finish;
 
