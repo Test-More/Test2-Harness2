@@ -1,6 +1,7 @@
 use Test2::V0;
 
 use File::Spec ();
+
 BEGIN {
     @INC = map { File::Spec->rel2abs($_) } @INC;
     # Forked child processes spawned by the harness rely on PERL5LIB,
@@ -20,13 +21,37 @@ use App::Yath2::Command::test;
 use App::Yath2::LogArchive;
 
 package Fake::Workspace;
-sub new           { bless { workdir => $_[1] }, $_[0] }
+sub new           { bless {workdir => $_[1]}, $_[0] }
 sub workdir       { $_[0]->{workdir} }
 sub create_option { }
 
+package Fake::IPC;
+sub new       { bless {}, $_[0] }
+sub file      { undef }
+sub dir       { undef }
+sub dir_order { [qw/cwd tempdir/] }
+
+package Fake::Yath;
+sub new              { bless {uuid => $_[1], cwd => $_[2]}, $_[0] }
+sub instance_uuid    { $_[0]->{uuid} }
+sub base_dir         { '' }
+sub cwd              { $_[0]->{cwd} }
+sub user_config_file { '' }
+sub config_file      { '' }
+
 package Fake::Settings;
-sub new       { bless { workspace => $_[1] }, $_[0] }
+
+sub new {
+    my ($class, $workspace, $uuid, $cwd) = @_;
+    bless {
+        workspace => $workspace,
+        ipc       => Fake::IPC->new,
+        yath      => Fake::Yath->new($uuid, $cwd),
+    } => $class;
+}
 sub workspace { $_[0]->{workspace} }
+sub ipc       { $_[0]->{ipc} }
+sub yath      { $_[0]->{yath} }
 
 package main;
 
@@ -47,7 +72,7 @@ chdir $cwd_dir or die "chdir: $!";
 
 my $cmd = App::Yath2::Command::test->new(
     args     => [$tf],
-    settings => Fake::Settings->new(Fake::Workspace->new($work)),
+    settings => Fake::Settings->new(Fake::Workspace->new($work), 'a1b2c3d4', $cwd_dir),
 );
 
 my $captured = '';
@@ -56,7 +81,7 @@ my $err;
 {
     open(my $cap, '>', \$captured) or die $!;
     my $orig_out = select $cap;
-    my $ok = eval { $rc = $cmd->run; 1 };
+    my $ok       = eval { $rc = $cmd->run; 1 };
     $err = $@;
     select $orig_out;
 }
@@ -67,7 +92,7 @@ die $err unless defined $rc;
 is($rc, 0, 'test command exits 0 on a passing test');
 
 unlike($captured, qr/Work directory:/, 'no Work directory: line printed');
-like($captured,   qr/Wrote archive: .*\.yath/, 'reported written archive');
+like($captured, qr/Wrote archive: .*\.yath/, 'reported written archive');
 
 ok(!-d $work, 'workdir was removed after archiving');
 
@@ -76,7 +101,7 @@ is(scalar(@archives), 1, 'exactly one archive produced in cwd');
 my ($archive) = @archives;
 like($archive, qr{/\d{8}-\d{6}\.yath\z}, 'archive name uses YYYYMMDD-HHMMSS pattern');
 
-my $la = App::Yath2::LogArchive->new(path => $archive);
+my $la    = App::Yath2::LogArchive->new(path => $archive);
 my %files = map { $_ => 1 } $la->list_files;
 
 ok($files{'services/harness.jsonl'}, 'archive contains harness JSONL log');

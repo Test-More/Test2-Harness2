@@ -17,15 +17,19 @@ use File::Path qw/remove_tree/;
 use Carp qw/croak/;
 use POSIX qw/strftime/;
 use Time::HiRes qw/sleep/;
+use Sys::Hostname qw/hostname/;
 
 use Test2::Harness2();
 use Test2::Harness2::TestFile();
 use Test2::Harness2::Resource::JobCount();
 use App::Yath2::LogArchive();
 use App::Yath2::LogArchive::Format qw/default_writer_format/;
+use App::Yath2();
 use App::Yath2::Streamer::Live();
 use App::Yath2::OutputManager();
 use App::Yath2::Renderer::Default();
+use App::Yath2::Util::IPC qw/resolve_ipc_dir resolve_ipc_filename write_ipc_file unlink_ipc_file/;
+use Scope::Guard ();
 
 use Getopt::Yath;
 include_options(
@@ -98,6 +102,51 @@ sub run {
             'Test2::Harness2::Collector::Logger::JSON',
         ],
     );
+
+    my $info_path;
+    {
+        my $explicit = $settings->ipc->file;
+        my ($dir, $is_tmp);
+        if ($explicit) {
+            my ($vol, $dirs) = File::Spec->splitpath($explicit);
+            $dir       = File::Spec->catdir(File::Spec->splitdir($dirs));
+            $is_tmp    = 0;
+            $info_path = $explicit;
+        }
+        else {
+            ($dir, $is_tmp) = resolve_ipc_dir($settings);
+            my $name = resolve_ipc_filename(
+                type    => 'nonce',
+                host    => hostname(),
+                user    => ($ENV{USER} // (getpwuid($<))[0] // 'unknown'),
+                pid     => $spawn->pid,
+                uuid    => $settings->yath->instance_uuid,
+                tempdir => $is_tmp,
+            );
+            $info_path = File::Spec->catfile($dir, $name);
+        }
+
+        write_ipc_file(
+            $info_path,
+            {
+                yath_version => $App::Yath2::VERSION,
+                type         => 'nonce',
+                hostname     => hostname(),
+                user         => ($ENV{USER} // (getpwuid($<))[0] // 'unknown'),
+                pid          => $spawn->pid,
+                uuid         => $settings->yath->instance_uuid,
+                created_at   => time(),
+                workdir      => $workdir,
+                project      => $settings->yath->base_dir,
+                ipcm_info    => $spawn->ipcm_info,
+            },
+        );
+    }
+
+    my $writer_pid = $$;
+    my $ipc_guard  = Scope::Guard::guard(sub {
+        unlink_ipc_file($info_path, $writer_pid);
+    });
 
     my $queued = $spawn->queue_test_run(files => \@files);
     die "Could not queue run: " . ($queued->{error} // '(no error)') . "\n"
