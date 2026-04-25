@@ -2200,6 +2200,75 @@ test up front, without changing how the suite is run.
 
 ---
 
+## Addendum A — `Atomic::Pipe` mixed_data_mode cross-kind FIFO (GH#389)
+
+*Recorded 2026-04-25. Investigated as part of GH#389.*
+
+### Conclusion: Outcome B — documented non-guarantee
+
+`Atomic::Pipe` in `mixed_data_mode` does **not** guarantee FIFO ordering
+between plain-line writes (via `print $fh "...\n"`) and `write_message`
+calls on the same pipe fd, even when both come from the same process.
+
+The upstream POD (as of v0.022) says at the top of the `DESCRIPTION`
+section:
+
+> "message order is not guaranteed when messages are sent from multiple
+> processes or threads. Though all messages from any given thread/process
+> should be in order."
+
+This guarantee covers only **message-to-message** ordering from the same
+writer. It makes no statement about the relative arrival order of a raw
+`print` vs a `write_message` call issued immediately afterward from the
+same writer process. Under kernel scheduler pressure on slow CI (observed
+on containerized Perl 5.14–5.26 matrix jobs), the `write_message` burst
+can land at the reader before the `print` line that was issued first on
+the same fd.
+
+This is not a bug in `Atomic::Pipe`; it is a consequence of how `print`
+and `write_message` interact with the kernel's pipe buffer: `print` issues
+a single unframed write (possibly split across multiple system calls for
+large payloads), while `write_message` sends one or more precisely-sized
+atomic chunks with framing headers. Under load, the scheduler may interleave
+their delivery.
+
+### Impact
+
+The race is visible only on the **STDOUT pipe** — the pipe that carries
+both plain text and event bursts from the same child process. The STDERR
+pipe carries only sync markers written exclusively via `write_message`, so
+it is not affected.
+
+### What the Collector's read loop does (3B-3 finding)
+
+The Collector's `_ingest_item` buffers items per-stream in arrival order
+(insertion into `@{$buffer->{$stream}}`). It does **not** re-sort within a
+stream; it trusts that `get_line_burst_or_data()` returns items in write
+order. The sync-marker system (§6.1) ensures that STDOUT items and STDERR
+items are flushed together correctly, but it cannot reorder items already
+delivered out of sequence within the STDOUT stream. The `sleep 0.01`
+workaround in `t/AI/unit/Collector/burst_sync.t` is therefore the active
+mitigation for this race in the test suite.
+
+### Constraints on producers (see also `EventEmitter.pm` POD)
+
+Because the ordering gap is a kernel-level property, producer code must not
+assume that a `print` issued immediately before a `write_message` on the
+same pipe fd will arrive at the reader in that order. In practice this is
+only a problem in testing, where a contrived script interleaves both kinds
+in a tight loop. In production, the test formatter (`Stream2`) writes one
+`write_message` burst per Test2 event and any surrounding `print` output
+is produced by the test itself — not by the harness — so the interleaving
+is coarser and the pacing is sufficient.
+
+If a future producer needs strict cross-kind ordering guarantees, the
+correct approach is a separate pipe for each kind (one for plain text, one
+for event bursts), not a sleep or retry. Do not add sequencing fields to
+the JSON payload: that would change the wire format and add overhead to
+every event.
+
+---
+
 ## Remaining follow-ups
 
 Tracked here so the refactor catches them — not blockers to this
