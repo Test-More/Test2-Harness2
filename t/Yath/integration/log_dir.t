@@ -1,9 +1,5 @@
 # HARNESS-CONFLICTS YATH
 use Test2::V0;
-plan skip_all => "TODO: --log-dir / -L flag and JSONL log output not yet wired";
-__END__
-
-use Test2::V0;
 
 use lib 't/lib';
 use Test2::Harness2::Test::Yath qw/yath/;
@@ -32,7 +28,7 @@ yath(
         }
 
         is(@files, 1, "Only 1 file present");
-        like($files[0], qr{\.jsonl$}, "File is a jsonl file");
+        like($files[0], qr{\.yath$}, "File is a yath archive");
     },
 );
 

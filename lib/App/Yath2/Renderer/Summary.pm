@@ -49,7 +49,9 @@ sub desired_filters { () }    # must see harness_run_end and harness_job_end —
 sub args_from_settings {
     my $class = shift;
     my %params = @_;
-    return $params{settings}->summary->all;
+    my $settings = $params{settings};
+    return unless $settings->check_group('summary');
+    return $settings->summary->all;
 }
 
 sub init {
