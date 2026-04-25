@@ -1,9 +1,5 @@
 # HARNESS-CONFLICTS YATH
 use Test2::V0;
-plan skip_all => "TODO: init command not yet ported to this branch";
-__END__
-
-use Test2::V0;
 
 use File::Temp qw/tempdir/;
 use File::Spec;
