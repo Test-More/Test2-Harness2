@@ -6,6 +6,17 @@ use Test2::Harness2::Run;
 use Test2::Harness2::RunService;
 use Test2::Harness2::Util::JSON qw/decode_json_zst_file/;
 
+# Under the run-service aggregation topology, _handle_collector_artifacts
+# forwards a 'run_artifacts_update' message to the harness via
+# _send_to_harness. That path needs a real IPC bus, which this unit
+# test has no business spinning up: the test only cares that the
+# per-run artifacts.json.zst manifest is written correctly. Stub the
+# IPC send to a no-op so the test stays focused.
+{
+    no warnings 'redefine';
+    *Test2::Harness2::RunService::_send_to_harness = sub { };
+}
+
 my $wd = tempdir(CLEANUP => 1);
 make_path("$wd/logs/runs/R1/services");
 
