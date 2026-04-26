@@ -1,8 +1,5 @@
 # HARNESS-CONFLICTS YATH
-use Test2::V0;
-plan skip_all => "TODO: replay command not yet aligned with current log/streamer format";
-__END__
-
+# HARNESS-DURATION-SLOW
 use Test2::V0;
 
 use File::Temp qw/tempdir/;
@@ -21,6 +18,7 @@ sub clean_output {
     my $out = shift;
     $out->{output} =~ s/^.*duration.*$//m;
     $out->{output} =~ s/^.*Wrote log file:.*$//m;
+    $out->{output} =~ s/^.*Wrote archive:.*$//m;
     $out->{output} =~ s/^.*Symlinked to:.*$//m;
     $out->{output} =~ s/^.*Linked log file:.*$//m;
     $out->{output} =~ s/^\s*Wall Time:.*seconds//m;
@@ -35,6 +33,11 @@ sub clean_output {
     # Can remove this once the fixme is removed
     $out->{output} =~ s/^FIXME: publish should send log to server$//gm;
 
+    # Normalize display job numbers: parallel jobs complete in non-deterministic
+    # order so the renderer assigns job 1/2/... differently each run. Replace
+    # all "job  N" sequences with "job  N" sentinel so both sides match.
+    $out->{output} =~ s/\bjob\s+\d+\b/job N/g;
+
     my @lines;
     my $start;
     for my $line (split /\n/, $out->{output}) {
@@ -45,7 +48,25 @@ sub clean_output {
         push @lines => $line;
     }
 
-    $out->{output} = join "\n" => @lines;
+    # Sort consecutive PASSED/FAILED job-status lines so that parallel
+    # completion order does not break the comparison.
+    my @normalized;
+    my @status_group;
+    for my $line (@lines) {
+        if ($line =~ /^\(\s*(?:PASSED|FAILED)\s*\)/) {
+            push @status_group => $line;
+        }
+        else {
+            if (@status_group) {
+                push @normalized => sort @status_group;
+                @status_group = ();
+            }
+            push @normalized => $line;
+        }
+    }
+    push @normalized => sort @status_group if @status_group;
+
+    $out->{output} = join "\n" => @normalized;
 }
 
 my $out1 = yath(

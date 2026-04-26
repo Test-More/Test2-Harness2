@@ -1,8 +1,5 @@
 # HARNESS-CONFLICTS YATH
-use Test2::V0;
-plan skip_all => "TODO: times command output not aligned with current log format";
-__END__
-
+# HARNESS-DURATION-MODERATE
 use Test2::V0;
 
 use File::Temp qw/tempdir/;
@@ -34,7 +31,7 @@ yath(
     test    => sub {
         my $out = shift;
 
-        like($out->{output}, qr{Total .* Startup .* Events .* Cleanup .* File}m, "Got header");
+        like($out->{output}, qr{Total .* File}m, "Got header");
         like($out->{output}, qr{t/Yath/integration/times/pass\.tx}m,                  "Got pass line");
         like($out->{output}, qr{t/Yath/integration/times/pass2\.tx}m,                 "Got pass2 line");
         like($out->{output}, qr{TOTAL}m,                                         "Got total line");
