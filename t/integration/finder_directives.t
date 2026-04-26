@@ -6,7 +6,9 @@ use App::Yath2::Finder;
 use Test2::Harness2::TestFile;
 
 # End-to-end verification that App::Yath2::Finder::exclude_file sees
-# HARNESS-* metadata through the new TestFile parser. exclude_file is a
+# the per-file HARNESS metadata through the new TestFile parser. (Avoid
+# writing the literal "HARNESS-<wildcard>" form in this comment because
+# the scanner would treat it as a directive and warn.) exclude_file is a
 # pure method that reads only its own HashBase flags plus the
 # TestFile's check_feature / check_duration helpers, so we can exercise
 # it with minimal Finder construction and a handful of fixture files.
