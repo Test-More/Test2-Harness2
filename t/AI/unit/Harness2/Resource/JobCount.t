@@ -133,4 +133,112 @@ subtest 'release of unknown id rejected' => sub {
     ok(!$ok, 'croaks on unknown release id');
 };
 
+subtest 'max_per_job validation' => sub {
+    my $ok = eval { Test2::Harness2::Resource::JobCount->new(slots => 4, max_per_job => 0); 1 };
+    ok(!$ok, 'max_per_job=0 rejected');
+
+    $ok = eval { Test2::Harness2::Resource::JobCount->new(slots => 4, max_per_job => -1); 1 };
+    ok(!$ok, 'max_per_job=-1 rejected');
+
+    $ok = eval { Test2::Harness2::Resource::JobCount->new(slots => 4, max_per_job => 8); 1 };
+    ok(!$ok, 'max_per_job > slots rejected');
+
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 4, max_per_job => 2);
+    is($r->max_per_job, 2, 'max_per_job stored');
+};
+
+subtest 'max_per_job clamps test max_slots downward' => sub {
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 8);
+
+    # Test asks for fixed 1 slot -> still gets 1 (no clamp needed).
+    my $j1 = make_job(min_slots => 1, max_slots => 1);
+    is($r->available(id => 'a', job => $j1), 1, 'fixed-1 test gets 1');
+
+    # Test asks for fixed 4 slots -> gets 4 (under cap).
+    my $j4 = make_job(min_slots => 4, max_slots => 4);
+    is($r->available(id => 'b', job => $j4), 4, 'fixed-4 test gets 4');
+
+    # Test asks for fixed 16 slots -> clamped to 8 by max_per_job.
+    my $j16 = make_job(min_slots => 1, max_slots => 16);
+    is($r->available(id => 'c', job => $j16), 8, 'wide range clamped to max_per_job');
+
+    # Test asks for max_slots = 0 ("as many as free") -> still capped at 8.
+    my $jmax = make_job(min_slots => 1, max_slots => 0);
+    is($r->available(id => 'd', job => $jmax), 8, '"as many as free" capped at max_per_job');
+};
+
+subtest 'HARNESS-JOB-SLOTS MIN MAX range honoured under cap' => sub {
+    # Range form: test asks for between MIN and MAX slots, takes
+    # whatever is free in that window. The per-job cap clamps the
+    # MAX side; the MIN side still gates whether the test can run
+    # at all.
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 6);
+
+    # range 2..8: free=16, cap=6 -> grant=6 (capped down from 8).
+    my $jw = make_job(min_slots => 2, max_slots => 8);
+    is($r->available(id => 'a', job => $jw), 6, 'range 2..8 with cap 6 -> grant 6');
+
+    # range 2..4: free=16, cap=6 -> grant=4 (max wins, no cap needed).
+    my $jm = make_job(min_slots => 2, max_slots => 4);
+    is($r->available(id => 'b', job => $jm), 4, 'range 2..4 -> grant 4');
+
+    # range 2..0 ("as many as free"): cap substitutes -> grant=6.
+    my $jo = make_job(min_slots => 2, max_slots => 0);
+    is($r->available(id => 'c', job => $jo), 6, 'range 2..unbounded clamped at cap');
+};
+
+subtest 'HARNESS-JOB-SLOTS MIN MAX with MIN > cap is unsatisfiable' => sub {
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 4);
+    my $j = make_job(min_slots => 8, max_slots => 16);
+    is($r->available(id => 'x', job => $j), -1, 'range 8..16 with cap 4 -> -1 (MIN exceeds cap)');
+};
+
+subtest 'HARNESS-JOB-SLOTS MIN MAX adapts to free slots within range' => sub {
+    # No cap; verify range-vs-free math still works as legacy.
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 8);
+    $r->assign(id => 'pre', job => make_job(), env => {});    # used = 1, free = 7
+
+    # range 2..16: free=7 -> grant = min(max=16, free=7) = 7.
+    my $j = make_job(min_slots => 2, max_slots => 16);
+    is($r->available(id => 'a', job => $j), 7, 'range 2..16 with 7 free -> grant 7');
+};
+
+subtest 'max_per_job < min_slots reports unsatisfiable for that test only' => sub {
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 4);
+
+    my $jbad = make_job(min_slots => 8, max_slots => 8);
+    is($r->available(id => 'x', job => $jbad), -1, 'test exceeding cap is unsatisfiable');
+
+    # The resource itself is not broken: a normal test still gets a slot.
+    my $jok = make_job(min_slots => 1, max_slots => 1);
+    is($r->available(id => 'y', job => $jok), 1, 'other tests still work');
+};
+
+subtest '-j 16:8 scenario: 16 default tests run concurrently' => sub {
+    # Default test (no min_slots/max_slots header) consumes 1 slot each.
+    # With 16-slot pool we should fit all 16 simultaneously.
+    my $r = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 8);
+    for my $i (1 .. 16) {
+        my $g = $r->available(id => "j$i", job => make_job());
+        is($g, 1, "job $i grant=1");
+        $r->assign(id => "j$i", job => make_job(), env => {});
+    }
+    is($r->used,                              16, 'pool full');
+    is($r->available(id => '17', job => make_job()), 0, '17th waits');
+};
+
+subtest '-j 16:8 scenario: one 4-slot test reduces concurrency to 13' => sub {
+    my $r   = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 8);
+    my $jw  = make_job(min_slots => 4, max_slots => 4);
+    is($r->available(id => 'wide', job => $jw), 4, 'wide test grants 4');
+    $r->assign(id => 'wide', job => $jw, env => {});
+
+    # 12 of the remaining 12 default tests fit; the 13th does not.
+    for my $i (1 .. 12) {
+        $r->assign(id => "n$i", job => make_job(), env => {});
+    }
+    is($r->used, 16, 'pool full at 4 + 12');
+    is($r->available(id => 'extra', job => make_job()), 0, '13th 1-slot test must wait');
+};
+
 done_testing;

@@ -87,6 +87,28 @@ sub run {
     }
     my $ext_re = join '|', map { quotemeta } @ext;
 
+    # -j N / --slots N / --jobs N / --job-count N (and the -j N:M form
+    # which the resource group's trigger splits into slots+job_slots),
+    # plus -x M / --slots-per-job M / --job-slots M.
+    #
+    #   slots     -> total pool size (JobCount->{slots})
+    #   job_slots -> per-test-file CAP applied as JobCount->{max_per_job}
+    #
+    # Tests still use what their own HARNESS-JOB-SLOTS header (or
+    # min_slots/max_slots default of 1) declares; the cap only clamps
+    # the upper bound. -j 16:8 with 16 default tests => 16 concurrent;
+    # one test asking for 4 slots => still room for 12 default tests.
+    #
+    # Fall back to the historical 16-slot default when callers
+    # (typically unit tests with mock settings) do not expose a
+    # resource group.
+    my $slots     = 16;
+    my $job_slots = 1;
+    if (eval { $settings->can('check_group') && $settings->check_group('resource') }) {
+        $slots     = $settings->resource->slots     // $slots;
+        $job_slots = $settings->resource->job_slots // $job_slots;
+    }
+
     my @files;
     for my $arg (@$args) {
         if (-d $arg) {
@@ -116,7 +138,7 @@ sub run {
     my $spawn = Test2::Harness2->spawn(
         workdir   => $workdir,
         protocol  => $settings->ipc->protocol,
-        resources => [Test2::Harness2::Resource::JobCount->new(slots => 16)],
+        resources => [Test2::Harness2::Resource::JobCount->new(slots => $slots, max_per_job => $job_slots)],
         loggers   => [
             'Test2::Harness2::Collector::Logger::JSONL',
             'Test2::Harness2::Collector::Logger::JSON',

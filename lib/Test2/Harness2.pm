@@ -1501,13 +1501,17 @@ sub _try_launch_next_pending {
         }
 
         if ($decision eq 'skip') {
-            # The resource set can never satisfy this job. Drop
-            # it from the scheduler's pending; no synthesized
-            # completion event (this is not a failure, the job
-            # just could not run).
-            $self->_scheduler_skip($run_id, $job_id);
-            $self->_finalize_run_if_complete($head_run);
-            return 1;
+            # A resource is healthy but can never grant the slots THIS
+            # job demands (e.g. test declares HARNESS-JOB-SLOTS 8 and
+            # the per-job cap is 4). Route through the synthetic skip
+            # launch so the renderer/log show a real skip_all event
+            # with a reason, the run service sees a normal job
+            # completion, and the run can finalize. The skip launch
+            # itself goes through the limiter pool with need=1, so it
+            # may defer if the pool is currently saturated.
+            my $outcome = $self->_launch_synthetic_job($head_run, $job, 'skip', $arg);
+            return 1 if $outcome eq 'launched' || $outcome eq 'skip';
+            next;    # 'defer' -- try again next tick
         }
 
         if ($decision eq 'broken') {
@@ -1685,10 +1689,16 @@ sub _evaluate_resources_for {
     #
     # Return shape: ('launch', \@use)
     #               ('defer')
-    #               ('skip')   - resource is present but cannot ever
-    #                            grant (e.g. slot request > pool
-    #                            size). Scheduler silently drops the
-    #                            job from pending.
+    #               ('skip', $resource_name)
+    #                          - resource is present but can never
+    #                            grant THIS specific job (e.g. job's
+    #                            min_slots exceeds the resource's
+    #                            per-job cap). Scheduler routes the
+    #                            job through the synthetic skip launch
+    #                            so the user sees a real skip_all event
+    #                            and the run still completes; other
+    #                            jobs that fit the cap continue to use
+    #                            the resource.
     #               ('broken', $resource_name)
     #                          - a needed resource has been flipped
     #                            to permanent_broken. Scheduler
@@ -1706,7 +1716,7 @@ sub _evaluate_resources_for {
         return ('defer') unless $res->is_usable;
 
         my $av = $res->available(job => $job);
-        return ('skip')  if $av < 0;
+        return ('skip', $res->resource_name) if $av < 0;
         return ('defer') if !$av;
 
         push @use => $res;

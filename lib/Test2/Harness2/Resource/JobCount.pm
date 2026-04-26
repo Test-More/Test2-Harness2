@@ -10,6 +10,7 @@ use Time::HiRes qw/time/;
 
 use Object::HashBase qw{
     <slots
+    <max_per_job
     <used
     <assignments
     +paused
@@ -28,6 +29,13 @@ sub init {
     my $slots = $self->{+SLOTS};
     croak "'slots' is required and must be a positive integer"
         unless defined $slots && $slots =~ m/^\d+$/ && $slots > 0;
+
+    if (defined $self->{+MAX_PER_JOB}) {
+        croak "'max_per_job' must be a positive integer"
+            unless $self->{+MAX_PER_JOB} =~ m/^\d+$/ && $self->{+MAX_PER_JOB} > 0;
+        croak "'max_per_job' ($self->{+MAX_PER_JOB}) must not exceed 'slots' ($slots)"
+            if $self->{+MAX_PER_JOB} > $slots;
+    }
 
     $self->{+USED}        //= 0;
     $self->{+ASSIGNMENTS} //= {};
@@ -53,9 +61,26 @@ sub _job_slot_bounds {
     # (a one-liner "skip_all" or "die" only needs a single slot, even
     # if the test file normally asks for eight).
     my $tf  = $job->test_file;
-    my $min = $p{min} // $tf->min_slots || 1;
-    my $max = $p{max} // $tf->max_slots;
+    # check_min_slots / check_max_slots trigger a scan first so a test
+    # file's HARNESS-JOB-SLOTS header is honoured. The bare min_slots /
+    # max_slots accessors only return the role default and never reflect
+    # the file's own declaration.
+    my $min = $p{min} // ($tf->can('check_min_slots') ? $tf->check_min_slots : $tf->min_slots) || 1;
+    my $max = $p{max} // ($tf->can('check_max_slots') ? $tf->check_max_slots : $tf->max_slots);
     $max = $min unless defined $max;
+
+    # Per-job cap from -j N:M / -x M. The cap clamps the upper bound
+    # for tests that fit; tests whose minimum exceeds the cap are
+    # reported as permanently unsatisfiable below (return -1) so the
+    # scheduler can route them through a synth skip_all. Other tests
+    # continue to use this resource normally -- the resource itself
+    # is not broken, just unable to grant THIS specific job.
+    # max <= 0 from the test means "as many as are free" (handled in
+    # available()); substitute the cap so the cap wins on that case.
+    if (defined $self->{+MAX_PER_JOB}) {
+        my $cap = $self->{+MAX_PER_JOB};
+        $max = $cap if $max < 1 || $max > $cap;
+    }
 
     return ($min, $max);
 }
@@ -68,10 +93,11 @@ sub available {
     my ($min, $max) = $self->_job_slot_bounds($job, %p);
     my $need = $p{need} // $min;
 
-    # Permanently unsatisfiable: the resource pool is smaller than the job's
-    # minimum. Return -1 so the scheduler can mark the job as skipped rather
-    # than deferring it forever.
+    # Permanently unsatisfiable: pool smaller than min, or per-job cap
+    # smaller than min. Return -1 so the scheduler routes this job
+    # through the synth skip path rather than deferring forever.
     return -1 if $self->{+SLOTS} < $min;
+    return -1 if defined $self->{+MAX_PER_JOB} && $self->{+MAX_PER_JOB} < $min;
 
     my $free = $self->{+SLOTS} - $self->{+USED};
 

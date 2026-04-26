@@ -80,10 +80,7 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         long_examples  => [' 2'],
         short_examples => ['2'],
 
-        default => sub {
-            my ($opt, $settings) = @_;
-            $settings->resource->slots // 1;
-        },
+        default => sub { 1 },
     );
 
     option_post_process 50 => \&jobs_post_process;
