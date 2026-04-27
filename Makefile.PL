@@ -22,11 +22,17 @@ if ($ENV{AUTOMATED_TESTING}) {
         if $is_njh;
 }
 
+use File::ShareDir::Install;
+$File::ShareDir::Install::INCLUDE_DOTFILES = 1;
+$File::ShareDir::Install::INCLUDE_DOTDIRS = 1;
+install_share dist => "share";
+
 my %WriteMakefileArgs = (
   "ABSTRACT" => "Top-level test harness service.",
   "AUTHOR" => "Chad Granum <exodist\@cpan.org>",
   "CONFIGURE_REQUIRES" => {
     "ExtUtils::MakeMaker" => 0,
+    "File::ShareDir::Install" => "0.06",
     "Test2::Event::V2" => "1.302199",
     "Test2::Util::Term" => "0.000159"
   },
@@ -39,7 +45,7 @@ my %WriteMakefileArgs = (
   "NAME" => "Test2::Harness2",
   "PREREQ_PM" => {
     "App::Yath::Script" => "2.000011",
-    "Atomic::Pipe" => "0.021",
+    "Atomic::Pipe" => "0.026",
     "B" => 0,
     "Capture::Tiny" => "0.48",
     "Carp" => 0,
@@ -74,10 +80,11 @@ my %WriteMakefileArgs = (
     "IO::Compress::Gzip" => 0,
     "IO::Handle" => "1.27",
     "IO::Select" => 0,
+    "IO::Socket::UNIX" => "1.55",
     "IO::Uncompress::Bunzip2" => 0,
     "IO::Uncompress::Gunzip" => 0,
     "IPC::Cmd" => 0,
-    "IPC::Manager" => "0.000032",
+    "IPC::Manager" => "0.000034",
     "Importer" => "0.025",
     "JSON::PP" => 0,
     "LWP" => 0,
@@ -156,7 +163,7 @@ my %WriteMakefileArgs = (
 
 my %FallbackPrereqs = (
   "App::Yath::Script" => "2.000011",
-  "Atomic::Pipe" => "0.021",
+  "Atomic::Pipe" => "0.026",
   "B" => 0,
   "Capture::Tiny" => "0.48",
   "Carp" => 0,
@@ -193,10 +200,11 @@ my %FallbackPrereqs = (
   "IO::Compress::Gzip" => 0,
   "IO::Handle" => "1.27",
   "IO::Select" => 0,
+  "IO::Socket::UNIX" => "1.55",
   "IO::Uncompress::Bunzip2" => 0,
   "IO::Uncompress::Gunzip" => 0,
   "IPC::Cmd" => 0,
-  "IPC::Manager" => "0.000032",
+  "IPC::Manager" => "0.000034",
   "Importer" => "0.025",
   "JSON::PP" => 0,
   "LWP" => 0,
@@ -274,3 +282,9 @@ delete $WriteMakefileArgs{CONFIGURE_REQUIRES}
   unless eval { ExtUtils::MakeMaker->VERSION(6.52) };
 
 WriteMakefile(%WriteMakefileArgs);
+
+{
+package
+MY;
+use File::ShareDir::Install qw(postamble);
+}
