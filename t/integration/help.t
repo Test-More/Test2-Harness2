@@ -31,6 +31,8 @@ yath(
         my $out    = shift;
         my $script = find_yath();
 
+        $out->{output} =~ s/^Detected App::Yath::Script::V# modules in local.*\n//m;
+
         is($out->{output}, <<"        EOT", "Got output for the help command");
 help - Show the list of commands
 

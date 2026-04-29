@@ -1,5 +1,8 @@
 {{$NEXT}}
 
+    - Fix t/integration/help.t to strip the App::Yath::Script::V# detection
+      message correctly so the test passes under plain prove
+
 1.000171  2026-04-23 03:11:01-07:00 America/Los_Angeles
 
     - Depend on the App::Yath::Script dist for the yath script
