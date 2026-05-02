@@ -1,5 +1,8 @@
 {{$NEXT}}
 
+    - Add [PruneCruft] to dist.ini so build artifacts (blib/,
+      pm_to_blib, MYMETA.*) no longer leak into release tarballs.
+
     - Renamed distribution to Test2-Harness2.
     - Split namespaces: Test2::Harness2 (runtime), App::Yath2 (CLI), App::Yath2UI (DB/web).
     - External code referencing the old Test2::Harness or App::Yath namespaces must migrate.
