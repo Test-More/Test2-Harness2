@@ -2,8 +2,6 @@ package Test2::Harness2::Util::File::Stream;
 use strict;
 use warnings;
 
-# Probably best to get rid of this class as we will be removing the Zstd subclass in favor of the reader, writer, and FileMonitor classes. The JSONL class can be reworked.
-
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
@@ -98,24 +96,6 @@ sub seek {
 
     seek($fh, $pos, SEEK_SET) or die "Could not seek to position $pos in file '$name': $!";
     $self->{+LINE_POS} = $pos;
-}
-
-# Block until new lines have been appended to the file or $timeout
-# seconds elapse. Layers on wait_for_change() from the base class:
-# Linux::Inotify2 when available, falling back to a Time::HiRes
-# polling loop. Returns 1 if new data (past the current read
-# cursor) is likely available; 0 if the timeout fired.
-#
-# "Likely" because wait_for_change reports any change -- a
-# truncate, an attribute touch, an atomic rename. Callers that
-# tolerate spurious wake-ups (the usual "poll() returns nothing
-# this round" idiom) get the cheap wait. Callers that need a strict
-# guarantee can re-run poll() after the wake and retry if it returns
-# empty.
-sub wait_for_data {
-    my $self = shift;
-    my ($timeout) = @_;
-    return $self->wait_for_change($timeout);
 }
 
 1;

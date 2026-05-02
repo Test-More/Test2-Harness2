@@ -20,14 +20,6 @@ sub read {
     return $out;
 }
 
-# Probably do not need readline on a file that has 1 value
-sub read_line {
-    my $self = shift;
-    my $out  = $self->SUPER::read_line(@_);
-    chomp($out) if defined $out;
-    return $out;
-}
-
 1;
 
 __END__
@@ -62,11 +54,6 @@ hold back the value when the file lacks a final newline.
 =item $val = $vf->read()
 
 Read all contents from the file, C<chomp()> the result, and return it.
-
-=item $val = $vf->read_line()
-
-Read a single line from the file, C<chomp()> it, and return it. Will
-return the content even if the file does not end with a newline.
 
 =back
 

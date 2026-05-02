@@ -11,11 +11,4 @@ my $val = $one->read;
 chomp(my $no_tail = $val);
 is($val, $no_tail, "trailing newline was removed from the value");
 
-$val = $one->read_line;
-is(
-    $val,
-    "use Test2::V0 -target => 'Test2::Harness2::Util::File::Value';",
-    "got line, no newline"
-);
-
 done_testing;
