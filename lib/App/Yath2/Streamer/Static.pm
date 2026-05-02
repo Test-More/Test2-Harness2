@@ -151,6 +151,12 @@ sub _resolve_path {
 # run_id, or a different shape entirely). The run-shaped snapshot is
 # the one we need for lifecycle synthesis; other snapshots are only
 # validated for consistency against it.
+#
+# spec.json (the immutable run spec, also written by Logger::JSON
+# via the run_queued event) carries run_id but none of the runtime
+# fields the lifecycle synthesis needs (pending / running / results).
+# Prefer snapshots that carry those fields so state.json wins over
+# spec.json regardless of hash-key iteration order.
 sub _collect_static_state {
     my ($self, $scope_map, $rid) = @_;
 
@@ -176,7 +182,18 @@ sub _collect_static_state {
         }
     }
 
-    my @ordered = (@run_scoped, @other);
+    # Within run-scoped, prefer states carrying runtime-shape fields
+    # (pending / running / results). Spec snapshots match run_id but
+    # carry none of those, and would otherwise win on hash-iteration
+    # luck.
+    my @runtime_shape =
+        grep { ref($_->[1]{pending}) eq 'ARRAY' || ref($_->[1]{running}) eq 'ARRAY' || ref($_->[1]{results}) eq 'HASH' }
+            @run_scoped;
+    my @spec_shape =
+        grep { !(ref($_->[1]{pending}) eq 'ARRAY' || ref($_->[1]{running}) eq 'ARRAY' || ref($_->[1]{results}) eq 'HASH') }
+            @run_scoped;
+
+    my @ordered = (@runtime_shape, @spec_shape, @other);
     return undef unless @ordered;
 
     my ($base_class, $base) = @{$ordered[0]};
