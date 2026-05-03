@@ -335,7 +335,14 @@ sub _shutdown_harness {
 # Resolve the archive's destination path:
 #   --log-file PATH  use verbatim
 #   --log-dir DIR    DIR/<stamp>.yath
-#   neither          ${TMPDIR}/${project}-${user}-${stamp}-${pid}.yath
+#   neither          ${SYSTEM_TMP}/${project}-${user}-${stamp}-${pid}.yath
+#
+# SYSTEM_TMP is the original system tmpdir captured by
+# App::Yath::Script before yath swaps TMPDIR for its per-invocation
+# workdir. File::Spec->tmpdir() in this process returns the
+# workdir-scoped tmp, which gets removed alongside the workdir at
+# end of run -- so the archive must land in the original system
+# tmp to survive.
 sub _resolve_archive_path {
     my $self = shift;
     my $settings = $self->{+SETTINGS};
@@ -354,8 +361,9 @@ sub _resolve_archive_path {
 
     my $project = $settings->yath->project // '__UNKNOWN__';
     my $user    = $settings->yath->user    // 'unknown';
+    my $tmp     = $settings->yath->orig_tmp // File::Spec->tmpdir();
     return File::Spec->catfile(
-        File::Spec->tmpdir(),
+        $tmp,
         "$project-$user-$stamp-$$.yath",
     );
 }

@@ -91,6 +91,7 @@ package Fake::Yath2Group;
 sub new     { bless {}, $_[0] }
 sub project { 'fakeproj' }
 sub user    { 'fakeuser' }
+sub orig_tmp         { undef }
 
 package Fake::Settings2;
 sub new {

@@ -47,6 +47,7 @@ sub user_config_file { '' }
 sub config_file      { '' }
 sub project          { 'fakeproj' }
 sub user             { 'fakeuser' }
+sub orig_tmp         { undef }
 
 package Fake::Renderer;
 sub new { bless {verbose => 0, @_[1..$#_]} => $_[0] }

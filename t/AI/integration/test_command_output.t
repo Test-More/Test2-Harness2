@@ -38,6 +38,7 @@ sub user_config_file { '' }
 sub config_file      { '' }
 sub project          { 'fakeproj' }
 sub user             { 'fakeuser' }
+sub orig_tmp         { undef }
 
 package Fake::Renderer2;
 # Forced verbose=>1 so the renderer emits per-assert lines (this test

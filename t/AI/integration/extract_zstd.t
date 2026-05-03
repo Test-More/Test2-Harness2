@@ -40,6 +40,7 @@ sub _make_logdir {
     sub cwd              { $_[0]->{cwd} }
     sub project          { '__UNKNOWN__' }
     sub user             { 'fakeuser' }
+sub orig_tmp         { undef }
     sub user_config_file { '' }
     sub config_file      { '' }
 

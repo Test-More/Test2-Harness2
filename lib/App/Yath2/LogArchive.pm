@@ -123,7 +123,11 @@ sub find_latest {
     # caller report the no-archive condition.
     return undef if $project eq '__UNKNOWN__';
 
-    my $tmp     = File::Spec->tmpdir();
+    # The original system tmpdir captured by App::Yath::Script
+    # before yath swapped TMPDIR for its per-invocation workdir.
+    # File::Spec->tmpdir() in this process returns the workdir
+    # tmp; the archives live in the original system tmp.
+    my $tmp     = $settings->yath->orig_tmp // File::Spec->tmpdir();
     my $pattern = File::Spec->catfile($tmp, "${project}-${user}-*.yath");
 
     my @hits;

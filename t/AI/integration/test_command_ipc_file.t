@@ -44,6 +44,7 @@ sub user_config_file { '' }
 sub config_file      { '' }
 sub project          { 'fakeproj' }
 sub user             { 'fakeuser' }
+sub orig_tmp         { undef }
 
 package Fake::Workspace;
 sub new                  { bless {workdir => $_[1]}, $_[0] }
