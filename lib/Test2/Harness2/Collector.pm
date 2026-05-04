@@ -8,7 +8,7 @@ use Carp qw/croak/;
 use Config;
 use POSIX qw/:sys_wait_h setpgid/;
 use Time::HiRes qw/time/;
-use Scalar::Util qw/blessed/;
+use Scalar::Util qw/blessed refaddr/;
 use Scope::Guard ();
 use IO::Handle;
 use IO::Select;
@@ -806,8 +806,12 @@ sub _run_collection_loop {
     my $stdout_eof   = defined($out_r) ? 0 : 1;
     my $stderr_eof   = defined($err_r) ? 0 : 1;
 
-    # Merged if same handle object or err not provided
-    my $merge_outputs = defined($out_r) && defined($err_r) && "$out_r" eq "$err_r";
+    # Merged if same handle object or err not provided.
+    # Compare refaddr instead of stringification so a future Atomic::Pipe
+    # `""` overload would not silently break the equality.
+    my $merge_outputs = defined($out_r) && defined($err_r)
+        && refaddr($out_r) && refaddr($err_r)
+        && refaddr($out_r) == refaddr($err_r);
     $stderr_eof = 1 if $merge_outputs;
 
     # IO::Select paces the loop so it parks on idle pipes instead of
