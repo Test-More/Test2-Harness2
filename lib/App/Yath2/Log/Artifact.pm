@@ -5,13 +5,8 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
-use File::Basename qw/dirname/;
-use File::Path qw/make_path/;
-use File::Spec ();
-use Scalar::Util qw/blessed/;
 
-use Test2::Harness2::Util qw/write_file_atomic/;
-use Test2::Harness2::Util::Zstd qw/compress_blob decompress_blob open_zstd_reader/;
+use Test2::Harness2::Util::Zstd qw/compress_blob decompress_blob/;
 
 use App::Yath2::Log::Iterator::JSONL;
 
@@ -37,43 +32,60 @@ use Object::HashBase qw{
 #
 # Required attributes:
 #
-#   log   The owning Log backend (used for is_live, root, save, etc.)
+#   log   The owning Log backend. Provides the read primitives the
+#         handle delegates to:
+#           $log->_artifact_exists($rel)        -> ($exists, $is_zst)
+#           $log->_artifact_read($rel)          -> $bytes (compressed if .zst)
+#           $log->_artifact_iter_records($stem) -> records-backed iterator
+#                                                  (or undef -> file-backed)
+#           $log->_artifact_list_dir($rel)      -> sorted basenames
+#           $log->absolute_path($rel)           -> abs path or croak
+#         Directory implements these against the filesystem; TarZIdx
+#         implements them against the archive's index.
 #   base  Relative path under the log root for this artifact group, or
 #         undef when the handle targets the archive root.
 #   live  Boolean -- true when the underlying source is a live workdir.
 #         Forwarded to per-file iterators.
-#   root  Absolute filesystem path of the log root.
+#   root  Absolute filesystem path of the log root (Directory) or the
+#         archive file path (TarZIdx). Used by save() on filesystem-backed
+#         backends; may be undef on archive-only backends where save is
+#         not supported.
 
 sub init {
     my $self = shift;
     croak "'log' is a required attribute"
         unless defined $self->{+LOG};
-    croak "'root' is a required attribute"
-        unless defined $self->{+ROOT} && length $self->{+ROOT};
     $self->{+LIVE} //= 0;
     # base may be undef for archive-root handles.
+    # root may be undef for archive-only backends.
     return;
 }
 
-# Compose the full path of $relative under this artifact's base.
-sub _abs {
+# Compose an artifact-relative path under this handle's base.
+sub _rel {
     my ($self, $rel) = @_;
     my $base = $self->{+BASE};
     if (defined $base && length $base) {
-        return File::Spec->catfile($self->{+ROOT}, $base, $rel);
+        return "$base/$rel";
     }
-    return File::Spec->catfile($self->{+ROOT}, $rel);
+    return $rel;
 }
 
-# Return the on-disk path that exists for $logical (a stem like
-# 'events.jsonl' / 'spec.jsonl' / 'report.jsonl'). Prefers the .zst
-# variant. Returns (path, is_zst) or () if neither exists.
+# Resolve $stem ('events.jsonl' / 'spec.jsonl' / 'report.jsonl') to
+# the on-disk variant that exists. Returns ($rel, $is_zst) or () when
+# neither variant is present. Prefers the .zst variant.
 sub _resolve_jsonl {
     my ($self, $stem) = @_;
-    my $zst = $self->_abs("$stem.zst");
-    return ($zst, 1) if -f $zst;
-    my $plain = $self->_abs($stem);
-    return ($plain, 0) if -f $plain;
+    my $log = $self->{+LOG};
+
+    my $rel_zst = $self->_rel("$stem.zst");
+    my ($exists_zst) = $log->_artifact_exists($rel_zst);
+    return ($rel_zst, 1) if $exists_zst;
+
+    my $rel_plain = $self->_rel($stem);
+    my ($exists_plain) = $log->_artifact_exists($rel_plain);
+    return ($rel_plain, 0) if $exists_plain;
+
     return ();
 }
 
@@ -105,14 +117,12 @@ sub _read_jsonl_bytes {
     croak "events / spec / report are not valid on archive-root artifacts handle"
         if $self->_root_only;
 
-    my ($path, $is_zst) = $self->_resolve_jsonl($stem);
+    my ($rel, $is_zst) = $self->_resolve_jsonl($stem);
     croak "no $stem found under " . ($self->{+BASE} // '')
-        unless defined $path;
+        unless defined $rel;
 
-    open(my $fh, '<', $path) or croak "open '$path': $!";
-    binmode $fh;
-    my $bytes = do { local $/; <$fh> };
-    close $fh;
+    my $log = $self->{+LOG};
+    my $bytes = $log->_artifact_read($rel);
 
     if ($want_compressed) {
         return $bytes if $is_zst;
@@ -121,16 +131,11 @@ sub _read_jsonl_bytes {
 
     return $bytes unless $is_zst;
 
-    # Multi-frame zstd: open via the streaming reader and concat the
-    # decoded payloads. Single-frame would also work via decompress_blob
-    # but the reader handles either case uniformly.
-    my $r = open_zstd_reader($path);
-    my $out = '';
-    while (defined(my $frame = $r->readline)) {
-        $out .= $frame;
-    }
-    $r->close;
-    return $out;
+    # zstd_jsonl_decompress: events files are multi-frame; whole-file
+    # snapshots are single-frame. Either way concat-decoded payloads
+    # are correct. Use a streaming reader so multi-frame works without
+    # a separate code path.
+    return $log->_decompress_jsonl_bytes($bytes);
 }
 
 sub _jsonl_iter {
@@ -139,13 +144,22 @@ sub _jsonl_iter {
     croak "events_iter / spec_iter / report_iter are not valid on archive-root artifacts handle"
         if $self->_root_only;
 
-    my ($path, $is_zst) = $self->_resolve_jsonl($stem);
+    my $log = $self->{+LOG};
+
+    # Backend may want to short-circuit with a records-backed iterator
+    # (e.g. TarZIdx already has the bytes in memory).
+    if (my $records = $log->_artifact_iter_records($self->{+BASE}, $stem)) {
+        return App::Yath2::Log::Iterator::JSONL->new(records => $records);
+    }
+
+    my ($rel, $is_zst) = $self->_resolve_jsonl($stem);
     # An iterator pointing at a non-existent file is allowed -- it
     # just produces no records. The Reader handles -e checks itself.
-    $path //= $self->_abs("$stem.zst");
+    $rel //= $self->_rel("$stem.zst");
 
+    my $abs = $log->absolute_path($rel);
     return App::Yath2::Log::Iterator::JSONL->new(
-        path => $path,
+        path => $abs,
         live => $self->{+LIVE},
     );
 }
@@ -171,19 +185,16 @@ sub attachments {
     croak "attachments is not valid on archive-root artifacts handle"
         if $self->_root_only;
 
-    my $dir = $self->_abs('attachments');
-    return () unless -d $dir;
+    my $log    = $self->{+LOG};
+    my $relbase = $self->_rel('attachments');
 
-    opendir(my $dh, $dir) or return ();
-    my @names;
-    while (defined(my $entry = readdir($dh))) {
-        next if $entry eq '.' || $entry eq '..';
-        next unless -f File::Spec->catfile($dir, $entry);
+    my @entries = $log->_artifact_list_dir($relbase);
+    my %names;
+    for my $entry (@entries) {
         $entry =~ s{\.zst\z}{};
-        push @names => $entry;
+        $names{$entry} = 1;
     }
-    closedir($dh);
-    return sort @names;
+    return sort keys %names;
 }
 
 # Boolean -- does the named file exist under this artifact's base
@@ -193,8 +204,13 @@ sub exists {
     my ($self, $rel) = @_;
     croak "filename is required" unless defined $rel && length $rel;
 
-    return 1 if -e $self->_abs($rel);
-    return 1 if -e $self->_abs("$rel.zst");
+    my $log = $self->{+LOG};
+    my $full = $self->_rel($rel);
+
+    my ($e1) = $log->_artifact_exists($full);
+    return 1 if $e1;
+    my ($e2) = $log->_artifact_exists("$full.zst");
+    return 1 if $e2;
     return 0;
 }
 
@@ -210,35 +226,33 @@ sub get {
 sub _read_under {
     my ($self, $subdir, $rel, %opts) = @_;
 
+    my $log = $self->{+LOG};
     my $relpath = defined $subdir ? "$subdir/$rel" : $rel;
+    my $full = $self->_rel($relpath);
 
-    my $abs    = $self->_abs($relpath);
-    my $abszst = "$abs.zst";
+    my ($exists_plain, $plain_is_zst) = $log->_artifact_exists($full);
+    my ($exists_zst, undef)            = $log->_artifact_exists("$full.zst");
 
-    my ($path, $is_zst);
-    if (-e $abs) {
-        ($path, $is_zst) = ($abs, $abs =~ /\.zst\z/ ? 1 : 0);
+    my ($pick_rel, $is_zst);
+    if ($exists_plain) {
+        $pick_rel = $full;
+        $is_zst   = $plain_is_zst;
     }
-    elsif (-e $abszst) {
-        ($path, $is_zst) = ($abszst, 1);
+    elsif ($exists_zst) {
+        $pick_rel = "$full.zst";
+        $is_zst   = 1;
     }
     else {
         croak "no such file: $relpath";
     }
 
     if ($opts{filehandle}) {
-        open(my $fh, '<', $path) or croak "open '$path': $!";
-        binmode $fh;
-        return $fh;
+        return $log->_artifact_open_fh($pick_rel);
     }
 
-    open(my $fh, '<', $path) or croak "open '$path': $!";
-    binmode $fh;
-    my $bytes = do { local $/; <$fh> };
-    close $fh;
+    my $bytes = $log->_artifact_read($pick_rel);
 
     return $bytes if $opts{compressed};
-
     return $bytes unless $is_zst;
     return decompress_blob($bytes);
 }
@@ -258,6 +272,10 @@ sub save {
 
     croak "filename must not contain '..'" if $rel =~ m{(?:\A|/)\.\.(?:\z|/)};
 
+    my $log = $self->{+LOG};
+    croak "save is not supported on this Log backend"
+        unless $log->can('_artifact_save');
+
     my $compress = exists $opts{compress}
         ? $opts{compress}
         : ($self->{+LIVE} ? 1 : 0);
@@ -265,25 +283,16 @@ sub save {
     my $force_no_overwrite = $opts{force_no_overwrite} ? 1 : 0;
 
     my $rel_target = $compress ? "$rel.zst" : $rel;
-    my $abs        = $self->_abs($rel_target);
+    my $full = $self->_rel($rel_target);
 
-    if ($force_no_overwrite) {
-        croak "file already exists: $abs" if -e $abs || -e $self->_abs("$rel_target.zst");
-    }
-
-    my $par = dirname($abs);
-    make_path($par) unless -d $par;
-
-    my $payload = $compress ? compress_blob($content) : $content;
-    write_file_atomic($abs, $payload);
-
-    # Drop a stale alternate-form file so future reads pick up the
-    # form the caller asked for. (e.g. a save(compress=>1) over a
-    # plaintext file should leave only the compressed form.)
-    my $other = $compress ? $self->_abs($rel) : $self->_abs("$rel.zst");
-    unlink $other if $other ne $abs && -e $other;
-
-    return $abs;
+    return $log->_artifact_save(
+        rel                => $full,
+        rel_alt            => $self->_rel($rel),
+        rel_alt_zst        => $self->_rel("$rel.zst"),
+        bytes              => $content,
+        compress           => $compress,
+        force_no_overwrite => $force_no_overwrite,
+    );
 }
 
 1;
@@ -306,6 +315,13 @@ with no selector). Provides decoded / compressed / iterator forms of
 the standard trio (events.jsonl.zst, spec.jsonl.zst,
 report.jsonl.zst) plus generic file access (attachment, exists, get,
 save).
+
+The handle delegates all I/O to the owning Log backend via the
+backend's C<_artifact_exists> / C<_artifact_read> /
+C<_artifact_iter_records> / C<_artifact_list_dir> / C<_artifact_save>
+methods. This keeps the handle backend-agnostic: directory and
+tar.zidx and (eventually) SQLite all surface the same handle API
+even though their underlying storage is different.
 
 =head1 SOURCE
 

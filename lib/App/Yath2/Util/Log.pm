@@ -5,22 +5,18 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
-use File::Temp qw/tempdir/;
 
 use App::Yath2::Log;
-use App::Yath2::Log::TarZIdx;
 
 # Open a Log for a path, returning a backend that supports the new
 # reader API (services / runs / jobs / tries / artifacts / event /
-# EOE). The TarZIdx backend's new-API methods are not yet implemented
-# (M2 step 13), so when given a tar.zidx file we extract to a temp
-# directory and return a Directory backend pointing at that tree.
+# EOE). The dispatcher in App::Yath2::Log handles directory vs
+# tar.zidx vs sqlite detection; this helper just normalizes the
+# "give me a Log for an arbitrary $path" pattern that commands use.
 #
-# Returns ($log, $cleanup) where $cleanup is a Scope::Guard-like
-# coderef the caller invokes to remove any temporary directory we
-# created (no-op when the path was already a directory). When called
-# in scalar context only $log is returned; the temp directory is
-# CLEANUP=>1 and dies with the process.
+# Returns ($log, $cleanup) where $cleanup is a no-op coderef preserved
+# for back-compat with the previous auto-extract version. When called
+# in scalar context only $log is returned.
 #
 # Croaks if $path is missing or unrecognized.
 sub open_log {
@@ -28,34 +24,18 @@ sub open_log {
     croak "path is required" unless defined $path && length $path;
     croak "path '$path' does not exist" unless -e $path;
 
-    # Directory: straight to Directory backend.
+    my $log;
     if (-d $path) {
-        my $log = App::Yath2::Log->new(dir => $path);
-        return wantarray ? ($log, sub { 1 }) : $log;
+        $log = App::Yath2::Log->new(dir => $path);
+    }
+    elsif (-f $path) {
+        $log = App::Yath2::Log->new(file => $path);
+    }
+    else {
+        croak "path '$path' is not a file or directory";
     }
 
-    croak "path '$path' is not a file or directory" unless -f $path;
-
-    # File: detect kind. SQLite is not implemented yet (M2 step 14);
-    # tar.zidx we extract to a tempdir to access via Directory.
-    my $kind = App::Yath2::Log->_detect_file_kind($path);
-
-    if ($kind eq 'sqlite') {
-        croak "App::Yath2::Log::Sqlite not yet implemented (M2 step 14): $path";
-    }
-    if ($kind ne 'tar.zidx') {
-        croak "Unable to identify '$path' as a yath log archive (not sqlite or tar.zidx)";
-    }
-
-    my $tmp = tempdir(CLEANUP => 1, TEMPLATE => 'yath-log-XXXXXX', TMPDIR => 1);
-    my $arc = App::Yath2::Log::TarZIdx->new(path => $path);
-    $arc->extract($tmp);
-
-    my $log = App::Yath2::Log->new(dir => $tmp);
-    my $cleanup = sub {
-        require File::Path;
-        File::Path::remove_tree($tmp, {safe => 1});
-    };
+    my $cleanup = sub { 1 };
     return wantarray ? ($log, $cleanup) : $log;
 }
 
@@ -75,10 +55,9 @@ App::Yath2::Util::Log - Open a yath log for the new reader API.
 
 Helper that wraps L<App::Yath2::Log> for callers that want to read a
 log via the new reader API regardless of whether the source path is
-a directory, a tar.zidx archive, or a sqlite-as-file archive. Tar
-archives are transparently extracted to a tempdir and accessed via
-the Directory backend; sqlite is rejected until L<App::Yath2::Log::Sqlite>
-lands.
+a directory, a tar.zidx archive, or a sqlite-as-file archive. All
+backends are now driven directly through their native primitives;
+no auto-extract is required.
 
 =head1 SOURCE
 

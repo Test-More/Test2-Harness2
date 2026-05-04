@@ -8,26 +8,31 @@ use Carp qw/croak/;
 use Time::HiRes qw/time/;
 
 use Test2::Harness2::Util qw/tinysleep/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::JSONL::Reader;
 
 use Object::HashBase qw{
     <path
     <live
+    <records
     +reader
     +buffer
     +eof
     +read_all
 };
 
-# Iterator over a single .jsonl(.zst) file. Used by the per-artifact
-# events / spec / report iterators returned by Artifact->events_iter,
-# spec_iter, report_iter. Decoupled from the depth-first walk done by
-# App::Yath2::Log::Directory; that walk uses its own per-stream
-# Test2::Harness2::Util::JSONL::Reader instances.
+# Iterator over a single .jsonl(.zst) file or an in-memory record list.
+# Used by the per-artifact events / spec / report iterators returned by
+# Artifact->events_iter, spec_iter, report_iter. Decoupled from the
+# depth-first walk done by App::Yath2::Log::Directory.
 #
 # Construction:
 #
+#     # File-backed (Directory / Live):
 #     App::Yath2::Log::Iterator::JSONL->new(path => $path, live => $bool);
+#
+#     # In-memory (TarZIdx / Sqlite -- always sealed):
+#     App::Yath2::Log::Iterator::JSONL->new(records => \@decoded);
 #
 # When live is false (the default for sealed sources), end-of-file is
 # treated as end-of-iteration. When live is true, the reader stays
@@ -36,9 +41,20 @@ use Object::HashBase qw{
 
 sub init {
     my $self = shift;
-    croak "'path' is a required attribute"
-        unless defined $self->{+PATH} && length $self->{+PATH};
-    $self->{+LIVE}     //= 0;
+    if (defined $self->{+RECORDS}) {
+        croak "'records' and 'path' are mutually exclusive"
+            if defined $self->{+PATH};
+        croak "'records' must be an arrayref"
+            unless ref($self->{+RECORDS}) eq 'ARRAY';
+        # Records-backed iterators are always sealed: EOE is purely
+        # a function of how many records remain.
+        $self->{+LIVE} = 0;
+    }
+    else {
+        croak "'path' or 'records' is a required attribute"
+            unless defined $self->{+PATH} && length $self->{+PATH};
+        $self->{+LIVE} //= 0;
+    }
     $self->{+BUFFER}   //= [];
     $self->{+EOF}      //= 0;
     $self->{+READ_ALL} //= 0;
@@ -48,14 +64,25 @@ sub init {
 # is missing is not an error until something actually tries to read.
 sub _reader {
     my $self = shift;
+    return undef if defined $self->{+RECORDS};
     return $self->{+READER} //= Test2::Harness2::Util::JSONL::Reader->new(path => $self->{+PATH});
 }
 
 # Drain whatever the underlying JSONL reader has buffered into our
-# own buffer. Returns the number of records added.
+# own buffer. Returns the number of records added. For records-backed
+# iterators this is a one-shot copy of every remaining record.
 sub _pull {
     my $self = shift;
-    my $r = $self->_reader;
+    if (defined $self->{+RECORDS}) {
+        return 0 if $self->{+EOF};
+        push @{$self->{+BUFFER}} => @{$self->{+RECORDS}};
+        my $n = scalar @{$self->{+RECORDS}};
+        $self->{+EOF} = 1;
+        # Empty-list-once: avoid pushing the same records twice.
+        $self->{+RECORDS} = [];
+        return $n;
+    }
+    my $r = $self->_reader or return 0;
     return 0 unless $r->exists;
     my @items = $r->read_lines;
     return 0 unless @items;
@@ -124,8 +151,20 @@ sub count {
 sub _read_all {
     my $self = shift;
 
+    if (defined $self->{+RECORDS}) {
+        my @all;
+        push @all => @{$self->{+BUFFER}};
+        $self->{+BUFFER} = [];
+        push @all => @{$self->{+RECORDS}};
+        $self->{+RECORDS}  = [];
+        $self->{+EOF}      = 1;
+        $self->{_all}      = \@all;
+        $self->{+READ_ALL} = 1;
+        return;
+    }
+
     my $r = $self->_reader;
-    return unless $r->exists;
+    return unless $r && $r->exists;
 
     # Drain everything sitting in the underlying reader so far.
     my @all;
@@ -150,6 +189,10 @@ sub end_of_events {
 
     return 0 if @{$self->{+BUFFER}};
 
+    if (defined $self->{+RECORDS}) {
+        return @{$self->{+RECORDS}} ? 0 : 1;
+    }
+
     if ($self->{+LIVE}) {
         # Live: only the parent log can declare termination of a live
         # artifact (when the matching harness_collector_end has been
@@ -168,9 +211,30 @@ sub end_of_events {
     return 1;
 }
 
-# Reset back to the beginning of the file.
+# Reset back to the beginning of the file / record list.
 sub reset {
     my $self = shift;
+    if (defined $self->{+RECORDS}) {
+        # Records-backed iterators retain a private snapshot of the
+        # original record list ('_all' is populated lazily by _read_all).
+        # Refill RECORDS from that snapshot.
+        if ($self->{+READ_ALL}) {
+            $self->{+RECORDS} = [@{$self->{_all} // []}];
+        }
+        else {
+            # _pull was called but _read_all was not; the original
+            # list was already moved into BUFFER on first _pull.
+            # Rebuild from the buffer drained so far + remaining.
+            my @snap = (@{$self->{_all} // []}, @{$self->{+BUFFER}}, @{$self->{+RECORDS}});
+            $self->{+RECORDS} = [@snap];
+            # Re-snapshot for future resets.
+            $self->{_all}      = [@snap];
+            $self->{+READ_ALL} = 1;
+        }
+        $self->{+BUFFER}   = [];
+        $self->{+EOF}      = 0;
+        return;
+    }
     if (my $r = delete $self->{+READER}) {
         eval { $r->close; 1 };
     }
@@ -191,7 +255,7 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Log::Iterator::JSONL - Iterator over a single .jsonl(.zst) file.
+App::Yath2::Log::Iterator::JSONL - Iterator over a single .jsonl(.zst) file or in-memory record list.
 
 =head1 DESCRIPTION
 
@@ -201,6 +265,23 @@ L<App::Yath2::Log::Artifact/report_iter>. Wraps a
 L<Test2::Harness2::Util::JSONL::Reader> with the convenience methods
 the reader API requires (C<next>, C<first>, C<last>, C<count>,
 C<EOE>, C<reset>).
+
+Two construction forms are supported:
+
+=over 4
+
+=item C<< path => $path, live => $bool >>
+
+File-backed iteration via L<Test2::Harness2::Util::JSONL::Reader>.
+Used by the Directory and Live backends.
+
+=item C<< records => \@decoded >>
+
+In-memory iteration over a pre-decoded record list. Used by the
+TarZIdx (and eventually SQLite) backends, where records are already
+in memory after a single bulk decompress. Always sealed.
+
+=back
 
 =head1 SOURCE
 

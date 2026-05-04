@@ -66,7 +66,13 @@ ok(-s $archive, 'archive non-empty');
 my $arc = App::Yath2::Log->new(file => $archive);
 isa_ok($arc, ['App::Yath2::Log::TarZIdx']);
 
-# tar.zidx is read-stub for now; just verify file detection works.
-ok(-e $archive, 'archive exists');
+# Reader API is fully implemented for tar.zidx now: the listing /
+# artifacts methods should report the same shape the Directory log
+# reports for the same source.
+is([$arc->runs], [$run_id], 'tar.zidx: same runs as Directory log');
+ok($arc->has_service('harness'), 'tar.zidx: harness service present');
+
+my $arc_run_a = $arc->artifacts($run_id);
+ok(length($arc_run_a->spec) > 0, 'tar.zidx: run spec non-empty');
 
 done_testing;

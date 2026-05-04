@@ -5,6 +5,8 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
+use Compress::Zstd ();
+use File::Basename qw/dirname/;
 use File::Find ();
 use File::Path qw/make_path/;
 use File::Spec ();
@@ -835,6 +837,130 @@ sub read_file {
 sub absolute_path {
     my ($self, $rel) = @_;
     return File::Spec->catfile($self->{+PATH}, $rel);
+}
+
+# }}}
+
+# {{{ Artifact backend primitives
+#
+# Used by App::Yath2::Log::Artifact to read / list / save artifacts.
+# Directory uses straightforward filesystem operations for these.
+
+# Returns ($exists, $is_zst). $exists is a boolean; $is_zst is true
+# when the artifact path ends in .zst (caller may also pass a path
+# without the suffix and let the caller probe both forms).
+sub _artifact_exists {
+    my ($self, $rel) = @_;
+    my $abs = File::Spec->catfile($self->{+PATH}, $rel);
+    return (0, 0) unless -e $abs;
+    my $is_zst = $rel =~ /\.zst\z/ ? 1 : 0;
+    return (1, $is_zst);
+}
+
+# Read the raw bytes of $rel (no decompression). Compressed files
+# come back as compressed bytes; the caller decides whether to
+# decompress.
+sub _artifact_read {
+    my ($self, $rel) = @_;
+    my $abs = File::Spec->catfile($self->{+PATH}, $rel);
+    open(my $fh, '<', $abs) or croak "open '$abs': $!";
+    binmode $fh;
+    local $/;
+    my $bytes = <$fh>;
+    close $fh;
+    return $bytes;
+}
+
+# Open a filehandle for $rel.
+sub _artifact_open_fh {
+    my ($self, $rel) = @_;
+    my $abs = File::Spec->catfile($self->{+PATH}, $rel);
+    open(my $fh, '<', $abs) or croak "open '$abs': $!";
+    binmode $fh;
+    return $fh;
+}
+
+# Decompress a possibly-multi-frame zstd byte string. Single-file
+# .json.zst snapshots are one frame; .jsonl.zst event streams
+# concatenate one self-contained zstd frame per record.
+sub _decompress_jsonl_bytes {
+    my ($self, $bytes) = @_;
+    require Test2::Harness2::Util::Zstd;
+
+    # Use the streaming reader-based path: write to a temp scalar fh
+    # and decode frame-by-frame.
+    my $out = '';
+    my $offset = 0;
+    while ($offset < length $bytes) {
+        my $size = Test2::Harness2::Util::Zstd::zstd_frame_size(substr($bytes, $offset));
+        croak "incomplete zstd frame in jsonl bytes" unless defined $size;
+        my $frame = substr($bytes, $offset, $size);
+        $offset += $size;
+        my $plain = Compress::Zstd::decompress($frame);
+        croak "zstd decompress failed in jsonl bytes" unless defined $plain;
+        $out .= $plain;
+    }
+    return $out;
+}
+
+# Records-backed iterator? Directory always returns undef -- it
+# always uses a file-backed iterator (live-aware).
+sub _artifact_iter_records { return undef }
+
+# Sorted basenames of $rel (a directory). Returns () when missing.
+sub _artifact_list_dir {
+    my ($self, $rel) = @_;
+    my $dir = File::Spec->catdir($self->{+PATH}, $rel);
+    return () unless -d $dir;
+    opendir(my $dh, $dir) or return ();
+    my @names;
+    while (defined(my $entry = readdir($dh))) {
+        next if $entry eq '.' || $entry eq '..';
+        next unless -f File::Spec->catfile($dir, $entry);
+        push @names => $entry;
+    }
+    closedir($dh);
+    return sort @names;
+}
+
+# Atomically write artifact bytes. Required positional/named args:
+#   rel                final relative path (with or without .zst)
+#   rel_alt            stale plaintext counterpart to clean up
+#   rel_alt_zst        stale compressed counterpart to clean up
+#   bytes              raw plaintext bytes (will be compressed if requested)
+#   compress           boolean; whether to compress on write
+#   force_no_overwrite boolean
+sub _artifact_save {
+    my ($self, %p) = @_;
+    require Test2::Harness2::Util::Zstd;
+
+    my $rel = $p{rel};
+    my $abs = File::Spec->catfile($self->{+PATH}, $rel);
+
+    if ($p{force_no_overwrite}) {
+        croak "file already exists: $abs"
+            if -e $abs
+            || -e File::Spec->catfile($self->{+PATH}, "$rel.zst");
+    }
+
+    my $par = dirname($abs);
+    make_path($par) unless -d $par;
+
+    my $payload = $p{compress}
+        ? Test2::Harness2::Util::Zstd::compress_blob($p{bytes})
+        : $p{bytes};
+
+    require Test2::Harness2::Util;
+    Test2::Harness2::Util::write_file_atomic($abs, $payload);
+
+    # Drop the stale alternate form so future reads pick up only the
+    # form the caller asked for.
+    my $other = $p{compress}
+        ? File::Spec->catfile($self->{+PATH}, $p{rel_alt})
+        : File::Spec->catfile($self->{+PATH}, $p{rel_alt_zst});
+    unlink $other if $other ne $abs && -e $other;
+
+    return $abs;
 }
 
 # }}}

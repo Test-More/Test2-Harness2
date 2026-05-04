@@ -14,8 +14,19 @@ use File::Spec ();
 
 use Test2::Harness2::Util::JSON qw/decode_json encode_json/;
 use Test2::Harness2::Util::Zstd qw/zstd_frame_size/;
+use Test2::Harness2::LogLayout qw/
+    run_dir
+    job_dir
+    services_global_dir
+    service_global_dir
+    service_run_dir
+    services_run_dir
+/;
 
-use Object::HashBase qw/path +_index/;
+use App::Yath2::Log::Artifact;
+use App::Yath2::Log::Iterator::JSONL;
+
+use Object::HashBase qw/path +_index +_seen_starts +_closed_starts +_walk/;
 
 # tar.zidx is the single archive format yath produces. Layout:
 # a USTAR-format tar with per-entry payloads (each individually
@@ -23,12 +34,11 @@ use Object::HashBase qw/path +_index/;
 # when the source was already a .zst-suffixed file), plus a special
 # index entry, plus a 32-byte footer pointing at the index.
 #
-# Post new_log_refactor M2 step 10a: the new reader API
-# (artifacts/services/runs/jobs/tries/event/EOE/save) is NOT yet
-# implemented for this backend. The class still owns the archive's
-# write path and the legacy list_files / read_file primitives so
-# callers can call extract() which the Directory backend then drives.
-# The full reader API will land in step 10c.
+# This backend implements the full reader API (services/runs/jobs/
+# tries/artifacts/event/EOE) directly against the tar -- no
+# extract-to-tempdir step is required. Random access into the tar
+# uses the index, so reading any single artifact does not require
+# decompressing the entire archive.
 
 use constant BLOCK_SIZE          => 512;
 use constant INDEX_ENTRY_NAME    => '__index__.json.zst';
@@ -37,29 +47,6 @@ use constant TAR_ZIDX_FOOTER_LEN => 32;
 
 sub is_live { 0 }
 sub static  { 1 }
-
-# {{{ New reader API stubs (step 10c)
-#
-# Provide stub methods that throw "not yet implemented" so the
-# dispatcher is well-behaved when a caller hands it a tar.zidx file
-# and asks for events/listing/etc.
-sub services    { croak "App::Yath2::Log::TarZIdx->services: not yet implemented (M2 step 10c)" }
-sub runs        { croak "App::Yath2::Log::TarZIdx->runs: not yet implemented (M2 step 10c)" }
-sub jobs        { croak "App::Yath2::Log::TarZIdx->jobs: not yet implemented (M2 step 10c)" }
-sub tries       { croak "App::Yath2::Log::TarZIdx->tries: not yet implemented (M2 step 10c)" }
-sub last_try    { croak "App::Yath2::Log::TarZIdx->last_try: not yet implemented (M2 step 10c)" }
-sub has_service { croak "App::Yath2::Log::TarZIdx->has_service: not yet implemented (M2 step 10c)" }
-sub has_run     { croak "App::Yath2::Log::TarZIdx->has_run: not yet implemented (M2 step 10c)" }
-sub has_job     { croak "App::Yath2::Log::TarZIdx->has_job: not yet implemented (M2 step 10c)" }
-sub has_try     { croak "App::Yath2::Log::TarZIdx->has_try: not yet implemented (M2 step 10c)" }
-sub artifacts   { croak "App::Yath2::Log::TarZIdx->artifacts: not yet implemented (M2 step 10c)" }
-sub event       { croak "App::Yath2::Log::TarZIdx->event: not yet implemented (M2 step 10c)" }
-sub events      { croak "App::Yath2::Log::TarZIdx->events: not yet implemented (M2 step 10c)" }
-sub EOE         { croak "App::Yath2::Log::TarZIdx->EOE: not yet implemented (M2 step 10c)" }
-sub end_of_events { croak "App::Yath2::Log::TarZIdx->end_of_events: not yet implemented (M2 step 10c)" }
-sub reset       { croak "App::Yath2::Log::TarZIdx->reset: not yet implemented (M2 step 10c)" }
-
-# }}}
 
 sub absolute_path {
     my ($self, $rel) = @_;
@@ -242,12 +229,681 @@ sub read_file {
     return $sfh;
 }
 
-# No close() method on the backend: tar.zidx instances hold no
-# open filehandles between calls (every read_file open/closes a
-# fresh fh), so there is nothing to release. The cached index is
-# discarded automatically when the object is GC'd; consumers that
-# want to invalidate the cache can do so via Object::HashBase's
-# slot accessor.
+# Read raw stored bytes for $rel without unwrapping the inner zstd
+# layer. Used by the Artifact handle when it wants .zst bytes verbatim.
+sub _read_stored_bytes {
+    my ($self, $rel) = @_;
+    my $entry = $self->_build_index->{$rel}
+        or croak "no such file '$rel' in archive";
+    croak "'$rel' is a directory entry, not a file"
+        if ($entry->{kind} // 'file') eq 'dir';
+
+    open(my $fh, '<', $self->{+PATH}) or croak "open $self->{+PATH}: $!";
+    binmode $fh;
+    seek($fh, $entry->{offset}, SEEK_SET) or croak "seek data: $!";
+    my $stored;
+    read($fh, $stored, $entry->{size}) == $entry->{size}
+        or croak "short data read for '$rel'";
+    close $fh;
+    return ($stored, $entry->{inner} // 'zstd');
+}
+
+# }}}
+
+# {{{ Listing API
+
+# Walk the index and bucket files by their "kind of host directory"
+# so the listing methods can answer in O(1) once we cache the buckets.
+sub _layout {
+    my $self = shift;
+    return $self->{_layout_cache} if $self->{_layout_cache};
+
+    my $idx = $self->_build_index;
+
+    my %global_services;       # name => 1
+    my %runs;                  # run_id => 1
+    my %run_services;          # run_id => { name => 1 }
+    my %run_jobs;              # run_id => { job_id => 1 }
+    my %job_tries;             # "$rid/$jid" => { try => 1 }
+
+    for my $rel (keys %$idx) {
+        # services/<name>/...
+        if ($rel =~ m{^services/([^/]+)(?:/|\z)}) {
+            $global_services{$1} = 1;
+            next;
+        }
+
+        # runs/<run_id>/...
+        if ($rel =~ m{^runs/([^/]+)(?:/(.*))?\z}) {
+            my ($rid, $rest) = ($1, $2);
+            $runs{$rid} = 1;
+            if (defined $rest && length $rest) {
+                if ($rest =~ m{^services/([^/]+)(?:/|\z)}) {
+                    $run_services{$rid}{$1} = 1;
+                }
+                elsif ($rest =~ m{^jobs/([^/]+)(?:/(.*))?\z}) {
+                    my ($jid, $rest2) = ($1, $2);
+                    $run_jobs{$rid}{$jid} = 1;
+                    if (defined $rest2 && $rest2 =~ m{^([^/]+)(?:/|\z)}) {
+                        $job_tries{"$rid/$jid"}{$1} = 1;
+                    }
+                }
+            }
+            next;
+        }
+    }
+
+    return $self->{_layout_cache} = {
+        global_services => \%global_services,
+        runs            => \%runs,
+        run_services    => \%run_services,
+        run_jobs        => \%run_jobs,
+        job_tries       => \%job_tries,
+    };
+}
+
+sub _smart_sort {
+    my @ids = @_;
+    return () unless @ids;
+    if (!grep { !/^\d+\z/ } @ids) {
+        return sort { $a <=> $b } @ids;
+    }
+    return sort @ids;
+}
+
+sub services {
+    my ($self, $run_id) = @_;
+    my $layout = $self->_layout;
+
+    if (defined $run_id) {
+        croak "no such run: $run_id" unless $self->has_run($run_id);
+        my $bucket = $layout->{run_services}{$run_id} || {};
+        return sort keys %$bucket;
+    }
+    return sort keys %{$layout->{global_services}};
+}
+
+sub runs {
+    my $self = shift;
+    my $layout = $self->_layout;
+    return _smart_sort(keys %{$layout->{runs}});
+}
+
+sub jobs {
+    my ($self, $run_id) = @_;
+    croak "run_id is required" unless defined $run_id;
+    croak "no such run: $run_id" unless $self->has_run($run_id);
+    my $layout = $self->_layout;
+    return _smart_sort(keys %{$layout->{run_jobs}{$run_id} || {}});
+}
+
+sub tries {
+    my ($self, $run_id, $job_id) = @_;
+    croak "run_id is required" unless defined $run_id;
+    croak "job_id is required" unless defined $job_id;
+    croak "no such run: $run_id" unless $self->has_run($run_id);
+    croak "no such job: $run_id/$job_id"
+        unless $self->has_job($run_id, $job_id);
+    my $layout = $self->_layout;
+    return _smart_sort(keys %{$layout->{job_tries}{"$run_id/$job_id"} || {}});
+}
+
+sub last_try {
+    my ($self, $run_id, $job_id) = @_;
+    my @t = $self->tries($run_id, $job_id);
+    return undef unless @t;
+    return $t[-1];
+}
+
+sub has_service {
+    my ($self, $name, $run_id) = @_;
+    croak "service name is required" unless defined $name && length $name;
+    my $layout = $self->_layout;
+    if (defined $run_id) {
+        return 0 unless $self->has_run($run_id);
+        return $layout->{run_services}{$run_id}{$name} ? 1 : 0;
+    }
+    return $layout->{global_services}{$name} ? 1 : 0;
+}
+
+sub has_run {
+    my ($self, $run_id) = @_;
+    return 0 unless defined $run_id && length $run_id;
+    return 0 if $run_id =~ m{/};
+    my $layout = $self->_layout;
+    return $layout->{runs}{$run_id} ? 1 : 0;
+}
+
+sub has_job {
+    my ($self, $run_id, $job_id) = @_;
+    return 0 unless $self->has_run($run_id);
+    return 0 unless defined $job_id && length $job_id;
+    return 0 if $job_id =~ m{/};
+    my $layout = $self->_layout;
+    return $layout->{run_jobs}{$run_id}{$job_id} ? 1 : 0;
+}
+
+sub has_try {
+    my ($self, $run_id, $job_id, $job_try) = @_;
+    return 0 unless $self->has_job($run_id, $job_id);
+    return 0 unless defined $job_try && length $job_try;
+    return 0 if $job_try =~ m{/};
+    my $layout = $self->_layout;
+    return $layout->{job_tries}{"$run_id/$job_id"}{$job_try} ? 1 : 0;
+}
+
+# }}}
+
+# {{{ Artifacts handle
+
+# artifacts() -- mirror the Directory positional/hashref dispatch.
+sub artifacts {
+    my $self = shift;
+
+    return $self->_artifacts_from_args(@_) if @_ == 1 && ref($_[0]) eq 'HASH';
+    return $self->_artifacts_root           unless @_;
+
+    my @args = @_;
+
+    if (@args == 1) {
+        my $arg = $args[0];
+        if (defined $arg && $arg =~ /^\d+\z/) {
+            return $self->_artifacts_from_args({run_id => $arg});
+        }
+        if (defined $arg && $self->has_service($arg)) {
+            return $self->_artifacts_from_args({service => $arg});
+        }
+        return $self->_artifacts_from_args({run_id => $arg});
+    }
+
+    if (@args == 2) {
+        my ($run_id, $second) = @args;
+        if (defined $second && $second =~ /^\d+\z/) {
+            return $self->_artifacts_from_args({run_id => $run_id, job_id => $second});
+        }
+        return $self->_artifacts_from_args({run_id => $run_id, service => $second});
+    }
+
+    if (@args == 3) {
+        my ($run_id, $job_id, $job_try) = @args;
+        return $self->_artifacts_from_args({
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $job_try,
+        });
+    }
+
+    croak "artifacts() got too many positional arguments";
+}
+
+sub _artifacts_root {
+    my $self = shift;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self,
+        root => $self->{+PATH},
+        base => undef,
+        live => 0,
+    );
+}
+
+sub _artifacts_from_args {
+    my ($self, $args) = @_;
+    my $service = $args->{service};
+    my $run_id  = $args->{run_id};
+    my $job_id  = $args->{job_id};
+    my $job_try = $args->{job_try};
+
+    croak "service name cannot start with a digit"
+        if defined $service && $service =~ /^\d/;
+
+    if (defined $service) {
+        if (defined $run_id) {
+            croak "no such run: $run_id" unless $self->has_run($run_id);
+            croak "no such service: $service in run $run_id"
+                unless $self->has_service($service, $run_id);
+            return $self->_make_artifact(service_run_dir($run_id, $service));
+        }
+        croak "no such service: $service"
+            unless $self->has_service($service);
+        return $self->_make_artifact(service_global_dir($service));
+    }
+
+    if (defined $job_id) {
+        croak "run_id is required when job_id is given"
+            unless defined $run_id;
+        croak "no such run: $run_id"          unless $self->has_run($run_id);
+        croak "no such job: $run_id/$job_id"  unless $self->has_job($run_id, $job_id);
+
+        if (!defined $job_try) {
+            my $lt = $self->last_try($run_id, $job_id);
+            croak "no tries for job $run_id/$job_id"
+                unless defined $lt;
+            $job_try = $lt;
+        }
+        croak "no such try: $run_id/$job_id/$job_try"
+            unless $self->has_try($run_id, $job_id, $job_try);
+
+        return $self->_make_artifact(job_dir($run_id, $job_id, $job_try));
+    }
+
+    if (defined $run_id) {
+        croak "no such run: $run_id" unless $self->has_run($run_id);
+        return $self->_make_artifact(run_dir($run_id));
+    }
+
+    return $self->_artifacts_root;
+}
+
+sub _make_artifact {
+    my ($self, $base) = @_;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self,
+        root => $self->{+PATH},
+        base => $base,
+        live => 0,
+    );
+}
+
+# }}}
+
+# {{{ Artifact backend primitives
+#
+# The archive's index records each entry under its source-tree path
+# (no trailing .zst when the source was already-.zst, otherwise the
+# stored entry name is "$rel.zst" but the index key is the source rel).
+# To honour the Artifact contract -- which probes both ".../events.jsonl"
+# and ".../events.jsonl.zst" -- we map the "with .zst suffix" probe
+# back to the suffix-less index key when needed.
+
+# Returns ($exists, $is_zst). For TarZIdx, $is_zst tells the caller
+# whether the bytes returned by _artifact_read are zstd-compressed
+# (i.e. need a decompress to be plaintext).
+sub _artifact_exists {
+    my ($self, $rel) = @_;
+    my $idx = $self->_build_index;
+
+    # Direct hit (matches the source path the writer used).
+    if (my $entry = $idx->{$rel}) {
+        return (0, 0) if ($entry->{kind} // 'file') eq 'dir';
+        # When the source was plaintext (inner=zstd) the stored bytes
+        # are zstd-wrapped and the caller asked for a non-.zst path.
+        # When the source was already .zst, the index key carries
+        # .zst already.
+        my $is_zst = $rel =~ /\.zst\z/ ? 1 : 0;
+        return (1, $is_zst);
+    }
+
+    # Caller probed the .zst variant of a plaintext source. The
+    # source path was 'foo.jsonl' but the stored bytes are .zst-shaped.
+    if ($rel =~ /\.zst\z/) {
+        (my $stripped = $rel) =~ s/\.zst\z//;
+        if (my $entry = $idx->{$stripped}) {
+            return (0, 0) if ($entry->{kind} // 'file') eq 'dir';
+            # The on-archive bytes are zstd-wrapped (inner=zstd).
+            return (1, 1);
+        }
+    }
+
+    return (0, 0);
+}
+
+# Read raw artifact bytes. For TarZIdx this returns:
+#
+#   - For a plain index hit on a non-.zst path: the decompressed bytes
+#     (matches Directory's "this is a plaintext file" semantics).
+#   - For a plain index hit on a .zst path: the verbatim stored bytes
+#     (matches Directory's "this is a .zst file" semantics).
+#   - For a probe on the .zst variant of a plaintext source (e.g.
+#     'foo.jsonl.zst' when the index key is 'foo.jsonl'): the stored
+#     zstd-wrapped bytes.
+sub _artifact_read {
+    my ($self, $rel) = @_;
+    my $idx = $self->_build_index;
+
+    my $entry = $idx->{$rel};
+    my $rel_real = $rel;
+
+    if (!$entry && $rel =~ /\.zst\z/) {
+        (my $stripped = $rel) =~ s/\.zst\z//;
+        $entry = $idx->{$stripped};
+        $rel_real = $stripped if $entry;
+    }
+
+    croak "no such file in archive: $rel" unless $entry;
+    croak "'$rel' is a directory entry, not a file"
+        if ($entry->{kind} // 'file') eq 'dir';
+
+    my ($stored, $inner) = $self->_read_stored_bytes($rel_real);
+
+    my $caller_wants_zst = $rel =~ /\.zst\z/ ? 1 : 0;
+    if ($caller_wants_zst) {
+        # Caller asked for .zst-shaped bytes. If inner=zstd the stored
+        # bytes already are .zst-shaped (compressed plaintext). If
+        # inner=none the source was already .zst -- bytes are .zst
+        # shaped too. Either way: return verbatim.
+        return $stored;
+    }
+
+    # Caller asked for the non-.zst path.
+    if ($inner eq 'none') {
+        # The source was already .zst; the index key the caller hit
+        # carries no .zst suffix only when... it doesn't (inner=none
+        # implies source had .zst suffix and the index key keeps it).
+        # So this branch can only happen if the caller asked for a
+        # path that does not have .zst, but the index hit had .zst:
+        # that would not have hit $idx->{$rel} above. Defensive return.
+        return $stored;
+    }
+
+    # inner=zstd, caller wants plaintext: decompress.
+    return $self->zstd_decompress($stored);
+}
+
+# Open a filehandle for $rel. Returns a scalar-backed fh of the
+# decompressed-or-verbatim bytes (whatever _artifact_read would
+# return).
+sub _artifact_open_fh {
+    my ($self, $rel) = @_;
+    my $bytes = $self->_artifact_read($rel);
+    open(my $sfh, '<', \$bytes) or croak "open scalar fh: $!";
+    return $sfh;
+}
+
+# Decompress zstd-wrapped jsonl bytes (multi-frame or single-frame).
+sub _decompress_jsonl_bytes {
+    my ($self, $bytes) = @_;
+
+    my $out = '';
+    my $offset = 0;
+    while ($offset < length $bytes) {
+        my $size = zstd_frame_size(substr($bytes, $offset));
+        croak "incomplete zstd frame in jsonl bytes" unless defined $size;
+        my $frame = substr($bytes, $offset, $size);
+        $offset += $size;
+        my $plain = Compress::Zstd::decompress($frame);
+        croak "zstd decompress failed in jsonl bytes" unless defined $plain;
+        $out .= $plain;
+    }
+    return $out;
+}
+
+# Records-backed iterator: decompress the entire stem in one shot,
+# split on newlines, decode each line. Returns an arrayref or undef
+# if the file does not exist.
+sub _artifact_iter_records {
+    my ($self, $base, $stem) = @_;
+    return undef unless defined $stem && length $stem;
+
+    my $rel = defined $base && length $base ? "$base/$stem" : $stem;
+    my $rel_zst = "$rel.zst";
+    my $idx = $self->_build_index;
+
+    my $entry = $idx->{$rel} || $idx->{$rel_zst};
+    return undef unless $entry;
+
+    # Resolve to the index key the entry actually lives at.
+    my $hit_rel = $idx->{$rel} ? $rel : $rel_zst;
+    my ($stored, $inner) = $self->_read_stored_bytes($hit_rel);
+
+    my $plain;
+    if ($inner eq 'none') {
+        # Already-.zst source: the source bytes are themselves a
+        # multi-frame zstd stream (one record per frame).
+        $plain = $self->_decompress_jsonl_bytes($stored);
+    }
+    else {
+        # Plaintext source wrapped in one outer zstd frame.
+        $plain = $self->zstd_decompress($stored);
+    }
+
+    my @records;
+    for my $line (split /\n/, $plain) {
+        next unless length $line;
+        my $decoded;
+        my $ok  = eval { $decoded = decode_json($line); 1 };
+        my $err = $@;
+        unless ($ok) {
+            chomp $err;
+            warn "Skipping JSONL line that failed to decode in tar.zidx '$hit_rel': $err\n";
+            next;
+        }
+        push @records => $decoded;
+    }
+
+    return \@records;
+}
+
+# Sorted basenames of $rel (a directory). Returns () when missing.
+sub _artifact_list_dir {
+    my ($self, $rel) = @_;
+    my $idx = $self->_build_index;
+    my $prefix = "$rel/";
+    my %names;
+    for my $key (keys %$idx) {
+        next unless rindex($key, $prefix, 0) == 0;
+        my $rest = substr($key, length $prefix);
+        next unless length $rest;
+        # Skip nested entries (only direct children).
+        next if $rest =~ m{/};
+        # Skip directory entries.
+        next if ($idx->{$key}{kind} // 'file') eq 'dir';
+        $names{$rest} = 1;
+    }
+    return sort keys %names;
+}
+
+# }}}
+
+# {{{ Iterator (depth-first walk)
+#
+# Mirrors App::Yath2::Log::Directory's depth-first iterator but reads
+# bytes from the tar via _artifact_iter_records (records are already in
+# memory). Sealed-only: tar.zidx archives never go live. EOE flips
+# true once the iterator stack is empty AND nothing remains to be
+# read.
+
+sub _walk_state {
+    my $self = shift;
+    return $self->{+_WALK} //= {
+        stack         => [
+            $self->_open_artifact_walk(
+                base    => 'services/harness',
+                run_id  => undef,
+                job_id  => undef,
+                job_try => undef,
+                service => 'harness',
+                collector_pid => undef,
+            ),
+        ],
+    };
+}
+
+# Build a stack entry for the given collector base. The 'records' field
+# is an arrayref of decoded events (consumed in order). 'idx' tracks
+# the next record to serve.
+sub _open_artifact_walk {
+    my ($self, %args) = @_;
+
+    my $base = $args{base};
+    my $records = $self->_artifact_iter_records($base, 'events.jsonl') || [];
+
+    return {
+        records       => $records,
+        idx           => 0,
+        base          => $base,
+        ident         => {
+            (defined $args{run_id}  ? (run_id  => $args{run_id})  : ()),
+            (defined $args{job_id}  ? (job_id  => $args{job_id})  : ()),
+            (defined $args{job_try} ? (job_try => $args{job_try}) : ()),
+            (defined $args{service} ? (service_name => $args{service}) : ()),
+        },
+        collector_pid => $args{collector_pid},
+    };
+}
+
+sub _facet {
+    my ($self, $event, $name) = @_;
+    return undef unless ref($event) eq 'HASH';
+    my $fd = $event->{facet_data};
+    return undef unless ref($fd) eq 'HASH';
+    return $fd->{$name};
+}
+
+sub _base_for_collector_start {
+    my ($self, $content) = @_;
+    return undef unless ref($content) eq 'HASH';
+
+    my $type = $content->{type};
+    return undef unless defined $type;
+
+    if ($type eq 'Job') {
+        my $rid = $content->{run_id};
+        my $jid = $content->{id};
+        my $try = $content->{job_try} // 0;
+        return undef unless defined $rid && defined $jid;
+        return "runs/$rid/jobs/$jid/$try";
+    }
+
+    if ($type eq 'Run') {
+        my $rid = $content->{id};
+        return undef unless defined $rid;
+        return "runs/$rid";
+    }
+
+    if ($type eq 'Service') {
+        my $name = $content->{service_name} // $content->{id};
+        return undef unless defined $name && length $name;
+        my $rid = $content->{run_id};
+        return defined $rid ? "runs/$rid/services/$name" : "services/$name";
+    }
+
+    return undef;
+}
+
+sub _inject_identifiers {
+    my ($self, $event, $ident) = @_;
+    return $event unless ref($event) eq 'HASH';
+
+    my $fd = $event->{facet_data} // do { $event->{facet_data} = {}; $event->{facet_data} };
+    my $h = $fd->{harness} // do { $fd->{harness} = {}; $fd->{harness} };
+
+    for my $k (qw/run_id job_id job_try service_name/) {
+        next unless exists $ident->{$k};
+        $h->{$k} //= $ident->{$k};
+    }
+
+    return $event;
+}
+
+# Pull one record from the iterator. Depth-first: try the top of
+# stack first; on EOF walk down to older readers so the parent can
+# produce a harness_collector_end that closes the child.
+sub event {
+    my ($self, $timeout) = @_;
+
+    my $walk  = $self->_walk_state;
+    my $stack = $walk->{stack};
+
+    while (1) {
+        last unless @$stack;
+
+        my $got;
+        my $owner;
+        for (my $i = $#$stack; $i >= 0; $i--) {
+            my $entry = $stack->[$i];
+            if ($entry->{idx} < scalar @{$entry->{records}}) {
+                $got = $entry->{records}[$entry->{idx}++];
+                $owner = $entry;
+                last;
+            }
+        }
+
+        if (defined $got) {
+            if (my $start = $self->_facet($got, 'harness_collector_start')) {
+                my $cpid = $start->{collector_pid};
+                $self->{+_SEEN_STARTS}{$cpid} = $start if defined $cpid;
+                my $child_base = $self->_base_for_collector_start($start);
+                if (defined $child_base) {
+                    my %args = (base => $child_base, collector_pid => $cpid);
+                    my $type = $start->{type};
+                    if ($type eq 'Job') {
+                        $args{run_id}  = $start->{run_id};
+                        $args{job_id}  = $start->{id};
+                        $args{job_try} = $start->{job_try} // 0;
+                    }
+                    elsif ($type eq 'Run') {
+                        $args{run_id} = $start->{id};
+                    }
+                    elsif ($type eq 'Service') {
+                        $args{service} = $start->{service_name} // $start->{id};
+                        $args{run_id}  = $start->{run_id} if defined $start->{run_id};
+                    }
+                    push @$stack => $self->_open_artifact_walk(%args);
+                }
+                return $self->_inject_identifiers($got, $owner->{ident});
+            }
+
+            if (my $end = $self->_facet($got, 'harness_collector_end')) {
+                my $cpid = $end->{collector_pid};
+                $self->{+_CLOSED_STARTS}{$cpid} = 1 if defined $cpid;
+                return $self->_inject_identifiers($got, $owner->{ident});
+            }
+
+            return $self->_inject_identifiers($got, $owner->{ident});
+        }
+
+        # Nothing to read from any stacked reader. Pop drained tops.
+        my $popped = 0;
+        while (@$stack && $stack->[-1]{idx} >= scalar @{$stack->[-1]{records}}) {
+            pop @$stack;
+            $popped++;
+        }
+        last if !@$stack;
+        # Otherwise loop and try reading again from a deeper entry.
+    }
+
+    return undef;
+}
+
+sub events {
+    my ($self, $timeout) = @_;
+    my @out;
+    while (1) {
+        my $e = $self->event(0);
+        last unless defined $e;
+        push @out => $e;
+    }
+    if (!@out && $self->EOE) {
+        return (undef);
+    }
+    return @out;
+}
+
+sub EOE { $_[0]->end_of_events }
+
+sub end_of_events {
+    my $self = shift;
+    my $walk  = $self->_walk_state;
+    my $stack = $walk->{stack};
+
+    # Drained any popped tops.
+    while (@$stack) {
+        my $top = $stack->[-1];
+        if ($top->{idx} < scalar @{$top->{records}}) {
+            return 0;
+        }
+        pop @$stack;
+    }
+    return 1;
+}
+
+sub reset {
+    my $self = shift;
+    delete $self->{+_WALK};
+    delete $self->{+_SEEN_STARTS};
+    delete $self->{+_CLOSED_STARTS};
+    return;
+}
 
 # }}}
 
@@ -367,14 +1023,53 @@ sub extract {
     return App::Yath2::Log::Directory->new(path => $dir, live => 0);
 }
 
-# archive on a TarZIdx is a no-op when called against an existing
-# .yath; it returns $self. (The user-visible flow is to call ->archive
-# on a Directory backend; that yields a TarZIdx pointing at the new
-# file.)
+# archive($out, %opts).
+#
+# tar.zidx -> tar.zidx: copy the archive to $out, optionally filtering
+# runs. tar.zidx -> sqlite: not implemented (M2 step 14).
 sub archive {
     my ($self, $out, %opts) = @_;
-    croak "Cannot archive a tar.zidx backend (already archived); "
-        . "open the source directory and call ->archive on it instead";
+    croak "output path is required" unless defined $out && length $out;
+
+    my $format = $opts{format} // 'tar.zidx';
+
+    if ($format eq 'sqlite') {
+        croak "App::Yath2::Log::Sqlite not yet implemented (M2 step 14)";
+    }
+
+    if ($format ne 'tar.zidx') {
+        croak "unknown archive format: $format";
+    }
+
+    my $runs         = $opts{runs};
+    my $exclude_runs = $opts{exclude_runs};
+    croak "'runs' and 'exclude_runs' are mutually exclusive"
+        if defined $runs && defined $exclude_runs;
+
+    # Filtered tar.zidx -> tar.zidx: extract to a tempdir then re-archive.
+    # Unfiltered: copy bytes verbatim.
+    if (!defined $runs && !defined $exclude_runs) {
+        require File::Copy;
+        File::Copy::copy($self->{+PATH}, $out)
+            or croak "copy $self->{+PATH} -> $out: $!";
+        require App::Yath2::Log::TarZIdx;
+        return App::Yath2::Log::TarZIdx->new(path => $out);
+    }
+
+    require File::Temp;
+    my $tmp = File::Temp::tempdir(CLEANUP => 1, TEMPLATE => 'yath-tarzidx-rearch-XXXXXX', TMPDIR => 1);
+    require File::Path;
+    File::Path::remove_tree($tmp, {keep_root => 1});
+    $self->extract(
+        $tmp,
+        compressed   => 0,
+        runs         => $runs,
+        exclude_runs => $exclude_runs,
+    );
+
+    require App::Yath2::Log::Directory;
+    my $dir = App::Yath2::Log::Directory->new(path => $tmp, live => 0);
+    return $dir->archive($out);
 }
 
 # Internal: build a tar.zidx archive at this object's PATH from a
@@ -517,6 +1212,7 @@ sub _write_from_directory {
     # Force re-read of the index next time list_files / has_file
     # / read_file is called.
     delete $self->{+_INDEX};
+    delete $self->{_layout_cache};
 
     return $out;
 }
@@ -586,6 +1282,12 @@ zstd-compressed JSON map from relative path to entry metadata
 C<inner> is C<'zstd'> when the entry's payload bytes are
 zstd-compressed, or C<'none'> when the bytes are stored verbatim.
 
+This backend implements the full reader API directly against the
+archive: callers can drive C<services> / C<runs> / C<jobs> / C<tries>
+listings, the C<artifacts(...)> handle factory, and the depth-first
+C<event> iterator without first extracting the archive to a
+filesystem tree.
+
 =head1 ATTRIBUTES
 
 =over 4
@@ -598,7 +1300,7 @@ The path to the C<.yath> file.
 
 =head1 METHODS
 
-In addition to the inherited L<App::Yath2::Log> API:
+In addition to the inherited L<App::Yath2::Log> reader API:
 
 =over 4
 
@@ -613,12 +1315,12 @@ verbatim with C<.zst> suffixes preserved. Returns a new
 L<App::Yath2::Log::Directory> instance pointing at the
 destination.
 
-=item C<archive> is unsupported on this backend
+=item $arc = $tar->archive($out, %opts)
 
-Calling L</archive> on a TarZIdx instance croaks. The user-visible
-flow is to construct an L<App::Yath2::Log::Directory> for
-the source and call L<App::Yath2::Log::Directory/archive>
-on it; that yields a TarZIdx instance pointing at the new file.
+Re-archive this tar.zidx to C<$out>. Without filters this is a
+plain bytes-on-disk copy. With C<runs> / C<exclude_runs> filters
+the source is extracted to a tempdir, the filtered tree is
+re-archived, and the new TarZIdx is returned.
 
 =back
 
