@@ -332,7 +332,7 @@ sub has_service {
 sub has_run {
     my ($self, $run_id) = @_;
     return 0 unless defined $run_id && length $run_id;
-    return 0 if $run_id =~ m{/};
+    return 0 unless $run_id =~ /^\d+\z/;
     my $aid = $self->_archive_id_or_die;
     my $dbh = $self->dbh;
     my ($n) = $dbh->selectrow_array(
@@ -346,7 +346,7 @@ sub has_job {
     my ($self, $run_id, $job_id) = @_;
     return 0 unless $self->has_run($run_id);
     return 0 unless defined $job_id && length $job_id;
-    return 0 if $job_id =~ m{/};
+    return 0 unless $job_id =~ /^\d+\z/;
     my $rid = $self->_run_db_id($run_id);
     my $aid = $self->_archive_id_or_die;
     my $dbh = $self->dbh;
@@ -361,7 +361,7 @@ sub has_try {
     my ($self, $run_id, $job_id, $job_try) = @_;
     return 0 unless $self->has_job($run_id, $job_id);
     return 0 unless defined $job_try && length $job_try;
-    return 0 if $job_try =~ m{/};
+    return 0 unless $job_try =~ /^\d+\z/;
     my $jid = $self->_job_db_id($run_id, $job_id);
     my $dbh = $self->dbh;
     my ($n) = $dbh->selectrow_array(
@@ -972,13 +972,12 @@ sub _artifact_save {
                SET compressed = ?, payload = ?, format = ?, created_at = ?
              WHERE artifact_id = ?
         });
-        $sth->execute(
-            $stored_compressed,
-            $self->_payload_from_bytes($stored_bytes),
-            $info->{format},
-            $now,
-            $existing->{artifact_id},
-        );
+        $sth->bind_param(1, $stored_compressed);
+        $self->_bind_payload($sth, 2, $self->_payload_from_bytes($stored_bytes));
+        $sth->bind_param(3, $info->{format});
+        $sth->bind_param(4, $now);
+        $sth->bind_param(5, $existing->{artifact_id});
+        $sth->execute;
         return "db:archive=$aid:artifact=$existing->{artifact_id}";
     }
 
@@ -986,23 +985,31 @@ sub _artifact_save {
         INSERT INTO artifacts
             (archive_id, artifact_uuid, scope_kind, scope_id,
              artifact_kind, format, name, compressed, payload, created_at, sealed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     });
-    $sth->execute(
-        $aid,
-        $self->_uuid_to_db($artifact_uuid),
-        $info->{scope_kind},
-        $info->{scope_id},
-        $info->{artifact_kind},
-        $info->{format},
-        $info->{name},
-        $stored_compressed,
-        $self->_payload_from_bytes($stored_bytes),
-        $now,
-    );
+    $sth->bind_param(1, $aid);
+    $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid));
+    $sth->bind_param(3, $info->{scope_kind});
+    $sth->bind_param(4, $info->{scope_id});
+    $sth->bind_param(5, $info->{artifact_kind});
+    $sth->bind_param(6, $info->{format});
+    $sth->bind_param(7, $info->{name});
+    $sth->bind_param(8, $stored_compressed);
+    $self->_bind_payload($sth, 9, $self->_payload_from_bytes($stored_bytes));
+    $sth->bind_param(10, $now);
+    $sth->bind_param(11, 1);
+    $sth->execute;
 
     my $id = $self->_last_insert_id($dbh, 'artifacts', 'artifact_id');
     return "db:archive=$aid:artifact=$id";
+}
+
+# Default payload binder. Subclasses may override to set a flavor-
+# specific bind type (DBD::Pg's PG_BYTEA, DBI's SQL_BLOB, etc.).
+sub _bind_payload {
+    my ($self, $sth, $idx, $bytes) = @_;
+    $sth->bind_param($idx, $bytes);
+    return;
 }
 
 # }}}
@@ -1022,9 +1029,9 @@ sub _ensure_run_row {
     my $run_uuid = gen_uuid();
     my $sth = $dbh->prepare(q{
         INSERT INTO runs (archive_id, run_ord, run_uuid, status, aborted, timed_out)
-        VALUES (?, ?, ?, ?, 0, 0)
+        VALUES (?, ?, ?, ?, ?, ?)
     });
-    $sth->execute($aid, $run_ord, $self->_uuid_to_db($run_uuid), 'unknown');
+    $sth->execute($aid, $run_ord, $self->_uuid_to_db($run_uuid), 'unknown', 0, 0);
     return $self->_last_insert_id($dbh, 'runs', 'run_id');
 }
 
@@ -1580,20 +1587,20 @@ sub insert {
             INSERT INTO artifacts
                 (archive_id, artifact_uuid, scope_kind, scope_id,
                  artifact_kind, format, name, compressed, payload, created_at, sealed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         });
-        $sth->execute(
-            $aid,
-            $self->_uuid_to_db($artifact_uuid),
-            $info->{scope_kind},
-            $info->{scope_id},
-            $info->{artifact_kind},
-            $info->{format},
-            $info->{name},
-            $stored_compressed,
-            $self->_payload_from_bytes($stored_bytes),
-            $now,
-        );
+        $sth->bind_param(1, $aid);
+        $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid));
+        $sth->bind_param(3, $info->{scope_kind});
+        $sth->bind_param(4, $info->{scope_id});
+        $sth->bind_param(5, $info->{artifact_kind});
+        $sth->bind_param(6, $info->{format});
+        $sth->bind_param(7, $info->{name});
+        $sth->bind_param(8, $stored_compressed);
+        $self->_bind_payload($sth, 9, $self->_payload_from_bytes($stored_bytes));
+        $sth->bind_param(10, $now);
+        $sth->bind_param(11, 1);
+        $sth->execute;
     }
 
     return $aid;
