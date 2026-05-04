@@ -267,7 +267,7 @@ sub finish {
     my $err_method = 'system-err';
 
     print {$fh} "<testsuites>\n";
-    my @jobs = sort { $a->{'job_name'} <=> $b->{'job_name'} } values %{ $self->{'tests'} };
+    my @jobs = sort { $a->{'job_name'} cmp $b->{'job_name'} } values %{ $self->{'tests'} };
     foreach my $job (@jobs) {
         print {$fh} $xml->testsuite(
             $job->{'testsuite'},
