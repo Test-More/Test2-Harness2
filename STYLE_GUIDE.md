@@ -20,10 +20,13 @@ not here.
   - Examples: `croak "Missing required parameter 'file'"` (caller's fault). `die "Failed to write temp file: $!"` (internal failure). A failed `open` on a path the caller passed in: `croak`. A failed `open` on a path the code constructed itself for its own use: `die`.
 - Never suppress or discard exceptions. Always rethrow (`die $@`) or warn (`warn $@`). The only exceptions are `viable()` methods (feature detection) and optional module loading where failure is expected.
 - Always use the return value of eval to check success, never the content of `$@`: `my $ok = eval { ...; 1 }`.
-- Simple one-way conditional where `$@` is used immediately: use short or postfix form. E.g. `warn $@ unless eval { ...; 1 };` or `unless (eval { ...; 1 }) { warn $@; exit(1); }`.
+- Simple one-way conditional where `$@` is used immediately: any of these short forms is fine.
+  - postfix: `warn $@ unless eval { ...; 1 };`
+  - block:   `unless (eval { ...; 1 }) { warn $@; exit(1); }`
+  - or-form: `eval { ...; 1 } or warn $@;` — acceptable when the eval block is a single statement and the `or`-clause is also a single statement, so nothing can clobber `$@` between the eval close-brace and the use. (For longer blocks or multi-statement handlers, use the three-step form instead.)
 - If/else branching on eval result: use three-step form. `my $ok = eval { ...; 1 }; my $err = $@; if ($ok) { ... } else { ... }`.
 - If the conditional block has statements before `$@` is used (e.g. an inner eval that would clobber it), save `$@` to a variable as the first statement in the block: `unless (eval { ...; 1 }) { my $err = $@; ... }`.
-- A multi-line eval block must never appear inside the parens of a conditional. Instead use the three-step form: `my $ok = eval { ...; 1 }; my $err = $@; if/unless ($ok) { ... }`. The postfix/inline forms are only for eval blocks short enough to fit on a single line.
+- A multi-line eval block must never appear inside the parens of a conditional. Instead use the three-step form: `my $ok = eval { ...; 1 }; my $err = $@; if/unless ($ok) { ... }`. The postfix/inline/or-form variants are only for eval blocks short enough to fit on a single line.
 - Always use `my $pid = fork // die "reason: $!"` to handle fork failure, never a separate conditional afterward. Fork failures are always `die`, not `croak`.
 
 ## Whitespace and formatting
