@@ -16,6 +16,7 @@ use File::Path qw/remove_tree/;
 use File::Spec();
 use POSIX qw/strftime/;
 use Time::HiRes qw/sleep/;
+use Carp qw/croak/;
 
 use Test2::Harness2();
 use App::Yath2::TestFile();
@@ -318,14 +319,16 @@ sub _resolve_archive_path {
     my $settings = $self->{+SETTINGS};
 
     my $logging = $settings->log_archive;
-    if (my $log_file = $logging->file) {
-        return $log_file if length $log_file;
-    }
+    my $log_file = $logging->file;
+    croak "log-archive 'file' set to empty string"
+        if defined $log_file && !length $log_file;
+    return $log_file if defined $log_file;
 
     my $stamp = strftime('%Y%m%d-%H%M%S', localtime);
-    if (my $log_dir = $logging->dir) {
-        return File::Spec->catfile($log_dir, "$stamp.yath") if length $log_dir;
-    }
+    my $log_dir = $logging->dir;
+    croak "log-archive 'dir' set to empty string"
+        if defined $log_dir && !length $log_dir;
+    return File::Spec->catfile($log_dir, "$stamp.yath") if defined $log_dir;
 
     my $project = $settings->yath->project // '__UNKNOWN__';
     my $user    = $settings->yath->user    // 'unknown';
