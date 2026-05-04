@@ -25,7 +25,12 @@ sub parse_stderr_tap {
     # STDERR only has comments
     return unless $line =~ m/^\s*#/;
 
-    my $facet_data = __PACKAGE__->parse_tap_comment($line, no_nest => 1) or return undef;
+    # Run the comment through the same indentation-aware path used for
+    # STDOUT TAP so subtest-nested STDERR diag carries the same `nested`
+    # depth as its STDOUT siblings. Auditors and renderers route on
+    # `hub_truth(...)->{nested}`, so a missing depth would mis-place
+    # the diag at the top level.
+    my $facet_data = __PACKAGE__->_parse_tap_line($line) or return undef;
     $facet_data->{info}->[-1]->{tag}   = 'DIAG';
     $facet_data->{info}->[-1]->{debug} = 1;
     $facet_data->{from_tap}            = {source => 'STDERR', details => $line};
