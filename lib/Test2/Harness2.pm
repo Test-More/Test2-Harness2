@@ -550,9 +550,14 @@ sub _handle_collector_start {
     return unless ref($content) eq 'HASH';
 
     my $em = $self->{+EMITTER} or return;
-    $em->emit_event(
-        harness_collector_start => {%$content},
-    );
+    # Emit as a top-level harness_collector_start facet (NOT nested
+    # under facet_data.harness) so the Log iterator's depth-first walk
+    # can detect it via $event->{facet_data}{harness_collector_start}.
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_start => {%$content},
+        },
+    });
 
     return;
 }
@@ -562,9 +567,11 @@ sub _handle_collector_end {
     return unless ref($content) eq 'HASH';
 
     my $em = $self->{+EMITTER} or return;
-    $em->emit_event(
-        harness_collector_end => {%$content},
-    );
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_end => {%$content},
+        },
+    });
 
     return;
 }

@@ -595,9 +595,14 @@ sub _handle_gen_msg_collector_start {
     my ($self, $content) = @_;
 
     my $em = $self->{+EMITTER} or return;
-    $em->emit_event(
-        harness_collector_start => {%$content},
-    );
+    # Top-level facet (not nested in facet_data.harness) so the Log
+    # iterator can spot it via $event->{facet_data}{harness_collector_start}
+    # and descend into the child collector's events.jsonl.zst.
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_start => {%$content},
+        },
+    });
 
     return;
 }
@@ -606,9 +611,11 @@ sub _handle_gen_msg_collector_end {
     my ($self, $content) = @_;
 
     my $em = $self->{+EMITTER} or return;
-    $em->emit_event(
-        harness_collector_end => {%$content},
-    );
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_end => {%$content},
+        },
+    });
 
     return;
 }

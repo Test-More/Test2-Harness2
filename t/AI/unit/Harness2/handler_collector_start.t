@@ -29,9 +29,9 @@ subtest 'collector_start IPC -> harness_collector_start event' => sub {
 
     my @emitted;
     no warnings 'redefine';
-    local *Test2::Harness2::Util::EventEmitter::emit_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted, \%fields;
+    local *Test2::Harness2::Util::EventEmitter::emit_raw = sub {
+        my ($self, $event) = @_;
+        push @emitted, $event;
         return 'fake-sync';
     };
 
@@ -56,8 +56,10 @@ subtest 'collector_start IPC -> harness_collector_start event' => sub {
 
     is(scalar @emitted, 1, 'one event emitted via emitter');
 
-    my $facet = $emitted[0]{harness_collector_start};
-    ok(ref($facet) eq 'HASH', 'harness_collector_start facet emitted');
+    my $fd = $emitted[0]{facet_data};
+    ok(ref($fd) eq 'HASH', 'event has facet_data');
+    my $facet = $fd->{harness_collector_start};
+    ok(ref($facet) eq 'HASH', 'harness_collector_start at top level of facet_data');
     is($facet->{kind},          'collector_start', 'kind preserved on facet');
     is($facet->{type},          'Run',             'type=Run preserved');
     is($facet->{id},            0,                 'id preserved');
@@ -72,9 +74,9 @@ subtest 'collector_end IPC -> harness_collector_end event' => sub {
 
     my @emitted;
     no warnings 'redefine';
-    local *Test2::Harness2::Util::EventEmitter::emit_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted, \%fields;
+    local *Test2::Harness2::Util::EventEmitter::emit_raw = sub {
+        my ($self, $event) = @_;
+        push @emitted, $event;
         return 'fake-sync';
     };
 
@@ -101,8 +103,10 @@ subtest 'collector_end IPC -> harness_collector_end event' => sub {
 
     is(scalar @emitted, 1, 'one event emitted');
 
-    my $facet = $emitted[0]{harness_collector_end};
-    ok(ref($facet) eq 'HASH', 'harness_collector_end facet emitted');
+    my $fd = $emitted[0]{facet_data};
+    ok(ref($fd) eq 'HASH', 'event has facet_data');
+    my $facet = $fd->{harness_collector_end};
+    ok(ref($facet) eq 'HASH', 'harness_collector_end at top level of facet_data');
     is($facet->{kind}, 'collector_end',   'kind preserved');
     is($facet->{type}, 'Service',         'type=Service preserved');
     is($facet->{id},           'preload-foo', 'id preserved');

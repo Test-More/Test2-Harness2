@@ -300,6 +300,13 @@ sub _run_collector {
     $self->_open_writers();
     my $spec_hash = $self->_write_spec_row();
 
+    # The harness's own collector (no parent service per F19) drops a
+    # LIVE sentinel at <logdir>/LIVE so consumers can detect a still-
+    # being-written log. Removed in _finalize_collection on clean exit
+    # (per F20 = a). A crashed harness leaves a stale LIVE which
+    # consumers can use to spot abnormal termination.
+    $self->_create_live_sentinel;
+
     # Tell the parent service we're up. Emission is skipped for
     # collectors with no parent (per F19: both ipc_parent and ipc_run
     # undef -- today only the harness collector matches).
@@ -488,20 +495,23 @@ sub send_ipc {
 # Pick the parent IPC target for the lifecycle pair (collector_start /
 # collector_end). Per B4 routing:
 #
-#   * job collectors  -- ipc_run is set, fall through to ipc_parent
-#                         (which is the run service for non-preload
-#                          jobs and the requesting run service for
-#                          preload-spawned jobs, per F7)
-#   * run service     -- ipc_run undef, ipc_parent = ipc_harness
-#   * global services -- ipc_run undef, ipc_parent = ipc_harness
-#   * harness collector -- both undef, returns undef (skipped per F19)
-#
-# Order: ipc_run if defined, else ipc_parent. The harness's own
-# collector has both undef; the caller skips on undef.
+#   * Job collectors    -- ipc_run is the immediate parent (run service)
+#                          and is also where the lifecycle IPC goes.
+#   * Run collectors    -- ipc_parent (= harness) gets the lifecycle IPC.
+#                          (Their ipc_run slot points at the run service
+#                          itself, but a service does not reflect its own
+#                          lifecycle pair into its own event stream --
+#                          the harness does.)
+#   * Service collectors -- run-scoped or global -- send to ipc_parent
+#                           (run service or harness respectively).
+#   * Harness collector  -- both ipc_parent and ipc_run undef, returns
+#                           undef so the caller skips emission per F19.
 sub _lifecycle_ipc_target {
     my $self = shift;
-    return $self->{+IPC_RUN}    if defined $self->{+IPC_RUN};
+    my $type = $self->{+TYPE} // '';
+    return $self->{+IPC_RUN}    if $type eq 'Job' && defined $self->{+IPC_RUN};
     return $self->{+IPC_PARENT} if defined $self->{+IPC_PARENT};
+    return $self->{+IPC_RUN}    if defined $self->{+IPC_RUN};
     return undef;
 }
 
@@ -523,6 +533,41 @@ sub _lifecycle_base_payload {
         collector_pid => $$,
         collected_pid => $self->{+CHILD_PID},
     );
+}
+
+# True when this collector is the top-of-tree harness collector: no
+# parent service to notify, no enclosing run. Today exactly one
+# collector matches (the one App::Yath2::Command::test interposes) per
+# F19. Used to gate the LIVE sentinel lifecycle.
+sub _is_top_level_harness {
+    my $self = shift;
+    return 0 if defined $self->{+IPC_PARENT};
+    return 0 if defined $self->{+IPC_RUN};
+    return 1;
+}
+
+# Drop the LIVE sentinel at <logdir>/LIVE. Per F20 the file content is
+# a literal "1\n" so a stale LIVE is trivially distinguishable from an
+# empty placeholder. Only the top-level harness collector creates it.
+sub _create_live_sentinel {
+    my $self = shift;
+    return unless $self->_is_top_level_harness;
+    my $path = $self->{+LOGDIR} . '/LIVE';
+    return if -e $path;
+    write_file_atomic($path, "1\n");
+    return;
+}
+
+# Remove the LIVE sentinel if present. Called by _finalize_collection
+# on clean exit (F20 = a). A crashing harness skips this and leaves
+# the file in place -- consumers (e.g. the test command's renderer
+# child) use that as a hint that something went wrong.
+sub _remove_live_sentinel {
+    my $self = shift;
+    return unless $self->_is_top_level_harness;
+    my $path = $self->{+LOGDIR} . '/LIVE';
+    unlink $path if -e $path;
+    return;
 }
 
 # Send collector_start IPC to the lifecycle target if one exists.
@@ -595,7 +640,16 @@ sub _send_to {
     for my $attempt (1, 2) {
         my $ready = $self->_wait_for_ipc_target($target);
 
-        my $ok = eval { $client->try_send_message($target, $content); 1 };
+        # Suppress IPC::Manager's connection-level "send to X failed:
+        # Broken pipe" carps -- they happen routinely when a parent
+        # service has already shut down by the time we try to send our
+        # collector_end. We surface the failure ourselves below if it
+        # was the second attempt.
+        my $ok = eval {
+            local $SIG{__WARN__} = sub { };
+            $client->try_send_message($target, $content);
+            1;
+        };
         return if $ok;
 
         my $err = $@;
@@ -612,7 +666,12 @@ sub _send_to {
         $role = 'ipc_run'     if defined $self->{+IPC_RUN}     && $target eq $self->{+IPC_RUN};
         $role = 'ipc_harness' if defined $self->{+IPC_HARNESS} && $target eq $self->{+IPC_HARNESS};
         my $to = defined $role ? "$target ($role)" : $target;
-        warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err";
+        # Broken-pipe / peer-gone is normal at shutdown when our
+        # parent service has already exited. Anything else still
+        # rates a warning so the caller notices.
+        my $is_peer_gone = $err =~ /broken pipe|peer .* went away|not a valid message recipient/i;
+        warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err"
+            unless $is_peer_gone;
         return;
     }
 
@@ -813,6 +872,11 @@ sub _finalize_collection {
         my $w = delete $self->{$slot} or next;
         eval { $w->close; 1 };
     }
+
+    # Clean exit of the top-level harness collector: drop the LIVE
+    # sentinel so consumers tailing the dir can tell the harness
+    # finished gracefully (F20 = a).
+    $self->_remove_live_sentinel;
 
     return;
 }

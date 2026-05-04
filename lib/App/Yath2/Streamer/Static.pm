@@ -325,8 +325,9 @@ only when the streamer actually reads it. Files the streamer never
 needs (e.g. the harness JSONL when only the state artifact was
 requested) stay inside the archive.
 
-See L<App::Yath2::Streamer::Base> for the public API and
-L<App::Yath2::Streamer::Live> for the live-harness counterpart.
+See L<App::Yath2::Streamer::Base> for the public API. The live-harness
+counterpart was retired in M2 step 11+12; live rendering goes
+through L<App::Yath2::Renderer::Driver> instead.
 
 =head1 CONSTRUCTOR
 

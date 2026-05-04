@@ -406,10 +406,11 @@ App::Yath2::Streamer::Base - Shared backbone for live and static streamers.
 
 =head1 DESCRIPTION
 
-Abstract base class for L<App::Yath2::Streamer::Live> and
-L<App::Yath2::Streamer::Static>. Carries the state-diff + event-queue
-+ event-reader machinery; leaves per-mode input and bootstrap to
-subclasses via C<_bootstrap> and C<_tick>.
+Abstract base class for L<App::Yath2::Streamer::Static> (the only
+remaining subclass post M2 step 11+12; the live counterpart was
+replaced by L<App::Yath2::Renderer::Driver>). Carries the state-diff
++ event-queue + event-reader machinery; leaves per-mode input and
+bootstrap to subclasses via C<_bootstrap> and C<_tick>.
 
 Do not instantiate directly.
 

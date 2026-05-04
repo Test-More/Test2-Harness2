@@ -22,17 +22,17 @@ subtest 'collector_start IPC -> harness_collector_start event via emitter' => su
     my $run = Test2::Harness2::Run->new(run_id => 'r-coll');
     my $svc = Test2::Harness2::RunService->new(workdir => $dir, run => $run);
 
-    # Capture every event the service emits via the local emitter.
+    # Capture every raw event the service emits via the local emitter.
     my @emitted;
     no warnings 'redefine';
-    local *Test2::Harness2::Util::EventEmitter::emit_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted, \%fields;
+    local *Test2::Harness2::Util::EventEmitter::emit_raw = sub {
+        my ($self, $event) = @_;
+        push @emitted, $event;
         return 'fake-sync';
     };
 
     # Install a stub emitter so _handle_gen_msg_collector_start has
-    # something to call emit_event on. We use a plain blessed hash so
+    # something to call emit_raw on. We use a plain blessed hash so
     # we don't have to wire up Atomic::Pipe in unit tests.
     $svc->{Test2::Harness2::RunService::EMITTER()}
         = bless {}, 'Test2::Harness2::Util::EventEmitter';
@@ -55,10 +55,11 @@ subtest 'collector_start IPC -> harness_collector_start event via emitter' => su
 
     is(scalar @emitted, 1, 'one event emitted via emitter');
 
-    my $fields = $emitted[0];
-    ok(exists $fields->{harness_collector_start}, 'has harness_collector_start key');
+    my $fd = $emitted[0]{facet_data};
+    ok(ref($fd) eq 'HASH', 'event has facet_data');
+    ok(exists $fd->{harness_collector_start}, 'has top-level harness_collector_start facet');
 
-    my $facet = $fields->{harness_collector_start};
+    my $facet = $fd->{harness_collector_start};
     ok(ref($facet) eq 'HASH', 'facet is hashref');
     is($facet->{kind},          'collector_start', 'kind preserved');
     is($facet->{type},          'Job',             'type preserved');
@@ -79,9 +80,9 @@ subtest 'collector_end IPC -> harness_collector_end event via emitter' => sub {
 
     my @emitted;
     no warnings 'redefine';
-    local *Test2::Harness2::Util::EventEmitter::emit_event = sub {
-        my ($self, %fields) = @_;
-        push @emitted, \%fields;
+    local *Test2::Harness2::Util::EventEmitter::emit_raw = sub {
+        my ($self, $event) = @_;
+        push @emitted, $event;
         return 'fake-sync';
     };
 
@@ -107,8 +108,10 @@ subtest 'collector_end IPC -> harness_collector_end event via emitter' => sub {
 
     is(scalar @emitted, 1, 'one event emitted');
 
-    my $facet = $emitted[0]{harness_collector_end};
-    ok(ref($facet) eq 'HASH', 'has harness_collector_end facet');
+    my $fd = $emitted[0]{facet_data};
+    ok(ref($fd) eq 'HASH', 'event has facet_data');
+    my $facet = $fd->{harness_collector_end};
+    ok(ref($facet) eq 'HASH', 'has top-level harness_collector_end facet');
     is($facet->{kind}, 'collector_end',   'kind preserved');
     is($facet->{type}, 'Job',             'type preserved');
     is($facet->{exit}, 0,                 'exit preserved');

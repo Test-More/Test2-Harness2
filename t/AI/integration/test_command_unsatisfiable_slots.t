@@ -1,5 +1,4 @@
 use Test2::V0;
-plan skip_all => "renderer/streamer rendering output reworked in M2 step 11+12 of new_log_refactor";
 
 # When a test declares HARNESS-JOB-SLOTS larger than the per-job cap
 # the user passed (-j N:M / -x M), the job-limiter must report the

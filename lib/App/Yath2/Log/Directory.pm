@@ -562,7 +562,18 @@ sub _top_is_done {
         return 0;
     }
 
-    return $self->{+CLOSED_STARTS}->{$cpid} ? 1 : 0;
+    return 1 if $self->{+CLOSED_STARTS}->{$cpid};
+
+    # H2 = A: the parent is supposed to emit a synthetic
+    # harness_collector_end on a peer-gone. Until that machinery is
+    # universal, accept "LIVE marker absent" as the last-resort
+    # liveness signal: once the harness collector has shut down (and
+    # taken LIVE with it), nothing new will append to any nested
+    # events.jsonl.zst, so any SEEN_STARTS without a matching end is
+    # effectively closed.
+    return 1 unless $self->_live_marker_present;
+
+    return 0;
 }
 
 sub _live_marker_present {
@@ -615,10 +626,15 @@ sub end_of_events {
     return 0 if @$stack;
     return 1 unless $self->{+LIVE};
 
-    # Live: stack drained, but a live log is only really done when
-    # all known starts have matching ends.
-    for my $cpid (keys %{$self->{+SEEN_STARTS}}) {
-        return 0 unless $self->{+CLOSED_STARTS}->{$cpid};
+    # Live: stack drained. Normally we wait until all known starts
+    # have matching ends; if the LIVE sentinel is gone the harness
+    # has shut down and nothing more will append, so any unclosed
+    # start is treated as closed (matches H2 fallback in
+    # _top_is_done).
+    if ($self->_live_marker_present) {
+        for my $cpid (keys %{$self->{+SEEN_STARTS}}) {
+            return 0 unless $self->{+CLOSED_STARTS}->{$cpid};
+        }
     }
 
     return 1;
