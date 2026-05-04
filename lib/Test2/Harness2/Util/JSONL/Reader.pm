@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
+use Errno qw/ESPIPE/;
 use Fcntl qw/SEEK_SET/;
 
 use Test2::Harness2::Util::JSON qw/decode_json/;
@@ -69,7 +70,8 @@ sub _drain {
             my $ok  = eval { $decoded = decode_json($payload); 1 };
             my $err = $@;
             unless ($ok) {
-                warn "Skipping zstd JSONL frame that failed to decode in '$self->{path}': $err";
+                chomp $err;
+                warn "Skipping zstd JSONL frame that failed to decode in '$self->{path}': $err\n";
                 next;
             }
             push @{$self->{buffer}} => $decoded;
@@ -79,7 +81,16 @@ sub _drain {
 
     my $fh = $self->_ensure_reader or return;
 
-    seek($fh, $self->{pos}, SEEK_SET) or return;
+    unless (seek($fh, $self->{pos}, SEEK_SET)) {
+        my $errno = $!;
+        croak "non-seekable handle for '$self->{path}'" if $errno == ESPIPE;
+
+        # Truncate / rotate / unlink-then-recreate: drop the old fh
+        # and try again from the beginning on the next call.
+        delete $self->{fh};
+        $self->{pos} = 0;
+        return;
+    }
 
     while (defined(my $line = <$fh>)) {
         # Hold back a torn final line until the writer finishes it.
@@ -92,7 +103,8 @@ sub _drain {
         my $ok  = eval { $decoded = decode_json($line); 1 };
         my $err = $@;
         unless ($ok) {
-            warn "Skipping JSONL line that failed to decode in '$self->{path}': $err";
+            chomp $err;
+            warn "Skipping JSONL line that failed to decode in '$self->{path}': $err\n";
             next;
         }
         push @{$self->{buffer}} => $decoded;
