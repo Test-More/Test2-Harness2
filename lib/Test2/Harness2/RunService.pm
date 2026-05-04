@@ -154,7 +154,6 @@ sub init {
             $jid,
             queued_at => $queued_at,
             job_try   => $job->job_try,
-            file      => $tf->absolute,
             abs_file  => $tf->absolute,
             rel_file  => $tf->relative,
         );
