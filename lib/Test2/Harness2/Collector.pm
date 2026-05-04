@@ -14,14 +14,15 @@ use Scope::Guard ();
 use IO::Handle;
 use IO::Select;
 use Atomic::Pipe;
+use MIME::Base64 qw/decode_base64/;
 
 use Test2::Harness2::Event;
 use Test2::Harness2::Collector::Handle;
 use Test2::Harness2::Collector::Util qw/make_warn_handler kill_child/;
 use Test2::Harness2::LogLayout qw/collector_base_dir/;
-use Test2::Harness2::Util qw/load_module parse_exit tinysleep/;
+use Test2::Harness2::Util qw/load_module parse_exit tinysleep write_file_atomic/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
-use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
+use Test2::Harness2::Util::Zstd qw/open_zstd_writer compress_blob/;
 use Test2::Harness2::Util::IPC qw/pid_is_running set_procname swap_io ipc_default_connect_args atomic_pipe_compression_args apply_atomic_pipe_compression/;
 
 # Single Collector class (post new_log_refactor M2 step 4+5). The
@@ -76,6 +77,8 @@ use Object::HashBase qw{
     +_events_writer
     +_report_writer
     +_state
+    +_attachment_counter
+    +_attachment_dir_made
 
     +_win32_job
     +_start_times
@@ -1145,9 +1148,10 @@ sub _process_event {
     }
 }
 
-# Write phase. For now: just append the event as JSON to events.jsonl.zst.
-# TODO (step 7): pull base64 attachments out of the event into
-# $base/attachments/$file before writing the rewritten event.
+# Write phase. Extract any base64 attachment hashes into
+# <base>/attachments/, mutate the event facet to point at archive_path
+# (stripping data/encoding), then append the rewritten event as JSON
+# to events.jsonl.zst.
 sub _write_event {
     my $self = shift;
     my ($event) = @_;
@@ -1155,12 +1159,205 @@ sub _write_event {
 
     my $w = $self->{+_EVENTS_WRITER} or return;
 
+    $self->_extract_attachments($event);
+
     my $json = ref($event) && $event->can('as_json') ? $event->as_json : do {
         require Test2::Harness2::Util::JSON;
         Test2::Harness2::Util::JSON::encode_json($event);
     };
 
     $w->say($json);
+}
+
+# Extensions whose payload is already compressed and should NOT get an
+# additional .zst wrapper. Keep this list in sync with the answer to
+# LOGGER_ARTIFACT_REFACTOR2 §195.
+my %ALREADY_COMPRESSED = map { $_ => 1 } qw(
+    jpg jpeg png gif webp avif heic
+    mp4 mov webm mkv
+    mp3 ogg oga opus flac aac m4a
+    zst gz xz bz2 zip 7z rar
+);
+
+sub _attachment_already_compressed {
+    my ($self, $filename) = @_;
+    return 0 unless defined $filename;
+    return 0 unless $filename =~ /\.([A-Za-z0-9]+)\z/;
+    return $ALREADY_COMPRESSED{lc $1} ? 1 : 0;
+}
+
+# Build a safe on-disk filename component. Strip any directory parts
+# the user may have put in 'filename' so we never escape the
+# attachments/ directory; replace anything ugly.
+sub _attachment_safe_name {
+    my ($self, $filename) = @_;
+    return 'attachment' unless defined $filename && length $filename;
+
+    # Strip any path separators -- keep only the basename component.
+    $filename =~ s{.*[/\\]}{}s;
+
+    # Replace control characters and embedded NULs.
+    $filename =~ s/[\x00-\x1F\x7F]/_/g;
+
+    # Empty after stripping? Fall back.
+    return 'attachment' unless length $filename;
+
+    return $filename;
+}
+
+# Initialize the per-collector attachment counter from any pre-existing
+# attachments under <base>/attachments/. Pre-populated so a restarted
+# collector pointed at an existing logdir does not clobber prior files.
+sub _init_attachment_counter {
+    my $self = shift;
+    return $self->{+_ATTACHMENT_COUNTER} if defined $self->{+_ATTACHMENT_COUNTER};
+
+    my $dir = $self->base_dir . '/attachments';
+    my $high = 0;
+
+    if (opendir(my $dh, $dir)) {
+        while (defined(my $entry = readdir($dh))) {
+            next if $entry eq '.' || $entry eq '..';
+            next unless $entry =~ /^(\d+)-/;
+            my $n = 0 + $1;
+            $high = $n if $n > $high;
+        }
+        closedir($dh);
+        # Dir already exists, so don't try to make_path again later.
+        $self->{+_ATTACHMENT_DIR_MADE} = 1;
+    }
+
+    return $self->{+_ATTACHMENT_COUNTER} = $high;
+}
+
+sub _next_attachment_index {
+    my $self = shift;
+    $self->_init_attachment_counter;
+    return ++$self->{+_ATTACHMENT_COUNTER};
+}
+
+sub _attachment_prefix {
+    my ($self, $n) = @_;
+    return $n > 9999 ? "$n" : sprintf('%04d', $n);
+}
+
+sub _attachments_dir {
+    my $self = shift;
+    my $dir = $self->base_dir . '/attachments';
+    unless ($self->{+_ATTACHMENT_DIR_MADE}) {
+        make_path($dir);
+        $self->{+_ATTACHMENT_DIR_MADE} = 1;
+    }
+    return $dir;
+}
+
+# An attachment is a hash with all three of: filename, data, encoding.
+sub _looks_like_attachment {
+    my ($self, $val) = @_;
+    return 0 unless ref($val) eq 'HASH';
+    return 0 unless defined $val->{filename} && !ref $val->{filename};
+    return 0 unless defined $val->{data}     && !ref $val->{data};
+    return 0 unless defined $val->{encoding} && !ref $val->{encoding};
+    return 1;
+}
+
+# Walk the event's facet_data; for each attachment hash detected
+# anywhere inside (any facet, any depth into list-style facets),
+# extract the bytes and mutate the hash in place.
+sub _extract_attachments {
+    my $self = shift;
+    my ($event) = @_;
+    return unless $event;
+
+    my $fd;
+    if (blessed($event)) {
+        $fd = $event->facet_data;
+    }
+    elsif (ref($event) eq 'HASH') {
+        $fd = $event->{facet_data};
+    }
+    return unless ref($fd) eq 'HASH';
+
+    my $mutated = 0;
+    for my $facet_key (keys %$fd) {
+        my $facet = $fd->{$facet_key};
+        if (ref($facet) eq 'ARRAY') {
+            for my $i (0 .. $#$facet) {
+                my $entry = $facet->[$i];
+                next unless $self->_looks_like_attachment($entry);
+                $self->_extract_one_attachment($entry);
+                $mutated = 1;
+            }
+        }
+        elsif (ref($facet) eq 'HASH') {
+            if ($self->_looks_like_attachment($facet)) {
+                $self->_extract_one_attachment($facet);
+                $mutated = 1;
+            }
+        }
+    }
+
+    # Drop any cached JSON / compressed-form so the rewritten event
+    # serializes to the latest hash.
+    if ($mutated && ref($event) && $event->can('clear_compressed_form')) {
+        $event->clear_compressed_form;
+    }
+
+    return;
+}
+
+# Extract one attachment hash in place. Decodes the base64 data, picks
+# a unique on-disk filename, writes the bytes (zstd-compressed unless
+# the extension says they're already compressed), and rewrites the
+# input hash to drop data/encoding and add archive_path.
+sub _extract_one_attachment {
+    my $self = shift;
+    my ($att) = @_;
+
+    my $orig_filename = $att->{filename};
+    my $encoding      = $att->{encoding};
+    my $b64           = $att->{data};
+
+    my $bytes;
+    if (lc $encoding eq 'base64') {
+        $bytes = decode_base64($b64);
+    }
+    else {
+        # Unknown encoding -- leave as-is; better to keep the data
+        # in-event than to silently drop it.
+        return;
+    }
+
+    my $idx        = $self->_next_attachment_index;
+    my $prefix     = $self->_attachment_prefix($idx);
+    my $safe_name  = $self->_attachment_safe_name($orig_filename);
+    my $compressed = !$self->_attachment_already_compressed($orig_filename);
+
+    my $on_disk_name = "$prefix-$safe_name";
+    $on_disk_name .= '.zst' if $compressed;
+
+    my $dir  = $self->_attachments_dir;
+    my $path = "$dir/$on_disk_name";
+
+    my $payload = $compressed ? compress_blob($bytes) : $bytes;
+    write_file_atomic($path, $payload);
+
+    # Path inside the log tree (relative to logdir root).
+    my $base_rel = collector_base_dir(
+        type    => $self->{+TYPE},
+        id      => $self->{+ID},
+        run_id  => $self->{+RUN_ID},
+        job_try => $self->{+JOB_TRY},
+    );
+    my $archive_path = "$base_rel/attachments/$on_disk_name";
+
+    # Mutate the facet hash in place. Preserve filename / details /
+    # is_image; strip data + encoding; add archive_path.
+    delete $att->{data};
+    delete $att->{encoding};
+    $att->{archive_path} = $archive_path;
+
+    return;
 }
 
 # Public alias for code that wants to push synth events into the
