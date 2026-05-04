@@ -726,16 +726,22 @@ sub archive {
     croak "output path is required" unless defined $out && length $out;
 
     my $format = $opts{format} // 'tar.zidx';
+    $format = 'tar.zidx' if $format eq 'tar';
+
+    my ($runs, $exclude_runs) = $self->_normalize_run_filters(\%opts);
 
     if ($format eq 'sqlite') {
-        croak "App::Yath2::Log::Sqlite not yet implemented (M2 step 10d)";
+        require App::Yath2::Log::Sqlite;
+        # Refuse to clobber an existing destination -- fresh file only.
+        croak "destination '$out' already exists" if -e $out;
+        my $dest = App::Yath2::Log::Sqlite->new(file => $out);
+        $dest->insert($self, runs => $runs, exclude_runs => $exclude_runs);
+        return $dest;
     }
 
     if ($format ne 'tar.zidx') {
         croak "unknown archive format: $format";
     }
-
-    my ($runs, $exclude_runs) = $self->_normalize_run_filters(\%opts);
 
     require App::Yath2::Log::TarZIdx;
     my $arc = App::Yath2::Log::TarZIdx->new(path => $out);

@@ -1032,19 +1032,24 @@ sub archive {
     croak "output path is required" unless defined $out && length $out;
 
     my $format = $opts{format} // 'tar.zidx';
-
-    if ($format eq 'sqlite') {
-        croak "App::Yath2::Log::Sqlite not yet implemented (M2 step 14)";
-    }
-
-    if ($format ne 'tar.zidx') {
-        croak "unknown archive format: $format";
-    }
+    $format = 'tar.zidx' if $format eq 'tar';
 
     my $runs         = $opts{runs};
     my $exclude_runs = $opts{exclude_runs};
     croak "'runs' and 'exclude_runs' are mutually exclusive"
         if defined $runs && defined $exclude_runs;
+
+    if ($format eq 'sqlite') {
+        require App::Yath2::Log::Sqlite;
+        croak "destination '$out' already exists" if -e $out;
+        my $dest = App::Yath2::Log::Sqlite->new(file => $out);
+        $dest->insert($self, runs => $runs, exclude_runs => $exclude_runs);
+        return $dest;
+    }
+
+    if ($format ne 'tar.zidx') {
+        croak "unknown archive format: $format";
+    }
 
     # Filtered tar.zidx -> tar.zidx: extract to a tempdir then re-archive.
     # Unfiltered: copy bytes verbatim.
