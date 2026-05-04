@@ -120,7 +120,7 @@ sub render_event {
             my $alternative_error   = '';
             foreach my $msg ( @{ $f->{'errors'} } ) {
                 next unless $msg->{'from_harness'};
-                next unless $msg->{'tag'} // '' eq 'REASON';
+                next unless ($msg->{'tag'} // '') eq 'REASON';
 
                 my $details = $msg->{details};
                 if ( $details =~ m/^Planned for ([0-9]+) assertions?, but saw ([0-9]+)/ ) {
@@ -210,7 +210,7 @@ sub render_event {
                 $test->{'testsuite'}->{'errors'}++;
 
                 # Grab the first amnesty description that's a TODO message.
-                my ($todo_message) = map { $_->{'details'} } grep { $_->{'tag'} // '' eq 'TODO' } @{ $f->{'amnesty'} };
+                my ($todo_message) = map { $_->{'details'} } grep { ($_->{'tag'} // '') eq 'TODO' } @{ $f->{'amnesty'} };
 
                 push @{ $test->{'testcase'} }, $self->xml->testcase(
                     { 'name' => "$test_name (TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} },
