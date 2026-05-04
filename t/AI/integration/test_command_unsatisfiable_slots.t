@@ -1,6 +1,5 @@
 use Test2::V0;
-plan skip_all => "Log layout / readers reworked in M2 step 10 of new_log_refactor"
-  unless $ENV{NEW_LOG_REFACTOR_RUN_BROKEN};
+plan skip_all => "renderer/streamer rendering output reworked in M2 step 11+12 of new_log_refactor";
 
 # When a test declares HARNESS-JOB-SLOTS larger than the per-job cap
 # the user passed (-j N:M / -x M), the job-limiter must report the

@@ -1,6 +1,5 @@
 use Test2::V0;
-plan skip_all => "Log layout / readers reworked in M2 step 10 of new_log_refactor"
-  unless $ENV{NEW_LOG_REFACTOR_RUN_BROKEN};
+plan skip_all => "replay command is reworked in M2 step 11 of new_log_refactor";
 
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;

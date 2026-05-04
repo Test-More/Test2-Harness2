@@ -1,6 +1,4 @@
 use Test2::V0;
-plan skip_all => "Log layout / readers reworked in M2 step 10 of new_log_refactor"
-  unless $ENV{NEW_LOG_REFACTOR_RUN_BROKEN};
 
 use File::Spec ();
 
@@ -173,18 +171,21 @@ like(
     'archive name uses ${project}-${user}-${stamp}-${pid}.yath pattern',
 );
 
-my $la    = App::Yath2::Log->open(path => $archive);
+my $la    = App::Yath2::Log->new(file => $archive);
 my %files = map { $_ => 1 } $la->list_files;
 
-ok($files{'services/harness/events.jsonl.zst'}, 'archive contains harness JSONL log');
-ok($files{'services/harness/state.json.zst'},   'archive contains harness JSON  log');
+# Post new_log_refactor on-disk layout: per-collector spec/events/report
+# .jsonl.zst trio.
+ok($files{'services/harness/events.jsonl.zst'}, 'archive contains harness events.jsonl.zst');
+ok($files{'services/harness/spec.jsonl.zst'},   'archive contains harness spec.jsonl.zst');
+ok($files{'services/harness/report.jsonl.zst'}, 'archive contains harness report.jsonl.zst');
 ok(
-    (grep { m{^runs/[^/]+/tests/[^/]+/\d+\.jsonl\.zst\z} } keys %files),
-    'archive contains at least one per-try JSONL (runs/<run>/tests/<job>/<try>.jsonl.zst)'
+    (grep { m{^runs/[^/]+/jobs/[^/]+/\d+/events\.jsonl\.zst\z} } keys %files),
+    'archive contains at least one per-try events.jsonl.zst'
 );
 ok(
-    (grep { m{^runs/[^/]+/tests/[^/]+/\d+\.json\.zst\z} } keys %files),
-    'archive contains at least one per-try JSON (runs/<run>/tests/<job>/<try>.json.zst)'
+    (grep { m{^runs/[^/]+/jobs/[^/]+/\d+/spec\.jsonl\.zst\z} } keys %files),
+    'archive contains at least one per-try spec.jsonl.zst'
 );
 
 # The default archive destination is now under the system tmpdir,

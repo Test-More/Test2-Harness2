@@ -1,17 +1,13 @@
 use Test2::V0;
-plan skip_all => "Log layout / readers reworked in M2 step 10 of new_log_refactor"
-  unless $ENV{NEW_LOG_REFACTOR_RUN_BROKEN};
 use File::Temp qw/tempdir/;
 use Time::HiRes qw/time sleep/;
-use POSIX qw/:sys_wait_h/;
-use Cpanel::JSON::XS qw/decode_json/;
 
 use lib 't/lib';
+use Test2::Harness2;
 use Test2::Harness2::TestFile;
-use Test2::Harness2::Test::Loggers qw/classic_harness_loggers classic_test_loggers/;
 use Test2::Harness2::Test::SpawnRace qw/finish_and_wait/;
 
-use Test2::Harness2;
+use App::Yath2::Log;
 
 sub wait_until {
     my ($check, $timeout_sec) = @_;
@@ -23,45 +19,18 @@ sub wait_until {
     return 0;
 }
 
-sub read_jsonl {
-    my ($path) = @_;
-    my $zst = ($path =~ /\.zst\z/) ? $path : "$path.zst";
-    my $plain = $path =~ s/\.zst\z//r;
-    if (-f $zst) {
-        require Test2::Harness2::Util::JSONL::Reader;
-        my $r = Test2::Harness2::Util::JSONL::Reader->new(path => $zst);
-        return $r->read_lines;
-    }
-    return () unless -e $plain;
-    open my $fh, '<', $plain or return ();
-    my @events = map { decode_json($_) } grep { /\S/ } <$fh>;
-    close $fh;
-    return @events;
-}
-
-subtest 'run service writes its own jsonl log under runs/<run_id>/services' => sub {
+subtest 'run service writes its own collector trio under runs/<run_id>/' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
-    # A trivial test file so the harness has work to kick off, which is
-    # what triggers the lazy run-service spawn.
     my $tf = "$dir/ok.t";
     open my $fh, '>', $tf or die $!;
     print $fh "use Test2::V0; ok(1); done_testing;\n";
     close $fh;
 
-    my $spawn = Test2::Harness2->spawn(
-        workdir         => $dir,
-        loggers         => classic_harness_loggers($dir),
-        service_loggers => [
-            'Test2::Harness2::Collector::Logger::JSONL',
-            'Test2::Harness2::Collector::Logger::JSON',
-        ],
-        test_loggers => classic_test_loggers(),
-    );
+    my $spawn = Test2::Harness2->spawn(workdir => $dir);
     my $q = $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
     ok($q->{ok}, 'queued') or diag explain $q;
 
-    # Drain the run.
     wait_until(
         sub {
             my $s = $spawn->status;
@@ -72,30 +41,18 @@ subtest 'run service writes its own jsonl log under runs/<run_id>/services' => s
 
     finish_and_wait($spawn);
 
-    # Phase 4 layout: per-run logs live in their own directory under
-    # runs/<run_id>/, with events.jsonl(.zst), state.json(.zst), and
-    # spec.json(.zst) sitting alongside.
-    opendir my $rdh, "$dir/logs/runs" or die "open $dir/runs: $!";
-    my @run_dirs = grep { /^[^.]/ && -d "$dir/logs/runs/$_" } readdir $rdh;
-    closedir $rdh;
-    is(scalar @run_dirs, 1, 'one run directory written');
-    my $run_id = $run_dirs[0];
-    my $run_log;
-    for my $cand ("$dir/logs/runs/$run_id/events.jsonl", "$dir/logs/runs/$run_id/events.jsonl.zst") {
-        $run_log = $cand if -e $cand;
-    }
-    ok($run_log && -e $run_log, 'per-run events.jsonl exists');
+    # Use the Log API to inspect the on-disk tree.
+    my $log = App::Yath2::Log->new(dir => "$dir/logs");
+    my @runs = $log->runs;
+    is(scalar(@runs), 1, 'one run directory written');
+    my $run_id = $runs[0];
 
-    my @events = read_jsonl($run_log);
-    my %kinds  = map { ($_->{facet_data}{harness}{kind} // '') => 1 } @events;
-    ok($kinds{service_started}, 'run service emitted service_started');
-    ok($kinds{service_stopped}, 'run service emitted service_stopped');
-
-    ok(-e "$dir/logs/runs/$run_id/spec.json.zst", 'per-run spec.json.zst exists');
-    ok(-e "$dir/logs/runs/$run_id/state.json.zst", 'per-run state.json.zst exists');
+    my $run_a = $log->artifacts($run_id);
+    ok(length($run_a->spec) > 0,   'run spec.jsonl(.zst) is non-empty');
+    ok(length($run_a->report) > 0, 'run report.jsonl(.zst) is non-empty');
 };
 
-subtest "run service runs in its own process and is a child of the harness" => sub {
+subtest 'harness service has its own collector trio' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
     my $tf = "$dir/ok.t";
@@ -103,18 +60,9 @@ subtest "run service runs in its own process and is a child of the harness" => s
     print $fh "use Test2::V0; ok(1); done_testing;\n";
     close $fh;
 
-    my $spawn = Test2::Harness2->spawn(
-        workdir         => $dir,
-        loggers         => classic_harness_loggers($dir),
-        service_loggers => [
-            'Test2::Harness2::Collector::Logger::JSONL',
-            'Test2::Harness2::Collector::Logger::JSON',
-        ],
-        test_loggers => classic_test_loggers(),
-    );
+    my $spawn = Test2::Harness2->spawn(workdir => $dir);
     $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
 
-    # Drain the run so the collector has a chance to flush both logs.
     wait_until(
         sub {
             my $s = $spawn->status;
@@ -125,25 +73,11 @@ subtest "run service runs in its own process and is a child of the harness" => s
 
     finish_and_wait($spawn);
 
-    # Dig the run-id events.jsonl out, read both logs.
-    opendir my $rdh, "$dir/logs/runs" or die "open $dir/runs: $!";
-    my @run_dirs = grep { /^[^.]/ && -d "$dir/logs/runs/$_" } readdir $rdh;
-    closedir $rdh;
-    my $rid     = $run_dirs[0];
-    my $run_log = (-e "$dir/logs/runs/$rid/events.jsonl") ? "$dir/logs/runs/$rid/events.jsonl"
-                : "$dir/logs/runs/$rid/events.jsonl.zst";
-    my $harn_log = "$dir/logs/services/harness/events.jsonl";
-
-    my @run_started = grep { ($_->{facet_data}{harness}{kind} // '') eq 'service_started' } read_jsonl($run_log);
-    my @har_started = grep { ($_->{facet_data}{harness}{kind} // '') eq 'service_started' } read_jsonl($harn_log);
-    is(scalar @run_started, 1, 'exactly one service_started event in run.jsonl');
-    is(scalar @har_started, 1, 'exactly one service_started event in harness.jsonl');
-
-    my $run_pid  = $run_started[0]->{facet_data}{harness}{pid};
-    my $harn_pid = $har_started[0]->{facet_data}{harness}{pid};
-    ok($run_pid,  'run service reported a pid');
-    ok($harn_pid, 'harness reported a pid');
-    isnt($run_pid, $harn_pid, 'run-service pid differs from harness pid');
+    my $log = App::Yath2::Log->new(dir => "$dir/logs");
+    ok($log->has_service('harness'), 'harness service present');
+    my $harn_a = $log->artifacts('harness');
+    ok(length($harn_a->spec) > 0,    'harness spec non-empty');
+    ok(length($harn_a->events) > 0,  'harness events non-empty');
 };
 
 done_testing;

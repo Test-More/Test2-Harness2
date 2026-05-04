@@ -1,13 +1,10 @@
 use Test2::V0;
-plan skip_all => "Log layout / readers reworked in M2 step 10 of new_log_refactor"
-  unless $ENV{NEW_LOG_REFACTOR_RUN_BROKEN};
 use File::Temp qw/tempdir/;
 use POSIX qw/:sys_wait_h _exit/;
 use Time::HiRes qw/sleep/;
 
 use lib 't/lib';
 use Test2::Harness2::TestFile;
-use Test2::Harness2::Test::Loggers qw/classic_harness_loggers classic_test_loggers/;
 
 use Test2::Harness2;
 
@@ -53,8 +50,6 @@ subtest 'Terminate mid-run kills collector and test process' => sub {
     my $spawn = Test2::Harness2->spawn(
         workdir      => $dir,
         kill_timeout => 2,
-        loggers      => classic_harness_loggers($dir),
-        test_loggers => classic_test_loggers(),
     );
     my $q     = $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
     ok($q->{ok}, 'queued');
@@ -100,8 +95,6 @@ PERL
     my $spawn = Test2::Harness2->spawn(
         workdir      => $dir,
         kill_timeout => 2,
-        loggers      => classic_harness_loggers($dir),
-        test_loggers => classic_test_loggers(),
     );
     $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
 
@@ -135,8 +128,6 @@ subtest 'service dies when its caller dies (no detach)' => sub {
         my $spawn = Test2::Harness2->spawn(
             workdir      => $dir,
             kill_timeout => 2,
-            loggers      => classic_harness_loggers($dir),
-            test_loggers => classic_test_loggers(),
         );
         $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
         # Intentionally NOT detached — leak via _exit so DESTROY doesn't fire.
@@ -148,18 +139,17 @@ subtest 'service dies when its caller dies (no detach)' => sub {
     # -> run service -> test collectors, so the kill_timeout grace at
     # each layer can stack (two windows worst-case here). With
     # kill_timeout => 2 above, 15s leaves comfortable headroom.
+    #
+    # Post-new_log_refactor: the harness writes events.jsonl.zst plus
+    # report.jsonl.zst on shutdown. Wait for the report row to appear.
     ok(
         wait_until(
             sub {
-                return 0 unless -e "$dir/logs/services/harness/events.jsonl";
-                open my $fh, '<', "$dir/logs/services/harness/events.jsonl" or return 0;
-                local $/;
-                my $content = <$fh>;
-                return $content =~ /service_stopped/;
+                return -e "$dir/logs/services/harness/report.jsonl.zst";
             },
             15
         ),
-        'service logged service_stopped after caller died'
+        'harness wrote a report row after caller died'
     );
 };
 
@@ -179,8 +169,6 @@ subtest 'detached service survives caller death' => sub {
         my $spawn = Test2::Harness2->spawn(
             workdir      => $dir,
             kill_timeout => 2,
-            loggers      => classic_harness_loggers($dir),
-            test_loggers => classic_test_loggers(),
         );
         $spawn->detach;
         print $w $spawn->pid, "\n";

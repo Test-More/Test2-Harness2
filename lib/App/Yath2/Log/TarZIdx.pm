@@ -14,7 +14,6 @@ use File::Spec ();
 
 use Test2::Harness2::Util::JSON qw/decode_json encode_json/;
 
-use parent 'App::Yath2::Log';
 use Object::HashBase qw/path +_index/;
 
 # tar.zidx is the single archive format yath produces. Layout:
@@ -23,9 +22,12 @@ use Object::HashBase qw/path +_index/;
 # when the source was already a .zst-suffixed file), plus a special
 # index entry, plus a 32-byte footer pointing at the index.
 #
-# This file owns both reading and writing of that format. Read and
-# write methods are sectioned below; helpers shared by both live at
-# the top.
+# Post new_log_refactor M2 step 10a: the new reader API
+# (artifacts/services/runs/jobs/tries/event/EOE/save) is NOT yet
+# implemented for this backend. The class still owns the archive's
+# write path and the legacy list_files / read_file primitives so
+# callers can call extract() which the Directory backend then drives.
+# The full reader API will land in step 10c.
 
 use constant BLOCK_SIZE          => 512;
 use constant INDEX_ENTRY_NAME    => '__index__.json.zst';
@@ -33,6 +35,30 @@ use constant TAR_ZIDX_MAGIC      => "YZIDXv1\0";
 use constant TAR_ZIDX_FOOTER_LEN => 32;
 
 sub is_live { 0 }
+sub static  { 1 }
+
+# {{{ New reader API stubs (step 10c)
+#
+# Provide stub methods that throw "not yet implemented" so the
+# dispatcher is well-behaved when a caller hands it a tar.zidx file
+# and asks for events/listing/etc.
+sub services    { croak "App::Yath2::Log::TarZIdx->services: not yet implemented (M2 step 10c)" }
+sub runs        { croak "App::Yath2::Log::TarZIdx->runs: not yet implemented (M2 step 10c)" }
+sub jobs        { croak "App::Yath2::Log::TarZIdx->jobs: not yet implemented (M2 step 10c)" }
+sub tries       { croak "App::Yath2::Log::TarZIdx->tries: not yet implemented (M2 step 10c)" }
+sub last_try    { croak "App::Yath2::Log::TarZIdx->last_try: not yet implemented (M2 step 10c)" }
+sub has_service { croak "App::Yath2::Log::TarZIdx->has_service: not yet implemented (M2 step 10c)" }
+sub has_run     { croak "App::Yath2::Log::TarZIdx->has_run: not yet implemented (M2 step 10c)" }
+sub has_job     { croak "App::Yath2::Log::TarZIdx->has_job: not yet implemented (M2 step 10c)" }
+sub has_try     { croak "App::Yath2::Log::TarZIdx->has_try: not yet implemented (M2 step 10c)" }
+sub artifacts   { croak "App::Yath2::Log::TarZIdx->artifacts: not yet implemented (M2 step 10c)" }
+sub event       { croak "App::Yath2::Log::TarZIdx->event: not yet implemented (M2 step 10c)" }
+sub events      { croak "App::Yath2::Log::TarZIdx->events: not yet implemented (M2 step 10c)" }
+sub EOE         { croak "App::Yath2::Log::TarZIdx->EOE: not yet implemented (M2 step 10c)" }
+sub end_of_events { croak "App::Yath2::Log::TarZIdx->end_of_events: not yet implemented (M2 step 10c)" }
+sub reset       { croak "App::Yath2::Log::TarZIdx->reset: not yet implemented (M2 step 10c)" }
+
+# }}}
 
 sub absolute_path {
     my ($self, $rel) = @_;
@@ -323,12 +349,32 @@ sub archive {
 # source directory. Used by Directory->archive($out) which constructs
 # a TarZIdx pointing at $out and then calls _write_from_directory.
 sub _write_from_directory {
-    my ($self, $src) = @_;
+    my ($self, $src, %opts) = @_;
     my $out = $self->{+PATH};
     my $tmp = "$out.tmp.$$";
 
     my $abs_src = File::Spec->rel2abs($src);
     croak "source '$src' is not a directory" unless -d $abs_src;
+
+    my $runs         = $opts{runs};
+    my $exclude_runs = $opts{exclude_runs};
+    croak "'runs' and 'exclude_runs' are mutually exclusive"
+        if defined $runs && defined $exclude_runs;
+
+    my $include_run = sub {
+        my ($rel) = @_;
+        # The LIVE sentinel never goes into archives.
+        return 0 if $rel eq 'LIVE';
+        return 1 unless $rel =~ m{^runs/(\d+)(?:/|\z)};
+        my $rid = $1;
+        if (defined $runs) {
+            return scalar grep { $_ eq $rid } @$runs;
+        }
+        if (defined $exclude_runs) {
+            return scalar(grep { $_ eq $rid } @$exclude_runs) ? 0 : 1;
+        }
+        return 1;
+    };
 
     open(my $fh, '>', $tmp) or croak "open $tmp: $!";
     binmode $fh;
@@ -342,6 +388,7 @@ sub _write_from_directory {
                 my $rel = File::Spec->abs2rel($_, $abs_src);
                 return if $rel eq '.';
                 $rel =~ s{\\}{/}g;
+                return unless $include_run->($rel);
                 if (-f $_) {
                     push @file_entries => [$rel, $_];
                 }

@@ -6,91 +6,120 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 use Cwd ();
+use Fcntl qw/SEEK_SET SEEK_END/;
 use File::Spec ();
 use Time::HiRes ();
 
-# The base class provides factory dispatch, not state. Subclasses
-# (Directory, TarZIdx) use Object::HashBase themselves and define
-# their own attribute slots; the base class's only blessable slot
-# is the lazy logger-class cache populated on first ext lookup.
-use constant _LOGGER_MAP => '_logger_map';
-
-use Test2::Harness2::Util qw/load_module/;
-
-# XXX: reworked in M2 step 10. The LogLayout module no longer
-# exports run_spec_basename / run_state_basename / run_events_basename
-# (logger leaves are gone post new_log_refactor M2 step 4+5). The
-# legacy reader still references them in code paths covered by
-# soon-to-be-removed tests, so we restore local shims pointing at
-# the new layout for the duration of step 10.
-use Test2::Harness2::LogLayout qw/run_dir/;
-sub run_spec_basename   { run_dir($_[0]) . '/spec' }
-sub run_state_basename  { run_dir($_[0]) . '/state' }
-sub run_events_basename { run_dir($_[0]) . '/events' }
-
-use App::Yath2::Log::Artifact;
-
-# Logger class lookup is by extension: an artifact ending in .xyz is
-# produced by Test2::Harness2::Collector::Logger::XYZ (also tried with
-# Capital and lowercase casings, in that order). Loggers expose
-# update_type so we know whether a given physical file is an
-# append-stream or a replace-snapshot; everything else (the file
-# extension, the produced path) is derivable without asking the
-# logger.
-use constant LOGGER_NAMESPACE => 'Test2::Harness2::Collector::Logger';
-
-# {{{ Construction / factory
-
-# Factory: open an existing archive in either form, dispatching to
-# the right backend. Direct construction (when the kind is already
-# known) goes through the backend's own ->new.
+# Dispatcher class for the new_log_refactor reader API. This class is
+# NOT a base class: it has no instance state of its own. It exists to
+# pick the right backend class given the constructor's argument shape
+# and return a fresh instance of that class.
 #
-#     App::Yath2::Log->open(file => '/path/to/run.yath')  # TarZIdx
-#     App::Yath2::Log->open(dir  => '/path/to/logs')      # Directory
-#     App::Yath2::Log->open(path => $auto)                # -d decides
-sub open {
+# Backend selection by argument shape:
+#
+#   App::Yath2::Log->new(live => $dir)  # Live workdir (still being written)
+#   App::Yath2::Log->new(dir  => $dir)  # Sealed / extracted directory
+#   App::Yath2::Log->new(file => $f)    # *.yath archive: tar.zidx or sqlite
+#                                       # (auto-detect by magic bytes)
+#   App::Yath2::Log->new(dbh  => ..., uuid => ...)
+#   App::Yath2::Log->new(dsn  => ..., user => ..., pass => ...,
+#                        attrs => ..., uuid => ...)
+#
+# The dispatcher delegates by loading the appropriate backend class
+# and returning the new instance directly. It performs no work other
+# than detection.
+#
+# In addition to ->new the class also offers a few legacy helpers
+# (->open, ->find_latest, ->update_last_log_symlink) that drive
+# integration with the rest of the codebase.
+
+sub new {
     my ($class, %args) = @_;
 
-    my $file = delete $args{file};
-    my $dir  = delete $args{dir};
-    my $path = delete $args{path};
+    # Live directory backend.
+    if (defined $args{live}) {
+        croak "live + dir / file / dbh / dsn are mutually exclusive"
+            if defined $args{dir} || defined $args{file} || defined $args{dbh} || defined $args{dsn};
 
-    croak "Pass exactly one of 'file', 'dir', or 'path'"
-        if 1 != grep { defined($_) } $file, $dir, $path;
-
-    my $is_dir;
-    if (defined $file) {
-        croak "file '$file' does not exist" unless -e $file;
-        croak "file '$file' is a directory; use dir => ..." if -d $file;
-        $path   = $file;
-        $is_dir = 0;
-    }
-    elsif (defined $dir) {
-        croak "dir '$dir' does not exist"     unless -e $dir;
-        croak "dir '$dir' is not a directory" unless -d $dir;
-        $path   = $dir;
-        $is_dir = 1;
-    }
-    else {
-        croak "path '$path' does not exist" unless -e $path;
-        $is_dir = -d $path ? 1 : 0;
+        require App::Yath2::Log::Live;
+        return App::Yath2::Log::Live->new(path => delete $args{live}, %args);
     }
 
-    if ($is_dir) {
+    # Sealed directory backend.
+    if (defined $args{dir}) {
+        croak "dir + file / dbh / dsn are mutually exclusive"
+            if defined $args{file} || defined $args{dbh} || defined $args{dsn};
+
         require App::Yath2::Log::Directory;
-        return App::Yath2::Log::Directory->new(path => $path, %args);
+        return App::Yath2::Log::Directory->new(path => delete $args{dir}, live => 0, %args);
     }
 
-    require App::Yath2::Log::TarZIdx;
-    return App::Yath2::Log::TarZIdx->new(path => $path, %args);
+    # Single file backend; auto-detect tar.zidx vs sqlite via magic.
+    if (defined $args{file}) {
+        croak "file + dbh / dsn are mutually exclusive"
+            if defined $args{dbh} || defined $args{dsn};
+
+        my $path = delete $args{file};
+        croak "file '$path' does not exist" unless -e $path;
+        croak "file '$path' is a directory; use dir => or live => instead"
+            if -d $path;
+
+        my $kind = $class->_detect_file_kind($path);
+        if ($kind eq 'sqlite') {
+            require App::Yath2::Log::Sqlite;
+            return App::Yath2::Log::Sqlite->new(file => $path, %args);
+        }
+        if ($kind eq 'tar.zidx') {
+            require App::Yath2::Log::TarZIdx;
+            return App::Yath2::Log::TarZIdx->new(path => $path, %args);
+        }
+
+        croak "Unable to identify '$path' as a yath log archive (not sqlite or tar.zidx)";
+    }
+
+    # Database connection forms.
+    if (defined $args{dbh} || defined $args{dsn}) {
+        require App::Yath2::Log::Sqlite;
+        return App::Yath2::Log::Sqlite->new(%args);
+    }
+
+    croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
 }
 
-# }}}
+# Detect the on-disk kind of a $path. Returns 'sqlite', 'tar.zidx', or
+# 'unknown'. The check is best-effort: SQLite databases start with the
+# 16-byte 'SQLite format 3\0' header; tar.zidx archives end with the
+# 32-byte footer beginning 'YZIDXv1\0'. We sniff both.
+sub _detect_file_kind {
+    my ($class, $path) = @_;
 
-# {{{ Latest-archive discovery + last_log.yath symlink
+    open(my $fh, '<', $path) or croak "open '$path': $!";
+    binmode $fh;
 
-# Filename of the in-cwd symlink that always points at the most
-# recent archive a `yath test` produced from this working directory.
+    my $head;
+    read($fh, $head, 16);
+    if (defined $head && length($head) == 16 && $head eq "SQLite format 3\0") {
+        close $fh;
+        return 'sqlite';
+    }
+
+    my $size = -s $path;
+    if (defined $size && $size >= 32) {
+        seek($fh, $size - 32, SEEK_SET);
+        my $foot;
+        read($fh, $foot, 32);
+        if (defined $foot && length($foot) == 32 && substr($foot, 0, 8) eq "YZIDXv1\0") {
+            close $fh;
+            return 'tar.zidx';
+        }
+    }
+
+    close $fh;
+    return 'unknown';
+}
+
+# Shape of the in-cwd symlink that always points at the most recent
+# archive a `yath test` run produced from this working directory.
 # Consumers (yath replay, yath extract, yath failed, ...) honour it
 # when no explicit log path was given on the command line.
 use constant LAST_LOG_SYMLINK => 'last_log.yath';
@@ -98,11 +127,9 @@ use constant LAST_LOG_SYMLINK => 'last_log.yath';
 # Locate the most recent log archive for the current cwd.
 #
 #   1. ./last_log.yath -- if present, the symlink target wins.
-#      (The symlink may itself live in cwd or, if a wrapper has
-#      cd'd elsewhere, be passed an explicit $cwd.)
-#   2. Glob ${TMPDIR}/${project}-${user}-*.yath. Sort by the stamp
-#      embedded in the filename; ties (same-second runs) are broken
-#      by hi-res mtime.
+#   2. Glob ${TMPDIR}/${project}-${user}-*.yath. Sort by stamp embedded
+#      in the filename; ties (same-second runs) are broken by hi-res
+#      mtime.
 #
 # Returns the absolute path of the winning archive, or undef when
 # nothing matches.
@@ -122,9 +149,6 @@ sub find_latest {
     return undef unless defined $project && length $project;
     return undef unless defined $user    && length $user;
 
-    # __UNKNOWN__ means we could not pin the project to a specific
-    # codebase. Refuse to glob across all projects and let the
-    # caller report the no-archive condition.
     return undef if $project eq '__UNKNOWN__';
 
     # The original system tmpdir captured by App::Yath::Script
@@ -173,338 +197,39 @@ sub update_last_log_symlink {
     return $sym;
 }
 
-# }}}
+# Legacy entry point kept so existing CLI commands and integration
+# tests can still call ->open(path => ...). Internally this just
+# auto-detects file vs directory and forwards to ->new.
+sub open {
+    my ($class, %args) = @_;
 
-# {{{ Required backend contract (subclasses fill these in)
+    my $file = delete $args{file};
+    my $dir  = delete $args{dir};
+    my $path = delete $args{path};
 
-sub is_live      { 0 }    # Directory backend overrides when a live workdir
-sub static       { $_[0]->is_live ? 0 : 1 }
-sub list_files   { croak "list_files is not implemented for " . ref($_[0]) }
-sub has_file     { croak "has_file is not implemented for "   . ref($_[0]) }
-sub read_file    { croak "read_file is not implemented for "  . ref($_[0]) }
-sub absolute_path {
-    croak "absolute_path is not implemented for " . ref($_[0]);
-}
+    croak "Pass exactly one of 'file', 'dir', or 'path'"
+        if 1 != grep { defined($_) } $file, $dir, $path;
 
-# Relative directory paths visible to this backend, no leading slash,
-# no trailing slash, and no ordering guarantee. The Directory backend
-# walks the filesystem; the TarZIdx backend derives parent paths from
-# list_files (and, when present, explicit directory entries in the
-# index).
-sub list_dirs    { croak "list_dirs is not implemented for "  . ref($_[0]) }
-
-# Writers. Default implementations route through the cross-backend
-# helper: read everything via list_files / read_file and write to a
-# new instance. Backends that have a more efficient native form
-# override.
-sub archive {
-    my ($self, $out, %opts) = @_;
-    croak "archive() is not implemented for " . ref($self);
-}
-
-sub extract {
-    my ($self, $dir, %opts) = @_;
-    croak "extract() is not implemented for " . ref($self);
-}
-
-# }}}
-
-# {{{ Artifacts API
-
-# $la->artifacts                       -> harness-scope (no run-scope entries)
-# $la->artifacts($run_id)              -> per-run (no job-scope entries)
-# $la->artifacts($run_id, $job_id)     -> per-job, keyed by try number
-#
-# All three return:
-#
-#   {
-#       append  => { logical_name => [physical_paths...] },
-#       replace => { logical_name => [physical_paths...] },
-#   }
-#
-# 'logical_name' is the artifact's logical key (no extension). For
-# global / run scope this is a path-like key (e.g. 'services/harness',
-# 'events', 'spec', 'state'). For job scope the keys are stringified
-# integer try numbers ('0', '1', ...).
-#
-# update_type ('append' / 'replace') comes from the logger that
-# produced the artifact, looked up by extension via _logger_for_ext.
-# Files whose extension has no installed logger are skipped silently.
-sub artifacts {
-    my $self = shift;
-    my ($run_id, $job_id) = @_;
-
-    croak "run_id is required when job_id is given"
-        if defined $job_id && !defined $run_id;
-
-    my %append;
-    my %replace;
-
-    if (defined $job_id) {
-        # Job scope: keep only files under runs/<run>/tests/<job>/
-        # and key by the try number (the extension-less basename).
-        my $prefix = run_dir($run_id) . "/tests/$job_id/";
-        for my $rel ($self->list_files) {
-            next unless index($rel, $prefix) == 0;
-            my $tail = substr($rel, length $prefix);
-            next if $tail =~ m{/};    # nested dir, not a leaf
-
-            my ($try, $ext) = $self->_split_path_ext($tail) or next;
-            my $info = $self->_logger_for_ext($ext) or next;
-
-            my $bucket = $info->{update_type} eq 'append' ? \%append : \%replace;
-            push @{$bucket->{$try}} => $rel;
-        }
-    }
-    elsif (defined $run_id) {
-        # Run scope: files under runs/<run>/, excluding tests/<job>/
-        # (those are job-scope) and excluding any nested service
-        # subdirectory entries that key by sub-path.
-        my $prefix = run_dir($run_id) . "/";
-        for my $rel (sort $self->list_files) {
-            next unless index($rel, $prefix) == 0;
-            my $tail = substr($rel, length $prefix);
-            next if $tail =~ m{^tests/};
-
-            my ($base, $ext) = $self->_split_path_ext($tail) or next;
-            my $info = $self->_logger_for_ext($ext) or next;
-
-            my $bucket = $info->{update_type} eq 'append' ? \%append : \%replace;
-            push @{$bucket->{$base}} => $rel;
-        }
-    }
-    else {
-        # Global scope: drop everything under runs/ (those scopes
-        # are reached separately).
-        for my $rel (sort $self->list_files) {
-            next if $rel =~ m{^runs/};
-
-            my ($base, $ext) = $self->_split_path_ext($rel) or next;
-            my $info = $self->_logger_for_ext($ext) or next;
-
-            my $bucket = $info->{update_type} eq 'append' ? \%append : \%replace;
-            push @{$bucket->{$base}} => $rel;
-        }
-    }
-
-    return {append => \%append, replace => \%replace};
-}
-
-# Split 'foo.jsonl' or 'foo.jsonl.zst' (or a path with slashes,
-# e.g. 'services/harness.jsonl') into ('foo' / 'services/harness',
-# 'jsonl'). Returns undef on a name that does not look like
-# basename.ext or basename.ext.zst.
-sub _split_path_ext {
-    my ($self, $rel) = @_;
-    return unless defined $rel && length $rel;
-    return unless $rel =~ m{^(.+?)\.([^./]+)(?:\.zst)?\z};
-    return ($1, $2);
-}
-
-# Files in the archive whose logical name (everything before the
-# extension and any .zst suffix) equals $logical_prefix.
-sub _files_with_logical_prefix {
-    my ($self, $logical_prefix) = @_;
-    my @hits;
-    for my $rel ($self->list_files) {
-        next unless $rel =~ m{^\Q$logical_prefix\E\.[^./]+(?:\.zst)?\z};
-        push @hits => $rel;
-    }
-    return @hits;
-}
-
-# }}}
-
-# {{{ Listing methods
-
-# Run IDs present in the archive. Existence is keyed on the
-# `runs/<id>/` directory: if the directory is visible to the
-# backend, the run exists, even when no artifact files have landed
-# inside it yet. Same shape for jobs() and services().
-sub runs {
-    my $self = shift;
-    return sort keys %{ $self->_immediate_children('runs') };
-}
-
-# Job IDs in a given run. Existence is keyed on the
-# `runs/<run>/tests/<job>/` directory.
-sub jobs {
-    my ($self, $run_id) = @_;
-    croak "run_id is required" unless defined $run_id && length $run_id;
-    return sort keys %{ $self->_immediate_children("runs/$run_id/tests") };
-}
-
-# Service names. Without args: harness-scope services under
-# `services/<name>/`. With $run_id: run-scoped services under
-# `runs/<run>/services/<name>/`. Existence is keyed on directory
-# presence.
-sub services {
-    my ($self, $run_id) = @_;
-    my $prefix = defined $run_id ? "runs/$run_id/services" : "services";
-    return sort keys %{ $self->_immediate_children($prefix) };
-}
-
-# Names of immediate child directories of $prefix. Walks list_dirs
-# and matches paths exactly one level beneath $prefix.
-sub _immediate_children {
-    my ($self, $prefix) = @_;
-    my %names;
-    for my $dir ($self->list_dirs) {
-        next unless $dir =~ m{^\Q$prefix\E/([^/]+)\z};
-        $names{$1} = 1;
-    }
-    return \%names;
-}
-
-# }}}
-
-# {{{ Artifact accessor
-
-# Build (or fetch a cached) Artifact handle for one logical artifact.
-#
-#     my $a = $la->artifact('runs/RUN/events');
-#     my $a = $la->artifact('runs/RUN/events', prefer => ['jsonl', 'csv']);
-#
-# 'prefer' is an ordered list of file extensions; the first extension
-# whose physical form is on disk wins. Returns undef if no matching
-# physical artifact exists.
-sub artifact {
-    my ($self, $logical, %opts) = @_;
-    croak "logical path is required" unless defined $logical && length $logical;
-
-    my $prefer = $opts{prefer} // [];
-    croak "'prefer' must be an array reference" unless ref($prefer) eq 'ARRAY';
-
-    # Discover physical-file extensions for this logical name by
-    # scanning the archive. Extensions the caller listed in 'prefer'
-    # come first (in the order given), then everything else in
-    # alphabetical order so the resolution is deterministic.
-    my %disk_ext;
-    for my $rel ($self->_files_with_logical_prefix($logical)) {
-        my (undef, $ext) = $self->_split_path_ext($rel);
-        $disk_ext{$ext} = $rel if defined $ext;
-    }
-
-    my @ext_order;
-    my %seen;
-    for my $ext (@$prefer) {
-        next if $seen{$ext}++;
-        next unless exists $disk_ext{$ext};
-        push @ext_order => $ext;
-    }
-    for my $ext (sort keys %disk_ext) {
-        next if $seen{$ext}++;
-        push @ext_order => $ext;
-    }
-
-    return undef unless @ext_order;
-
-    for my $ext (@ext_order) {
-        my $info = $self->_logger_for_ext($ext);
-        next unless $info;
-
-        for my $cand ("$logical.$ext.zst", "$logical.$ext") {
-            next unless $self->has_file($cand);
-            return App::Yath2::Log::Artifact->new(
-                archive      => $self,
-                relpath      => $cand,
-                logical_name => $logical,
-                logger_class => $info->{class},
-                update_type  => $info->{update_type},
-            );
-        }
-    }
-
-    croak "No installed logger handles any of: "
-        . join(', ', map { ".$_" } @ext_order)
-        . " for artifact '$logical' -- install the matching "
-        . LOGGER_NAMESPACE . "::* class";
-}
-
-# Return the FileMonitor for $logical via $self->artifact($logical)->watch.
-# Convenience wrapper for the common one-liner.
-sub watch_artifact {
-    my ($self, $logical, %opts) = @_;
-    my $a = $self->artifact($logical, %opts);
-    return undef unless $a;
-    return $a->watch;
-}
-
-# Flat iterator: returns ($rel => $logger_class) pairs covering every
-# artifact in scope. Convenience for consumers (e.g. Streamer::Static)
-# that walk physical files and dispatch by logger class. Files with
-# no installed logger for their extension are skipped silently.
-sub iter_artifacts {
-    my ($self, $run_id, $job_id) = @_;
-
-    croak "run_id is required when job_id is given"
-        if defined $job_id && !defined $run_id;
-
-    my @out;
-    for my $rel (sort $self->list_files) {
-        if (defined $job_id) {
-            my $tests_prefix = run_dir($run_id) . "/tests/";
-            next unless index($rel, $tests_prefix) == 0;
-            my $tail = substr($rel, length $tests_prefix);
-            next unless $tail =~ m{^\Q$job_id\E/[^/]+\z};
-        }
-        elsif (defined $run_id) {
-            my $prefix = run_dir($run_id) . "/";
-            next unless index($rel, $prefix) == 0;
-            my $tail = substr($rel, length $prefix);
-            next if $tail =~ m{^tests/};
+    if (defined $path) {
+        croak "path '$path' does not exist" unless -e $path;
+        if (-d $path) {
+            $dir = $path;
         }
         else {
-            next if $rel =~ m{^runs/};
+            $file = $path;
         }
-
-        my (undef, $ext) = $self->_split_path_ext($rel);
-        next unless defined $ext;
-        my $info = $self->_logger_for_ext($ext) or next;
-        push @out => ($rel => $info->{class});
     }
 
-    return @out;
-}
-
-# }}}
-
-# {{{ Internal helpers
-
-# Lookup a logger class for the given on-disk file extension.
-#
-# Try Test2::Harness2::Collector::Logger::<UPPER>, then <Capital>,
-# then <lower>. First class that loads wins. Each result is cached
-# (positive or negative); subsequent lookups for the same ext skip
-# the load attempts.
-#
-# Returns { class => $name, update_type => 'append'|'replace' } or
-# undef when no logger is installed for that extension.
-sub _logger_for_ext {
-    my ($self, $ext) = @_;
-    return undef unless defined $ext && length $ext;
-
-    my $cache = $self->{+_LOGGER_MAP} //= {};
-    return $cache->{$ext} if exists $cache->{$ext};
-
-    my @candidates = (uc $ext, ucfirst lc $ext, lc $ext);
-    my %seen;
-    for my $cand (grep { !$seen{$_}++ } @candidates) {
-        my $class = LOGGER_NAMESPACE . '::' . $cand;
-        next unless eval { load_module($class); 1 };
-        next unless $class->can('update_type');
-        $cache->{$ext} = {
-            class       => $class,
-            update_type => $class->update_type,
-        };
-        return $cache->{$ext};
+    if (defined $dir) {
+        # ->open historically auto-detected live vs sealed; the new
+        # API is explicit, so we route this to the sealed Directory
+        # backend by default. Callers that want live should call
+        # ->new(live => $dir) explicitly.
+        return $class->new(dir => $dir, %args);
     }
 
-    $cache->{$ext} = undef;
-    return undef;
+    return $class->new(file => $file, %args);
 }
-
-# }}}
 
 1;
 
@@ -516,64 +241,43 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Log - Read and write yath log archives.
+App::Yath2::Log - Dispatcher for the yath log reader API.
 
 =head1 SYNOPSIS
 
     use App::Yath2::Log;
 
-    # Factory: open an existing archive (directory or .yath file).
-    my $la = App::Yath2::Log->open(file => '/path/to/run.yath');
-    my $la = App::Yath2::Log->open(dir  => '/path/to/logs');
-    my $la = App::Yath2::Log->open(path => $auto);    # detects
+    my $log = App::Yath2::Log->new(live => $logs_dir);    # live workdir
+    my $log = App::Yath2::Log->new(dir  => $logs_dir);    # sealed dir
+    my $log = App::Yath2::Log->new(file => $yath_file);   # tar.zidx or sqlite
+    my $log = App::Yath2::Log->new(dbh  => $dbh, uuid => $u);
+    my $log = App::Yath2::Log->new(dsn  => $dsn, user => $u, pass => $p,
+                                   attrs => \%a, uuid => $u);
 
-    # Listing.
-    my @runs = $la->runs;
-    my @jobs = $la->jobs($run_id);
-    my @svc  = $la->services;
-    my @rsv  = $la->services($run_id);
+    while (my $event = $log->event($timeout)) {
+        ...;
+        last if $log->EOE;
+    }
 
-    # Artifacts API. Returns
-    # { append => { name => [paths...] }, replace => { name => [paths...] } }.
-    my $global   = $la->artifacts;
-    my $run_scope = $la->artifacts($run_id);
-    my $job_scope = $la->artifacts($run_id, $job_id);
-
-    # Artifact handles.
-    my $a = $la->artifact('runs/RUN/events');             # auto extension
-    my $a = $la->artifact('runs/RUN/events',
-                          prefer => ['jsonl', 'csv']);
-
-    # Transform ops (return the new Log instance).
-    my $arc = App::Yath2::Log->open(dir => '/logs')
-                  ->archive('/out/run.yath');
-
-    my $dir = App::Yath2::Log->open(file => '/out/run.yath')
-                  ->extract('/out/extracted');
+    my $events = $log->artifacts($run_id, $job_id, $job_try)->events;
 
 =head1 DESCRIPTION
 
-Single-interface, dual-backend abstraction over a yath log tree.
-Two backends ship in-tree: a directory backend
-(L<App::Yath2::Log::Directory>) that reads and writes a live
-or extracted log directory, and a tar.zidx backend
-(L<App::Yath2::Log::TarZIdx>) that reads and writes the
-single-file C<.yath> archive format yath produces.
+Dispatcher that picks the appropriate backend (Live / Directory /
+TarZIdx / Sqlite) given the constructor arguments. The dispatcher
+itself holds no state -- it simply loads and constructs the backend.
 
-The base class is the factory + shared methods. Subclasses fill in
-C<list_files>, C<has_file>, C<read_file>, C<absolute_path>,
-C<archive>, and C<extract>.
+The backend implements the Log reader API described in
+F<LOGGER_ARTIFACT_REFACTOR2>: listing methods (services / runs / jobs
+/ tries / has_* / last_try), the artifacts() handle factory, and the
+depth-first event() iterator that walks
+C<services/harness/events.jsonl.zst> down through nested
+C<harness_collector_start> events.
 
 =head1 SEE ALSO
 
-L<App::Yath2::Log::Directory> -- directory backend.
-
-L<App::Yath2::Log::TarZIdx> -- tar.zidx backend.
-
-L<App::Yath2::Log::Artifact> -- handle for an individual
-artifact.
-
-L<Test2::Harness2::LogLayout> -- path templates.
+L<App::Yath2::Log::Live>, L<App::Yath2::Log::Directory>,
+L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::Sqlite>.
 
 =head1 SOURCE
 
