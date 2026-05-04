@@ -42,7 +42,6 @@ use Object::HashBase qw{
     +completed_job_ids
     +pending_synth_completions
     +emitter
-    +artifacts
     watch_pids
     own_pgroup
 };
@@ -114,7 +113,6 @@ sub init {
     $self->{+WATCH_PIDS}                //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}                //= 0;
     $self->{+COLLECTOR_GRACE_SECS}      //= DEFAULT_COLLECTOR_GRACE_SECS;
-    $self->{+ARTIFACTS}                 //= {};
 
     # Logger lists default to empty: the caller (typically the harness,
     # via effective_service_loggers / effective_test_loggers) decides
@@ -609,58 +607,6 @@ sub _handle_gen_msg_test_job_completed {
     );
 
     $self->_broadcast_run_state;
-    return;
-}
-
-sub _handle_gen_msg_collector_artifacts {
-    my ($self, $content) = @_;
-
-    $self->_merge_artifacts($content->{loggers} // {});
-
-    # Forward the merged artifact set to the harness so it can fan out
-    # to any run-scoped subscribers. The mapping is in-memory only;
-    # consumers reading the on-disk archive derive the same map from
-    # the file tree (extension -> Logger::<XYZ>).
-    $self->_send_to_harness({
-        kind      => 'run_artifacts_update',
-        run_id    => $self->{+RUN_ID},
-        artifacts => {%{$self->{+ARTIFACTS} // {}}},
-    });
-
-    $self->_emit_run_log_event(
-        kind     => 'job_loggers',
-        job_info => {
-            run_id  => $content->{run_id},
-            job_id  => $content->{job_id},
-            job_try => $content->{job_try},
-        },
-        loggers => $content->{loggers} // {},
-    );
-    return;
-}
-
-sub _merge_artifacts {
-    my ($self, $loggers) = @_;
-
-    my $logdir    = $self->{+LOGDIR};
-    my $artifacts = $self->{+ARTIFACTS} //= {};
-
-    for my $class (keys %$loggers) {
-        for my $meta (@{$loggers->{$class}}) {
-            for my $key (keys %$meta) {
-                next unless $key =~ /_file\z/;
-                my $abs = $meta->{$key};
-                next unless defined $abs && length $abs;
-                my $rel = File::Spec->abs2rel($abs, $logdir);
-                if (exists $artifacts->{$rel} && $artifacts->{$rel} ne $class) {
-                    warn "Test2::Harness2::RunService: artifact '$rel' already claimed by $artifacts->{$rel}, ignoring duplicate from $class\n";
-                    next;
-                }
-                $artifacts->{$rel} = $class;
-            }
-        }
-    }
-
     return;
 }
 

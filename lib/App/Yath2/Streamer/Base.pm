@@ -249,9 +249,10 @@ sub _apply_run_state {
     return;
 }
 
-# Drain any event readers attached by the subclass. Shared so both
-# live (general-event readers attached on artifact IPC messages) and
-# static (readers attached at bootstrap) go through the same loop.
+# Drain any event readers attached by the subclass. Shared between
+# live (no readers in this iteration -- placeholder for the Log-API
+# discovery layer that will replace the old artifact-IPC channel)
+# and static (readers attached at bootstrap).
 sub _drain_event_readers {
     my $self = shift;
 

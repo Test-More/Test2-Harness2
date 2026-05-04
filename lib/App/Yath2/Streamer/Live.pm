@@ -7,26 +7,23 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
 
-use Test2::Harness2::Util qw/load_module/;
-
 use parent 'App::Yath2::Streamer::Base';
 use Object::HashBase qw{
     <handle
     <log
 };
 
-# Live mode: subscribe to a running harness and drain both the IPC
-# state stream and any general-event artifacts the harness advertises.
+# Live mode: subscribe to a running harness and drain the IPC state
+# stream. Per-artifact tailing returns in a later step once the new
+# App::Yath2::Log artifact API is wired in.
 #
 # Required:
 #   handle  => $spawn     # must implement subscribe / unsubscribe / handle()
 #
 # Optional:
 #   log     => "$workdir/logs"
-#     Enables tailing of append-style general-event artifacts. The
-#     directory does not need to exist at construction time -- the
-#     readers tolerate a missing path and pick it up as soon as the
-#     collector opens the file.
+#     Reserved for forthcoming on-disk artifact discovery. Currently
+#     unused beyond storage.
 sub _bootstrap {
     my $self = shift;
 
@@ -41,10 +38,9 @@ sub _bootstrap {
     # The harness will push initial snapshots synchronously so we pick
     # them up on the next poll.
     $handle->subscribe(
-        ($self->{+GLOBAL} ? (global => 1)          : ()),
-        (@runs            ? (runs   => [@runs])    : ()),
-        state     => 1,
-        artifacts => 1,
+        ($self->{+GLOBAL} ? (global => 1)       : ()),
+        (@runs            ? (runs   => [@runs]) : ()),
+        state => 1,
     );
 
     return;
@@ -74,10 +70,8 @@ sub _tick {
         $self->_ingest_message($content);
     }
 
-    # Tail any append-style general-event artifacts the harness has
-    # told us about. log_reader() for a non-existent path is held
-    # open until the file appears, so this is safe even before the
-    # first test starts writing its log.
+    # Drain any event readers a future on-disk-discovery layer has
+    # attached. Stays a no-op until that layer lands.
     $self->_drain_event_readers;
 
     return;
@@ -96,67 +90,6 @@ sub _ingest_message {
         return;
     }
 
-    if ($type eq 'artifacts') {
-        my $item      = $content->{item} // 'harness';
-        my $run_id    = $content->{run_id};
-        my $artifacts = $content->{artifacts};
-        return unless ref($artifacts) eq 'HASH';
-        $self->_apply_artifacts($item, $run_id, $artifacts);
-        return;
-    }
-
-    return;
-}
-
-sub _apply_artifacts {
-    my ($self, $item, $run_id, $artifacts) = @_;
-
-    my $scope = $item eq 'harness' ? 'harness' : "run:$run_id";
-    my $known = $self->{+KNOWN_ARTIFACTS}->{$scope} //= {};
-
-    my @new;
-    for my $path (keys %$artifacts) {
-        next if exists $known->{$path};
-        $known->{$path} = $artifacts->{$path};
-        push @new => $path;
-    }
-
-    # Open general-event readers on newly-registered artifacts so
-    # their append-style streams get drained on every tick. Readers
-    # tolerate a missing path -- the collector may still be opening
-    # the file -- and pick it up as soon as it appears on disk.
-    if (@new && defined $self->{+LOG}) {
-        for my $rel (@new) {
-            $self->_open_event_reader($rel, $known->{$rel});
-        }
-    }
-
-    # Resolve any pending actions that were blocked on an artifact
-    # that has just arrived. First iteration has no such actions but
-    # the slot exists for forward compat.
-    if (@new && $self->{+PENDING_ACTIONS}->{$scope}) {
-        my @actions = @{delete $self->{+PENDING_ACTIONS}->{$scope}};
-        for my $a (@actions) {
-            $a->($self, $known);
-        }
-    }
-
-    return;
-}
-
-sub _open_event_reader {
-    my ($self, $rel, $class) = @_;
-
-    return unless defined $class;
-    return if $self->{+EVENT_READERS}->{$rel};  # already open
-
-    my $loaded = eval { load_module($class); 1 };
-    return unless $loaded;
-    return unless $class->can('records_general_events') && $class->records_general_events;
-
-    my $path   = "$self->{+LOG}/$rel";
-    my $reader = $class->log_reader($path);
-    $self->{+EVENT_READERS}->{$rel} = [[$class, $reader]];
     return;
 }
 

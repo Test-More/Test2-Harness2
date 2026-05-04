@@ -304,9 +304,7 @@ and as a shutdown fallback when no C<run_mutation> events arrived.
 
 =head1 METADATA
 
-L</metadata> returns C<< { json_file => $output_file } >> so the
-C<collector_artifacts> message published at collector startup carries
-a locator for the sidecar.
+L</metadata> returns C<< { json_file => $output_file } >>.
 
 =head1 SEE ALSO
 

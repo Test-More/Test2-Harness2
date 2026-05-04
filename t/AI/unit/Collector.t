@@ -14,30 +14,9 @@ use Test2::Harness2::Collector::Logger::JSONL;
 # can call them on every platform.
 use Test2::Harness2::Collector::Win32;
 
-# Minimal logger that consumes the role and leaves metadata() at its
-# role default (undef). Used to assert that loggers with no metadata
-# get omitted from the collector_artifacts payload.
-{
-
-    package T2H2_SilentLogger;
-    use Object::HashBase;
-    use Role::Tiny::With;
-    sub update_type { 'append' }
-    sub file_ext { 'jsonl' }
-    sub log_reader   { undef }
-    sub ready        { 0 }
-    sub fetch_events { () }
-    sub fetch_state  { undef }
-    with 'Test2::Harness2::Role::Collector::Logger';
-    sub log_events { 0 }
-    sub log_event  { }
-    sub shutdown   { }
-}
-
-# The collector now unconditionally fires a collector_artifacts IPC message after
-# its loggers start.  The real bus is not running under these unit tests, so
-# stub the handle out to keep the tests quiet and fast.  Individual subtests
-# below install their own overrides when they want to observe the message.
+# The real IPC bus is not running under these unit tests, so stub the
+# handle out to keep the tests quiet and fast. Individual subtests
+# below install their own overrides when they want to observe sends.
 BEGIN {
     require IPC::Manager;
     no warnings 'once', 'redefine';
@@ -1633,11 +1612,10 @@ subtest 'blessed logger receives set_process_info and set_ipcm_info at instantia
     sub shutdown           { }
     sub failing            { }
     sub applicable         { 1 }
-    sub set_process_info   { push @main::T2H2_RecordingLogger_PI   => {@_[1 .. $#_]}; return }
-    sub set_ipcm_info      { push @main::T2H2_RecordingLogger_IPCM => $_[1];          return }
-    sub set_auditor        { }
-    sub set_loggers_lookup { }
-    sub update_type       { 'append' }
+    sub set_process_info { push @main::T2H2_RecordingLogger_PI   => {@_[1 .. $#_]}; return }
+    sub set_ipcm_info    { push @main::T2H2_RecordingLogger_IPCM => $_[1];          return }
+    sub set_auditor      { }
+    sub update_type      { 'append' }
     sub file_ext       { 'jsonl' }
     sub log_reader         { undef }
     sub ready              { 0 }
@@ -1688,186 +1666,6 @@ subtest 'ipcm_info is required at construction - Collector::Logger::JSONL' => su
     my $err = $@;
     ok(!$ok, 'croaks without ipcm_info');
     like($err, qr/ipcm_info/, 'error mentions ipcm_info');
-};
-
-# ===========================================================================
-# Logger metadata + collector_artifacts IPC send
-# ===========================================================================
-
-subtest '_send_logger_metadata groups metadata and registers under the collector-bus id' => sub {
-    open(my $devnull, '<', '/dev/null') or die $!;
-
-    my @connect_args;
-    my @sent;
-    no warnings 'once', 'redefine';
-    local *IPC::Manager::connect = sub {
-        my (undef, @rest) = @_;
-        push @connect_args => \@rest;
-        return bless {sent => \@sent}, 'T2H2_FakeClient_LMeta';
-    };
-    *T2H2_FakeClient_LMeta::peer_active = sub { 1 };
-    *T2H2_FakeClient_LMeta::send_message = sub {
-        my ($self, $to, $payload) = @_;
-        push @{$self->{sent}} => {to => $to, payload => $payload};
-        return;
-    };
-    *T2H2_FakeClient_LMeta::try_send_message  = sub { my $self = shift; $self->send_message(@_); 1 };
-    *T2H2_FakeClient_LMeta::set_send_blocking = sub { return };
-
-    # Two JSONL loggers at different paths to show class keys map to arrayrefs.
-    my $jsonl_a = Test2::Harness2::Collector::Logger::JSONL->new(
-        ipcm_info => {}, output_file => '/tmp/a.jsonl',
-    );
-    my $jsonl_b = Test2::Harness2::Collector::Logger::JSONL->new(
-        ipcm_info => {}, output_file => '/tmp/b.jsonl',
-    );
-
-    # Service-collector bus_id identifies by ipc_parent (the
-    # interposed service's bus name). Use the Service subclass
-    # here so this test still exercises that code path now that
-    # _build_collector_bus_id lives on the subclasses.
-    require Test2::Harness2::Collector::Service;
-    my $c = Test2::Harness2::Collector::Service->new(
-        stdout    => $devnull,
-        ipcm_info => {fake => 1},
-        ipc_parent  => 'harness', ipc_harness => 'harness',
-        run_id    => 'R1',
-        job_id    => 'J1',
-        job_try   => 0,
-        loggers   => [$jsonl_a, $jsonl_b],
-    );
-
-    $c->_instantiate_loggers();
-    $c->_send_logger_metadata;
-
-    is(scalar @connect_args,   1,                   'exactly one IPC client connected');
-    is(
-        $connect_args[0][0], 'collector:harness',
-        'Service collector bus_id derives from ipc_parent',
-    );
-
-    is(scalar @sent,               1,               'exactly one send_message call');
-    is($sent[0]{to},               'harness',       'sent to the configured peer');
-    is($sent[0]{payload}{kind},    'collector_artifacts', 'collector_artifacts message kind');
-    is($sent[0]{payload}{run_id},  'R1',            'carries run_id');
-    is($sent[0]{payload}{job_id},  'J1',            'carries job_id');
-    is($sent[0]{payload}{job_try}, 0,               'carries job_try');
-
-    my $jsonl_class = 'Test2::Harness2::Collector::Logger::JSONL';
-    my $meta        = $sent[0]{payload}{loggers}{$jsonl_class};
-    is(ref($meta),    'ARRAY',                        'class key maps to an arrayref');
-    is(scalar @$meta, 2,                              'both JSONL logger instances represented');
-    is($meta->[0],    {jsonl_file => '/tmp/a.jsonl'}, 'first JSONL metadata');
-    is($meta->[1],    {jsonl_file => '/tmp/b.jsonl'}, 'second JSONL metadata');
-};
-
-subtest '_send_logger_metadata omits loggers whose metadata is undef' => sub {
-    open(my $devnull, '<', '/dev/null') or die $!;
-
-    my @sent;
-    no warnings 'once', 'redefine';
-    local *IPC::Manager::connect = sub {
-        return bless {sent => \@sent}, 'T2H2_FakeClient_Omit';
-    };
-    *T2H2_FakeClient_Omit::peer_active  = sub { 1 };
-    *T2H2_FakeClient_Omit::send_message = sub {
-        my ($self, $to, $payload) = @_;
-        push @{$self->{sent}} => $payload;
-        return;
-    };
-    *T2H2_FakeClient_Omit::try_send_message  = sub { my $self = shift; $self->send_message(@_); 1 };
-    *T2H2_FakeClient_Omit::set_send_blocking = sub { return };
-
-    # JSONL produces metadata; the bare role default is undef.
-    my $jsonl = Test2::Harness2::Collector::Logger::JSONL->new(
-        ipcm_info => {}, output_file => '/tmp/one.jsonl',
-    );
-    my $silent = T2H2_SilentLogger->new;
-
-    my $c = Test2::Harness2::Collector::Test->new(
-        stdout    => $devnull,
-        ipcm_info => {fake => 1},
-        ipc_parent  => 'harness', ipc_harness => 'harness',
-        loggers   => [$jsonl, $silent],
-    );
-    $c->_instantiate_loggers();
-    $c->_send_logger_metadata;
-
-    is(scalar @sent, 1, 'one message sent');
-    my $loggers = $sent[0]{loggers};
-
-    my $jsonl_class  = 'Test2::Harness2::Collector::Logger::JSONL';
-    my $silent_class = 'T2H2_SilentLogger';
-    ok(exists $loggers->{$jsonl_class},   'JSONL present (defined metadata)');
-    ok(!exists $loggers->{$silent_class}, 'silent logger absent (undef metadata)');
-    is(
-        $loggers->{$jsonl_class}, [{jsonl_file => '/tmp/one.jsonl'}],
-        'JSONL slot carries only the defined metadata'
-    );
-};
-
-subtest '_send_logger_metadata still fires when every logger returns undef' => sub {
-    open(my $devnull, '<', '/dev/null') or die $!;
-
-    my @sent;
-    no warnings 'once', 'redefine';
-    local *IPC::Manager::connect = sub {
-        return bless {sent => \@sent}, 'T2H2_FakeClient_Empty';
-    };
-    *T2H2_FakeClient_Empty::peer_active  = sub { 1 };
-    *T2H2_FakeClient_Empty::send_message = sub {
-        my ($self, $to, $payload) = @_;
-        push @{$self->{sent}} => $payload;
-        return;
-    };
-    *T2H2_FakeClient_Empty::try_send_message  = sub { my $self = shift; $self->send_message(@_); 1 };
-    *T2H2_FakeClient_Empty::set_send_blocking = sub { return };
-
-    my $silent = T2H2_SilentLogger->new;
-
-    my $c = Test2::Harness2::Collector::Test->new(
-        stdout    => $devnull,
-        ipcm_info => {fake => 1},
-        ipc_parent  => 'harness', ipc_harness => 'harness',
-        loggers   => [$silent],
-    );
-    $c->_instantiate_loggers();
-    $c->_send_logger_metadata;
-
-    is(scalar @sent,      1,               'message still fires with no metadata to report');
-    is($sent[0]{kind},    'collector_artifacts', 'correct kind');
-    is($sent[0]{loggers}, {},              'loggers is an empty hash');
-};
-
-subtest '_send_logger_metadata warns on IPC failure, does not propagate' => sub {
-    open(my $devnull, '<', '/dev/null') or die $!;
-
-    no warnings 'once', 'redefine';
-    local *IPC::Manager::connect = sub {
-        return bless {}, 'T2H2_FakeClient_Die';
-    };
-    local *T2H2_FakeClient_Die::peer_active        = sub { 1 };
-    local *T2H2_FakeClient_Die::send_message       = sub { die "no route to peer\n" };
-    local *T2H2_FakeClient_Die::try_send_message   = sub { my $self = shift; $self->send_message(@_); 1 };
-    local *T2H2_FakeClient_Die::set_send_blocking  = sub { return };
-
-    my $jsonl = Test2::Harness2::Collector::Logger::JSONL->new(
-        ipcm_info => {}, output_file => '/tmp/x.jsonl',
-    );
-    my $c = Test2::Harness2::Collector::Test->new(
-        stdout    => $devnull,
-        ipcm_info => {fake => 1},
-        ipc_parent  => 'harness', ipc_harness => 'harness',
-        loggers   => [$jsonl],
-    );
-    $c->_instantiate_loggers();
-
-    my @warnings;
-    local $SIG{__WARN__} = sub { push @warnings => @_ };
-
-    my $ok = eval { $c->_send_logger_metadata; 1 };
-    ok($ok,                                                             'does not propagate the exception');
-    ok((grep { /Collector IPC send failed.*collector_artifacts/ } @warnings), 'warning surfaces');
 };
 
 subtest 'ipc_harness is required at construction - Collector' => sub {

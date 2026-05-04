@@ -39,7 +39,6 @@ use Object::HashBase qw{
     <child_pid
     <parser
     <loggers
-    <loggers_lookup
     <observers
     +_observers_spec
     <parent_pids
@@ -82,12 +81,12 @@ sub _instantiate_auditor { }
 
 # is_harness_collector is set true only in the harness's own
 # top-of-tree interpose collector, where ipc_harness points at the
-# collector's own child (the harness service). End-of-life and
-# logger-metadata sends that would normally target ipc_harness have
-# nowhere useful to go in that case, and the child has usually
-# already _exit()'d by the time the collector reaches EOF -- hitting
-# the "Disconnected pipe" warn path. The send sites consult the flag
-# to short-circuit self-addressed traffic.
+# collector's own child (the harness service). End-of-life sends that
+# would normally target ipc_harness have nowhere useful to go in that
+# case, and the child has usually already _exit()'d by the time the
+# collector reaches EOF -- hitting the "Disconnected pipe" warn path.
+# The send sites consult the flag to short-circuit self-addressed
+# traffic.
 
 use constant IS_WIN32 => $^O eq 'MSWin32';
 
@@ -291,8 +290,7 @@ sub _instantiate_loggers {
 
     my $specs = $self->{+_LOGGERS_SPEC} //= [];
 
-    $self->{+LOGGERS}        = [];
-    $self->{+LOGGERS_LOOKUP} = {};
+    $self->{+LOGGERS} = [];
 
     for my $item (@$specs) {
         # Applicability gate: let each spec opt out of contexts it was
@@ -328,15 +326,13 @@ sub _instantiate_loggers {
             $item->set_process_info(%identity);
             $item->set_ipcm_info($self->{+IPCM_INFO});
             $item->set_auditor($self->auditor) if $self->auditor;
-            $item->set_loggers_lookup($self->{+LOGGERS_LOOKUP});
             $inst = $item;
         }
         elsif (ref($item) eq 'ARRAY') {
             my ($class, @args) = @$item;
             $inst = $class->new(
                 %identity,
-                ipcm_info      => $self->{+IPCM_INFO},
-                loggers_lookup => $self->{+LOGGERS_LOOKUP},
+                ipcm_info => $self->{+IPCM_INFO},
                 (defined $self->auditor ? (auditor => $self->auditor) : ()),
                 @args,
             );
@@ -344,8 +340,7 @@ sub _instantiate_loggers {
         else {
             $inst = $item->new(
                 %identity,
-                ipcm_info      => $self->{+IPCM_INFO},
-                loggers_lookup => $self->{+LOGGERS_LOOKUP},
+                ipcm_info => $self->{+IPCM_INFO},
                 (defined $self->auditor ? (auditor => $self->auditor) : ()),
             );
         }
@@ -359,15 +354,13 @@ sub _instantiate_loggers {
     }
 }
 
-# Append a logger instance to both the ordered LOGGERS array and the
-# class-keyed LOGGERS_LOOKUP hash. Kept as a helper so anything that grows
-# the logger set later stays in sync on both structures.
+# Append a logger instance to the ordered LOGGERS array. Kept as a helper
+# so anything that grows the logger set later goes through one place.
 sub _add_logger {
     my $self = shift;
     my ($logger) = @_;
 
-    push @{$self->{+LOGGERS}}                            => $logger;
-    push @{$self->{+LOGGERS_LOOKUP}{ref $logger} //= []} => $logger;
+    push @{$self->{+LOGGERS}} => $logger;
 
     return $logger;
 }
@@ -557,13 +550,6 @@ sub _init_event_sinks {
         }
     }
 
-    # Once every logger has started (and knows its final locators, e.g. an
-    # opened output file), report their metadata to the harness so it can
-    # emit a job_loggers event. The message goes straight to the harness
-    # (ipc_harness), not up through an intermediate parent service; only
-    # the harness consumes it.
-    $self->_send_logger_metadata;
-
     # When there is no parser the collector still drains the handles but
     # discards the lines without constructing events.
     my $parser = $self->{+PARSER};
@@ -732,48 +718,6 @@ sub _send_to {
         warn "Collector IPC send failed (kind '" . ($content->{kind} // '?') . "') from '$from' to '$to': $err";
         return;
     }
-
-    return;
-}
-
-# Gather metadata from each instantiated logger, keyed by class so
-# multiple instances of the same class coexist, and fire a one-shot
-# `collector_artifacts` message (see IPC_AND_LOGGERS §8).
-#
-# Routing per §8.3: direct to ipc_run if the collector has one,
-# else ipc_harness. Never via ipc_parent -- the intermediate parent
-# (a preload stage, a resource service) has no use for the payload.
-sub _send_logger_metadata {
-    my $self = shift;
-
-    # Harness interpose has ipc_run undef and ipc_harness == its own
-    # child service -- nowhere useful to route logger metadata.
-    return if $self->is_harness_collector;
-
-    # Drop loggers that have nothing retrievable to report: a class with no
-    # defined metadata does not appear at all, and a class keeps only the
-    # slots that actually produced metadata.  The event still fires when
-    # nobody contributed anything, with loggers => {}, so downstream
-    # consumers always see the message.
-    my %loggers;
-    for my $logger (@{$self->{+LOGGERS}}) {
-        my $meta = $logger->metadata;
-        next unless defined $meta;
-        my $class = ref($logger);
-        push @{$loggers{$class}} => $meta;
-    }
-
-    my $target = $self->{+IPC_RUN} // $self->{+IPC_HARNESS};
-
-    $self->_send_to(
-        $target, {
-            kind    => 'collector_artifacts',
-            run_id  => $self->{+RUN_ID},
-            job_id  => $self->{+JOB_ID},
-            job_try => $self->{+JOB_TRY},
-            loggers => \%loggers,
-        }
-    );
 
     return;
 }

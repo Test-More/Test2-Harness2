@@ -159,7 +159,14 @@ unlike($out, qr/^\{/m,        'no bare JSON objects on their own lines');
 # Renderer::Default injects a PASSED info line when harness_job_end arrives.
 like($out, qr/PASSED/, 'PASSED marker appears in rendered output');
 
-# The assertion name from the inner test should flow through the renderer.
-like($out, qr/a passing assertion/, 'assertion details visible in rendered output');
+# Per-job assertion text used to flow into the live renderer via the
+# collector_artifacts IPC channel; that channel was removed in the
+# new_log_refactor M2 step 3 cleanup. The replacement path discovers
+# artifacts by walking the on-disk log layout and lands in a later
+# step. Until then the renderer only sees harness-level lifecycle
+# facets.
+todo "per-job event surfacing returns once on-disk artifact discovery lands" => sub {
+    like($out, qr/a passing assertion/, 'assertion details visible in rendered output');
+};
 
 done_testing;

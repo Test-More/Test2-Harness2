@@ -78,12 +78,11 @@ sub records_general_events { 0 }
 # as objects (new() method defined).
 
 # Default no-op implementations. Loggers that need to retain the run/job/ipcm
-# info, the auditor, or the cross-logger lookup must override these -- the
-# role can't assume every consumer is a blessed hash or wants to track them.
-sub set_process_info   { }
-sub set_ipcm_info      { }
-sub set_auditor        { }
-sub set_loggers_lookup { }
+# info or the auditor must override these -- the role can't assume every
+# consumer is a blessed hash or wants to track them.
+sub set_process_info { }
+sub set_ipcm_info    { }
+sub set_auditor      { }
 
 # Path-derivation attributes. Default no-op accessors returning undef;
 # consumers that want to drive the output_file_basename computation must
@@ -317,29 +316,11 @@ The default implementation returns true (applicable in every context).
 
 =item \%info_or_undef = $logger->metadata()
 
-Return a hashref describing where and how the data this logger produced can
-be retrieved by an external consumer.  For a file-backed logger this is
-typically a path (e.g. C<< { jsonl_file => '/path/to/events.jsonl' } >>).
-Loggers that do not persist retrievable data (for example, loggers that
-fire transient IPC messages) should return C<undef> -- the default -- so
-downstream consumers see nothing to chase.
-
-The collector gathers each logger's metadata after L</startup> runs and
-forwards it to its configured IPC peer so the harness service can publish a
-C<job_loggers> event describing where the job's outputs live.  Keyed by
-class name, the payload shape is:
-
-    {
-        'Logger::Class::A' => [ { ...metadata... }, ... ],
-        'Logger::Class::B' => [ { ...metadata... } ],
-    }
-
-The value is always an arrayref because the same logger class may be
-configured more than once (for example, two JSONL loggers writing to
-different files).  Loggers that return C<undef> are omitted entirely: a
-class with no defined metadata does not appear in the hash at all.  If no
-configured logger returns metadata the event still fires, but with an
-empty C<loggers> hash, so downstream consumers always see the message.
+Return a hashref describing where and how the data this logger produced
+can be retrieved by an external consumer.  For a file-backed logger this
+is typically a path (e.g. C<< { jsonl_file => '/path/to/events.jsonl' } >>).
+Loggers that do not persist retrievable data should return C<undef> --
+the default.
 
 The default implementation returns C<undef>.
 
@@ -389,17 +370,6 @@ loggers that talk to a service must override.
 
 Invoked by the collector after instantiation so loggers that consult the
 auditor (e.g. for pass/fail summaries) can capture it. The default is a no-op.
-
-=item $logger->set_loggers_lookup(\%lookup)
-
-Invoked by the collector after instantiation with a reference to the
-collector's own C<< $class => [@instances] >> lookup hash. Loggers that need
-to consult siblings (for example, a logger that reads from another logger's
-state) should store this and B<weaken> their copy to avoid a reference
-cycle. The hash stays in sync with the collector's own state, so later
-additions are visible.
-
-The default implementation is a no-op.
 
 =item $path = $logger->output_file_basename
 

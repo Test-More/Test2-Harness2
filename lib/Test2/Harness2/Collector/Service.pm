@@ -66,9 +66,9 @@ which is where the run's .jsonl and .json belong.
 
 Used by the harness's own top-of-tree interpose collector. With no
 C<ipc_parent> and an C<ipc_harness> pointing at this collector's own
-child service, the C<collector_exiting> / C<collector_artifacts>
-sends would target an already-exiting peer; this flag short-circuits
-those self-addressed sends.
+child service, the C<collector_exiting> send would target an
+already-exiting peer; this flag short-circuits those self-addressed
+sends.
 
 =back
 

@@ -86,8 +86,8 @@ sub harness_events_for {
 }
 
 # Under the run-service aggregation topology, per-job lifecycle
-# events (job_started / job_completed / job_loggers) live in the
-# run's own .jsonl, not the harness log.
+# events (job_started / job_completed) live in the run's own .jsonl,
+# not the harness log.
 sub run_events_for {
     my ($dir) = @_;
     opendir my $dh, "$dir/logs/runs" or return ();

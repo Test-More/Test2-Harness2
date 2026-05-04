@@ -10,7 +10,7 @@ use File::Spec ();
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util qw/parse_exit tinysleep load_module/;
+use Test2::Harness2::Util qw/parse_exit tinysleep/;
 use Test2::Harness2::Util::IPC qw/ipc_default_spawn_args/;
 use POSIX qw/WNOHANG/;
 
@@ -51,7 +51,6 @@ use Object::HashBase qw{
     +completed_runs
     +finish_after_initial_run
     +emitter
-    +artifacts
     +subscribers
     +subscriber_retry
     watch_pids
@@ -134,7 +133,6 @@ sub init {
     $self->{+COMPLETED_RUNS}    //= {};
     $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
-    $self->{+ARTIFACTS}         //= {};
     $self->{+SUBSCRIBERS}       //= {};
     $self->{+SUBSCRIBER_RETRY}  //= {};
 
@@ -254,8 +252,8 @@ sub start {
     # subclass's builder cannot derive a bus_id, so pass one
     # explicitly. The collector identifies by the harness's own
     # bus name. is_harness_collector => 1 suppresses the
-    # collector_exiting / collector_artifacts sends that would
-    # otherwise target this collector's own (dying) child service.
+    # collector_exiting sends that would otherwise target this
+    # collector's own (dying) child service.
     require Test2::Harness2::Collector::Service;
     Test2::Harness2::Collector::Service->interpose(
         ipcm_info            => $self->ipcm_info,
@@ -560,23 +558,6 @@ sub run_on_general_message {
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
-    # Run-scoped collector_artifacts (run_id defined) flow to the run
-    # service, which logs them as job_loggers on the run's own emitter.
-    # Global collector_artifacts (no run_id -- e.g. from a resource-
-    # service collector) merge into the in-memory ARTIFACTS map for
-    # subscriber fan-out.
-    if (defined $kind && $kind eq 'collector_artifacts') {
-        return $self->_handle_global_collector_artifacts($content)
-            unless defined $content->{run_id};
-        return;
-    }
-
-    # Run service forwarded its current artifact set so any run-scoped
-    # subscriber can be brought up to date. Merge into our global map
-    # and fan out.
-    return $self->_handle_run_artifacts_update($content)
-        if defined $kind && $kind eq 'run_artifacts_update';
-
     warn "Test2::Harness2: unhandled general message kind: " . (defined $kind ? "'$kind'" : '(none)') . "\n";
 
     return;
@@ -627,140 +608,18 @@ sub _handle_resource_state_message {
     return;
 }
 
-sub _seed_artifacts_from_loggers {
-    my $self = shift;
-
-    # Harness LOGGERS are final after service init: no logger added or
-    # removed after this point reaches the harness's own interpose
-    # collector (already forked). We build metadata eagerly here so
-    # the in-memory ARTIFACTS map (used for fan-out to artifact
-    # subscribers) reflects the full configured logger set, including
-    # arrayref specs ([$class, %args]) which the collector child
-    # otherwise instantiates independently in its own process.
-    for my $item (@{$self->{+LOGGERS} // []}) {
-        my $inst = $self->_logger_instance_for_metadata($item) or next;
-        next unless $inst->can('metadata');
-        $inst->prepare_output_locations;
-        my $meta = $inst->metadata;
-        next unless ref($meta) eq 'HASH';
-        $self->_merge_artifacts({ref($inst) => [$meta]});
-    }
-
-    return;
-}
-
-# Return an instance suitable for calling metadata()/prepare_output_locations.
-# Blessed specs are returned as-is. Arrayref specs ([$class, %args]) and
-# bare class-name strings are instantiated with harness-scope identity so
-# metadata() resolves output paths the same way the interpose collector's
-# own instantiation would. This does not open file handles (loggers defer
-# that to startup()), so it is fork-safe.
-sub _logger_instance_for_metadata {
-    my ($self, $item) = @_;
-
-    return $item if blessed($item);
-
-    my ($class, @args);
-    if (ref($item) eq 'ARRAY') {
-        ($class, @args) = @$item;
-    }
-    elsif (!ref($item) && defined $item && length $item) {
-        $class = $item;
-    }
-    else {
-        return undef;
-    }
-
-    my %identity = (
-        logdir       => $self->{+LOGDIR},
-        service_name => $self->{+NAME},
-        ipcm_info    => $self->ipcm_info,
-    );
-
-    my $inst;
-    my $ok  = eval { load_module($class); $inst = $class->new(%identity, @args); 1 };
-    my $err = $@;
-    unless ($ok) {
-        warn "Test2::Harness2: failed to pre-instantiate logger '$class' for metadata: $err";
-        return undef;
-    }
-
-    return $inst;
-}
-
-sub _merge_artifacts {
-    my ($self, $loggers) = @_;
-
-    my $logdir    = $self->{+LOGDIR};
-    my $artifacts = $self->{+ARTIFACTS} //= {};
-
-    for my $class (keys %$loggers) {
-        for my $meta (@{$loggers->{$class}}) {
-            for my $key (keys %$meta) {
-                next unless $key =~ /_file\z/;
-                my $abs = $meta->{$key};
-                next unless defined $abs && length $abs;
-                my $rel = File::Spec->abs2rel($abs, $logdir);
-                if (exists $artifacts->{$rel} && $artifacts->{$rel} ne $class) {
-                    warn "Test2::Harness2: artifact '$rel' already claimed by $artifacts->{$rel}, ignoring duplicate from $class\n";
-                    next;
-                }
-                $artifacts->{$rel} = $class;
-            }
-        }
-    }
-
-    return;
-}
-
-sub _handle_global_collector_artifacts {
-    my ($self, $content) = @_;
-
-    $self->_merge_artifacts($content->{loggers} // {});
-    $self->_notify_artifact_subscribers(scope => 'harness');
-    return;
-}
-
-# Merge a run service's current artifact table into our global map
-# (entries are already logdir-relative) and notify run-scope
-# subscribers. The mapping lives only in memory; readers of the
-# on-disk archive derive the same map by extension lookup.
-sub _handle_run_artifacts_update {
-    my ($self, $content) = @_;
-
-    my $run_id    = $content->{run_id};
-    my $artifacts = $content->{artifacts};
-
-    return unless defined $run_id && ref($artifacts) eq 'HASH';
-
-    my $all = $self->{+ARTIFACTS} //= {};
-    for my $rel (keys %$artifacts) {
-        next unless defined $rel && length $rel;
-        my $class = $artifacts->{$rel};
-        if (exists $all->{$rel} && defined($all->{$rel}) && $all->{$rel} ne $class) {
-            warn "Test2::Harness2: artifact '$rel' already claimed by $all->{$rel}, ignoring duplicate from $class\n";
-            next;
-        }
-        $all->{$rel} = $class;
-    }
-
-    $self->_notify_artifact_subscribers(scope => 'run', run_id => $run_id);
-    return;
-}
-
 # ----------------------------------------------------------------------
 # Subscription API. Consumers (typically App::Yath2::Streamer) ask to
-# be told when run state or artifact tables change. The harness is the
-# only service that carries this registry; run services publish state
-# upstream via _send_to_harness, the harness then fans out to any
-# matching subscribers.
+# be told when run state changes. The harness is the only service that
+# carries this registry; run services publish state upstream via
+# _send_to_harness, the harness then fans out to any matching
+# subscribers.
 #
 # Registry shape:
 #   { $peer_name => {
-#         global    => $bool,      # harness-scope artifacts + (future) harness state
-#         runs      => { $id=>1 }, # run ids the subscriber watches
-#         state     => $bool,      # want state change messages
-#         artifacts => $bool,      # want artifact change messages
+#         global => $bool,      # (future) harness-level state
+#         runs   => { $id=>1 }, # run ids the subscriber watches
+#         state  => $bool,      # want state change messages
 #     } }
 sub request_handler_subscribe {
     my ($self, $payload, $msg) = @_;
@@ -769,9 +628,8 @@ sub request_handler_subscribe {
     return {ok => 0, error => "subscribe requires an IPC message context"}
         unless defined $peer && length $peer;
 
-    my $global    = $payload->{global}    ? 1 : 0;
-    my $state     = $payload->{state}     ? 1 : 0;
-    my $artifacts = $payload->{artifacts} ? 1 : 0;
+    my $global = $payload->{global} ? 1 : 0;
+    my $state  = $payload->{state}  ? 1 : 0;
 
     my @run_ids;
     push @run_ids => $payload->{run}     if defined $payload->{run};
@@ -786,27 +644,16 @@ sub request_handler_subscribe {
     }
 
     my $entry = $self->{+SUBSCRIBERS}->{$peer} //= {
-        global    => 0,
-        runs      => {},
-        state     => 0,
-        artifacts => 0,
+        global => 0,
+        runs   => {},
+        state  => 0,
     };
-    $entry->{global}    ||= $global;
-    $entry->{state}     ||= $state;
-    $entry->{artifacts} ||= $artifacts;
+    $entry->{global}     ||= $global;
+    $entry->{state}      ||= $state;
     $entry->{runs}->{$_} = 1 for @run_ids;
 
-    # Send initial snapshots for the freshly-added scope so the
-    # subscriber does not need to separately request them. Artifacts
-    # are sent before state to reduce the race where a state message
-    # references an artifact the consumer has not been told about yet.
-    if ($artifacts) {
-        $self->_send_artifact_snapshot($peer, scope => 'harness')
-            if $global;
-        for my $rid (@run_ids) {
-            $self->_send_artifact_snapshot($peer, scope => 'run', run_id => $rid);
-        }
-    }
+    # Send an initial state snapshot for each freshly-added run so the
+    # subscriber does not need to separately request it.
     if ($state) {
         for my $rid (@run_ids) {
             $self->_send_state_snapshot($peer, run_id => $rid);
@@ -829,8 +676,8 @@ sub request_handler_unsubscribe {
     return {ok => 1};
 }
 
-# Fan-out. Called from _handle_run_state_update and artifact merge
-# sites. Full snapshot each time; consumers diff on their side.
+# Fan-out. Called from _handle_run_state_update. Full snapshot each
+# time; consumers diff on their side.
 sub _notify_state_subscribers {
     my ($self, $run_id, $run_data) = @_;
     return unless defined $run_id;
@@ -848,29 +695,6 @@ sub _notify_state_subscribers {
                 state  => $run_data,
             },
         );
-    }
-    return;
-}
-
-sub _notify_artifact_subscribers {
-    my ($self, %params) = @_;
-    my $scope  = $params{scope};
-    my $run_id = $params{run_id};
-
-    return unless defined $scope;
-
-    for my $peer (keys %{$self->{+SUBSCRIBERS}}) {
-        my $entry = $self->{+SUBSCRIBERS}->{$peer};
-        next unless $entry->{artifacts};
-
-        if ($scope eq 'harness') {
-            next unless $entry->{global};
-            $self->_send_artifact_snapshot($peer, scope => 'harness');
-        }
-        elsif ($scope eq 'run') {
-            next unless defined $run_id && $entry->{runs}->{$run_id};
-            $self->_send_artifact_snapshot($peer, scope => 'run', run_id => $run_id);
-        }
     }
     return;
 }
@@ -907,42 +731,6 @@ sub _send_state_snapshot {
             state  => $run_data,
         },
     );
-}
-
-sub _send_artifact_snapshot {
-    my ($self, $peer, %params) = @_;
-    my $scope = $params{scope} or return;
-
-    my $artifacts;
-    if ($scope eq 'harness') {
-        $artifacts = {%{$self->{+ARTIFACTS} // {}}};
-    }
-    elsif ($scope eq 'run') {
-        my $run_id = $params{run_id} or return;
-        # Filter the harness's merged map down to entries scoped to
-        # this run. Matches both run-level files (runs/$run_id.jsonl,
-        # runs/$run_id.json) and nested paths (runs/$run_id/tests/...,
-        # runs/$run_id/services/...) so subscribers tail the run
-        # service's own log alongside per-test artifacts.
-        my $all = $self->{+ARTIFACTS} // {};
-        $artifacts = {
-            map  { $_ => $all->{$_} }
-            grep { m{^runs/\Q$run_id\E(?:[./]|\z)} }
-                keys %$all
-        };
-    }
-    else {
-        return;
-    }
-
-    my $msg = {
-        type      => 'artifacts',
-        item      => ($scope eq 'harness' ? 'harness' : 'run'),
-        artifacts => $artifacts,
-    };
-    $msg->{run_id} = $params{run_id} if $scope eq 'run';
-
-    $self->_send_to_subscriber($peer => $msg);
 }
 
 # Deliver one message to a subscriber. Uses the service's own
@@ -1337,7 +1125,6 @@ sub run_should_end {
 # we only supply the harness-specific startup step.
 sub service_on_start {
     my $self = shift;
-    $self->_seed_artifacts_from_loggers;
     $self->start_resource_services($self->{+RESOURCES}, scope => 'global');
     return;
 }

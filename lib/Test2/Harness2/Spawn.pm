@@ -158,13 +158,12 @@ sub wait_until_idle {
     }
 }
 
-# Ask the harness to forward state and/or artifact updates to this
-# handle's IPC client. %params are the harness's subscribe payload:
-#   global    => $bool
-#   run       => $run_id
-#   runs      => [$run_id1, ...]
-#   state     => $bool
-#   artifacts => $bool
+# Ask the harness to forward state updates to this handle's IPC
+# client. %params are the harness's subscribe payload:
+#   global => $bool
+#   run    => $run_id
+#   runs   => [$run_id1, ...]
+#   state  => $bool
 # Croaks if the harness returns an error (e.g. unknown run_id).
 sub subscribe {
     my $self = shift;

@@ -13,9 +13,9 @@ use Test2::Harness2::Test::ResourceService qw//;
 
 # The jump_to subtest drives the interpose path with a stub ipcm_info; the
 # collector would otherwise try to talk to a real IPC bus on startup and
-# leak "collector_artifacts send failed" warnings onto STDERR. Stubbing the handle
-# class keeps the unit test clean. Inherited through fork into the service
-# and collector processes.
+# leak send-failure warnings onto STDERR. Stubbing the handle class keeps
+# the unit test clean. Inherited through fork into the service and
+# collector processes.
 BEGIN {
     require IPC::Manager;
     no warnings 'once', 'redefine';
@@ -612,34 +612,6 @@ subtest 'run_on_general_message - job_complete_notify is a no-op' => sub {
     my $ok = eval { $h->run_on_general_message($fake_msg); 1 };
     ok($ok, 'job_complete_notify message does not die');
     is(\@warnings, [], 'no warnings for known kind');
-};
-
-subtest 'run_on_general_message - collector_artifacts is now silent on harness' => sub {
-    # Handled by the run service now; a stray copy reaching the harness
-    # must be dropped without emitting anything and without warning.
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    my $fake_msg = bless {}, 'FakeMsgLoggers';
-    no warnings 'once';
-    *FakeMsgLoggers::content = sub { {
-        kind    => 'collector_artifacts',
-        run_id  => 'R',
-        job_id  => 'J',
-        job_try => 0,
-        loggers => {'Test2::Harness2::Collector::Logger::JSONL' => [{jsonl_file => '/x'}]},
-    } };
-
-    my @emitted;
-    my @warnings;
-    no warnings 'redefine';
-    local *Test2::Harness2::emit_service_event = sub { push @emitted => {@_[1 .. $#_]} };
-    local $SIG{__WARN__} = sub { push @warnings => @_ };
-
-    $h->run_on_general_message($fake_msg);
-
-    is(scalar @emitted,  0, 'no service event emitted on the harness');
-    is(scalar @warnings, 0, 'no warning about the message kind');
 };
 
 subtest 'run_on_general_message - resource state messages flip the named resource' => sub {
