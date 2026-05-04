@@ -52,6 +52,7 @@ use Object::HashBase qw{
     -failed_subtest_tree
     -passing_subtests
     -failing_subtests
+    -top_level_subtests
 
     +_collector
     +_ipc_run
@@ -96,10 +97,11 @@ sub init {
     $self->{+_PLANS}          = 0;
     $self->{+ASSERTION_COUNT} = 0;
 
-    $self->{+NUMBERS}          = {};
-    $self->{+SUBTESTS}         = {};
-    $self->{+PASSING_SUBTESTS} = [];
-    $self->{+FAILING_SUBTESTS} = [];
+    $self->{+NUMBERS}             = {};
+    $self->{+SUBTESTS}            = {};
+    $self->{+PASSING_SUBTESTS}    = [];
+    $self->{+FAILING_SUBTESTS}    = [];
+    $self->{+TOP_LEVEL_SUBTESTS} = [];
 
     $self->{+NESTED} //= 0;
 }
@@ -147,6 +149,28 @@ sub pass_count {
 
 sub has_exit { defined $_[0]->{+EXIT} }
 sub has_plan { defined $_[0]->{+PLAN} }
+
+# Final-state hash for downstream consumers (collector report row,
+# IPC test_job_completed payload). Includes the top-level subtest
+# summary (per F9: name / pass / count_pass / count_fail). Order in
+# the subtests array is insertion order (as seen in the stream).
+sub final_state {
+    my $self = shift;
+
+    my %state = (
+        pass            => $self->pass ? 1 : 0,
+        fail_count      => $self->fail_count,
+        pass_count      => $self->pass_count,
+        assertion_count => $self->{+ASSERTION_COUNT} // 0,
+        exit            => $self->{+EXIT},
+        subtests        => [@{$self->{+TOP_LEVEL_SUBTESTS} // []}],
+    );
+
+    $state{plan} = $self->{+PLAN} if defined $self->{+PLAN};
+    $state{halt} = $self->{+HALT} if defined $self->{+HALT};
+
+    return \%state;
+}
 
 sub audit_event {
     my $self = shift;
@@ -326,6 +350,7 @@ sub _emit_completed {
         exit            => $self->{+EXIT},
         plan            => $self->{+PLAN},
         halt            => $self->{+HALT},
+        subtests        => $self->{+TOP_LEVEL_SUBTESTS} // [],
     );
 
     # Forward time accounting captured by the collector via the
@@ -613,6 +638,20 @@ sub _subtest_process_parent {
     }
     else {
         push @{$self->{+PASSING_SUBTESTS} //= []} => $name;
+    }
+
+    # Track top-level subtests with their per-subtest counts (per F9).
+    # Only the top-level auditor (NESTED == 0) records these; nested
+    # sub-auditors track their own children but those are not the
+    # top-level summary the run service forwards.
+    if ($self->{+NESTED} == 0) {
+        my $top = $self->{+TOP_LEVEL_SUBTESTS} //= [];
+        push @$top => {
+            name       => $name,
+            pass       => $fail ? 0 : 1,
+            count_pass => $subauditor->pass_count,
+            count_fail => $subauditor->fail_count,
+        };
     }
 
     return;

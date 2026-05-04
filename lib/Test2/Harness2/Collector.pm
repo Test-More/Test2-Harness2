@@ -77,6 +77,7 @@ use Object::HashBase qw{
     +_events_writer
     +_report_writer
     +_state
+    +_pending_collector_report
     +_attachment_counter
     +_attachment_dir_made
 
@@ -816,53 +817,65 @@ sub _finalize_collection {
     return;
 }
 
-# Append the report.jsonl.zst row before exit. Per F2 / F3:
+# Append the report.jsonl.zst row before exit. Per F2 / F3 / F4:
 #
-#   Job:      auditor's final state hash + exit/exit_decoded/ended_at/pids.
-#   Run/Svc:  exit/exit_decoded/ended_at/pids only. The collector_report
-#             facet (when emitted by the service) merges in via the
-#             write_phase before this row is written -- TODO step 6.
+#   Job:      auditor's final state hash, then any in-stream
+#             collector_report facet content (rare for jobs but
+#             allowed), then exit/exit_decoded/ended_at/pids.
+#   Run/Svc:  collector_report facet content (the service-side
+#             aggregate state), then exit/exit_decoded/ended_at/pids.
+#
+# Precedence (last writer wins on key collision):
+#
+#   collector exit-info > collector_report facet > auditor state.
+#
+# The collector is authoritative for exit/exit_decoded/ended_at/
+# collector_pid/collected_pid; the service-emitted report carries
+# service-side aggregate fields the collector cannot know.
 sub _write_report_row {
     my $self = shift;
     my ($child_exit) = @_;
 
     my $w = $self->{+_REPORT_WRITER} or return;
 
-    my %row = (
-        ended_at      => time,
-        collector_pid => $$,
-        (defined $self->{+CHILD_PID} ? (collected_pid => $self->{+CHILD_PID}) : ()),
-        (defined $child_exit ? (
-            exit         => $child_exit,
-            exit_decoded => parse_exit($child_exit),
-        ) : (
-            exit         => undef,
-            exit_decoded => undef,
-        )),
-    );
+    my %row;
 
+    # 1. Auditor state (Jobs only) -- lowest precedence.
     if ($self->{+TYPE} eq 'Job' && (my $auditor = $self->{+AUDITOR})) {
         my $state = $self->_auditor_final_state($auditor);
-        $row{state} = $state if $state;
-    }
-
-    if (my $pending = $self->{+_STATE}) {
-        # Future-step: collector_report-facet content merged in here.
-        for my $k (keys %$pending) {
-            $row{$k} //= $pending->{$k};
+        if ($state) {
+            %row = (%row, %$state);
         }
     }
+
+    # 2. In-stream collector_report facet content (Run/Service mostly,
+    #    but Jobs may carry one too). Overrides auditor state on key
+    #    collision.
+    if (my $pending = $self->{+_PENDING_COLLECTOR_REPORT}) {
+        %row = (%row, %$pending);
+    }
+
+    # 3. Collector-supplied exit info -- highest precedence; the
+    #    collector is the authoritative source for these.
+    $row{exit} = $child_exit;
+    $row{exit_decoded} = defined($child_exit) ? parse_exit($child_exit) : undef;
+    $row{ended_at} = time;
+    $row{collector_pid} = $$;
+    $row{collected_pid} = $self->{+CHILD_PID} if defined $self->{+CHILD_PID};
 
     require Test2::Harness2::Util::JSON;
     $w->say(Test2::Harness2::Util::JSON::encode_json(\%row));
 }
 
 # Best-effort projection of an Auditor::Test instance's final state
-# into a plain hashref. The auditor's slots are not always available
-# as direct accessors; we read the public ones we know about.
+# into a plain hashref. Prefers final_state() when the auditor exposes
+# it (post M2 step 9); falls back to reading public accessors one by
+# one for older / minimal auditor classes.
 sub _auditor_final_state {
     my ($self, $auditor) = @_;
     return undef unless $auditor;
+
+    return $auditor->final_state if $auditor->can('final_state');
 
     my %state;
     $state{pass}            = $auditor->pass            ? 1 : 0 if $auditor->can('pass');
@@ -1149,9 +1162,12 @@ sub _process_event {
 }
 
 # Write phase. Extract any base64 attachment hashes into
-# <base>/attachments/, mutate the event facet to point at archive_path
-# (stripping data/encoding), then append the rewritten event as JSON
-# to events.jsonl.zst.
+# <base>/attachments/, capture any collector_report facet content
+# (per F3/F4: service emits one final event with collector_report
+# containing service-side aggregate state for the report row),
+# mutate the event facet to point at archive_path (stripping
+# data/encoding), then append the rewritten event as JSON to
+# events.jsonl.zst.
 sub _write_event {
     my $self = shift;
     my ($event) = @_;
@@ -1159,6 +1175,7 @@ sub _write_event {
 
     my $w = $self->{+_EVENTS_WRITER} or return;
 
+    $self->_capture_collector_report($event);
     $self->_extract_attachments($event);
 
     my $json = ref($event) && $event->can('as_json') ? $event->as_json : do {
@@ -1167,6 +1184,35 @@ sub _write_event {
     };
 
     $w->say($json);
+}
+
+# Stash any in-stream collector_report facet content for merging into
+# report.jsonl.zst at exit. Last writer wins -- a service that emits
+# multiple collector_report facets has its final one captured. The
+# event is still written to events.jsonl.zst normally; the stash is
+# in addition.
+sub _capture_collector_report {
+    my $self = shift;
+    my ($event) = @_;
+    return unless $event;
+
+    my $fd;
+    if (blessed($event)) {
+        $fd = $event->facet_data;
+    }
+    elsif (ref($event) eq 'HASH') {
+        $fd = $event->{facet_data};
+    }
+    return unless ref($fd) eq 'HASH';
+
+    my $cr = $fd->{collector_report};
+    return unless ref($cr) eq 'HASH';
+
+    # Shallow copy so the on-disk event hash and the stash diverge
+    # cleanly if any later code mutates one.
+    $self->{+_PENDING_COLLECTOR_REPORT} = {%$cr};
+
+    return;
 }
 
 # Extensions whose payload is already compressed and should NOT get an

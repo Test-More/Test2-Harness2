@@ -41,6 +41,11 @@ use Object::HashBase qw{
     +completed_job_states
     +pending_synth_completions
     +emitter
+    +started_at
+    +ended_at
+    +run_pass
+    +run_failing_emitted
+    +run_completed_emitted
     watch_pids
     own_pgroup
 };
@@ -113,6 +118,14 @@ sub init {
     $self->{+WATCH_PIDS}                //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}                //= 0;
     $self->{+COLLECTOR_GRACE_SECS}      //= DEFAULT_COLLECTOR_GRACE_SECS;
+
+    # Run-level pass/fail latched by run_failing emission. Starts undef
+    # (no jobs seen yet); flips to 1 implicitly on first successful job
+    # observation, and to 0 on the first failing job (which also emits
+    # run_failing into the local event stream).
+    $self->{+RUN_PASS}               = 1;
+    $self->{+RUN_FAILING_EMITTED}    = 0;
+    $self->{+RUN_COMPLETED_EMITTED}  = 0;
 
     # Logger / observer plumbing was removed in the new_log_refactor
     # (M2 step 4+5); ignore any lingering caller-supplied slots.
@@ -319,6 +332,11 @@ sub service_on_start {
     # Stamp the start time on the State so the persisted state.json
     # has it the moment any consumer reads it. Idempotent.
     $self->{+RUN_STATE}->mark_started;
+
+    # Mirror the start stamp on our own slot so the collector_report
+    # facet emitted at shutdown can carry it without round-tripping
+    # through Run::State.
+    $self->{+STARTED_AT} //= time;
 
     # Emit run_queued so the JSON logger writes the immutable Run
     # spec to runs/<run_id>/spec.json.zst. Sent before run_mutation
@@ -528,6 +546,42 @@ sub _handle_gen_msg_test_job_failing {
             job_try => $content->{job_try},
         },
     );
+
+    # First failing job in the run -- flip run_pass to 0 and emit
+    # run_failing into our local event stream so the run collector
+    # records it in runs/<id>/events.jsonl.zst. Subsequent failing
+    # jobs do not re-emit (state-flip event, not per-failure
+    # broadcast).
+    if (!$self->{+RUN_FAILING_EMITTED}) {
+        $self->{+RUN_FAILING_EMITTED} = 1;
+        $self->{+RUN_PASS}            = 0;
+
+        $self->_emit_run_failing(
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+        );
+    }
+
+    return;
+}
+
+# Emit run_failing on the run service's own outgoing event stream.
+# Run collector picks it up via the standard pipeline and writes a
+# row carrying the harness facet under runs/<id>/events.jsonl.zst.
+sub _emit_run_failing {
+    my ($self, %fields) = @_;
+
+    my $em = $self->{+EMITTER} or return;
+
+    $em->emit_event(
+        run_failing => {
+            run_id  => $self->{+RUN_ID},
+            job_id  => $fields{job_id},
+            job_try => $fields{job_try},
+            stamp   => time,
+        },
+    );
+
     return;
 }
 
@@ -577,6 +631,20 @@ sub _handle_gen_msg_test_job_completed {
     # Auditor::Test._emit_completed already carries every field we
     # need (pass/exit/plan/halt/counts/timing); just snapshot it.
     $self->{+COMPLETED_JOB_STATES}->{$job_id} = {%$content};
+
+    # Flip the run's pass state if a job came in failing without
+    # having previously emitted test_job_failing (e.g. a synthesized
+    # completion of a vanished collector). The first run_failing
+    # emission wins; subsequent flips are silent.
+    if (!$content->{pass} && !$self->{+RUN_FAILING_EMITTED}) {
+        $self->{+RUN_FAILING_EMITTED} = 1;
+        $self->{+RUN_PASS}            = 0;
+
+        $self->_emit_run_failing(
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+        );
+    }
 
     # Record the authoritative verdict + exit details keyed by
     # job_id so the State snapshot can carry them out to the harness
@@ -716,13 +784,127 @@ sub run_on_cleanup {
     # Stamp finish time + completed flag on the State so the persisted
     # snapshot reflects the terminal state.
     $self->{+RUN_STATE}->mark_finished;
+    $self->{+ENDED_AT} //= time;
 
     # Final run_mutation so the JSON logger's cached snapshot
     # reflects the run's terminal state before the collector shuts
     # down and writes the sidecar file.
     $self->_broadcast_run_state;
 
+    # Emit the terminal run_completed + collector_report event. The
+    # run collector picks up the collector_report facet via its
+    # write_phase and merges it into runs/<id>/report.jsonl.zst at
+    # exit (per F3/F4: single event, two facets).
+    $self->emit_run_completed;
+
     $self->emit_service_event(kind => 'service_stopped');
+}
+
+# Emit the terminal run_completed + collector_report two-facet event
+# (per F4 = A). Built from in-memory COMPLETED_JOB_STATES plus the
+# pass/start/end stamps the run service tracks itself.
+sub emit_run_completed {
+    my $self = shift;
+
+    return if $self->{+RUN_COMPLETED_EMITTED};
+    $self->{+RUN_COMPLETED_EMITTED} = 1;
+
+    my $em = $self->{+EMITTER} or return;
+
+    my $now      = time;
+    my $report   = $self->_build_collector_report($now);
+
+    $em->emit_event(
+        run_completed => {
+            run_id => $self->{+RUN_ID},
+            stamp  => $now,
+        },
+        collector_report => $report,
+    );
+
+    return;
+}
+
+# Walk COMPLETED_JOB_STATES (per-job state hashes the run service
+# accumulated from each test_job_completed IPC -- per F18) and
+# assemble the run-level aggregate the run collector merges into
+# report.jsonl.zst.
+sub _build_collector_report {
+    my $self = shift;
+    my ($now) = @_;
+    $now //= time;
+
+    my $states = $self->{+COMPLETED_JOB_STATES} // {};
+
+    my $passed  = 0;
+    my $failed  = 0;
+    my $aborted = 0;
+
+    my %jobs_by_id;
+    for my $jid (keys %$states) {
+        my $st = $states->{$jid} // {};
+        my $job_pass = $st->{pass} ? 1 : 0;
+        if ($job_pass) {
+            $passed++;
+        }
+        else {
+            $failed++;
+            $aborted++ if $st->{synth};
+        }
+
+        # Resolve test file for this job from the Run's queue-time
+        # job spec. Jobs that were only synthesized (no original
+        # entry) won't have a Run::Job; fall back to whatever the
+        # state hash carries.
+        my $file = $st->{file};
+        if (!defined $file) {
+            for my $job (@{$self->{+RUN}->jobs}) {
+                next unless $job->job_id eq $jid;
+                my $tf = $job->test_file;
+                $file = $tf->absolute if $tf;
+                last;
+            }
+        }
+
+        my $tries = defined($st->{job_try}) ? ($st->{job_try} + 1) : 1;
+
+        $jobs_by_id{$jid} = {
+            job_id     => $jid,
+            file       => $file,
+            pass       => $job_pass,
+            tries      => $tries,
+            subtests   => [@{$st->{subtests} // []}],
+        };
+    }
+
+    # Stable ordering: order from the Run's own jobs spec; any
+    # remaining ids get appended in sort order so the array stays
+    # deterministic.
+    my @ordered;
+    my %placed;
+    for my $job (@{$self->{+RUN}->jobs}) {
+        my $jid = $job->job_id;
+        next unless exists $jobs_by_id{$jid};
+        push @ordered, $jobs_by_id{$jid};
+        $placed{$jid} = 1;
+    }
+    for my $jid (sort keys %jobs_by_id) {
+        next if $placed{$jid};
+        push @ordered, $jobs_by_id{$jid};
+    }
+
+    my $total = scalar @ordered;
+
+    return {
+        pass         => $self->{+RUN_PASS} ? 1 : 0,
+        started_at   => $self->{+STARTED_AT},
+        ended_at     => $self->{+ENDED_AT} // $now,
+        total_jobs   => $total,
+        passed_jobs  => $passed,
+        failed_jobs  => $failed,
+        aborted_jobs => $aborted,
+        jobs         => \@ordered,
+    };
 }
 
 # ----------------------------------------------------------------------
