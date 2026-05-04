@@ -66,36 +66,44 @@ sub mark_finished {
     return;
 }
 
+# Idempotent: mark_running on an already-running OR already-done
+# job is a no-op, not an error. This lets log replays + delta streams
+# converge when a job is already in a terminal list (a producer that
+# re-emits a stable state; init+delta replay over an already-seeded
+# base; mark_done arriving before its companion mark_running).
 sub mark_running {
     my ($self, $job_id) = @_;
-    my @new = grep { $_ ne $job_id } @{$self->{+PENDING}};
-    croak "job_id '$job_id' is not pending" if @new == @{$self->{+PENDING}};
-    $self->{+PENDING} = \@new;
+    return if grep { $_ eq $job_id } @{$self->{+RUNNING}};
+    return if grep { $_ eq $job_id } @{$self->{+DONE}};
+    $self->{+PENDING} = [grep { $_ ne $job_id } @{$self->{+PENDING}}];
     push @{$self->{+RUNNING}} => $job_id;
     return;
 }
 
 sub mark_done {
     my ($self, $job_id) = @_;
-    my @new = grep { $_ ne $job_id } @{$self->{+RUNNING}};
-    croak "job_id '$job_id' is not running" if @new == @{$self->{+RUNNING}};
-    $self->{+RUNNING} = \@new;
+    return if grep { $_ eq $job_id } @{$self->{+DONE}};
+    $self->{+RUNNING} = [grep { $_ ne $job_id } @{$self->{+RUNNING}}];
+    $self->{+PENDING} = [grep { $_ ne $job_id } @{$self->{+PENDING}}];
     push @{$self->{+DONE}} => $job_id;
     return;
 }
 
 sub mark_skipped {
     my ($self, $job_id) = @_;
-    my @new = grep { $_ ne $job_id } @{$self->{+PENDING}};
-    croak "job_id '$job_id' is not pending" if @new == @{$self->{+PENDING}};
-    $self->{+PENDING} = \@new;
+    return if grep { $_ eq $job_id } @{$self->{+DONE}};
+    $self->{+PENDING} = [grep { $_ ne $job_id } @{$self->{+PENDING}}];
     push @{$self->{+DONE}} => $job_id;
     return;
 }
 
+# Idempotent: seeding the same job_id twice is a no-op rather than
+# producing a duplicate pending entry. Replay over an already-seeded
+# State (init+delta sequences, replay command) converges cleanly.
 sub seed_pending {
     my ($self, @job_ids) = @_;
-    push @{$self->{+PENDING}} => @job_ids;
+    my %seen = map { $_ => 1 } @{$self->{+PENDING}}, @{$self->{+RUNNING}}, @{$self->{+DONE}};
+    push @{$self->{+PENDING}} => grep { !$seen{$_}++ } @job_ids;
     return;
 }
 

@@ -50,15 +50,28 @@ subtest 'seed_pending / mark_running / mark_done' => sub {
     is($s->running, [],      'A removed from running');
     is($s->done,    [qw/A/], 'A landed in done');
 
-    my $ok  = eval { $s->mark_running('not-a-real-id'); 1 };
-    my $err = $@;
-    ok(!$ok, 'mark_running croaks for unknown id');
-    like($err, qr/not pending/);
+    # Idempotent ops: replaying mark_done over an already-done job
+    # is a no-op, not a croak. Same for mark_running on an already-
+    # running job. This lets log replays + delta streams converge
+    # without additional eval guards on the consumer side.
+    $s->mark_running('A');    # A is already in done; should not move
+    is($s->done,    [qw/A/], 'idempotent mark_running leaves A in done');
+    is($s->running, [],      'idempotent mark_running does not re-add to running');
 
-    $ok  = eval { $s->mark_done('B'); 1 };
-    $err = $@;
-    ok(!$ok, 'mark_done croaks when job not running');
-    like($err, qr/not running/);
+    $s->mark_running('B');
+    $s->mark_running('B');    # idempotent: still just one running entry
+    is($s->running, [qw/B/], 'duplicate mark_running is a no-op');
+
+    $s->mark_done('B');
+    $s->mark_done('B');       # idempotent: still just one done entry
+    is($s->done, [qw/A B/], 'duplicate mark_done is a no-op');
+
+    # mark_running for a job_id that is not in pending and not in
+    # running just adds it to running (no croak). Useful when a
+    # streamer joins mid-run and the producer's snapshot landed
+    # before its seed_pending.
+    $s->mark_running('Z');
+    ok((grep { $_ eq 'Z' } @{$s->running}), 'mark_running on unknown id adds to running');
 };
 
 subtest 'mark_skipped moves pending -> done' => sub {
