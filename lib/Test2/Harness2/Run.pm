@@ -17,6 +17,7 @@ use Test2::Harness2::Util qw/load_module/;
 
 use Object::HashBase qw{
     <run_id
+    <run_uuid
     <jobs
     <created_at
     <resources
@@ -35,7 +36,10 @@ use constant DEFAULT_LAUNCH_JOB_TIMEOUT_SECS => 5;
 sub init {
     my $self = shift;
 
-    $self->{+RUN_ID}             //= gen_uuid();
+    croak "'run_id' is a required attribute"
+        unless defined $self->{+RUN_ID};
+
+    $self->{+RUN_UUID}           //= gen_uuid();
     $self->{+JOBS}               //= [];
     $self->{+CREATED_AT}         //= time;
     $self->{+RESOURCES}          //= [];
@@ -55,19 +59,29 @@ sub from_files {
     my $files = delete $params{files} or croak "'files' is required";
     croak "'files' must be an arrayref" unless ref($files) eq 'ARRAY';
 
-    my $run_id = $params{run_id} // gen_uuid();
+    croak "'run_id' is required"
+        unless defined $params{run_id};
+
+    my $run_id = $params{run_id};
 
     # Accept a role-consuming blessed object, a [$class, @ctor_args]
     # arrayref (passed through as $class->new(@ctor_args)), or a
     # TO_JSON-shaped hashref carrying '__test_file_class__' (the
     # class is asked to rehydrate itself from the hash). There is no
     # caller-side default class.
+    #
+    # Job ids are sequential ordinal integers within a run, starting
+    # at 0. Each run owns its own counter (this run's `from_files`
+    # allocates them top-down; further jobs added via `add_job` after
+    # construction continue the sequence inside `add_job` itself).
     my @jobs;
+    my $next_job_id = 0;
     for my $input (@$files) {
         my $test_file = $class->_coerce_test_file($input);
         push @jobs => Test2::Harness2::Run::Job->new(
             test_file => $test_file,
             run_id    => $run_id,
+            job_id    => $next_job_id++,
         );
     }
 
@@ -192,7 +206,14 @@ because they are constructor-only.
 
 =item run_id
 
-UUID identifying this run (auto-generated if not supplied).
+Sequential ordinal integer identifying this run on disk, allocated by the
+harness (required).
+
+=item run_uuid
+
+UUID metadata for this run (auto-generated if not supplied). Surfaced in
+the run's spec sidecar and indexed in DB schemas, but not encoded in the
+on-disk path.
 
 =item jobs
 

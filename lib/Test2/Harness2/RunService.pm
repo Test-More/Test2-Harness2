@@ -1022,9 +1022,10 @@ sub start {
         parent_pids  => [$caller_pid],
         kill_timeout => $self->{+KILL_TIMEOUT},
         spec         => {
-            run_id  => $self->{+RUN_ID},
-            name    => $self->{+NAME},
-            harness => $self->{+HARNESS_NAME},
+            run_id   => $self->{+RUN_ID},
+            run_uuid => $self->{+RUN}->run_uuid,
+            name     => $self->{+NAME},
+            harness  => $self->{+HARNESS_NAME},
         },
     );
 

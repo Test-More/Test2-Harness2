@@ -50,6 +50,7 @@ use Object::HashBase qw{
     +emitter
     +subscribers
     +subscriber_retry
+    +run_ord_counter
     watch_pids
     own_pgroup
 };
@@ -132,6 +133,13 @@ sub init {
     $self->{+OWN_PGROUP}        //= 0;
     $self->{+SUBSCRIBERS}       //= {};
     $self->{+SUBSCRIBER_RETRY}  //= {};
+
+    # Sequential run-ord allocator (B2/B3): every accepted run gets
+    # the next ordinal integer starting at 0. The counter is per
+    # harness-process; persistent runners reuse the same harness so
+    # ords climb monotonically across runs in a session, with gaps
+    # possible (e.g. accepted-then-purged runs).
+    $self->{+RUN_ORD_COUNTER}   //= 0;
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
     croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
@@ -345,10 +353,19 @@ sub request_handler_queue_test_run {
             if $run_seed ne $harness_seed;
     }
 
+    # Allocate the next run ordinal up-front so we can hand it to
+    # Run->from_files. A caller-supplied run_id is rejected: run ids
+    # are owned by the harness and incoming payload values would
+    # collide with the counter.
+    return {ok => 0, error => "'run_id' is allocated by the harness; do not pass it"}
+        if defined $payload->{run_id};
+
+    my $run_id = $self->{+RUN_ORD_COUNTER}++;
+
     my $ok = eval {
         my $run = Test2::Harness2::Run->from_files(
-            files => $files,
-            (defined $payload->{run_id}    ? (run_id    => $payload->{run_id})    : ()),
+            files     => $files,
+            run_id    => $run_id,
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
             %run_logger_opts,
         );
