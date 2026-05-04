@@ -294,7 +294,12 @@ sub _run_collector {
     # Open the writer trio + spec row before any event flows so a
     # crash mid-collection still leaves spec.jsonl.zst usable.
     $self->_open_writers();
-    $self->_write_spec_row();
+    my $spec_hash = $self->_write_spec_row();
+
+    # Tell the parent service we're up. Emission is skipped for
+    # collectors with no parent (per F19: both ipc_parent and ipc_run
+    # undef -- today only the harness collector matches).
+    $self->_emit_collector_start($spec_hash);
 
     # Signal handlers. Installed with `local` so they restore automatically
     # when _run_collector returns (including via die).
@@ -420,7 +425,8 @@ sub _open_writers {
 
 # Append the spec row. Always one row per startup (B7 / B11). The row
 # is whatever `spec` hash the caller handed us, plus the collector
-# pid.
+# pid. Returns the assembled hash so the caller can reuse it for the
+# matching collector_start IPC emission (M2 step 6).
 sub _write_spec_row {
     my $self = shift;
     my $w = $self->{+_SPEC_WRITER} or return;
@@ -437,6 +443,8 @@ sub _write_spec_row {
 
     require Test2::Harness2::Util::JSON;
     $w->say(Test2::Harness2::Util::JSON::encode_json(\%spec));
+
+    return \%spec;
 }
 
 # Cached IPC client for upward sends.
@@ -471,6 +479,107 @@ sub _wait_for_ipc_target {
 sub send_ipc {
     my ($self, $target, $content) = @_;
     return $self->_send_to($target, $content);
+}
+
+# Pick the parent IPC target for the lifecycle pair (collector_start /
+# collector_end). Per B4 routing:
+#
+#   * job collectors  -- ipc_run is set, fall through to ipc_parent
+#                         (which is the run service for non-preload
+#                          jobs and the requesting run service for
+#                          preload-spawned jobs, per F7)
+#   * run service     -- ipc_run undef, ipc_parent = ipc_harness
+#   * global services -- ipc_run undef, ipc_parent = ipc_harness
+#   * harness collector -- both undef, returns undef (skipped per F19)
+#
+# Order: ipc_run if defined, else ipc_parent. The harness's own
+# collector has both undef; the caller skips on undef.
+sub _lifecycle_ipc_target {
+    my $self = shift;
+    return $self->{+IPC_RUN}    if defined $self->{+IPC_RUN};
+    return $self->{+IPC_PARENT} if defined $self->{+IPC_PARENT};
+    return undef;
+}
+
+# Build the common identity payload shared by collector_start and
+# collector_end. All keys are present (set to undef where N/A) per
+# the spec rule "don't be fancy with key omission".
+sub _lifecycle_base_payload {
+    my $self = shift;
+
+    my $type = $self->{+TYPE};
+
+    return (
+        type          => $type,
+        id            => $self->{+ID},
+        run_id        => $self->{+RUN_ID},
+        job_id        => ($type eq 'Job'     ? $self->{+ID} : undef),
+        job_try       => ($type eq 'Job'     ? $self->{+JOB_TRY} : undef),
+        service_name  => ($type eq 'Service' ? $self->{+ID} : undef),
+        collector_pid => $$,
+        collected_pid => $self->{+CHILD_PID},
+    );
+}
+
+# Send collector_start IPC to the lifecycle target if one exists.
+# $spec_hash is the same hash just written to spec.jsonl.zst (for
+# downstream introspection).
+sub _emit_collector_start {
+    my ($self, $spec_hash) = @_;
+
+    my $target = $self->_lifecycle_ipc_target;
+    return unless defined $target;
+
+    $self->_send_to($target, {
+        kind => 'collector_start',
+        $self->_lifecycle_base_payload,
+        started_at => time,
+        spec       => $spec_hash // {},
+    });
+
+    return;
+}
+
+# Send collector_end IPC to the lifecycle target if one exists.
+# Per B5 + F3 + C6: payload always carries exit/exit_decoded/ended_at
+# plus a state hash. For Jobs the state hash is the auditor's final
+# state; for Run/Service it carries just the exit/timing info (the
+# service-emitted collector_report facet rides through the event
+# stream separately and is merged into report.jsonl.zst by the
+# collector before this emission -- see _write_report_row).
+sub _emit_collector_end {
+    my ($self, $child_exit) = @_;
+
+    my $target = $self->_lifecycle_ipc_target;
+    return unless defined $target;
+
+    my $ended_at = time;
+    my $exit_decoded = defined($child_exit) ? parse_exit($child_exit) : undef;
+
+    my %state = (
+        exit          => $child_exit,
+        exit_decoded  => $exit_decoded,
+        ended_at      => $ended_at,
+        collector_pid => $$,
+        collected_pid => $self->{+CHILD_PID},
+    );
+
+    if ($self->{+TYPE} eq 'Job' && (my $auditor = $self->{+AUDITOR})) {
+        if (my $final = $self->_auditor_final_state($auditor)) {
+            %state = (%$final, %state);
+        }
+    }
+
+    $self->_send_to($target, {
+        kind => 'collector_end',
+        $self->_lifecycle_base_payload,
+        exit         => $child_exit,
+        exit_decoded => $exit_decoded,
+        ended_at     => $ended_at,
+        state        => \%state,
+    });
+
+    return;
 }
 
 sub _send_to {
@@ -689,6 +798,12 @@ sub _finalize_collection {
 
     # Write the final report row, then close the writers.
     $self->_write_report_row($child_exit);
+
+    # Tell the parent service we're going away. Done after the report
+    # row is on disk so a parent reflecting the IPC into its own event
+    # stream does so only once the child's report.jsonl.zst is final.
+    # The IPC outbox is drained by _exit_mirroring_child before _exit.
+    $self->_emit_collector_end($child_exit);
 
     for my $slot (+_EVENTS_WRITER, +_SPEC_WRITER, +_REPORT_WRITER) {
         my $w = delete $self->{$slot} or next;

@@ -522,7 +522,49 @@ sub run_on_general_message {
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
+    # Lifecycle reflection from child collectors that route their
+    # collector_start/_end up to the harness: run-service collectors
+    # and global services. The harness collector itself has no parent
+    # and skips emission entirely (per F19) so we never receive its
+    # own pair.
+    return $self->_handle_collector_start($content)
+        if defined $kind && $kind eq 'collector_start';
+
+    return $self->_handle_collector_end($content)
+        if defined $kind && $kind eq 'collector_end';
+
     warn "Test2::Harness2: unhandled general message kind: " . (defined $kind ? "'$kind'" : '(none)') . "\n";
+
+    return;
+}
+
+# Reflect a collector_start IPC (from a run-service collector or a
+# global-service collector) into the harness's own outgoing event
+# stream. The harness's own collector picks it up via the standard
+# pipeline and writes a harness_collector_start row into
+# services/harness/events.jsonl.zst. That row is the entry-point a
+# Log iterator follows to descend into a run's or global service's
+# events.jsonl.zst.
+sub _handle_collector_start {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $em = $self->{+EMITTER} or return;
+    $em->emit_event(
+        harness_collector_start => {%$content},
+    );
+
+    return;
+}
+
+sub _handle_collector_end {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $em = $self->{+EMITTER} or return;
+    $em->emit_event(
+        harness_collector_end => {%$content},
+    );
 
     return;
 }

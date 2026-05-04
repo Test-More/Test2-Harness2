@@ -531,6 +531,34 @@ sub _handle_gen_msg_test_job_failing {
     return;
 }
 
+# Reflect a collector_start IPC from a child collector (job or
+# run-scoped service) into our own outgoing event stream. The run's
+# collector picks it up via the standard pipeline and writes a
+# harness_collector_start row into runs/<run_id>/events.jsonl.zst.
+# This is the discovery hook a Log iterator uses to descend into
+# the child collector's events.jsonl.zst.
+sub _handle_gen_msg_collector_start {
+    my ($self, $content) = @_;
+
+    my $em = $self->{+EMITTER} or return;
+    $em->emit_event(
+        harness_collector_start => {%$content},
+    );
+
+    return;
+}
+
+sub _handle_gen_msg_collector_end {
+    my ($self, $content) = @_;
+
+    my $em = $self->{+EMITTER} or return;
+    $em->emit_event(
+        harness_collector_end => {%$content},
+    );
+
+    return;
+}
+
 sub _handle_gen_msg_test_job_completed {
     my ($self, $content) = @_;
 
