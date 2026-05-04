@@ -72,7 +72,8 @@ use Object::HashBase qw{
 #   abort - same as fail for THIS job plus every remaining pending
 #           job in the same run, one at a time as the job limiter
 #           frees slots; the run closes out once they all complete.
-use constant BROKEN_BEHAVIORS => {map { $_ => 1 } qw/skip fail abort/};
+use constant BROKEN_BEHAVIORS      => {map { $_ => 1 } qw/skip fail abort/};
+use constant SUBSCRIBER_RETRY_CAP  => 1024;
 
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Service', 'Test2::Harness2::Role::ResourceServiceHost';
@@ -977,6 +978,21 @@ sub _send_to_subscriber {
     my $retry = $self->{+SUBSCRIBER_RETRY}->{$peer} //= {};
     $retry->{pending} //= [];
     push @{$retry->{pending}} => $payload;
+
+    # Cap per-peer retry queue. A subscriber that never drains will
+    # otherwise balloon harness memory. When the cap is hit, drop the
+    # oldest payloads (FIFO) and warn once -- the consumer is broken
+    # in some way and there is no good way to recover the lost
+    # messages, but the harness must stay healthy.
+    my $cap = SUBSCRIBER_RETRY_CAP;
+    if (@{$retry->{pending}} > $cap) {
+        my $excess = @{$retry->{pending}} - $cap;
+        splice @{$retry->{pending}}, 0, $excess;
+        unless ($retry->{capped_warned}++) {
+            warn "Test2::Harness2: subscriber '$peer' retry queue exceeded "
+               . "$cap; dropping oldest payloads.\n";
+        }
+    }
     return;
 }
 
