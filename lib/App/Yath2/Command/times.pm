@@ -5,12 +5,11 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
-use Cwd qw/getcwd/;
 
 use Test2::Util::Times qw/render_duration/;
 
 use App::Yath2::Log();
-use App::Yath2::Streamer::Static();
+use App::Yath2::Util::Log qw//;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -47,10 +46,8 @@ Available sort fields are 'total' (numeric, the wall-clock duration of each
 test) and 'file' (alphabetic). Optional Field arguments override the default
 sort precedence; subsequent fields break ties from earlier ones.
 
-Per-test durations are derived from harness_job_start / harness_job_end
-stamps emitted by App::Yath2::Streamer::Static. The granular startup/events/
-cleanup breakdown that lived in the legacy log format is not present in the
-new event stream.
+Per-test durations are derived from each try's spec.jsonl.zst (started_at)
+and report.jsonl.zst (ended_at) final states.
     EOT
 }
 
@@ -70,16 +67,16 @@ sub run {
 
     shift @$args if @$args && $args->[0] eq '--';
 
-    my $log = shift @$args;
-    unless (defined $log && length $log) {
-        $log = App::Yath2::Log->find_latest($self->{+SETTINGS});
-        print STDERR "yath times: using latest archive: $log\n"
-            if defined $log && length $log;
+    my $path = shift @$args;
+    unless (defined $path && length $path) {
+        $path = App::Yath2::Log->find_latest($self->{+SETTINGS});
+        print STDERR "yath times: using latest archive: $path\n"
+            if defined $path && length $path;
     }
     die "You must specify a log archive or directory\n"
-        unless defined $log && length $log;
-    die "Log source '$log' does not exist\n" unless -e $log;
-    $self->{+LOG} = $log;
+        unless defined $path && length $path;
+    die "Log source '$path' does not exist\n" unless -e $path;
+    $self->{+LOG} = $path;
 
     my %seen;
     my @fields;
@@ -91,46 +88,35 @@ sub run {
     }
     $self->{+FIELDS} = \@fields;
 
-    require App::Yath2::Log;
-    my @runs = App::Yath2::Log->open(path => $log)->runs;
-    die "No runs found in '$log'\n" unless @runs;
+    my $log = App::Yath2::Util::Log::open_log($path);
 
-    my $streamer = App::Yath2::Streamer::Static->new(
-        log    => $log,
-        runs   => [@runs],
-        global => 1,
-    );
+    my @runs = $log->runs;
+    die "No runs found in '$path'\n" unless @runs;
 
-    my %job_state;
     my @jobs;
-    $streamer->stream(
-        callback => sub {
-            my ($event) = @_;
-            my $f = $event->facet_data // {};
+    for my $rid (@runs) {
+        for my $jid ($log->jobs($rid)) {
+            my $try = $log->last_try($rid, $jid);
+            next unless defined $try;
 
-            if (my $start = $f->{harness_job_start}) {
-                my $jid = $start->{job_id} // $event->{job_id} // return;
-                $job_state{$jid}{start} //= $start->{stamp}    // $event->stamp;
-                $job_state{$jid}{file}  //= $start->{rel_file} // $start->{file};
-                return;
-            }
+            my $arts   = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
+            my $spec   = $arts->spec_iter->first // {};
+            my $report = $arts->report_iter->last // {};
 
-            return unless my $end = $f->{harness_job_end};
+            my $tf = $spec->{test_file} // {};
+            my $file = $tf->{relative} // $tf->{file} // $tf->{absolute};
+            next unless defined $file;
 
-            my $jid  = $end->{job_id}   // $event->{job_id} // return;
-            my $file = $end->{rel_file} // $end->{file}     // $job_state{$jid}{file};
-            return unless $file;
-
-            my $start = $job_state{$jid}{start};
-            my $stop  = $end->{stamp} // $event->stamp;
-            return unless defined $start && defined $stop;
+            my $start = $spec->{started_at};
+            my $stop  = $report->{ended_at};
+            next unless defined $start && defined $stop;
 
             my $total = $stop - $start;
-            return unless $total >= 0;
+            next unless $total >= 0;
 
             push @jobs => {file => $file, time => {total => $total}};
-        },
-    );
+        }
+    }
 
     my @rows;
     my $totals = {file => 'TOTAL', total => 0};

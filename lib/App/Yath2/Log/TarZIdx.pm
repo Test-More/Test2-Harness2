@@ -13,6 +13,7 @@ use File::Path qw/make_path/;
 use File::Spec ();
 
 use Test2::Harness2::Util::JSON qw/decode_json encode_json/;
+use Test2::Harness2::Util::Zstd qw/zstd_frame_size/;
 
 use Object::HashBase qw/path +_index/;
 
@@ -266,6 +267,23 @@ sub extract {
         if -e $dir && -d $dir && _dir_non_empty($dir);
 
     my $compressed = exists $opts{compressed} ? $opts{compressed} : 0;
+    my $runs         = $opts{runs};
+    my $exclude_runs = $opts{exclude_runs};
+    croak "'runs' and 'exclude_runs' are mutually exclusive"
+        if defined $runs && defined $exclude_runs;
+
+    my $include_run = sub {
+        my ($rel) = @_;
+        return 1 unless $rel =~ m{^runs/([^/]+)(?:/|\z)};
+        my $rid = $1;
+        if (defined $runs) {
+            return scalar grep { $_ eq $rid } @$runs;
+        }
+        if (defined $exclude_runs) {
+            return scalar(grep { $_ eq $rid } @$exclude_runs) ? 0 : 1;
+        }
+        return 1;
+    };
 
     make_path($dir);
     require Test2::Harness2::Util::Zstd;
@@ -273,6 +291,7 @@ sub extract {
 
     my $index = $self->_build_index;
     for my $rel (sort keys %$index) {
+        next unless $include_run->($rel);
         my $entry = $index->{$rel};
 
         if (($entry->{kind} // 'file') eq 'dir') {
@@ -281,7 +300,18 @@ sub extract {
             next;
         }
 
-        my $out_rel = $compressed ? "$rel.zst" : $rel;
+        my $entry_inner = $entry->{inner} // 'zstd';
+        # `compressed=>1` keeps the original suffix shape: files that
+        # were already .zst keep the suffix; plaintext sources gain
+        # one (since they are stored zstd-wrapped). `compressed=>0`
+        # always drops to plaintext and strips the .zst suffix.
+        my $out_rel;
+        if ($compressed) {
+            $out_rel = $rel =~ /\.zst\z/ ? $rel : "$rel.zst";
+        }
+        else {
+            $out_rel = $rel;
+        }
         # `compressed=>1` keeps the original bytes (including the
         # outer zstd wrap); `compressed=>0` strips one layer and
         # emits the plaintext.
@@ -316,9 +346,11 @@ sub extract {
             # and the caller asked for plaintext, the file extension
             # in the archive carries '.zst'. Decompress the payload
             # and strip the suffix from the output rel-path so the
-            # extracted form is a real plaintext file.
+            # extracted form is a real plaintext file. The source may
+            # be multi-frame (jsonl.zst is one frame per record), so
+            # walk all frames concatenating decoded payloads.
             if ($inner eq 'none' && $rel =~ /\.zst\z/) {
-                $payload = Test2::Harness2::Util::Zstd::decompress_blob($payload);
+                $payload = _decompress_multi_frame($payload);
                 (my $stripped = $rel) =~ s/\.zst\z//;
                 $out_abs = File::Spec->catfile($dir, $stripped);
                 $parent  = dirname($out_abs);
@@ -499,6 +531,31 @@ sub _dir_non_empty {
     }
     closedir($dh);
     return 0;
+}
+
+# Decompress a possibly-multi-frame zstd byte string. Single-file
+# .json.zst snapshots are one frame; .jsonl.zst event streams
+# concatenate one self-contained zstd frame per record, with the
+# trailing newline baked into each frame.
+sub _decompress_multi_frame {
+    my ($bytes) = @_;
+
+    my $out = '';
+    while (length $bytes) {
+        my $size = zstd_frame_size($bytes);
+        croak "tar.zidx extract: incomplete zstd frame in payload"
+            unless defined $size;
+        my $frame = substr($bytes, 0, $size);
+        substr($bytes, 0, $size) = '';
+
+        my $plain = Compress::Zstd::decompress($frame);
+        croak "tar.zidx extract: zstd decompress failed in payload"
+            unless defined $plain;
+
+        $out .= $plain;
+    }
+
+    return $out;
 }
 
 # }}}

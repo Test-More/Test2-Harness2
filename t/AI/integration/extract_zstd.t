@@ -48,6 +48,14 @@ sub orig_tmp         { undef }
     package Fake::Extract;
     sub new           { bless { no_decompress => $_[1] // 0 }, $_[0] }
     sub no_decompress { $_[0]->{no_decompress} }
+    sub run           { [] }
+    sub exclude_run   { [] }
+
+    package Fake::Archive;
+    sub new         { bless {}, $_[0] }
+    sub format      { 'tar' }
+    sub run         { [] }
+    sub exclude_run { [] }
 
     package Fake::Settings;
     sub new {
@@ -55,10 +63,12 @@ sub orig_tmp         { undef }
         bless {
             yath    => Fake::Yath->new($p{cwd}),
             extract => Fake::Extract->new($p{no_decompress} // 0),
+            archive => Fake::Archive->new,
         }, $class;
     }
     sub yath    { $_[0]->{yath} }
     sub extract { $_[0]->{extract} }
+    sub archive { $_[0]->{archive} }
 }
 
 sub _run_cmd {

@@ -5,13 +5,11 @@ use warnings;
 our $VERSION = '2.000011';
 
 use Carp qw/croak/;
-use Cwd qw/getcwd/;
 
 use Test2::Util::Table qw/table/;
-use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use App::Yath2::Log();
-use App::Yath2::Streamer::Static();
+use App::Yath2::Util::Log qw//;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -39,19 +37,16 @@ sub summary { "Show the failed tests from a log archive" }
 
 sub group { 'log parsing' }
 
-sub cli_args { "[--] LOG [RUN_ID ...]" }
+sub cli_args { "[--] LOG" }
 
 sub description {
     return <<"    EOT";
 Lists the test scripts that failed in a recorded yath log. LOG is either a
-.yath archive file or a directory that looks like \$workdir/logs (i.e. carries
-runs/<id>/ subdirectories for the runs it stores). RUN_IDs, if any, restrict
-the analysis to the listed runs; with none, every run stored in the archive
-is walked.
+.yath archive file or a directory that looks like \$workdir/logs.
 
-The event source is App::Yath2::Streamer::Static, so this command sees the
-same lifecycle stream as 'yath replay'. Per-job assertions used for the
-"Subtests" column are read directly from each failed job's JSONL artifact.
+For each failed try the failing top-level subtests (read directly from the
+try's report.jsonl.zst) are shown alongside the test file path. Per-job pass/
+fail comes from each try's report.jsonl.zst final state.
     EOT
 }
 
@@ -63,62 +58,53 @@ sub run {
 
     shift @$args if @$args && $args->[0] eq '--';
 
-    my $log = shift @$args;
-    unless (defined $log && length $log) {
-        $log = App::Yath2::Log->find_latest($settings);
-        print STDERR "yath failed: using latest archive: $log\n"
-            if defined $log && length $log;
+    my $path = shift @$args;
+    unless (defined $path && length $path) {
+        $path = App::Yath2::Log->find_latest($settings);
+        print STDERR "yath failed: using latest archive: $path\n"
+            if defined $path && length $path;
     }
 
     die "You must specify a log archive or directory\n"
-        unless defined $log && length $log;
+        unless defined $path && length $path;
 
-    die "Log source '$log' does not exist\n" unless -e $log;
+    die "Log source '$path' does not exist\n" unless -e $path;
+    die "extra arguments after LOG\n" if @$args;
 
-    $self->{+LOG} = $log;
+    $self->{+LOG} = $path;
 
-    my $archive  = App::Yath2::Log->open(path => $log);
-    my @all_runs = $archive->runs;
-    die "No runs found in '$log'\n" unless @all_runs;
+    my $log = App::Yath2::Util::Log::open_log($path);
 
-    my @requested = @$args;
-    if (@requested) {
-        my %known = map { $_ => 1 } @all_runs;
-        for my $rid (@requested) {
-            die "unknown run '$rid' in '$log'\n" unless $known{$rid};
+    my @runs = $log->runs;
+    die "No runs found in '$path'\n" unless @runs;
+
+    # Per-file aggregate. Each file collects every try's final state we
+    # walk via the Log API.
+    my %by_file;
+    for my $rid (@runs) {
+        for my $jid ($log->jobs($rid)) {
+            for my $try ($log->tries($rid, $jid)) {
+                my $arts = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
+
+                my $spec = $arts->spec_iter->first // {};
+                my $tf   = $spec->{test_file}      // {};
+                my $rel  = $tf->{relative} // $tf->{file};
+                next unless defined $rel;
+
+                my $report = $arts->report_iter->last // {};
+
+                push @{$by_file{$rel}{ends}} => {
+                    run_id   => $rid,
+                    job_id   => $jid,
+                    job_try  => $try,
+                    pass     => $report->{pass} ? 1 : 0,
+                    fail     => $report->{pass} ? 0 : 1,
+                    stamp    => $report->{ended_at} // 0,
+                    subtests => $report->{subtests} || [],
+                };
+            }
         }
     }
-    else {
-        @requested = @all_runs;
-    }
-
-    my $streamer = App::Yath2::Streamer::Static->new(
-        log    => $log,
-        runs   => [@requested],
-        global => 1,
-    );
-
-    # Per-file aggregate. Each file collects every harness_job_end we
-    # see for it (one per try, keyed by the synthesised job_id).
-    my %by_file;
-    $streamer->stream(
-        callback => sub {
-            my ($event) = @_;
-            my $f       = $event->facet_data // {};
-            my $end     = $f->{harness_job_end} or return;
-
-            my $rel = $end->{rel_file} // $end->{file} // $end->{abs_file};
-            return unless defined $rel;
-
-            push @{$by_file{$rel}{ends}} => {
-                run_id  => $event->{run_id},
-                job_id  => $end->{job_id}    // $event->{job_id},
-                job_try => $event->{job_try} // 0,
-                fail    => $end->{fail} ? 1 : 0,
-                stamp   => $end->{stamp} // $event->stamp,
-            };
-        },
-    );
 
     my $brief = $settings->failed->brief;
     my @rows;
@@ -136,7 +122,7 @@ sub run {
             next;
         }
 
-        my $subtests = $self->_collect_subtests($archive, \@ends);
+        my $subtests = _collect_subtest_names(\@ends);
 
         push @rows => [
             $rel,
@@ -164,84 +150,27 @@ sub run {
     return 0;
 }
 
-# Walk each failed try's per-job JSONL to extract the subtest names.
-# The streamer does not currently stamp provenance onto general events
-# (per ARCHITECTURE.md §12.5 provenance comes from the log path), so we
-# read each per-job log directly via the archive instead.
-sub _collect_subtests {
-    my $self = shift;
-    my ($archive, $ends) = @_;
-
+# Collect failing top-level subtest names across every failed try for
+# a given file. Subtests come from each try's report.jsonl.zst final
+# state (per F9: { name, pass, count_pass, count_fail }).
+sub _collect_subtest_names {
+    my ($ends) = @_;
     my %seen;
     my @names;
     for my $end (@$ends) {
         next unless $end->{fail};
-        my $jid = $end->{job_id}  // next;
-        my $rid = $end->{run_id}  // next;
-        my $try = $end->{job_try} // 0;
-
-        # Phase 4.5 per-try layout: runs/<run>/tests/<job>/<try>.jsonl.
-        # Older callers may pass tries with no extension awareness;
-        # has_file() answers in either compressed or plain form.
-        my $rel = "runs/$rid/tests/$jid/$try.jsonl";
-        next unless $archive->has_file($rel);
-
-        my $fh = $archive->read_file($rel);
-        while (my $line = <$fh>) {
-            chomp $line;
-            next unless length $line;
-            my $event = eval { decode_json($line) } or next;
-            my $f     = $event->{facet_data}        or next;
-
-            next unless $f->{parent};
-            next if $f->{trace} && $f->{trace}{nested};
-            next unless $self->_include_subtest($f);
-
-            for my $name ($self->_subtests($f)) {
-                next if $seen{$name}++;
-                push @names => $name;
-            }
+        my $st = $end->{subtests};
+        next unless ref($st) eq 'ARRAY';
+        for my $entry (@$st) {
+            next unless ref($entry) eq 'HASH';
+            next if $entry->{pass};
+            my $name = $entry->{name};
+            next unless defined $name && length $name;
+            next if $seen{$name}++;
+            push @names => $name;
         }
-        close $fh;
     }
-
-    return join "\n" => sort @names;
-}
-
-sub _include_subtest {
-    my $self = shift;
-    my ($f) = @_;
-
-    return 0 unless $f->{parent} && keys %{$f->{parent}};
-    return 0 if $f->{assert} && $f->{assert}{pass};
-    return 0 if !$f->{assert} || !keys %{$f->{assert}};
-    return 0 if $f->{amnesty} && @{$f->{amnesty}};
-    return 1;
-}
-
-sub _subtests {
-    my $self = shift;
-    my ($f, $prefix) = @_;
-
-    return unless $self->_include_subtest($f);
-
-    my $name = $f->{assert}{details};
-    unless ($name) {
-        my $frame = $f->{trace}{frame};
-        $name = "Unnamed Subtest";
-        $name .= " ($frame->[1] line $frame->[2])"
-            if $frame && $frame->[1] && $frame->[2];
-    }
-
-    $name = "$prefix -> $name" if $prefix;
-
-    my @out = ($name);
-    for my $child (@{$f->{parent}{children}}) {
-        next unless $child->{parent};
-        push @out => $self->_subtests($child, $name);
-    }
-
-    return @out;
+    return join "\n" => @names;
 }
 
 1;

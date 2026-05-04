@@ -622,7 +622,7 @@ sub _handle_resource_state_message {
 }
 
 # ----------------------------------------------------------------------
-# Subscription API. Consumers (typically App::Yath2::Streamer) ask to
+# Subscription API. Consumers (typically the test command) ask to
 # be told when run state changes. The harness is the only service that
 # carries this registry; run services publish state upstream via
 # _send_to_harness, the harness then fans out to any matching

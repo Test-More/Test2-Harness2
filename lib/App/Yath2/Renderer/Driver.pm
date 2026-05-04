@@ -32,9 +32,13 @@ use App::Yath2::Options::Renderer;
 sub run {
     my ($class, %args) = @_;
 
-    my $logdir       = $args{logdir}      // croak "'logdir' is required";
     my $settings     = $args{settings}    // croak "'settings' is required";
     my $harness_pid  = $args{harness_pid};
+    my $log          = $args{log};
+    my $logdir       = $args{logdir};
+
+    croak "'log' or 'logdir' is required"
+        unless $log || (defined $logdir && length $logdir);
 
     local $| = 1;
     STDERR->autoflush(1);
@@ -43,23 +47,32 @@ sub run {
     my $renderers = App::Yath2::Options::Renderer->init_renderers($settings);
     $om->add_renderer($_) for @$renderers;
 
-    my $log = App::Yath2::Log->new(live => $logdir);
+    $log //= App::Yath2::Log->new(live => $logdir);
+    my $is_live = $log->can('is_live') ? $log->is_live : 0;
 
     my %run_states;          # run_id => last seen run_data hash
     my %seen_run_start;      # run_id => 1
     my %seen_run_end;        # run_id => 1
     my $synth_queue = [];    # queue of synthesized lifecycle events to dispatch first
 
-    # Detection state for F22 stuck-EOE timeout: once the harness pid
-    # disappears (or the LIVE sentinel goes away), allow $grace seconds
-    # of quiescence before bailing out and reporting an EOE bug.
+    # Detection state for F22 stuck-EOE timeout (live mode only): once
+    # the harness pid disappears (or the LIVE sentinel goes away),
+    # allow $grace seconds of quiescence before bailing out and
+    # reporting an EOE bug. Sealed mode never polls -- the iterator is
+    # walked synchronously and EOE flips true once the readers drain.
     my $grace            = 10;
     my $no_progress_deadline;
     my $last_event_at    = time;
-    my $live_path        = "$logdir/LIVE";
+    my $live_path        = (defined $logdir && length $logdir) ? "$logdir/LIVE" : undef;
 
     my $exit_code = 0;
     my $bail_reason;
+
+    # Poll/timeout cadence depends on mode. Sealed mode passes timeout=0
+    # so the iterator returns whatever is buffered immediately and we
+    # exit as soon as the stack drains. Live mode passes a small
+    # positive timeout to amortize syscall overhead.
+    my $poll_timeout = $is_live ? 0.05 : 0;
 
     while (1) {
         # 1. Drain any events synthesized from the previous tick first,
@@ -70,7 +83,7 @@ sub run {
             $last_event_at = time;
         }
 
-        my $event = $log->event(0.05);
+        my $event = $log->event($poll_timeout);
 
         if ($event) {
             $last_event_at = time;
@@ -95,11 +108,17 @@ sub run {
             last;
         }
 
+        # Sealed mode: no polling, no live sentinel. If EOE is false
+        # but no event came back, treat as drained and exit.
+        unless ($is_live) {
+            last;
+        }
+
         # F22: detect stuck iterator. If harness pid is gone or the LIVE
         # sentinel disappeared and EOE is still false, give the iterator
         # 10 seconds of grace, then bail with a clear error.
         my $harness_gone = $harness_pid && !kill(0 => $harness_pid);
-        my $live_gone    = !-e $live_path;
+        my $live_gone    = defined($live_path) && !-e $live_path;
         if ($harness_gone || $live_gone) {
             $no_progress_deadline //= time + $grace;
             if (time >= $no_progress_deadline) {
@@ -208,9 +227,7 @@ sub _maybe_synthesize_lifecycle {
 }
 
 # Diff $state vs the prior snapshot for $rid; push synthesized
-# lifecycle events onto $synth_queue. Pruned port of
-# App::Yath2::Streamer::Base::_apply_run_state -- kept separate so
-# the renderer driver does not pull in the Streamer abstraction.
+# lifecycle events onto $synth_queue.
 sub _apply_run_state {
     my ($class, $rid, $state, $run_states, $seen_run_start, $seen_run_end, $synth_queue) = @_;
 
@@ -397,10 +414,17 @@ App::Yath2::Renderer::Driver - Drive the renderer pipeline from a live on-disk L
 
     use App::Yath2::Renderer::Driver;
 
+    # Live mode (the test command's main use):
     my $exit = App::Yath2::Renderer::Driver->run(
         logdir      => "$workdir/logs",
         settings    => $settings,
         harness_pid => $harness_pid,
+    );
+
+    # Sealed mode (replay command):
+    my $exit = App::Yath2::Renderer::Driver->run(
+        log      => $log,            # any App::Yath2::Log backend
+        settings => $settings,
     );
 
 =head1 DESCRIPTION
@@ -413,10 +437,12 @@ C<harness_job_start>, C<harness_job_end>, C<harness_job_exit>) from the
 run service's per-mutation snapshots, and feeds everything through
 L<App::Yath2::OutputManager>.
 
-This replaces the old C<App::Yath2::Streamer::Live> based pipeline:
-the renderer no longer consumes IPC state messages, only on-disk
-events. The test command's parent process still subscribes to the
-harness IPC bus for fast-path pass/fail decisions independently.
+The renderer consumes only on-disk events. The test command's
+parent process subscribes to the harness IPC bus for fast-path
+pass/fail decisions independently. The driver is also reused by
+sealed-mode consumers (replay command) -- pass C<log =E<gt> $log>
+to use a pre-built backend, or C<logdir =E<gt> $dir> to open a
+live workdir.
 
 =head1 SOURCE
 
