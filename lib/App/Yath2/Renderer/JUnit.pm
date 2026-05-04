@@ -102,6 +102,12 @@ sub render_event {
 
     my $test = $self->{'tests'}->{$job_id};
 
+    # If we have not yet seen `harness_job_start` for this job_id we have
+    # no testsuite scaffolding to attach to. Drop the event silently --
+    # this happens when the renderer joins a run mid-stream, or when an
+    # out-of-order delivery puts a per-job event ahead of its job_start.
+    return unless $test;
+
     # We have all the data. Print the XML.
     if ( $f->{'harness_job_end'} ) {
         $self->close_open_failure_testcase( $test, -1 );
