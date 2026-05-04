@@ -1278,6 +1278,28 @@ sub run_on_pid {
         $self->_release_job_resources($cur);
         $self->_scheduler_mark_done($run->run_id, $job_id);
 
+        # Stamp a synth completion onto the mirror Run::State so
+        # _snapshot_run_results counts the orphan as a fail rather
+        # than skipping it for missing completed_at. Aggregate pass
+        # math depends on every started job having a recorded result.
+        my $rstate = $self->{+RUN_STATES}->{$run->run_id};
+        if ($rstate) {
+            my $entry = $rstate->{results}{$job_id} //= {};
+            my $job   = $cur->{job};
+            $entry->{job_try}      //= $job ? $job->job_try : undef;
+            if ($job && $job->can('test_file_abs')) {
+                $entry->{abs_file} //= $job->test_file_abs;
+                $entry->{rel_file} //= $job->test_file_rel;
+            }
+            $entry->{exit}          = $exit;
+            $entry->{pass}          = 0;
+            $entry->{pass_count}  //= 0;
+            $entry->{fail_count}  //= 0;
+            $entry->{completed_at}  = time;
+            $entry->{stamp}        //= $entry->{completed_at};
+            $entry->{orphaned}      = 1;
+        }
+
         $self->_finalize_run_if_complete($run);
 
         return;
