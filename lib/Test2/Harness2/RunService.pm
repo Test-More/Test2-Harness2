@@ -450,11 +450,20 @@ sub run_on_interval {
 
         my $raw = $entry->{raw_exit_on_reap};
         $self->_handle_gen_msg_test_job_completed({
-            run_id  => $entry->{run_id},
-            job_id  => $job_id,
-            job_try => $entry->{job_try},
-            exit    => $raw,
-            synth   => 1,
+            run_id     => $entry->{run_id},
+            job_id     => $job_id,
+            job_try    => $entry->{job_try},
+            exit       => $raw,
+            # Explicitly stamp a failed-with-zero-counts result so
+            # downstream renderers can distinguish "synthesized
+            # completion of a vanished collector" from "completion with
+            # unknown counts". Undef pass_count / fail_count would
+            # otherwise propagate to the renderer surface.
+            pass       => 0,
+            pass_count => 0,
+            fail_count => 0,
+            stamp      => time,
+            synth      => 1,
         });
     }
 
