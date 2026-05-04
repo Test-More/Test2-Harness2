@@ -1,4 +1,4 @@
-package App::Yath2::LogArchive::Directory;
+package App::Yath2::Log::Directory;
 use strict;
 use warnings;
 
@@ -9,7 +9,7 @@ use File::Find ();
 use File::Path qw/make_path/;
 use File::Spec ();
 
-use parent 'App::Yath2::LogArchive';
+use parent 'App::Yath2::Log';
 use Object::HashBase qw/path live/;
 
 # Directory backend. Handles two cases with one implementation:
@@ -140,8 +140,8 @@ sub archive {
     my ($self, $out, %opts) = @_;
     croak "output path is required" unless defined $out && length $out;
 
-    require App::Yath2::LogArchive::TarZIdx;
-    my $arc = App::Yath2::LogArchive::TarZIdx->new(path => $out);
+    require App::Yath2::Log::TarZIdx;
+    my $arc = App::Yath2::Log::TarZIdx->new(path => $out);
     $arc->_write_from_directory($self->{+PATH});
     return $arc;
 }
@@ -161,7 +161,7 @@ sub extract {
     my $compressed = exists $opts{compressed} ? $opts{compressed} : 1;
 
     make_path($dir);
-    require App::Yath2::LogArchive::Directory;
+    require App::Yath2::Log::Directory;
 
     for my $rel ($self->list_files) {
         my $is_zst  = $rel =~ /\.zst\z/;
@@ -189,7 +189,7 @@ sub extract {
         close $out or croak "close $out_abs: $!";
     }
 
-    return App::Yath2::LogArchive::Directory->new(path => $dir, live => 0);
+    return App::Yath2::Log::Directory->new(path => $dir, live => 0);
 }
 
 # }}}
@@ -226,7 +226,7 @@ __END__
 
 =head1 NAME
 
-App::Yath2::LogArchive::Directory - Directory-backed LogArchive backend.
+App::Yath2::Log::Directory - Directory-backed Log backend.
 
 =head1 DESCRIPTION
 
@@ -234,7 +234,7 @@ Reads and writes a yath log tree laid out as a regular filesystem
 directory. Handles both the live workdir case (the harness is
 actively writing into it) and the extracted-dir case (post
 C<yath extract>). The only behavioral difference is whether an
-L<App::Yath2::LogArchive::Artifact> wraps a
+L<App::Yath2::Log::Artifact> wraps a
 L<Test2::Harness2::Util::FileMonitor> for change polling (live) or
 short-circuits to a one-shot change signal (static).
 
@@ -248,7 +248,7 @@ The root of the log tree.
 
 =item live (optional, defaults to autodetect)
 
-Boolean. C<1> means "treat as live": L<App::Yath2::LogArchive::Artifact/watch>
+Boolean. C<1> means "treat as live": L<App::Yath2::Log::Artifact/watch>
 yields a FileMonitor that drives a real change-detection loop.
 C<0> means "treat as static": the FileMonitor short-circuits to
 "first check truthy, every later check zero".
@@ -260,14 +260,14 @@ the log root. Pass an explicit value to override.
 
 =head1 METHODS
 
-In addition to the inherited L<App::Yath2::LogArchive> API:
+In addition to the inherited L<App::Yath2::Log> API:
 
 =over 4
 
 =item $tar = $dir->archive($out_file, compressed => $bool)
 
 Pack this directory into a tar.zidx archive at C<$out_file>.
-Returns an L<App::Yath2::LogArchive::TarZIdx> instance pointing at
+Returns an L<App::Yath2::Log::TarZIdx> instance pointing at
 the new file.
 
 =item $new_dir = $dir->extract($dest_dir, compressed => $bool)
@@ -276,7 +276,7 @@ Copy this directory into C<$dest_dir>. With C<compressed =E<gt> 0>
 (the C<yath extract> default), C<.zst> entries are decompressed
 and their suffixes stripped. With C<compressed =E<gt> 1>, files
 are copied verbatim. Returns a new
-L<App::Yath2::LogArchive::Directory> instance pointing at the
+L<App::Yath2::Log::Directory> instance pointing at the
 destination.
 
 =back

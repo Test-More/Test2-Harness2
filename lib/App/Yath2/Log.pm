@@ -1,4 +1,4 @@
-package App::Yath2::LogArchive;
+package App::Yath2::Log;
 use strict;
 use warnings;
 
@@ -24,7 +24,7 @@ use Test2::Harness2::LogLayout qw/
     run_events_basename
 /;
 
-use App::Yath2::LogArchive::Artifact;
+use App::Yath2::Log::Artifact;
 
 # Logger class lookup is by extension: an artifact ending in .xyz is
 # produced by Test2::Harness2::Collector::Logger::XYZ (also tried with
@@ -41,9 +41,9 @@ use constant LOGGER_NAMESPACE => 'Test2::Harness2::Collector::Logger';
 # the right backend. Direct construction (when the kind is already
 # known) goes through the backend's own ->new.
 #
-#     App::Yath2::LogArchive->open(file => '/path/to/run.yath')  # TarZIdx
-#     App::Yath2::LogArchive->open(dir  => '/path/to/logs')      # Directory
-#     App::Yath2::LogArchive->open(path => $auto)                # -d decides
+#     App::Yath2::Log->open(file => '/path/to/run.yath')  # TarZIdx
+#     App::Yath2::Log->open(dir  => '/path/to/logs')      # Directory
+#     App::Yath2::Log->open(path => $auto)                # -d decides
 sub open {
     my ($class, %args) = @_;
 
@@ -73,12 +73,12 @@ sub open {
     }
 
     if ($is_dir) {
-        require App::Yath2::LogArchive::Directory;
-        return App::Yath2::LogArchive::Directory->new(path => $path, %args);
+        require App::Yath2::Log::Directory;
+        return App::Yath2::Log::Directory->new(path => $path, %args);
     }
 
-    require App::Yath2::LogArchive::TarZIdx;
-    return App::Yath2::LogArchive::TarZIdx->new(path => $path, %args);
+    require App::Yath2::Log::TarZIdx;
+    return App::Yath2::Log::TarZIdx->new(path => $path, %args);
 }
 
 # }}}
@@ -401,7 +401,7 @@ sub artifact {
 
         for my $cand ("$logical.$ext.zst", "$logical.$ext") {
             next unless $self->has_file($cand);
-            return App::Yath2::LogArchive::Artifact->new(
+            return App::Yath2::Log::Artifact->new(
                 archive      => $self,
                 relpath      => $cand,
                 logical_name => $logical,
@@ -512,16 +512,16 @@ __END__
 
 =head1 NAME
 
-App::Yath2::LogArchive - Read and write yath log archives.
+App::Yath2::Log - Read and write yath log archives.
 
 =head1 SYNOPSIS
 
-    use App::Yath2::LogArchive;
+    use App::Yath2::Log;
 
     # Factory: open an existing archive (directory or .yath file).
-    my $la = App::Yath2::LogArchive->open(file => '/path/to/run.yath');
-    my $la = App::Yath2::LogArchive->open(dir  => '/path/to/logs');
-    my $la = App::Yath2::LogArchive->open(path => $auto);    # detects
+    my $la = App::Yath2::Log->open(file => '/path/to/run.yath');
+    my $la = App::Yath2::Log->open(dir  => '/path/to/logs');
+    my $la = App::Yath2::Log->open(path => $auto);    # detects
 
     # Listing.
     my @runs = $la->runs;
@@ -540,20 +540,20 @@ App::Yath2::LogArchive - Read and write yath log archives.
     my $a = $la->artifact('runs/RUN/events',
                           prefer => ['jsonl', 'csv']);
 
-    # Transform ops (return the new LogArchive instance).
-    my $arc = App::Yath2::LogArchive->open(dir => '/logs')
+    # Transform ops (return the new Log instance).
+    my $arc = App::Yath2::Log->open(dir => '/logs')
                   ->archive('/out/run.yath');
 
-    my $dir = App::Yath2::LogArchive->open(file => '/out/run.yath')
+    my $dir = App::Yath2::Log->open(file => '/out/run.yath')
                   ->extract('/out/extracted');
 
 =head1 DESCRIPTION
 
 Single-interface, dual-backend abstraction over a yath log tree.
 Two backends ship in-tree: a directory backend
-(L<App::Yath2::LogArchive::Directory>) that reads and writes a live
+(L<App::Yath2::Log::Directory>) that reads and writes a live
 or extracted log directory, and a tar.zidx backend
-(L<App::Yath2::LogArchive::TarZIdx>) that reads and writes the
+(L<App::Yath2::Log::TarZIdx>) that reads and writes the
 single-file C<.yath> archive format yath produces.
 
 The base class is the factory + shared methods. Subclasses fill in
@@ -562,11 +562,11 @@ C<archive>, and C<extract>.
 
 =head1 SEE ALSO
 
-L<App::Yath2::LogArchive::Directory> -- directory backend.
+L<App::Yath2::Log::Directory> -- directory backend.
 
-L<App::Yath2::LogArchive::TarZIdx> -- tar.zidx backend.
+L<App::Yath2::Log::TarZIdx> -- tar.zidx backend.
 
-L<App::Yath2::LogArchive::Artifact> -- handle for an individual
+L<App::Yath2::Log::Artifact> -- handle for an individual
 artifact.
 
 L<Test2::Harness2::LogLayout> -- path templates.

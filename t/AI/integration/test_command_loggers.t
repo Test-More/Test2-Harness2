@@ -23,7 +23,7 @@ my $idx_root = tempdir(CLEANUP => 1);
 $ENV{XDG_RUNTIME_DIR} = $idx_root;
 
 use App::Yath2::Command::test;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
 package Fake::Workspace;
 sub new                  { bless {workdir => $_[1]}, $_[0] }
@@ -79,7 +79,7 @@ package Fake::Tests;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
 
-package Fake::LogArchive;
+package Fake::Log;
 sub new  { bless {}, $_[0] }
 sub file { undef }
 sub dir  { undef }
@@ -97,7 +97,7 @@ sub new {
         finder      => Fake::Finder->new,
         resource    => Fake::Resource->new,
         tests       => Fake::Tests->new,
-        log_archive => Fake::LogArchive->new,
+        log => Fake::Log->new,
     } => $class;
 }
 sub workspace   { $_[0]->{workspace} }
@@ -108,7 +108,7 @@ sub term        { $_[0]->{term} }
 sub finder      { $_[0]->{finder} }
 sub resource    { $_[0]->{resource} }
 sub tests       { $_[0]->{tests} }
-sub log_archive { $_[0]->{log_archive} }
+sub log { $_[0]->{log} }
 sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;
@@ -171,7 +171,7 @@ like(
     'archive name uses ${project}-${user}-${stamp}-${pid}.yath pattern',
 );
 
-my $la    = App::Yath2::LogArchive->open(path => $archive);
+my $la    = App::Yath2::Log->open(path => $archive);
 my %files = map { $_ => 1 } $la->list_files;
 
 ok($files{'services/harness/events.jsonl.zst'}, 'archive contains harness JSONL log');

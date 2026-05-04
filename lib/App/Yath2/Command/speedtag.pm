@@ -10,7 +10,7 @@ use Cwd qw/getcwd/;
 use Test2::Harness2::Util qw/clean_path/;
 use Test2::Harness2::Util::File::JSON;
 
-use App::Yath2::LogArchive();
+use App::Yath2::Log();
 use App::Yath2::Streamer::Static();
 
 use Role::Tiny::With;
@@ -95,7 +95,7 @@ sub run {
 
     my $log = shift @$args;
     unless (defined $log && length $log) {
-        $log = App::Yath2::LogArchive->find_latest($settings);
+        $log = App::Yath2::Log->find_latest($settings);
         print STDERR "yath speedtag: using latest archive: $log\n"
             if defined $log && length $log;
     }
@@ -112,8 +112,8 @@ sub run {
     die "max medium duration must be an integer, got '$self->{+MAX_MEDIUM}'\n"
         unless $self->{+MAX_MEDIUM} && $self->{+MAX_MEDIUM} =~ m/^\d+$/;
 
-    require App::Yath2::LogArchive;
-    my @runs = App::Yath2::LogArchive->open(path => $log)->runs;
+    require App::Yath2::Log;
+    my @runs = App::Yath2::Log->open(path => $log)->runs;
     die "No runs found in '$log'\n" unless @runs;
 
     my $streamer = App::Yath2::Streamer::Static->new(

@@ -1,4 +1,4 @@
-package App::Yath2::Options::LogArchive;
+package App::Yath2::Options::Log;
 use strict;
 use warnings;
 
@@ -6,12 +6,12 @@ our $VERSION = '2.000011';
 
 use Getopt::Yath;
 
-option_group {group => 'log_archive', category => 'Log Archive Options'} => sub {
+option_group {group => 'log', category => 'Log Options'} => sub {
     option log => (
         type        => 'Bool',
         short       => 'L',
         default     => 0,
-        description => 'Turn on user-visible log archiving. The archive is written by App::Yath2::LogArchive; --log-file or --log-dir choose the destination.',
+        description => 'Turn on user-visible log archiving. The archive is written by App::Yath2::Log; --log-file or --log-dir choose the destination.',
     );
 
     option dir => (
@@ -38,17 +38,17 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Options::LogArchive - User-facing log archive destination options
+App::Yath2::Options::Log - User-facing log archive destination options
 (--log / -L, --log-dir, --log-file / -F).
 
 =head1 DESCRIPTION
 
-Defines the C<log_archive> option group consumed by C<yath test> (and
+Defines the C<log> option group consumed by C<yath test> (and
 any future command that wants the same destination semantics) to
 choose where the run's log archive is written.
 
 The actual archive write happens in the consuming command; this
-module only owns the option parsing and the C<$settings-E<gt>log_archive>
+module only owns the option parsing and the C<$settings-E<gt>log>
 accessor.
 
 =head1 SOURCE

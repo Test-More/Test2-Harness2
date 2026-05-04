@@ -7,7 +7,7 @@ our $VERSION = '2.000011';
 use File::Spec ();
 use POSIX qw/strftime/;
 
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
 use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
@@ -68,7 +68,7 @@ sub run {
 
     print "Archiving '$logdir' as '$archive'\n";
 
-    App::Yath2::LogArchive->open(dir => $logdir)->archive($archive);
+    App::Yath2::Log->open(dir => $logdir)->archive($archive);
 
     print "Wrote archive: $archive\n";
     return 0;

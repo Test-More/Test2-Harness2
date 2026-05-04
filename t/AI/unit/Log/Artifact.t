@@ -1,9 +1,9 @@
 use Test2::V0;
 
 use File::Temp qw/tempdir/;
-use App::Yath2::LogArchive::Artifact;
+use App::Yath2::Log::Artifact;
 
-# Build a minimal LogArchive-shaped backend that satisfies the
+# Build a minimal Log-shaped backend that satisfies the
 # Artifact's needs: static() and absolute_path($rel). Two flavours:
 # a live backend (where ->watch wraps a FileMonitor that drives a
 # real stat loop) and a static backend (where ->watch returns a
@@ -36,7 +36,7 @@ my $dir = tempdir(CLEANUP => 1);
     close $fh;
 
     my $arc = T2H2_FakeStaticArchive->new(path => $dir);
-    my $a   = App::Yath2::LogArchive::Artifact->new(
+    my $a   = App::Yath2::Log::Artifact->new(
         archive      => $arc,
         relpath      => 'state.json',
         logger_class => 'Test2::Harness2::Collector::Logger::JSON',
@@ -70,7 +70,7 @@ my $dir = tempdir(CLEANUP => 1);
     close $fh;
 
     my $arc = T2H2_FakeStaticArchive->new(path => $dir);
-    my $a   = App::Yath2::LogArchive::Artifact->new(
+    my $a   = App::Yath2::Log::Artifact->new(
         archive      => $arc,
         relpath      => 'events.jsonl',
         logger_class => 'Test2::Harness2::Collector::Logger::JSONL',
@@ -99,7 +99,7 @@ my $dir = tempdir(CLEANUP => 1);
     close $fh;
 
     my $arc = T2H2_FakeLiveArchive->new(path => $dir);
-    my $a   = App::Yath2::LogArchive::Artifact->new(
+    my $a   = App::Yath2::Log::Artifact->new(
         archive      => $arc,
         relpath      => 'live.json',
         logger_class => 'Test2::Harness2::Collector::Logger::JSON',
@@ -126,7 +126,7 @@ my $dir = tempdir(CLEANUP => 1);
 {
     like(
         dies {
-            App::Yath2::LogArchive::Artifact->new(
+            App::Yath2::Log::Artifact->new(
                 archive      => T2H2_FakeStaticArchive->new(path => $dir),
                 relpath      => 'x',
                 logger_class => 'Foo',
@@ -139,7 +139,7 @@ my $dir = tempdir(CLEANUP => 1);
 
     like(
         dies {
-            App::Yath2::LogArchive::Artifact->new(
+            App::Yath2::Log::Artifact->new(
                 relpath      => 'x',
                 logger_class => 'Foo',
                 update_type  => 'append',
@@ -154,7 +154,7 @@ my $dir = tempdir(CLEANUP => 1);
 # artifact) is a programming error.
 {
     my $arc = T2H2_FakeStaticArchive->new(path => $dir);
-    my $a   = App::Yath2::LogArchive::Artifact->new(
+    my $a   = App::Yath2::Log::Artifact->new(
         archive      => $arc,
         relpath      => 'events.jsonl',
         logger_class => 'Test2::Harness2::Collector::Logger::JSONL',

@@ -9,7 +9,7 @@ use App::Yath2::Command::failed;
 
 # Build a synthetic log directory carrying a single run with two
 # completed jobs (one pass, one fail). The streamer reads this back
-# via App::Yath2::LogArchive::Directory and the command groups by
+# via App::Yath2::Log::Directory and the command groups by
 # rel_file. Subtest collection walks the per-job JSONLs directly via
 # the archive so any parent/assert facets there get picked up.
 

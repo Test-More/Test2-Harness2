@@ -1435,7 +1435,7 @@ namespaces**, each with its own responsibility:
 |----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `Test2::Harness2`          | The primary harness runtime. Spins up services and resources, executes runs, captures output and results, cleans up processes. Described above.                                                                                                                                                                                                |
 | `Test2::Formatter::Stream2` | The in-test Test2 formatter that serialises events over atomic pipes to the collector. Lives outside the `Test2::Harness2` namespace because it loads inside test processes. See §21.                                                                                                                                                          |
-| `App::Yath2`               | The new application layer. Built on `App::Yath::Script` and `Getopt::Yath`. Turns user input (`yath ...` commands, config files) into requests to start or utilise `Test2::Harness2` services. Handles test discovery, deciding which loggers to attach, assembling runs, starting and stopping harness services, the artifact-reading layer that feeds renderers (see §13), and log-archive create / extract utilities. |
+| `App::Yath2`               | The new application layer. Built on `App::Yath::Script` and `Getopt::Yath`. Turns user input (`yath ...` commands, config files) into requests to start or utilise `Test2::Harness2` services. Handles test discovery, deciding which loggers to attach, assembling runs, starting and stopping harness services, the artifact-reading layer that feeds renderers (see §13), and log create / extract utilities. |
 | `App::Yath2::DB`             | Optional. Defines how to store and reference logs of runs in a database.                                                                                                                                                                                                                                                                        |
 | `App::Yath2::UI`             | Optional. A web interface over an `App::Yath2::DB` database.                                                                                                                                                                                                                                                                                      |
 
@@ -2085,7 +2085,7 @@ run-scoped service's own lifecycle records. Each service gets its
 own `services/<name>/` directory; per-logger leaves land inside
 (`events.jsonl` from `Logger::JSONL`, `state.json` from
 `Logger::JSON`). The directory itself is the run-scoped service
-existence signal -- `LogArchive::services($run_id)` walks the
+existence signal -- `Log::services($run_id)` walks the
 immediate children of `runs/<run>/services/`. Produced when a
 `Logger::JSONL` / `Logger::JSON` is attached to the service's
 collector (not by default).
@@ -2100,7 +2100,7 @@ Each service has its own `services/<name>/` directory; per-logger
 leaves are `events.jsonl` (from `Logger::JSONL`) and `state.json`
 (from `Logger::JSON`). The directory itself is the
 harness-scoped service existence signal --
-`LogArchive::services()` walks the immediate children of
+`Log::services()` walks the immediate children of
 `services/`. Produced only when `Logger::JSONL` / `Logger::JSON`
 are attached to the service collector.
 
@@ -2352,7 +2352,7 @@ archive format yath produces or reads. Tar manipulation is pure Perl
 prereq). Normal write / read flow never spawns an external process.
 
 The `tar.zidx` reader and writer live in a single consolidated
-module at `lib/App/Yath2/LogArchive/TarZIdx.pm`. Per-entry index
+module at `lib/App/Yath2/Log/TarZIdx.pm`. Per-entry index
 entries gain an `inner` field (`"zstd"` for plaintext sources
 wrapped in an inner zstd frame, `"none"` for already-`.zst` source
 files stored verbatim).
@@ -2396,13 +2396,13 @@ for debugging or training-input pipelines.
 See `AI_DOCS/2026-04-29-full-audit-refactor.md` for the full
 record. Headline deviations from the rest of this document:
 
-### `App::Yath2::LogArchive::Format` is gone
+### `App::Yath2::Log::Format` is gone
 
 Format detection collapses to a `-d` test on the path. The
 catalogue indirection only made sense when there were multiple
 archive formats; tar.zidx is the only one yath produces. The
 `TAR_ZIDX_MAGIC` / `TAR_ZIDX_FOOTER_LEN` constants live in
-`LogArchive::TarZIdx`. `viable()` and `default_writer_format()` no
+`Log::TarZIdx`. `viable()` and `default_writer_format()` no
 longer exist.
 
 ### Loggers identify themselves by class name, not `file_ext`
@@ -2410,14 +2410,14 @@ longer exist.
 The `file_ext` requirement on `Test2::Harness2::Role::Collector::Logger`
 is dropped. An artifact with extension `.xyz` is produced by
 `Test2::Harness2::Collector::Logger::XYZ` (also tried as `Xyz` and
-`xyz`). `LogArchive` resolves the class on demand per ext and
+`xyz`). `Log` resolves the class on demand per ext and
 caches the result.
 
 ### `artifacts.json[.zst]` manifest is dropped
 
 `Test2::Harness2::_write_artifacts_manifest` and the per-run
 counterpart in `RunService` are removed. The on-disk manifest is
-no longer a thing. `LogArchive::artifacts` and `iter_artifacts`
+no longer a thing. `Log::artifacts` and `iter_artifacts`
 walk `list_files()` and dispatch by extension. `manifest_drift()`
 is gone.
 
@@ -2431,7 +2431,7 @@ The directory itself is the existence signal -- empty
 `runs/<id>/`, `runs/<id>/tests/<job>/`, and
 `services/<name>/` directories all count. The previous
 `spec.json[.zst]` marker check and the `include_empty` option are
-gone. `LogArchive` gains a `list_dirs()` backend method; the
+gone. `Log` gains a `list_dirs()` backend method; the
 Directory backend walks the filesystem, the TarZIdx backend reads
 explicit directory entries from the index and additionally derives
 parent-of-file paths so older archives still report their
@@ -2456,19 +2456,19 @@ per-logger leaf is the producer's class basename role
 `Test2::Harness2::Collector::Logger::JSON` handles the event by
 writing `runs/<run_id>/spec.json.zst`, gated on `is_run`.
 
-### `App::Yath2::LogArchive::Role::ChangeWatch` is gone
+### `App::Yath2::Log::Role::ChangeWatch` is gone
 
 Replaced by a `static` flag on `FileMonitor` and on the
-`LogArchive` base class. `Artifact` no longer carries change-watch
+`Log` base class. `Artifact` no longer carries change-watch
 methods; instead it exposes `->watch` returning a fresh
-`FileMonitor` with the artifact as the delegate. `LogArchive`
+`FileMonitor` with the artifact as the delegate. `Log`
 gains `watch_artifact($logical)` as a one-liner shortcut.
 
 ### `Test2::Harness2::Util::CwdIndex` is gone
 
 Replaced by `./last_log.yath` (an unconditional symlink the test
 command writes after every archive) plus
-`App::Yath2::LogArchive->find_latest($settings)` (canonical no-arg
+`App::Yath2::Log->find_latest($settings)` (canonical no-arg
 discovery: symlink first, else glob `${TMPDIR}/${project}-${user}-*.yath`
 sorted by stamp + hi-res mtime tiebreak; refuses to glob when
 project resolves to `__UNKNOWN__`).
@@ -2492,11 +2492,11 @@ to a project-prefixed form:
 `find_ipc_files` filters by `command =>`. The `nonce`/`persistent`
 type tag is gone from the JSON payload too.
 
-### `Options::Logging` -> `Options::LogArchive`
+### `Options::Logging` -> `Options::Log`
 
 The user-facing log archive destination options live in
-`App::Yath2::Options::LogArchive` (group `log_archive`, category
-"Log Archive Options"). `Renderer::Logger`'s separate `logging`
+`App::Yath2::Options::Log` (group `log`, category
+"Log Options"). `Renderer::Logger`'s separate `logging`
 group is unrelated and unaffected.
 
 ### `Util::Zstd::Writer->say` embeds the newline in the frame

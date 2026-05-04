@@ -9,7 +9,7 @@ use File::Find ();
 use File::Path qw/make_path/;
 use File::Spec ();
 
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 use Compress::Zstd ();
 use Test2::Harness2::Util::Zstd qw/zstd_frame_size/;
 
@@ -66,7 +66,7 @@ sub run {
 
     my $archive = shift @$args;
     unless (defined $archive && length $archive) {
-        $archive = App::Yath2::LogArchive->find_latest($self->{+SETTINGS});
+        $archive = App::Yath2::Log->find_latest($self->{+SETTINGS});
         print STDERR "yath extract: using latest archive: $archive\n"
             if defined $archive && length $archive;
     }
@@ -83,7 +83,7 @@ sub run {
     make_path($dest) or die "could not create destination '$dest': $!\n"
         unless -d $dest;
 
-    my $la = App::Yath2::LogArchive->open(path => $archive);
+    my $la = App::Yath2::Log->open(path => $archive);
 
     print "Extracting '$archive' to '$dest' (format: " . _format_for($la) . ")\n";
 
@@ -126,7 +126,7 @@ sub run {
 sub _format_for {
     my ($la) = @_;
     my $class = ref $la;
-    return $class =~ s/^App::Yath2::LogArchive:://r;
+    return $class =~ s/^App::Yath2::Log:://r;
 }
 
 # Walk the extracted tree, decompress every .zst file in place to its

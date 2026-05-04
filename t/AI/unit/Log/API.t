@@ -2,7 +2,7 @@ use Test2::V0;
 
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 use Test2::Harness2::Util::JSON qw/write_json_zst_file_atomic/;
 
 my $dir = tempdir(CLEANUP => 1);
@@ -16,7 +16,7 @@ make_path("$dir/runs/R2");
 # (global or run-scoped) lives under its own per-name directory and
 # carries one file per logger leaf. Contents stay empty/zero -- they
 # are only used to confirm existence and the extension -> logger-class
-# lookup (LogArchive derives the producing logger from the on-disk
+# lookup (Log derives the producing logger from the on-disk
 # extension, no manifest needed).
 open my $fh, '>', "$dir/services/harness/events.jsonl.zst" or die $!; close $fh;
 open $fh,    '>', "$dir/services/harness/state.json.zst"   or die $!; close $fh;
@@ -32,8 +32,8 @@ write_json_zst_file_atomic(
     {run_id => 'R1', created_at => 1, jobs => []},
 );
 
-my $la = App::Yath2::LogArchive->open(path => $dir);
-isa_ok($la, 'App::Yath2::LogArchive::Directory');
+my $la = App::Yath2::Log->open(path => $dir);
+isa_ok($la, 'App::Yath2::Log::Directory');
 
 is(
     $la->artifacts,

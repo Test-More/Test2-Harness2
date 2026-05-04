@@ -3,7 +3,7 @@ use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
 
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 use App::Yath2::Streamer::Static;
 
 my $tmp   = tempdir(CLEANUP => 1);
@@ -38,7 +38,7 @@ write_json_file_atomic("$logs/runs/RUN1/state.json", $state);
 
 # Pack the logs directory as a .yath archive.
 my $archive_path = "$tmp/run.yath";
-App::Yath2::LogArchive->open(dir => $logs)->archive($archive_path);
+App::Yath2::Log->open(dir => $logs)->archive($archive_path);
 ok(-f $archive_path, "archive written at $archive_path");
 
 # Streamer opens the archive directly.

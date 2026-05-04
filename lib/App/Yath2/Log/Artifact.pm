@@ -1,4 +1,4 @@
-package App::Yath2::LogArchive::Artifact;
+package App::Yath2::Log::Artifact;
 use strict;
 use warnings;
 
@@ -44,11 +44,11 @@ use Object::HashBase qw{
 #     call repeatedly; consumers that want one watcher should hold
 #     onto its result.
 #
-# Construction is normally driven by App::Yath2::LogArchive->artifact.
+# Construction is normally driven by App::Yath2::Log->artifact.
 #
 # Required attributes:
 #
-#   archive       The owning LogArchive backend.
+#   archive       The owning Log backend.
 #   relpath       Physical relative path inside the archive (e.g.
 #                 'runs/<run>/events.jsonl').
 #   logger_class  The logger class that produced this artifact (used
@@ -235,11 +235,11 @@ __END__
 
 =head1 NAME
 
-App::Yath2::LogArchive::Artifact - Handle into one logical artifact in a log archive.
+App::Yath2::Log::Artifact - Handle into one logical artifact in a log archive.
 
 =head1 DESCRIPTION
 
-Returned by L<App::Yath2::LogArchive/artifact>. Wraps one logger's
+Returned by L<App::Yath2::Log/artifact>. Wraps one logger's
 output (one logical artifact -- typically backed by one physical
 file). Provides three methods:
 
@@ -291,7 +291,7 @@ repeatedly.
 
 =item archive (required)
 
-The owning LogArchive backend.
+The owning Log backend.
 
 =item relpath (required)
 

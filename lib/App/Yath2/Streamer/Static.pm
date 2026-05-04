@@ -35,14 +35,14 @@ sub _bootstrap {
     croak "Static streamer requires a directory or log archive; got '$log'"
         unless -d $log || -f $log;
 
-    # Both the directory and archive forms flow through LogArchive --
+    # Both the directory and archive forms flow through Log --
     # the Directory backend handles bare directories, the Tar / Zip /
     # SevenZip backends handle archives -- so the rest of this class
     # reads artifacts(), runs(), read_file(), etc. uniformly. Require
     # lazily so live-only callers do not drag in the archive backends.
-    require App::Yath2::LogArchive;
+    require App::Yath2::Log;
 
-    my $archive = App::Yath2::LogArchive->open(path => $log);
+    my $archive = App::Yath2::Log->open(path => $log);
     $self->{+ARCHIVE}           = $archive;
     $self->{+ARCHIVE_EXTRACTED} = {};
 
@@ -112,7 +112,7 @@ sub _resolve_path {
     my ($self, $rel) = @_;
 
     my $archive = $self->{+ARCHIVE};
-    if ($archive->isa('App::Yath2::LogArchive::Directory')) {
+    if ($archive->isa('App::Yath2::Log::Directory')) {
         my $abs = "$self->{+LOG}/$rel";
         return -e $abs ? $abs : undef;
     }
@@ -315,7 +315,7 @@ App::Yath2::Streamer::Static - Static streamer: replay a completed log archive.
 =head1 DESCRIPTION
 
 Replays events from a completed log directory or C<.yath> archive
-via L<App::Yath2::LogArchive>. Synthesises lifecycle facets from
+via L<App::Yath2::Log>. Synthesises lifecycle facets from
 the final state snapshot each C<records_state> logger recorded,
 and passes events from C<records_general_events> loggers through
 unchanged.
@@ -336,7 +336,7 @@ L<App::Yath2::Streamer::Live> for the live-harness counterpart.
 
 Either a directory path (e.g. C<$workdir/logs>) or a C<.yath>
 archive file. The directory form is consumed via
-L<App::Yath2::LogArchive::Directory>, the archive form picks the
+L<App::Yath2::Log::Directory>, the archive form picks the
 right backend based on the file signature.
 
 =item global / run / runs

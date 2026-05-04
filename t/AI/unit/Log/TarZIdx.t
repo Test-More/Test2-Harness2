@@ -1,9 +1,9 @@
 use Test2::V0;
 
 use File::Temp qw/tempdir tempfile/;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
-use App::Yath2::LogArchive::TarZIdx;
+use App::Yath2::Log::TarZIdx;
 
 my $src = tempdir(CLEANUP => 1);
 mkdir "$src/sub" or die $!;
@@ -20,12 +20,12 @@ close $fh;
 my (undef, $out) = tempfile(OPEN => 0, SUFFIX => '.tar.zidx', UNLINK => 1);
 unlink $out;
 
-App::Yath2::LogArchive->open(dir => $src)->archive($out);
+App::Yath2::Log->open(dir => $src)->archive($out);
 ok(-s $out, 'output non-empty');
 
-my $la = App::Yath2::LogArchive->open(path => $out);
+my $la = App::Yath2::Log->open(path => $out);
 ok(
-    ref($la) eq 'App::Yath2::LogArchive::TarZIdx',
+    ref($la) eq 'App::Yath2::Log::TarZIdx',
     'reader resolves to TarZIdx backend (' . ref($la) . ')'
 );
 

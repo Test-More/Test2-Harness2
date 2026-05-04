@@ -7,7 +7,7 @@ use lib 't/lib';
 use Test2::Harness2::TestFile;
 use Test2::Harness2::Test::Loggers qw/classic_harness_loggers classic_test_loggers/;
 use Test2::Harness2;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
 sub wait_until {
     my ($check, $timeout_sec) = @_;
@@ -47,8 +47,8 @@ wait_until(
 $spawn->finish;
 $spawn->wait;
 
-my $dir_la = App::Yath2::LogArchive->open(path => "$dir/logs");
-isa_ok($dir_la, 'App::Yath2::LogArchive::Directory');
+my $dir_la = App::Yath2::Log->open(path => "$dir/logs");
+isa_ok($dir_la, 'App::Yath2::Log::Directory');
 
 my @runs = $dir_la->runs;
 is(scalar(@runs), 1, 'exactly one run on disk');
@@ -68,12 +68,12 @@ ok(
 
 my (undef, $archive) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
 unlink $archive;
-App::Yath2::LogArchive->open(dir => "$dir/logs")->archive($archive);
+App::Yath2::Log->open(dir => "$dir/logs")->archive($archive);
 ok(-s $archive, 'archive non-empty');
 
-my $arc_la = App::Yath2::LogArchive->open(path => $archive);
+my $arc_la = App::Yath2::Log->open(path => $archive);
 ok(
-    ref($arc_la) =~ /^App::Yath2::LogArchive::TarZIdx/,
+    ref($arc_la) =~ /^App::Yath2::Log::TarZIdx/,
     'opened tar.zidx backend (' . ref($arc_la) . ')'
 );
 

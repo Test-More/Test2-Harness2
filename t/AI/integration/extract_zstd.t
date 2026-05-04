@@ -6,7 +6,7 @@ use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 use File::Spec ();
 
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 use App::Yath2::Command::archive;
 use App::Yath2::Command::extract;
 use Test2::Harness2::Util::Zstd qw/compress_blob compress_file_atomic/;
@@ -103,14 +103,14 @@ subtest 'archive + extract (default decompresses)' => sub {
     # The extracted tree is itself a valid Directory-shape archive
     # (yath replay /tmp/extracted/ should work). Loggers are now
     # resolved by extension at read time -- no manifest required.
-    my $la = App::Yath2::LogArchive->open(path => $dest);
+    my $la = App::Yath2::Log->open(path => $dest);
     is(
         $la->artifacts,
         {
             append  => { 'services/harness/events' => ['services/harness/events.jsonl'] },
             replace => { 'services/harness/state'  => ['services/harness/state.json']   },
         },
-        'LogArchive::Directory reads the extracted tree (append/replace shape)',
+        'Log::Directory reads the extracted tree (append/replace shape)',
     );
 };
 

@@ -9,7 +9,7 @@ use Cwd qw/getcwd/;
 
 use Test2::Util::Times qw/render_duration/;
 
-use App::Yath2::LogArchive();
+use App::Yath2::Log();
 use App::Yath2::Streamer::Static();
 
 use Role::Tiny::With;
@@ -72,7 +72,7 @@ sub run {
 
     my $log = shift @$args;
     unless (defined $log && length $log) {
-        $log = App::Yath2::LogArchive->find_latest($self->{+SETTINGS});
+        $log = App::Yath2::Log->find_latest($self->{+SETTINGS});
         print STDERR "yath times: using latest archive: $log\n"
             if defined $log && length $log;
     }
@@ -91,8 +91,8 @@ sub run {
     }
     $self->{+FIELDS} = \@fields;
 
-    require App::Yath2::LogArchive;
-    my @runs = App::Yath2::LogArchive->open(path => $log)->runs;
+    require App::Yath2::Log;
+    my @runs = App::Yath2::Log->open(path => $log)->runs;
     die "No runs found in '$log'\n" unless @runs;
 
     my $streamer = App::Yath2::Streamer::Static->new(

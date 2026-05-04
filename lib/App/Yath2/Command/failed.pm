@@ -10,7 +10,7 @@ use Cwd qw/getcwd/;
 use Test2::Util::Table qw/table/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
 
-use App::Yath2::LogArchive();
+use App::Yath2::Log();
 use App::Yath2::Streamer::Static();
 
 use Role::Tiny::With;
@@ -65,7 +65,7 @@ sub run {
 
     my $log = shift @$args;
     unless (defined $log && length $log) {
-        $log = App::Yath2::LogArchive->find_latest($settings);
+        $log = App::Yath2::Log->find_latest($settings);
         print STDERR "yath failed: using latest archive: $log\n"
             if defined $log && length $log;
     }
@@ -77,7 +77,7 @@ sub run {
 
     $self->{+LOG} = $log;
 
-    my $archive  = App::Yath2::LogArchive->open(path => $log);
+    my $archive  = App::Yath2::Log->open(path => $log);
     my @all_runs = $archive->runs;
     die "No runs found in '$log'\n" unless @all_runs;
 

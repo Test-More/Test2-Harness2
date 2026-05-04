@@ -21,7 +21,7 @@ use Carp qw/croak/;
 use Test2::Harness2();
 use App::Yath2::TestFile();
 use Test2::Harness2::Util qw/mod2file/;
-use App::Yath2::LogArchive();
+use App::Yath2::Log();
 use App::Yath2::Streamer::Live();
 use App::Yath2::OutputManager();
 use App::Yath2::Options::Renderer();
@@ -35,7 +35,7 @@ include_options(
     'App::Yath2::Options::Workspace',
     'App::Yath2::Options::Finder',
     'App::Yath2::Options::IPC',
-    'App::Yath2::Options::LogArchive',
+    'App::Yath2::Options::Log',
     'App::Yath2::Options::Renderer',
     'App::Yath2::Options::Resource',
     'App::Yath2::Options::Run',
@@ -96,9 +96,9 @@ sub run {
     $self->_shutdown_harness($spawn);
 
     my $archive = $self->_resolve_archive_path;
-    App::Yath2::LogArchive->open(dir => "$workdir/logs")->archive($archive);
+    App::Yath2::Log->open(dir => "$workdir/logs")->archive($archive);
     print "Wrote archive: $archive\n";
-    App::Yath2::LogArchive->update_last_log_symlink($archive);
+    App::Yath2::Log->update_last_log_symlink($archive);
 
     if (!$settings->workspace->keep_dirs) {
         remove_tree($workdir, {error => \my $rm_errors});
@@ -347,15 +347,15 @@ sub _resolve_archive_path {
     my $self = shift;
     my $settings = $self->{+SETTINGS};
 
-    my $logging = $settings->log_archive;
+    my $logging = $settings->log;
     my $log_file = $logging->file;
-    croak "log-archive 'file' set to empty string"
+    croak "log 'file' set to empty string"
         if defined $log_file && !length $log_file;
     return $log_file if defined $log_file;
 
     my $stamp = strftime('%Y%m%d-%H%M%S', localtime);
     my $log_dir = $logging->dir;
-    croak "log-archive 'dir' set to empty string"
+    croak "log 'dir' set to empty string"
         if defined $log_dir && !length $log_dir;
     return File::Spec->catfile($log_dir, "$stamp.yath") if defined $log_dir;
 

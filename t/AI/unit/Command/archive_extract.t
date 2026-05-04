@@ -9,7 +9,7 @@ use Cwd qw/getcwd/;
 
 use App::Yath2::Command::archive;
 use App::Yath2::Command::extract;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
 # Minimal settings shape the extract / archive commands need.
 package Fake::Yath;

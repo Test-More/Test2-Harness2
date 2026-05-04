@@ -30,7 +30,7 @@ sub wait_until {
 #                         stream.
 #
 # All three must exist for any consumer (replay, archive, extract,
-# the static streamer) to accept the run; the LogArchive layer
+# the static streamer) to accept the run; the Log layer
 # rejects pre-Phase-4 layouts (runs/<id>.json or runs/<id>.jsonl)
 # with a clear error.
 

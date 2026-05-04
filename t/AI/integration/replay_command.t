@@ -4,7 +4,7 @@ use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/write_json_file_atomic encode_json/;
 
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 use App::Yath2::Command::replay;
 
 # Replay's run() now goes through App::Yath2::Options::Renderer::init_renderers
@@ -60,7 +60,7 @@ for my $rid (qw/RP RF/) {
     my $pass = $rid eq 'RP' ? 1 : 0;
 
     # Phase 4 log layout: spec.json + state.json sit alongside the
-    # event log under runs/<run_id>/. Consumers (LogArchive::artifacts)
+    # event log under runs/<run_id>/. Consumers (Log::artifacts)
     # reject any runs/<id>/ that lacks spec.json. The static streamer
     # picks up every *.json under runs/<id>/ as a state snapshot
     # (loggers are resolved by extension), so spec.json and state.json
@@ -84,7 +84,7 @@ for my $rid (qw/RP RF/) {
 }
 
 my $archive = "$tmp/run.yath";
-App::Yath2::LogArchive->open(dir => $logs)->archive($archive);
+App::Yath2::Log->open(dir => $logs)->archive($archive);
 ok(-f $archive, 'archive created');
 
 subtest 'replay directory, all runs -> exit 1 (one run failed)' => sub {

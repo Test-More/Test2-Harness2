@@ -32,7 +32,7 @@ use Role::Tiny;
 #       a fresh snapshot each time).
 #
 #       Note: a logger's writing extension is its class basename in
-#       lower case (Logger::JSONL -> 'jsonl'). LogArchive maps an
+#       lower case (Logger::JSONL -> 'jsonl'). Log maps an
 #       on-disk extension back to its producing logger by trying
 #       Test2::Harness2::Collector::Logger::<XYZ> in upper, capital,
 #       and lower-case forms in that order.
@@ -424,13 +424,13 @@ before L</startup> opens any files.
 Required. Returns C<'append'> (log file grows, new lines are written to
 the end) or C<'replace'> (file is atomically swapped, so the whole file
 is a fresh snapshot each time). Used by streamers to pick an appropriate
-watching strategy (tail vs. re-read), and by L<App::Yath2::LogArchive>
+watching strategy (tail vs. re-read), and by L<App::Yath2::Log>
 to bucket physical files into the C<append> / C<replace> halves of the
 artifacts API.
 
 A logger's writing extension is its class basename in lower case
 (C<Test2::Harness2::Collector::Logger::JSONL> writes C<.jsonl>).
-L<App::Yath2::LogArchive> reverses the lookup by trying
+L<App::Yath2::Log> reverses the lookup by trying
 C<Test2::Harness2::Collector::Logger::E<lt>upperE<gt>>,
 C<E<lt>capitalE<gt>>, and C<E<lt>lowerE<gt>> in that order so a logger
 named for any of those casings will be found.

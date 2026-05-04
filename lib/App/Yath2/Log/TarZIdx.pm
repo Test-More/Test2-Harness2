@@ -1,4 +1,4 @@
-package App::Yath2::LogArchive::TarZIdx;
+package App::Yath2::Log::TarZIdx;
 use strict;
 use warnings;
 
@@ -14,7 +14,7 @@ use File::Spec ();
 
 use Test2::Harness2::Util::JSON qw/decode_json encode_json/;
 
-use parent 'App::Yath2::LogArchive';
+use parent 'App::Yath2::Log';
 use Object::HashBase qw/path +_index/;
 
 # tar.zidx is the single archive format yath produces. Layout:
@@ -37,7 +37,7 @@ sub is_live { 0 }
 sub absolute_path {
     my ($self, $rel) = @_;
     croak "absolute_path is unavailable for the tar.zidx backend; "
-        . "extract first or read via the LogArchive API ($rel)";
+        . "extract first or read via the Log API ($rel)";
 }
 
 # {{{ Format helpers (methods so subclasses / future formats can override)
@@ -243,7 +243,7 @@ sub extract {
 
     make_path($dir);
     require Test2::Harness2::Util::Zstd;
-    require App::Yath2::LogArchive::Directory;
+    require App::Yath2::Log::Directory;
 
     my $index = $self->_build_index;
     for my $rel (sort keys %$index) {
@@ -306,7 +306,7 @@ sub extract {
         close $out or croak "close $out_abs: $!";
     }
 
-    return App::Yath2::LogArchive::Directory->new(path => $dir, live => 0);
+    return App::Yath2::Log::Directory->new(path => $dir, live => 0);
 }
 
 # archive on a TarZIdx is a no-op when called against an existing
@@ -466,7 +466,7 @@ __END__
 
 =head1 NAME
 
-App::Yath2::LogArchive::TarZIdx - tar.zidx-backed LogArchive backend.
+App::Yath2::Log::TarZIdx - tar.zidx-backed Log backend.
 
 =head1 DESCRIPTION
 
@@ -494,7 +494,7 @@ The path to the C<.yath> file.
 
 =head1 METHODS
 
-In addition to the inherited L<App::Yath2::LogArchive> API:
+In addition to the inherited L<App::Yath2::Log> API:
 
 =over 4
 
@@ -506,21 +506,21 @@ C<yath extract>) every zstd-compressed member is decompressed on
 the way out and the trailing C<.zst> suffix is stripped from the
 output filename. With C<compressed =E<gt> 1> entries are written
 verbatim with C<.zst> suffixes preserved. Returns a new
-L<App::Yath2::LogArchive::Directory> instance pointing at the
+L<App::Yath2::Log::Directory> instance pointing at the
 destination.
 
 =item C<archive> is unsupported on this backend
 
 Calling L</archive> on a TarZIdx instance croaks. The user-visible
-flow is to construct an L<App::Yath2::LogArchive::Directory> for
-the source and call L<App::Yath2::LogArchive::Directory/archive>
+flow is to construct an L<App::Yath2::Log::Directory> for
+the source and call L<App::Yath2::Log::Directory/archive>
 on it; that yields a TarZIdx instance pointing at the new file.
 
 =back
 
 =head1 SEE ALSO
 
-L<App::Yath2::LogArchive> -- the base class / factory.
+L<App::Yath2::Log> -- the base class / factory.
 
 =head1 SOURCE
 

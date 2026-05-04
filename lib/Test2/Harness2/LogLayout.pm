@@ -8,7 +8,7 @@ use Carp qw/croak/;
 use Exporter qw/import/;
 
 # Single canonical source for on-disk paths inside a yath log tree.
-# Loggers, RunService, LogArchive backends, and the layout-rejection
+# Loggers, RunService, Log backends, and the layout-rejection
 # checks all import these helpers so the path templates live in one
 # place.
 #

@@ -15,7 +15,7 @@ use Object::HashBase qw{
 use Carp qw/croak/;
 use Cwd qw/getcwd/;
 
-use App::Yath2::LogArchive();
+use App::Yath2::Log();
 use App::Yath2::Streamer::Static();
 use App::Yath2::OutputManager();
 use App::Yath2::Options::Renderer();
@@ -64,7 +64,7 @@ sub run {
 
     my $log = shift @$args;
     unless (defined $log && length $log) {
-        $log = App::Yath2::LogArchive->find_latest($self->{+SETTINGS});
+        $log = App::Yath2::Log->find_latest($self->{+SETTINGS});
         print STDERR "yath replay: using latest archive: $log\n"
             if defined $log && length $log;
     }
@@ -78,7 +78,7 @@ sub run {
     # Requested run ids: default to the full set the archive carries.
     my @requested = @$args;
     unless (@requested) {
-        my $archive = App::Yath2::LogArchive->open(path => $log);
+        my $archive = App::Yath2::Log->open(path => $log);
         @requested = $archive->runs;
         die "No runs found in '$log'\n" unless @requested;
     }

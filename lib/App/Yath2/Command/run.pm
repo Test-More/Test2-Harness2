@@ -128,7 +128,7 @@ sub run {
     die "API Failure: " . encode_pretty_json($res->{api})
         unless $res->{api}->{success};
 
-    # XXX TODO replace this with App::Yath::LogArchive at some point?
+    # XXX TODO replace this with App::Yath::Log at some point?
 
     my $run_complete;
     while (!$run_complete) {
@@ -137,7 +137,7 @@ sub run {
 
         $run_complete //= 1 unless $client->active;
 
-        # XXX TODO replace the poller loop with App::Yath::LogArchive usage somewhere?
+        # XXX TODO replace the poller loop with App::Yath::Log usage somewhere?
 
         while (my $msg = $client->get_message(blocking => !$run_complete, timeout => 0.2)) {
             if ($msg->terminate || $msg->run_complete) {
