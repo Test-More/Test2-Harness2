@@ -268,6 +268,10 @@ sub _drive_streamer {
     );
 
     my ($final_pass, $seen_end);
+    my $harness_pid       = $spawn->pid;
+    my $harness_dead_at;
+    my $harness_grace_sec = 10;
+
     $streamer->stream(
         callback => sub {
             my ($event) = @_;
@@ -278,8 +282,26 @@ sub _drive_streamer {
             }
             $om->dispatch($event);
         },
-        exit_if => sub { $seen_end ? 1 : 0 },
+        exit_if => sub {
+            return 1 if $seen_end;
+
+            # If the harness process disappears before run_end arrives,
+            # something went wrong and waiting forever does not help.
+            # Give the streamer one grace window to drain anything still
+            # queued on disk, then bail.
+            if ($harness_pid && !kill(0 => $harness_pid)) {
+                $harness_dead_at //= time;
+                return 1 if (time - $harness_dead_at) >= $harness_grace_sec;
+            }
+            return 0;
+        },
     );
+
+    unless ($seen_end) {
+        warn "harness pid $harness_pid disappeared before harness_run_end; "
+           . "test command exiting without a final pass verdict.\n"
+            if $harness_dead_at;
+    }
 
     $om->end_of_events;
     $om->finish;
