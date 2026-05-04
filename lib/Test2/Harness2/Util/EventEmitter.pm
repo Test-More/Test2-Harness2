@@ -6,7 +6,6 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
-use Time::HiRes qw/time/;
 use Atomic::Pipe;
 use Test2::Util::UUID qw/gen_uuid/;
 
@@ -81,19 +80,14 @@ sub _as_atomic_pipe {
 sub emit_event {
     my ($self, %fields) = @_;
 
-    my $event_id = gen_uuid();
-    my $stamp    = time;
-
+    # Build a minimal harness-facet-only event. After the new_log_refactor
+    # we no longer stamp event_id / stamp on the event hash itself or on
+    # the harness facet -- callers that need timing or identity put it in
+    # the facets that own it (trace.stamp/pid/tid for timing, harness.run_id
+    # / harness.job_id / harness.job_try for identifiers).
     my $event = {
-        event_id   => $event_id,
-        stamp      => $stamp,
-        pid        => $$,
         facet_data => {
-            harness => {
-                event_id => $event_id,
-                stamp    => $stamp,
-                %fields,
-            },
+            harness => {%fields},
         },
     };
 
@@ -103,34 +97,28 @@ sub emit_event {
 sub emit_raw {
     my ($self, $event) = @_;
 
-    # Make sure the top-level event_id and the harness facet event_id agree.
-    # If only one is set, propagate it; if neither, generate one; if both are
-    # set to different values, refuse to emit -- that is always a caller bug.
-    my $top     = $event->{event_id};
-    my $harness = $event->{facet_data}{harness}{event_id};
-    if (defined($top) && defined($harness) && $top ne $harness) {
-        croak "event_id mismatch: top-level '$top' vs harness facet '$harness'";
-    }
-    my $event_id = $top // $harness // gen_uuid();
-    $event->{event_id} = $event_id;
-    $event->{facet_data}{harness}{event_id} = $event_id;
+    # The wire-level sync identifier is generated fresh per emission and
+    # used only to pair the STDOUT JSON burst with the STDERR sync marker
+    # in the collector. It is not persisted on the event hash, not added
+    # to facet_data, and not serialized as part of the on-disk events.
+    # The collector strips it back off after sync matching.
+    my $sync_id = gen_uuid();
+    $event->{event_id} = $sync_id;
 
-    # Atomic::Pipe message frames self-delimit, so no trailing
-    # newline is needed on the wire to separate records. The JSONL
-    # zstd logger writes one frame per event in the same shape, and
-    # the extract command is responsible for inserting exactly one
-    # newline between records when materializing extracted plaintext
-    # jsonl. The collector still caches the on-wire compressed
-    # bytes on the event so the logger can append them verbatim
-    # without recompressing.
     my $json = encode_json($event);
+
+    # Once the JSON is encoded, the wire-level sync id has done its job
+    # on the writer side. Drop it from the in-memory event hash so the
+    # caller does not see (or persist) it.
+    delete $event->{event_id};
+
     $self->{+STDOUT_PIPE}->write_message($json);
 
     if (my $se = $self->{+STDERR_PIPE}) {
-        $se->write_message(qq/{"event_id":"$event_id"}/);
+        $se->write_message(qq/{"event_id":"$sync_id"}/);
     }
 
-    return $event_id;
+    return $sync_id;
 }
 
 1;

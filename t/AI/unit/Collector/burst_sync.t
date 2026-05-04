@@ -133,9 +133,14 @@ subtest 'stdout JSON burst becomes a decoded event, not a line' => sub {
     is(scalar @evs, 1, "one event produced (no line event from burst, no event from sync marker)");
 
     my $e = $evs[0];
-    is($e->{event_id},                    $event->{event_id}, "event_id preserved from burst");
-    is($e->{facet_data}{assert}{pass},    1,                  "assert.pass preserved");
-    is($e->{facet_data}{assert}{details}, 'synthetic',        "assert.details preserved");
+
+    # The wire-level event_id is used by the collector for STDOUT/STDERR
+    # sync matching but is stripped before the event reaches the parser
+    # pipeline. It must NOT appear on the persisted event.
+    ok(!exists $e->{event_id}, "wire-level event_id stripped from persisted event");
+
+    is($e->{facet_data}{assert}{pass},    1,           "assert.pass preserved");
+    is($e->{facet_data}{assert}{details}, 'synthetic', "assert.details preserved");
     ok(!$e->{facet_data}{from_stream}, "burst event did NOT get a from_stream facet");
     ok(!$e->{facet_data}{info},        "burst event did NOT get a wrapping info entry");
 };

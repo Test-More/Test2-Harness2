@@ -1001,8 +1001,6 @@ sub _finalize_collection {
         }
 
         my $exit_event = Test2::Harness2::Event->new(
-            event_id   => gen_uuid(),
-            stamp      => time,
             facet_data => {
                 harness_process_exit => $px,
             },
@@ -1331,8 +1329,6 @@ sub _emit_collector_error {
 
     my $ok = eval {
         my $event = Test2::Harness2::Event->new(
-            event_id   => gen_uuid(),
-            stamp      => time,
             facet_data => {
                 errors => [{
                     tag     => 'COLLECTR',

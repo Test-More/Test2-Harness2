@@ -72,10 +72,10 @@ recording the source stream (C<STDOUT> or C<STDERR>) and the original line
 verbatim. No C<from_stream> facet is attached in that case; the two are
 mutually exclusive per event.
 
-In either path the base class C<normalize_event> step still runs, so every
-event ends up with a populated C<harness> facet (C<event_id>, C<stamp>, and
-optionally C<run_id>/C<job_id>/C<job_try> if the parser was constructed with
-those attributes).
+After the new_log_refactor the parser no longer stamps event_id / stamp
+onto the event or its harness facet; identifier fields (run_id / job_id /
+job_try) are likewise no longer populated by the parser. Those fields are
+injected by the Log iterator on read in a later refactor step.
 
 =head1 USAGE
 
@@ -94,30 +94,11 @@ C<parser> attribute:
         ],
     );
 
-    # Or with explicit attributes so events carry run/job identifiers.
-    use Test2::Harness2::Collector::Parser::IOParser::Stream;
-
-    my $parser = Test2::Harness2::Collector::Parser::IOParser::Stream->new(
-        run_id  => $run_id,
-        job_id  => $job_id,
-        job_try => 1,
-    );
-
-    my $c = Test2::Harness2::Collector->spawn(
-        launch => ['perl', 'some_test.t'],
-        parser => $parser,
-        # ... loggers, etc.
-    );
-
 =head1 ATTRIBUTES
 
 Inherited from L<Test2::Harness2::Collector::Parser::IOParser>:
 
 =over 4
-
-=item run_id, job_id, job_try
-
-Optional identifiers copied into the C<harness> facet of every event.
 
 =item name, type
 
@@ -132,11 +113,10 @@ Optional metadata slots reserved for caller-specific use.
 =item $parser->parse_stream_line(\%io, $event)
 
 Overridden. Called by the inherited C<parse_io> with a hashref of the input
-parameters (C<stream>, C<line>, optional C<stamp> / C<event_id>) and the
-event being built. Tries TAP first; on a hit, replaces C<< $event->{facet_data} >>
-with the parsed facets and returns. On a miss, delegates to the base class's
-C<parse_stream_line> which produces the plain C<from_stream> / C<info>
-facets.
+parameters (C<stream>, C<line>) and the event being built. Tries TAP first;
+on a hit, replaces C<< $event->{facet_data} >> with the parsed facets and
+returns. On a miss, delegates to the base class's C<parse_stream_line>
+which produces the plain C<from_stream> / C<info> facets.
 
 This method is not typically invoked directly; use C<parse_io> from the base
 class instead.
@@ -146,7 +126,7 @@ class instead.
 =head1 SEE ALSO
 
 L<Test2::Harness2::Collector::Parser::IOParser> -- base class, handles the
-raw C<from_stream> fallback and C<harness> normalization.
+raw C<from_stream> fallback.
 
 L<Test2::Harness2::Collector::Parser::TapParser> -- the underlying TAP
 recognizer; its documentation describes exactly which lines are matched and

@@ -8,10 +8,7 @@ use IO::Handle;
 
 use Carp qw/croak confess/;
 use Scalar::Util qw/blessed/;
-use Time::HiRes qw/time/;
-use Test2::Util qw/get_tid/;
 
-use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util qw/hub_truth apply_encoding/;
 use Test2::Harness2::Util::EventEmitter;
 
@@ -75,9 +72,18 @@ sub record {
 }
 
 # Serialize an event and send it to the collector parent: full JSON payload as
-# an atomic message burst on STDOUT, and a tiny {"event_id":...} sync marker
-# on STDERR (when STDERR is its own pipe) so the collector can keep STDERR
-# text ordered against the events.
+# an atomic message burst on STDOUT, and a small sync marker on STDERR (when
+# STDERR is its own pipe) so the collector can keep STDERR text ordered
+# against the events.
+#
+# This formatter no longer stamps event_id / about.uuid / top-level
+# stamp / pid / tid onto the event hash. The canonical homes for those
+# fields are inside the trace facet (stamp/pid/tid) which Test2 already
+# populates upstream; event UUIDs are no longer generated at all. The
+# wire-level sync identifier the EventEmitter uses to pair STDOUT bursts
+# with STDERR sync markers lives only on the wire JSON; downstream
+# consumers that want a stable per-event id should use stream_id (a
+# monotonic counter from this formatter, scoped to the test process).
 sub _send_event {
     my $self = shift;
     my ($in, %fields) = @_;
@@ -97,15 +103,19 @@ sub _send_event {
         $event  = \%fields;
     }
 
-    my $event_id = $event->{event_id} //= $facets->{about}->{uuid} //= $fields{event_id} //= gen_uuid();
-    $facets->{about}->{uuid} //= $event_id;
-
     $event->{facet_data} = $facets;
-    $event->{event_id}   = $event_id;
 
-    $event->{stamp} //= time;
-    $event->{tid}   //= get_tid();
-    $event->{pid}   //= $$;
+    # stream_id is part of the harness facet (canonical home). Move the
+    # incoming top-level stream_id into facet_data.harness.stream_id so the
+    # wire format reflects the post-refactor canonical layout. Same for
+    # assert_count.
+    if (defined(my $sid = delete $event->{stream_id})) {
+        $facets->{harness}->{stream_id} //= $sid;
+    }
+    if (exists $event->{assert_count}) {
+        my $ac = delete $event->{assert_count};
+        $facets->{harness}->{assert_count} //= $ac if defined $ac;
+    }
 
     {
         no warnings 'once';

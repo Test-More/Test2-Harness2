@@ -7,7 +7,6 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time sleep/;
-use Test2::Util::UUID qw/gen_uuid/;
 
 use Test2::Harness2::Event;
 
@@ -312,8 +311,6 @@ sub _bless_event {
     return $hash if blessed($hash) && $hash->isa('Test2::Harness2::Event');
 
     my %copy = %$hash;
-    $copy{event_id}   //= gen_uuid();
-    $copy{stamp}      //= time;
     $copy{facet_data} //= {};
 
     return Test2::Harness2::Event->new(\%copy);

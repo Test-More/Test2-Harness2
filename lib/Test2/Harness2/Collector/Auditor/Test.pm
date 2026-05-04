@@ -9,8 +9,6 @@ use Scalar::Util qw/blessed/;
 use List::Util qw/first max/;
 use Time::HiRes qw/time/;
 
-use Test2::Util::UUID qw/gen_uuid/;
-
 use Test2::Harness2::Util qw/hub_truth parse_exit/;
 use Test2::Harness2::Event;
 
@@ -127,48 +125,17 @@ sub audit_event {
     my $self = shift;
     my ($event) = @_;
 
-    $self->_normalize_event($event);
+    $event->{facet_data} //= {};
 
     my @out;
     for my $se ($self->_audit($event)) {
-        $self->_normalize_event($se);
+        $se->{facet_data} //= {} if ref($se);
         delete $se->{facet_data}->{harness}->{closed_by}
             if $se->{facet_data} && $se->{facet_data}->{harness};
         push @out => $se;
     }
 
     return @out;
-}
-
-sub _normalize_event {
-    my $self = shift;
-    my ($event) = @_;
-
-    my $f = $event->{facet_data} //= {};
-
-    # event_id lives in three places that must agree: the top-level key, the
-    # harness facet, and the about facet's uuid. Any two set to different
-    # values indicates an upstream bug -- refuse to paper over it. Read
-    # through intermediate hashrefs only when they already exist so we do
-    # not autovivify empty facets just to inspect them.
-    my %sources;
-    $sources{$event->{event_id}} = 'event' if defined $event->{event_id};
-    $sources{$f->{harness}{event_id}} //= 'harness facet' if $f->{harness} && defined $f->{harness}{event_id};
-    $sources{$f->{about}{uuid}}       //= 'about facet'   if $f->{about}   && defined $f->{about}{uuid};
-
-    if (keys(%sources) > 1) {
-        croak "event_id mismatch across facets: " . join(', ', map { "$sources{$_}='$_'" } sort keys %sources);
-    }
-
-    my $event_id = $event->{event_id} // ($f->{harness} && $f->{harness}{event_id}) // ($f->{about} && $f->{about}{uuid}) // gen_uuid();
-
-    $event->{event_id} = $event_id;
-
-    # harness gets stamped with the event_id; about is only stamped when the
-    # caller already put an about facet in place so we do not create one just
-    # to hold a uuid.
-    $f->{harness}{event_id} //= $event_id;
-    $f->{about}{uuid}       //= $event_id if $f->{about};
 }
 
 sub _audit {
@@ -240,20 +207,15 @@ sub _audit_subtest_start {
     # top-level announcements produced by the top-level auditor.
     return unless $is_ours;
 
-    my $stamp    = $event->{stamp} // $f->{harness}->{stamp} // time;
     my $announce = Test2::Harness2::Event->new(
-        event_id   => gen_uuid(),
-        stamp      => $stamp,
         facet_data => {
             harness => {
                 subtest_started => 1,
                 nested          => $nested,
-                stamp           => $stamp,
             },
             (defined $f->{trace} ? (trace => {%{$f->{trace}}}) : ()),
         },
     );
-    $self->_normalize_event($announce);
     return $announce;
 }
 
@@ -271,15 +233,12 @@ sub _audit_orphan_subtest_end_recovery {
     $f->{harness_auditor}->{no_render} = 1;
     $self->_drop_compressed_cache($event);
 
-    my $stamp = $f->{trace}->{stamp} // $f->{stamp} // $f->{harness}->{stamp} // time;
-
     $f = {
         %{$f},
         harness_auditor => {added_by_auditor => 1},
         parent          => undef,
         trace           => undef,
         harness         => {
-            stamp => $stamp,
             %{$f->{harness} || {}},
             subtest_end => undef,
         },
@@ -294,11 +253,8 @@ sub _audit_orphan_subtest_end_recovery {
     };
 
     $event = Test2::Harness2::Event->new(
-        event_id   => $f->{harness}->{event_id} // $f->{about}->{uuid} // gen_uuid(),
-        stamp      => $stamp,
         facet_data => $f,
     );
-    $self->_normalize_event($event);
 
     return ($event, $f);
 }
@@ -330,8 +286,7 @@ sub _audit_close_deeper_subtests {
         delete $fd->{harness_auditor}->{no_render};
         $fd->{parent}->{hid}      ||= $n;
         $fd->{parent}->{children} ||= $st->{children};
-        $fd->{harness}->{closed_by}     = $event;
-        $fd->{harness}->{closed_by_eid} = $event->{event_id};
+        $fd->{harness}->{closed_by} = $event;
         $self->_drop_compressed_cache($se);
 
         my $pn = $n - 1;
@@ -368,10 +323,8 @@ sub _subtest_process {
 
     unless ($event) {
         $event = Test2::Harness2::Event->new(
-            event_id   => $f->{harness}->{event_id} // $f->{about}->{uuid} // gen_uuid(),
             facet_data => $f,
         );
-        $self->_normalize_event($event);
     }
 
     $self->{+NUMBERS}->{$f->{assert}->{number}}++
@@ -409,8 +362,6 @@ sub _subtest_process_parent {
     );
 
     for my $sf (@{$f->{parent}->{children}}) {
-        $sf->{about}->{uuid}       ||= gen_uuid();
-        $sf->{harness}->{event_id} ||= $sf->{about}->{uuid};
         $subauditor->_subtest_process($sf);
     }
 
@@ -497,12 +448,19 @@ sub _subtest_process_exit {
     my $px = $f->{harness_process_exit};
     $self->{+EXIT} = $px->{all};
 
+    # The harness_job_exit facet keeps its own stamp -- this is a payload
+    # field on the facet, not the event-wide stamp mirror that lives in
+    # trace.stamp. Prefer trace.stamp from the event we are processing,
+    # and fall back to the wall clock if the event was synthesized
+    # without a trace facet.
+    my $jx_stamp = ($f->{trace} && $f->{trace}->{stamp}) // time;
+
     $f->{harness_job_exit} //= {
         job_id  => $self->{+JOB_ID},
         job_try => $self->{+JOB_TRY},
         exit    => $px->{all},
         codes   => $px,
-        stamp   => $event->{stamp} // $f->{harness}->{stamp} // time,
+        stamp   => $jx_stamp,
         (defined $px->{times}       ? (times       => $px->{times})       : ()),
         (defined $px->{child_times} ? (child_times => $px->{child_times}) : ()),
         (defined $px->{child_wall}  ? (child_wall  => $px->{child_wall})  : ()),

@@ -10,7 +10,6 @@ use Role::Tiny ();
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
 
-use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Event;
 use Test2::Harness2::Util qw/load_module tinysleep/;
 use Test2::Harness2::Util::IPC qw/pid_is_running/;
@@ -89,8 +88,6 @@ sub make_warn_handler {
 
         my $ok = eval {
             my $event = Test2::Harness2::Event->new(
-                event_id   => gen_uuid(),
-                stamp      => time,
                 facet_data => {
                     info => [{tag => 'WARNING', details => $msg, debug => 1}],
                 },

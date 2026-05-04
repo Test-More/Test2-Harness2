@@ -6,8 +6,6 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
-use Time::HiRes qw/time/;
-use Test2::Util::UUID qw/gen_uuid/;
 
 use Test2::Harness2::Event;
 
@@ -42,7 +40,10 @@ sub parse_io {
 
     $self->parse_stream_line(\%params, $event) if defined $params{line};
 
-    $self->normalize_event(\%params, $event);
+    # Strip the wire-level sync identifier (used by the collector to pair
+    # STDOUT JSON bursts with STDERR sync markers) so it does not bleed
+    # into the on-disk event payload or downstream consumers.
+    delete $event->{event_id};
 
     # Stash the on-wire compressed JSON frame the collector captured
     # from Atomic::Pipe's keep_compressed read path. The bytes are
@@ -56,31 +57,6 @@ sub parse_io {
     return $event;
 }
 
-sub normalize_event {
-    my $self = shift;
-    my ($io, $event) = @_;
-
-    my $stamp = $event->{stamp} // $io->{stamp} // time;
-
-    croak "event_id mismatch between event ('$event->{event_id}') and io ('$io->{event_id}')"
-        if defined($event->{event_id})
-        && defined($io->{event_id})
-        && $event->{event_id} ne $io->{event_id};
-
-    my $event_id = $event->{event_id} // $io->{event_id} // gen_uuid();
-
-    $event->{stamp}    = $stamp;
-    $event->{event_id} = $event_id;
-
-    $event->{facet_data}{harness}{stamp}    = $stamp;
-    $event->{facet_data}{harness}{event_id} = $event_id;
-
-    # Only fill in about.uuid when an about facet already exists -- don't
-    # autovivify one just to stamp a uuid onto it.
-    $event->{facet_data}{about}{uuid} //= $event_id
-        if $event->{facet_data}{about};
-}
-
 sub get_event {
     my $self = shift;
     my (%params) = @_;
@@ -92,8 +68,6 @@ sub get_event {
     }
 
     return Test2::Harness2::Event->new(
-        stamp      => $params{stamp}    // time,
-        event_id   => $params{event_id} // gen_uuid(),
         facet_data => {},
     );
 }
@@ -157,13 +131,11 @@ the default.
     my $event = $parser->parse_io(
         stream => 'stdout',
         line   => 'hello world',
-        stamp  => time,
     );
 
     # $event->facet_data->{from_stream}{source}  eq 'STDOUT'
     # $event->facet_data->{from_stream}{details} eq 'hello world'
     # $event->facet_data->{info}[0]{tag}         eq 'STDOUT'
-    # $event->facet_data->{harness}{event_id}    eq $event->event_id
 
 Used via the collector:
 
@@ -224,28 +196,19 @@ will be uppercased into the C<from_stream.source> slot as-is.
 The text of the line (without trailing newline). If undef the method returns
 undef without constructing an event.
 
-=item stamp
-
-Optional timestamp. Defaults to the current time from L<Time::HiRes> when
-omitted.
-
-=item event_id
-
-Optional pre-assigned UUID. Defaults to a freshly generated UUID when
-omitted.
-
 =back
 
-The method orchestrates three steps in order: C<get_event> constructs a
-fresh event, C<parse_stream_line> populates the stream-specific facets, and
-C<normalize_event> fills in the C<harness> facet and propagates
-C<event_id>/C<stamp> into it.
+The method orchestrates two steps in order: C<get_event> constructs a fresh
+event (or reuses one passed in via C<event>), and C<parse_stream_line>
+populates the stream-specific facets. After the new_log_refactor the parser
+no longer stamps event_id / stamp / about.uuid onto the event; canonical
+homes for those fields live in the appropriate facets (trace.stamp, etc.).
 
 =item $event = $parser->get_event(%params)
 
-Build and return a fresh L<Test2::Harness2::Event> with C<stamp>,
-C<event_id>, and an empty C<facet_data> hash. Subclasses can override this
-to pre-populate facets or to reuse an existing event passed in via C<%params>.
+Build and return a fresh L<Test2::Harness2::Event> with an empty
+C<facet_data> hash. Subclasses can override this to pre-populate facets or
+to reuse an existing event passed in via C<%params>.
 
 =item $parser->parse_stream_line(\%io, $event)
 
@@ -263,13 +226,6 @@ to keep the fallback behavior.
 The C<$io> hashref is the same hash of named parameters that was passed to
 C<parse_io>; subclasses may mutate it (for example to signal to downstream
 code that a line has been consumed).
-
-=item $parser->normalize_event(\%io, $event)
-
-Merge timing information into the event. Sets C<< $event->{stamp} >> and
-C<< $event->{event_id} >>, then copies those into
-C<< $event->{facet_data}{harness} >>. Safe to call multiple times; existing
-C<harness> fields are preserved.
 
 =back
 

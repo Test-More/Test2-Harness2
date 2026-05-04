@@ -38,16 +38,28 @@ subtest 'returns undef for undef line' => sub {
     ok(!defined $event, "undef line returns undef");
 };
 
-subtest 'normalize_event sets harness facet' => sub {
+subtest 'parse_io strips wire-level event_id and does not stamp identifier mirrors' => sub {
     my $parser = Test2::Harness2::Collector::Parser::IOParser->new(ipcm_info => {});
-    my $event  = $parser->parse_io(stream => 'stdout', line => 'test');
 
+    # Pre-built event with a wire-level event_id like the collector's
+    # decoded JSON-burst payload would arrive: top-level event_id is
+    # used by the collector for STDOUT/STDERR sync matching, then
+    # stripped before the event reaches the parser pipeline.
+    my $event = $parser->parse_io(
+        stream   => 'stdout',
+        event    => {event_id => 'WIRE-SYNC-ID', facet_data => {}},
+    );
+
+    ok($event, "got event");
+    is($event->{event_id}, undef, "wire-level event_id stripped from event hash");
+
+    # No harness-facet identifier mirrors are populated at the parser.
     my $h = $event->facet_data->{harness};
-    ok(defined $h->{event_id}, "event_id set in harness");
-    ok(defined $h->{stamp},    "stamp set in harness");
-    ok(!exists $h->{run_id},   "run_id not stamped on event");
-    ok(!exists $h->{job_id},   "job_id not stamped on event");
-    ok(!exists $h->{job_try},  "job_try not stamped on event");
+    ok(!defined $h || !exists $h->{event_id}, "harness.event_id not set by parser");
+    ok(!defined $h || !exists $h->{stamp},    "harness.stamp not set by parser");
+    ok(!defined $h || !exists $h->{run_id},   "harness.run_id not set by parser");
+    ok(!defined $h || !exists $h->{job_id},   "harness.job_id not set by parser");
+    ok(!defined $h || !exists $h->{job_try},  "harness.job_try not set by parser");
 };
 
 subtest 'set_ipcm_info stores ipcm_info' => sub {
@@ -62,30 +74,6 @@ subtest 'ipcm_info is required at construction' => sub {
     my $err = $@;
     ok(!$ok, 'croaks without ipcm_info');
     like($err, qr/ipcm_info/, 'error mentions ipcm_info');
-};
-
-subtest 'normalize_event croaks on event_id mismatch between event and io' => sub {
-    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(ipcm_info => {});
-    my $event  = Test2::Harness2::Event->new(
-        event_id   => 'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
-        facet_data => {},
-    );
-    my $io = {stream => 'stdout', event_id => 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB'};
-
-    my $ok  = eval { $parser->normalize_event($io, $event); 1 };
-    my $err = $@;
-    ok(!$ok, 'normalize_event croaks on mismatch');
-    like($err, qr/event_id mismatch/, 'error mentions event_id mismatch');
-};
-
-subtest 'normalize_event accepts matching event_ids' => sub {
-    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(ipcm_info => {});
-    my $id     = 'CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC';
-    my $event  = Test2::Harness2::Event->new(event_id => $id, facet_data => {});
-    my $io     = {stream => 'stdout', event_id => $id};
-
-    ok(lives { $parser->normalize_event($io, $event) }, 'lives when ids match');
-    is($event->{event_id}, $id, 'event_id preserved');
 };
 
 done_testing;
