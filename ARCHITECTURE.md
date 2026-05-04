@@ -2507,3 +2507,71 @@ yields valid jsonl directly; `yath extract` no longer reinserts
 newlines between records. The cached-compressed-frame fast path
 on `Logger::JSONL` is dropped (the cache held bare bytes with no
 newline).
+
+### `new_log_refactor` M2 step 4+5 — Single Collector class, no Logger / Observer
+
+The `Test2::Harness2::Collector::Test`, `Test2::Harness2::Collector::Service`,
+`Test2::Harness2::Collector::Logger::JSONL`,
+`Test2::Harness2::Collector::Logger::JSON`,
+`Test2::Harness2::Role::Collector::Logger`,
+`Test2::Harness2::Role::Collector::Observer`, and
+`Test2::Harness2::Collector::Observer::TestObserver` modules are gone.
+Their roles collapse to:
+
+- A single `Test2::Harness2::Collector` class that takes
+  `type => 'Job' | 'Run' | 'Service'` plus an `id` slot. The
+  collector writes its `spec.jsonl.zst`, `events.jsonl.zst`, and
+  `report.jsonl.zst` files directly under its base directory
+  (computed by `Test2::Harness2::LogLayout::collector_base_dir`).
+  No more logger plugin slots; no more observer chain.
+
+- Test-job collectors carry an `Auditor::Test` instance that has
+  absorbed every IPC duty `TestObserver` used to perform:
+  `test_job_started` (from `startup`), `test_job_diagnosing` /
+  `test_job_failing` (from `audit_event` on the relevant transitions),
+  and `test_job_completed` + `job_release` (from `shutdown`).
+
+- Run and service collectors are dumb pass-throughs: parser →
+  write_phase. No auditor.
+
+The pipeline is now strictly:
+
+    parser -> [Auditor::Test on type=Job] -> write_phase
+
+The on-disk layout uses `runs/<id>/jobs/<id>/<try>/` (was
+`runs/<id>/tests/<id>/<try>/`).
+
+#### Rev-2 insight: who owns the state matters
+
+This refactor was prompted by the observation that the previous
+design conflated event-source with state-owner. **Tests are state
+producers**: their state lives entirely in the events streamed out
+of the test process and is reconstructed by an Auditor sitting next
+to the test-job collector. That justifies an Auditor for test-job
+collectors and lets the Auditor emit the IPC transition messages.
+
+**Runs and services act on state**: their state lives in the run
+service / global service process itself, not in the collector that
+just observes its stdout/stderr. So those collectors are dumb
+pass-throughs, and the IPC transition events for runs (run_failing,
+run_completed, etc.) are emitted by the run service directly into
+its own outgoing event stream — the run collector writes them to
+`runs/<id>/events.jsonl.zst` like any other event.
+
+The earlier design's `parent_io` and Observer-managed-state
+machinery was an attempt to put state-tracking next to every
+collector regardless of where the state actually lived. The new
+shape mirrors the ownership model directly.
+
+#### What follow-up steps still cover
+
+- M2 step 6 wires up `collector_start` / `collector_end` IPC so a
+  parent service can ingest the lifecycle of every child collector
+  it spawns into its own events stream.
+- M2 step 7 extracts base64-encoded attachments out of events into
+  `<base>/attachments/<filename>` during the write phase.
+- M2 step 10 rewrites the reader side (`App::Yath2::Log` and
+  subclasses) for the new layout. Until that lands, the reader
+  surface is intentionally broken; tests under `t/AI/unit/Log/`,
+  `t/AI/unit/Streamer/`, and several `t/AI/integration/*` files
+  carry an environment-gated `skip_all` until step 10 reworks them.

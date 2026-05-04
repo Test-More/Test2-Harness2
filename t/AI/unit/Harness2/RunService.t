@@ -57,11 +57,10 @@ subtest 'constructs with required attributes' => sub {
     is($svc->workdir,  $dir,      'workdir stored');
     ok(-d "$dir/logs/runs/r-1/services", 'services dir created at construction');
 
-    # No default loggers: caller (harness, typically) decides what
-    # artifacts to write for a run. Empty loggers means no run.jsonl
-    # / run.json at all unless explicitly requested.
-    is($svc->loggers,      [], 'loggers default is empty arrayref');
-    is($svc->test_loggers, [], 'test_loggers default is empty arrayref');
+    # Logger / observer plumbing was removed in the new_log_refactor
+    # (M2 step 4+5); the run service no longer carries logger slots.
+    ok(!$svc->can('loggers'),      'no loggers slot post-refactor');
+    ok(!$svc->can('test_loggers'), 'no test_loggers slot post-refactor');
 };
 
 subtest 'requires workdir' => sub {

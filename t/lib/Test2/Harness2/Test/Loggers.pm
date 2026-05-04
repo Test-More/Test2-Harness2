@@ -12,53 +12,17 @@ our @EXPORT_OK = qw{
     classic_logger_specs
 };
 
-# Return the pair of logger specs the harness used to auto-create for
-# its own interpose collector. Pass these as the harness's `loggers`
-# arg to keep the on-disk layout under
-# $workdir/logs/services/$name/{events.jsonl,state.json}.
+# Logger / observer plumbing was removed in the new_log_refactor
+# (M2 step 4+5). The collector now writes spec / events / report
+# directly; there are no longer any logger specs to assemble.
 #
-# The Logger::JSON entry requires a $spec object (anything that can
-# TO_JSON); only the JSONL is included when no $spec is supplied.
-# Callers that want the .json snapshot pass their harness instance
-# (or any other TO_JSON-capable object) as the third argument.
-sub classic_harness_loggers {
-    my ($workdir, $name, $spec) = @_;
-    $name //= 'harness';
+# These helpers are kept as no-op stubs returning empty lists so
+# existing integration tests keep importing without failing the
+# require, and any callers that still pass `loggers` / `test_loggers`
+# end up with empty lists the harness silently accepts.
 
-    my @out = (
-        [
-            'Test2::Harness2::Collector::Logger::JSONL',
-            output_file => "$workdir/logs/services/$name/events.jsonl",
-        ],
-    );
-    push @out => [
-        'Test2::Harness2::Collector::Logger::JSON',
-        output_file => "$workdir/logs/services/$name/state.json",
-        spec        => $spec,
-    ] if defined $spec;
-
-    return \@out;
-}
-
-# Per-test-job logger specs. output_file is omitted on purpose: the
-# logger role derives the path from the collector's identity attrs
-# (logdir / run_id / job_id / job_try), which is how every per-job
-# collector wires up after the logger-paths refactor.
-sub classic_test_loggers {
-    return [
-        'Test2::Harness2::Collector::Logger::JSONL',
-        'Test2::Harness2::Collector::Logger::JSON',
-    ];
-}
-
-# Convenience: everything a legacy-style harness construction needs.
-# Returns a (%args) list ready to merge into spawn() / new().
-sub classic_logger_specs {
-    my ($workdir, $harness_name) = @_;
-    return (
-        loggers      => classic_harness_loggers($workdir, $harness_name),
-        test_loggers => classic_test_loggers(),
-    );
-}
+sub classic_harness_loggers { [] }
+sub classic_test_loggers    { [] }
+sub classic_logger_specs    { () }
 
 1;

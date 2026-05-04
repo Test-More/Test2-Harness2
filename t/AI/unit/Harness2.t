@@ -1191,7 +1191,7 @@ subtest 'start - jump_to unwinds the interpose child via Long::Jump' => sub {
 
     waitpid($outer, 0);
     is($? >> 8, 0, 'interpose child reached the setjump with a CODE-ref payload');
-    ok(-e "$dir/logs/services/harness/events.jsonl", 'service log file was created by the collector');
+    ok(-e "$dir/logs/services/harness/events.jsonl.zst", 'service events file was created by the collector');
 };
 
 subtest 'run_on_start sets up pgid (smoke test)' => sub {

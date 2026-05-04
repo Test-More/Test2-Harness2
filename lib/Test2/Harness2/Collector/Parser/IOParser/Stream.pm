@@ -86,12 +86,13 @@ C<parser> attribute:
 
     # By class name -- the collector will instantiate it.
     my $c = Test2::Harness2::Collector->spawn(
+        type    => 'Job',
+        id      => 0,
+        run_id  => 0,
+        job_try => 0,
+        logdir  => '/path/to/logs',
         launch  => ['perl', 'some_test.t'],
         parser  => 'Test2::Harness2::Collector::Parser::IOParser::Stream',
-        loggers => [
-            ['Test2::Harness2::Collector::Logger::JSONL',
-                output_file => 'events.jsonl'],
-        ],
     );
 
 =head1 ATTRIBUTES

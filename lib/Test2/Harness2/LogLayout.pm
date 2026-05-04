@@ -8,29 +8,33 @@ use Carp qw/croak/;
 use Exporter qw/import/;
 
 # Single canonical source for on-disk paths inside a yath log tree.
-# Loggers, RunService, Log backends, and the layout-rejection
-# checks all import these helpers so the path templates live in one
-# place.
+# Collectors and Log readers import these so the path templates live
+# in one place.
 #
 # All returned paths are relative to the log root (no leading '/'),
 # extension-less in the logical sense -- callers append '.json',
 # '.jsonl', '.zst', etc. at their own layer.
 #
-# Do not embed compression suffixes (.zst) or alternate encodings
-# (.csv, .xml) here; that is the logger's concern.
+# Layout (post new_log_refactor):
+#
+#   services/<id>/                          -- global (non-run) services
+#   runs/<run_id>/                          -- run collector base
+#   runs/<run_id>/services/<id>/            -- run-scoped services
+#   runs/<run_id>/jobs/<id>/<try>/          -- per-job per-try collector base
+#
+# Each collector base directory hosts the standard trio:
+#   spec.jsonl.zst    -- one row per startup
+#   events.jsonl.zst  -- pipeline output, append-only
+#   report.jsonl.zst  -- one row per shutdown
 
 our @EXPORT_OK = qw/
     run_dir
-    run_spec_basename
-    run_state_basename
-    run_events_basename
-    run_test_basename
+    job_dir
     services_global_dir
     services_run_dir
     service_global_dir
     service_run_dir
-    service_global_basename
-    service_run_basename
+    collector_base_dir
 /;
 
 sub run_dir {
@@ -39,30 +43,12 @@ sub run_dir {
     return "runs/$run_id";
 }
 
-sub run_spec_basename {
-    my ($run_id) = @_;
-    croak "run_id is required" unless defined $run_id && length $run_id;
-    return "runs/$run_id/spec";
-}
-
-sub run_state_basename {
-    my ($run_id) = @_;
-    croak "run_id is required" unless defined $run_id && length $run_id;
-    return "runs/$run_id/state";
-}
-
-sub run_events_basename {
-    my ($run_id) = @_;
-    croak "run_id is required" unless defined $run_id && length $run_id;
-    return "runs/$run_id/events";
-}
-
-sub run_test_basename {
+sub job_dir {
     my ($run_id, $job_id, $job_try) = @_;
     croak "run_id is required"  unless defined $run_id  && length $run_id;
     croak "job_id is required"  unless defined $job_id  && length $job_id;
     croak "job_try is required" unless defined $job_try && length $job_try;
-    return "runs/$run_id/tests/$job_id/$job_try";
+    return "runs/$run_id/jobs/$job_id/$job_try";
 }
 
 sub services_global_dir { 'services' }
@@ -86,19 +72,37 @@ sub service_run_dir {
     return "runs/$run_id/services/$name";
 }
 
-sub service_global_basename {
-    my ($name, $leaf) = @_;
-    croak "service name is required" unless defined $name && length $name;
-    croak "leaf is required"         unless defined $leaf && length $leaf;
-    return "services/$name/$leaf";
-}
+# Generic collector-base resolver. Args: type ('Service' | 'Run' | 'Job'),
+# id (service name or ord int), run_id (or undef), job_try (or undef).
+# Returns the collector's base directory relative to the log root.
+sub collector_base_dir {
+    my (%args) = @_;
+    my $type    = $args{type}    or croak "'type' is required";
+    my $id      = $args{id};
+    my $run_id  = $args{run_id};
+    my $job_try = $args{job_try};
 
-sub service_run_basename {
-    my ($run_id, $name, $leaf) = @_;
-    croak "run_id is required"       unless defined $run_id && length $run_id;
-    croak "service name is required" unless defined $name   && length $name;
-    croak "leaf is required"         unless defined $leaf   && length $leaf;
-    return "runs/$run_id/services/$name/$leaf";
+    croak "'id' is required" unless defined $id && length $id;
+
+    if ($type eq 'Service') {
+        return defined $run_id
+            ? service_run_dir($run_id, $id)
+            : service_global_dir($id);
+    }
+
+    if ($type eq 'Run') {
+        return run_dir($id);
+    }
+
+    if ($type eq 'Job') {
+        croak "'run_id' is required for type=Job"
+            unless defined $run_id && length $run_id;
+        croak "'job_try' is required for type=Job"
+            unless defined $job_try && length $job_try;
+        return job_dir($run_id, $id, $job_try);
+    }
+
+    croak "Unknown collector type '$type' (want Service / Run / Job)";
 }
 
 1;
@@ -117,8 +121,17 @@ Test2::Harness2::LogLayout - Path templates for the yath log tree.
 
 Single canonical source of truth for the on-disk paths inside a yath
 log tree. Importable functions return I<extension-less> relative paths.
-Callers append their own suffixes (C<.json>, C<.jsonl>, C<.zst>,
-future C<.csv> / C<.xml>, etc.) at their own layer.
+Callers append their own suffixes (C<.json>, C<.jsonl>, C<.zst>) at
+their own layer.
+
+The post-refactor layout uses one of four base directories per
+collector, with each base hosting the same trio of files
+(C<spec.jsonl.zst>, C<events.jsonl.zst>, C<report.jsonl.zst>):
+
+  services/<id>/                  global services
+  runs/<run_id>/                  run collector
+  runs/<run_id>/services/<id>/    run-scoped services
+  runs/<run_id>/jobs/<id>/<try>/  per-job per-try
 
 =head1 EXPORTS
 
@@ -128,23 +141,9 @@ future C<.csv> / C<.xml>, etc.) at their own layer.
 
 Returns C<runs/$run_id>.
 
-=item $rel = run_spec_basename($run_id)
+=item $rel = job_dir($run_id, $job_id, $job_try)
 
-Returns C<runs/$run_id/spec>.
-
-=item $rel = run_state_basename($run_id)
-
-Returns C<runs/$run_id/state>.
-
-=item $rel = run_events_basename($run_id)
-
-Returns C<runs/$run_id/events>.
-
-=item $rel = run_test_basename($run_id, $job_id, $job_try)
-
-Returns C<runs/$run_id/tests/$job_id/$job_try>. Per-job directory,
-per-try basename. Phase 4.5 layout (changed from the previous
-per-job-only basename so retries no longer clobber).
+Returns C<runs/$run_id/jobs/$job_id/$job_try>.
 
 =item $rel = services_global_dir()
 
@@ -156,22 +155,16 @@ Returns C<runs/$run_id/services>.
 
 =item $rel = service_global_dir($name)
 
-Returns C<services/$name>. The directory itself is the existence
-signal for a global service; per-leaf log files land beneath it.
+Returns C<services/$name>.
 
 =item $rel = service_run_dir($run_id, $name)
 
-Returns C<runs/$run_id/services/$name>. The directory itself is
-the existence signal for a run-scoped service.
+Returns C<runs/$run_id/services/$name>.
 
-=item $rel = service_global_basename($name, $leaf)
+=item $rel = collector_base_dir(type => $t, id => $id, run_id => $r, job_try => $try)
 
-Returns C<services/$name/$leaf>. Concrete loggers append their
-extension (.jsonl, .json, .zst) to produce the on-disk file.
-
-=item $rel = service_run_basename($run_id, $name, $leaf)
-
-Returns C<runs/$run_id/services/$name/$leaf>.
+Generic resolver. Picks the correct base directory for the supplied
+type ('Service' | 'Run' | 'Job') and identifier triple.
 
 =back
 
@@ -200,9 +193,6 @@ L<https://github.com/Test-More/Test2-Harness>.
 
 Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
 
-This program is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself.
-
-See L<http://dev.perl.org/licenses/>
+See L<https://dev.perl.org/licenses/>
 
 =cut

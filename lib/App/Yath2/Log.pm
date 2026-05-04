@@ -17,12 +17,16 @@ use constant _LOGGER_MAP => '_logger_map';
 
 use Test2::Harness2::Util qw/load_module/;
 
-use Test2::Harness2::LogLayout qw/
-    run_dir
-    run_spec_basename
-    run_state_basename
-    run_events_basename
-/;
+# XXX: reworked in M2 step 10. The LogLayout module no longer
+# exports run_spec_basename / run_state_basename / run_events_basename
+# (logger leaves are gone post new_log_refactor M2 step 4+5). The
+# legacy reader still references them in code paths covered by
+# soon-to-be-removed tests, so we restore local shims pointing at
+# the new layout for the duration of step 10.
+use Test2::Harness2::LogLayout qw/run_dir/;
+sub run_spec_basename   { run_dir($_[0]) . '/spec' }
+sub run_state_basename  { run_dir($_[0]) . '/state' }
+sub run_events_basename { run_dir($_[0]) . '/events' }
 
 use App::Yath2::Log::Artifact;
 

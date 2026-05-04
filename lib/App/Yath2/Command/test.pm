@@ -48,14 +48,6 @@ include_options(
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
 
-# Standard pair of loggers wired up at every level (harness service,
-# per-run service, per-test-job collector). One always streams every
-# event as JSONL; the other writes a JSON snapshot file.
-use constant DEFAULT_LOGGERS => [
-    'Test2::Harness2::Collector::Logger::JSONL',
-    'Test2::Harness2::Collector::Logger::JSON',
-];
-
 sub args_include_tests { 1 }
 sub group              { 'test' }
 sub summary            { 'Run a list of test files' }
@@ -159,12 +151,9 @@ sub _spawn_harness {
     my @resources = $self->_build_resources;
 
     return Test2::Harness2->spawn(
-        workdir         => $workdir,
-        protocol        => $settings->ipc->protocol,
-        resources       => \@resources,
-        loggers         => DEFAULT_LOGGERS,
-        service_loggers => DEFAULT_LOGGERS,
-        test_loggers    => DEFAULT_LOGGERS,
+        workdir   => $workdir,
+        protocol  => $settings->ipc->protocol,
+        resources => \@resources,
     );
 }
 

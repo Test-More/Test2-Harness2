@@ -31,10 +31,7 @@ use Object::HashBase qw{
     <name
     <ipc_parent
     <job_id
-    <loggers
-    <service_loggers
     <test_auditor
-    <test_loggers
     <kill_timeout
     <parent_pids
     <jump_to
@@ -142,40 +139,19 @@ sub init {
 
     $self->_init_resources;
 
-    # Loggers default to empty: the caller decides what (if anything)
-    # gets written to disk. Three independent lists control the three
-    # service tiers the harness manages:
-    #
-    #   loggers          Run on the harness's OWN Collector interpose.
-    #                    A typical harness config might put a JSONL +
-    #                    JSON pair here pointing at
-    #                    "$logdir/services/$NAME.{jsonl,json}".
-    #
-    #   service_loggers  Applied to each child service the harness
-    #                    starts (RunService and resource services).
-    #                    Runs may extend or replace this list per-run
-    #                    via queue_test_run.
-    #
-    #   test_loggers     Applied to the per-test-job Collector spawned
-    #                    inside a RunService. Runs may extend or
-    #                    replace this list per-run via queue_test_run.
-    #
-    # Each slot is an arrayref of logger specs: either a blessed
-    # logger instance or an arrayref [$class, %args] that the
-    # Collector instantiates in the child process.
-    $self->{+LOGGERS}         //= [];
-    $self->{+SERVICE_LOGGERS} //= [];
-    $self->{+TEST_LOGGERS}    //= [];
+    # Loggers / observers were removed in the new_log_refactor (M2 step
+    # 4+5); the collector now writes its own spec/events/report files
+    # directly. Constructor args named `loggers`, `service_loggers`,
+    # `test_loggers`, `extend_loggers`, and `extend_test_loggers` are
+    # silently swallowed so legacy callers do not crash, but they have
+    # no effect on the on-disk layout.
+    delete $self->{loggers};
+    delete $self->{service_loggers};
+    delete $self->{test_loggers};
+    delete $self->{extend_loggers};
+    delete $self->{extend_test_loggers};
 
-    croak "'loggers' must be an arrayref"
-        unless ref($self->{+LOGGERS}) eq 'ARRAY';
-    croak "'service_loggers' must be an arrayref"
-        unless ref($self->{+SERVICE_LOGGERS}) eq 'ARRAY';
-    croak "'test_loggers' must be an arrayref"
-        unless ref($self->{+TEST_LOGGERS}) eq 'ARRAY';
-
-    # The test auditor default is still set here: it's a class-level
-    # concern, not a per-instance logger, and a run-complete
+    # The test auditor default is still set here: a run-complete
     # pass/fail verdict is useless without it.
     $self->{+TEST_AUDITOR} //= 'Test2::Harness2::Collector::Auditor::Test';
 }
@@ -213,11 +189,8 @@ sub start {
     }
 
     # Construct the service object in the pre-fork process.  init() creates
-    # $workdir/logs/services/ and populates default loggers.
+    # $workdir/logs/services/.
     my $self = $class->new(%args);
-
-    # Grab the loggers to hand to interpose before forking.
-    my $loggers = $self->{+LOGGERS};
 
     # Everything the interpose child needs to do after the pipes are wired up
     # is packaged here so it can either run inline (the normal path) or be
@@ -244,29 +217,23 @@ sub start {
     my $jump_to = $self->{+JUMP_TO};
 
     # The interpose collector has no parent service to notify -- it
-    # is the top of its own tree. ipc_parent stays undef; ipc_harness
-    # points at the service-side name so the collector can still
-    # deliver its end-of-life report to the harness if ever consumed
-    # by an external orchestrator on the same bus.
-    # Top-of-tree interpose: no ipc_parent means the Service
-    # subclass's builder cannot derive a bus_id, so pass one
-    # explicitly. The collector identifies by the harness's own
-    # bus name. is_harness_collector => 1 suppresses the
-    # collector_exiting sends that would otherwise target this
-    # collector's own (dying) child service.
-    require Test2::Harness2::Collector::Service;
-    Test2::Harness2::Collector::Service->interpose(
-        ipcm_info            => $self->ipcm_info,
-        ipc_parent           => undef,
-        ipc_run              => undef,
-        ipc_harness          => $self->{+NAME},
-        bus_id               => "collector:" . $self->{+NAME},
-        is_harness_collector => 1,
-        logdir               => $self->{+LOGDIR},
-        service_name         => $self->{+NAME},
-        loggers              => $loggers,
-        parser               => 'Test2::Harness2::Collector::Parser::IOParser',
-        parent_pids          => [$caller_pid],
+    # is the top of its own tree. ipc_parent stays undef. ipc_harness
+    # points at the service-side name so the collector identifies its
+    # owning service even though it has no upward IPC peer per F19.
+    # bus_id is passed explicitly because the harness's own collector
+    # has no parent to derive from.
+    Test2::Harness2::Collector->interpose(
+        type        => 'Service',
+        id          => $self->{+NAME},
+        logdir      => $self->{+LOGDIR},
+        ipcm_info   => $self->ipcm_info,
+        ipc_parent  => undef,
+        ipc_run     => undef,
+        ipc_harness => $self->{+NAME},
+        bus_id      => "collector:service:" . $self->{+NAME},
+        parser      => 'Test2::Harness2::Collector::Parser::IOParser',
+        parent_pids => [$caller_pid],
+        spec        => {service_name => $self->{+NAME}, role => 'harness'},
         (defined($jump_to) ? (jump_to => $jump_to, jump_payload => $run_service) : ()),
     );
 
@@ -348,14 +315,11 @@ sub request_handler_queue_test_run {
     return {ok => 0, error => "'files' must be a non-empty arrayref"}
         unless ref($files) eq 'ARRAY' && @$files;
 
-    # loggers / extend_loggers and test_loggers / extend_test_loggers
-    # carry the caller's per-run intent. The Run constructor
-    # validates mutual exclusivity and shape; surface a tidy error
-    # response rather than letting the croak escape.
+    # Logger options were dropped in the new_log_refactor (M2 step
+    # 4+5). Drop them from the payload so the Run constructor never
+    # sees them. Kept as a tidy filter so older clients passing them
+    # don't fail the request.
     my %run_logger_opts;
-    for my $k (qw/loggers extend_loggers test_loggers extend_test_loggers/) {
-        $run_logger_opts{$k} = $payload->{$k} if defined $payload->{$k};
-    }
 
     # --set-hash-seed (Phase 7.2): when both the harness and the
     # incoming run have an explicit seed, they must match. Any
@@ -1395,9 +1359,8 @@ sub _finalize_run_if_complete {
 # All three paths route the job through a real Collector launch --
 # skip runs a one-liner that calls skip_all, fail runs a one-liner
 # that dies, abort is per-job fail for the whole remaining run.
-# That way the loggers, auditor, and on-disk artifacts are produced
-# the same way they would be for a real test; no job is ever silently
-# dropped.
+# That way the auditor and on-disk artifacts are produced the same
+# way they would be for a real test; no job is ever silently dropped.
 #
 # Returns 'launched', 'defer' (limiter full), or 'skip' (the
 # unavailable-action launch is impossible: e.g. no job-limiter is
@@ -1573,14 +1536,6 @@ sub _ensure_run_service_started {
     my $run_id = $run->run_id;
     my $bus    = "run-$run_id";
 
-    # Effective logger lists for this run: the harness's defaults,
-    # possibly overridden or extended by the Run's own intent slots.
-    # service_loggers flow to the RunService's own event output and
-    # to resource services scoped to this run; test_loggers flow to
-    # each per-job Collector launched inside the run.
-    my $svc_loggers  = $run->effective_service_loggers($self->{+SERVICE_LOGGERS});
-    my $test_loggers = $run->effective_test_loggers($self->{+TEST_LOGGERS});
-
     my $pid = Test2::Harness2::RunService->spawn(
         workdir      => $self->{+WORKDIR},
         logdir       => $self->{+LOGDIR},
@@ -1589,8 +1544,6 @@ sub _ensure_run_service_started {
         parent_pids  => [$$],
         harness_name => $self->{+NAME},
         kill_timeout => $self->{+KILL_TIMEOUT},
-        loggers      => $svc_loggers,
-        test_loggers => $test_loggers,
     );
 
     $self->{+RUN_SERVICES}->{$run_id} = {
@@ -1727,10 +1680,6 @@ sub _launch_job {
                 test_file => $job->test_file_abs,
                 env       => \%env,
                 auditor   => $self->{+TEST_AUDITOR},
-                # Omit loggers from the payload: the run service uses
-                # its own TEST_LOGGERS slot (populated at spawn from
-                # the run's effective test_loggers) when the payload
-                # doesn't override.
                 (defined $opts{launch} ? (launch => $opts{launch}) : ()),
             },
         );

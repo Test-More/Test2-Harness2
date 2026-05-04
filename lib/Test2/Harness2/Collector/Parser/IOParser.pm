@@ -142,13 +142,12 @@ Used via the collector:
     use Test2::Harness2::Collector;
 
     my $c = Test2::Harness2::Collector->spawn(
-        launch => ['perl', '-e', 'print "hi\n"'],
-        # No explicit parser -- IOParser is the default when at least one
-        # logger or auditor is present.
-        loggers => [
-            ['Test2::Harness2::Collector::Logger::JSONL',
-                output_file => 'events.jsonl'],
-        ],
+        type    => 'Job',
+        id      => 0,
+        run_id  => 0,
+        job_try => 0,
+        logdir  => '/path/to/logs',
+        launch  => ['perl', '-e', 'print "hi\n"'],
     );
 
 =head1 ATTRIBUTES

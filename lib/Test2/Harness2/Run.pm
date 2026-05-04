@@ -20,10 +20,6 @@ use Object::HashBase qw{
     <jobs
     <created_at
     <resources
-    <loggers
-    <extend_loggers
-    <test_loggers
-    <extend_test_loggers
     <launch_job_timeout
     <requested_harness_uuid
     <hash_seed
@@ -45,55 +41,12 @@ sub init {
     $self->{+RESOURCES}          //= [];
     $self->{+LAUNCH_JOB_TIMEOUT} //= DEFAULT_LAUNCH_JOB_TIMEOUT_SECS;
 
-    # Per-run logger overrides. Each of the four slots is an arrayref
-    # of logger specs; each pair is mutually exclusive.
-    #
-    #   loggers               Replace the harness's service_loggers for
-    #                         this run's RunService + resource services.
-    #   extend_loggers        Append to the harness's service_loggers
-    #                         for this run.
-    #   test_loggers          Replace the harness's test_loggers for
-    #                         test jobs in this run.
-    #   extend_test_loggers   Append to the harness's test_loggers for
-    #                         this run's test jobs.
-    #
-    # The effective list is computed at launch time by the harness /
-    # run service; the Run only carries intent.
-    for my $slot (LOGGERS, EXTEND_LOGGERS, TEST_LOGGERS, EXTEND_TEST_LOGGERS) {
-        next unless defined $self->{$slot};
-        croak "'$slot' must be an arrayref"
-            unless ref($self->{$slot}) eq 'ARRAY';
-    }
-
-    croak "'loggers' and 'extend_loggers' are mutually exclusive"
-        if defined $self->{+LOGGERS} && defined $self->{+EXTEND_LOGGERS};
-
-    croak "'test_loggers' and 'extend_test_loggers' are mutually exclusive"
-        if defined $self->{+TEST_LOGGERS} && defined $self->{+EXTEND_TEST_LOGGERS};
-}
-
-# Effective per-run logger lists. Given the harness-level defaults,
-# return the list the run should actually use for its service /
-# test-job collectors. Replace-style overrides win outright; extend-
-# style overrides append to the harness defaults. Each returns a
-# fresh arrayref so callers can mutate without reaching back into
-# the Run.
-sub effective_service_loggers {
-    my ($self, $harness_defaults) = @_;
-    return $self->_effective($self->{+LOGGERS}, $self->{+EXTEND_LOGGERS}, $harness_defaults);
-}
-
-sub effective_test_loggers {
-    my ($self, $harness_defaults) = @_;
-    return $self->_effective($self->{+TEST_LOGGERS}, $self->{+EXTEND_TEST_LOGGERS}, $harness_defaults);
-}
-
-sub _effective {
-    my ($self, $replace, $extend, $defaults) = @_;
-    $defaults //= [];
-    return [@$replace]            if defined $replace;
-    return [@$defaults, @$extend] if defined $extend;
-    return [@$defaults];
+    # Per-run logger overrides were dropped in the new_log_refactor
+    # (M2 step 4+5). Silently swallow legacy slots for back-compat.
+    delete $self->{loggers};
+    delete $self->{extend_loggers};
+    delete $self->{test_loggers};
+    delete $self->{extend_test_loggers};
 }
 
 sub from_files {
@@ -221,7 +174,7 @@ Test2::Harness2::Run - Immutable spec for a single test run.
 
 A C<Test2::Harness2::Run> represents the I<intent> to execute one logical
 test run: an ordered collection of test jobs plus the policies (resources,
-loggers, timeouts) the caller chose at queue time.
+timeouts) the caller chose at queue time.
 
 The Run itself does not track lifecycle state. Mutable state (pending /
 running / done lists, per-job result hashes, exit summaries, etc.) lives
@@ -255,16 +208,6 @@ Epoch timestamp (float) when the run was queued.
 Arrayref of L<Test2::Harness2::Role::Resource> instances scoped to this
 specific run (as opposed to the harness-global resources on the harness
 itself). Defaults to empty.
-
-=item loggers / extend_loggers
-
-Per-run service-logger overrides. Replace-style and extend-style; mutually
-exclusive.
-
-=item test_loggers / extend_test_loggers
-
-Per-run test-job-logger overrides. Replace-style and extend-style;
-mutually exclusive.
 
 =item launch_job_timeout
 
@@ -317,13 +260,6 @@ Re-blesses C<Run::Job> entries inside the C<jobs> arrayref.
 
 Append a L<Test2::Harness2::Run::Job> to the spec at queue-build time.
 Must not be called once the spec has been handed to the harness.
-
-=item $list = $run->effective_service_loggers(\@harness_defaults)
-
-=item $list = $run->effective_test_loggers(\@harness_defaults)
-
-Apply replace / extend overrides against a list of harness-level
-defaults and return a fresh arrayref.
 
 =item $hash = $run->TO_JSON
 

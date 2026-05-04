@@ -6,6 +6,7 @@ our $VERSION = '2.000011';
 
 use Carp qw/croak/;
 use Config;
+use File::Path qw/make_path/;
 use POSIX qw/:sys_wait_h setpgid/;
 use Time::HiRes qw/time/;
 use Scalar::Util qw/blessed refaddr/;
@@ -14,23 +15,35 @@ use IO::Handle;
 use IO::Select;
 use Atomic::Pipe;
 
-use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Event;
 use Test2::Harness2::Collector::Handle;
-use Test2::Harness2::Collector::Util qw/spec_class validate_spec make_warn_handler kill_child/;
+use Test2::Harness2::Collector::Util qw/make_warn_handler kill_child/;
+use Test2::Harness2::LogLayout qw/collector_base_dir/;
 use Test2::Harness2::Util qw/load_module parse_exit tinysleep/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use Test2::Harness2::Util::IPC qw/pid_is_running set_procname swap_io ipc_default_connect_args atomic_pipe_compression_args apply_atomic_pipe_compression/;
 
-# This is the base class. Two subclasses add the test-vs-service
-# divergent behaviour: Test2::Harness2::Collector::Test carries an
-# auditor and derives its bus_id from job_id, while
-# Test2::Harness2::Collector::Service skips the auditor machinery
-# and derives its bus_id from the interposed service's bus name.
-# The base class is instantiable (the auditor accessors default to
-# undef / no-op) so generic collector behaviour can be exercised
-# without picking a subclass.
+# Single Collector class (post new_log_refactor M2 step 4+5). The
+# Logger and Observer abstractions are gone; the collector writes its
+# three .jsonl.zst files directly. Test-job collectors carry an
+# Auditor::Test (which has absorbed TestObserver's IPC duties); run
+# and service collectors are dumb pass-throughs.
+#
+# Construction takes:
+#   type    'Job' | 'Run' | 'Service'   -- required
+#   id      ord int (Job/Run) or service name (Service) -- required
+#   run_id  ord int (defined for type=Run, type=Job, run-scoped services)
+#   job_try integer (only meaningful for type=Job)
+#   logdir  the workdir's logs/ directory -- required
+#
+# The base dir for this collector under $logdir is computed from the
+# four identity slots above; the trio
+# (spec.jsonl.zst, events.jsonl.zst, report.jsonl.zst) is appended
+# directly to that base dir.
 use Object::HashBase qw{
+    <type
+    <id
     <launch
     <new_pgroup
     <env_vars
@@ -38,18 +51,13 @@ use Object::HashBase qw{
     <err_fh
     <child_pid
     <parser
-    <loggers
-    <observers
-    +_observers_spec
+    <auditor
     <parent_pids
     <kill_timeout
     <logdir
-    <service_name
     <run_id
-    <job_id
     <job_try
-    <is_run
-    <is_harness_collector
+    <spec
     <ipcm_info
     <ipc_parent
     <ipc_run
@@ -59,34 +67,21 @@ use Object::HashBase qw{
     +_started
     <_owns_child
 
-    +_event_loggers
-    +_loggers_spec
+    +_auditor_spec
     +_failing_notified
     <child_exit
+
+    +_base_dir
+    +_spec_writer
+    +_events_writer
+    +_report_writer
+    +_state
 
     +_win32_job
     +_start_times
     +_child_fork_times
     +_child_fork_stamp
 };
-
-# Default auditor accessors for the base class. Test2::Harness2::Collector::Test
-# overrides `auditor` via its own HashBase slot and replaces
-# `_auditor_spec` / `_normalize_auditor` / `_instantiate_auditor` with
-# working implementations.
-sub auditor              { undef }
-sub _auditor_spec        { undef }
-sub _normalize_auditor   { }
-sub _instantiate_auditor { }
-
-# is_harness_collector is set true only in the harness's own
-# top-of-tree interpose collector, where ipc_harness points at the
-# collector's own child (the harness service). End-of-life sends that
-# would normally target ipc_harness have nowhere useful to go in that
-# case, and the child has usually already _exit()'d by the time the
-# collector reaches EOF -- hitting the "Disconnected pipe" warn path.
-# The send sites consult the flag to short-circuit self-addressed
-# traffic.
 
 use constant IS_WIN32 => $^O eq 'MSWin32';
 
@@ -95,21 +90,32 @@ use constant IS_WIN32 => $^O eq 'MSWin32';
 # the methods are available before any instance is constructed.
 require Test2::Harness2::Collector::Win32 if IS_WIN32;
 
+use constant VALID_TYPES => {map { $_ => 1 } qw/Job Run Service/};
+
 sub init {
     my $self = shift;
 
     croak "'ipcm_info' is a required attribute"
         unless defined $self->{+IPCM_INFO};
 
-    # ipc_harness is the bus name of the main harness service; every
-    # collector needs it so end-of-life messages land there regardless
-    # of the collector's position in the service tree. ipc_parent is
-    # the bus name of whatever service spawned this collector (for a
-    # test-job collector: its RunService; for the harness interpose
-    # collector: undef -- it has no parent service to notify). A
-    # missing parent is valid; a missing harness is not.
     croak "'ipc_harness' is a required attribute"
         unless defined $self->{+IPC_HARNESS};
+
+    my $type = $self->{+TYPE} // croak "'type' is a required attribute (Job/Run/Service)";
+    croak "Invalid type '$type' (want Job/Run/Service)"
+        unless VALID_TYPES->{$type};
+
+    croak "'id' is a required attribute"
+        unless defined $self->{+ID} && length $self->{+ID};
+
+    if ($type eq 'Job') {
+        croak "'run_id' is required for type=Job"
+            unless defined $self->{+RUN_ID};
+        $self->{+JOB_TRY} //= 0;
+    }
+
+    croak "'logdir' is a required attribute"
+        unless defined $self->{+LOGDIR} && length $self->{+LOGDIR};
 
     # Map spec constructor names to internal attribute names so callers can
     # use the natural names from the spec (stdout, stderr, pid, env) even
@@ -119,26 +125,34 @@ sub init {
     $self->{+CHILD_PID} //= delete $self->{pid}    if exists $self->{pid};
     $self->{+ENV_VARS}  //= delete $self->{env}    if exists $self->{env};
 
-    $self->{+JOB_ID}  //= gen_uuid();
-    $self->{+JOB_TRY} //= 0;
-
     $self->{+_START_TIMES} = [times()];
 
     $self->{+KILL_TIMEOUT} //= 15;
     $self->{+ENV_VARS}     //= {};
     $self->{+NEW_PGROUP}   //= 0;
+    $self->{+SPEC}         //= {};
 
-    # Callers should pass bus_id explicitly (the harness-interpose
-    # call site in particular cannot be derived from ipc_parent
-    # because the harness has no parent service). When they do not,
-    # fall back to the subclass's best-effort derivation.
+    # Compose collector bus_id. Test-job collectors identify by id (the
+    # job's ordinal); other collectors identify by id (service name or
+    # run ordinal). The harness's own collector overrides bus_id
+    # explicitly (it passes its own bus name in).
     $self->{+BUS_ID} //= $self->_build_collector_bus_id;
 
-    # Auditor first: loggers may need to consult it, and validation should run
-    # in the same order as instantiation below.
-    $self->_normalize_auditor();
-    $self->_normalize_observers();
-    $self->_normalize_loggers();
+    # Validate auditor spec only for Job collectors; auditors are
+    # meaningless for run/service collectors.
+    if ($type eq 'Job' && defined $self->{+AUDITOR}) {
+        my $auditor = $self->{+AUDITOR};
+        if (!blessed($auditor)) {
+            my $class = ref($auditor) eq 'ARRAY' ? $auditor->[0] : $auditor;
+            croak "Auditor spec must be a class name, [class, args], or instance"
+                unless defined $class && !ref($class);
+            load_module($class);
+            croak "Auditor '$class' does not implement Test2::Harness2::Role::Auditor"
+                unless Role::Tiny::does_role($class, 'Test2::Harness2::Role::Auditor');
+        }
+        $self->{+_AUDITOR_SPEC} = $self->{+AUDITOR};
+        $self->{+AUDITOR} = undef;    # re-instantiated in the child
+    }
 
     my $has_launch = defined $self->{+LAUNCH};
     my $has_stdio  = defined($self->{+OUT_FH}) || defined($self->{+ERR_FH});
@@ -165,204 +179,51 @@ sub init {
         }
     }
 
-    # Default parser -- only needed when something will consume events.
-    # Skip the default when there are no loggers and no auditor; user may
-    # still pass one explicitly, which will be honored.
-    $self->{+PARSER} //= 'Test2::Harness2::Collector::Parser::IOParser'
-        if @{$self->{+LOGGERS}} || $self->auditor;
+    # Default parser. Always present so the write_phase has a parsed
+    # event to serialize.
+    $self->{+PARSER} //= 'Test2::Harness2::Collector::Parser::IOParser';
 
     # Load parser class if it's a class name
     load_module($self->{+PARSER})
         if defined($self->{+PARSER}) && !ref $self->{+PARSER};
 }
 
-# spec_class / validate_spec live in Test2::Harness2::Collector::Util.
-# Imported above; called as plain functions from the *_normalize methods
-# below.
-
-# Default observer spec accessor. Subclasses may override to install
-# default observers (e.g. Collector::Test installs TestObserver).
-sub _default_observers { () }
-
-# Validate the observers spec list. Each entry must be a class name
-# (or [class, @args] / blessed instance) implementing the Observer
-# role. Like loggers, instances are built lazily in the collector
-# child process via _instantiate_observers.
-sub _normalize_observers {
+# Compute and cache the absolute base dir for this collector.
+sub base_dir {
     my $self = shift;
-
-    my $observers = $self->{+OBSERVERS};
-    if (!defined($observers)) {
-        $observers = $self->{+OBSERVERS} = [$self->_default_observers];
-    }
-
-    croak "'observers' must be an arrayref" unless ref($observers) eq 'ARRAY';
-
-    my $role = 'Test2::Harness2::Role::Collector::Observer';
-
-    validate_spec($_, 'observer', $role) for @$observers;
-
-    $self->{+_OBSERVERS_SPEC} = [@$observers];
+    return $self->{+_BASE_DIR} //= $self->{+LOGDIR} . '/' . collector_base_dir(
+        type    => $self->{+TYPE},
+        id      => $self->{+ID},
+        run_id  => $self->{+RUN_ID},
+        job_try => $self->{+JOB_TRY},
+    );
 }
 
-# Build observer instances inside the collector child process. Mirrors
-# _instantiate_loggers: blessed instances get identity / ipcm_info
-# stamped on via setters; class / [class, @args] specs go through new()
-# with the standard identity hash.
-sub _instantiate_observers {
+# Collector identity for the IPC bus. Run and service collectors use
+# their id as the disambiguator; job collectors use their (run, id,
+# try) triple. The harness's own collector overrides bus_id explicitly.
+sub _build_collector_bus_id {
     my $self = shift;
 
-    my $specs = $self->{+_OBSERVERS_SPEC} //= [];
+    my $type = $self->{+TYPE};
+    my $id   = $self->{+ID};
 
-    $self->{+OBSERVERS} = [];
-
-    for my $item (@$specs) {
-        my %identity = (
-            run_id  => $self->{+RUN_ID},
-            job_id  => $self->{+JOB_ID},
-            job_try => $self->{+JOB_TRY},
-        );
-
-        my $inst;
-        if (blessed($item)) {
-            $item->set_process_info(%identity);
-            $item->set_ipcm_info($self->{+IPCM_INFO});
-            $item->set_auditor($self->auditor) if $self->auditor;
-            $inst = $item;
-        }
-        elsif (ref($item) eq 'ARRAY') {
-            my ($class, @args) = @$item;
-            $inst = $class->new(
-                %identity,
-                ipcm_info => $self->{+IPCM_INFO},
-                (defined $self->auditor ? (auditor => $self->auditor) : ()),
-                @args,
-            );
-        }
-        else {
-            $inst = $item->new(
-                %identity,
-                ipcm_info => $self->{+IPCM_INFO},
-                (defined $self->auditor ? (auditor => $self->auditor) : ()),
-            );
-        }
-
-        push @{$self->{+OBSERVERS}} => $inst;
+    my $name;
+    if ($type eq 'Job') {
+        $name = "job:$id";
     }
-}
-
-# Pure validation: confirm each entry is a well-formed spec whose class
-# implements the logger role. Constructors are NOT invoked here -- the actual
-# instances are built lazily in _instantiate_loggers, which runs in the
-# collector child only. This avoids opening files or other side effects in the
-# parent that would then be duplicated across the fork/spawn boundary.
-sub _normalize_loggers {
-    my $self = shift;
-
-    my $loggers = $self->{+LOGGERS} //= [];
-
-    croak "'loggers' must be an arrayref" unless ref($loggers) eq 'ARRAY';
-
-    my $role = 'Test2::Harness2::Role::Collector::Logger';
-
-    validate_spec($_, 'logger', $role) for @$loggers;
-
-    # depends_on is a class method on the logger role with a default of (),
-    # so we can resolve dependencies without instantiating.
-    my %have = map { spec_class($_) => 1 } @$loggers;
-    for my $item (@$loggers) {
-        my $class = spec_class($item);
-        for my $dep ($class->depends_on) {
-            next if $have{$dep};
-            croak "Logger '$class' requires logger '$dep', but it is not present";
-        }
+    elsif ($type eq 'Run') {
+        $name = "run:$id";
+    }
+    else {
+        $name = "service:$id";
     }
 
-    # Preserve original spec list for later serialization / instantiation.
-    $self->{+_LOGGERS_SPEC} = [@$loggers];
-}
-
-# Build instances from the spec list. Called from _run_collector so that only
-# the collector child process constructs loggers/auditor objects -- the parent
-# never opens those file handles, sockets, etc.
-sub _instantiate_loggers {
-    my $self = shift;
-
-    my $specs = $self->{+_LOGGERS_SPEC} //= [];
-
-    $self->{+LOGGERS} = [];
-
-    for my $item (@$specs) {
-        # Applicability gate: let each spec opt out of contexts it was
-        # not designed for (e.g. test-job-only loggers on a service
-        # collector). Blessed instances answer for themselves; everything
-        # else is asked via its class.
-        my $logger_class = blessed($item) ? $item : spec_class($item);
-        next unless $logger_class->applicable($self);
-
-        # service_name and job_id are mutually exclusive from the logger's
-        # point of view (the role's output_file_basename croaks on both).
-        # Service collectors identify by service_name; test collectors
-        # identify by job_id. Collector::init defaults a random job_id
-        # for every collector, so we must explicitly suppress it for
-        # service collectors rather than pass both.
-        my %identity = (
-            logdir  => $self->{+LOGDIR},
-            run_id  => $self->{+RUN_ID},
-            job_try => $self->{+JOB_TRY},
-            is_run  => $self->{+IS_RUN},
-        );
-        if (defined $self->{+SERVICE_NAME}) {
-            $identity{service_name} = $self->{+SERVICE_NAME};
-        }
-        else {
-            $identity{job_id} = $self->{+JOB_ID};
-        }
-
-        my $inst;
-        if (blessed($item)) {
-            # Pre-constructed instance: stamp info onto it via setters
-            # since we cannot re-run its constructor.
-            $item->set_process_info(%identity);
-            $item->set_ipcm_info($self->{+IPCM_INFO});
-            $item->set_auditor($self->auditor) if $self->auditor;
-            $inst = $item;
-        }
-        elsif (ref($item) eq 'ARRAY') {
-            my ($class, @args) = @$item;
-            $inst = $class->new(
-                %identity,
-                ipcm_info => $self->{+IPCM_INFO},
-                (defined $self->auditor ? (auditor => $self->auditor) : ()),
-                @args,
-            );
-        }
-        else {
-            $inst = $item->new(
-                %identity,
-                ipcm_info => $self->{+IPCM_INFO},
-                (defined $self->auditor ? (auditor => $self->auditor) : ()),
-            );
-        }
-
-        # Every logger has its identity attributes now, so it can
-        # resolve its output path and create any directory trees its
-        # output files will need before startup opens them.
-        $inst->prepare_output_locations;
-
-        $self->_add_logger($inst);
+    my $bus = "collector:$name";
+    if (defined $self->{+RUN_ID} && (length($self->{+RUN_ID}) + length($bus) + 1) < 512) {
+        $bus .= ":" . $self->{+RUN_ID};
     }
-}
-
-# Append a logger instance to the ordered LOGGERS array. Kept as a helper
-# so anything that grows the logger set later goes through one place.
-sub _add_logger {
-    my $self = shift;
-    my ($logger) = @_;
-
-    push @{$self->{+LOGGERS}} => $logger;
-
-    return $logger;
+    return $bus;
 }
 
 sub spawn {
@@ -390,8 +251,7 @@ sub start {
     return unless defined $pid;
 
     # Parent: replace the caller's collector reference with a handle so the
-    # heavyweight Collector instance (with its loggers, auditor, parser, and
-    # pipe machinery) is not kept alive in the parent.
+    # heavyweight Collector instance is not kept alive in the parent.
     $_[0] = Test2::Harness2::Collector::Handle->new(pid => $pid);
 
     return $pid;
@@ -421,52 +281,35 @@ sub _spawn_collector {
     $self->_exit_mirroring_child($ok);
 }
 
-# _spawn_collector_win32 + collect_from_file live in
-# Test2::Harness2::Collector::Win32 and are loaded only on win32. The
-# unix path stays inline above; the Win32 module installs both methods
-# into this class's namespace so $self->_spawn_collector_win32 and
-# Test2::Harness2::Collector->collect_from_file resolve as usual.
-
 sub _run_collector {
     my $self = shift;
 
     # Reset CPU-time baseline now that we're in the process that will
-    # actually run the collection loop. _START_TIMES captured during
-    # init() was taken in whichever process called new(); the unix
-    # spawn path forks between init() and here, so the original
-    # baseline reflects the parent's accumulated times and produces
-    # negative deltas at finalize.
+    # actually run the collection loop.
     $self->{+_START_TIMES} = [times()];
 
     my ($child_pid, $out_r, $err_r, $started_child) = $self->_setup_child_handles();
     $self->_set_procname($child_pid);
 
+    # Open the writer trio + spec row before any event flows so a
+    # crash mid-collection still leaves spec.jsonl.zst usable.
+    $self->_open_writers();
+    $self->_write_spec_row();
+
     # Signal handlers. Installed with `local` so they restore automatically
-    # when _run_collector returns (including via die), which is why they must
-    # live in this top-level method rather than a helper.
-    #
-    # Ignore-class signals: tests and test-spawned child processes may send
-    # these for their own coordination.  The collector must not die from them.
-    # SIGPIPE in particular: write calls already check errno; we don't want a
-    # broken-pipe to kill the collector.
+    # when _run_collector returns (including via die).
     local $SIG{USR1} = 'IGNORE';
     local $SIG{USR2} = 'IGNORE';
     local $SIG{HUP}  = 'IGNORE';
     local $SIG{PIPE} = 'IGNORE';
 
-    # Graceful-shutdown signals: TERM the watched child and let the existing
-    # wait + exit-mirroring path handle cleanup.  We set $got_signal so the
-    # main loop can notice and break out after draining remaining output.
     my $got_signal;
     local $SIG{TERM} = sub { $got_signal = 'TERM' };
     local $SIG{INT}  = sub { $got_signal = 'INT' };
     local $SIG{QUIT} = sub { $got_signal = 'QUIT' };
 
-    my $parser = $self->_init_event_sinks();
+    my $parser = $self->_init_pipeline();
 
-    # Route collector-process warnings through the logger chain as WARNING
-    # info events (see _make_warn_handler). Must stay in this scope for the
-    # same `local` reason as the signal handlers above.
     local $SIG{__WARN__} = $self->_make_warn_handler;
 
     my ($buffer, $child_exit) = $self->_run_collection_loop(
@@ -496,62 +339,56 @@ sub _setup_child_handles {
 
     my $child_pid = $self->{+CHILD_PID};
 
-    # Wrap handles for the collection loop.
-    # Pipe handles: wrap in Atomic::Pipe with mixed_data_mode.
-    # Regular file handles: use a plain line-reader shim.
-    # Fifo/pipe handles passed as file paths: also wrapped in Atomic::Pipe.
     my $out_r = defined($self->{+OUT_FH}) ? $self->_wrap_handle($self->{+OUT_FH}) : undef;
     my $err_r = defined($self->{+ERR_FH}) ? $self->_wrap_handle($self->{+ERR_FH}) : undef;
 
     return ($child_pid, $out_r, $err_r, $started_child);
 }
 
-# Build logger and auditor instances in the collector child process (so the
-# parent never opens their file handles / sockets / etc.), start the loggers,
-# cache the event-logging subset, and instantiate the parser. Returns the
-# parser (which may be undef when no loggers and no auditor are configured).
-sub _init_event_sinks {
+# Pipeline init: build auditor (Job-only), open parser instance.
+sub _init_pipeline {
     my $self = shift;
 
-    # Auditor before loggers so loggers that want it can receive it as a
-    # constructor argument (for new() specs) or via set_auditor() (for
-    # pre-blessed instances, handled in _instantiate_loggers).
-    $self->_instantiate_auditor();
-    $self->_instantiate_observers();
-    $self->_instantiate_loggers();
+    if ($self->{+TYPE} eq 'Job' && $self->{+_AUDITOR_SPEC}) {
+        my $spec = $self->{+_AUDITOR_SPEC};
+        my $inst;
+        if (blessed($spec)) {
+            $inst = $spec;
+            $inst->set_process_info(
+                run_id  => $self->{+RUN_ID},
+                job_id  => $self->{+ID},
+                job_try => $self->{+JOB_TRY},
+            );
+            $inst->set_ipcm_info($self->{+IPCM_INFO});
+        }
+        elsif (ref($spec) eq 'ARRAY') {
+            my ($class, @args) = @$spec;
+            $inst = $class->new(
+                run_id    => $self->{+RUN_ID},
+                job_id    => $self->{+ID},
+                job_try   => $self->{+JOB_TRY},
+                ipcm_info => $self->{+IPCM_INFO},
+                @args,
+            );
+        }
+        else {
+            $inst = $spec->new(
+                run_id    => $self->{+RUN_ID},
+                job_id    => $self->{+ID},
+                job_try   => $self->{+JOB_TRY},
+                ipcm_info => $self->{+IPCM_INFO},
+            );
+        }
+        $self->{+AUDITOR} = $inst;
 
-    # Lifecycle startup ordering matters: the auditor must be fully
-    # started before observe_event ever sees an auditor-emitted event,
-    # and every observer must be fully started before an auditor-
-    # startup event reaches its observe_event. So we collect both
-    # sources first (auditor events, then each observer's startup
-    # events), *then* pipe the auditor events through the observer
-    # chain, then concatenate the observers' own startup events, then
-    # bring loggers up and replay the accumulated list.
-    my @auditor_startup;
-    if (my $auditor = $self->auditor) {
-        @auditor_startup = grep { $_ } $auditor->startup($self);
-    }
-
-    my @observer_startup;
-    for my $obs (@{$self->{+OBSERVERS} // []}) {
-        push @observer_startup => grep { $_ } $obs->startup($self);
-    }
-
-    my @startup_events = $self->_pipe_through_observers(@auditor_startup);
-    push @startup_events => @observer_startup;
-
-    $_->startup($self) for @{$self->{+LOGGERS}};
-    $self->{+_EVENT_LOGGERS} = [grep { $_->log_events } @{$self->{+LOGGERS}}];
-
-    if (@startup_events && $self->{+_EVENT_LOGGERS} && @{$self->{+_EVENT_LOGGERS}}) {
-        for my $e (@startup_events) {
-            $_->log_event($e) for @{$self->{+_EVENT_LOGGERS}};
+        # Auditor startup may emit events (e.g. test_job_started IPC).
+        # Any returned event is sent through write_phase like normal.
+        my @startup = grep { $_ } $inst->startup($self);
+        for my $e (@startup) {
+            $self->_write_event($e);
         }
     }
 
-    # When there is no parser the collector still drains the handles but
-    # discards the lines without constructing events.
     my $parser = $self->{+PARSER};
     if (defined($parser) && !ref $parser) {
         $parser = $parser->new(ipcm_info => $self->{+IPCM_INFO});
@@ -563,44 +400,57 @@ sub _init_event_sinks {
     return $parser;
 }
 
-# Lazy IPC handle per target bus name. One handle entry per unique
-# target; each registers the collector on the IPC bus under its
-# job_id so the receiving service can identify the sender. The
-# collector sends only UPWARD (to its parent service or to the
-# harness); it never holds a handle into the IPC identity of the
-# process it is monitoring.
+# Open the spec/events/report writers under the collector's base dir.
+# The dir is created on demand. If the files already exist we append
+# (zstd is concatenable; subsequent frames just append to the file).
+sub _open_writers {
+    my $self = shift;
+
+    my $base = $self->base_dir;
+    make_path($base);
+
+    my $events_path = "$base/events.jsonl.zst";
+    my $spec_path   = "$base/spec.jsonl.zst";
+    my $report_path = "$base/report.jsonl.zst";
+
+    $self->{+_EVENTS_WRITER} = open_zstd_writer($events_path);
+    $self->{+_SPEC_WRITER}   = open_zstd_writer($spec_path);
+    $self->{+_REPORT_WRITER} = open_zstd_writer($report_path);
+}
+
+# Append the spec row. Always one row per startup (B7 / B11). The row
+# is whatever `spec` hash the caller handed us, plus the collector
+# pid.
+sub _write_spec_row {
+    my $self = shift;
+    my $w = $self->{+_SPEC_WRITER} or return;
+
+    my %spec = (
+        %{$self->{+SPEC} // {}},
+        collector_pid => $$,
+        type          => $self->{+TYPE},
+        id            => $self->{+ID},
+        (defined $self->{+RUN_ID}  ? (run_id  => $self->{+RUN_ID})  : ()),
+        (defined $self->{+JOB_TRY} ? (job_try => $self->{+JOB_TRY}) : ()),
+        started_at    => time,
+    );
+
+    require Test2::Harness2::Util::JSON;
+    $w->say(Test2::Harness2::Util::JSON::encode_json(\%spec));
+}
+
+# Cached IPC client for upward sends.
 sub _ipc_client {
     my $self = shift;
     return $self->{_ipc_client} if $self->{_ipc_client};
 
     require IPC::Manager;
-    # listen=0 (from ipc_default_connect_args): the collector only
-    # ever sends UPWARD and never receives inbound traffic, so on
-    # ConnectionUnix it skips the listen socket entirely. Drivers
-    # that ignore the flag (MessageFiles, AtomicPipe, etc.) treat
-    # the kwarg as a no-op.
     my $c = IPC::Manager->connect($self->bus_id, $self->{+IPCM_INFO}, ipc_default_connect_args());
-
-    # The collector runs an event loop. Sends never block: queued
-    # messages are flushed by the loop's per-iteration drain (see
-    # _run_collection_loop). Clients without Role::Outbox inherit
-    # the no-op set_send_blocking from IPC::Manager::Client base.
     $c->set_send_blocking(0);
 
     return $self->{_ipc_client} = $c;
 }
 
-# Wait briefly for $target to register on the bus so the first
-# message we send to it actually lands. Matters mainly in the
-# service-interpose flow where the collector and its parent
-# service race through startup. Gated per-target so we only pay
-# the wait once per peer.
-#
-# Returns truthy if the peer is registered (or was once -- a peer
-# that came up and then disappeared still counts as "we saw it"),
-# falsy if the wait timed out without the peer ever registering.
-# Caller can use the return value to decide whether to attempt the
-# send at all.
 sub _wait_for_ipc_target {
     my ($self, $target) = @_;
     return $self->{_ipc_target_seen}->{$target}
@@ -616,83 +466,19 @@ sub _wait_for_ipc_target {
     return $self->{_ipc_target_seen}->{$target} = $active ? 1 : 0;
 }
 
-# Collector's own identity on the IPC bus. Per IPC_AND_LOGGERS §5.4
-# this must be self-describing:
-#
-#   collector:<service_name>           -- non-run-scoped collectors
-#                                         (harness's own, global resources,
-#                                         global-scope preload stages).
-#   collector:<service_name>:<run_id>  -- run-scoped collectors (run
-#                                         service's own, run-scoped
-#                                         resources, run-scoped preload
-#                                         stages, test-job collectors
-#                                         launched under a run).
-#
-# For service-interpose collectors, <service_name> is the interposed
-# service's bus name (what it registered as). For test-job collectors
-# there is no interposed service -- the test process is not a service --
-# so we use the job_id as the disambiguator.
-sub _build_collector_bus_id {
-    my $self = shift;
-
-    # Base-class fallback: pick whichever identifier we have. Subclasses
-    # (Collector::Test, Collector::Service) tighten this down to the
-    # one their role actually identifies by.
-    my $collected_name = $self->{+IPC_PARENT} // $self->{+JOB_ID};
-
-    croak "Could not determine the name of what we are collecting: set bus_id explicitly, or ensure at least one of ipc_parent / job_id is provided"
-        unless $collected_name;
-
-    return $self->_compose_bus_id($collected_name);
-}
-
-# Share the run-id suffix logic between the base's fallback and the
-# subclass builders.
-sub _compose_bus_id {
-    my ($self, $collected_name) = @_;
-    my $id = "collector:$collected_name";
-    $id .= ":$self->{+IPC_RUN}"
-        if defined $self->{+IPC_RUN}
-        && (length($self->{+IPC_RUN}) + length($id) + 1) < 512;
-    return $id;
-}
-
-# Public helper for observers: send to any known target using the
-# collector's cached IPC handle pool and warn-on-failure semantics.
-# Thin wrapper around _send_to so the underscore name stays
-# internal. Observers that want to address ipc_run / ipc_harness /
-# some other bus name go through here.
+# Public helper: send to any known target. Used by Auditor::Test (it
+# took over TestObserver's IPC duties).
 sub send_ipc {
     my ($self, $target, $content) = @_;
     return $self->_send_to($target, $content);
 }
 
-# Fire-and-forget send to a specific target service. Every send a
-# collector performs goes UP the tree -- to ipc_parent, ipc_run, or
-# ipc_harness -- and a collector never outlives its targets: a
-# correctly-shut-down system tears the collector down before the
-# services it talks to. A pipe / EPIPE error here therefore means
-# a parent went away before its collector was torn down, which is
-# a real bug (shutdown ordering, crashed peer, etc.) and wants to
-# surface, not get silenced. All send failures warn. Returns
-# nothing either way since the collector's lifecycle must never
-# depend on delivery.
 sub _send_to {
     my ($self, $target, $content) = @_;
     return unless defined $target;
 
     my $client = $self->_ipc_client;
 
-    # Send with one retry. The MessageFiles protocol's try_send_message
-    # croaks "Client does not exist" if the target's peer directory
-    # is missing at send time; that can race with peer registration
-    # at startup or peer teardown at shutdown. Re-check peer_active
-    # once before giving up so the legitimately-late but still-alive
-    # case stops emitting spurious warnings.
-    #
-    # try_send_message is non-blocking: queues on EAGAIN. The
-    # collection loop calls drain_pending each iteration to flush
-    # the queue when the transport reports writability.
     for my $attempt (1, 2) {
         my $ready = $self->_wait_for_ipc_target($target);
 
@@ -701,8 +487,6 @@ sub _send_to {
 
         my $err = $@;
 
-        # On retry, force another peer_active poll the next time
-        # around by clearing the gating cache for this target.
         if ($attempt == 1 && $ready) {
             delete $self->{_ipc_target_ready}->{$target};
             delete $self->{_ipc_target_seen}->{$target};
@@ -722,13 +506,6 @@ sub _send_to {
     return;
 }
 
-# Build the SIG{__WARN__} handler routed through this collector's
-# event pipeline. Wraps make_warn_handler() so the closure binds to
-# $self->_process_event for the actual dispatch. Child-process
-# warnings already flow through the stdout/stderr pipe to this
-# process's parser chain, so no handler is needed on the child side.
-# Collector-process warnings become WARNING info events on the logger
-# chain; the renderer is responsible for surfacing them to the user.
 sub _make_warn_handler {
     my $self = shift;
     return make_warn_handler(sub { $self->_process_event($_[0]) });
@@ -750,19 +527,11 @@ sub _run_collection_loop {
     my $stdout_eof   = defined($out_r) ? 0 : 1;
     my $stderr_eof   = defined($err_r) ? 0 : 1;
 
-    # Merged if same handle object or err not provided.
-    # Compare refaddr instead of stringification so a future Atomic::Pipe
-    # `""` overload would not silently break the equality.
     my $merge_outputs = defined($out_r) && defined($err_r)
         && refaddr($out_r) && refaddr($err_r)
         && refaddr($out_r) == refaddr($err_r);
     $stderr_eof = 1 if $merge_outputs;
 
-    # IO::Select paces the loop so it parks on idle pipes instead of
-    # busy-spinning through non-blocking reads. can_read also returns
-    # immediately once a pipe closes, so EOF latency is unaffected. The
-    # per-iteration parent-pid / signal / waitpid bookkeeping still fires
-    # every $cycle seconds even when no I/O happens.
     my $cycle  = 0.2;
     my $sel    = IO::Select->new;
     my $out_fh = $stdout_eof ? undef : $self->_select_fh($out_r);
@@ -770,32 +539,14 @@ sub _run_collection_loop {
     $sel->add($out_fh) if defined $out_fh;
     $sel->add($err_fh) if defined $err_fh;
 
-    # Ordering buffer. Atomic::Pipe streams may interleave plain lines with
-    # JSON-burst events on STDOUT, and the Test2 Stream formatter sends a
-    # sync marker {"event_id":...} on STDERR each time it writes an event on
-    # STDOUT. We buffer both streams until we have seen the matching
-    # event_id on both sides (or just once when the streams are merged) and
-    # then flush in order, so stdout/stderr text keeps its relative
-    # ordering against the events. `saw_event` latches once we see any
-    # JSON-burst so the "pure text" eager-flush path stops firing even after
-    # we have pruned flushed event_ids out of `seen`.
     my $buffer = {seen => {}, saw_event => 0, stdout => [], stderr => []};
 
-    my $draining = 0;    # Set when we got a signal/parent-gone and are finishing up
+    my $draining = 0;
 
     while (1) {
-        # Flush any queued outbound IPC sends. The client is in
-        # send_blocking=0 mode (set by _ipc_client). The kernel may
-        # have made room in the FIFO since the previous iteration.
-        # have_pending_sends short-circuits on the first peer with a
-        # backlog; pending_sends would walk every peer summing queue
-        # depths, which is wasted work on the hot path.
         my $client = $self->{_ipc_client};
         $client->drain_pending if $client && $client->have_pending_sends;
 
-        # Build a write-side select set when the outbox has a
-        # backlog so the loop wakes the moment room appears, even
-        # on platforms without large pipe buffers.
         my $write_sel;
         if ($client && $client->have_writable_handles) {
             require IO::Select;
@@ -811,20 +562,15 @@ sub _run_collection_loop {
             IO::Select->select($sel->count ? $sel : undef, $write_sel, undef, $cycle);
         }
 
-        # Post-select drain: writable wake-up means the queue can
-        # advance now. Read-side wake-up may also have made room
-        # transitively.
         $client->drain_pending if $client && $client->have_pending_sends;
 
         my $ok = eval {
-            # Check for signal - kill child but keep draining handles
             if ($$got_signal_ref && !$draining) {
                 $self->_kill_child($child_pid) if $child_pid;
                 $draining     = 1;
                 $child_exited = 1;
             }
 
-            # Check parent pids
             if (!$draining && $self->{+PARENT_PIDS} && @{$self->{+PARENT_PIDS}}) {
                 my $parent_gone = 0;
                 for my $ppid (@{$self->{+PARENT_PIDS}}) {
@@ -840,7 +586,6 @@ sub _run_collection_loop {
                 }
             }
 
-            # Read stdout
             unless ($stdout_eof) {
                 for my $item ($self->_read_handle($out_r)) {
                     if (!defined $item) {
@@ -853,7 +598,6 @@ sub _run_collection_loop {
                 }
             }
 
-            # Read stderr
             unless ($stderr_eof) {
                 for my $item ($self->_read_handle($err_r)) {
                     if (!defined $item) {
@@ -866,7 +610,6 @@ sub _run_collection_loop {
                 }
             }
 
-            # Check if child has exited (only if we started it via waitpid)
             if ($child_pid && $started_child && !$child_exited) {
                 my $rv = waitpid($child_pid, WNOHANG);
                 if ($rv == $child_pid) {
@@ -875,9 +618,6 @@ sub _run_collection_loop {
                 }
             }
 
-            # For externally-managed pids we can't waitpid, but we can still
-            # notice they are gone via pid_is_running. Exit status is not
-            # available in this path; that requires the IPC channel.
             if ($child_pid && !$started_child && !$child_exited) {
                 $child_exited = 1 unless pid_is_running($child_pid);
             }
@@ -888,15 +628,11 @@ sub _run_collection_loop {
 
         unless ($ok) {
             $self->_emit_collector_error($err);
-
-            # Terminate the child and bail out of the loop
             $self->_kill_child($child_pid) if $child_pid && $started_child;
             last;
         }
 
-        # Check if we're done
         if ($stdout_eof && $stderr_eof) {
-            # Drain any remaining child exit if we started it
             if ($child_pid && $started_child && !$child_exited) {
                 my $rv = waitpid($child_pid, 0);
                 $child_exit   = $? if $rv == $child_pid;
@@ -913,12 +649,9 @@ sub _finalize_collection {
     my $self = shift;
     my ($buffer, $parser, $child_exit) = @_;
 
-    # Flush anything still sitting in the ordering buffer (items that never
-    # got a matching sync marker).
+    # Flush anything still sitting in the ordering buffer.
     $self->_flush_buffer($buffer, $parser) if $parser;
 
-    # Write exit event if we have an exit code, and stash it so the spawning
-    # method can mirror the child's exit when it terminates the collector.
     if (defined $child_exit) {
         $self->{+CHILD_EXIT} = $child_exit;
 
@@ -930,13 +663,6 @@ sub _finalize_collection {
         my $px = parse_exit($child_exit);
         $px->{times} = \@cpu_times;
 
-        # Per-job child-process times: baseline taken just before the
-        # collected child was forked, end taken now (after waitpid),
-        # so cuser/csys captures the full child tree's CPU and the
-        # delta wall-clock spans the child's lifetime. Reported
-        # whether or not this collector is a test-job collector;
-        # only test-job collectors aggregate it (TestObserver +
-        # RunService + harness_run_end).
         if (my $cf = $self->{+_CHILD_FORK_TIMES}) {
             $px->{child_times} = [map { $end_times->[$_] - $cf->[$_] } 0 .. 3];
         }
@@ -952,33 +678,89 @@ sub _finalize_collection {
         $self->_process_event($exit_event);
     }
 
-    # Lifecycle shutdown: mirrors the startup ordering. Auditor
-    # shuts down first so its emitted events can still flow through
-    # observe_event; each observer then shuts down with its events
-    # going straight to the loggers. Loggers must not shut down
-    # until every produced shutdown event has been log_event()'d.
-    my @auditor_shutdown;
-    if (my $auditor = $self->auditor) {
-        @auditor_shutdown = grep { $_ } $auditor->shutdown($self);
-    }
-
-    my @observer_shutdown;
-    for my $obs (@{$self->{+OBSERVERS} // []}) {
-        push @observer_shutdown => grep { $_ } $obs->shutdown($self);
-    }
-
-    my @shutdown_events = $self->_pipe_through_observers(@auditor_shutdown);
-    push @shutdown_events => @observer_shutdown;
-
-    if (@shutdown_events && $self->{+_EVENT_LOGGERS} && @{$self->{+_EVENT_LOGGERS}}) {
-        for my $e (@shutdown_events) {
-            $_->log_event($e) for @{$self->{+_EVENT_LOGGERS}};
+    # Auditor shutdown (Job collectors). May emit terminal events
+    # and IPC.
+    if (my $auditor = $self->{+AUDITOR}) {
+        my @shutdown = grep { $_ } $auditor->shutdown($self);
+        for my $e (@shutdown) {
+            $self->_write_event($e);
         }
     }
 
-    $_->shutdown($self) for @{$self->{+LOGGERS}};
+    # Write the final report row, then close the writers.
+    $self->_write_report_row($child_exit);
+
+    for my $slot (+_EVENTS_WRITER, +_SPEC_WRITER, +_REPORT_WRITER) {
+        my $w = delete $self->{$slot} or next;
+        eval { $w->close; 1 };
+    }
 
     return;
+}
+
+# Append the report.jsonl.zst row before exit. Per F2 / F3:
+#
+#   Job:      auditor's final state hash + exit/exit_decoded/ended_at/pids.
+#   Run/Svc:  exit/exit_decoded/ended_at/pids only. The collector_report
+#             facet (when emitted by the service) merges in via the
+#             write_phase before this row is written -- TODO step 6.
+sub _write_report_row {
+    my $self = shift;
+    my ($child_exit) = @_;
+
+    my $w = $self->{+_REPORT_WRITER} or return;
+
+    my %row = (
+        ended_at      => time,
+        collector_pid => $$,
+        (defined $self->{+CHILD_PID} ? (collected_pid => $self->{+CHILD_PID}) : ()),
+        (defined $child_exit ? (
+            exit         => $child_exit,
+            exit_decoded => parse_exit($child_exit),
+        ) : (
+            exit         => undef,
+            exit_decoded => undef,
+        )),
+    );
+
+    if ($self->{+TYPE} eq 'Job' && (my $auditor = $self->{+AUDITOR})) {
+        my $state = $self->_auditor_final_state($auditor);
+        $row{state} = $state if $state;
+    }
+
+    if (my $pending = $self->{+_STATE}) {
+        # Future-step: collector_report-facet content merged in here.
+        for my $k (keys %$pending) {
+            $row{$k} //= $pending->{$k};
+        }
+    }
+
+    require Test2::Harness2::Util::JSON;
+    $w->say(Test2::Harness2::Util::JSON::encode_json(\%row));
+}
+
+# Best-effort projection of an Auditor::Test instance's final state
+# into a plain hashref. The auditor's slots are not always available
+# as direct accessors; we read the public ones we know about.
+sub _auditor_final_state {
+    my ($self, $auditor) = @_;
+    return undef unless $auditor;
+
+    my %state;
+    $state{pass}            = $auditor->pass            ? 1 : 0 if $auditor->can('pass');
+    $state{fail_count}      = $auditor->fail_count                if $auditor->can('fail_count');
+    $state{pass_count}      = $auditor->pass_count                if $auditor->can('pass_count');
+    $state{assertion_count} = $auditor->assertion_count           if $auditor->can('assertion_count');
+    $state{exit}            = $auditor->exit                      if $auditor->can('exit');
+    if ($auditor->can('plan')) {
+        my $plan = $auditor->plan;
+        $state{plan} = $plan if defined $plan;
+    }
+    if ($auditor->can('halt')) {
+        my $halt = $auditor->halt;
+        $state{halt} = $halt if defined $halt;
+    }
+    return \%state;
 }
 
 sub _set_procname {
@@ -994,7 +776,6 @@ sub _set_procname {
         push @parts => $cmd;
     }
     elsif (defined $self->{+OUT_FH} || defined $self->{+ERR_FH}) {
-        # Try to show file info
         my @files;
         if (!ref($self->{+OUT_FH}) && defined $self->{+OUT_FH}) {
             push @files => "out=$self->{+OUT_FH}";
@@ -1011,14 +792,9 @@ sub _set_procname {
 sub _launch_child {
     my $self = shift;
 
-    # zstd compression on both pipes: write_message / write_burst
-    # frames compress transparently while plain print writes (the
-    # child's STDOUT/STDERR text stream) pass through uncompressed.
     my ($out_r, $out_w) = Atomic::Pipe->pair(mixed_data_mode => 1, atomic_pipe_compression_args());
     my ($err_r, $err_w) = Atomic::Pipe->pair(mixed_data_mode => 1, atomic_pipe_compression_args());
 
-    # Save copies of the original STDOUT/STDERR before redirecting; restored
-    # by both platform-specific launchers in the parent path.
     open(my $orig_stdout, '>&', \*STDOUT) or croak "Could not clone STDOUT: $!";
     open(my $orig_stderr, '>&', \*STDERR) or croak "Could not clone STDERR: $!";
 
@@ -1027,7 +803,6 @@ sub _launch_child {
         ? $self->_launch_child_win32($out_r, $out_w, $err_r, $err_w, $orig_stdout, $orig_stderr)
         : $self->_launch_child_unix($out_r, $out_w, $err_r, $err_w, $orig_stdout, $orig_stderr);
 
-    # Parent (both platforms) - close write ends so reads get EOF.
     $out_w->close();
     $err_w->close();
 
@@ -1037,9 +812,6 @@ sub _launch_child {
     return ($pid, $out_r, $err_r);
 }
 
-# Environment additions injected into every collector-launched child so
-# Test2::Formatter::Stream2 knows it is running under a collector
-# (and how many mixed-mode pipes the collector is reading from).
 sub _child_env_overrides {
     my $self = shift;
     return (
@@ -1054,17 +826,12 @@ sub _launch_child_unix {
 
     my $cmd = $self->{+LAUNCH};
 
-    # Baseline for the per-job (child-process) times reported on
-    # harness_process_exit. Captured pre-fork so the delta covers the
-    # entire watched-child tree (its CPU rolls into our cuser/csys at
-    # waitpid) plus any collector-loop CPU between fork and reap.
     $self->{+_CHILD_FORK_TIMES} = [times()];
     $self->{+_CHILD_FORK_STAMP} = time;
 
     my $pid = fork() // die "Failed to fork child process: $!";
 
     if (!$pid) {
-        # Child process
         $out_r->close();
         $err_r->close();
 
@@ -1076,10 +843,6 @@ sub _launch_child_unix {
         close($orig_stdout);
         close($orig_stderr);
 
-        # Optionally put the child in a brand-new process group so its signal
-        # handling is isolated from the harness. Enabled only when the caller
-        # sets new_pgroup => 1 (the harness does so for test launches). This
-        # prevents a test doing `kill 'TERM', 0` from taking down the harness.
         if ($self->{+NEW_PGROUP}) {
             POSIX::setpgid(0, 0) or warn "setpgid(0,0) failed: $!";
         }
@@ -1089,31 +852,18 @@ sub _launch_child_unix {
         exec(@$cmd) or croak "Failed to exec '@$cmd': $!";
     }
 
-    # Parent: restore STDOUT/STDERR so collector diagnostics still go to the
-    # real terminal.
     open(STDOUT, '>&', $orig_stdout) or croak "Could not restore STDOUT: $!";
     open(STDERR, '>&', $orig_stderr) or croak "Could not restore STDERR: $!";
 
     return $pid;
 }
 
-# _win32_spawn, _check_new_pgroup_supported_on_win32, _launch_child_win32,
-# _launch_child_win32_job, _win32_quote_arg, _kill_child_win32, and
-# DESTROY (Win32::Job cleanup) live in
-# Test2::Harness2::Collector::Win32 and are loaded only on win32.
-
 sub _wrap_handle {
     my $self = shift;
     my ($handle) = @_;
 
-    # Already an Atomic::Pipe object
     return $handle if blessed($handle) && $handle->isa('Atomic::Pipe');
 
-    # Pipe or fifo filehandle -- wrap in Atomic::Pipe with mixed_data_mode
-    # plus the standard zstd-with-dict compression config so framed
-    # messages from the writer side decode here. from_fh does not
-    # take extra constructor params, so configure compression
-    # post-construction via set_compression / set_compression_dictionary_file.
     if (-p $handle) {
         my $ap = Atomic::Pipe->from_fh('<&', $handle);
         $ap->set_mixed_data_mode();
@@ -1121,13 +871,9 @@ sub _wrap_handle {
         return $ap;
     }
 
-    # Regular file handle -- use plain line-reader shim, no Atomic::Pipe.
     return Test2::Harness2::Collector::Util::FileLineReader->new($handle);
 }
 
-# Pulls a raw filehandle out of whatever _wrap_handle produced, for use with
-# IO::Select. Returns undef for unknown handle shapes (callers must treat
-# that as "cannot be select()ed" and fall back to the read path).
 sub _select_fh {
     my $self = shift;
     my ($handle) = @_;
@@ -1141,13 +887,6 @@ sub _read_handle {
     my $self = shift;
     my ($handle) = @_;
 
-    # Atomic::Pipe handles -- return [type, data, $compressed_or_undef]
-    # tuples so the caller can distinguish atomic message bursts
-    # (JSON events) from plain lines. With keep_compressed enabled,
-    # message and burst frames also carry the on-wire compressed
-    # bytes via a "compressed => $raw" pair on the return list; we
-    # promote that into the tuple so downstream consumers (event
-    # parser, zstd logger) can reuse the frame without recompressing.
     if (blessed($handle) && $handle->isa('Atomic::Pipe')) {
         my @items;
 
@@ -1164,8 +903,6 @@ sub _read_handle {
         return @items;
     }
 
-    # FileLineReader already emits [line => $data] tuples and a trailing
-    # undef EOF sentinel, so pass its output through unchanged.
     return $handle->read_lines();
 }
 
@@ -1177,9 +914,6 @@ sub _ingest_item {
     my $stamp = time;
 
     if ($type eq 'message') {
-        # Atomic JSON burst. On STDOUT this is a full event; on STDERR it is
-        # a sync marker whose event_id tells us that the matching STDOUT
-        # event (and any STDERR context around it) can now be drained.
         my $decoded;
         unless (eval { $decoded = decode_json($data); 1 }) {
             my $err = $@;
@@ -1190,11 +924,6 @@ sub _ingest_item {
             return;
         }
 
-        # Stash $compressed alongside the decoded payload so the
-        # parser can attach it to the resulting Event for the JSONL
-        # zstd logger's reuse path. Sync markers on STDERR carry a
-        # compressed form too but the collector never logs them, so
-        # the bytes are kept for symmetry only.
         push @{$buffer->{$stream}} => [$stamp, message => $decoded, $compressed];
 
         my $event_id = ref($decoded) eq 'HASH' ? $decoded->{event_id} : undef;
@@ -1211,15 +940,9 @@ sub _ingest_item {
         return;
     }
 
-    # Plain line. Atomic::Pipe delivers lines with the trailing newline
-    # still attached in mixed_data_mode; strip it for consistency with
-    # the FileLineReader path (which chomps).
     chomp $data;
     push @{$buffer->{$stream}} => [$stamp, line => $data];
 
-    # Until we have seen any event there is nothing to synchronize against
-    # -- flush eagerly so pure-text processes don't stall. We can't rely on
-    # keys %{seen} here because flush_buffer prunes event_ids as they drain.
     $self->_flush_buffer($buffer, $parser) unless $buffer->{saw_event};
 }
 
@@ -1236,8 +959,6 @@ sub _flush_buffer {
 
             if ($kind eq 'message') {
                 if ($stream eq 'stdout') {
-                    # A real event arrived via a burst -- feed it through
-                    # the parser so the harness facet still gets populated.
                     my $event = $parser->parse_io(
                         stream     => $stream,
                         event      => $val,
@@ -1246,10 +967,7 @@ sub _flush_buffer {
                     );
                     $self->_process_event($event) if $event;
                 }
-                # STDERR messages are sync markers only; nothing to emit.
 
-                # Drop event_ids we've drained so `seen` can't grow without
-                # bound across a long-running process.
                 if (ref($val) eq 'HASH' && defined(my $eid = $val->{event_id})) {
                     delete $buffer->{seen}{$eid};
                     last if defined($to) && $eid eq $to;
@@ -1291,30 +1009,7 @@ sub _emit_collector_error {
     warn "Additionally, failed to log collector error: $@\n";
 }
 
-# Thread a list of events through the configured observer chain.
-# Each observer sees one event at a time and returns the list it
-# wants handed downstream; the next observer then sees each of
-# those. Same semantic as what _process_event applies per-event,
-# exposed as a helper so startup / shutdown can reuse it on the
-# lifecycle-event lists.
-sub _pipe_through_observers {
-    my ($self, @events) = @_;
-
-    my $observers = $self->{+OBSERVERS} or return @events;
-    return @events unless @$observers;
-
-    for my $obs (@$observers) {
-        my @out;
-        for my $e (@events) {
-            next unless $e;
-            push @out => $obs->observe_event($e);
-        }
-        @events = @out;
-    }
-
-    return @events;
-}
-
+# Pipeline: parser -> [auditor for Job] -> write_phase.
 sub _process_event {
     my $self = shift;
     my ($event) = @_;
@@ -1322,67 +1017,50 @@ sub _process_event {
     return unless $event;
 
     my @events;
-    if (my $auditor = $self->auditor) {
+    if (my $auditor = $self->{+AUDITOR}) {
         @events = $auditor->audit_event($event);
-
-        if (!$self->{+_FAILING_NOTIFIED} && $auditor->failing) {
-            $_->failing(1) for @{$self->{+LOGGERS}};
-            $self->{+_FAILING_NOTIFIED} = 1;
-        }
     }
     else {
         @events = ($event);
     }
 
-    # Observer chain: same contract as the auditor -- each observer
-    # sees one event at a time and returns the list it wants handed
-    # downstream (normally the incoming event plus any synth). The
-    # pipeline threads observers in listed order: observer N sees
-    # whatever observer N-1 returned.
-    @events = $self->_pipe_through_observers(@events);
-
-    my $loggers = $self->{+_EVENT_LOGGERS} or return;
-    return unless @$loggers;
-
     for my $e (@events) {
         next unless $e;
-        $_->log_event($e) for @$loggers;
+        $self->_write_event($e);
     }
 }
 
-# Terminate the collector process. Three cases drive the chosen exit:
-#
-#   * Collector itself failed (the eval { _run_collector } died, $collector_ok
-#     is false): _exit(255). Distinct from any child status so callers can
-#     tell a collector bug apart from a test failure.
-#
-#   * We have the watched child's wait-status (launch and interpose modes,
-#     where we own waitpid): mirror it. If the child died from a signal we
-#     restore that signal's default disposition and re-raise it, so the
-#     collector's wait-status carries the same signal the test process did.
-#     Otherwise _exit with the child's exit code.
-#
-#   * No wait-status available (pipe mode with an externally-managed pid, or
-#     pure file-input mode): we cannot mirror an exit. Fall back to the
-#     auditor's verdict -- exit 1 if the auditor saw a failure on the child
-#     being collected, 0 for normal operation. With no auditor, exit 0.
+# Write phase. For now: just append the event as JSON to events.jsonl.zst.
+# TODO (step 7): pull base64 attachments out of the event into
+# $base/attachments/$file before writing the rewritten event.
+sub _write_event {
+    my $self = shift;
+    my ($event) = @_;
+    return unless $event;
+
+    my $w = $self->{+_EVENTS_WRITER} or return;
+
+    my $json = ref($event) && $event->can('as_json') ? $event->as_json : do {
+        require Test2::Harness2::Util::JSON;
+        Test2::Harness2::Util::JSON::encode_json($event);
+    };
+
+    $w->say($json);
+}
+
+# Public alias for code that wants to push synth events into the
+# write phase (e.g. service code emitting collector_report). Bypasses
+# the auditor (synth events are already final).
+sub write_event {
+    my ($self, $event) = @_;
+    return $self->_write_event($event);
+}
+
 sub _exit_mirroring_child {
     my $self = shift;
     my ($collector_ok) = @_;
 
-    # Drain any queued outbound IPC sends before exit. The collector
-    # was running in send_blocking=0 mode (set by _ipc_client) so
-    # events accumulated during the run are still in the client's
-    # outbox; without this drain they would be dropped when this
-    # process _exits. Loop until the queue clears or a 5s deadline
-    # is hit (avoid wedging an exit on a peer that isn't reading).
     if (my $client = $self->{_ipc_client}) {
-        # The Outbox API (have_pending_sends + drain_pending) is
-        # provided as a no-op fallback by the IPC::Manager::Client
-        # base class for backends that do not consume Role::Outbox,
-        # so no can() gate is needed -- non-Outbox clients exit the
-        # loop after the first iteration when have_pending_sends
-        # returns 0.
         my $deadline = time + 5;
         while ($client->have_pending_sends && time < $deadline) {
             last unless $client->drain_pending;
@@ -1401,9 +1079,6 @@ sub _exit_mirroring_child {
                 $SIG{$name} = 'DEFAULT';
                 kill($name => $$);
             }
-
-            # If the signal didn't terminate us, fall back to the shell
-            # convention of 128 + signal number.
             POSIX::_exit(128 + $sig);
         }
 
@@ -1426,23 +1101,6 @@ sub _kill_child {
     return kill_child($pid, kill_timeout => $self->{+KILL_TIMEOUT});
 }
 
-# Fork, and let the child continue the caller's execution path while the
-# parent becomes the collector for whatever the child does. Never returns in
-# the parent.
-#
-# Optional parameters:
-#
-#   jump_to      -- name of a currently-active Long::Jump setjump. When set,
-#                   the interpose child does a longjump() back to that point
-#                   after the pipes are wired up, rather than returning
-#                   normally. The caller's stack is unwound to the setjump,
-#                   giving cleaner stack traces for the code that runs
-#                   under the collector.
-#
-#   jump_payload -- an optional coderef passed through longjump() to the
-#                   setjump. Typically the caller uses this to hand the
-#                   "continue the work" closure back to the setjump site.
-#                   Requires jump_to.
 sub interpose {
     my ($class, %params) = @_;
 
@@ -1469,16 +1127,11 @@ sub interpose {
     open($params{orig_stdout}, '>&', \*STDOUT) or croak "Could not clone STDOUT: $!";
     open($params{orig_stderr}, '>&', \*STDERR) or croak "Could not clone STDERR: $!";
 
-    # Baseline for child_times/child_wall in the interpose path. The
-    # parent of this fork becomes the collector; the child continues
-    # as the watched process. Capture pre-fork so the post-waitpid
-    # delta covers the child's whole lifetime.
     my @child_fork_times = times();
     my $child_fork_stamp = time;
 
     my $pid = fork() // die "Failed to fork for interpose: $!";
 
-    # Parent becomes the collector and exits when done -- does not return
     if ($pid) {
         $params{pid}                = $pid;
         $params{_child_fork_times}  = \@child_fork_times;
@@ -1486,14 +1139,10 @@ sub interpose {
         $class->_interpose_parent(\%params);
     }
 
-    # Child: complete handle setup, then either return to the caller or
-    # unwind the stack back to the named setjump with the caller's payload.
     $class->_interpose_child(\%params);
 
     if (defined $jump_to) {
         Long::Jump::longjump($jump_to, $jump_payload);
-        # longjump does not return on success; if we're still here something
-        # has gone seriously wrong.
         POSIX::_exit(255);
     }
 
@@ -1503,8 +1152,6 @@ sub interpose {
 sub _interpose_parent {
     my ($class, $params) = @_;
 
-    # Defensive scope guard: this method is the parent's whole life from the
-    # interpose fork onward; never let execution leak past it.
     my $guard = Scope::Guard->new(sub { POSIX::_exit(255) });
 
     my $out_w       = delete $params->{out_w};
@@ -1515,14 +1162,11 @@ sub _interpose_parent {
     $out_w->close();
     $err_w->close();
 
-    # Restore original stdout/stderr so the collector can still print
-    # warnings/diagnostics to the real terminal.
     open(STDOUT, '>&', $orig_stdout) or croak "Could not restore STDOUT: $!";
     open(STDERR, '>&', $orig_stderr) or croak "Could not restore STDERR: $!";
     close($orig_stdout);
     close($orig_stderr);
 
-    # Remap internal keys to spec names that init() expects
     $params->{stdout}        = delete $params->{out_r};
     $params->{stderr}        = delete $params->{err_r};
     $params->{_OWNS_CHILD()} = 1;
@@ -1552,14 +1196,99 @@ sub _interpose_child {
     close($params->{orig_stdout});
     close($params->{orig_stderr});
 
-    # Tell downstream readers (Stream2 formatter, Harness2 service
-    # run_service, etc.) how many mixed-mode pipes the collector is
-    # actually reading. interpose() always creates two (stdout + stderr,
-    # separate), so the child advertises 2. This is the same contract
-    # _child_env_overrides publishes to launch-path children, and it is
-    # the reliable signal -- filenos alone cannot distinguish a merged
-    # setup (both fds dup'd onto the same pipe) from separate pipes.
     $ENV{T2_HARNESS2_PIPE_COUNT} = 2;
 }
 
+# Used by Role::Tiny check above (auditor validation).
+require Role::Tiny;
+
 1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2::Collector - Single collector class for tests, runs, and services.
+
+=head1 DESCRIPTION
+
+Post-new_log_refactor (M2 step 4+5), the collector is a single
+non-subclassed class that takes a C<type =E<gt> 'Job' | 'Run' |
+'Service'> slot and writes its own log artifacts directly to disk.
+The Logger and Observer abstractions are gone; the per-collector
+trio (C<spec.jsonl.zst>, C<events.jsonl.zst>, C<report.jsonl.zst>)
+is written by the collector itself under its base directory.
+
+=head1 ATTRIBUTES
+
+=over 4
+
+=item type (required)
+
+One of C<'Job'>, C<'Run'>, C<'Service'>.
+
+=item id (required)
+
+Identifier of the collected thing. Service name (string) for
+type=Service; ord int for type=Run/Job.
+
+=item run_id
+
+Run identifier (ord int). Defined for type=Run, type=Job, and
+run-scoped services. Undef for global services and the harness's
+own collector.
+
+=item job_try
+
+Integer (default 0). Only meaningful for type=Job.
+
+=item logdir (required)
+
+Absolute path of the workdir's logs/ directory. The collector base
+dir is computed under this.
+
+=item spec
+
+Hashref of constructor arguments / metadata for the collected
+thing. Written verbatim to spec.jsonl.zst on startup, with
+collector pid + identity stamped on automatically.
+
+=item auditor
+
+Test2::Harness2::Role::Auditor spec (class name, [class, args], or
+blessed instance). Only meaningful for type=Job; ignored otherwise.
+
+=item launch
+
+Arrayref command to spawn as the collected child process.
+
+=item ipc_parent / ipc_run / ipc_harness
+
+Bus names for the relevant peer services. Used by the auditor to
+emit upward-facing IPC.
+
+=back
+
+=head1 SOURCE
+
+L<https://github.com/Test-More/Test2-Harness>
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+See L<https://dev.perl.org/licenses/>
+
+=cut

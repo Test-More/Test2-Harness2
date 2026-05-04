@@ -48,7 +48,7 @@ C<< $handle->child_pid >> (the pid of C<ipcm_service>'s own fork --
 typically the service pid, or the wrapper pid if the service's
 C<post_fork_hook> interposes a collector / wrapper around itself).
 Services that want stdout/stderr captured into their log file (e.g.
-via L<Test2::Harness2::Collector::Service>) wire that up in their
+via L<Test2::Harness2::Collector>) wire that up in their
 own C<post_fork_hook>.
 
 =head1 PROVIDED METHODS

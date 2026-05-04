@@ -15,6 +15,23 @@ use Test2::Harness2::Event;
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Auditor';
 
+# Auditor::Test absorbs the IPC duties that used to live in
+# TestObserver (post new_log_refactor M2 step 4+5):
+#
+#   test_job_started     emitted from startup($collector)
+#   test_job_diagnosing  emitted from audit_event on the first
+#                         diagnostic facet (info important/debug
+#                         or STDERR-sourced)
+#   test_job_failing     emitted from audit_event on the first
+#                         failing assertion / error-without-amnesty
+#   test_job_completed   emitted from shutdown($collector) (which
+#                         also forwards the final state hash per F18)
+#   job_release          emitted from shutdown alongside
+#                         test_job_completed
+#
+# All emissions go through the collector's send_ipc method so the
+# auditor never holds its own IPC client.
+
 use Object::HashBase qw{
     <run_id
     <job_id
@@ -35,6 +52,16 @@ use Object::HashBase qw{
     -failed_subtest_tree
     -passing_subtests
     -failing_subtests
+
+    +_collector
+    +_ipc_run
+    +_ipc_harness
+    +_test_pid
+    +_collector_pid
+    +_emitted_started
+    +_emitted_diagnosing
+    +_emitted_failing
+    +_emitted_completed
 };
 
 # Attribute reference:
@@ -127,6 +154,20 @@ sub audit_event {
 
     $event->{facet_data} //= {};
 
+    # Stream-transition IPC: emit test_job_diagnosing on the first
+    # diagnostic facet, test_job_failing on the first failing
+    # assertion / error-without-amnesty. Done before _audit so the
+    # IPC fires the moment the auditor actually saw the event.
+    my $f = $event->{facet_data};
+    if ($f) {
+        unless ($self->{+_EMITTED_FAILING}) {
+            $self->_emit_failing if $self->_event_is_failing($f);
+        }
+        unless ($self->{+_EMITTED_DIAGNOSING}) {
+            $self->_emit_diagnosing if $self->_event_is_diagnostic($f);
+        }
+    }
+
     my @out;
     for my $se ($self->_audit($event)) {
         $se->{facet_data} //= {} if ref($se);
@@ -136,6 +177,176 @@ sub audit_event {
     }
 
     return @out;
+}
+
+# Lifecycle hooks called by the collector. Both may return zero or
+# more events to forward through the write phase; today both return
+# nothing, but we keep the contract for symmetry with how the rest
+# of the harness drives lifecycle methods.
+
+sub startup {
+    my ($self, $collector) = @_;
+    return unless $collector;
+
+    $self->{+_COLLECTOR}     = $collector;
+    $self->{+_IPC_RUN}       = $collector->ipc_run;
+    $self->{+_IPC_HARNESS}   = $collector->ipc_harness;
+    $self->{+_TEST_PID}      = $collector->child_pid;
+    $self->{+_COLLECTOR_PID} = $$;
+
+    $self->_emit_started;
+
+    return;
+}
+
+sub shutdown {
+    my ($self, $collector) = @_;
+    $self->{+_COLLECTOR} //= $collector;
+
+    $self->_emit_completed unless $self->{+_EMITTED_COMPLETED};
+    return;
+}
+
+# Has the collector reached a state where the run can release this
+# job's resources? Used by the shutdown path to decide whether to
+# emit job_release in addition to test_job_completed.
+sub _event_is_failing {
+    my ($self, $f) = @_;
+
+    if (my $assert = $f->{assert}) {
+        return 1 if !$assert->{pass} && !($f->{amnesty} && @{$f->{amnesty}});
+    }
+
+    if (my $errors = $f->{errors}) {
+        return 1 if first { $_->{fail} } @$errors;
+    }
+
+    if (my $ctrl = $f->{control}) {
+        return 1 if $ctrl->{halt} || $ctrl->{terminate};
+    }
+
+    return 0;
+}
+
+sub _event_is_diagnostic {
+    my ($self, $f) = @_;
+
+    if (my $from = $f->{from_stream}) {
+        return 1 if defined($from->{source}) && $from->{source} eq 'STDERR';
+    }
+
+    if (my $info = $f->{info}) {
+        return 1 if first { $_->{important} || $_->{debug} } @$info;
+    }
+
+    return 0;
+}
+
+sub _send_to_run {
+    my ($self, $content) = @_;
+    my $target    = $self->{+_IPC_RUN}   or return;
+    my $collector = $self->{+_COLLECTOR} or return;
+    $collector->send_ipc($target, $content);
+    return;
+}
+
+sub _send_to_harness {
+    my ($self, $content) = @_;
+    my $target    = $self->{+_IPC_HARNESS} or return;
+    my $collector = $self->{+_COLLECTOR}   or return;
+    $collector->send_ipc($target, $content);
+    return;
+}
+
+sub _base_payload {
+    my $self = shift;
+    return (
+        run_id  => $self->{+RUN_ID},
+        job_id  => $self->{+JOB_ID},
+        job_try => $self->{+JOB_TRY},
+        stamp   => time,
+    );
+}
+
+sub _emit_started {
+    my $self = shift;
+    return if $self->{+_EMITTED_STARTED};
+    $self->{+_EMITTED_STARTED} = 1;
+
+    $self->_send_to_run({
+        kind => 'test_job_started',
+        $self->_base_payload,
+        collector_pid => $self->{+_COLLECTOR_PID},
+        test_pid      => $self->{+_TEST_PID},
+    });
+}
+
+sub _emit_diagnosing {
+    my $self = shift;
+    return if $self->{+_EMITTED_DIAGNOSING};
+    $self->{+_EMITTED_DIAGNOSING} = 1;
+
+    $self->_send_to_run({
+        kind => 'test_job_diagnosing',
+        $self->_base_payload,
+    });
+}
+
+sub _emit_failing {
+    my $self = shift;
+    return if $self->{+_EMITTED_FAILING};
+    $self->{+_EMITTED_FAILING} = 1;
+
+    $self->_send_to_run({
+        kind => 'test_job_failing',
+        $self->_base_payload,
+    });
+}
+
+# test_job_completed payload includes the FULL job state hash so the
+# run service can accumulate per-job state in memory without reading
+# disk (per F18). job_release fires alongside on the harness bus.
+sub _emit_completed {
+    my $self = shift;
+    return if $self->{+_EMITTED_COMPLETED};
+    $self->{+_EMITTED_COMPLETED} = 1;
+
+    my $stamp = time;
+
+    my %payload = (
+        kind   => 'test_job_completed',
+        run_id => $self->{+RUN_ID},
+        job_id => $self->{+JOB_ID},
+        job_try => $self->{+JOB_TRY},
+        stamp  => $stamp,
+        pass            => $self->pass ? 1 : 0,
+        pass_count      => $self->pass_count,
+        fail_count      => $self->fail_count,
+        assertion_count => $self->{+ASSERTION_COUNT} // 0,
+        exit            => $self->{+EXIT},
+        plan            => $self->{+PLAN},
+        halt            => $self->{+HALT},
+    );
+
+    # Forward time accounting captured by the collector via the
+    # harness_process_exit facet (audit consumed it into +EXIT).
+    if (my $px = $self->{_last_exit_facet}) {
+        $payload{codes}       = $px->{codes}       if $px->{codes};
+        $payload{times}       = $px->{times}       if $px->{times};
+        $payload{child_times} = $px->{child_times} if $px->{child_times};
+        $payload{child_wall}  = $px->{child_wall}  if defined $px->{child_wall};
+    }
+
+    $self->_send_to_run(\%payload);
+
+    $self->_send_to_harness({
+        kind   => 'job_release',
+        run_id => $self->{+RUN_ID},
+        job_id => $self->{+JOB_ID},
+        stamp  => $stamp,
+    });
+
+    return;
 }
 
 sub _audit {
@@ -447,6 +658,16 @@ sub _subtest_process_exit {
 
     my $px = $f->{harness_process_exit};
     $self->{+EXIT} = $px->{all};
+
+    # Cache the exit facet for the test_job_completed payload (time
+    # accounting fields). The auditor sees harness_process_exit
+    # exactly once, so this is a one-shot capture.
+    $self->{_last_exit_facet} = {
+        codes       => $px,
+        (defined $px->{times}       ? (times       => $px->{times})       : ()),
+        (defined $px->{child_times} ? (child_times => $px->{child_times}) : ()),
+        (defined $px->{child_wall}  ? (child_wall  => $px->{child_wall})  : ()),
+    };
 
     # The harness_job_exit facet keeps its own stamp -- this is a payload
     # field on the facet, not the event-wide stamp mirror that lives in
