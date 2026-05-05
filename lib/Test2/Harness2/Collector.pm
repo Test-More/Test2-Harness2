@@ -1638,12 +1638,75 @@ Test2::Harness2::Collector - Single collector class for tests, runs, and service
 
 =head1 DESCRIPTION
 
-Post-new_log_refactor (M2 step 4+5), the collector is a single
+Post-C<new_log_refactor> (M2 step 4+5), the collector is a single
 non-subclassed class that takes a C<type =E<gt> 'Job' | 'Run' |
 'Service'> slot and writes its own log artifacts directly to disk.
-The Logger and Observer abstractions are gone; the per-collector
-trio (C<spec.jsonl.zst>, C<events.jsonl.zst>, C<report.jsonl.zst>)
-is written by the collector itself under its base directory.
+The C<Logger> and C<Observer> abstractions are gone; the
+per-collector trio (C<spec.jsonl.zst>, C<events.jsonl.zst>,
+C<report.jsonl.zst>) is written by the collector itself under its
+base directory.
+
+=head1 PIPELINE
+
+    parser -> [Auditor::Test on type=Job] -> write_phase
+
+C<parser> ingests structured events from the collected child's
+stdout / stderr (TAP, structured events, etc.). For C<type=Job>
+the events flow through an L<Test2::Harness2::Collector::Auditor::Test>
+instance, which tracks pass/fail state, validates the assertion /
+plan / subtest invariants, and emits the upward-facing IPC
+transitions (C<test_job_started>, C<test_job_diagnosing>,
+C<test_job_failing>, C<test_job_completed>, C<job_release>) that
+the L<TestObserver> module used to handle in the previous design.
+
+For C<type=Run> and C<type=Service> the auditor is skipped: those
+are dumb pass-throughs because their state lives in the collected
+service process itself (the run service / global service), not in
+the collector. State-transition events for runs and services are
+emitted by the service process directly into its own outgoing
+event stream and ingested by the run collector like any other
+event.
+
+C<write_phase> decodes any C<harness_attachment> facets, persists
+their payloads under C<E<lt>baseE<gt>/attachments/E<lt>filenameE<gt>>,
+substitutes a path reference back into the event, and appends the
+event to C<events.jsonl.zst>.
+
+=head1 ON-DISK LAYOUT PRODUCED
+
+Path templates per L<Test2::Harness2::LogLayout>:
+
+    services/<name>/                          (type=Service, no run_id)
+    runs/<run_id>/services/<name>/            (type=Service, with run_id)
+    runs/<run_id>/                            (type=Run)
+    runs/<run_id>/jobs/<job_id>/<job_try>/    (type=Job)
+
+Under each base, the collector writes:
+
+    spec.jsonl.zst            one row, written at startup
+    events.jsonl.zst          append-only, one or more rows
+    report.jsonl.zst          one row, written at shutdown
+    attachments/<filename>    optional, per write_phase decode
+
+The harness collector additionally writes / removes a C<LIVE>
+sentinel file at the log root: present while the harness is
+running, removed on clean shutdown, absent on crash. The reader
+uses the sentinel to disambiguate "live, expect more bytes" from
+"sealed".
+
+=head1 IPC EMISSIONS
+
+On startup the collector sends a C<collector_start> message to its
+parent service; on shutdown a C<collector_end>. The parent service
+reflects each into its own outgoing events stream as
+C<harness_collector_start> / C<harness_collector_end> events, which
+is what the reader's depth-first iterator pivots on to push and
+pop child readers.
+
+For C<type=Job>, the Auditor additionally emits
+C<test_job_started> / C<test_job_diagnosing> / C<test_job_failing>
+/ C<test_job_completed> / C<job_release> through the same IPC
+client.
 
 =head1 ATTRIBUTES
 

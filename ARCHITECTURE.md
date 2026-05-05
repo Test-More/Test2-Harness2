@@ -2575,3 +2575,234 @@ shape mirrors the ownership model directly.
   surface is intentionally broken; tests under `t/AI/unit/Log/`,
   `t/AI/unit/Streamer/`, and several `t/AI/integration/*` files
   carry an environment-gated `skip_all` until step 10 reworks them.
+
+### `new_log_refactor` rev-2 — collector pipeline + Log reader
+
+This addendum collects the rev-2 amendments that landed across M2
+of `new_log_refactor`. It supersedes any earlier section that
+described the old `LogArchive` / `Logger` / `Observer` shape.
+
+#### State producers vs state consumers
+
+The single design rule that drove every other decision in the
+branch:
+
+- **Tests are state producers.** The state of a running test lives
+  in the events the test process emits. There is no other source
+  of truth; an Auditor sitting next to the test-job collector
+  reconstructs the state from that stream. So:
+  - The test-job collector carries an `Auditor::Test` instance.
+  - The auditor handles all upward-facing IPC for the test
+    (test_job_started / test_job_diagnosing / test_job_failing /
+    test_job_completed / job_release).
+  - There is no separate `TestObserver`; its IPC duties moved
+    into the auditor.
+
+- **Runs and services act on state.** Their state lives in the
+  run service / global service process itself, not in the
+  collector that observes the service's stdout/stderr. So:
+  - Run / Service collectors are dumb pass-throughs. No auditor.
+  - State-transition events (`run_failing`, `run_completed`,
+    harness-level transitions) are emitted by the service process
+    directly into its own outgoing events stream. The run
+    collector simply writes them to
+    `runs/<id>/events.jsonl.zst`.
+
+The earlier rev's `parent_io` machinery and the separate
+`TestObserver` were attempts to attach state-tracking to every
+collector regardless of where the state actually lived. The new
+shape mirrors the ownership model.
+
+#### Collector pipeline
+
+A single `Test2::Harness2::Collector` class. No subclasses, no
+plugin slots for loggers or observers. Construction takes the
+identity (`type` + `id` + `run_id` + `job_try`) and a `logdir`;
+the collector writes its trio of files
+(`spec.jsonl.zst`, `events.jsonl.zst`, `report.jsonl.zst`)
+directly under its base directory (computed by
+`Test2::Harness2::LogLayout::collector_base_dir`).
+
+Pipeline:
+
+    parser -> [Auditor::Test on type=Job] -> write_phase
+
+`parser` ingests stdout / stderr (TAP, structured events, etc.)
+into structured event objects. `write_phase` decodes any
+`harness_attachment` facets, writes them to
+`<base>/attachments/<filename>`, replaces the in-event payload
+with a path reference, and appends the (possibly auditor-emitted)
+event to `events.jsonl.zst`.
+
+`spec.jsonl.zst` gets exactly one row at startup describing the
+collected thing (its identity, command line, env, etc.).
+`report.jsonl.zst` gets exactly one row at shutdown describing
+the final state (exit code, pass/fail summary for tests, peer
+state for services). `report.jsonl.zst` replaces the previous
+rev's `state.json`.
+
+#### `collector_start` / `collector_end` IPC
+
+When a collector starts, it sends a `collector_start` IPC message
+to its parent service; when its child has exited and the audit /
+write phase has flushed, it sends a `collector_end`. The parent
+service translates each into an event in its own outgoing events
+stream:
+
+- `harness_collector_start` carries the new collector's identity
+  (type, id, run_id, job_try, collector_pid) and is what the
+  reader's depth-first iterator pivots on to push a child reader
+  onto its stack.
+- `harness_collector_end` carries the matching `collector_pid`
+  plus the child's exit info / final state hash. The reader pops
+  the corresponding child reader from its stack on this event.
+
+Because the reflection happens in the parent service, every
+collector's lifecycle is recorded as ordinary events in a single
+service's `events.jsonl.zst`. There is no separate collector
+metadata file and no parallel IPC channel for "what files this
+collector produced".
+
+#### On-disk layout
+
+Per `Test2::Harness2::LogLayout`:
+
+    services/<name>/                          global services
+    runs/<run_id>/                            run collector
+    runs/<run_id>/services/<name>/            run-scoped services
+    runs/<run_id>/jobs/<job_id>/<job_try>/    per-job per-try
+
+Each base directory holds:
+
+    spec.jsonl.zst        one-row, written at startup
+    events.jsonl.zst      append-only, one or more rows
+    report.jsonl.zst      one-row, written at shutdown
+    attachments/<file>    optional, per write_phase decode
+
+At the log root:
+
+    LIVE                  sentinel: present while the harness is
+                          running, removed on clean shutdown,
+                          absent on crash.
+
+Run and job identifiers are sequential ord ints scoped to the
+archive (per amendment K1 / step 26). UUIDs are kept only as
+logical archive identifiers (DB `archives.archive_uuid` etc.).
+
+#### `App::Yath2::Log` reader API
+
+`App::Yath2::Log->new(...)` is a pure dispatcher. Backend by
+argument shape:
+
+| arg                 | backend                            |
+| ------------------- | ---------------------------------- |
+| `live => $dir`      | `App::Yath2::Log::Live`            |
+| `dir  => $dir`      | `App::Yath2::Log::Directory`       |
+| `file => $f`        | `Log::TarZIdx` or `Log::Sqlite`    |
+|                     | (auto-detected by magic bytes)     |
+| `dbh  => ...`       | `App::Yath2::Log::Sqlite`          |
+| `dsn  => ...`       | `App::Yath2::Log::Sqlite` /        |
+|                     | `Log::Postgres` / `Log::MariaDB` / |
+|                     | `Log::MySQL`                       |
+
+Magic-byte detection: SQLite magic (`'SQLite format 3\\0'`,
+header) wins first, then the tar.zidx footer marker
+(`'YZIDXv1\\0'`, last 32 bytes). Anything else is rejected with a
+hard error.
+
+Every backend exposes the same surface:
+
+- **Listing**: `services` / `runs` / `jobs` / `tries` /
+  `last_try` / `has_run` / `has_job` / `has_try` / `has_service`.
+- **Artifacts factory**: `artifacts(...)` returns a
+  `App::Yath2::Log::Artifact` handle. Positional forms — `()`,
+  `($svc)`, `($run)`, `($run, $svc)`, `($run, $job)`,
+  `($run, $job, $try)` — plus a hashref form
+  `({service => ..., run_id => ..., job_id => ..., job_try => ...})`.
+  Service names cannot start with a digit so the positional
+  disambiguator is unambiguous.
+- **Per-artifact API** on the handle: `events` / `events_zst` /
+  `events_iter`; `spec` / `spec_zst` / `spec_iter`;
+  `report` / `report_zst` / `report_iter`; `attachment(name)`;
+  `attachments`; `exists($file)`; `get($file, %opts)`;
+  `save($file, $content, %opts)`.
+- **Depth-first event iterator**: `event($timeout)`, `events()`,
+  `EOE`, `reset`. Starts at
+  `services/harness/events.jsonl.zst`; pushes a child reader on
+  every `harness_collector_start`; pops on the matching
+  `harness_collector_end`.
+- **Path-aware identifier injection**: events surfaced by the
+  iterator get `harness.run_id` / `job_id` / `job_try` /
+  `service_name` injected based on which on-disk file they came
+  from. This is the read-side replacement for the old writer-side
+  identifier mirroring.
+
+The DB backends share `App::Yath2::Log::DB` as their abstract
+base. Per-flavor classes provide DSN construction, schema
+bootstrap from `share/schema/<flavor>.sql`, UUID + JSON codecs,
+and payload bind hooks. The `archives` table makes multi-archive
+the universal model: a "single sqlite .yath" is just N=1 in the
+same table.
+
+#### LIVE sentinel — disambiguating live vs sealed
+
+The harness collector writes `LIVE` at the log root on startup
+and removes it on clean shutdown. The reader uses its presence to
+decide live vs sealed when both modes are otherwise possible:
+
+- `App::Yath2::Log::Live` (a thin subclass forcing `live=1`) and
+  `App::Yath2::Log::Directory` with `live=0` already pick the
+  mode from the constructor.
+- The iterator's `_top_is_done` and `end_of_events` checks fall
+  back to "LIVE absent" as the last-resort liveness signal so
+  that a crashed harness that left the sentinel-removal step
+  un-run does not stall the iterator forever.
+
+`extract` and `archive` skip the sentinel when packaging.
+
+#### `inspect` command (M2 step 21)
+
+`yath inspect <path>` is the one entry point that intentionally
+does *not* construct a full `Log` object up front: for a
+multi-archive sqlite file the constructor would refuse to pick a
+default, so `inspect` opens the DB directly to enumerate
+`archives` rows and validates each archive in a fresh `Sqlite`
+instance scoped by `uuid`. For tar.zidx files and directories the
+single-archive form is used.
+
+Validation: `services/harness/spec.jsonl(.zst)` exists and has at
+least one parseable row; `services/harness/events.jsonl(.zst)`
+exists. No deeper checking.
+
+`--json` produces a machine-readable report (single hash for
+single-archive logs, with an `archives` arrayref for sqlite
+multi-archive).
+
+#### Module map (post-rev-2)
+
+    App::Yath2::Log                      dispatcher
+    App::Yath2::Log::Live                live workdir backend
+    App::Yath2::Log::Directory           sealed dir backend
+    App::Yath2::Log::TarZIdx             tar.zidx archive backend
+    App::Yath2::Log::DB                  abstract DB backend
+    App::Yath2::Log::Sqlite              sqlite-on-DB
+    App::Yath2::Log::Postgres            postgres-on-DB
+    App::Yath2::Log::MariaDB             mariadb-on-DB
+    App::Yath2::Log::MySQL               mysql-on-DB
+    App::Yath2::Log::Artifact            per-collector handle
+    App::Yath2::Log::Iterator::JSONL     per-file iterator
+    App::Yath2::Command::inspect         `yath inspect <path>`
+
+    Test2::Harness2::Collector           single collector class
+    Test2::Harness2::Collector::Auditor::Test
+                                         test auditor + IPC
+    Test2::Harness2::LogLayout           path templates
+
+Removed (rev-2): `Test2::Harness2::Collector::Test`,
+`Test2::Harness2::Collector::Service`,
+`Test2::Harness2::Collector::Logger::JSONL`,
+`Test2::Harness2::Collector::Logger::JSON`,
+`Test2::Harness2::Role::Collector::Logger`,
+`Test2::Harness2::Role::Collector::Observer`,
+`Test2::Harness2::Collector::Observer::TestObserver`,
+`App::Yath2::LogArchive` (renamed `App::Yath2::Log`).

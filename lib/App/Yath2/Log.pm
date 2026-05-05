@@ -247,37 +247,171 @@ App::Yath2::Log - Dispatcher for the yath log reader API.
 
     use App::Yath2::Log;
 
-    my $log = App::Yath2::Log->new(live => $logs_dir);    # live workdir
-    my $log = App::Yath2::Log->new(dir  => $logs_dir);    # sealed dir
-    my $log = App::Yath2::Log->new(file => $yath_file);   # tar.zidx or sqlite
+    # Construction shapes.
+    my $log = App::Yath2::Log->new(live => $logs_dir);     # live workdir
+    my $log = App::Yath2::Log->new(dir  => $logs_dir);     # sealed dir
+    my $log = App::Yath2::Log->new(file => $yath_file);    # *.yath (auto-detect)
     my $log = App::Yath2::Log->new(dbh  => $dbh, uuid => $u);
-    my $log = App::Yath2::Log->new(dsn  => $dsn, user => $u, pass => $p,
-                                   attrs => \%a, uuid => $u);
+    my $log = App::Yath2::Log->new(
+        dsn   => $dsn,
+        user  => $u,
+        pass  => $p,
+        attrs => \%a,
+        uuid  => $u,
+    );
 
+    # Listing.
+    my @runs     = $log->runs;
+    my @globals  = $log->services;             # services not scoped to a run
+    my @services = $log->services($run_id);    # services scoped to $run_id
+    my @jobs     = $log->jobs($run_id);
+    my @tries    = $log->tries($run_id, $job_id);
+    my $last     = $log->last_try($run_id, $job_id);
+
+    # Artifacts handle factory (positional forms).
+    my $root = $log->artifacts;                     # archive root
+    my $svc  = $log->artifacts('harness');          # global service
+    my $run  = $log->artifacts(0);                  # run by ord
+    my $rsvc = $log->artifacts(0, 'preload-perl');  # run-scoped service
+    my $job  = $log->artifacts(0, 0);               # highest try of job
+    my $try  = $log->artifacts(0, 0, 1);            # specific try
+
+    # Hashref form is also accepted:
+    my $a = $log->artifacts({
+        run_id  => 0,
+        job_id  => 0,
+        job_try => 1,
+    });
+
+    # Per-artifact API.
+    my $events_bytes = $a->events;       # decompressed bytes
+    my $events_zst   = $a->events_zst;   # compressed bytes
+    my $events_iter  = $a->events_iter;  # streaming iterator
+    while (defined(my $rec = $events_iter->next)) { ... }
+    my $spec_iter   = $a->spec_iter;
+    my $report_iter = $a->report_iter;
+    my @atts        = $a->attachments;
+    my $bytes       = $a->attachment('foo.txt');
+    my $exists      = $a->exists('foo.txt');
+    $a->save('meta.json', $json_bytes);
+
+    # Whole-log depth-first event iterator.
     while (my $event = $log->event($timeout)) {
         ...;
         last if $log->EOE;
     }
+    $log->reset;
 
-    my $events = $log->artifacts($run_id, $job_id, $job_try)->events;
+    # Format conversion / extraction.
+    $log->extract($dest_dir);                       # decompress on the way out
+    $log->extract($dest_dir, compressed => 1);      # preserve .zst suffixes
+    $log->archive($out_path);                       # default tar.zidx
+    $log->archive($out_path, format => 'sqlite');
+    $log->archive($out_path, runs => [0]);          # scoped extract
+    my $aid = $sqlite->insert($source_log);         # multi-archive insert
 
 =head1 DESCRIPTION
 
-Dispatcher that picks the appropriate backend (Live / Directory /
-TarZIdx / Sqlite) given the constructor arguments. The dispatcher
-itself holds no state -- it simply loads and constructs the backend.
+Dispatcher that picks the appropriate backend given the
+constructor arguments. The dispatcher itself holds no state -- it
+loads and constructs the backend, then returns the backend
+instance.
 
-The backend implements the Log reader API described in
-F<LOGGER_ARTIFACT_REFACTOR2>: listing methods (services / runs / jobs
-/ tries / has_* / last_try), the artifacts() handle factory, and the
-depth-first event() iterator that walks
-C<services/harness/events.jsonl.zst> down through nested
-C<harness_collector_start> events.
+Backends:
+
+=over 4
+
+=item L<App::Yath2::Log::Live>
+
+Live workdir while a harness is still writing. Iterators wait for
+new bytes; EOE blocks on a still-running harness. Used by the
+test command's renderer child.
+
+=item L<App::Yath2::Log::Directory>
+
+Sealed (post-extract or otherwise idle) directory tree. Iterators
+treat EOF as end-of-stream. The default for filesystem-shaped
+inputs.
+
+=item L<App::Yath2::Log::TarZIdx>
+
+A tar.zidx archive (USTAR + per-file zstd + a trailing index for
+random-access reads). Read-only; archive() and insert() construct
+new archives.
+
+=item L<App::Yath2::Log::Sqlite> / Postgres / MariaDB / MySQL
+
+The four SQL-backed flavors. Share L<App::Yath2::Log::DB> as
+abstract base; per-flavor classes only provide DSN construction,
+schema bootstrap, UUID + JSON codecs, and payload bind hooks. All
+DB shapes are multi-archive: a "single sqlite .yath file" is just
+the N=1 case in the same C<archives> table.
+
+=back
+
+The backend implements the full Log reader API documented in
+SYNOPSIS plus per-backend behavior notes:
+
+=over 4
+
+=item *
+
+Live + Directory expose paths under the underlying tree;
+C<absolute_path()> is meaningful and C<save()> writes plain files.
+
+=item *
+
+TarZIdx is read-only after construction; C<absolute_path()> throws
+because there is no on-disk file per artifact, just an offset into
+the archive.
+
+=item *
+
+DB backends keep one row per artifact and translate the on-disk
+relative paths spoken by the C<Artifact> handle into
+(scope_kind, scope_id, artifact_kind, format, name) tuples. Save
+auto-vivifies the necessary scope rows.
+
+=item *
+
+Magic-byte detection picks tar.zidx vs sqlite for C<file =E<gt> $f>:
+SQLite magic (16-byte header C<'SQLite format 3\0'>) wins first;
+tar.zidx is identified by the 32-byte trailing footer beginning
+C<'YZIDXv1\0'>. Anything else fails the constructor.
+
+=back
+
+=head1 LEGACY HELPERS
+
+=over 4
+
+=item App::Yath2::Log->open(file => $f | dir => $d | path => $p)
+
+Auto-detects file vs directory and dispatches to C<new>. The path
+form is convenient when the caller does not yet know whether they
+have a file or a directory.
+
+=item $path = App::Yath2::Log->find_latest($settings)
+
+Locates the most recent archive for the current cwd: honours
+F<./last_log.yath> first, then falls back to the timestamped
+glob in C<TMPDIR>.
+
+=item App::Yath2::Log->update_last_log_symlink($archive_path)
+
+Updates F<./last_log.yath> atomically. Refuses to overwrite a
+non-symlink at the target path.
+
+=back
 
 =head1 SEE ALSO
 
 L<App::Yath2::Log::Live>, L<App::Yath2::Log::Directory>,
-L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::Sqlite>.
+L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::Sqlite>,
+L<App::Yath2::Log::Postgres>, L<App::Yath2::Log::MariaDB>,
+L<App::Yath2::Log::MySQL>, L<App::Yath2::Log::Artifact>,
+L<App::Yath2::Log::Iterator::JSONL>, L<Test2::Harness2::LogLayout>,
+L<App::Yath2::Command::inspect>.
 
 =head1 SOURCE
 

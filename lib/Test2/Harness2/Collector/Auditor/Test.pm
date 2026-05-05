@@ -847,6 +847,50 @@ L</audit_event> returns zero or more events for downstream consumers, and the
 auditor may emit additional synthesized events (for example to surface
 mismatched assertion counts or buffered-subtest-end recovery).
 
+=head2 Absorbed L<TestObserver> duties
+
+Post-C<new_log_refactor> M2 step 4+5, this auditor also handles the
+upward-facing IPC duties that used to live in
+C<Test2::Harness2::Collector::Observer::TestObserver>:
+
+=over 4
+
+=item C<test_job_started>
+
+Emitted from C<startup($collector)> once the test process has been
+launched.
+
+=item C<test_job_diagnosing>
+
+Emitted from C<audit_event> on the first diagnostic facet
+(important / debug info, or a STDERR-sourced parser facet).
+
+=item C<test_job_failing>
+
+Emitted from C<audit_event> on the first failing assertion or
+error-without-amnesty.
+
+=item C<test_job_completed>
+
+Emitted from C<shutdown($collector)>; carries the auditor's final
+state hash (per amendment F18).
+
+=item C<job_release>
+
+Emitted from C<shutdown> alongside C<test_job_completed>.
+
+=back
+
+All emissions go through the collector's IPC client; the auditor
+never holds its own bus connection.
+
+=head2 Top-level subtests tracking
+
+The auditor also tracks the set of top-level subtests it observed
+along with their pass/fail state. This is what the run service's
+C<collector_report> facet (per F17) aggregates across jobs to
+describe per-test subtest state in the run-level summary.
+
 =head1 SYNOPSIS
 
     use Test2::Harness2::Collector::Auditor::Test;
