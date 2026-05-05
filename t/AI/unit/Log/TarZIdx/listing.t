@@ -1,5 +1,5 @@
 use Test2::V0;
-use File::Temp qw/tempdir tempfile/;
+use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 
 use Test2::Harness2::Util::JSON qw/encode_json/;
@@ -37,8 +37,8 @@ for my $base (
 }
 
 # Archive to a tar.zidx file.
-my (undef, $arc_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
-unlink $arc_path;
+my $arc_dir = tempdir(CLEANUP => 1);
+my $arc_path = "$arc_dir/run.yath";
 App::Yath2::Log->new(dir => $src)->archive($arc_path);
 
 my $log = App::Yath2::Log->new(file => $arc_path);

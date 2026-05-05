@@ -1,11 +1,13 @@
 use Test2::V0;
-use File::Temp qw/tempdir tempfile/;
+use File::Temp qw/tempdir/;
 
 use App::Yath2::Log;
 
+my $tmp = tempdir(CLEANUP => 1);
+
 # _detect_file_kind: SQLite magic.
 {
-    my (undef, $path) = tempfile(OPEN => 0, UNLINK => 1);
+    my $path = "$tmp/sqlite.bin";
     open(my $fh, '>', $path) or die $!;
     binmode $fh;
     print $fh "SQLite format 3\0";
@@ -15,7 +17,7 @@ use App::Yath2::Log;
 
 # _detect_file_kind: tar.zidx footer.
 {
-    my (undef, $path) = tempfile(OPEN => 0, UNLINK => 1);
+    my $path = "$tmp/tarzidx.bin";
     open(my $fh, '>', $path) or die $!;
     binmode $fh;
     # Some random head bytes, then a 32-byte tail with the magic at offset 0.
@@ -27,7 +29,7 @@ use App::Yath2::Log;
 
 # _detect_file_kind: unknown.
 {
-    my (undef, $path) = tempfile(OPEN => 0, UNLINK => 1);
+    my $path = "$tmp/unknown.bin";
     open(my $fh, '>', $path) or die $!;
     binmode $fh;
     print $fh "no magic of any kind here";

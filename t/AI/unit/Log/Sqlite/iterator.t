@@ -1,7 +1,7 @@
 use Test2::V0;
 use Test2::Require::Module 'DBD::SQLite';
 
-use File::Temp qw/tempdir tempfile/;
+use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 
 use Test2::Harness2::Util::JSON qw/encode_json/;
@@ -77,8 +77,8 @@ write_jsonl_zst(
     {facet_data => {assert => {pass => 1, details => 'second'}}},
 );
 
-my (undef, $arc_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
-unlink $arc_path;
+my $arc_dir = tempdir(CLEANUP => 1);
+my $arc_path = "$arc_dir/run.yath";
 App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');
 
 my $log = App::Yath2::Log->new(file => $arc_path);

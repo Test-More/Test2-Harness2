@@ -1,5 +1,5 @@
 use Test2::V0;
-use File::Temp qw/tempdir tempfile/;
+use File::Temp qw/tempdir/;
 
 use App::Yath2::Log;
 
@@ -23,8 +23,8 @@ use App::Yath2::Log;
 {
     # Build a synthetic tar.zidx archive from an empty source dir.
     my $src = tempdir(CLEANUP => 1);
-    my (undef, $out) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
-    unlink $out;
+    my $work = tempdir(CLEANUP => 1);
+    my $out = "$work/empty.yath";
 
     require App::Yath2::Log::TarZIdx;
     my $arc = App::Yath2::Log::TarZIdx->new(path => $out);
