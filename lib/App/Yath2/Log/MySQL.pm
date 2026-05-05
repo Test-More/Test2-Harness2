@@ -340,23 +340,25 @@ sub _artifact_save {
         return "db:archive=$aid:artifact=$existing->{artifact_id}";
     }
 
+    my $fk = $self->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
     my $sth = $dbh->prepare(q{
         INSERT INTO artifacts
-            (archive_id, artifact_uuid, scope_kind, scope_id,
+            (archive_id, artifact_uuid, run_id, service_id, job_try_id,
              artifact_kind, format, name, compressed, payload, created_at, sealed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     });
     $sth->bind_param(1, $aid);
     $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid), DBI::SQL_BINARY());
-    $sth->bind_param(3, $info->{scope_kind});
-    $sth->bind_param(4, $info->{scope_id});
-    $sth->bind_param(5, $info->{artifact_kind});
-    $sth->bind_param(6, $info->{format});
-    $sth->bind_param(7, $info->{name});
-    $sth->bind_param(8, $stored_compressed);
-    $self->_bind_payload($sth, 9, $stored_bytes);
-    $sth->bind_param(10, $now);
-    $sth->bind_param(11, 1);
+    $sth->bind_param(3, $fk->{run_id});
+    $sth->bind_param(4, $fk->{service_id});
+    $sth->bind_param(5, $fk->{job_try_id});
+    $sth->bind_param(6, $info->{artifact_kind});
+    $sth->bind_param(7, $info->{format});
+    $sth->bind_param(8, $info->{name});
+    $sth->bind_param(9, $stored_compressed);
+    $self->_bind_payload($sth, 10, $stored_bytes);
+    $sth->bind_param(11, $now);
+    $sth->bind_param(12, 1);
     $sth->execute;
 
     my $id = $self->_last_insert_id($dbh, 'artifacts', 'artifact_id');
@@ -429,23 +431,25 @@ sub insert {
 
         my $artifact_uuid = gen_uuid();
         my $now = $self->_now_iso;
+        my $fk = $self->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
         my $sth = $dbh->prepare(q{
             INSERT INTO artifacts
-                (archive_id, artifact_uuid, scope_kind, scope_id,
+                (archive_id, artifact_uuid, run_id, service_id, job_try_id,
                  artifact_kind, format, name, compressed, payload, created_at, sealed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         });
         $sth->bind_param(1, $aid);
         $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid), DBI::SQL_BINARY());
-        $sth->bind_param(3, $info->{scope_kind});
-        $sth->bind_param(4, $info->{scope_id});
-        $sth->bind_param(5, $info->{artifact_kind});
-        $sth->bind_param(6, $info->{format});
-        $sth->bind_param(7, $info->{name});
-        $sth->bind_param(8, $stored_compressed);
-        $self->_bind_payload($sth, 9, $stored_bytes);
-        $sth->bind_param(10, $now);
-        $sth->bind_param(11, 1);
+        $sth->bind_param(3, $fk->{run_id});
+        $sth->bind_param(4, $fk->{service_id});
+        $sth->bind_param(5, $fk->{job_try_id});
+        $sth->bind_param(6, $info->{artifact_kind});
+        $sth->bind_param(7, $info->{format});
+        $sth->bind_param(8, $info->{name});
+        $sth->bind_param(9, $stored_compressed);
+        $self->_bind_payload($sth, 10, $stored_bytes);
+        $sth->bind_param(11, $now);
+        $sth->bind_param(12, 1);
         $sth->execute;
     }
 

@@ -13,8 +13,10 @@
 -- only writes the binary column; the string column is a read-only
 -- convenience for human DB users (indexed). Per F13.
 --
--- Polymorphic scope on `artifacts`: `scope_kind` ENUM + `scope_id` int.
--- No DB FK (caller-managed).
+-- Sub-archive scope on `artifacts`: three nullable FK columns
+-- (`run_id`, `service_id`, `job_try_id`). A CHECK enforces "at most
+-- one non-NULL" — zero non-NULL = archive-root scope; exactly one
+-- non-NULL = scoped to that entity.
 --
 -- Payload compression: client-side zstd. App compresses bytes before
 -- INSERT and stores compressed=1. (No native zstd-capable server-side
@@ -144,8 +146,9 @@ CREATE TABLE artifacts (
     archive_id           BIGINT       NOT NULL,
     artifact_uuid        BINARY(16)   NOT NULL,
     artifact_uuid_string CHAR(36),
-    scope_kind           ENUM('archive','run','service','job_try') NOT NULL,
-    scope_id             BIGINT       NOT NULL,
+    run_id               BIGINT,
+    service_id           BIGINT,
+    job_try_id           BIGINT,
     artifact_kind        ENUM('events','state','spec','report','attachment','arbitrary') NOT NULL,
     format               VARCHAR(64)  NOT NULL,
     name                 VARCHAR(255),
@@ -153,18 +156,41 @@ CREATE TABLE artifacts (
     payload              LONGBLOB     NOT NULL,
     created_at           DATETIME(6)  NOT NULL,
     sealed               TINYINT(1)   NOT NULL DEFAULT 0,
-    name_when_unnamed VARCHAR(8) GENERATED ALWAYS AS (CASE WHEN name IS NULL THEN '__' ELSE NULL END) VIRTUAL,
+    -- Virtual columns capture each scope's identity only when this row
+    -- belongs to that scope (other FKs IS NULL). Outside the scope
+    -- they are NULL, which MySQL treats as distinct in UNIQUE — so
+    -- the per-scope UNIQUE only constrains the right subset of rows.
+    -- An extra `__` token disambiguates NULL `name` (standard streams:
+    -- events/spec/state/report) within the scope.
+    run_scope_run_id          BIGINT       GENERATED ALWAYS AS (CASE WHEN run_id     IS NOT NULL AND service_id IS NULL AND job_try_id IS NULL THEN run_id     ELSE NULL END) VIRTUAL,
+    service_scope_service_id  BIGINT       GENERATED ALWAYS AS (CASE WHEN service_id IS NOT NULL AND run_id     IS NULL AND job_try_id IS NULL THEN service_id ELSE NULL END) VIRTUAL,
+    job_try_scope_job_try_id  BIGINT       GENERATED ALWAYS AS (CASE WHEN job_try_id IS NOT NULL AND run_id     IS NULL AND service_id IS NULL THEN job_try_id ELSE NULL END) VIRTUAL,
+    archive_scope_marker      TINYINT(1)   GENERATED ALWAYS AS (CASE WHEN run_id IS NULL AND service_id IS NULL AND job_try_id IS NULL THEN 1 ELSE NULL END) VIRTUAL,
+    name_token                VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN name IS NULL THEN '__' ELSE name END) VIRTUAL,
     UNIQUE KEY artifacts_archive_uuid_uk        (archive_id, artifact_uuid),
     UNIQUE KEY artifacts_archive_uuid_string_uk (archive_id, artifact_uuid_string),
-    UNIQUE KEY artifacts_named_uk
-        (archive_id, scope_kind, scope_id, artifact_kind, format, name),
-    UNIQUE KEY artifacts_unnamed_uk
-        (archive_id, scope_kind, scope_id, artifact_kind, format, name_when_unnamed),
-    KEY artifacts_scope_idx
-        (archive_id, scope_kind, scope_id),
-    KEY artifacts_scope_kind_idx
-        (archive_id, scope_kind, scope_id, artifact_kind),
-    CONSTRAINT artifacts_archive_fk FOREIGN KEY (archive_id) REFERENCES archives(archive_id) ON DELETE CASCADE
+    UNIQUE KEY artifacts_run_uk
+        (archive_id, run_scope_run_id, artifact_kind, format, name_token),
+    UNIQUE KEY artifacts_service_uk
+        (archive_id, service_scope_service_id, artifact_kind, format, name_token),
+    UNIQUE KEY artifacts_job_try_uk
+        (archive_id, job_try_scope_job_try_id, artifact_kind, format, name_token),
+    UNIQUE KEY artifacts_archive_uk
+        (archive_id, archive_scope_marker, artifact_kind, format, name_token),
+    KEY artifacts_run_idx     (archive_id, run_id),
+    KEY artifacts_service_idx (archive_id, service_id),
+    KEY artifacts_job_try_idx (archive_id, job_try_id),
+    KEY artifacts_kind_idx    (archive_id, artifact_kind),
+    CONSTRAINT artifacts_scope_chk CHECK (
+        (CASE WHEN run_id     IS NULL THEN 1 ELSE 0 END)
+      + (CASE WHEN service_id IS NULL THEN 1 ELSE 0 END)
+      + (CASE WHEN job_try_id IS NULL THEN 1 ELSE 0 END)
+        >= 2
+    ),
+    CONSTRAINT artifacts_archive_fk FOREIGN KEY (archive_id) REFERENCES archives(archive_id)   ON DELETE CASCADE,
+    CONSTRAINT artifacts_run_fk     FOREIGN KEY (run_id)     REFERENCES runs(run_id)           ON DELETE CASCADE,
+    CONSTRAINT artifacts_service_fk FOREIGN KEY (service_id) REFERENCES services(service_id)   ON DELETE CASCADE,
+    CONSTRAINT artifacts_job_try_fk FOREIGN KEY (job_try_id) REFERENCES job_tries(job_try_id)  ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TRIGGER artifacts_uuid_str_ins

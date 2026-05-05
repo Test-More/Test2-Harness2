@@ -42,7 +42,7 @@ jobs            job-scope summary
 job_tries       per-try summary
 subtests        top-level subtests of each try (for fast pass/fail lookup)
 artifacts       events / spec / state / report / attachment / arbitrary
-                payloads (polymorphic scope)
+                payloads (sub-archive scope via three nullable FKs)
 ```
 
 There is **no** separate `attachments` table — attachments are just
@@ -170,16 +170,18 @@ Populated when the try is sealed. (Per F9.)
 ### 2.7 artifacts
 
 The actual events / spec / state / report / attachment / arbitrary
-payloads. Polymorphic scope.
+payloads. Sub-archive scope is expressed by three nullable FK columns:
+exactly zero (= archive-root scope) or exactly one is non-NULL.
 
 | column          | type                       | notes                                                 |
 |-----------------|----------------------------|-------------------------------------------------------|
 | artifact_id     | BIGINT PK                  |                                                       |
-| archive_id      | BIGINT FK                  | → archives (denormalized; always set)                 |
+| archive_id      | BIGINT FK                  | → archives (always set; ON DELETE CASCADE)            |
 | artifact_uuid   | UUID / BINARY / TEXT       | unique within (archive_id)                            |
 | artifact_uuid_string | TEXT                  | MySQL/Percona only                                    |
-| scope_kind      | TEXT                       | 'archive' \| 'run' \| 'service' \| 'job_try'         |
-| scope_id        | BIGINT                     | references archive_id / run_id / service_id / job_try_id depending on scope_kind. **No DB FK** because polymorphic; integrity is application-managed. |
+| run_id          | BIGINT FK NULL             | → runs (ON DELETE CASCADE); set iff scope is `run`     |
+| service_id      | BIGINT FK NULL             | → services (ON DELETE CASCADE); set iff scope is `service` |
+| job_try_id      | BIGINT FK NULL             | → job_tries (ON DELETE CASCADE); set iff scope is `job_try` |
 | artifact_kind   | TEXT (or ENUM)             | 'events' \| 'state' \| 'spec' \| 'report' \| 'attachment' \| 'arbitrary' |
 | format          | TEXT                       | 'jsonl' \| 'json' \| 'csv' \| 'html' \| ...           |
 | name            | TEXT NULL                  | filename for `attachment` and `arbitrary` kinds; NULL for the standard streaming kinds |
@@ -189,41 +191,55 @@ payloads. Polymorphic scope.
 | sealed          | BOOLEAN                    | append streams: true once null sentinel landed (default false) |
 
 **Constraints:**
-- `CHECK (scope_kind IN ('archive','run','service','job_try'))`.
-- `UNIQUE(archive_id, scope_kind, scope_id, artifact_kind, format, name)` —
-  `name` allows multiple `arbitrary` files per scope; standard streams
-  (kind `events`/`state`/`spec`/`report`) have `name IS NULL` and so are
-  unique by `(scope_kind, scope_id, artifact_kind, format)`. (Most
-  flavors emulate "NULL distinct" via `COALESCE(name, '')`.)
+- `CHECK ((run_id IS NULL) + (service_id IS NULL) + (job_try_id IS NULL) >= 2)` —
+  i.e. at most one of the three is non-NULL. All-NULL = archive-root
+  scope (e.g. `meta.json`); exactly one non-NULL = scope is that
+  entity.
+- `UNIQUE(archive_id, run_id,     artifact_kind, format, name) WHERE run_id IS NOT NULL AND service_id IS NULL AND job_try_id IS NULL`
+- `UNIQUE(archive_id, service_id, artifact_kind, format, name) WHERE service_id IS NOT NULL AND run_id IS NULL AND job_try_id IS NULL`
+- `UNIQUE(archive_id, job_try_id, artifact_kind, format, name) WHERE job_try_id IS NOT NULL AND run_id IS NULL AND service_id IS NULL`
+- `UNIQUE(archive_id,             artifact_kind, format, name) WHERE run_id IS NULL AND service_id IS NULL AND job_try_id IS NULL`
 - `UNIQUE(archive_id, artifact_uuid)`.
 
-**Indexes:** `(archive_id, scope_kind, scope_id)`,
-`(archive_id, scope_kind, scope_id, artifact_kind)`.
+(`name` allows multiple `arbitrary` files per scope; standard streams
+have `name IS NULL` and so are unique by `(scope, artifact_kind, format)`.
+SQLite and PostgreSQL use partial indexes directly; MariaDB and MySQL
+emulate them via virtual generated columns — see the `.sql` files.)
 
-## 3. Polymorphic scope on `artifacts` — design choice
+**Indexes:** `(archive_id, run_id)`, `(archive_id, service_id)`,
+`(archive_id, job_try_id)`, `(archive_id, artifact_kind)`.
 
-The user gave us two acceptable shapes (`LOG_ARCHIVE_DB_QUESTIONS.md` Q9):
+## 3. Sub-archive scope on `artifacts` — design choice
 
-- **(A) Link tables** (one per scope kind: `archive_artifacts`,
-  `run_artifacts`, `service_artifacts`, `job_try_artifacts`): clean
-  referential integrity, but every read needs a join across multiple
-  link tables, and every artifact insert needs an extra link insert.
-- **(B) Polymorphic single column** (`scope_kind` + `scope_id`): simpler
-  schema and queries; no DB-enforced referential integrity for the
-  scope link.
+Three shapes were considered for expressing "this artifact belongs to
+run X / service Y / job_try Z / the archive itself":
 
-**We chose (B).** The artifacts table is the single largest table in
-the schema (one row per stream + one per attachment + one per arbitrary
-file), and almost every read of it is keyed by `(archive_id, scope_kind,
-scope_id, ...)`. Joining four link tables on every access for a property
-the application already knows from context (the caller asked for a
-job_try's events.jsonl) buys nothing. The cost of (B) is only the loss
-of one ON DELETE CASCADE rule that we don't actually use — sealed-only
-archives are essentially append-only; we never expect to delete a job
-or service mid-archive. Application code enforces the scope_id ↔
-scope_kind invariant on insert.
+- **(A) Link tables** (one per scope kind: `run_artifacts` etc.):
+  clean referential integrity, but every read needs a join across
+  multiple link tables, and every artifact insert needs an extra link
+  insert.
+- **(B) Polymorphic single column** (`scope_kind` + `scope_id`):
+  simplest schema, but no DB-enforced referential integrity for the
+  scope link, and no ON DELETE CASCADE.
+- **(C) Three nullable FK columns** + CHECK that "at most one is
+  non-NULL": one row per artifact (no extra inserts), one index per
+  scope, full FK referential integrity with ON DELETE CASCADE, and
+  trivially-readable queries (`WHERE run_id = ?` etc.).
 
-The CHECK constraint on `scope_kind` enforces the four-value enum.
+**We chose (C).** The artifacts table is the single largest table in
+the schema, and almost every read of it is keyed by `(archive_id, <one
+scope FK>)`. Three nullable FKs give us that key column directly with
+no JOIN required, while still preserving DB-level integrity that the
+polymorphic shape (B) couldn't enforce. The CHECK constraint guards
+the "at most one non-NULL" invariant.
+
+Per-scope uniqueness is split into four partial UNIQUE indexes (one
+per scope kind, including archive-root). On MariaDB/MySQL — which
+don't support partial indexes — virtual generated columns capture the
+scope identity only when the row belongs to that scope (NULL
+otherwise), and a plain UNIQUE on the generated columns enforces the
+right rule (MariaDB/MySQL UNIQUE treats NULL as distinct, so out-of-
+scope NULL rows don't collide).
 
 ## 4. UUID storage per flavor
 
@@ -368,10 +384,15 @@ job_tries:   UNIQUE(job_id, try_ord)
              INDEX(job_id)
 subtests:    INDEX(job_try_id, pass)
              INDEX(name)
-artifacts:   UNIQUE(archive_id, scope_kind, scope_id, artifact_kind, format, name)
+artifacts:   UNIQUE(archive_id, run_id,     artifact_kind, format, name)  -- partial: run scope
+             UNIQUE(archive_id, service_id, artifact_kind, format, name)  -- partial: service scope
+             UNIQUE(archive_id, job_try_id, artifact_kind, format, name)  -- partial: job_try scope
+             UNIQUE(archive_id,             artifact_kind, format, name)  -- partial: archive-root scope
              UNIQUE(archive_id, artifact_uuid)
-             INDEX(archive_id, scope_kind, scope_id)
-             INDEX(archive_id, scope_kind, scope_id, artifact_kind)
+             INDEX(archive_id, run_id)
+             INDEX(archive_id, service_id)
+             INDEX(archive_id, job_try_id)
+             INDEX(archive_id, artifact_kind)
              UNIQUE(archive_id, artifact_uuid_string)  -- MySQL/Percona only
 ```
 
@@ -392,11 +413,6 @@ project's top-level `/docs/` is gitignored.
 
 ## 13. Open questions for review
 
-- Is the polymorphic-scope choice (§3) acceptable? The previous round
-  used four nullable typed FKs (DP2=B in the old doc); the user OK'd
-  link tables in principle. We picked single-column polymorphic (B in
-  the old terminology) for query simplicity. Speak up here if you'd
-  prefer either alternative.
 - `format` column is unconstrained text — should we lift the format
   list (`jsonl`, `json`, `csv`, `html`, ...) into a CHECK constraint or
   keep it open-ended for future formats? Currently open-ended.

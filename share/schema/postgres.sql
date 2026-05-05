@@ -5,13 +5,14 @@
 -- Identity convention: every PK is `<thing>_id BIGINT`, every UUID is
 -- `<thing>_uuid UUID`. UUIDs are v7 (gen_uuid). No bare `id` / `uuid`.
 --
--- Polymorphic scope on `artifacts`: `scope_kind` text + `scope_id` int.
--- No DB FK (caller-managed). CHECK constraint enforces enum values.
+-- Sub-archive scope on `artifacts`: three nullable FK columns
+-- (`run_id`, `service_id`, `job_try_id`). A CHECK enforces "at most
+-- one non-NULL" — zero non-NULL = archive-root scope; exactly one
+-- non-NULL = scoped to that entity.
 --
 -- Payload compression: server-side TOAST LZ4 via column-level
 -- COMPRESSION clause. App stores RAW bytes (compressed=FALSE).
 
-CREATE TYPE scope_kind_t    AS ENUM ('archive','run','service','job_try');
 CREATE TYPE artifact_kind_t AS ENUM ('events','state','spec','report','attachment','arbitrary');
 
 CREATE TABLE archives (
@@ -120,10 +121,11 @@ CREATE INDEX subtests_name_idx        ON subtests(name);
 
 CREATE TABLE artifacts (
     artifact_id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    archive_id      BIGINT          NOT NULL REFERENCES archives(archive_id) ON DELETE CASCADE,
+    archive_id      BIGINT          NOT NULL REFERENCES archives(archive_id)   ON DELETE CASCADE,
     artifact_uuid   UUID            NOT NULL,
-    scope_kind      scope_kind_t    NOT NULL,
-    scope_id        BIGINT          NOT NULL,
+    run_id          BIGINT                   REFERENCES runs(run_id)           ON DELETE CASCADE,
+    service_id      BIGINT                   REFERENCES services(service_id)   ON DELETE CASCADE,
+    job_try_id      BIGINT                   REFERENCES job_tries(job_try_id)  ON DELETE CASCADE,
     artifact_kind   artifact_kind_t NOT NULL,
     format          TEXT            NOT NULL,
     name            TEXT,
@@ -131,20 +133,33 @@ CREATE TABLE artifacts (
     payload         BYTEA           COMPRESSION lz4 NOT NULL,
     created_at      TIMESTAMPTZ     NOT NULL,
     sealed          BOOLEAN         NOT NULL DEFAULT FALSE,
+    CHECK (
+        (CASE WHEN run_id     IS NULL THEN 1 ELSE 0 END)
+      + (CASE WHEN service_id IS NULL THEN 1 ELSE 0 END)
+      + (CASE WHEN job_try_id IS NULL THEN 1 ELSE 0 END)
+        >= 2
+    ),
     UNIQUE(archive_id, artifact_uuid)
 );
 
--- Per-scope (kind, format, name) uniqueness. Standard streams have
--- name IS NULL — split into two partial indexes for "NULL distinct"
--- behavior.
-CREATE UNIQUE INDEX artifacts_named_uk
-    ON artifacts(archive_id, scope_kind, scope_id, artifact_kind, format, name)
-    WHERE name IS NOT NULL;
-CREATE UNIQUE INDEX artifacts_unnamed_uk
-    ON artifacts(archive_id, scope_kind, scope_id, artifact_kind, format)
-    WHERE name IS NULL;
+-- Per-scope (artifact_kind, format, name) uniqueness. One partial
+-- index per scope kind, plus one for archive-root (all FKs NULL).
+-- Postgres treats NULLs as distinct in UNIQUE by default, so the
+-- partial predicates also serve as the "NULL-distinct" guard.
+CREATE UNIQUE INDEX artifacts_run_uk
+    ON artifacts(archive_id, run_id, artifact_kind, format, name)
+    WHERE run_id IS NOT NULL AND service_id IS NULL AND job_try_id IS NULL;
+CREATE UNIQUE INDEX artifacts_service_uk
+    ON artifacts(archive_id, service_id, artifact_kind, format, name)
+    WHERE service_id IS NOT NULL AND run_id IS NULL AND job_try_id IS NULL;
+CREATE UNIQUE INDEX artifacts_job_try_uk
+    ON artifacts(archive_id, job_try_id, artifact_kind, format, name)
+    WHERE job_try_id IS NOT NULL AND run_id IS NULL AND service_id IS NULL;
+CREATE UNIQUE INDEX artifacts_archive_uk
+    ON artifacts(archive_id, artifact_kind, format, name)
+    WHERE run_id IS NULL AND service_id IS NULL AND job_try_id IS NULL;
 
-CREATE INDEX artifacts_scope_idx
-    ON artifacts(archive_id, scope_kind, scope_id);
-CREATE INDEX artifacts_scope_kind_idx
-    ON artifacts(archive_id, scope_kind, scope_id, artifact_kind);
+CREATE INDEX artifacts_run_idx        ON artifacts(archive_id, run_id);
+CREATE INDEX artifacts_service_idx    ON artifacts(archive_id, service_id);
+CREATE INDEX artifacts_job_try_idx    ON artifacts(archive_id, job_try_id);
+CREATE INDEX artifacts_kind_idx       ON artifacts(archive_id, artifact_kind);

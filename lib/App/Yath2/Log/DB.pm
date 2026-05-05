@@ -741,30 +741,65 @@ sub _select_artifact_row {
     my $aid = $self->_archive_id_or_die;
     my $dbh = $self->dbh;
 
+    my ($scope_clause, @scope_bind) = $self->_scope_where_clause(
+        $info->{scope_kind}, $info->{scope_id});
+
     my ($sql, @bind);
     if (defined $info->{name}) {
-        $sql = q{
+        $sql = qq{
             SELECT artifact_id, compressed, payload, format
               FROM artifacts
-             WHERE archive_id = ? AND scope_kind = ? AND scope_id = ?
+             WHERE archive_id = ? AND $scope_clause
                AND artifact_kind = ? AND name = ?
         };
-        @bind = ($aid, $info->{scope_kind}, $info->{scope_id},
-            $info->{artifact_kind}, $info->{name});
+        @bind = ($aid, @scope_bind, $info->{artifact_kind}, $info->{name});
     }
     else {
-        $sql = q{
+        $sql = qq{
             SELECT artifact_id, compressed, payload, format
               FROM artifacts
-             WHERE archive_id = ? AND scope_kind = ? AND scope_id = ?
+             WHERE archive_id = ? AND $scope_clause
                AND artifact_kind = ? AND name IS NULL
         };
-        @bind = ($aid, $info->{scope_kind}, $info->{scope_id},
-            $info->{artifact_kind});
+        @bind = ($aid, @scope_bind, $info->{artifact_kind});
     }
 
     my $row = $dbh->selectrow_hashref($sql, undef, @bind);
     return $row;
+}
+
+# Translate a logical (scope_kind, scope_id) pair into a SQL WHERE
+# fragment over the three nullable FK columns + bind values. The
+# fragment never includes "archive_id = ?" — callers prepend that.
+sub _scope_where_clause {
+    my ($self, $scope_kind, $scope_id) = @_;
+    if ($scope_kind eq 'run') {
+        return ('run_id = ? AND service_id IS NULL AND job_try_id IS NULL', $scope_id);
+    }
+    if ($scope_kind eq 'service') {
+        return ('service_id = ? AND run_id IS NULL AND job_try_id IS NULL', $scope_id);
+    }
+    if ($scope_kind eq 'job_try') {
+        return ('job_try_id = ? AND run_id IS NULL AND service_id IS NULL', $scope_id);
+    }
+    if ($scope_kind eq 'archive') {
+        return ('run_id IS NULL AND service_id IS NULL AND job_try_id IS NULL');
+    }
+    croak "unknown scope_kind: $scope_kind";
+}
+
+# For INSERT: returns a hashref { run_id => ..., service_id => ...,
+# job_try_id => ... }, with exactly zero or one set based on the
+# scope_kind/scope_id pair. Used to pick FK column values.
+sub _scope_fk_values {
+    my ($self, $scope_kind, $scope_id) = @_;
+    my %v = (run_id => undef, service_id => undef, job_try_id => undef);
+    if ($scope_kind eq 'run')      { $v{run_id}     = $scope_id }
+    elsif ($scope_kind eq 'service') { $v{service_id} = $scope_id }
+    elsif ($scope_kind eq 'job_try') { $v{job_try_id} = $scope_id }
+    elsif ($scope_kind eq 'archive') { }
+    else { croak "unknown scope_kind: $scope_kind" }
+    return \%v;
 }
 
 # Read raw bytes for $rel. The Artifact handle calls this only after
@@ -882,12 +917,15 @@ sub _artifact_list_dir {
     my $aid = $self->_archive_id_or_die;
     my $dbh = $self->dbh;
 
-    my $rows = $dbh->selectall_arrayref(q{
+    my ($scope_clause, @scope_bind) = $self->_scope_where_clause(
+        $info->{scope_kind}, $info->{scope_id});
+
+    my $rows = $dbh->selectall_arrayref(qq{
         SELECT name FROM artifacts
-         WHERE archive_id = ? AND scope_kind = ? AND scope_id = ?
+         WHERE archive_id = ? AND $scope_clause
            AND artifact_kind = ? AND name IS NOT NULL
          ORDER BY name
-    }, undef, $aid, $info->{scope_kind}, $info->{scope_id}, $kind);
+    }, undef, $aid, @scope_bind, $kind);
 
     return map { $_->[0] } @$rows;
 }
@@ -981,23 +1019,26 @@ sub _artifact_save {
         return "db:archive=$aid:artifact=$existing->{artifact_id}";
     }
 
+    my $fk = $self->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
+
     my $sth = $dbh->prepare(q{
         INSERT INTO artifacts
-            (archive_id, artifact_uuid, scope_kind, scope_id,
+            (archive_id, artifact_uuid, run_id, service_id, job_try_id,
              artifact_kind, format, name, compressed, payload, created_at, sealed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     });
     $sth->bind_param(1, $aid);
     $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid));
-    $sth->bind_param(3, $info->{scope_kind});
-    $sth->bind_param(4, $info->{scope_id});
-    $sth->bind_param(5, $info->{artifact_kind});
-    $sth->bind_param(6, $info->{format});
-    $sth->bind_param(7, $info->{name});
-    $sth->bind_param(8, $stored_compressed);
-    $self->_bind_payload($sth, 9, $self->_payload_from_bytes($stored_bytes));
-    $sth->bind_param(10, $now);
-    $sth->bind_param(11, 1);
+    $sth->bind_param(3, $fk->{run_id});
+    $sth->bind_param(4, $fk->{service_id});
+    $sth->bind_param(5, $fk->{job_try_id});
+    $sth->bind_param(6, $info->{artifact_kind});
+    $sth->bind_param(7, $info->{format});
+    $sth->bind_param(8, $info->{name});
+    $sth->bind_param(9, $stored_compressed);
+    $self->_bind_payload($sth, 10, $self->_payload_from_bytes($stored_bytes));
+    $sth->bind_param(11, $now);
+    $sth->bind_param(12, 1);
     $sth->execute;
 
     my $id = $self->_last_insert_id($dbh, 'artifacts', 'artifact_id');
@@ -1297,18 +1338,19 @@ sub list_files {
     my $aid = $self->_archive_id_or_die;
     my $dbh = $self->dbh;
     my $rows = $dbh->selectall_arrayref(q{
-        SELECT a.scope_kind, a.scope_id, a.artifact_kind, a.format, a.name, a.compressed,
+        SELECT a.run_id, a.service_id, a.job_try_id,
+               a.artifact_kind, a.format, a.name, a.compressed,
                s.name AS service_name, s.run_id AS s_run_id,
                r.run_ord AS run_ord,
                j.job_ord AS job_ord, j.run_id AS j_run_id,
                t.try_ord AS try_ord, t.job_id AS t_job_id,
                sr.run_ord AS s_run_ord
           FROM artifacts a
-          LEFT JOIN services s ON a.scope_kind = 'service' AND a.scope_id = s.service_id
-          LEFT JOIN runs sr    ON s.run_id = sr.run_id
-          LEFT JOIN runs r     ON a.scope_kind = 'run'     AND a.scope_id = r.run_id
-          LEFT JOIN job_tries t ON a.scope_kind = 'job_try' AND a.scope_id = t.job_try_id
-          LEFT JOIN jobs j      ON t.job_id = j.job_id
+          LEFT JOIN services s  ON a.service_id = s.service_id
+          LEFT JOIN runs sr     ON s.run_id     = sr.run_id
+          LEFT JOIN runs r      ON a.run_id     = r.run_id
+          LEFT JOIN job_tries t ON a.job_try_id = t.job_try_id
+          LEFT JOIN jobs j      ON t.job_id     = j.job_id
          WHERE a.archive_id = ?
     }, { Slice => {} }, $aid);
 
@@ -1325,33 +1367,38 @@ sub list_files {
     return @paths;
 }
 
-# Compute the on-disk-relative "directory" for an artifact row.
+# Compute the on-disk-relative "directory" for an artifact row. The
+# row carries the three nullable scope FKs; we infer scope kind by
+# which one is set. All three NULL = archive-root scope.
 sub _base_for_artifact_row {
     my ($self, $row) = @_;
-    my $sk = $row->{scope_kind};
-    if ($sk eq 'archive')  { return ''; }
-    if ($sk eq 'run')      { return "runs/$row->{run_ord}"; }
-    if ($sk eq 'service') {
+    if (defined $row->{job_try_id}) {
+        # Need run_ord, job_ord, try_ord. The list_files / extract JOIN
+        # already supplies these via t/j/jr (extract uses j_run_ord).
+        my $rord = defined $row->{j_run_ord} ? $row->{j_run_ord} : do {
+            my $dbh = $self->dbh;
+            my ($r) = $dbh->selectrow_array(q{
+                SELECT r.run_ord
+                  FROM job_tries t JOIN jobs j ON t.job_id = j.job_id
+                                   JOIN runs r ON j.run_id = r.run_id
+                 WHERE t.job_try_id = ?
+            }, undef, $row->{job_try_id});
+            $r;
+        };
+        return undef unless defined $rord;
+        return "runs/$rord/jobs/$row->{job_ord}/$row->{try_ord}";
+    }
+    if (defined $row->{service_id}) {
         my $name = $row->{service_name};
         return defined $row->{s_run_ord}
             ? "runs/$row->{s_run_ord}/services/$name"
             : "services/$name";
     }
-    if ($sk eq 'job_try') {
-        # Need run_ord, job_ord, try_ord. Look up via t_job_id -> jobs row.
-        my $dbh = $self->dbh;
-        my $aid = $self->_archive_id_or_die;
-        my ($rord, $jord, $tord) = $dbh->selectrow_array(q{
-            SELECT r.run_ord, j.job_ord, t.try_ord
-              FROM job_tries t
-              JOIN jobs j ON t.job_id = j.job_id
-              JOIN runs r ON j.run_id = r.run_id
-             WHERE t.job_try_id = ?
-        }, undef, $row->{scope_id});
-        return undef unless defined $rord;
-        return "runs/$rord/jobs/$jord/$tord";
+    if (defined $row->{run_id}) {
+        return "runs/$row->{run_ord}";
     }
-    return undef;
+    # All three FKs NULL -> archive-root scope.
+    return '';
 }
 
 sub _stem_for_artifact_row {
@@ -1390,27 +1437,28 @@ sub extract {
     my $dbh = $self->dbh;
 
     my $rows = $dbh->selectall_arrayref(q{
-        SELECT a.artifact_id, a.scope_kind, a.scope_id, a.artifact_kind, a.format,
+        SELECT a.artifact_id, a.run_id, a.service_id, a.job_try_id,
+               a.artifact_kind, a.format,
                a.name, a.compressed, a.payload,
                s.name AS service_name, sr.run_ord AS s_run_ord,
                r.run_ord AS run_ord,
                t.try_ord AS try_ord, j.job_ord AS job_ord, jr.run_ord AS j_run_ord
           FROM artifacts a
-          LEFT JOIN services s   ON a.scope_kind = 'service' AND a.scope_id = s.service_id
-          LEFT JOIN runs sr      ON s.run_id = sr.run_id
-          LEFT JOIN runs r       ON a.scope_kind = 'run'     AND a.scope_id = r.run_id
-          LEFT JOIN job_tries t  ON a.scope_kind = 'job_try' AND a.scope_id = t.job_try_id
-          LEFT JOIN jobs j       ON t.job_id = j.job_id
-          LEFT JOIN runs jr      ON j.run_id = jr.run_id
+          LEFT JOIN services s   ON a.service_id = s.service_id
+          LEFT JOIN runs sr      ON s.run_id     = sr.run_id
+          LEFT JOIN runs r       ON a.run_id     = r.run_id
+          LEFT JOIN job_tries t  ON a.job_try_id = t.job_try_id
+          LEFT JOIN jobs j       ON t.job_id     = j.job_id
+          LEFT JOIN runs jr      ON j.run_id     = jr.run_id
          WHERE a.archive_id = ?
     }, { Slice => {} }, $aid);
 
     for my $row (@$rows) {
         # Determine run_ord for filter.
         my $rord;
-        if ($row->{scope_kind} eq 'run')      { $rord = $row->{run_ord}; }
-        elsif ($row->{scope_kind} eq 'service' && defined $row->{s_run_ord}) { $rord = $row->{s_run_ord}; }
-        elsif ($row->{scope_kind} eq 'job_try') { $rord = $row->{j_run_ord}; }
+        if    (defined $row->{run_id})                                          { $rord = $row->{run_ord}; }
+        elsif (defined $row->{service_id} && defined $row->{s_run_ord})         { $rord = $row->{s_run_ord}; }
+        elsif (defined $row->{job_try_id})                                      { $rord = $row->{j_run_ord}; }
 
         if (defined $rord) {
             if (defined $runs) {
@@ -1583,23 +1631,25 @@ sub insert {
 
         my $artifact_uuid = gen_uuid();
         my $now = $self->_now_iso;
+        my $fk = $self->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
         my $sth = $dbh->prepare(q{
             INSERT INTO artifacts
-                (archive_id, artifact_uuid, scope_kind, scope_id,
+                (archive_id, artifact_uuid, run_id, service_id, job_try_id,
                  artifact_kind, format, name, compressed, payload, created_at, sealed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         });
         $sth->bind_param(1, $aid);
         $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid));
-        $sth->bind_param(3, $info->{scope_kind});
-        $sth->bind_param(4, $info->{scope_id});
-        $sth->bind_param(5, $info->{artifact_kind});
-        $sth->bind_param(6, $info->{format});
-        $sth->bind_param(7, $info->{name});
-        $sth->bind_param(8, $stored_compressed);
-        $self->_bind_payload($sth, 9, $self->_payload_from_bytes($stored_bytes));
-        $sth->bind_param(10, $now);
-        $sth->bind_param(11, 1);
+        $sth->bind_param(3, $fk->{run_id});
+        $sth->bind_param(4, $fk->{service_id});
+        $sth->bind_param(5, $fk->{job_try_id});
+        $sth->bind_param(6, $info->{artifact_kind});
+        $sth->bind_param(7, $info->{format});
+        $sth->bind_param(8, $info->{name});
+        $sth->bind_param(9, $stored_compressed);
+        $self->_bind_payload($sth, 10, $self->_payload_from_bytes($stored_bytes));
+        $sth->bind_param(11, $now);
+        $sth->bind_param(12, 1);
         $sth->execute;
     }
 
