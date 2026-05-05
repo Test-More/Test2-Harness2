@@ -1553,8 +1553,19 @@ sub insert {
     my $dbh = $self->dbh;
     $self->bootstrap_schema;
 
+    require App::Yath2::Log;
+
+    # Build the archive metadata so the same archive_uuid lands on
+    # both the archives row and the fresh meta.json we drop in at
+    # the archive root. If the caller passed an explicit
+    # archive_uuid, honour it; otherwise the meta builder mints one.
+    my $meta = App::Yath2::Log->build_archive_meta(
+        archive_uuid => $opts{archive_uuid},
+    );
+    my $meta_bytes = App::Yath2::Log->encode_archive_meta($meta);
+
     # Fresh archive row.
-    my $aid = $self->_create_archive($opts{archive_uuid});
+    my $aid = $self->_create_archive($meta->{archive_uuid});
 
     require Test2::Harness2::Util::Zstd;
 
@@ -1576,6 +1587,9 @@ sub insert {
     my @ordered;
     for my $rel (@files) {
         next if $rel eq 'LIVE';
+        # Skip any meta.json the source already had; we mint a fresh
+        # one below keyed to the new archive_uuid.
+        next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
         (my $logical = $rel) =~ s/\.zst\z//;
         if ($rel =~ /\.zst\z/) {
             # Prefer the .zst variant -- replace any prior plain entry.
@@ -1652,6 +1666,16 @@ sub insert {
         $sth->bind_param(12, 1);
         $sth->execute;
     }
+
+    # Drop a fresh meta.json into the archive-root scope. compress=>0
+    # (small, JSON-readable). save() takes the dispatcher path through
+    # _artifact_save which inserts a new artifact row; archive_root
+    # scope is encoded as all three FK columns NULL.
+    $self->artifacts->save(
+        App::Yath2::Log->META_FILENAME,
+        $meta_bytes,
+        compress => 0,
+    );
 
     return $aid;
 }

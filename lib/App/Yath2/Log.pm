@@ -7,8 +7,14 @@ our $VERSION = '2.000011';
 use Carp qw/croak/;
 use Cwd ();
 use Fcntl qw/SEEK_SET SEEK_END/;
+use File::Basename qw/basename/;
 use File::Spec ();
+use POSIX ();
+use Sys::Hostname ();
 use Time::HiRes ();
+
+use Test2::Util::UUID qw/gen_uuid/;
+use Test2::Harness2::Util::JSON qw/encode_json/;
 
 # Dispatcher class for the new_log_refactor reader API. This class is
 # NOT a base class: it has no instance state of its own. It exists to
@@ -84,6 +90,113 @@ sub new {
     }
 
     croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
+}
+
+sub META_FORMAT_VERSION { 1 }
+sub META_FILENAME       { 'meta.json' }
+
+# Build the meta.json content for a sealed archive. Returns a hashref
+# with the canonical fields (per F23). Fields:
+#
+#   format_version  -- META_FORMAT_VERSION (currently 1)
+#   archive_uuid    -- a fresh UUID (or the caller-supplied one)
+#   created_at      -- ISO-8601 UTC timestamp
+#   host            -- hostname
+#   user            -- $ENV{USER} or getpwuid($<)
+#   git_sha         -- `git rev-parse HEAD` if cwd is in a git repo,
+#                      else undef
+#   project         -- basename of cwd, or undef
+#   yath_version    -- $App::Yath2::Log::VERSION (per the canonical
+#                      version set across the dist)
+#
+# Live dirs do NOT get meta.json -- only sealed forms do. Callers
+# (Directory->archive, DB->insert, etc.) plumb this in explicitly at
+# seal time.
+sub build_archive_meta {
+    my ($class, %p) = @_;
+
+    my $uuid = $p{archive_uuid} // gen_uuid();
+    my $cwd  = $p{cwd} // Cwd::getcwd();
+
+    my $now = Time::HiRes::time();
+    my @gm  = gmtime(int $now);
+    my $stamp = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
+        $gm[5] + 1900, $gm[4] + 1, $gm[3], $gm[2], $gm[1], $gm[0]);
+
+    my $host = eval { Sys::Hostname::hostname() } // 'unknown';
+    my $user = $ENV{USER}
+        // $ENV{USERNAME}
+        // (eval { (getpwuid($<))[0] } || undef);
+
+    my $project;
+    {
+        my $base = basename($cwd);
+        $project = (defined $base && length $base && $base ne '/')
+            ? $base
+            : undef;
+    }
+
+    my $git_sha = _git_sha_for($cwd);
+
+    return {
+        format_version => META_FORMAT_VERSION,
+        archive_uuid   => $uuid,
+        created_at     => $stamp,
+        host           => $host,
+        user           => $user,
+        git_sha        => $git_sha,
+        project        => $project,
+        yath_version   => $App::Yath2::Log::VERSION,
+    };
+}
+
+# Resolve git HEAD SHA for $cwd. Best effort: returns undef on any
+# kind of failure (not a git repo, no git binary, etc.).
+sub _git_sha_for {
+    my ($cwd) = @_;
+    return undef unless defined $cwd && length $cwd && -d $cwd;
+
+    # Look for a .git in $cwd or any ancestor; bail when we hit FS root
+    # without finding one. This keeps us from shelling out to git in
+    # workdirs that are not git repos.
+    my $probe = $cwd;
+    my $found;
+    for (1 .. 50) {
+        if (-e File::Spec->catfile($probe, '.git')) {
+            $found = 1;
+            last;
+        }
+        my $up = File::Spec->catpath((File::Spec->splitpath($probe))[0,1]);
+        $up = (File::Spec->splitdir($probe))[-1] eq '' ? $probe : do {
+            my @parts = File::Spec->splitdir($probe);
+            pop @parts;
+            File::Spec->catdir(@parts);
+        };
+        last if $up eq $probe;
+        $probe = $up;
+    }
+    return undef unless $found;
+
+    # Use `--no-pager` defensively; capture stdout, ignore stderr; use
+    # `-C $cwd` to avoid chdir round-trips.
+    my $sha;
+    my $ok = eval {
+        local $SIG{__WARN__} = sub { };
+        my $cmd = qq{git --no-pager -C "$cwd" rev-parse HEAD 2>/dev/null};
+        my $out = `$cmd`;
+        chomp $out if defined $out;
+        if (defined $out && $out =~ /^[0-9a-fA-F]{7,}$/) {
+            $sha = $out;
+        }
+        1;
+    };
+    return $sha;
+}
+
+# Encode a meta hashref to UTF-8 JSON bytes.
+sub encode_archive_meta {
+    my ($class, $meta) = @_;
+    return encode_json($meta);
 }
 
 # Detect the on-disk kind of a $path. Returns 'sqlite', 'tar.zidx', or

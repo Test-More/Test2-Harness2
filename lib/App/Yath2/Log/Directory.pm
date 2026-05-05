@@ -735,13 +735,26 @@ sub archive {
         # Refuse to clobber an existing destination -- fresh file only.
         croak "destination '$out' already exists" if -e $out;
         my $dest = App::Yath2::Log::Sqlite->new(file => $out);
-        $dest->insert($self, runs => $runs, exclude_runs => $exclude_runs);
+        # DB::insert builds the archive metadata and drops a fresh
+        # meta.json into the archive root itself.
+        $dest->insert(
+            $self,
+            runs         => $runs,
+            exclude_runs => $exclude_runs,
+        );
         return $dest;
     }
 
     if ($format ne 'tar.zidx') {
         croak "unknown archive format: $format";
     }
+
+    # Build a fresh meta.json for the tar.zidx archive root. tar.zidx
+    # sealing is one-shot (no insert step); we plumb the bytes into
+    # the writer's extra_files option.
+    require App::Yath2::Log;
+    my $meta = App::Yath2::Log->build_archive_meta;
+    my $meta_bytes = App::Yath2::Log->encode_archive_meta($meta);
 
     require App::Yath2::Log::TarZIdx;
     my $arc = App::Yath2::Log::TarZIdx->new(path => $out);
@@ -751,6 +764,7 @@ sub archive {
             $self->{+PATH},
             runs         => $runs,
             exclude_runs => $exclude_runs,
+            extra_files  => { App::Yath2::Log->META_FILENAME() => $meta_bytes },
         );
         return $arc;
     }

@@ -1132,6 +1132,20 @@ sub _write_from_directory {
         $abs_src,
     );
 
+    # Inline content entries (not from disk) injected by the caller.
+    # Used to drop a meta.json into the archive root at seal time
+    # without first writing it back into the source dir. Each entry
+    # is [rel, raw_bytes].
+    my @inline_entries;
+    if (my $extras = $opts{extra_files}) {
+        for my $name (sort keys %$extras) {
+            # Filter out anything explicitly named LIVE for safety,
+            # though the caller should never ask.
+            next if $name eq 'LIVE';
+            push @inline_entries => [$name, $extras->{$name}];
+        }
+    }
+
     my %index;
 
     # Directory entries land first so the on-disk tar walks
@@ -1154,14 +1168,39 @@ sub _write_from_directory {
         };
     }
 
-    for my $pair (sort { $a->[0] cmp $b->[0] } @file_entries) {
-        my ($rel, $abs) = @$pair;
+    # Combine on-disk file entries with caller-supplied inline ones,
+    # sorted by rel path so the archive's tar order is stable. Inline
+    # entries take precedence: drop any disk entry whose rel matches
+    # an inline name (or its .zst counterpart) so we never write two
+    # entries for the same logical file.
+    my %inline_names;
+    for my $e (@inline_entries) {
+        $inline_names{$e->[0]} = 1;
+        (my $alt = $e->[0]) =~ s/\.zst\z//;
+        $inline_names{$alt} = 1;
+        $inline_names{"$alt.zst"} = 1;
+    }
+    my @disk_kept = grep { !$inline_names{$_->[0]} } @file_entries;
 
-        open(my $rfh, '<', $abs) or croak "open $abs: $!";
-        binmode $rfh;
-        local $/;
-        my $raw = <$rfh>;
-        close $rfh;
+    my @all_files = (
+        (map { [$_->[0], 'disk',   $_->[1]] } @disk_kept),
+        (map { [$_->[0], 'inline', $_->[1]] } @inline_entries),
+    );
+
+    for my $entry (sort { $a->[0] cmp $b->[0] } @all_files) {
+        my ($rel, $kind, $src) = @$entry;
+
+        my $raw;
+        if ($kind eq 'disk') {
+            open(my $rfh, '<', $src) or croak "open $src: $!";
+            binmode $rfh;
+            local $/;
+            $raw = <$rfh>;
+            close $rfh;
+        }
+        else {
+            $raw = $src;    # inline bytes, already in-memory
+        }
 
         # Already-zstd-compressed source files (the loggers'
         # .json.zst / .jsonl.zst) are stored verbatim with

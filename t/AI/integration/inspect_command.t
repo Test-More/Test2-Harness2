@@ -60,6 +60,13 @@ yath(
         like($out->{output}, qr{^Harness:\s+services/harness/spec\.jsonl\.zst}m, 'harness line');
         like($out->{output}, qr/^Runs:\s+\d+/m, 'Runs line');
         like($out->{output}, qr/^Globals:\s+\d+/m, 'Globals line');
+        # meta.json fields
+        like($out->{output}, qr/^Archive UUID:\s+[0-9A-Fa-f-]{36}/m,
+            'Archive UUID line');
+        like($out->{output}, qr/^Created at:\s+\d{4}-\d{2}-\d{2}T/m,
+            'Created at ISO line');
+        like($out->{output}, qr/^Host:\s+\S+/m,         'Host line');
+        like($out->{output}, qr/^Yath version:\s+\S+/m, 'Yath version line');
     },
 );
 # }}}
@@ -80,6 +87,10 @@ yath(
         is($rep->{harness}{ok}, 1, 'json harness ok');
         ok(ref($rep->{runs}) eq 'ARRAY', 'json runs is an array');
         ok(ref($rep->{globals}) eq 'ARRAY', 'json globals is an array');
+        ok(ref($rep->{meta}) eq 'HASH', 'json meta is a hashref');
+        is($rep->{meta}{format_version}, 1, 'json meta format_version');
+        like($rep->{meta}{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'json meta archive_uuid');
+        like($rep->{meta}{created_at},   qr/^\d{4}-\d{2}-\d{2}T/, 'json meta created_at');
     },
 );
 # }}}

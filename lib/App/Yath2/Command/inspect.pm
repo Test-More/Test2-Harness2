@@ -9,7 +9,7 @@ use Fcntl qw/SEEK_SET/;
 use File::Spec ();
 use Scalar::Util qw/blessed/;
 
-use Test2::Harness2::Util::JSON qw/encode_json/;
+use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use App::Yath2::Log;
 
@@ -184,6 +184,22 @@ sub _fill_log_report {
     $report->{global_count}= scalar @globals;
     $report->{valid}       = 1;
 
+    # Surface meta.json if present at the archive root. Live dirs
+    # never have one; sealed archives (tar.zidx + DB) always do.
+    my $root = $log->artifacts;
+    if ($root->exists(App::Yath2::Log->META_FILENAME)) {
+        my $bytes;
+        my $ok = eval {
+            $bytes = $root->get(App::Yath2::Log->META_FILENAME);
+            1;
+        };
+        if ($ok) {
+            my $decoded;
+            my $dok = eval { $decoded = decode_json($bytes); 1 };
+            $report->{meta} = $decoded if $dok;
+        }
+    }
+
     return;
 }
 
@@ -296,6 +312,16 @@ sub _format_human {
                 if !$a->{valid} && defined $a->{error};
         }
         return $out;
+    }
+
+    if (my $m = $r->{meta}) {
+        $out .= sprintf("Archive UUID: %s\n", $m->{archive_uuid}) if defined $m->{archive_uuid};
+        $out .= sprintf("Created at:   %s\n", $m->{created_at})   if defined $m->{created_at};
+        $out .= sprintf("Host:         %s\n", $m->{host})         if defined $m->{host};
+        $out .= sprintf("User:         %s\n", $m->{user})         if defined $m->{user};
+        $out .= sprintf("Git SHA:      %s\n", $m->{git_sha})      if defined $m->{git_sha};
+        $out .= sprintf("Project:      %s\n", $m->{project})      if defined $m->{project};
+        $out .= sprintf("Yath version: %s\n", $m->{yath_version}) if defined $m->{yath_version};
     }
 
     my $h = $r->{harness} || {};
