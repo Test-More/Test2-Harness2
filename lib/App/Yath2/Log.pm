@@ -404,14 +404,34 @@ non-symlink at the target path.
 
 =back
 
+=head1 MULTI-ARCHIVE DBs
+
+C<< App::Yath2::Log->new(file => $path) >> targets a single archive:
+when a SQLite C<.yath> file holds more than one archive, the
+constructor throws "ambiguous; specify uuid => ..." so the caller
+must pick one explicitly.
+
+For workflows that explicitly want to enumerate archives in a
+multi-archive DB (server-shaped DBs, multi-archive sqlite files),
+use L<App::Yath2::LogDB>:
+
+    my $ldb = App::Yath2::LogDB->new(file => $multi_yath);
+    for my $uuid ($ldb->archives) {
+        my $log = $ldb->log($uuid);
+        ...;
+    }
+
+C<LogDB> shares its DBI handle across the per-archive Log objects it
+hands out, so opening many archives does not reconnect.
+
 =head1 SEE ALSO
 
 L<App::Yath2::Log::Live>, L<App::Yath2::Log::Directory>,
 L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::Sqlite>,
 L<App::Yath2::Log::Postgres>, L<App::Yath2::Log::MariaDB>,
 L<App::Yath2::Log::MySQL>, L<App::Yath2::Log::Artifact>,
-L<App::Yath2::Log::Iterator::JSONL>, L<Test2::Harness2::LogLayout>,
-L<App::Yath2::Command::inspect>.
+L<App::Yath2::Log::Iterator::JSONL>, L<App::Yath2::LogDB>,
+L<Test2::Harness2::LogLayout>, L<App::Yath2::Command::inspect>.
 
 =head1 SOURCE
 
