@@ -1296,6 +1296,7 @@ sub _write_event {
     my $w = $self->{+_EVENTS_WRITER} or return;
 
     $self->_capture_collector_report($event);
+    $self->_strip_trace_full_caller($event);
     $self->_extract_attachments($event);
 
     my $json = ref($event) && $event->can('as_json') ? $event->as_json : do {
@@ -1333,6 +1334,59 @@ sub _capture_collector_report {
     $self->{+_PENDING_COLLECTOR_REPORT} = {%$cr};
 
     return;
+}
+
+# Test2::API populates trace.full_caller with the full 11-element
+# caller() array (including the warning_bits string and a hint hash
+# ref) on every context. The harness has no consumer for it -- the
+# 4-element trace.frame is what renderers and auditors use -- and
+# leaving it in bloats every events.jsonl.zst row. Strip it before
+# the event is serialized.
+sub _strip_trace_full_caller {
+    my $self = shift;
+    my ($event) = @_;
+    return unless $event;
+
+    my $fd;
+    if (blessed($event)) {
+        $fd = $event->facet_data;
+    }
+    elsif (ref($event) eq 'HASH') {
+        $fd = $event->{facet_data};
+    }
+    return unless ref($fd) eq 'HASH';
+
+    my $mutated = _strip_trace_full_caller_from_facets($fd);
+
+    if ($mutated && ref($event) && $event->can('clear_compressed_form')) {
+        $event->clear_compressed_form;
+    }
+
+    return;
+}
+
+# Recursively strip trace.full_caller from a facet_data hash. Subtest
+# events carry nested child events under parent.children whose own
+# trace facets need the same treatment.
+sub _strip_trace_full_caller_from_facets {
+    my ($fd) = @_;
+    return 0 unless ref($fd) eq 'HASH';
+
+    my $mutated = 0;
+
+    if (ref($fd->{trace}) eq 'HASH' && exists $fd->{trace}{full_caller}) {
+        delete $fd->{trace}{full_caller};
+        $mutated = 1;
+    }
+
+    my $parent = $fd->{parent};
+    if (ref($parent) eq 'HASH' && ref($parent->{children}) eq 'ARRAY') {
+        for my $child (@{$parent->{children}}) {
+            $mutated = 1 if _strip_trace_full_caller_from_facets($child);
+        }
+    }
+
+    return $mutated;
 }
 
 # Extensions whose payload is already compressed and should NOT get an
