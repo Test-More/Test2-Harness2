@@ -340,8 +340,9 @@ sub service_started_fields {
 sub service_on_start {
     my $self = shift;
 
-    # Stamp the start time on the State so the persisted state.json
-    # has it the moment any consumer reads it. Idempotent.
+    # Stamp the start time on the State so the persisted
+    # report.jsonl.zst row has it once the run service exits.
+    # Idempotent.
     $self->{+RUN_STATE}->mark_started;
 
     # Mirror the start stamp on our own slot so the collector_report

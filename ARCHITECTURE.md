@@ -2778,6 +2778,16 @@ exists. No deeper checking.
 single-archive logs, with an `archives` arrayref for sqlite
 multi-archive).
 
+#### Plaintext archive mode (`compress => 0`)
+
+Every backend's archive entry point accepts `compress => 0`,
+producing an archive whose bodies are stored as plaintext
+instead of zstd-wrapped. tar.zidx adds a third value for the
+per-entry `inner` field: `'plain'` (versus `'zstd'` and
+`'none'` which both mean "stored bytes are zstd-shaped").
+Plaintext archives are bigger but trivially greppable. CLI:
+`yath test --no-log-compress` and `yath archive --no-log-compress`.
+
 #### Module map (post-rev-2)
 
     App::Yath2::Log                      dispatcher
@@ -2791,6 +2801,7 @@ multi-archive).
     App::Yath2::Log::MySQL               mysql-on-DB
     App::Yath2::Log::Artifact            per-collector handle
     App::Yath2::Log::Iterator::JSONL     per-file iterator
+    App::Yath2::LogDB                    multi-archive DB container
     App::Yath2::Command::inspect         `yath inspect <path>`
 
     Test2::Harness2::Collector           single collector class

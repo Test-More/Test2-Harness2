@@ -143,9 +143,9 @@ Used via the collector:
 
     my $c = Test2::Harness2::Collector->spawn(
         type    => 'Job',
-        id      => 0,
-        run_id  => 0,
-        job_try => 0,
+        id      => 1,
+        run_id  => 1,
+        job_try => 1,
         logdir  => '/path/to/logs',
         launch  => ['perl', '-e', 'print "hi\n"'],
     );

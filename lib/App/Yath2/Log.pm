@@ -406,15 +406,15 @@ App::Yath2::Log - Dispatcher for the yath log reader API.
     # Artifacts handle factory (positional forms).
     my $root = $log->artifacts;                     # archive root
     my $svc  = $log->artifacts('harness');          # global service
-    my $run  = $log->artifacts(0);                  # run by ord
-    my $rsvc = $log->artifacts(0, 'preload-perl');  # run-scoped service
-    my $job  = $log->artifacts(0, 0);               # highest try of job
-    my $try  = $log->artifacts(0, 0, 1);            # specific try
+    my $run  = $log->artifacts(1);                  # run by ord
+    my $rsvc = $log->artifacts(1, 'preload-perl');  # run-scoped service
+    my $job  = $log->artifacts(1, 1);               # highest try of job
+    my $try  = $log->artifacts(1, 1, 1);            # specific try
 
     # Hashref form is also accepted:
     my $a = $log->artifacts({
-        run_id  => 0,
-        job_id  => 0,
+        run_id  => 1,
+        job_id  => 1,
         job_try => 1,
     });
 

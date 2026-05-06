@@ -52,7 +52,7 @@ sub render_event {
     my $f  = $event->{facet_data};
 
     # job_id lives in the harness sub-facet for general (JSONL) events, or
-    # inside the top-level lifecycle facet for Streamer-synthesised events.
+    # inside the top-level lifecycle facet for synthesised lifecycle events.
     my $job_id =
            ($f->{'harness'}         && $f->{'harness'}{'job_id'})
         // ($f->{'harness_job_start'} && $f->{'harness_job_start'}{'job_id'})
@@ -64,13 +64,13 @@ sub render_event {
         // ($f->{'harness'} && $f->{'harness'}{'job_try'})
         // 0;
 
-    my $stamp = $event->{'stamp'} or return;    # Streamer always sets stamp
+    my $stamp = $event->{'stamp'} or return;    # the renderer driver always sets stamp
 
     # Throw out job events if they are for a previous run and we've already started collecting job
     # information for a successive run.
     return if $self->{'tests'}->{$job_id} && $job_try < ( $self->{'tests'}->{$job_id}->{'job_try'} // 0 );
 
-    # At job launch (harness_job_start from the Streamer) start a new test section.
+    # At job launch (harness_job_start from the renderer driver) start a new test section.
     # Throw out anything collected for a previous retry of the same job.
     if ( $f->{'harness_job_start'} ) {
         my $jst      = $f->{'harness_job_start'};

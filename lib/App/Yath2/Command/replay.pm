@@ -91,7 +91,7 @@ sub run {
 
 # Walk every (run, job, last-try) report.jsonl.zst and return true if
 # any try did not pass. A run with no jobs is treated as a failure
-# (matches the previous Streamer-based behaviour).
+# (matches the previous static-iteration behaviour).
 sub _runs_failed {
     my ($log) = @_;
 

@@ -8,7 +8,7 @@ use parent 'App::Yath2::Filter';
 
 # Pass events that carry displayable content; drop pure housekeeping events.
 # An event is considered displayable if it has at least one of: assert, info,
-# errors, plan, or a Streamer harness lifecycle facet (job/run summary).
+# errors, plan, or a harness lifecycle facet (job/run summary).
 sub filter_event {
     my ($self, $event) = @_;
 
