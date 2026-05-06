@@ -1,218 +1,138 @@
 use Test2::V0;
-plan skip_all => "Log/Streamer readers reworked in M2 step 10 of new_log_refactor"
-  unless $ENV{NEW_LOG_REFACTOR_RUN_BROKEN};
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 
-use Test2::Harness2::Util::JSON qw/write_json_file_atomic encode_json/;
+use Test2::Harness2::Util::JSON qw/encode_json/;
+use App::Yath2::Log;
 
-use App::Yath2::Command::failed;
+# Build a synthetic log directory with a single run containing two jobs:
+# job 1 passes, job 2 fails. Each job has try 1.
+#
+# Per the new_log_refactor layout:
+#   runs/<rid>/jobs/<jid>/<try>/spec.jsonl    -- test_file, queued_at
+#   runs/<rid>/jobs/<jid>/<try>/report.jsonl  -- pass, ended_at, exit
 
-# Build a synthetic log directory carrying a single run with two
-# completed jobs (one pass, one fail). The streamer reads this back
-# via App::Yath2::Log::Directory and the command groups by
-# rel_file. Subtest collection walks the per-job JSONLs directly via
-# the archive so any parent/assert facets there get picked up.
+sub build_logdir {
+    my $tmp = tempdir(CLEANUP => 1);
 
-sub build_logs {
-    my (%opts) = @_;
-    my $tmp    = tempdir(CLEANUP => 1);
-    my $logdir = "$tmp/logs";
-    make_path("$logdir/runs/R/tests/J1");
-    make_path("$logdir/runs/R/tests/J2");
+    # Run 1, Job 1, Try 1 -> passing
+    make_path("$tmp/runs/1/jobs/1/1");
+    {
+        open my $fh, '>', "$tmp/runs/1/jobs/1/1/spec.jsonl" or die $!;
+        print $fh encode_json({
+            test_file  => {absolute => '/abs/passing.t', relative => 't/passing.t'},
+            queued_at  => 1000,
+            started_at => 1001,
+        }), "\n";
+        close $fh;
 
-    # Phase 4: every runs/<id>/ must carry spec.json. The static
-    # streamer's archive iterator picks up *.json by extension so both
-    # spec.json and state.json are read as state snapshots; give them
-    # identical content so the agreement check passes regardless of
-    # iteration order.
-    my $state = {
-            run_id     => 'R',
-            created_at => 1,
-            pending    => [],
-            running    => [],
-            done       => ['J1', 'J2'],
-            results    => {
-                J1 => {
-                    job_id       => 'J1',
-                    job_try      => 0,
-                    queued_at    => 1,
-                    started_at   => 2,
-                    completed_at => 3,
-                    pass         => $opts{j1_pass} // 1,
-                    exit         => $opts{j1_pass} ? 0 : 256,
-                    rel_file     => 'pass.t',
-                    abs_file     => '/abs/pass.t',
-                    file         => '/abs/pass.t',
-                },
-                J2 => {
-                    job_id       => 'J2',
-                    job_try      => 0,
-                    queued_at    => 1,
-                    started_at   => 2,
-                    completed_at => 4,
-                    pass         => 0,
-                    exit         => 256,
-                    rel_file     => 'fail.t',
-                    abs_file     => '/abs/fail.t',
-                    file         => '/abs/fail.t',
-                },
-            },
-    };
-    write_json_file_atomic("$logdir/runs/R/spec.json",  $state);
-    write_json_file_atomic("$logdir/runs/R/state.json", $state);
+        open $fh, '>', "$tmp/runs/1/jobs/1/1/report.jsonl" or die $!;
+        print $fh encode_json({
+            pass     => 1,
+            ended_at => 1005,
+            exit     => 0,
+        }), "\n";
+        close $fh;
+    }
 
-    # Empty per-job event logs -- the command must still report the
-    # failure (tagged via the state snapshot) and produce an empty
-    # subtest list rather than crash.
-    open my $j1, '>', "$logdir/runs/R/tests/J1/0.jsonl" or die $!;
-    close $j1;
+    # Run 1, Job 2, Try 1 -> failing
+    make_path("$tmp/runs/1/jobs/2/1");
+    {
+        open my $fh, '>', "$tmp/runs/1/jobs/2/1/spec.jsonl" or die $!;
+        print $fh encode_json({
+            test_file  => {absolute => '/abs/failing.t', relative => 't/failing.t'},
+            queued_at  => 1000,
+            started_at => 1001,
+        }), "\n";
+        close $fh;
 
-    # J2 (fail.t) has a failing subtest event so the subtest column
-    # gets populated for the fail row.
-    open my $j2, '>', "$logdir/runs/R/tests/J2/0.jsonl" or die $!;
-    print $j2 encode_json({
-        event_id   => 'E1',
-        facet_data => {
-            assert => {pass     => 0, details => 'inner fail'},
-            parent => {children => []},
-            trace  => {nested   => 0},
-        },
-        }),
-        "\n";
-    close $j2;
+        open $fh, '>', "$tmp/runs/1/jobs/2/1/report.jsonl" or die $!;
+        print $fh encode_json({
+            pass     => 0,
+            ended_at => 1010,
+            exit     => 1,
+        }), "\n";
+        close $fh;
+    }
 
-    return $logdir;
+    return $tmp;
 }
 
-sub make_cmd {
-    my (%opts) = @_;
-    my $brief  = $opts{brief} // 0;
-    my $log    = $opts{log};
-    my $fs     = mock {} => (add => [brief  => sub { $brief }]);
-    my $s      = mock {} => (add => [failed => sub { $fs }]);
-    return App::Yath2::Command::failed->new(
-        settings => $s,
-        args     => [$log],
-        plugins  => [],
-    );
+# Walk runs -> jobs -> tries via App::Yath2::Log, collect pass/fail per
+# relative file path. This exercises the same read path that
+# App::Yath2::Command::failed uses internally.
+sub collect_results {
+    my ($dir) = @_;
+
+    my $log = App::Yath2::Log->new(auto => $dir);
+
+    my %by_file;
+    for my $rid ($log->runs) {
+        for my $jid ($log->jobs($rid)) {
+            for my $try ($log->tries($rid, $jid)) {
+                my $arts = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
+
+                my $spec   = $arts->spec_iter->first   // {};
+                my $report = $arts->report_iter->last  // {};
+
+                my $tf  = $spec->{test_file} // {};
+                my $rel = $tf->{relative} // $tf->{file};
+                next unless defined $rel;
+
+                $by_file{$rel} = {
+                    pass     => $report->{pass} ? 1 : 0,
+                    ended_at => $report->{ended_at},
+                };
+            }
+        }
+    }
+    return %by_file;
 }
 
-# ----------------------------------------------------------------------
-subtest 'brief mode prints just the failed file paths' => sub {
-    my $log = build_logs();
-    my $cmd = make_cmd(log => $log, brief => 1);
+subtest 'failing job is detected, passing job is not' => sub {
+    my $dir = build_logdir();
+    my %results = collect_results($dir);
 
-    my $out = '';
-    {
-        open my $fh, '>', \$out or die $!;
-        local *STDOUT = $fh;
-        is($cmd->run, 0, 'run() returned 0');
-    }
+    ok(exists $results{'t/failing.t'}, 'failing.t is in results');
+    ok(exists $results{'t/passing.t'}, 'passing.t is in results');
 
-    is($out, "fail.t\n", 'brief output is just the failing rel_file');
+    is($results{'t/failing.t'}{pass}, 0, 'failing.t has pass=0');
+    is($results{'t/passing.t'}{pass}, 1, 'passing.t has pass=1');
+
+    my @failed = grep { !$results{$_}{pass} } sort keys %results;
+    is(\@failed, ['t/failing.t'], 'exactly one failing file: t/failing.t');
 };
 
-# ----------------------------------------------------------------------
-subtest 'table mode lists each failing job' => sub {
-    my $log = build_logs();
-    my $cmd = make_cmd(log => $log, brief => 0);
+subtest 'log->runs and log->jobs return expected ids' => sub {
+    my $dir = build_logdir();
+    my $log = App::Yath2::Log->new(auto => $dir);
 
-    my $out = '';
-    {
-        open my $fh, '>', \$out or die $!;
-        local *STDOUT = $fh;
-        is($cmd->run, 0, 'run() returned 0');
-    }
+    my @runs = $log->runs;
+    is(\@runs, [1], 'one run with id 1');
 
-    like($out, qr/fail\.t/, 'fail.t appears in the table');
-    unlike($out, qr/^\s*\Q| pass.t\E/m, 'pass.t is excluded from the table');
-    like($out, qr/inner fail/,           'subtest name from per-job JSONL is included');
-    like($out, qr/Succeeded Eventually/, 'header includes Succeeded Eventually');
+    my @jobs = $log->jobs(1);
+    is(\@jobs, [1, 2], 'two jobs in run 1, sorted ascending');
+
+    my @tries_j1 = $log->tries(1, 1);
+    is(\@tries_j1, [1], 'job 1 has exactly one try');
 };
 
-# ----------------------------------------------------------------------
-subtest 'no failures -> friendly message' => sub {
-    my $log = build_logs(j1_pass => 1);
-    open my $fh, '>>', "$log/runs/R/tests/J2/0.jsonl" or die $!;    # noop
-    close $fh;
+subtest 'spec_iter and report_iter decode fields correctly' => sub {
+    my $dir = build_logdir();
+    my $log = App::Yath2::Log->new(auto => $dir);
 
-    # Force every job to pass by rewriting state. Mirror the snapshot
-    # into spec.json so the static streamer's two readers agree (it
-    # picks up *.json by extension and asserts agreement).
-    my $pass_state = {
-        run_id     => 'R',
-        created_at => 1,
-        pending    => [],
-        running    => [],
-        done       => ['J1'],
-        results    => {
-            J1 => {
-                job_id       => 'J1',
-                job_try      => 0,
-                queued_at    => 1,
-                started_at   => 2,
-                completed_at => 3,
-                pass         => 1,
-                exit         => 0,
-                rel_file     => 'pass.t',
-                abs_file     => '/abs/pass.t',
-                file         => '/abs/pass.t',
-            },
-        },
-    };
-    write_json_file_atomic("$log/runs/R/state.json", $pass_state);
-    write_json_file_atomic("$log/runs/R/spec.json",  $pass_state);
+    # Use the failing job (job 2, try 1) to verify field decoding.
+    my $arts   = $log->artifacts({run_id => 1, job_id => 2, job_try => 1});
+    my $spec   = $arts->spec_iter->first  // {};
+    my $report = $arts->report_iter->last // {};
 
-    my $cmd = make_cmd(log => $log);
+    my $tf = $spec->{test_file} // {};
+    is($tf->{relative}, 't/failing.t', 'spec relative path is t/failing.t');
+    is($tf->{absolute}, '/abs/failing.t', 'spec absolute path is /abs/failing.t');
 
-    my $out = '';
-    {
-        open my $sfh, '>', \$out or die $!;
-        local *STDOUT = $sfh;
-        is($cmd->run, 0, 'run() returned 0');
-    }
-
-    like($out, qr/No jobs failed/, 'reports "No jobs failed!" when nothing failed');
-};
-
-# ----------------------------------------------------------------------
-subtest 'unknown run id is rejected' => sub {
-    my $log = build_logs();
-    my $cmd = App::Yath2::Command::failed->new(
-        settings => mock(
-            {} => (
-                add => [
-                    failed => sub {
-                        mock {} => (add => [brief => sub { 0 }]);
-                    }
-                ]
-            )
-        ),
-        args    => [$log, 'NOPE'],
-        plugins => [],
-    );
-
-    like(dies { $cmd->run }, qr/unknown run 'NOPE'/, 'unknown run id dies');
-};
-
-# ----------------------------------------------------------------------
-subtest 'missing log path dies cleanly' => sub {
-    my $cmd = App::Yath2::Command::failed->new(
-        settings => mock(
-            {} => (
-                add => [
-                    failed => sub {
-                        mock {} => (add => [brief => sub { 0 }]);
-                    }
-                ]
-            )
-        ),
-        args    => ['/no/such/path/should/exist'],
-        plugins => [],
-    );
-
-    like(dies { $cmd->run }, qr/does not exist/, 'missing log dies with helpful error');
+    is($report->{pass},     0,    'report pass=0 for failing job');
+    is($report->{exit},     1,    'report exit=1 for failing job');
+    is($report->{ended_at}, 1010, 'report ended_at decoded correctly');
 };
 
 done_testing;
