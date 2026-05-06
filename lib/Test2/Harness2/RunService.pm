@@ -988,9 +988,8 @@ sub emit_service_event {
 
     my $em = $self->{+EMITTER} or return;    # no emitter in unit tests
     $em->emit_event(
-        job_id  => $self->{+JOB_ID},
-        run_id  => $self->{+RUN_ID},
-        job_try => 0,
+        job_id => $self->{+JOB_ID},
+        run_id => $self->{+RUN_ID},
         %fields,
     );
 
