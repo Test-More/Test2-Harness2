@@ -714,7 +714,21 @@ sub _run_collection_loop {
 
     my $buffer = {seen => {}, saw_event => 0, stdout => [], stderr => []};
 
-    my $draining = 0;
+    # Termination state machine. Once we decide to take the child
+    # down (caught a signal, parent died, etc.) we send TERM and
+    # record a deadline; subsequent loop iterations keep draining
+    # the pipes so the child can finish whatever multipart write
+    # it was in the middle of. After the deadline the loop sends
+    # KILL. We never block-wait on the child here -- blocking would
+    # let the kernel pipe buffer fill while the child is still
+    # writing, and the resulting truncated multipart at EOF
+    # surfaces to the reader as "Incomplete message received before
+    # EOF" from Atomic::Pipe.
+    my $draining      = 0;
+    my $sent_term     = 0;
+    my $sent_kill     = 0;
+    my $kill_deadline;
+    my $kill_timeout  = $self->{+KILL_TIMEOUT} // 15;
 
     while (1) {
         my $client = $self->{_ipc_client};
@@ -730,18 +744,30 @@ sub _run_collection_loop {
             }
         }
 
+        # Cap the select() wait when we're escalating so we don't
+        # oversleep the kill deadline.
+        my $tick = $cycle;
+        if (defined $kill_deadline && !$sent_kill) {
+            my $remaining = $kill_deadline - time;
+            $tick = $remaining if $remaining > 0 && $remaining < $tick;
+            $tick = 0          if $remaining <= 0;
+        }
+
         if ($sel->count || $write_sel) {
             require IO::Select;
-            IO::Select->select($sel->count ? $sel : undef, $write_sel, undef, $cycle);
+            IO::Select->select($sel->count ? $sel : undef, $write_sel, undef, $tick);
         }
 
         $client->drain_pending if $client && $client->have_pending_sends;
 
         my $ok = eval {
             if ($$got_signal_ref && !$draining) {
-                $self->_kill_child($child_pid) if $child_pid;
-                $draining     = 1;
-                $child_exited = 1;
+                if ($child_pid && $started_child) {
+                    kill('TERM', $child_pid);
+                    $sent_term     = 1;
+                    $kill_deadline = time + $kill_timeout;
+                }
+                $draining = 1;
             }
 
             if (!$draining && $self->{+PARENT_PIDS} && @{$self->{+PARENT_PIDS}}) {
@@ -753,10 +779,20 @@ sub _run_collection_loop {
                     }
                 }
                 if ($parent_gone) {
-                    $self->_kill_child($child_pid) if $child_pid;
-                    $draining     = 1;
-                    $child_exited = 1;
+                    if ($child_pid && $started_child) {
+                        kill('TERM', $child_pid);
+                        $sent_term     = 1;
+                        $kill_deadline = time + $kill_timeout;
+                    }
+                    $draining = 1;
                 }
+            }
+
+            if ($draining && defined $kill_deadline && !$sent_kill && !$child_exited
+                && $child_pid && $started_child && time >= $kill_deadline)
+            {
+                kill('KILL', $child_pid);
+                $sent_kill = 1;
             }
 
             unless ($stdout_eof) {
