@@ -1689,7 +1689,264 @@ sub insert {
         compress => $compress,
     );
 
+    # Populate summary columns on runs / jobs / job_tries / services
+    # / subtests, and stamp the archive sealed. The artifact rows are
+    # the authoritative bytes, but the summary columns are what
+    # readers actually query (status / pass / exit / file / etc.) -- a
+    # row of NULLs makes the DB unusable for everything except raw
+    # artifact retrieval.
+    $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs);
+
+    $dbh->do(q{UPDATE archives SET sealed_at = ? WHERE archive_id = ?},
+        undef, $self->_now_iso, $aid);
+
     return $aid;
+}
+
+# After the artifact bytes are in the DB, walk the source's runs /
+# services / jobs / tries and project their spec.jsonl + report.jsonl
+# rows into the typed summary columns. Subtests are exploded out of
+# each job report's subtests array. Errors during a single row's
+# population are isolated -- one corrupt artifact does not abort the
+# seal -- but they warn so the user knows the row is partial.
+sub _populate_summary_rows {
+    my ($self, $source, $aid, $runs_filter, $exclude_runs_filter) = @_;
+
+    my $dbh = $self->dbh;
+    require Test2::Harness2::Util::JSON;
+    Test2::Harness2::Util::JSON->import('encode_json');
+
+    my @run_ords = $source->can('runs') ? $source->runs : ();
+
+    # Global services first (no run scope).
+    if ($source->can('services')) {
+        my @globals = $source->services;
+        for my $name (@globals) {
+            $self->_populate_service_row($source, $aid, $name, undef);
+        }
+    }
+
+    for my $run_ord (@run_ords) {
+        if (defined $runs_filter) {
+            next unless grep { $_ eq $run_ord } @$runs_filter;
+        }
+        elsif (defined $exclude_runs_filter) {
+            next if grep { $_ eq $run_ord } @$exclude_runs_filter;
+        }
+
+        $self->_populate_run_row($source, $aid, $run_ord);
+
+        if ($source->can('services')) {
+            for my $name ($source->services($run_ord)) {
+                $self->_populate_service_row($source, $aid, $name, $run_ord);
+            }
+        }
+
+        my @job_ords = $source->can('jobs') ? $source->jobs($run_ord) : ();
+        for my $job_ord (@job_ords) {
+            $self->_populate_job_rows($source, $aid, $run_ord, $job_ord);
+        }
+    }
+
+    return;
+}
+
+sub _read_first_jsonl_row {
+    my ($self, $artifact, $stem) = @_;
+    return undef unless $artifact;
+    my $iter;
+    if ($stem eq 'spec.jsonl') {
+        $iter = eval { $artifact->spec_iter } or return undef;
+    }
+    elsif ($stem eq 'report.jsonl') {
+        $iter = eval { $artifact->report_iter } or return undef;
+    }
+    else {
+        return undef;
+    }
+    my $row = eval { $iter->next };
+    return ref($row) eq 'HASH' ? $row : undef;
+}
+
+sub _encode_json_or_undef {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    require Test2::Harness2::Util::JSON;
+    my $out = eval { Test2::Harness2::Util::JSON::encode_json($val) };
+    return defined $out ? $out : undef;
+}
+
+sub _populate_run_row {
+    my ($self, $source, $aid, $run_ord) = @_;
+    my $dbh = $self->dbh;
+
+    my $artifact = eval { $source->artifacts($run_ord) } or return;
+    my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
+    my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
+
+    my %set;
+    $set{started_at}   = $spec->{started_at}                          if $spec   && defined $spec->{started_at};
+    $set{ended_at}     = $report->{ended_at}                          if $report && defined $report->{ended_at};
+    $set{exit}         = $report->{exit}                              if $report && defined $report->{exit};
+    $set{exit_decoded} = $self->_encode_json_or_undef($report->{exit_decoded})
+        if $report && defined $report->{exit_decoded};
+    $set{pass}         = $report->{pass} ? 1 : 0                      if $report && exists  $report->{pass};
+    $set{total_jobs}   = $report->{total_jobs}                        if $report && defined $report->{total_jobs};
+    $set{passed_jobs}  = $report->{passed_jobs}                       if $report && defined $report->{passed_jobs};
+    $set{failed_jobs}  = $report->{failed_jobs}                       if $report && defined $report->{failed_jobs};
+    $set{aborted_jobs} = $report->{aborted_jobs}                      if $report && defined $report->{aborted_jobs};
+    $set{spec}         = $self->_encode_json_or_undef($spec)          if $spec;
+    $set{state}        = $self->_encode_json_or_undef($report)        if $report;
+    $set{status}       = (defined $report && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+
+    my %where = (archive_id => $aid, run_ord => $run_ord);
+
+    if ($spec && defined $spec->{run_uuid}) {
+        $set{run_uuid} = $self->_uuid_to_db($spec->{run_uuid});
+    }
+
+    return $self->_update_row('runs', \%set, \%where);
+}
+
+sub _populate_service_row {
+    my ($self, $source, $aid, $name, $run_ord) = @_;
+    my $dbh = $self->dbh;
+
+    my $artifact;
+    if (defined $run_ord) {
+        # Run-scoped service: positional ($run_ord, $service_name).
+        $artifact = eval { $source->artifacts($run_ord, $name) };
+    }
+    else {
+        # Global service: positional ($service_name); falls back to
+        # hashref form when the source's artifacts() does not auto-detect.
+        $artifact = eval { $source->artifacts($name) }
+                 || eval { $source->artifacts({service => $name}) };
+    }
+    return unless $artifact;
+
+    my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
+    my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
+
+    # Make sure the service row exists (may have been skipped if the
+    # artifact loop didn't cover it -- though normally it does).
+    my $sid = $self->_ensure_service_row(name => $name, run_ord => $run_ord);
+
+    my %set;
+    $set{spec}   = $self->_encode_json_or_undef($spec)   if $spec;
+    $set{state}  = $self->_encode_json_or_undef($report) if $report;
+    $set{status} = (defined $report && defined $report->{ended_at}) ? 'completed' : 'running';
+
+    return $self->_update_row('services', \%set, {service_id => $sid});
+}
+
+sub _populate_job_rows {
+    my ($self, $source, $aid, $run_ord, $job_ord) = @_;
+    my $dbh = $self->dbh;
+
+    my @tries = $source->can('tries') ? $source->tries($run_ord, $job_ord) : ();
+    return unless @tries;
+
+    my $job_db_id;
+    my ($latest_try_ord, $latest_pass, $latest_status, $latest_file, $latest_spec_json);
+
+    for my $try_ord (@tries) {
+        my $artifact = eval { $source->artifacts($run_ord, $job_ord, $try_ord) } or next;
+        my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
+        my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
+
+        my $jtid = $self->_ensure_job_try_row($run_ord, $job_ord, $try_ord);
+        $job_db_id //= do {
+            my ($x) = $dbh->selectrow_array(
+                q{SELECT job_id FROM job_tries WHERE job_try_id = ?},
+                undef, $jtid,
+            );
+            $x;
+        };
+
+        my %set;
+        $set{started_at}   = $spec->{started_at}                          if $spec   && defined $spec->{started_at};
+        $set{ended_at}     = $report->{ended_at}                          if $report && defined $report->{ended_at};
+        $set{exit}         = $report->{exit}                              if $report && defined $report->{exit};
+        $set{exit_decoded} = $self->_encode_json_or_undef($report->{exit_decoded})
+            if $report && defined $report->{exit_decoded};
+        $set{pass}         = $report->{pass} ? 1 : 0                      if $report && exists  $report->{pass};
+        $set{spec}         = $self->_encode_json_or_undef($spec)          if $spec;
+        $set{state}        = $self->_encode_json_or_undef($report)        if $report;
+        $set{status}       = (defined $report && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+
+        $self->_update_row('job_tries', \%set, {job_try_id => $jtid});
+
+        # Track the highest-ord try's headlines for the parent jobs row.
+        if (!defined $latest_try_ord || $try_ord > $latest_try_ord) {
+            $latest_try_ord  = $try_ord;
+            $latest_pass     = $set{pass};
+            $latest_status   = $set{status};
+            my $tf = ref($spec) eq 'HASH' && ref($spec->{test_file}) eq 'HASH' ? $spec->{test_file} : undef;
+            $latest_file     = $tf ? ($tf->{relative} // $tf->{absolute} // $tf->{file}) : undef;
+            $latest_spec_json = $set{spec};
+        }
+
+        # Subtests: explode the per-try report's subtests array into
+        # rows. Idempotent across re-seal: the table is empty for a
+        # fresh DB, so straight INSERTs are fine. If a future caller
+        # re-runs insert() into an existing DB we'd want to clear the
+        # subtests for this job_try_id first; not in scope for the
+        # current single-pass writer.
+        if ($report && ref($report->{subtests}) eq 'ARRAY') {
+            my $sti = 0;
+            my $sth = $dbh->prepare(q{
+                INSERT INTO subtests (job_try_id, name, pass, count_pass, count_fail, ord)
+                VALUES (?, ?, ?, ?, ?, ?)
+            });
+            for my $st (@{$report->{subtests}}) {
+                next unless ref($st) eq 'HASH';
+                my $name = $st->{name} // '';
+                next unless length $name;
+                $sth->execute(
+                    $jtid, $name,
+                    $st->{pass} ? 1 : 0,
+                    $st->{count_pass},
+                    $st->{count_fail},
+                    $sti++,
+                );
+            }
+        }
+    }
+
+    return unless defined $job_db_id;
+
+    my %job_set;
+    $job_set{file}        = $latest_file       if defined $latest_file;
+    $job_set{pass}        = $latest_pass       if defined $latest_pass;
+    $job_set{status}      = $latest_status     if defined $latest_status;
+    $job_set{retry_count} = scalar @tries;
+    $job_set{spec}        = $latest_spec_json  if defined $latest_spec_json;
+
+    return $self->_update_row('jobs', \%job_set, {job_id => $job_db_id});
+}
+
+sub _update_row {
+    my ($self, $table, $set, $where) = @_;
+    return unless $set && %$set;
+
+    my @cols = sort keys %$set;
+    my @wcols = sort keys %$where;
+
+    # Quote reserved keywords (e.g. "exit").
+    my $q = sub {
+        my $c = shift;
+        return $c eq 'exit' ? '"exit"' : $c;
+    };
+
+    my $sql = "UPDATE $table SET "
+            . join(', ', map { $q->($_) . ' = ?' } @cols)
+            . ' WHERE '
+            . join(' AND ', map { $q->($_) . ' = ?' } @wcols);
+
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute(@$set{@cols}, @$where{@wcols});
+    return;
 }
 
 sub _normalize_run_filters {
