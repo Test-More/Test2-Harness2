@@ -1074,7 +1074,7 @@ sub archive {
     }
 
     require File::Temp;
-    my $tmp = File::Temp::tempdir(CLEANUP => 1, TEMPLATE => 'yath-tarzidx-rearch-XXXXXX', TMPDIR => 1);
+    my $tmp = File::Temp::tempdir(CLEANUP => 1, TEMPLATE => 'yath-tarzidx-XXXXXX', TMPDIR => 1);
     require File::Path;
     File::Path::remove_tree($tmp, {keep_root => 1});
     $self->extract(

@@ -1519,7 +1519,7 @@ sub archive {
 
     if ($format eq 'tar.zidx') {
         require File::Temp;
-        my $tmp = File::Temp::tempdir(CLEANUP => 1, TEMPLATE => 'yath-db-arch-XXXXXX', TMPDIR => 1);
+        my $tmp = File::Temp::tempdir(CLEANUP => 1, TEMPLATE => 'yath-db-XXXXXX', TMPDIR => 1);
         require File::Path;
         File::Path::remove_tree($tmp, {keep_root => 1});
         $self->extract($tmp, compressed => 0, runs => $runs, exclude_runs => $exclude_runs);
