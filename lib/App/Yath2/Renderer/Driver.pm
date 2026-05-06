@@ -64,7 +64,7 @@ sub run {
     # allow $grace seconds of quiescence before bailing out and
     # reporting an EOE bug. Sealed mode never polls -- the iterator is
     # walked synchronously and EOE flips true once the readers drain.
-    my $grace            = 10;
+    my $grace            = $args{grace} // 10;
     my $no_progress_deadline;
     my $last_event_at    = time;
     my $live_path        = (defined $logdir && length $logdir) ? "$logdir/LIVE" : undef;
