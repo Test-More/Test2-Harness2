@@ -231,7 +231,7 @@ sub _maybe_synthesize_lifecycle {
         my $info = $h->{job_info} // {};
         my $rid  = $info->{run_id} // $h->{run_id};
         my $jid  = $info->{job_id};
-        my $try  = $info->{job_try} // 0;
+        my $try  = $info->{job_try} // 1;
         return unless defined $rid && defined $jid;
 
         my $rs   = $run_states->{$rid} //= {jobs => {}};
@@ -257,7 +257,7 @@ sub _maybe_synthesize_lifecycle {
         my $info = $h->{job_info} // {};
         my $rid  = $info->{run_id} // $h->{run_id};
         my $jid  = $info->{job_id};
-        my $try  = $info->{job_try} // 0;
+        my $try  = $info->{job_try} // 1;
         return unless defined $rid && defined $jid;
 
         my $rs     = $run_states->{$rid} //= {jobs => {}};
@@ -359,7 +359,7 @@ sub _maybe_synthesize_lifecycle {
 # hash on lookup failure -- caller must be defensive.
 sub _job_spec {
     my ($log, $rid, $jid, $try, $rs) = @_;
-    $try //= 0;
+    $try //= 1;
     my $key = "$jid/$try";
     $rs->{jobs}{$key} //= {};
     return $rs->{jobs}{$key}{spec} if $rs->{jobs}{$key}{spec};
@@ -390,7 +390,7 @@ sub _job_spec {
 # Empty hash on lookup failure.
 sub _job_report {
     my ($log, $rid, $jid, $try, $rs) = @_;
-    $try //= 0;
+    $try //= 1;
     my $key = "$jid/$try";
     $rs->{jobs}{$key} //= {};
     return $rs->{jobs}{$key}{report} if $rs->{jobs}{$key}{report};
