@@ -237,12 +237,12 @@ sub collector {
     open(my $log, '>', $out_file) or die "Could not open '$out_file' for writing: $!";
     $log->autoflush(1);
 
-    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(job_id => 0, job_try => 0, run_id => 0, type => 'runner');
+    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(job_id => 1, job_try => 1, run_id => 1, type => 'runner');
     return $self->{+COLLECTOR} = Test2::Harness2::Collector->new(
         parser       => $parser,
-        job_id       => 0,
-        job_try      => 0,
-        run_id       => 0,
+        job_id       => 1,
+        job_try      => 1,
+        run_id       => 1,
         always_flush => 1,
         output       => sub {
             for my $e (@_) {

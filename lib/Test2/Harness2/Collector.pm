@@ -115,7 +115,7 @@ sub init {
     if ($type eq 'Job') {
         croak "'run_id' is required for type=Job"
             unless defined $self->{+RUN_ID};
-        $self->{+JOB_TRY} //= 0;
+        $self->{+JOB_TRY} //= 1;
     }
 
     croak "'logdir' is a required attribute"

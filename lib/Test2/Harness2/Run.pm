@@ -71,11 +71,11 @@ sub from_files {
     # caller-side default class.
     #
     # Job ids are sequential ordinal integers within a run, starting
-    # at 0. Each run owns its own counter (this run's `from_files`
+    # at 1. Each run owns its own counter (this run's `from_files`
     # allocates them top-down; further jobs added via `add_job` after
     # construction continue the sequence inside `add_job` itself).
     my @jobs;
-    my $next_job_id = 0;
+    my $next_job_id = 1;
     for my $input (@$files) {
         my $test_file = $class->_coerce_test_file($input);
         push @jobs => Test2::Harness2::Run::Job->new(

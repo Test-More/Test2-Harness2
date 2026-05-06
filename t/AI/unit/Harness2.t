@@ -218,7 +218,7 @@ subtest 'queue_test_run enqueues and returns run_id' => sub {
 
     my $res = $h->request_handler_queue_test_run({files => _tfs('t/a.t', 't/b.t')});
     ok($res->{ok}, 'accepted');
-    is($res->{run_id}, 0, 'first run gets ord 0');
+    is($res->{run_id}, 1, 'first run gets ord 1');
 
     my $status = $h->request_handler_status;
     is(scalar @{$status->{queue}},             1,              'one run queued');
@@ -226,7 +226,7 @@ subtest 'queue_test_run enqueues and returns run_id' => sub {
     is(scalar @{$status->{queue}[0]{pending}}, 2,              'two pending jobs');
 
     my $res2 = $h->request_handler_queue_test_run({files => _tfs('t/c.t')});
-    is($res2->{run_id}, 1, 'second run gets ord 1');
+    is($res2->{run_id}, 2, 'second run gets ord 2');
 };
 
 subtest 'queue_test_run rejects caller-supplied run_id (harness owns ord allocation)' => sub {
@@ -364,9 +364,9 @@ subtest 'run_on_all delegates job launch to the run service via IPC' => sub {
         $payload->{env}{T2_HARNESS_MY_JOB_CONCURRENCY}, 1,
         'JobCount concurrency env var propagated via the payload',
     );
-    is($payload->{run_id}, 0, 'run_id in payload');
-    is($payload->{job_id}, 0, 'job_id in payload');
-    is($payload->{job_try}, 0, 'job_try 0 in payload');
+    is($payload->{run_id}, 1, 'run_id in payload');
+    is($payload->{job_id}, 1, 'job_id in payload');
+    is($payload->{job_try}, 1, 'job_try 1 in payload');
 
     my @running = values %{$h->{running_jobs}};
     is(scalar @running,    1,     'one running job tracked');
@@ -500,7 +500,7 @@ subtest 'run_state_update to the last-done state emits run_ended' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
-    my $run = Test2::Harness2::Run->from_files(run_id => 0, files => _tfs('/abs/done.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/done.t'));
     push @{$h->{queue}} => $run;
     my ($job) = @{$run->jobs};
     my $rstate = $h->{run_states}{$run->run_id} = Test2::Harness2::Run::State->new(
@@ -551,7 +551,7 @@ subtest 'perform_hard_stop TERMs tracked pids and reaps them' => sub {
 
     my $fake_handle = bless {pid => $child_pid}, 'Test2::Harness2::Collector::Handle';
 
-    my $run    = Test2::Harness2::Run->from_files(run_id => 0, files => _tfs('dummy.t'));
+    my $run    = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('dummy.t'));
     my ($job)  = @{$run->jobs};
     my $job_id = $job->job_id;
     my $rstate = $h->{run_states}{$run->run_id} = Test2::Harness2::Run::State->new(
@@ -607,7 +607,7 @@ subtest 'run_on_general_message - job_complete_notify is a no-op' => sub {
         kind    => 'job_complete_notify',
         run_id  => 'r1',
         job_id  => 'j1',
-        job_try => 0,
+        job_try => 1,
     } };
 
     my @warnings;
@@ -824,7 +824,7 @@ subtest 'restart: healthy runtime resets the attempts counter' => sub {
 subtest 'harness spawns a run service lazily for each run it considers' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
-    my $run = Test2::Harness2::Run->from_files(run_id => 0, files => _tfs('x.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('x.t'));
     my $h   = Test2::Harness2->new(workdir => $dir);
     push @{$h->{queue}} => $run;
     $h->_scheduler_queue_run($run);
@@ -864,7 +864,7 @@ subtest 'harness spawns a run service lazily for each run it considers' => sub {
 
 subtest 'harness spawns a run service even when the run has no resources' => sub {
     my $dir = tempdir(CLEANUP => 1);
-    my $run = Test2::Harness2::Run->from_files(run_id => 0, files => _tfs('/abs/y.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/y.t'));
     my $h   = Test2::Harness2->new(workdir => $dir);
     $h->{ipcm_info} = {fake => 1};
     push @{$h->{queue}} => $run;
@@ -935,7 +935,7 @@ subtest 'per-run resources participate in _evaluate_resources_for' => sub {
 
 subtest 'run_on_cleanup signals run services for uncompleted runs' => sub {
     my $dir = tempdir(CLEANUP => 1);
-    my $run = Test2::Harness2::Run->from_files(run_id => 0, files => _tfs('never-runs.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('never-runs.t'));
 
     my $h = Test2::Harness2->new(workdir => $dir);
     push @{$h->{queue}} => $run;
@@ -1282,7 +1282,7 @@ subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
         resources => [Test2::Harness2::Resource::JobCount->new(slots => 1)],
     );
 
-    my $run    = Test2::Harness2::Run->from_files(run_id => 0, files => _tfs('/abs/orphan.t'));
+    my $run    = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/orphan.t'));
     my $job_id = $run->jobs->[0]->job_id;
     push @{$h->{queue}} => $run;
     my $rstate = $h->{run_states}{$run->run_id} = Test2::Harness2::Run::State->new(

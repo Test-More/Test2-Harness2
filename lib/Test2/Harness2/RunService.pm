@@ -187,7 +187,7 @@ sub request_handler_launch_job {
     }
 
     my $job_id   = $payload->{job_id};
-    my $job_try  = $payload->{job_try} // 0;
+    my $job_try  = $payload->{job_try} // 1;
     my $run_id   = $payload->{run_id}  // $self->{+RUN_ID};
     my $log_file = $payload->{log_file};
     my $env      = $payload->{env} // {};
@@ -873,7 +873,7 @@ sub _build_collector_report {
             }
         }
 
-        my $tries = defined($st->{job_try}) ? ($st->{job_try} + 1) : 1;
+        my $tries = defined($st->{job_try}) ? $st->{job_try} : 1;
 
         $jobs_by_id{$jid} = {
             job_id     => $jid,

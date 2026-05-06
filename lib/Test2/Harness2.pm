@@ -139,7 +139,7 @@ sub init {
     # harness-process; persistent runners reuse the same harness so
     # ords climb monotonically across runs in a session, with gaps
     # possible (e.g. accepted-then-purged runs).
-    $self->{+RUN_ORD_COUNTER}   //= 0;
+    $self->{+RUN_ORD_COUNTER}   //= 1;
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
     croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
@@ -1742,7 +1742,7 @@ sub _launch_job {
                 request   => 'launch_job',
                 run_id    => $run_id,
                 job_id    => $job_id,
-                job_try   => 0,
+                job_try   => 1,
                 test_file => $job->test_file_abs,
                 env       => \%env,
                 auditor   => $self->{+TEST_AUDITOR},

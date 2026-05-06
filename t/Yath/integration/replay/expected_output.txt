@@ -6,11 +6,11 @@
 ( PASSED )  job N    t/Yath/integration/replay/pass.tx
 ( FAILED )  job N    t/Yath/integration/replay/fail.tx
 The following jobs failed:
-+--------------------------------------+-----------------------------------+
-| Job ID                               | Test File                         |
-+--------------------------------------+-----------------------------------+
-| UUID-PLACEHOLDER | t/Yath/integration/replay/fail.tx |
-+--------------------------------------+-----------------------------------+
++--------+-----------------------------------+
+| Job ID | Test File                         |
++--------+-----------------------------------+
+| 2      | t/Yath/integration/replay/fail.tx |
++--------+-----------------------------------+
 Yath Result Summary
 Fail Count: 1
 File Count: 2

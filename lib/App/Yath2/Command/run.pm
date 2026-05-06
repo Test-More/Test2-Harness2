@@ -213,8 +213,8 @@ sub stop_plugins_and_renderers {
 
     $self->handle_event(Test2::Harness2::Event->new(
         run_id     => $settings->run->run_id,
-        job_id     => 0,
-        job_try    => 0,
+        job_id     => 1,
+        job_try    => 1,
         event_id   => gen_uuid(),
         stamp      => time,
         facet_data => {harness_final => $auditor->final_data},

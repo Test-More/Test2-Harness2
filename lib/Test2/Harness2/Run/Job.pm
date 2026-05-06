@@ -32,7 +32,7 @@ sub init {
     croak "'test_file' must consume Test2::Harness2::Role::TestFile, got " . (blessed($tf) ? "a " . ref($tf) : ref($tf) || "a non-ref")
         unless blessed($tf) && Role::Tiny::does_role($tf, 'Test2::Harness2::Role::TestFile');
 
-    $self->{+JOB_TRY} //= 0;
+    $self->{+JOB_TRY} //= 1;
 }
 
 sub test_file_abs { $_[0]->{+TEST_FILE}->absolute }
