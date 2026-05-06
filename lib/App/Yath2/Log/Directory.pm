@@ -730,6 +730,11 @@ sub archive {
 
     my ($runs, $exclude_runs) = $self->_normalize_run_filters(\%opts);
 
+    # Default: zstd-compress every artifact body. Pass compress=0 to
+    # store plaintext (greppable; bigger). The plaintext path
+    # decompresses any source .jsonl.zst on the way out.
+    my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
+
     if ($format eq 'sqlite') {
         require App::Yath2::Log::Sqlite;
         # Refuse to clobber an existing destination -- fresh file only.
@@ -741,6 +746,7 @@ sub archive {
             $self,
             runs         => $runs,
             exclude_runs => $exclude_runs,
+            compress     => $compress,
         );
         return $dest;
     }
@@ -765,6 +771,7 @@ sub archive {
             runs         => $runs,
             exclude_runs => $exclude_runs,
             extra_files  => { App::Yath2::Log->META_FILENAME() => $meta_bytes },
+            compress     => $compress,
         );
         return $arc;
     }

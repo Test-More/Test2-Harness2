@@ -1550,6 +1550,12 @@ sub insert {
 
     my ($runs, $exclude_runs) = $self->_normalize_run_filters(\%opts);
 
+    # compress=1 (default): store artifact payloads in their natural
+    # shape -- bytes that arrived zstd-shaped stay zstd, plaintext
+    # stays plaintext. compress=0: force every payload to plaintext;
+    # any source .zst is decompressed on the way in.
+    my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
+
     my $dbh = $self->dbh;
     $self->bootstrap_schema;
 
@@ -1629,19 +1635,21 @@ sub insert {
 
         my $raw = $source->_artifact_read($rel);
 
-        # Decide storage shape. We preserve the source's form so
-        # round-trips through the DB are byte-for-byte identical:
-        #
-        #   - Source .zst-shaped  -> store compressed=1, bytes verbatim.
-        #   - Source plain        -> store compressed=0, bytes verbatim.
-        #
-        # This matches Directory's "one path per file on disk"
-        # semantics exactly: the .zst path holds zst bytes, the plain
-        # path holds plain bytes. _payload_compressed_default still
-        # controls compression of save() callers who didn't pre-zstd
-        # their bytes.
-        my $stored_compressed = $src_is_zst ? 1 : 0;
-        my $stored_bytes      = $raw;
+        # Decide storage shape. Default ($compress=1): preserve the
+        # source's form so round-trips are byte-for-byte identical
+        # (.zst stays compressed, plain stays plain). $compress=0:
+        # force plaintext -- decompress source .zst on the way in.
+        my ($stored_compressed, $stored_bytes);
+        if ($compress) {
+            $stored_compressed = $src_is_zst ? 1 : 0;
+            $stored_bytes      = $raw;
+        }
+        else {
+            $stored_compressed = 0;
+            $stored_bytes      = $src_is_zst
+                ? $self->_decompress_jsonl_bytes($raw)
+                : $raw;
+        }
 
         my $artifact_uuid = gen_uuid();
         my $now = $self->_now_iso;
@@ -1667,14 +1675,18 @@ sub insert {
         $sth->execute;
     }
 
-    # Drop a fresh meta.json into the archive-root scope. compress=>0
-    # (small, JSON-readable). save() takes the dispatcher path through
-    # _artifact_save which inserts a new artifact row; archive_root
-    # scope is encoded as all three FK columns NULL.
+    # Drop a fresh meta.json into the archive-root scope. Compression
+    # follows the caller's compress flag so the whole archive is
+    # consistent: every body zstd-shaped, or every body plaintext.
+    # `yath extract` decompresses by default, so users see plaintext
+    # meta.json in extracted dirs either way. save() takes the
+    # dispatcher path through _artifact_save which inserts a new
+    # artifact row; archive_root scope is encoded as all three FK
+    # columns NULL.
     $self->artifacts->save(
         App::Yath2::Log->META_FILENAME,
         $meta_bytes,
-        compress => 0,
+        compress => $compress,
     );
 
     return $aid;

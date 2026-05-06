@@ -118,7 +118,18 @@ sub run {
     my $final_pass = ($ipc_pass && $log_pass) ? 1 : 0;
 
     my $archive = $self->_resolve_archive_path;
-    App::Yath2::Log->open(dir => $logdir)->archive($archive);
+    my $format  = lc($settings->log->format // 'tar');
+    $format = 'tar.zidx' if $format eq 'tar';
+    die "unknown log archive format '$format' (use 'tar' or 'sqlite')\n"
+        unless $format eq 'tar.zidx' || $format eq 'sqlite';
+
+    my $compress = $settings->log->compress ? 1 : 0;
+
+    App::Yath2::Log->open(dir => $logdir)->archive(
+        $archive,
+        format   => $format,
+        compress => $compress,
+    );
     print "Wrote archive: $archive\n";
     App::Yath2::Log->update_last_log_symlink($archive);
 

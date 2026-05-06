@@ -26,6 +26,20 @@ option_group {group => 'log', category => 'Log Options'} => sub {
         short       => 'F',
         description => 'Write the log archive to this exact path. Wins over --log-dir; the path is used verbatim, no extension is appended.',
     );
+
+    option format => (
+        prefix      => 'log',
+        type        => 'Scalar',
+        default     => 'tar',
+        description => "Archive format. 'tar' (the default) writes a tar.zidx; 'sqlite' writes a SQLite-backed archive (single-archive container).",
+    );
+
+    option compress => (
+        prefix      => 'log',
+        type        => 'Bool',
+        default     => 1,
+        description => "Compress artifact bytes inside the archive with zstd (default: enabled). Disable with --no-log-compress to write plaintext payloads -- larger on disk but trivially greppable. Applies to both tar and sqlite formats.",
+    );
 };
 
 1;

@@ -525,21 +525,29 @@ sub _artifact_exists {
     # Direct hit (matches the source path the writer used).
     if (my $entry = $idx->{$rel}) {
         return (0, 0) if ($entry->{kind} // 'file') eq 'dir';
-        # When the source was plaintext (inner=zstd) the stored bytes
-        # are zstd-wrapped and the caller asked for a non-.zst path.
-        # When the source was already .zst, the index key carries
-        # .zst already.
-        my $is_zst = $rel =~ /\.zst\z/ ? 1 : 0;
+        my $inner = $entry->{inner} // 'zstd';
+        # is_zst from the reader's perspective = "do the bytes
+        # _artifact_read returns end up zstd-shaped?". inner='plain'
+        # means stored is plaintext, so always 0. inner='none' means
+        # stored is the source's .zst bytes verbatim, so 1. inner='zstd'
+        # means stored is zstd-wrapped plaintext: 1 only when caller
+        # asked for the .zst variant.
+        my $is_zst;
+        if    ($inner eq 'plain') { $is_zst = 0 }
+        elsif ($inner eq 'none')  { $is_zst = 1 }
+        else                      { $is_zst = $rel =~ /\.zst\z/ ? 1 : 0 }
         return (1, $is_zst);
     }
 
-    # Caller probed the .zst variant of a plaintext source. The
-    # source path was 'foo.jsonl' but the stored bytes are .zst-shaped.
+    # Caller probed the .zst variant. Strip and look up the bare key.
     if ($rel =~ /\.zst\z/) {
         (my $stripped = $rel) =~ s/\.zst\z//;
         if (my $entry = $idx->{$stripped}) {
             return (0, 0) if ($entry->{kind} // 'file') eq 'dir';
-            # The on-archive bytes are zstd-wrapped (inner=zstd).
+            my $inner = $entry->{inner} // 'zstd';
+            # inner='plain': stored is plaintext, no .zst variant exists.
+            return (0, 0) if $inner eq 'plain';
+            # Otherwise the stored bytes are zstd-wrapped (inner=zstd).
             return (1, 1);
         }
     }
@@ -577,22 +585,20 @@ sub _artifact_read {
 
     my $caller_wants_zst = $rel =~ /\.zst\z/ ? 1 : 0;
     if ($caller_wants_zst) {
-        # Caller asked for .zst-shaped bytes. If inner=zstd the stored
-        # bytes already are .zst-shaped (compressed plaintext). If
-        # inner=none the source was already .zst -- bytes are .zst
-        # shaped too. Either way: return verbatim.
+        # Caller asked for .zst-shaped bytes. inner=zstd / inner=none
+        # both mean stored is already zstd-shaped (compressed plaintext
+        # or untouched .zst source). inner=plain means stored is
+        # plaintext: have to compress on-the-fly to satisfy the request.
+        return $self->zstd_compress($stored) if $inner eq 'plain';
         return $stored;
     }
 
     # Caller asked for the non-.zst path.
+    return $stored if $inner eq 'plain';
     if ($inner eq 'none') {
-        # The source was already .zst; the index key the caller hit
-        # carries no .zst suffix only when... it doesn't (inner=none
-        # implies source had .zst suffix and the index key keeps it).
-        # So this branch can only happen if the caller asked for a
-        # path that does not have .zst, but the index hit had .zst:
-        # that would not have hit $idx->{$rel} above. Defensive return.
-        return $stored;
+        # Source was already .zst, stored verbatim; bytes are
+        # zstd-shaped (multi-frame in jsonl case). Decompress.
+        return $self->_decompress_jsonl_bytes($stored);
     }
 
     # inner=zstd, caller wants plaintext: decompress.
@@ -646,7 +652,11 @@ sub _artifact_iter_records {
     my ($stored, $inner) = $self->_read_stored_bytes($hit_rel);
 
     my $plain;
-    if ($inner eq 'none') {
+    if ($inner eq 'plain') {
+        # Stored verbatim as plaintext (compress=0 archive).
+        $plain = $stored;
+    }
+    elsif ($inner eq 'none') {
         # Already-.zst source: the source bytes are themselves a
         # multi-frame zstd stream (one record per frame).
         $plain = $self->_decompress_jsonl_bytes($stored);
@@ -988,15 +998,17 @@ sub extract {
 
         my $payload;
         if ($compressed) {
-            # Caller wants the verbatim-suffixed bytes. If the
-            # archive entry was zstd-wrapped (inner='zstd'), the
-            # bytes already are .zst-shaped; emit them as-is. If
-            # the entry was stored verbatim (inner='none'), the
-            # source was already .zst -- still verbatim.
-            $payload = $stored;
+            # Caller wants the verbatim-suffixed bytes. inner='zstd'
+            # and inner='none' both mean stored is already zstd-shaped.
+            # inner='plain' (compress=0 archive) means stored is
+            # plaintext; compress on the way out so the extracted
+            # *.zst file holds zstd bytes as expected.
+            $payload = $inner eq 'plain' ? $self->zstd_compress($stored) : $stored;
         }
         else {
-            $payload = $inner eq 'none' ? $stored : $self->zstd_decompress($stored);
+            $payload = ($inner eq 'none' || $inner eq 'plain')
+                ? $stored
+                : $self->zstd_decompress($stored);
 
             # When the original source was already .zst (inner=='none')
             # and the caller asked for plaintext, the file extension
@@ -1092,6 +1104,11 @@ sub _write_from_directory {
     my $exclude_runs = $opts{exclude_runs};
     croak "'runs' and 'exclude_runs' are mutually exclusive"
         if defined $runs && defined $exclude_runs;
+
+    # compress=1 (default): wrap non-zst bodies in zstd, store .zst
+    # bodies verbatim. compress=0: never zstd anything; decompress
+    # any source .zst on the way out so the archive carries plaintext.
+    my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
 
     my $include_run = sub {
         my ($rel) = @_;
@@ -1202,14 +1219,27 @@ sub _write_from_directory {
             $raw = $src;    # inline bytes, already in-memory
         }
 
-        # Already-zstd-compressed source files (the loggers'
-        # .json.zst / .jsonl.zst) are stored verbatim with
-        # inner=>'none'. Everything else is wrapped in an inner
-        # zstd frame and recorded as inner=>'zstd', matching the
-        # historical default.
+        # Default (compress=1): already-zstd-compressed source files
+        # (the loggers' .json.zst / .jsonl.zst) are stored verbatim
+        # with inner=>'none'; everything else is wrapped in an inner
+        # zstd frame and recorded as inner=>'zstd'.
+        # compress=0: store every body plaintext, decompressing source
+        # .zst inputs first; rel/stored never carry the .zst suffix.
         my $is_zst = ($rel =~ /\.zst\z/);
         my ($payload, $stored, $inner);
-        if ($is_zst) {
+        if (!$compress) {
+            $payload = $is_zst ? $self->_decompress_jsonl_bytes($raw) : $raw;
+            ($stored = $rel) =~ s/\.zst\z//;
+            # 'plain' = stored bytes are plaintext (not zstd-wrapped).
+            # Distinct from 'none' which means "stored bytes are the
+            # source's already-zstd-compressed form, untouched".
+            $inner = 'plain';
+            # Rewrite the logical key in the index so readers ask
+            # for "events.jsonl" not "events.jsonl.zst" when looking
+            # up entries.
+            $rel = $stored;
+        }
+        elsif ($is_zst) {
             $payload = $raw;
             $stored  = $rel;
             $inner   = 'none';

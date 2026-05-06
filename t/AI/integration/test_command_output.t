@@ -73,9 +73,11 @@ sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
 
 package Fake::Log2;
-sub new  { bless {}, $_[0] }
-sub file { undef }
-sub dir  { undef }
+sub new    { bless {}, $_[0] }
+sub file   { undef }
+sub dir    { undef }
+sub format   { 'tar' }
+sub compress { 1 }
 
 package Fake::Settings2;
 
