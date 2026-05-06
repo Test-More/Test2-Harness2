@@ -13,14 +13,9 @@ use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
 use Getopt::Yath;
 include_options('App::Yath2::Options::Yath');
+include_options('App::Yath2::Options::Log');
 
 option_group {group => 'archive', category => 'Archive Options'} => sub {
-    option format => (
-        type        => 'Scalar',
-        default     => 'tar',
-        description => "Archive format. 'tar' (the default) writes a tar.zidx; 'sqlite' writes a SQLite database (M2 step 14, not yet implemented).",
-    );
-
     option run => (
         type        => 'List',
         alt         => ['runs'],
@@ -57,8 +52,11 @@ explicit path that points at it.
 
 The default archive format is tar.zidx (a USTAR-format tar with
 per-file zstd compression and a trailing index for random-access
-reads). Pass --format=sqlite to write a SQLite-backed archive
-instead (not yet implemented).
+reads). Pass --log-format=sqlite to write a SQLite-backed archive
+instead.
+
+Use --no-log-compress to skip zstd compression and write plaintext
+payloads (larger on disk but trivially greppable).
     EOT
 }
 
@@ -90,10 +88,12 @@ sub run {
 
     die "extra arguments after archive filename\n" if @$args;
 
-    my $format = lc($settings->archive->format // 'tar');
+    my $format = lc($settings->log->format // 'tar');
     $format = 'tar.zidx' if $format eq 'tar';
     die "unknown archive format '$format' (use 'tar' or 'sqlite')\n"
         unless $format eq 'tar.zidx' || $format eq 'sqlite';
+
+    my $compress = $settings->log->compress ? 1 : 0;
 
     my $runs    = $settings->archive->run;
     my $exclude = $settings->archive->exclude_run;
@@ -108,7 +108,8 @@ sub run {
 
     App::Yath2::Log->new(dir => $logdir)->archive(
         $archive,
-        format => $format,
+        format   => $format,
+        compress => $compress,
         %scope,
     );
 

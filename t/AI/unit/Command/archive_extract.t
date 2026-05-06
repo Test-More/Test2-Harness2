@@ -26,9 +26,12 @@ sub run           { [] }
 sub exclude_run   { [] }
 package Fake::Archive;
 sub new         { bless {}, $_[0] }
-sub format      { 'tar' }
 sub run         { [] }
 sub exclude_run { [] }
+package Fake::Log;
+sub new      { bless {}, $_[0] }
+sub format   { 'tar' }
+sub compress { 1 }
 package Fake::Settings;
 sub new {
     my ($class, %p) = @_;
@@ -36,11 +39,13 @@ sub new {
         yath    => Fake::Yath->new($p{cwd} // '/tmp/no-such-cwd'),
         extract => Fake::Extract->new,
         archive => Fake::Archive->new,
+        log     => Fake::Log->new,
     }, $class;
 }
 sub yath    { $_[0]->{yath} }
 sub extract { $_[0]->{extract} }
 sub archive { $_[0]->{archive} }
+sub log     { $_[0]->{log} }
 package main;
 
 # Build a logdir-shaped tree the archive command can serialise. The
