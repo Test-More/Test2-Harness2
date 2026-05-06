@@ -15,7 +15,6 @@ use Object::HashBase qw{
 use Carp qw/croak/;
 
 use App::Yath2::Log();
-use App::Yath2::Util::Log qw//;
 use App::Yath2::Renderer::Driver();
 
 use Getopt::Yath;
@@ -72,7 +71,7 @@ sub run {
 
     die "extra arguments after LOG\n" if @$args;
 
-    my $log = App::Yath2::Util::Log::open_log($path);
+    my $log = App::Yath2::Log->new(auto => $path);
 
     my $exit = App::Yath2::Renderer::Driver->run(
         log      => $log,

@@ -42,6 +42,28 @@ use Test2::Harness2::Util::JSON qw/encode_json/;
 sub new {
     my ($class, %args) = @_;
 
+    # Auto-detect backend from a single filesystem path: directory
+    # routes to Directory backend; regular file gets type detection
+    # by magic bytes (tar.zidx vs sqlite). Provided so callers that
+    # accept "an arbitrary log path" don't have to dispatch on
+    # -d/-f themselves.
+    if (defined $args{auto}) {
+        croak "auto + live / dir / file / dbh / dsn are mutually exclusive"
+            if defined $args{live} || defined $args{dir} || defined $args{file}
+            || defined $args{dbh}  || defined $args{dsn};
+
+        my $path = delete $args{auto};
+        croak "auto path must be non-empty" unless length $path;
+        croak "auto path '$path' does not exist" unless -e $path;
+        if (-d $path) {
+            return $class->new(dir => $path, %args);
+        }
+        if (-f $path) {
+            return $class->new(file => $path, %args);
+        }
+        croak "auto path '$path' is not a regular file or directory";
+    }
+
     # Live directory backend.
     if (defined $args{live}) {
         croak "live + dir / file / dbh / dsn are mutually exclusive"

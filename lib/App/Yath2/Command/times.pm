@@ -9,7 +9,6 @@ use Carp qw/croak/;
 use Test2::Util::Times qw/render_duration/;
 
 use App::Yath2::Log();
-use App::Yath2::Util::Log qw//;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -88,7 +87,7 @@ sub run {
     }
     $self->{+FIELDS} = \@fields;
 
-    my $log = App::Yath2::Util::Log::open_log($path);
+    my $log = App::Yath2::Log->new(auto => $path);
 
     my @runs = $log->runs;
     die "No runs found in '$path'\n" unless @runs;
