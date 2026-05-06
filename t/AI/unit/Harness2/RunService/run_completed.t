@@ -19,14 +19,44 @@ use Test2::Harness2::TestFile;
     sub content { $_[0]->{body} }
 }
 
+{
+    package Test::CapturingEmitter;
+    sub new {
+        my ($c, $store) = @_;
+        bless {store => $store}, $c;
+    }
+
+    sub emit_event {
+        my ($self, %fields) = @_;
+        push @{$self->{store}}, \%fields;
+        return 'fake-sync';
+    }
+
+    # emit_run_completed uses emit_raw so collector_report can sit at
+    # the top of facet_data (not nested under harness, per F4=A).
+    # Flatten both forms so subtests see a uniform hash.
+    sub emit_raw {
+        my ($self, $event) = @_;
+        my $fd = ref($event) eq 'HASH' ? $event->{facet_data} : undef;
+        my %flat;
+        if (ref($fd) eq 'HASH') {
+            for my $fk (keys %$fd) {
+                if ($fk eq 'harness' && ref($fd->{$fk}) eq 'HASH') {
+                    %flat = (%flat, %{$fd->{$fk}});
+                }
+                else {
+                    $flat{$fk} = $fd->{$fk};
+                }
+            }
+        }
+        push @{$self->{store}}, \%flat;
+        return 'fake-sync';
+    }
+}
+
 sub _capturing_emitter {
     my ($store) = @_;
-    no warnings 'redefine';
-    *Test2::Harness2::Util::EventEmitter::emit_event = sub {
-        my ($self, %fields) = @_;
-        push @$store, \%fields;
-        return 'fake-sync';
-    };
+    return Test::CapturingEmitter->new($store);
 }
 
 subtest 'run_completed + collector_report aggregate' => sub {
@@ -53,10 +83,7 @@ subtest 'run_completed + collector_report aggregate' => sub {
     my $svc = Test2::Harness2::RunService->new(workdir => $dir, run => $run);
 
     my @emitted;
-    _capturing_emitter(\@emitted);
-
-    $svc->{Test2::Harness2::RunService::EMITTER()}
-        = bless {}, 'Test2::Harness2::Util::EventEmitter';
+    $svc->{Test2::Harness2::RunService::EMITTER()} = _capturing_emitter(\@emitted);
 
     # Pretend we saw the start.
     $svc->{Test2::Harness2::RunService::STARTED_AT()} = 1714875000.0;
@@ -68,7 +95,7 @@ subtest 'run_completed + collector_report aggregate' => sub {
         kind    => 'test_job_completed',
         run_id  => 'r-done',
         job_id  => 'job-a',
-        job_try => 0,
+        job_try => 1,
         pass    => 1,
         pass_count => 5,
         fail_count => 0,
@@ -84,7 +111,7 @@ subtest 'run_completed + collector_report aggregate' => sub {
         kind    => 'test_job_completed',
         run_id  => 'r-done',
         job_id  => 'job-b',
-        job_try => 1,
+        job_try => 2,
         pass    => 0,
         pass_count => 4,
         fail_count => 2,
@@ -134,7 +161,7 @@ subtest 'run_completed + collector_report aggregate' => sub {
 
     is($report->{jobs}[1]{job_id}, 'job-b', 'job-b second');
     is($report->{jobs}[1]{pass},   0,       'job-b failed');
-    is($report->{jobs}[1]{tries},  2,       'job-b two tries (try=1 -> tries=2)');
+    is($report->{jobs}[1]{tries},  2,       'job-b two tries (try=2 -> tries=2)');
     is(scalar @{$report->{jobs}[1]{subtests}}, 1, 'job-b 1 subtest');
     is($report->{jobs}[1]{subtests}[0]{pass}, 0, 'job-b subtest failed');
 
@@ -155,16 +182,13 @@ subtest 'pass=1 when every job passes' => sub {
     my $svc = Test2::Harness2::RunService->new(workdir => $dir, run => $run);
 
     my @emitted;
-    _capturing_emitter(\@emitted);
-
-    $svc->{Test2::Harness2::RunService::EMITTER()}
-        = bless {}, 'Test2::Harness2::Util::EventEmitter';
+    $svc->{Test2::Harness2::RunService::EMITTER()} = _capturing_emitter(\@emitted);
 
     $svc->run_on_general_message(Test::RunSvc::FakeMsg->new({
         kind    => 'test_job_completed',
         run_id  => 'r-pass',
         job_id  => 'j',
-        job_try => 0,
+        job_try => 1,
         pass    => 1,
         pass_count => 1,
         fail_count => 0,

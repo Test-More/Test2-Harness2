@@ -78,6 +78,7 @@ use Object::HashBase qw{
     +_report_writer
     +_state
     +_pending_collector_report
+    +_pending_exit_timing
     +_attachment_counter
     +_attachment_dir_made
 
@@ -842,6 +843,17 @@ sub _finalize_collection {
             $px->{child_wall} = $end_stamp - $cs;
         }
 
+        # Stash for _write_report_row so the per-job report.jsonl.zst
+        # carries the timing breakdown (times / child_times / child_wall).
+        # Renderers used to read these out of the run service's run_mutation
+        # snapshot; that channel is gone, so the artifact is now the
+        # canonical home.
+        $self->{+_PENDING_EXIT_TIMING} = {
+            (defined $px->{times}       ? (times       => $px->{times})       : ()),
+            (defined $px->{child_times} ? (child_times => $px->{child_times}) : ()),
+            (defined $px->{child_wall}  ? (child_wall  => $px->{child_wall})  : ()),
+        };
+
         my $exit_event = Test2::Harness2::Event->new(
             facet_data => {
                 harness_process_exit => $px,
@@ -926,6 +938,14 @@ sub _write_report_row {
     $row{ended_at} = time;
     $row{collector_pid} = $$;
     $row{collected_pid} = $self->{+CHILD_PID} if defined $self->{+CHILD_PID};
+
+    # Timing breakdown captured at child reap. Renderers used to read
+    # times / child_times / child_wall out of the run service's
+    # run_mutation snapshot; the per-job report.jsonl.zst is now their
+    # canonical home.
+    if (my $timing = $self->{+_PENDING_EXIT_TIMING}) {
+        $row{$_} = $timing->{$_} for keys %$timing;
+    }
 
     require Test2::Harness2::Util::JSON;
     $w->say(Test2::Harness2::Util::JSON::encode_json(\%row));

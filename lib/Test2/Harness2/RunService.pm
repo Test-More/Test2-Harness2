@@ -220,6 +220,16 @@ sub request_handler_launch_job {
 
     my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
 
+    # queued_at is recorded once per job at run service init in
+    # _seed_run_state. Pull it back out here so the per-job
+    # spec.jsonl artifact carries the queue-time stamp -- renderers
+    # use it instead of the (now-retired) run_mutation snapshot.
+    my $queued_at;
+    if (my $rs = $self->{+RUN_STATE}) {
+        my $r = $rs->results->{$job_id};
+        $queued_at = $r->{queued_at} if $r && defined $r->{queued_at};
+    }
+
     my $handle;
     my $spawn_ok = eval {
         $handle = Test2::Harness2::Collector->spawn(
@@ -242,6 +252,7 @@ sub request_handler_launch_job {
                 run_id    => $run_id,
                 job_id    => $job_id,
                 job_try   => $job_try,
+                (defined $queued_at ? (queued_at => $queued_at) : ()),
             },
             (defined $auditor ? (auditor => $auditor) : ()),
         );
@@ -338,19 +349,27 @@ sub service_on_start {
     # through Run::State.
     $self->{+STARTED_AT} //= time;
 
-    # Emit run_queued so the JSON logger writes the immutable Run
-    # spec to runs/<run_id>/spec.json.zst. Sent before run_mutation
-    # so the spec is on disk by the time any state-consumer wakes
-    # up; the spec is queue-time-frozen and never changes after.
+    # Skinny run-level transition events. Renderers consume these
+    # plus per-job spec.jsonl / report.jsonl artifacts; the bulky
+    # full-snapshot run_mutation event was retired (it shipped a
+    # complete results map on every state change, growing O(N^2)
+    # with job count). Authoritative state mirroring still flows
+    # to the harness via the run_state_update IPC channel below.
+    my @job_ids = map { $_->job_id } @{$self->{+RUN}->jobs};
     $self->_emit_run_log_event(
-        kind     => 'run_queued',
-        run_data => $self->{+RUN}->TO_JSON,
+        kind       => 'run_queued',
+        queued_at  => $self->{+RUN}->created_at,
+        total_jobs => scalar(@job_ids),
+        job_ids    => \@job_ids,
+    );
+    $self->_emit_run_log_event(
+        kind       => 'run_started',
+        started_at => $self->{+STARTED_AT},
     );
 
-    # Emit an initial run_mutation so the JSON logger lands a file
-    # immediately, even for a run that never mutates during its
-    # lifetime (e.g. all jobs skipped due to broken resources).
-    $self->_broadcast_run_state;
+    # Authoritative full-snapshot mirror to the harness. IPC only;
+    # nothing on disk.
+    $self->_send_run_state_to_harness;
 
     # Bring up the run's resource services. The harness has already
     # validated the resource set (needed + non-permanent) before
@@ -510,6 +529,7 @@ sub _handle_gen_msg_test_job_started {
 
     $self->_emit_run_log_event(
         kind     => 'job_started',
+        stamp    => $started_at,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $job_id,
@@ -517,7 +537,7 @@ sub _handle_gen_msg_test_job_started {
         },
     );
 
-    $self->_broadcast_run_state;
+    $self->_send_run_state_to_harness;
     return;
 }
 
@@ -526,6 +546,7 @@ sub _handle_gen_msg_test_job_diagnosing {
 
     $self->_emit_run_log_event(
         kind     => 'job_diagnosing',
+        stamp    => time,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $content->{job_id},
@@ -540,6 +561,7 @@ sub _handle_gen_msg_test_job_failing {
 
     $self->_emit_run_log_event(
         kind     => 'job_failing',
+        stamp    => time,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $content->{job_id},
@@ -679,21 +701,21 @@ sub _handle_gen_msg_test_job_completed {
     my $err = $@;
     warn "run service could not mark job '$job_id' done: $err" unless $ok;
 
+    # Skinny completion event: just enough for the renderer to flip
+    # state. Detailed timing / counts / exit_decoded live in the per-
+    # job report.jsonl artifact; renderers fetch on demand.
     $self->_emit_run_log_event(
         kind     => 'job_completed',
+        stamp    => $content->{completed_at} // time,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $job_id,
             job_try => $content->{job_try},
         },
-        exit       => $content->{exit},
-        codes      => $content->{codes},
-        pass       => $content->{pass},
-        pass_count => $content->{pass_count},
-        fail_count => $content->{fail_count},
+        pass => $content->{pass},
     );
 
-    $self->_broadcast_run_state;
+    $self->_send_run_state_to_harness;
     return;
 }
 
@@ -718,27 +740,20 @@ sub _emit_run_log_event {
     return;
 }
 
-# After any mutation to the Run::State: fire a run_mutation event onto
-# the run's own emitter (so the JSON logger will overwrite its snapshot)
-# and send a run_state_update IPC to the harness carrying the full
-# State->TO_JSON payload so the harness's mirror stays in sync.
-#
-# Full snapshots, not diffs. Simpler, and the payloads are small
-# enough that per-mutation replay is not a concern.
-sub _broadcast_run_state {
+# Send a run_state_update IPC to the harness with the full
+# State->TO_JSON snapshot so the harness's mirror stays authoritative.
+# IPC only -- the on-disk run-events stream carries skinny transition
+# events instead (run_queued / run_started / job_started /
+# job_completed / run_failing / run_completed). Renderers reconstruct
+# whatever per-job detail they need from spec.jsonl / report.jsonl
+# artifacts.
+sub _send_run_state_to_harness {
     my $self = shift;
-
-    my $snap = $self->{+RUN_STATE}->TO_JSON;
-
-    $self->_emit_run_log_event(
-        kind     => 'run_mutation',
-        run_data => $snap,
-    );
 
     $self->_send_to_harness({
         kind     => 'run_state_update',
         run_id   => $self->{+RUN_ID},
-        run_data => $snap,
+        run_data => $self->{+RUN_STATE}->TO_JSON,
     });
 
     return;
@@ -793,10 +808,9 @@ sub run_on_cleanup {
     $self->{+RUN_STATE}->mark_finished;
     $self->{+ENDED_AT} //= time;
 
-    # Final run_mutation so the JSON logger's cached snapshot
-    # reflects the run's terminal state before the collector shuts
-    # down and writes the sidecar file.
-    $self->_broadcast_run_state;
+    # Final run_state_update IPC so the harness mirror sees the
+    # terminal state before run_completed lands.
+    $self->_send_run_state_to_harness;
 
     # Emit the terminal run_completed + collector_report event. The
     # run collector picks up the collector_report facet via its
@@ -818,16 +832,26 @@ sub emit_run_completed {
 
     my $em = $self->{+EMITTER} or return;
 
-    my $now      = time;
-    my $report   = $self->_build_collector_report($now);
+    my $now    = time;
+    my $report = $self->_build_collector_report($now);
 
-    $em->emit_event(
-        run_completed => {
-            run_id => $self->{+RUN_ID},
-            stamp  => $now,
+    # Two-facet event per F4=A: harness.run_completed (state-flip
+    # announcement) + top-level collector_report (data the run
+    # collector merges into report.jsonl.zst via _capture_collector_report).
+    # emit_raw -- not emit_event -- so collector_report lands at the
+    # top of facet_data, not nested under harness.
+    $em->emit_raw({
+        facet_data => {
+            harness => {
+                run_id        => $self->{+RUN_ID},
+                run_completed => {
+                    run_id => $self->{+RUN_ID},
+                    stamp  => $now,
+                },
+            },
+            collector_report => $report,
         },
-        collector_report => $report,
-    );
+    });
 
     return;
 }

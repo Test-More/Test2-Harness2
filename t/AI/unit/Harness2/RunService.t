@@ -260,10 +260,11 @@ subtest 'aggregation: test_job_started marks running and broadcasts' => sub {
     is($run_state[0]{run_data}{running}, [$jid], 'snapshot carries running list');
 
     my @muts = grep { $_->{kind} eq 'run_mutation' } @emits;
-    is(scalar @muts, 1, 'exactly one run_mutation event emitted');
+    is(scalar @muts, 0, 'no run_mutation event emitted (channel retired post-refactor; full snapshot now IPC-only)');
 
     my @starts = grep { $_->{kind} eq 'job_started' } @emits;
     is(scalar @starts, 1, 'job_started lifecycle event emitted');
+    ok(defined $starts[0]{stamp}, 'job_started event carries explicit stamp');
 };
 
 subtest 'aggregation: test_job_completed is idempotent (observer + watchdog race)' => sub {
