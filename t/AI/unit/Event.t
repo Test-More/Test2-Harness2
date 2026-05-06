@@ -31,20 +31,16 @@ subtest 'identifier accessors read canonical homes' => sub {
     my $event = Test2::Harness2::Event->new(
         facet_data => {
             harness => {
-                run_id       => 'r1',
-                job_id       => 'j1',
-                job_try      => 2,
-                stream_id    => 17,
-                assert_count => 5,
+                run_id  => 'r1',
+                job_id  => 'j1',
+                job_try => 2,
             },
         },
     );
 
-    is($event->run_id,       'r1', "run_id from harness facet");
-    is($event->job_id,       'j1', "job_id from harness facet");
-    is($event->job_try,      2,    "job_try from harness facet");
-    is($event->stream_id,    17,   "stream_id from harness facet");
-    is($event->assert_count, 5,    "assert_count from harness facet");
+    is($event->run_id,  'r1', "run_id from harness facet");
+    is($event->job_id,  'j1', "job_id from harness facet");
+    is($event->job_try, 2,    "job_try from harness facet");
 };
 
 subtest 'TO_JSON strips empty facets' => sub {

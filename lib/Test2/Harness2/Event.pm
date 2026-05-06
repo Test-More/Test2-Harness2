@@ -40,25 +40,16 @@ sub clear_compressed_form {
 #
 # event_id is intentionally a stub returning undef: the field is no
 # longer generated anywhere on the live-write path. Callers that needed
-# it must update to a different identifier (stream_id for ordering
-# within a single emitter, or a derived path-aware key the Log iterator
-# injects on read).
+# it must use a derived path-aware key the Log iterator injects on read.
 
 sub event_id { undef }
 
-sub stamp     { my $f = $_[0]->{+FACET_DATA}; $f && $f->{trace}   ? $f->{trace}->{stamp} : undef }
-sub pid       { my $f = $_[0]->{+FACET_DATA}; $f && $f->{trace}   ? $f->{trace}->{pid}   : undef }
-sub tid       { my $f = $_[0]->{+FACET_DATA}; $f && $f->{trace}   ? $f->{trace}->{tid}   : undef }
-sub run_id    { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{run_id}    : undef }
-sub job_id    { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{job_id}    : undef }
-sub job_try   { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{job_try}   : undef }
-sub stream_id { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{stream_id} : undef }
-
-sub assert_count {
-    my $f = $_[0]->{+FACET_DATA};
-    return undef unless $f && $f->{harness};
-    return $f->{harness}->{assert_count};
-}
+sub stamp   { my $f = $_[0]->{+FACET_DATA}; $f && $f->{trace}   ? $f->{trace}->{stamp}   : undef }
+sub pid     { my $f = $_[0]->{+FACET_DATA}; $f && $f->{trace}   ? $f->{trace}->{pid}     : undef }
+sub tid     { my $f = $_[0]->{+FACET_DATA}; $f && $f->{trace}   ? $f->{trace}->{tid}     : undef }
+sub run_id  { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{run_id}  : undef }
+sub job_id  { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{job_id}  : undef }
+sub job_try { my $f = $_[0]->{+FACET_DATA}; $f && $f->{harness} ? $f->{harness}->{job_try} : undef }
 
 sub TO_JSON {
     my $out = {%{$_[0]}};

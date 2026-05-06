@@ -186,7 +186,7 @@ sub render_event {
         # Ignore subtests
         return if ( $f->{'hubs'} && $f->{'hubs'}->[0]->{'nested'} );
 
-        my $test_num    = $event->{'assert_count'} || $f->{'assert'}->{'number'};
+        my $test_num    = $f->{'assert'}->{'number'};
         $test_num = sprintf "%04d", $test_num if defined $test_num;
         my $test_name   = _squeaky_clean( $f->{'assert'}->{'details'} // 'UNKNOWN_TEST?' );
         $test_name = join " - ", grep { defined } $test_num, $test_name;

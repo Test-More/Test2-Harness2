@@ -190,7 +190,7 @@ subtest 'emit_raw writes the event verbatim with a wire-level sync id' => sub {
         stderr_pipe => $se_w,
     );
 
-    my $raw = {facet_data => {harness => {stream_id => 7}, assert => {pass => 1}}};
+    my $raw = {facet_data => {harness => {run_id => 'r0'}, assert => {pass => 1}}};
     my $ret = $emitter->emit_raw($raw);
     like($ret, qr/\A[0-9a-f]{8}-/i, 'emit_raw returns generated wire-level sync id');
 
@@ -202,9 +202,9 @@ subtest 'emit_raw writes the event verbatim with a wire-level sync id' => sub {
     my ($type, $msg) = $r->get_line_burst_or_data();
     is($type, 'message', 'stdout got a message');
     my $payload = decode_json($msg);
-    is($payload->{event_id},                    $ret, 'wire payload has the sync id');
-    is($payload->{facet_data}{harness}{stream_id}, 7, 'stream_id intact');
-    is($payload->{facet_data}{assert}{pass}, 1, 'assert.pass intact');
+    is($payload->{event_id},                  $ret,  'wire payload has the sync id');
+    is($payload->{facet_data}{harness}{run_id}, 'r0', 'harness facet passed through verbatim');
+    is($payload->{facet_data}{assert}{pass},    1,    'assert.pass intact');
 
     # No mirroring into harness.event_id either.
     ok(!exists $payload->{facet_data}{harness}{event_id},
