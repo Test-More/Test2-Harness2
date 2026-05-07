@@ -92,21 +92,29 @@ CREATE UNIQUE INDEX services_run_name_uk
 CREATE INDEX services_archive_idx ON services(archive_id);
 CREATE INDEX services_run_idx     ON services(run_id);
 
+CREATE TABLE test_files (
+    test_file_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    relative        TEXT    NOT NULL,
+    UNIQUE(project_id, relative)
+);
+
+CREATE INDEX test_files_project_idx ON test_files(project_id);
+
 CREATE TABLE jobs (
     job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    archive_id      INTEGER NOT NULL REFERENCES archives(archive_id) ON DELETE CASCADE,
-    run_id          INTEGER NOT NULL REFERENCES runs(run_id)         ON DELETE CASCADE,
+    archive_id      INTEGER NOT NULL REFERENCES archives(archive_id)   ON DELETE CASCADE,
+    run_id          INTEGER NOT NULL REFERENCES runs(run_id)           ON DELETE CASCADE,
+    test_file_id    INTEGER          REFERENCES test_files(test_file_id) ON DELETE SET NULL,
     job_ord         INTEGER NOT NULL,
-    file            TEXT,
     pass            INTEGER,
     status          TEXT,
     retry_count     INTEGER,
-    spec            BLOB,
     UNIQUE(archive_id, run_id, job_ord)
 );
 
-CREATE INDEX jobs_run_pass_idx ON jobs(run_id, pass);
-CREATE INDEX jobs_file_idx     ON jobs(file);
+CREATE INDEX jobs_run_pass_idx     ON jobs(run_id, pass);
+CREATE INDEX jobs_test_file_idx    ON jobs(test_file_id);
 
 CREATE TABLE job_tries (
     job_try_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +132,34 @@ CREATE TABLE job_tries (
 );
 
 CREATE INDEX job_tries_job_idx ON job_tries(job_id);
+
+CREATE TABLE job_specs (
+    job_spec_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id              INTEGER NOT NULL REFERENCES jobs(job_id)             ON DELETE CASCADE,
+    test_file_id        INTEGER          REFERENCES test_files(test_file_id) ON DELETE SET NULL,
+    absolute            TEXT,
+    category            TEXT,
+    duration            TEXT,
+    stage               TEXT,
+    features            BLOB,    -- JSON
+    switches            BLOB,    -- JSON
+    retry               INTEGER,
+    retry_isolated      INTEGER,
+    smoke               INTEGER,
+    isolation           INTEGER,
+    non_perl            INTEGER,
+    is_binary           INTEGER,
+    event_timeout       INTEGER,
+    post_exit_timeout   INTEGER,
+    min_slots           INTEGER,
+    max_slots           INTEGER,
+    ch_dir              TEXT,
+    extras              BLOB,    -- JSON; conflicts, meta, comment, __test_file_class__, etc.
+    UNIQUE(job_id)
+);
+
+CREATE INDEX job_specs_test_file_idx ON job_specs(test_file_id);
+CREATE INDEX job_specs_job_idx       ON job_specs(job_id);
 
 CREATE TABLE subtests (
     subtest_id      INTEGER PRIMARY KEY AUTOINCREMENT,

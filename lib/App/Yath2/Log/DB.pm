@@ -216,6 +216,22 @@ sub _last_insert_id {
     return $dbh->last_insert_id(undef, undef, $table, $col);
 }
 
+# Keys from a (post-A2 flattened) spec row that get promoted to typed
+# job_specs columns. Anything else lands in job_specs.extras (as JSON).
+# Column name == spec key name (no renames). 'relative' is promoted to
+# test_files.relative (identity row), NOT duplicated in job_specs.
+our @JOB_SPECS_PROMOTED_KEYS = qw(
+    absolute category duration stage features switches
+    retry retry_isolated smoke isolation non_perl is_binary
+    event_timeout post_exit_timeout min_slots max_slots ch_dir
+);
+
+# Keys that are consumed structurally (not dumped into extras).
+my %_JOB_SPECS_CONSUMED = map { $_ => 1 } (
+    @JOB_SPECS_PROMOTED_KEYS,
+    qw(relative),    # goes to test_files.relative
+);
+
 # Find or create a projects row by name. Returns project_id. Idempotent.
 sub _resolve_or_create_project {
     my ($self, $name) = @_;
@@ -230,6 +246,26 @@ sub _resolve_or_create_project {
 
     $dbh->do(q{INSERT INTO projects (name) VALUES (?)}, undef, $name);
     return $self->_last_insert_id($dbh, 'projects', 'project_id');
+}
+
+# Find or create a test_files row for (project_id, relative).
+# Returns test_file_id. Idempotent.
+sub _resolve_or_create_test_file {
+    my ($self, $project_id, $relative) = @_;
+    croak "project_id required" unless defined $project_id;
+    croak "relative path required" unless defined $relative && length $relative;
+
+    my $dbh = $self->dbh;
+    my $sth = $dbh->prepare(q{
+        SELECT test_file_id FROM test_files WHERE project_id = ? AND relative = ?
+    });
+    $sth->execute($project_id, $relative);
+    my ($id) = $sth->fetchrow_array;
+    return $id if defined $id;
+
+    $dbh->do(q{INSERT INTO test_files (project_id, relative) VALUES (?, ?)},
+             undef, $project_id, $relative);
+    return $self->_last_insert_id($dbh, 'test_files', 'test_file_id');
 }
 
 # archive_id accessor comes from HashBase (`<archive_id`).
@@ -1873,7 +1909,7 @@ sub _populate_job_rows {
     return unless @tries;
 
     my $job_db_id;
-    my ($latest_try_ord, $latest_pass, $latest_status, $latest_file, $latest_spec_json);
+    my ($latest_try_ord, $latest_pass, $latest_status, $latest_spec);
 
     for my $try_ord (@tries) {
         my $artifact = eval { $source->artifacts($run_ord, $job_ord, $try_ord) } or next;
@@ -1904,11 +1940,10 @@ sub _populate_job_rows {
 
         # Track the highest-ord try's headlines for the parent jobs row.
         if (!defined $latest_try_ord || $try_ord > $latest_try_ord) {
-            $latest_try_ord  = $try_ord;
-            $latest_pass     = $set{pass};
-            $latest_status   = $set{status};
-            $latest_file     = ref($spec) eq 'HASH' ? ($spec->{relative} // $spec->{absolute}) : undef;
-            $latest_spec_json = $set{spec};
+            $latest_try_ord = $try_ord;
+            $latest_pass    = $set{pass};
+            $latest_status  = $set{status};
+            $latest_spec    = $spec;
         }
 
         # Subtests: explode the per-try report's subtests array into
@@ -1940,14 +1975,101 @@ sub _populate_job_rows {
 
     return unless defined $job_db_id;
 
-    my %job_set;
-    $job_set{file}        = $latest_file       if defined $latest_file;
-    $job_set{pass}        = $latest_pass       if defined $latest_pass;
-    $job_set{status}      = $latest_status     if defined $latest_status;
-    $job_set{retry_count} = scalar @tries;
-    $job_set{spec}        = $latest_spec_json  if defined $latest_spec_json;
+    # Resolve test_file_id from spec's 'relative' key, if available.
+    my $test_file_id;
+    if (ref($latest_spec) eq 'HASH' && defined $latest_spec->{relative}) {
+        my $project_id = $self->{+PROJECT_ID};
+        if (defined $project_id) {
+            $test_file_id = $self->_resolve_or_create_test_file(
+                $project_id, $latest_spec->{relative},
+            );
+        }
+    }
 
-    return $self->_update_row('jobs', \%job_set, {job_id => $job_db_id});
+    my %job_set;
+    $job_set{test_file_id} = $test_file_id    if defined $test_file_id;
+    $job_set{pass}         = $latest_pass     if defined $latest_pass;
+    $job_set{status}       = $latest_status   if defined $latest_status;
+    $job_set{retry_count}  = scalar @tries;
+
+    $self->_update_row('jobs', \%job_set, {job_id => $job_db_id});
+
+    # Populate job_specs row from the latest-try spec. One row per job
+    # (UNIQUE on job_id), written only if we have a spec to populate
+    # from and the row does not already exist.
+    $self->_populate_job_spec($job_db_id, $test_file_id, $latest_spec)
+        if ref($latest_spec) eq 'HASH';
+
+    return;
+}
+
+# Build and INSERT one job_specs row. Promoted keys go to typed columns;
+# everything else (that is not structurally consumed) lands in extras.
+sub _populate_job_spec {
+    my ($self, $job_id, $test_file_id, $spec) = @_;
+    return unless ref($spec) eq 'HASH';
+
+    my $dbh = $self->dbh;
+
+    # Check for existing row (idempotent).
+    my ($existing) = $dbh->selectrow_array(
+        q{SELECT job_spec_id FROM job_specs WHERE job_id = ?},
+        undef, $job_id,
+    );
+    return if defined $existing;
+
+    # Split spec keys: promoted -> typed columns; remainder -> extras.
+    my %promoted;
+    my %extras;
+    for my $k (sort keys %$spec) {
+        if ($_JOB_SPECS_CONSUMED{$k}) {
+            $promoted{$k} = $spec->{$k};
+        }
+        else {
+            $extras{$k} = $spec->{$k};
+        }
+    }
+
+    # JSON-encode array/hash promoted values (features, switches).
+    for my $k (qw/features switches/) {
+        next unless exists $promoted{$k} && ref($promoted{$k});
+        $promoted{$k} = $self->_encode_json_or_undef($promoted{$k});
+    }
+    my $extras_json = %extras ? $self->_encode_json_or_undef(\%extras) : undef;
+
+    my $sth = $dbh->prepare(q{
+        INSERT INTO job_specs
+            (job_id, test_file_id,
+             absolute, category, duration, stage,
+             features, switches,
+             retry, retry_isolated, smoke, isolation, non_perl, is_binary,
+             event_timeout, post_exit_timeout, min_slots, max_slots,
+             ch_dir, extras)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    });
+    $sth->execute(
+        $job_id,
+        $test_file_id,
+        $promoted{absolute},
+        $promoted{category},
+        $promoted{duration},
+        $promoted{stage},
+        $promoted{features},
+        $promoted{switches},
+        $promoted{retry},
+        $promoted{retry_isolated} ? 1 : (defined $promoted{retry_isolated} ? 0 : undef),
+        $promoted{smoke}          ? 1 : (defined $promoted{smoke}          ? 0 : undef),
+        $promoted{isolation}      ? 1 : (defined $promoted{isolation}      ? 0 : undef),
+        $promoted{non_perl}       ? 1 : (defined $promoted{non_perl}       ? 0 : undef),
+        $promoted{is_binary}      ? 1 : (defined $promoted{is_binary}      ? 0 : undef),
+        $promoted{event_timeout},
+        $promoted{post_exit_timeout},
+        $promoted{min_slots},
+        $promoted{max_slots},
+        $promoted{ch_dir},
+        $extras_json,
+    );
+    return;
 }
 
 sub _update_row {

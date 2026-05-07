@@ -86,21 +86,30 @@ CREATE TABLE services (
     CONSTRAINT services_run_fk     FOREIGN KEY (run_id)     REFERENCES runs(run_id)         ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE test_files (
+    test_file_id    BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    project_id      BIGINT       NOT NULL,
+    relative        VARCHAR(512) NOT NULL,
+    UNIQUE KEY test_files_uk         (project_id, relative),
+    KEY        test_files_proj_idx   (project_id),
+    CONSTRAINT test_files_project_fk FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE jobs (
     job_id          BIGINT        NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_id      BIGINT        NOT NULL,
     run_id          BIGINT        NOT NULL,
+    test_file_id    BIGINT,
     job_ord         INT           NOT NULL,
-    file            VARCHAR(1024),
     pass            TINYINT(1),
     status          VARCHAR(32),
     retry_count     INT,
-    spec            JSON,
     UNIQUE KEY jobs_archive_run_ord_uk (archive_id, run_id, job_ord),
-    KEY jobs_run_pass_idx (run_id, pass),
-    KEY jobs_file_idx     (file(255)),
-    CONSTRAINT jobs_archive_fk FOREIGN KEY (archive_id) REFERENCES archives(archive_id) ON DELETE CASCADE,
-    CONSTRAINT jobs_run_fk     FOREIGN KEY (run_id)     REFERENCES runs(run_id)         ON DELETE CASCADE
+    KEY jobs_run_pass_idx    (run_id, pass),
+    KEY jobs_test_file_idx   (test_file_id),
+    CONSTRAINT jobs_archive_fk   FOREIGN KEY (archive_id)   REFERENCES archives(archive_id)     ON DELETE CASCADE,
+    CONSTRAINT jobs_run_fk       FOREIGN KEY (run_id)       REFERENCES runs(run_id)             ON DELETE CASCADE,
+    CONSTRAINT jobs_test_file_fk FOREIGN KEY (test_file_id) REFERENCES test_files(test_file_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE job_tries (
@@ -118,6 +127,35 @@ CREATE TABLE job_tries (
     UNIQUE KEY job_tries_job_try_uk (job_id, try_ord),
     KEY job_tries_job_idx (job_id),
     CONSTRAINT job_tries_job_fk FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE job_specs (
+    job_spec_id         BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    job_id              BIGINT       NOT NULL,
+    test_file_id        BIGINT,
+    absolute            VARCHAR(2048),
+    category            VARCHAR(64),
+    duration            VARCHAR(64),
+    stage               VARCHAR(64),
+    features            JSON,
+    switches            JSON,
+    retry               INT,
+    retry_isolated      TINYINT(1),
+    smoke               TINYINT(1),
+    isolation           TINYINT(1),
+    non_perl            TINYINT(1),
+    is_binary           TINYINT(1),
+    event_timeout       INT,
+    post_exit_timeout   INT,
+    min_slots           INT,
+    max_slots           INT,
+    ch_dir              VARCHAR(2048),
+    extras              JSON,
+    UNIQUE KEY job_specs_job_uk    (job_id),
+    KEY job_specs_test_file_idx    (test_file_id),
+    KEY job_specs_job_idx          (job_id),
+    CONSTRAINT job_specs_job_fk    FOREIGN KEY (job_id)       REFERENCES jobs(job_id)             ON DELETE CASCADE,
+    CONSTRAINT job_specs_tf_fk     FOREIGN KEY (test_file_id) REFERENCES test_files(test_file_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE subtests (
