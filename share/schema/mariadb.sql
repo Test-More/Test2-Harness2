@@ -73,9 +73,7 @@ CREATE TABLE services (
     archive_id      BIGINT       NOT NULL,
     run_id          BIGINT,
     name            VARCHAR(191) NOT NULL,
-    status          VARCHAR(32),
-    spec            JSON,
-    state           JSON,
+    role            VARCHAR(64),
     -- Virtual columns: NULL when out of scope.
     name_when_global VARCHAR(191) GENERATED ALWAYS AS (CASE WHEN run_id IS NULL THEN name ELSE NULL END) VIRTUAL,
     UNIQUE KEY services_global_name_uk (archive_id, name_when_global),
@@ -84,6 +82,29 @@ CREATE TABLE services (
     KEY services_run_idx     (run_id),
     CONSTRAINT services_archive_fk FOREIGN KEY (archive_id) REFERENCES archives(archive_id) ON DELETE CASCADE,
     CONSTRAINT services_run_fk     FOREIGN KEY (run_id)     REFERENCES runs(run_id)         ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE service_lifetimes (
+    service_lifetime_id BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    service_id          BIGINT       NOT NULL,
+    lifetime_ord        INT          NOT NULL,
+    status              VARCHAR(32),
+    type                VARCHAR(64),
+    id                  VARCHAR(255),
+    service_name        VARCHAR(191),
+    stage_name          VARCHAR(191),
+    started_at          DATETIME(6),
+    ended_at            DATETIME(6),
+    `exit`              INT,
+    exit_decoded        JSON,
+    times               JSON,
+    child_times         JSON,
+    child_wall          DOUBLE,
+    spec_extras         JSON,
+    state_extras        JSON,
+    UNIQUE KEY service_lifetimes_uk     (service_id, lifetime_ord),
+    KEY        service_lifetimes_service_idx (service_id),
+    CONSTRAINT service_lifetimes_service_fk FOREIGN KEY (service_id) REFERENCES services(service_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE test_files (

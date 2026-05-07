@@ -65,9 +65,7 @@ CREATE TABLE services (
     archive_id      BIGINT NOT NULL REFERENCES archives(archive_id) ON DELETE CASCADE,
     run_id          BIGINT REFERENCES runs(run_id) ON DELETE CASCADE,
     name            TEXT   NOT NULL,
-    status          TEXT,
-    spec            JSONB,
-    state           JSONB
+    role            TEXT
 );
 
 -- Global service: one row per (archive, name) when run_id IS NULL.
@@ -80,6 +78,29 @@ CREATE UNIQUE INDEX services_run_name_uk
     WHERE run_id IS NOT NULL;
 CREATE INDEX services_archive_idx ON services(archive_id);
 CREATE INDEX services_run_idx     ON services(run_id);
+
+CREATE TABLE service_lifetimes (
+    service_lifetime_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    service_id          BIGINT      NOT NULL REFERENCES services(service_id) ON DELETE CASCADE,
+    lifetime_ord        INTEGER     NOT NULL,
+    status              TEXT,
+    type                TEXT,
+    id                  TEXT,
+    service_name        TEXT,
+    stage_name          TEXT,
+    started_at          TIMESTAMPTZ,
+    ended_at            TIMESTAMPTZ,
+    "exit"              INTEGER,
+    exit_decoded        JSONB COMPRESSION lz4,
+    times               JSONB COMPRESSION lz4,
+    child_times         JSONB COMPRESSION lz4,
+    child_wall          DOUBLE PRECISION,
+    spec_extras         JSONB COMPRESSION lz4,
+    state_extras        JSONB COMPRESSION lz4,
+    UNIQUE(service_id, lifetime_ord)
+);
+
+CREATE INDEX service_lifetimes_service_idx ON service_lifetimes(service_id);
 
 CREATE TABLE test_files (
     test_file_id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

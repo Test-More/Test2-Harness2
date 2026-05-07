@@ -1829,7 +1829,7 @@ sub _populate_summary_rows {
     if ($source->can('services')) {
         my @globals = $source->services;
         for my $name (@globals) {
-            $self->_populate_service_row($source, $aid, $name, undef);
+            $self->_populate_service_lifetimes($source, $aid, $name, undef);
         }
     }
 
@@ -1845,7 +1845,7 @@ sub _populate_summary_rows {
 
         if ($source->can('services')) {
             for my $name ($source->services($run_ord)) {
-                $self->_populate_service_row($source, $aid, $name, $run_ord);
+                $self->_populate_service_lifetimes($source, $aid, $name, $run_ord);
             }
         }
 
@@ -1873,6 +1873,32 @@ sub _read_first_jsonl_row {
     }
     my $row = eval { $iter->next };
     return ref($row) eq 'HASH' ? $row : undef;
+}
+
+# Walk the named JSONL stream from $artifact and return all hash rows
+# as an arrayref. Mirrors the eval-protected pattern of
+# _read_first_jsonl_row: returns [] on missing artifact, missing stream,
+# or any read error.
+sub _read_all_jsonl_rows {
+    my ($self, $artifact, $stem) = @_;
+    return [] unless $artifact;
+    my $iter;
+    if ($stem eq 'spec.jsonl') {
+        $iter = eval { $artifact->spec_iter } or return [];
+    }
+    elsif ($stem eq 'report.jsonl') {
+        $iter = eval { $artifact->report_iter } or return [];
+    }
+    else {
+        return [];
+    }
+    my @rows;
+    while (1) {
+        my $row = eval { $iter->next };
+        last unless defined $row;
+        push @rows => $row if ref($row) eq 'HASH';
+    }
+    return \@rows;
 }
 
 sub _encode_json_or_undef {
@@ -1916,7 +1942,28 @@ sub _populate_run_row {
     return $self->_update_row('runs', \%set, \%where);
 }
 
-sub _populate_service_row {
+# Keys promoted from a service spec.jsonl row to typed columns on
+# service_lifetimes. Anything else lands in spec_extras.
+our @SERVICE_LIFETIME_SPEC_PROMOTED_KEYS = qw(
+    type id service_name stage_name started_at
+    times child_times child_wall
+);
+
+# Keys promoted from a service report.jsonl row to typed columns. Note
+# `times` / `child_times` / `child_wall` may appear in either spec or
+# report; on collision the report value wins (it's the later writer).
+our @SERVICE_LIFETIME_REPORT_PROMOTED_KEYS = qw(
+    ended_at exit exit_decoded
+    times child_times child_wall
+);
+
+# Walk a service's spec.jsonl and report.jsonl artifacts and project
+# them into service_lifetimes rows -- one row per start/end cycle. D1:
+# services may restart, so report.jsonl can have multiple rows; spec
+# rows may be sparser. Pair by ord index (1-based). The parent
+# services row is identity-only (name/role/run_id); role is promoted
+# from the first non-null spec row that carries a `role` key.
+sub _populate_service_lifetimes {
     my ($self, $source, $aid, $name, $run_ord) = @_;
     my $dbh = $self->dbh;
 
@@ -1933,19 +1980,121 @@ sub _populate_service_row {
     }
     return unless $artifact;
 
-    my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
-    my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
+    my $specs   = $self->_read_all_jsonl_rows($artifact, 'spec.jsonl');
+    my $reports = $self->_read_all_jsonl_rows($artifact, 'report.jsonl');
 
     # Make sure the service row exists (may have been skipped if the
     # artifact loop didn't cover it -- though normally it does).
     my $sid = $self->_ensure_service_row(name => $name, run_ord => $run_ord);
 
-    my %set;
-    $set{spec}   = $self->_encode_json_or_undef($spec)   if $spec;
-    $set{state}  = $self->_encode_json_or_undef($report) if $report;
-    $set{status} = (defined $report && defined $report->{ended_at}) ? 'completed' : 'running';
+    # Promote `role` from the first spec row that carries one. Leave
+    # NULL (do not touch) when no spec row supplies a `role` key.
+    for my $spec (@$specs) {
+        next unless ref($spec) eq 'HASH';
+        next unless defined $spec->{role};
+        $self->_update_row('services', {role => $spec->{role}}, {service_id => $sid});
+        last;
+    }
 
-    return $self->_update_row('services', \%set, {service_id => $sid});
+    my $count = (scalar @$specs > scalar @$reports)
+        ? scalar @$specs
+        : scalar @$reports;
+    return unless $count;
+
+    my %spec_promoted   = map { $_ => 1 } @SERVICE_LIFETIME_SPEC_PROMOTED_KEYS;
+    my %report_promoted = map { $_ => 1 } @SERVICE_LIFETIME_REPORT_PROMOTED_KEYS;
+
+    my $sth = $dbh->prepare(q{
+        INSERT INTO service_lifetimes
+            (service_id, lifetime_ord, status,
+             type, id, service_name, stage_name,
+             started_at, ended_at,
+             "exit", exit_decoded,
+             times, child_times, child_wall,
+             spec_extras, state_extras)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    });
+
+    for (my $i = 0; $i < $count; $i++) {
+        my $spec   = $specs->[$i];
+        my $report = $reports->[$i];
+
+        # Split spec keys: typed cols vs spec_extras catch-all.
+        my (%spec_typed, %spec_extras);
+        if (ref($spec) eq 'HASH') {
+            for my $k (sort keys %$spec) {
+                if ($spec_promoted{$k}) {
+                    $spec_typed{$k} = $spec->{$k};
+                }
+                else {
+                    $spec_extras{$k} = $spec->{$k};
+                }
+            }
+        }
+
+        # Split report keys: typed cols vs state_extras catch-all.
+        my (%report_typed, %state_extras);
+        if (ref($report) eq 'HASH') {
+            for my $k (sort keys %$report) {
+                if ($report_promoted{$k}) {
+                    $report_typed{$k} = $report->{$k};
+                }
+                else {
+                    $state_extras{$k} = $report->{$k};
+                }
+            }
+        }
+
+        # Resolve typed columns. Report wins on collision for the
+        # shared keys (times / child_times / child_wall).
+        my $type         = $spec_typed{type};
+        my $id           = $spec_typed{id};
+        my $service_name = $spec_typed{service_name};
+        my $stage_name   = $spec_typed{stage_name};
+        my $started_at   = $spec_typed{started_at};
+        my $ended_at     = $report_typed{ended_at};
+        my $exit_val     = $report_typed{exit};
+        my $exit_decoded = exists $report_typed{exit_decoded}
+            ? $self->_encode_json_or_undef($report_typed{exit_decoded})
+            : undef;
+
+        my $times = exists $report_typed{times}       ? $report_typed{times}
+                  : exists $spec_typed{times}         ? $spec_typed{times}
+                  : undef;
+        my $child_times = exists $report_typed{child_times} ? $report_typed{child_times}
+                        : exists $spec_typed{child_times}   ? $spec_typed{child_times}
+                        : undef;
+        my $child_wall = exists $report_typed{child_wall} ? $report_typed{child_wall}
+                       : exists $spec_typed{child_wall}   ? $spec_typed{child_wall}
+                       : undef;
+
+        my $times_json       = ref($times)       ? $self->_encode_json_or_undef($times)       : $times;
+        my $child_times_json = ref($child_times) ? $self->_encode_json_or_undef($child_times) : $child_times;
+
+        my $spec_extras_json  = (ref($spec)   eq 'HASH' && %spec_extras)
+            ? $self->_encode_json_or_undef(\%spec_extras)  : undef;
+        my $state_extras_json = (ref($report) eq 'HASH' && %state_extras)
+            ? $self->_encode_json_or_undef(\%state_extras) : undef;
+
+        my $status;
+        if (ref($report) eq 'HASH' && defined $report->{ended_at}) {
+            $status = 'completed';
+        }
+        else {
+            $status = 'running';
+        }
+
+        $sth->execute(
+            $sid, $i + 1, $status,
+            $type, $id, $service_name, $stage_name,
+            $started_at, $ended_at,
+            $exit_val, $exit_decoded,
+            $times_json, $child_times_json, $child_wall,
+            $spec_extras_json, $state_extras_json,
+        );
+    }
+
+    return;
 }
 
 sub _populate_job_rows {

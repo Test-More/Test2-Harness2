@@ -74,9 +74,7 @@ CREATE TABLE services (
     archive_id      INTEGER NOT NULL REFERENCES archives(archive_id) ON DELETE CASCADE,
     run_id          INTEGER REFERENCES runs(run_id) ON DELETE CASCADE,
     name            TEXT    NOT NULL,
-    status          TEXT,
-    spec            BLOB,
-    state           BLOB
+    role            TEXT
 );
 
 -- (archive_id, run_id, name) unique. SQLite treats two NULLs as distinct
@@ -91,6 +89,29 @@ CREATE UNIQUE INDEX services_run_name_uk
     WHERE run_id IS NOT NULL;
 CREATE INDEX services_archive_idx ON services(archive_id);
 CREATE INDEX services_run_idx     ON services(run_id);
+
+CREATE TABLE service_lifetimes (
+    service_lifetime_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id          INTEGER NOT NULL REFERENCES services(service_id) ON DELETE CASCADE,
+    lifetime_ord        INTEGER NOT NULL,
+    status              TEXT,
+    type                TEXT,
+    id                  TEXT,
+    service_name        TEXT,
+    stage_name          TEXT,
+    started_at          TEXT,
+    ended_at            TEXT,
+    "exit"              INTEGER,
+    exit_decoded        BLOB,    -- JSON
+    times               BLOB,    -- JSON 4-tuple
+    child_times         BLOB,    -- JSON
+    child_wall          REAL,
+    spec_extras         BLOB,    -- JSON
+    state_extras        BLOB,    -- JSON
+    UNIQUE(service_id, lifetime_ord)
+);
+
+CREATE INDEX service_lifetimes_service_idx ON service_lifetimes(service_id);
 
 CREATE TABLE test_files (
     test_file_id    INTEGER PRIMARY KEY AUTOINCREMENT,

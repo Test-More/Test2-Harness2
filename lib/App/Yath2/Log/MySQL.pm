@@ -473,6 +473,14 @@ sub insert {
     # Artifact loop complete; clear the source reference.
     delete $self->{App::Yath2::Log::DB::_INSERT_SOURCE()};
 
+    # Mirror the base-class flow: populate summary rows
+    # (runs / services / service_lifetimes / jobs / job_tries / ...) and
+    # stamp sealed_at on the archive.
+    $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
+
+    $dbh->do(q{UPDATE archives SET sealed_at = ? WHERE archive_id = ?},
+        undef, $self->_now_iso, $aid);
+
     return $aid;
 }
 
