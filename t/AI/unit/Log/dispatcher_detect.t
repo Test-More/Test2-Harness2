@@ -2,6 +2,7 @@ use Test2::V0;
 use File::Temp qw/tempdir/;
 
 use App::Yath2::Log;
+use App::Yath2::Log::Footer qw/pack_footer FORMAT_ID_TAR FORMAT_ID_SQL/;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -15,16 +16,36 @@ my $tmp = tempdir(CLEANUP => 1);
     is(App::Yath2::Log->_detect_file_kind($path), 'sqlite', 'detects sqlite magic');
 }
 
-# _detect_file_kind: tar.zidx footer.
+# _detect_file_kind: YATHFOOT trailer with format_id=TAR.
 {
     my $path = "$tmp/tarzidx.bin";
     open(my $fh, '>', $path) or die $!;
     binmode $fh;
-    # Some random head bytes, then a 32-byte tail with the magic at offset 0.
     print $fh "garbage" x 100;
-    print $fh "YZIDXv1\0", "\0" x 24;    # 32-byte footer; size irrelevant.
+    print $fh pack_footer(
+        format_id   => FORMAT_ID_TAR,
+        meta_offset => 0,
+        meta_size   => 0,
+        body_size   => 0,
+    );
     close $fh;
-    is(App::Yath2::Log->_detect_file_kind($path), 'tar.zidx', 'detects tar.zidx footer');
+    is(App::Yath2::Log->_detect_file_kind($path), 'tar.zidx', 'detects YATHFOOT TAR trailer');
+}
+
+# _detect_file_kind: YATHFOOT trailer with format_id=SQL on a non-sqlite-header file.
+{
+    my $path = "$tmp/sqlfoot.bin";
+    open(my $fh, '>', $path) or die $!;
+    binmode $fh;
+    print $fh "not the sqlite header" x 10;
+    print $fh pack_footer(
+        format_id   => FORMAT_ID_SQL,
+        meta_offset => 0,
+        meta_size   => 0,
+        body_size   => 0,
+    );
+    close $fh;
+    is(App::Yath2::Log->_detect_file_kind($path), 'sqlite', 'detects YATHFOOT SQL trailer');
 }
 
 # _detect_file_kind: unknown.

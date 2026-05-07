@@ -2,7 +2,7 @@ package App::Yath2::Log;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Cwd ();
@@ -131,7 +131,7 @@ sub META_PROMOTED_KEYS {
 # archives whose archive_version is lower than this. There is no
 # auto-migration: an older archive must be re-archived (or read with an
 # older yath) to be consumed.
-sub last_breaking_version { '2.000011' }
+sub last_breaking_version { '2.000012' }
 
 # Build the meta.json content for a sealed archive. Returns a hashref
 # with the canonical fields (per F23). Fields:
@@ -239,10 +239,13 @@ sub encode_archive_meta {
 
 # Detect the on-disk kind of a $path. Returns 'sqlite', 'tar.zidx', or
 # 'unknown'. The check is best-effort: SQLite databases start with the
-# 16-byte 'SQLite format 3\0' header; tar.zidx archives end with the
-# 32-byte footer beginning 'YZIDXv1\0'. We sniff both.
+# 16-byte 'SQLite format 3\0' header; sealed yath archives (tar.zidx
+# and SQL-sealed) end with the 64-byte YATHFOOT trailer carrying a
+# 4-byte format_id. We sniff both.
 sub _detect_file_kind {
     my ($class, $path) = @_;
+
+    require App::Yath2::Log::Footer;
 
     open(my $fh, '<', $path) or croak "open '$path': $!";
     binmode $fh;
@@ -255,13 +258,20 @@ sub _detect_file_kind {
     }
 
     my $size = -s $path;
-    if (defined $size && $size >= 32) {
-        seek($fh, $size - 32, SEEK_SET);
-        my $foot;
-        read($fh, $foot, 32);
-        if (defined $foot && length($foot) == 32 && substr($foot, 0, 8) eq "YZIDXv1\0") {
-            close $fh;
-            return 'tar.zidx';
+    my $footer_size = App::Yath2::Log::Footer::FOOTER_SIZE();
+    if (defined $size && $size >= $footer_size) {
+        seek($fh, $size - $footer_size, SEEK_SET);
+        my $tail;
+        read($fh, $tail, $footer_size);
+        if (defined $tail && length($tail) == $footer_size) {
+            my $info = App::Yath2::Log::Footer::unpack_footer($tail);
+            if ($info) {
+                close $fh;
+                my $fid = $info->{format_id};
+                return 'tar.zidx' if $fid eq App::Yath2::Log::Footer::FORMAT_ID_TAR();
+                return 'sqlite'   if $fid eq App::Yath2::Log::Footer::FORMAT_ID_SQL();
+                return 'unknown';
+            }
         }
     }
 

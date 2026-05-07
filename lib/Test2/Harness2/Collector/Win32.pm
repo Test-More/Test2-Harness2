@@ -2,7 +2,7 @@ package Test2::Harness2::Collector::Win32;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 # All methods in this file are installed into the
 # Test2::Harness2::Collector class namespace below. The file itself

@@ -14,7 +14,7 @@ use warnings;
 # App::Yath2UI are both optional; this resource must continue to
 # work (using only the live sample) when neither is installed.
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 

@@ -2,7 +2,7 @@ package App::Yath2::Log::TarZIdx;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Compress::Zstd ();
@@ -142,16 +142,41 @@ sub _build_index {
     my $self = shift;
     return $self->{+_INDEX} if $self->{+_INDEX};
 
+    require App::Yath2::Log::Footer;
+    require App::Yath2::Log;
+
     open(my $fh, '<', $self->{+PATH}) or croak "open $self->{+PATH}: $!";
     binmode $fh;
 
     my $size = -s $self->{+PATH};
-    croak "tar.zidx: file too small" if $size < TAR_ZIDX_FOOTER_LEN;
+    croak "tar.zidx: file too small for YATHFOOT trailer"
+        if $size < App::Yath2::Log::Footer::FOOTER_SIZE();
 
-    seek($fh, -TAR_ZIDX_FOOTER_LEN, SEEK_END) or croak "seek footer: $!";
+    # Step 1: read the 64-byte YATHFOOT trailer at the end of the file.
+    seek($fh, -App::Yath2::Log::Footer::FOOTER_SIZE(), SEEK_END)
+        or croak "tar.zidx: seek YATHFOOT: $!";
+    my $tail;
+    read($fh, $tail, App::Yath2::Log::Footer::FOOTER_SIZE())
+        == App::Yath2::Log::Footer::FOOTER_SIZE()
+        or croak "tar.zidx: short YATHFOOT read";
+
+    my $info = App::Yath2::Log::Footer::unpack_footer($tail)
+        or croak "tar.zidx: missing or invalid YATHFOOT trailer "
+        . "(archive may be too old; minimum supported version: "
+        . App::Yath2::Log->last_breaking_version . ")";
+
+    croak "tar.zidx: trailer format_id is '$info->{format_id}', expected 'TAR'"
+        unless $info->{format_id} eq App::Yath2::Log::Footer::FORMAT_ID_TAR();
+
+    # Step 2: follow the trailer's format_ptr to the 32-byte zidx footer.
+    my $zidx_offset = $info->{format_ptr};
+    croak "tar.zidx: trailer format_ptr is 0; cannot locate zidx footer"
+        unless $zidx_offset;
+
+    seek($fh, $zidx_offset, SEEK_SET) or croak "tar.zidx: seek zidx footer: $!";
     my $foot;
     read($fh, $foot, TAR_ZIDX_FOOTER_LEN) == TAR_ZIDX_FOOTER_LEN
-        or croak "short footer read";
+        or croak "tar.zidx: short zidx footer read";
 
     my ($idx_offset, $idx_size) = $self->parse_footer($foot);
 
@@ -1277,7 +1302,35 @@ sub _write_from_directory {
 
     print $fh ("\0" x (BLOCK_SIZE * 2));
 
+    # Capture the offset of the 32-byte zidx footer before writing
+    # it; the YATHFOOT trailer's format_ptr points here.
+    my $zidx_footer_offset = tell $fh;
     print $fh $self->pack_footer($idx_offset, length($idx_compressed));
+    my $body_size = tell $fh;
+
+    require App::Yath2::Log::Footer;
+
+    my $meta_bytes = $opts{meta_json_bytes};
+    croak "_write_from_directory: missing meta_json_bytes for YATHFOOT trailer"
+        unless defined $meta_bytes && length $meta_bytes;
+
+    require Test2::Harness2::Util::Zstd;
+    my $meta_zst    = Test2::Harness2::Util::Zstd::compress_blob($meta_bytes);
+    my $meta_offset = tell $fh;
+    print $fh $meta_zst;
+
+    my $crc = App::Yath2::Log::Footer::crc32_of($meta_zst);
+
+    my $trailer = App::Yath2::Log::Footer::pack_footer(
+        format_id   => App::Yath2::Log::Footer::FORMAT_ID_TAR(),
+        flags       => App::Yath2::Log::Footer::FLAG_META_COMPRESSED(),
+        meta_offset => $meta_offset,
+        meta_size   => length($meta_zst),
+        meta_crc32  => $crc,
+        body_size   => $body_size,
+        format_ptr  => $zidx_footer_offset,
+    );
+    print $fh $trailer;
 
     close $fh or croak "close $tmp: $!";
 

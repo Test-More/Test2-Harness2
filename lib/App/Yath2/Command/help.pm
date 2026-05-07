@@ -4,7 +4,7 @@ use warnings;
 
 use Term::Table();
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Object::HashBase qw{
     <settings

@@ -28,7 +28,13 @@ use App::Yath2::Log;
 
     require App::Yath2::Log::TarZIdx;
     my $arc = App::Yath2::Log::TarZIdx->new(path => $out);
-    $arc->_write_from_directory($src);
+    my $meta = App::Yath2::Log->build_archive_meta;
+    my $meta_bytes = App::Yath2::Log->encode_archive_meta($meta);
+    $arc->_write_from_directory(
+        $src,
+        meta_json_bytes => $meta_bytes,
+        extra_files     => { App::Yath2::Log->META_FILENAME() => $meta_bytes },
+    );
 
     ok(-s $out, 'tar.zidx output non-empty');
 

@@ -2,7 +2,7 @@ package App::Yath2::Command::do;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use parent 'App::Yath2::Command::test';
 use Object::HashBase;

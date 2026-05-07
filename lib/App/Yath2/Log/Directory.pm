@@ -2,7 +2,7 @@ package App::Yath2::Log::Directory;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Compress::Zstd ();
@@ -768,10 +768,11 @@ sub archive {
     if ($arc->can('_write_from_directory')) {
         $arc->_write_from_directory(
             $self->{+PATH},
-            runs         => $runs,
-            exclude_runs => $exclude_runs,
-            extra_files  => { App::Yath2::Log->META_FILENAME() => $meta_bytes },
-            compress     => $compress,
+            runs            => $runs,
+            exclude_runs    => $exclude_runs,
+            extra_files     => { App::Yath2::Log->META_FILENAME() => $meta_bytes },
+            meta_json_bytes => $meta_bytes,
+            compress        => $compress,
         );
         return $arc;
     }

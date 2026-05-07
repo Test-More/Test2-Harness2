@@ -2,7 +2,7 @@ package App::Yath2::Command::abort;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 # XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
 

@@ -2,7 +2,7 @@ package Test2::Harness2::Collector::Parser::IOParser::Stream;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Test2::Harness2::Collector::Parser::TapParser qw/parse_stdout_tap parse_stderr_tap/;
 

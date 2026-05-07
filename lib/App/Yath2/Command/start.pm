@@ -2,7 +2,7 @@ package App::Yath2::Command::start;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 # XXX TODO: App::Yath2::IPC removed (PR #390) — start/daemon functionality needs new IPC
 # XXX TODO: Test2::Harness2::Instance removed (PR #390) — instance management needs reimplementing
