@@ -4,7 +4,10 @@ use Test2::Require::Module 'DBIx::QuickDB';
 use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
-skipall_unless_can_db(driver => 'MySQL');
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+for_each_db_version([qw/mysql percona/], sub {
+    skipall_unless_can_db(driver => 'MySQL');
 
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
@@ -132,5 +135,7 @@ like(dies { $log->services(99) }, qr/no such run/, 'services on missing run croa
     isa_ok($w, ['App::Yath2::Log::MySQL']);
     like(dies { $w->runs }, qr/no archives in this DB/, 'reads on empty DB throw');
 }
+
+});
 
 done_testing;

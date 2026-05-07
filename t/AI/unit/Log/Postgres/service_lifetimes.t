@@ -4,7 +4,10 @@ use Test2::Require::Module 'DBIx::QuickDB';
 use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
-skipall_unless_can_db(driver => 'PostgreSQL');
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+for_each_db_version([qw/postgresql/], sub {
+    skipall_unless_can_db(driver => 'PostgreSQL');
 
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
@@ -164,5 +167,7 @@ ok(!exists $col_names{spec},   'services.spec column dropped');
 ok(!exists $col_names{state},  'services.state column dropped');
 ok(!exists $col_names{status}, 'services.status column dropped');
 ok( exists $col_names{role},   'services.role column present');
+
+});
 
 done_testing;

@@ -4,7 +4,10 @@ use Test2::Require::Module 'DBIx::QuickDB';
 use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
-skipall_unless_can_db(driver => 'MariaDB');
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+for_each_db_version([qw/mariadb/], sub {
+    skipall_unless_can_db(driver => 'MariaDB');
 
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
@@ -222,5 +225,7 @@ my $log = App::Yath2::Log::MariaDB->new(dsn => $dsn);
     ok(ref $reports[0]{subtests} eq 'ARRAY', 'job_try report.subtests is array');
     is(scalar @{$reports[0]{subtests}}, 2, '2 subtest entries');
 }
+
+});
 
 done_testing;

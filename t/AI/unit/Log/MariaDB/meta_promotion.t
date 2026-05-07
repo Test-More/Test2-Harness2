@@ -4,7 +4,10 @@ use Test2::Require::Module 'DBIx::QuickDB';
 use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
-skipall_unless_can_db(driver => 'MariaDB');
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+for_each_db_version([qw/mariadb/], sub {
+    skipall_unless_can_db(driver => 'MariaDB');
 
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
@@ -93,5 +96,7 @@ my $extras = decode_json($row->{meta_extras});
 is($extras->{format_version}, 1,     'format_version in meta_extras');
 ok(!exists $extras->{archive_uuid},  'archive_uuid not duplicated');
 ok(!exists $extras->{host},          'host not duplicated');
+
+});
 
 done_testing;
