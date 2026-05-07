@@ -49,8 +49,11 @@ CREATE TABLE runs (
     passed_jobs     INTEGER,
     failed_jobs     INTEGER,
     aborted_jobs    INTEGER,
-    spec            JSONB,
-    state           JSONB,
+    times           JSONB COMPRESSION lz4,
+    child_times     JSONB COMPRESSION lz4,
+    child_wall      DOUBLE PRECISION,
+    spec_extras     JSONB COMPRESSION lz4,
+    state_extras    JSONB COMPRESSION lz4,
     UNIQUE(archive_id, run_uuid),
     UNIQUE(archive_id, run_ord)
 );
@@ -134,10 +137,19 @@ CREATE TABLE job_tries (
     pass            BOOLEAN,
     "exit"          INTEGER,
     exit_decoded    JSONB,
+    queued_at       TIMESTAMPTZ,
     started_at      TIMESTAMPTZ,
     ended_at        TIMESTAMPTZ,
-    spec            JSONB COMPRESSION lz4,
-    state           JSONB COMPRESSION lz4,
+    pass_count      INTEGER,
+    fail_count      INTEGER,
+    assertion_count INTEGER,
+    plan            JSONB COMPRESSION lz4,
+    halt            JSONB COMPRESSION lz4,
+    times           JSONB COMPRESSION lz4,
+    child_times     JSONB COMPRESSION lz4,
+    child_wall      DOUBLE PRECISION,
+    spec_extras     JSONB COMPRESSION lz4,
+    state_extras    JSONB COMPRESSION lz4,
     UNIQUE(job_id, try_ord)
 );
 

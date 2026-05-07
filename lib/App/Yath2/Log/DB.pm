@@ -1909,36 +1909,132 @@ sub _encode_json_or_undef {
     return defined $out ? $out : undef;
 }
 
+# Keys promoted from a run spec.jsonl row to typed columns on `runs`.
+# `run_uuid` is identity (already promoted at _ensure_run_row time);
+# listed here so it doesn't leak into spec_extras. `times` /
+# `child_times` / `child_wall` may appear in either spec or report; on
+# collision the report value wins (it's the later writer).
+our @RUNS_SPEC_PROMOTED_KEYS = qw(
+    run_uuid started_at
+    times child_times child_wall
+);
+
+# Keys promoted from a run report.jsonl row to typed columns on `runs`.
+our @RUNS_REPORT_PROMOTED_KEYS = qw(
+    ended_at exit exit_decoded pass
+    total_jobs passed_jobs failed_jobs aborted_jobs
+    times child_times child_wall
+);
+
+# Aggregated keys that are NOT stored in runs.spec_extras / state_extras.
+# `jobs` / `services` are rebuilt via JOIN at read time; `subtests` is
+# exploded into the subtests table per-job_try.
+our @RUNS_AGGREGATED_KEYS = qw(jobs subtests services);
+
+# Keys promoted from a job_tries spec.jsonl row to typed columns on
+# `job_tries`.
+our @JOB_TRIES_SPEC_PROMOTED_KEYS = qw(
+    queued_at started_at
+    times child_times child_wall
+);
+
+# Keys promoted from a job_tries report.jsonl row to typed columns on
+# `job_tries`.
+our @JOB_TRIES_REPORT_PROMOTED_KEYS = qw(
+    ended_at exit exit_decoded pass
+    pass_count fail_count assertion_count
+    plan halt
+    times child_times child_wall
+);
+
+# Aggregated keys excluded from job_tries.spec_extras / state_extras.
+# `subtests` is exploded into the subtests table.
+our @JOB_TRIES_AGGREGATED_KEYS = qw(subtests);
+
+# Walk a run's spec.jsonl and report.jsonl and project them into the
+# (already-existing) runs row. Single-row split: a run never restarts
+# (only services do). Promoted keys go to typed columns; everything
+# else lands in spec_extras / state_extras. Aggregated keys (`jobs`,
+# `subtests`, `services`) are dropped from BOTH typed-promotion and
+# extras -- they get rebuilt via JOIN at read time.
 sub _populate_run_row {
     my ($self, $source, $aid, $run_ord, $project_id) = @_;
-    my $dbh = $self->dbh;
 
     my $artifact = eval { $source->artifacts($run_ord) } or return;
     my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
     my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
 
-    my %set;
-    $set{started_at}   = $spec->{started_at}                          if $spec   && defined $spec->{started_at};
-    $set{ended_at}     = $report->{ended_at}                          if $report && defined $report->{ended_at};
-    $set{exit}         = $report->{exit}                              if $report && defined $report->{exit};
-    $set{exit_decoded} = $self->_encode_json_or_undef($report->{exit_decoded})
-        if $report && defined $report->{exit_decoded};
-    $set{pass}         = $report->{pass} ? 1 : 0                      if $report && exists  $report->{pass};
-    $set{total_jobs}   = $report->{total_jobs}                        if $report && defined $report->{total_jobs};
-    $set{passed_jobs}  = $report->{passed_jobs}                       if $report && defined $report->{passed_jobs};
-    $set{failed_jobs}  = $report->{failed_jobs}                       if $report && defined $report->{failed_jobs};
-    $set{aborted_jobs} = $report->{aborted_jobs}                      if $report && defined $report->{aborted_jobs};
-    $set{spec}         = $self->_encode_json_or_undef($spec)          if $spec;
-    $set{state}        = $self->_encode_json_or_undef($report)        if $report;
-    $set{status}       = (defined $report && defined $report->{ended_at}) ? 'completed' : 'incomplete';
-    $set{project_id}   = $project_id                                  if defined $project_id;
+    my %spec_promoted   = map { $_ => 1 } @RUNS_SPEC_PROMOTED_KEYS;
+    my %report_promoted = map { $_ => 1 } @RUNS_REPORT_PROMOTED_KEYS;
+    my %aggregated      = map { $_ => 1 } @RUNS_AGGREGATED_KEYS;
 
-    my %where = (archive_id => $aid, run_ord => $run_ord);
-
-    if ($spec && defined $spec->{run_uuid}) {
-        $set{run_uuid} = $self->_uuid_to_db($spec->{run_uuid});
+    my (%spec_typed, %spec_extras);
+    if (ref($spec) eq 'HASH') {
+        for my $k (sort keys %$spec) {
+            next if $aggregated{$k};
+            if ($spec_promoted{$k}) {
+                $spec_typed{$k} = $spec->{$k};
+            }
+            else {
+                $spec_extras{$k} = $spec->{$k};
+            }
+        }
     }
 
+    my (%report_typed, %state_extras);
+    if (ref($report) eq 'HASH') {
+        for my $k (sort keys %$report) {
+            next if $aggregated{$k};
+            if ($report_promoted{$k}) {
+                $report_typed{$k} = $report->{$k};
+            }
+            else {
+                $state_extras{$k} = $report->{$k};
+            }
+        }
+    }
+
+    # times / child_times / child_wall: report wins on collision.
+    my $times = exists $report_typed{times}       ? $report_typed{times}
+              : exists $spec_typed{times}         ? $spec_typed{times}
+              : undef;
+    my $child_times = exists $report_typed{child_times} ? $report_typed{child_times}
+                    : exists $spec_typed{child_times}   ? $spec_typed{child_times}
+                    : undef;
+    my $child_wall = exists $report_typed{child_wall} ? $report_typed{child_wall}
+                   : exists $spec_typed{child_wall}   ? $spec_typed{child_wall}
+                   : undef;
+
+    my $times_json       = ref($times)       ? $self->_encode_json_or_undef($times)       : $times;
+    my $child_times_json = ref($child_times) ? $self->_encode_json_or_undef($child_times) : $child_times;
+
+    my $spec_extras_json  = %spec_extras  ? $self->_encode_json_or_undef(\%spec_extras)  : undef;
+    my $state_extras_json = %state_extras ? $self->_encode_json_or_undef(\%state_extras) : undef;
+
+    my %set;
+    $set{started_at}   = $spec_typed{started_at}                       if defined $spec_typed{started_at};
+    $set{ended_at}     = $report_typed{ended_at}                       if defined $report_typed{ended_at};
+    $set{exit}         = $report_typed{exit}                           if defined $report_typed{exit};
+    $set{exit_decoded} = $self->_encode_json_or_undef($report_typed{exit_decoded})
+        if defined $report_typed{exit_decoded};
+    $set{pass}         = $report_typed{pass} ? 1 : 0                   if exists  $report_typed{pass};
+    $set{total_jobs}   = $report_typed{total_jobs}                     if defined $report_typed{total_jobs};
+    $set{passed_jobs}  = $report_typed{passed_jobs}                    if defined $report_typed{passed_jobs};
+    $set{failed_jobs}  = $report_typed{failed_jobs}                    if defined $report_typed{failed_jobs};
+    $set{aborted_jobs} = $report_typed{aborted_jobs}                   if defined $report_typed{aborted_jobs};
+    $set{times}        = $times_json                                   if defined $times_json;
+    $set{child_times}  = $child_times_json                             if defined $child_times_json;
+    $set{child_wall}   = $child_wall                                   if defined $child_wall;
+    $set{spec_extras}  = $spec_extras_json                             if defined $spec_extras_json;
+    $set{state_extras} = $state_extras_json                            if defined $state_extras_json;
+    $set{status}       = (ref($report) eq 'HASH' && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+    $set{project_id}   = $project_id                                   if defined $project_id;
+
+    if (defined $spec_typed{run_uuid}) {
+        $set{run_uuid} = $self->_uuid_to_db($spec_typed{run_uuid});
+    }
+
+    my %where = (archive_id => $aid, run_ord => $run_ord);
     return $self->_update_row('runs', \%set, \%where);
 }
 
@@ -2107,6 +2203,10 @@ sub _populate_job_rows {
     my $job_db_id;
     my ($latest_try_ord, $latest_pass, $latest_status, $latest_spec);
 
+    my %spec_promoted   = map { $_ => 1 } @JOB_TRIES_SPEC_PROMOTED_KEYS;
+    my %report_promoted = map { $_ => 1 } @JOB_TRIES_REPORT_PROMOTED_KEYS;
+    my %aggregated      = map { $_ => 1 } @JOB_TRIES_AGGREGATED_KEYS;
+
     for my $try_ord (@tries) {
         my $artifact = eval { $source->artifacts($run_ord, $job_ord, $try_ord) } or next;
         my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
@@ -2121,16 +2221,75 @@ sub _populate_job_rows {
             $x;
         };
 
+        # Split spec keys: typed cols vs spec_extras catch-all. Drop
+        # aggregated keys (subtests) from BOTH.
+        my (%spec_typed, %spec_extras);
+        if (ref($spec) eq 'HASH') {
+            for my $k (sort keys %$spec) {
+                next if $aggregated{$k};
+                if ($spec_promoted{$k}) {
+                    $spec_typed{$k} = $spec->{$k};
+                }
+                else {
+                    $spec_extras{$k} = $spec->{$k};
+                }
+            }
+        }
+
+        # Split report keys: typed cols vs state_extras catch-all. Drop
+        # aggregated keys (subtests) from BOTH; subtests is exploded
+        # into its own table below.
+        my (%report_typed, %state_extras);
+        if (ref($report) eq 'HASH') {
+            for my $k (sort keys %$report) {
+                next if $aggregated{$k};
+                if ($report_promoted{$k}) {
+                    $report_typed{$k} = $report->{$k};
+                }
+                else {
+                    $state_extras{$k} = $report->{$k};
+                }
+            }
+        }
+
+        # times / child_times / child_wall: report wins on collision.
+        my $times = exists $report_typed{times}       ? $report_typed{times}
+                  : exists $spec_typed{times}         ? $spec_typed{times}
+                  : undef;
+        my $child_times = exists $report_typed{child_times} ? $report_typed{child_times}
+                        : exists $spec_typed{child_times}   ? $spec_typed{child_times}
+                        : undef;
+        my $child_wall = exists $report_typed{child_wall} ? $report_typed{child_wall}
+                       : exists $spec_typed{child_wall}   ? $spec_typed{child_wall}
+                       : undef;
+
+        my $times_json       = ref($times)       ? $self->_encode_json_or_undef($times)       : $times;
+        my $child_times_json = ref($child_times) ? $self->_encode_json_or_undef($child_times) : $child_times;
+        my $plan_json        = ref($report_typed{plan}) ? $self->_encode_json_or_undef($report_typed{plan}) : $report_typed{plan};
+        my $halt_json        = ref($report_typed{halt}) ? $self->_encode_json_or_undef($report_typed{halt}) : $report_typed{halt};
+
+        my $spec_extras_json  = %spec_extras  ? $self->_encode_json_or_undef(\%spec_extras)  : undef;
+        my $state_extras_json = %state_extras ? $self->_encode_json_or_undef(\%state_extras) : undef;
+
         my %set;
-        $set{started_at}   = $spec->{started_at}                          if $spec   && defined $spec->{started_at};
-        $set{ended_at}     = $report->{ended_at}                          if $report && defined $report->{ended_at};
-        $set{exit}         = $report->{exit}                              if $report && defined $report->{exit};
-        $set{exit_decoded} = $self->_encode_json_or_undef($report->{exit_decoded})
-            if $report && defined $report->{exit_decoded};
-        $set{pass}         = $report->{pass} ? 1 : 0                      if $report && exists  $report->{pass};
-        $set{spec}         = $self->_encode_json_or_undef($spec)          if $spec;
-        $set{state}        = $self->_encode_json_or_undef($report)        if $report;
-        $set{status}       = (defined $report && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+        $set{queued_at}       = $spec_typed{queued_at}                     if defined $spec_typed{queued_at};
+        $set{started_at}      = $spec_typed{started_at}                    if defined $spec_typed{started_at};
+        $set{ended_at}        = $report_typed{ended_at}                    if defined $report_typed{ended_at};
+        $set{exit}            = $report_typed{exit}                        if defined $report_typed{exit};
+        $set{exit_decoded}    = $self->_encode_json_or_undef($report_typed{exit_decoded})
+            if defined $report_typed{exit_decoded};
+        $set{pass}            = $report_typed{pass} ? 1 : 0                if exists  $report_typed{pass};
+        $set{pass_count}      = $report_typed{pass_count}                  if defined $report_typed{pass_count};
+        $set{fail_count}      = $report_typed{fail_count}                  if defined $report_typed{fail_count};
+        $set{assertion_count} = $report_typed{assertion_count}             if defined $report_typed{assertion_count};
+        $set{plan}            = $plan_json                                 if defined $plan_json;
+        $set{halt}            = $halt_json                                 if defined $halt_json;
+        $set{times}           = $times_json                                if defined $times_json;
+        $set{child_times}     = $child_times_json                          if defined $child_times_json;
+        $set{child_wall}      = $child_wall                                if defined $child_wall;
+        $set{spec_extras}     = $spec_extras_json                          if defined $spec_extras_json;
+        $set{state_extras}    = $state_extras_json                         if defined $state_extras_json;
+        $set{status}          = (ref($report) eq 'HASH' && defined $report->{ended_at}) ? 'completed' : 'incomplete';
 
         $self->_update_row('job_tries', \%set, {job_try_id => $jtid});
 

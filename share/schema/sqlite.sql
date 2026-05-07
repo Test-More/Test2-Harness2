@@ -58,8 +58,11 @@ CREATE TABLE runs (
     passed_jobs     INTEGER,
     failed_jobs     INTEGER,
     aborted_jobs    INTEGER,
-    spec            BLOB,
-    state           BLOB,
+    times           BLOB,    -- JSON 4-tuple
+    child_times     BLOB,    -- JSON
+    child_wall      REAL,
+    spec_extras     BLOB,    -- JSON
+    state_extras    BLOB,    -- JSON
     UNIQUE(archive_id, run_uuid),
     UNIQUE(archive_id, run_ord)
 );
@@ -145,10 +148,19 @@ CREATE TABLE job_tries (
     pass            INTEGER,
     "exit"          INTEGER,
     exit_decoded    BLOB,
+    queued_at       TEXT,
     started_at      TEXT,
     ended_at        TEXT,
-    spec            BLOB,
-    state           BLOB,
+    pass_count      INTEGER,
+    fail_count      INTEGER,
+    assertion_count INTEGER,
+    plan            BLOB,    -- JSON
+    halt            BLOB,    -- JSON
+    times           BLOB,    -- JSON 4-tuple
+    child_times     BLOB,    -- JSON
+    child_wall      REAL,
+    spec_extras     BLOB,    -- JSON
+    state_extras    BLOB,    -- JSON
     UNIQUE(job_id, try_ord)
 );
 
