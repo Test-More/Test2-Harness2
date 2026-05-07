@@ -9,34 +9,34 @@ use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
 for_each_db_version([qw/postgresql/], sub {
     skipall_unless_can_db(driver => 'PostgreSQL');
 
-use File::Temp qw/tempdir/;
-use File::Path qw/make_path/;
-use DBI ();
+    use File::Temp qw/tempdir/;
+    use File::Path qw/make_path/;
+    use DBI ();
 
-use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
-use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
-use App::Yath2::Log;
-use App::Yath2::Log::Postgres;
+    use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+    use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
+    use App::Yath2::Log;
+    use App::Yath2::Log::Postgres;
 
-my $qdb = get_db({ driver => 'PostgreSQL' });
-{
+    my $qdb = get_db({ driver => 'PostgreSQL' });
+    {
     my $admin = DBI->connect(
         $qdb->connect_string('postgres'), undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1, pg_enable_utf8 => 1 },
     ) or die "connect: $DBI::errstr";
     $admin->do('CREATE DATABASE yath_log_test_reconstruct');
     $admin->disconnect;
-}
-my $dsn = $qdb->connect_string('yath_log_test_reconstruct');
+    }
+    my $dsn = $qdb->connect_string('yath_log_test_reconstruct');
 
-sub write_jsonl_zst {
+    sub write_jsonl_zst {
     my ($path, @rows) = @_;
     my $w = open_zstd_writer($path);
     $w->say(encode_json($_)) for @rows;
     $w->close;
-}
+    }
 
-sub build_source {
+    sub build_source {
     my $src = tempdir(CLEANUP => 1);
     make_path("$src/services/harness");
     make_path("$src/services/runner");
@@ -132,22 +132,22 @@ sub build_source {
     );
 
     return $src;
-}
+    }
 
-my $pg = App::Yath2::Log::Postgres->new(dsn => $dsn);
-my $aid = $pg->insert(App::Yath2::Log->new(dir => build_source()));
-ok(defined $aid, 'insert succeeded');
+    my $pg = App::Yath2::Log::Postgres->new(dsn => $dsn);
+    my $aid = $pg->insert(App::Yath2::Log->new(dir => build_source()));
+    ok(defined $aid, 'insert succeeded');
 
-my $dbh = $pg->dbh;
-# B9: spec/report artifact rows are not written; reconstruction is the
-# only read path. The narrowed ENUM would reject 'spec'/'report' values
-# even if we tried to insert them.
+    my $dbh = $pg->dbh;
+    # B9: spec/report artifact rows are not written; reconstruction is the
+    # only read path. The narrowed ENUM would reject 'spec'/'report' values
+    # even if we tried to insert them.
 
-# Reopen via the Postgres class directly (no public auto-detect for Pg DSN).
-my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
+    # Reopen via the Postgres class directly (no public auto-detect for Pg DSN).
+    my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
 
-# --- run-scope spec ---
-{
+    # --- run-scope spec ---
+    {
     my $arts = $log->artifacts(0);
     my @recs;
     my $it = $arts->spec_iter;
@@ -160,10 +160,10 @@ my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
     ok(defined $recs[0]{run_uuid}, 'run spec.run_uuid present');
     ok(!exists $recs[0]{jobs},     'run spec: aggregated jobs not present');
     ok(!exists $recs[0]{subtests}, 'run spec: aggregated subtests not present');
-}
+    }
 
-# --- run-scope report ---
-{
+    # --- run-scope report ---
+    {
     my $arts = $log->artifacts(0);
     my @recs;
     my $it = $arts->report_iter;
@@ -184,10 +184,10 @@ my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
     is($recs[0]{jobs}[0]{job_ord}, 0, 'jobs[0].job_ord');
     ok(ref $recs[0]{jobs}[0]{tries} eq 'ARRAY', 'jobs[0].tries is array');
     is(scalar @{$recs[0]{jobs}[0]{tries}}, 1, 'jobs[0].tries has 1 entry');
-}
+    }
 
-# --- service-scope spec / report (multi-lifetime) ---
-{
+    # --- service-scope spec / report (multi-lifetime) ---
+    {
     my $arts = $log->artifacts('runner');
     my @specs;
     my $it = $arts->spec_iter;
@@ -215,10 +215,10 @@ my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
     is($reports[1]{exit_decoded}, {signal => 0, status => 1}, 'lifetime 2 exit_decoded');
     is($reports[0]{why}, 'restart',  'lifetime 1 why from state_extras');
     is($reports[1]{why}, 'shutdown', 'lifetime 2 why from state_extras');
-}
+    }
 
-# --- job_try-scope spec / report ---
-{
+    # --- job_try-scope spec / report ---
+    {
     my $arts = $log->artifacts(0, 0, 0);
     my @specs;
     my $it = $arts->spec_iter;
@@ -248,7 +248,7 @@ my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
     is(scalar @{$reports[0]{subtests}}, 2, 'job_try report.subtests has 2 entries');
     is($reports[0]{subtests}[0]{name}, 'sub_a', 'subtest 0 name');
     is($reports[0]{subtests}[1]{name}, 'sub_b', 'subtest 1 name');
-}
+    }
 
 });
 

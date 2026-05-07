@@ -9,31 +9,31 @@ use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
 for_each_db_version([qw/mariadb/], sub {
     skipall_unless_can_db(driver => 'MariaDB');
 
-use File::Temp qw/tempdir/;
-use File::Path qw/make_path/;
-use DBI ();
+    use File::Temp qw/tempdir/;
+    use File::Path qw/make_path/;
+    use DBI ();
 
-use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util::JSON qw/encode_json/;
-use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
-use App::Yath2::Log;
-use App::Yath2::Log::MariaDB;
+    use Test2::Util::UUID qw/gen_uuid/;
+    use Test2::Harness2::Util::JSON qw/encode_json/;
+    use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
+    use App::Yath2::Log;
+    use App::Yath2::Log::MariaDB;
 
-my $qdb = get_db({ driver => 'MariaDB' });
-{
+    my $qdb = get_db({ driver => 'MariaDB' });
+    {
     my $admin = DBI->connect(
         $qdb->connect_string, undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1 },
     ) or die "connect: $DBI::errstr";
     $admin->do('CREATE DATABASE IF NOT EXISTS yath_log_test_artifactkinds');
     $admin->disconnect;
-}
-my $dsn = $qdb->connect_string('yath_log_test_artifactkinds');
+    }
+    my $dsn = $qdb->connect_string('yath_log_test_artifactkinds');
 
-# B9: insert() no longer writes spec/report/state artifact rows. The
-# artifact_kind ENUM allows only 'events','attachment','arbitrary'.
+    # B9: insert() no longer writes spec/report/state artifact rows. The
+    # artifact_kind ENUM allows only 'events','attachment','arbitrary'.
 
-sub build_source {
+    sub build_source {
     my $src = tempdir(CLEANUP => 1);
     make_path("$src/services/harness");
     make_path("$src/runs/0");
@@ -61,16 +61,16 @@ sub build_source {
     close $a;
 
     return $src;
-}
+    }
 
-my $db = App::Yath2::Log::MariaDB->new(dsn => $dsn);
-$db->bootstrap_schema;
+    my $db = App::Yath2::Log::MariaDB->new(dsn => $dsn);
+    $db->bootstrap_schema;
 
-my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
-ok(defined $aid, 'insert succeeded');
+    my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
+    ok(defined $aid, 'insert succeeded');
 
-my $dbh  = $db->dbh;
-my $rows = $dbh->selectall_arrayref(q{
+    my $dbh  = $db->dbh;
+    my $rows = $dbh->selectall_arrayref(q{
     SELECT DISTINCT artifact_kind FROM artifacts ORDER BY artifact_kind
 });
 my @kinds = map { $_->[0] } @$rows;

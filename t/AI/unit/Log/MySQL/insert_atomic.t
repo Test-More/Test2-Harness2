@@ -9,29 +9,29 @@ use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
 for_each_db_version([qw/mysql percona/], sub {
     skipall_unless_can_db(driver => 'MySQL');
 
-use File::Temp qw/tempdir/;
-use File::Path qw/make_path/;
-use DBI ();
+    use File::Temp qw/tempdir/;
+    use File::Path qw/make_path/;
+    use DBI ();
 
-use Test2::Harness2::Util::JSON qw/encode_json/;
-use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
-use App::Yath2::Log;
-use App::Yath2::Log::MySQL;
+    use Test2::Harness2::Util::JSON qw/encode_json/;
+    use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
+    use App::Yath2::Log;
+    use App::Yath2::Log::MySQL;
 
-# B8 (D6): atomic insert + duplicate-archive rejection.
+    # B8 (D6): atomic insert + duplicate-archive rejection.
 
-my $qdb = get_db({ driver => 'MySQL' });
-{
+    my $qdb = get_db({ driver => 'MySQL' });
+    {
     my $admin = DBI->connect(
         $qdb->connect_string, undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1 },
     ) or die "connect: $DBI::errstr";
     $admin->do('CREATE DATABASE IF NOT EXISTS yath_log_test_insertatomic');
     $admin->disconnect;
-}
-my $dsn = $qdb->connect_string('yath_log_test_insertatomic');
+    }
+    my $dsn = $qdb->connect_string('yath_log_test_insertatomic');
 
-sub build_source {
+    sub build_source {
     my (%args) = @_;
     my $uuid = $args{archive_uuid};
     my $src  = tempdir(CLEANUP => 1);
@@ -63,9 +63,9 @@ sub build_source {
         close $fh;
     }
     return $src;
-}
+    }
 
-sub clean_db {
+    sub clean_db {
     my $dbh = shift;
     for my $t (qw/
         artifacts subtests job_specs job_tries jobs test_files
@@ -73,10 +73,10 @@ sub clean_db {
     /) {
         $dbh->do("DELETE FROM $t");
     }
-}
+    }
 
-# {{{ Test 1: duplicate-uuid rejection.
-{
+    # {{{ Test 1: duplicate-uuid rejection.
+    {
     my $db = App::Yath2::Log::MySQL->new(dsn => $dsn);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
@@ -96,15 +96,15 @@ sub clean_db {
 
     my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
     is($n, 1, 'one archives row -- re-import did not partially populate');
-}
-# }}}
+    }
+    # }}}
 
-# {{{ Test 2: atomic rollback.
-# MySQL.pm has its own insert() override that calls
-# _mysql_insert_body which itself calls _populate_summary_rows. The
-# monkey-patch is portable because we patch the base-class symbol
-# inherited by both flavors.
-{
+    # {{{ Test 2: atomic rollback.
+    # MySQL.pm has its own insert() override that calls
+    # _mysql_insert_body which itself calls _populate_summary_rows. The
+    # monkey-patch is portable because we patch the base-class symbol
+    # inherited by both flavors.
+    {
     my $db = App::Yath2::Log::MySQL->new(dsn => $dsn);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
@@ -136,11 +136,11 @@ sub clean_db {
     ok(defined $aid, 'retry after rollback succeeds');
     my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
     is($n, 1, 'one archives row after retry');
-}
-# }}}
+    }
+    # }}}
 
-# {{{ Test 3: explicit archive_uuid override.
-{
+    # {{{ Test 3: explicit archive_uuid override.
+    {
     my $db = App::Yath2::Log::MySQL->new(dsn => $dsn);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
@@ -174,8 +174,8 @@ sub clean_db {
     );
     is(uc($got), uc($ovr_uuid),
         'override archive_uuid wins over source meta (D6)');
-}
-# }}}
+    }
+    # }}}
 
 });
 

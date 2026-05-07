@@ -9,27 +9,27 @@ use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
 for_each_db_version([qw/postgresql/], sub {
     skipall_unless_can_db(driver => 'PostgreSQL');
 
-use File::Temp qw/tempdir/;
-use File::Path qw/make_path/;
-use DBI ();
+    use File::Temp qw/tempdir/;
+    use File::Path qw/make_path/;
+    use DBI ();
 
-use Test2::Harness2::Util::JSON qw/encode_json/;
-use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
-use App::Yath2::Log;
-use App::Yath2::Log::Postgres;
+    use Test2::Harness2::Util::JSON qw/encode_json/;
+    use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
+    use App::Yath2::Log;
+    use App::Yath2::Log::Postgres;
 
-my $qdb = get_db({ driver => 'PostgreSQL' });
-{
+    my $qdb = get_db({ driver => 'PostgreSQL' });
+    {
     my $admin = DBI->connect(
         $qdb->connect_string('postgres'), undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1, pg_enable_utf8 => 1 },
     ) or die "connect: $DBI::errstr";
     $admin->do('CREATE DATABASE yath_log_test_archver');
     $admin->disconnect;
-}
-my $dsn = $qdb->connect_string('yath_log_test_archver');
+    }
+    my $dsn = $qdb->connect_string('yath_log_test_archver');
 
-sub build_minimal_log {
+    sub build_minimal_log {
     my $src = tempdir(CLEANUP => 1);
     make_path("$src/services/harness");
     make_path("$src/runs/0");
@@ -46,50 +46,50 @@ sub build_minimal_log {
     $w->close;
 
     return $src;
-}
+    }
 
-my $writer = App::Yath2::Log::Postgres->new(dsn => $dsn);
-$writer->bootstrap_schema;
+    my $writer = App::Yath2::Log::Postgres->new(dsn => $dsn);
+    $writer->bootstrap_schema;
 
-my $src = build_minimal_log();
-my $aid = $writer->insert(App::Yath2::Log->new(dir => $src));
-ok(defined $aid, 'insert returned an archive_id');
+    my $src = build_minimal_log();
+    my $aid = $writer->insert(App::Yath2::Log->new(dir => $src));
+    ok(defined $aid, 'insert returned an archive_id');
 
-my ($stamped_version) = $writer->dbh->selectrow_array(
+    my ($stamped_version) = $writer->dbh->selectrow_array(
     'SELECT archive_version FROM archives WHERE archive_id = ?',
     undef, $aid,
-);
-is($stamped_version, $App::Yath2::Log::VERSION,
+    );
+    is($stamped_version, $App::Yath2::Log::VERSION,
     'archive_version stamped to $App::Yath2::Log::VERSION on insert');
 
-{
+    {
     my $reader;
     ok(
         lives { $reader = App::Yath2::Log::Postgres->new(dsn => $dsn) },
         'reader opens at current version',
     );
     is([$reader->runs], [0], 'reader sees the run');
-}
+    }
 
-$writer->dbh->do(
+    $writer->dbh->do(
     'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
     undef, '2.000010', $aid,
-);
+    );
 
-like(
+    like(
     dies { App::Yath2::Log::Postgres->new(dsn => $dsn) },
     qr/refusing to read/,
     'reader refuses archive whose archive_version < last_breaking_version',
-);
+    );
 
-$writer->dbh->do(
+    $writer->dbh->do(
     'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
     undef, $App::Yath2::Log::VERSION, $aid,
-);
-ok(
+    );
+    ok(
     lives { App::Yath2::Log::Postgres->new(dsn => $dsn) },
     'reader works once archive_version is back at current',
-);
+    );
 
 });
 
