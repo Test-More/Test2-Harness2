@@ -15,6 +15,12 @@
 
 CREATE TYPE artifact_kind_t AS ENUM ('events','state','spec','report','attachment','arbitrary');
 
+CREATE TABLE projects (
+    project_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name            TEXT   NOT NULL,
+    UNIQUE(name)
+);
+
 CREATE TABLE archives (
     archive_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     archive_uuid    UUID        NOT NULL,
@@ -28,6 +34,7 @@ CREATE TABLE archives (
 CREATE TABLE runs (
     run_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     archive_id      BIGINT      NOT NULL REFERENCES archives(archive_id) ON DELETE CASCADE,
+    project_id      BIGINT      NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     run_ord         INTEGER     NOT NULL,
     run_uuid        UUID        NOT NULL,
     status          TEXT        NOT NULL,
@@ -49,6 +56,7 @@ CREATE TABLE runs (
 );
 
 CREATE INDEX runs_archive_idx ON runs(archive_id);
+CREATE INDEX runs_project_idx ON runs(project_id);
 CREATE INDEX runs_status_idx  ON runs(status);
 CREATE INDEX runs_pass_idx    ON runs(pass);
 

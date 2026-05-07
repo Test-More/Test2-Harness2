@@ -262,17 +262,20 @@ sub _ensure_run_row {
     );
     return $id if defined $id;
 
-    my $run_uuid = gen_uuid();
+    my $run_uuid   = gen_uuid();
+    my $project_id = $self->{App::Yath2::Log::DB::PROJECT_ID}
+        // croak("project_id not set on DB object before _ensure_run_row");
     my $sth = $dbh->prepare(q{
-        INSERT INTO runs (archive_id, run_ord, run_uuid, status, aborted, timed_out)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO runs (archive_id, project_id, run_ord, run_uuid, status, aborted, timed_out)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     });
     $sth->bind_param(1, $aid);
-    $sth->bind_param(2, $run_ord);
-    $sth->bind_param(3, $self->_uuid_to_db($run_uuid), DBI::SQL_BINARY());
-    $sth->bind_param(4, 'unknown');
-    $sth->bind_param(5, 0);
+    $sth->bind_param(2, $project_id);
+    $sth->bind_param(3, $run_ord);
+    $sth->bind_param(4, $self->_uuid_to_db($run_uuid), DBI::SQL_BINARY());
+    $sth->bind_param(5, 'unknown');
     $sth->bind_param(6, 0);
+    $sth->bind_param(7, 0);
     $sth->execute;
     return $self->_last_insert_id($dbh, 'runs', 'run_id');
 }
@@ -378,7 +381,17 @@ sub insert {
     my $dbh = $self->dbh;
     $self->bootstrap_schema;
 
-    my $aid = $self->_create_archive($opts{archive_uuid});
+    require App::Yath2::Log;
+    my $meta = App::Yath2::Log->build_archive_meta(
+        archive_uuid => $opts{archive_uuid},
+    );
+
+    # Resolve (find-or-create) the projects row for this archive.
+    my $project_name = $meta->{project} // 'unknown';
+    my $project_id   = $self->_resolve_or_create_project($project_name);
+    $self->{App::Yath2::Log::DB::PROJECT_ID} = $project_id;
+
+    my $aid = $self->_create_archive($meta->{archive_uuid});
 
     my @files;
     if ($source->can('list_files')) {

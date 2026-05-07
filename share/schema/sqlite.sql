@@ -22,6 +22,14 @@
 -- Payload compression: client-side zstd. App compresses bytes before
 -- INSERT and stores compressed=1. SQLite has no native compression.
 
+CREATE TABLE projects (
+    project_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT    NOT NULL,
+    UNIQUE(name)
+);
+
+CREATE INDEX projects_name_idx ON projects(name);
+
 CREATE TABLE archives (
     archive_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     archive_uuid    TEXT    NOT NULL COLLATE BINARY,
@@ -35,6 +43,7 @@ CREATE TABLE archives (
 CREATE TABLE runs (
     run_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     archive_id      INTEGER NOT NULL REFERENCES archives(archive_id) ON DELETE CASCADE,
+    project_id      INTEGER NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     run_ord         INTEGER NOT NULL,
     run_uuid        TEXT    NOT NULL COLLATE BINARY,
     status          TEXT    NOT NULL,
@@ -56,6 +65,7 @@ CREATE TABLE runs (
 );
 
 CREATE INDEX runs_archive_idx ON runs(archive_id);
+CREATE INDEX runs_project_idx ON runs(project_id);
 CREATE INDEX runs_status_idx  ON runs(status);
 CREATE INDEX runs_pass_idx    ON runs(pass);
 

@@ -32,6 +32,7 @@ use Object::HashBase qw{
     <attrs
     <uuid
     <archive_id
+    <project_id
     +_walk
     +_seen_starts
     +_closed_starts
@@ -213,6 +214,22 @@ sub _create_archive {
 sub _last_insert_id {
     my ($self, $dbh, $table, $col) = @_;
     return $dbh->last_insert_id(undef, undef, $table, $col);
+}
+
+# Find or create a projects row by name. Returns project_id. Idempotent.
+sub _resolve_or_create_project {
+    my ($self, $name) = @_;
+    croak "project name required" unless defined $name && length $name;
+
+    my $dbh = $self->dbh;
+    my ($id) = $dbh->selectrow_array(
+        q{SELECT project_id FROM projects WHERE name = ?},
+        undef, $name,
+    );
+    return $id if defined $id;
+
+    $dbh->do(q{INSERT INTO projects (name) VALUES (?)}, undef, $name);
+    return $self->_last_insert_id($dbh, 'projects', 'project_id');
 }
 
 # archive_id accessor comes from HashBase (`<archive_id`).
@@ -1067,12 +1084,14 @@ sub _ensure_run_row {
     );
     return $id if defined $id;
 
-    my $run_uuid = gen_uuid();
+    my $run_uuid   = gen_uuid();
+    my $project_id = $self->{+PROJECT_ID}
+        // croak "project_id not set on DB object before _ensure_run_row";
     my $sth = $dbh->prepare(q{
-        INSERT INTO runs (archive_id, run_ord, run_uuid, status, aborted, timed_out)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO runs (archive_id, project_id, run_ord, run_uuid, status, aborted, timed_out)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     });
-    $sth->execute($aid, $run_ord, $self->_uuid_to_db($run_uuid), 'unknown', 0, 0);
+    $sth->execute($aid, $project_id, $run_ord, $self->_uuid_to_db($run_uuid), 'unknown', 0, 0);
     return $self->_last_insert_id($dbh, 'runs', 'run_id');
 }
 
@@ -1570,6 +1589,11 @@ sub insert {
     );
     my $meta_bytes = App::Yath2::Log->encode_archive_meta($meta);
 
+    # Resolve (find-or-create) the projects row for this archive.
+    my $project_name = $meta->{project} // 'unknown';
+    my $project_id   = $self->_resolve_or_create_project($project_name);
+    $self->{+PROJECT_ID} = $project_id;
+
     # Fresh archive row.
     my $aid = $self->_create_archive($meta->{archive_uuid});
 
@@ -1695,7 +1719,7 @@ sub insert {
     # readers actually query (status / pass / exit / file / etc.) -- a
     # row of NULLs makes the DB unusable for everything except raw
     # artifact retrieval.
-    $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs);
+    $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
 
     $dbh->do(q{UPDATE archives SET sealed_at = ? WHERE archive_id = ?},
         undef, $self->_now_iso, $aid);
@@ -1710,7 +1734,7 @@ sub insert {
 # population are isolated -- one corrupt artifact does not abort the
 # seal -- but they warn so the user knows the row is partial.
 sub _populate_summary_rows {
-    my ($self, $source, $aid, $runs_filter, $exclude_runs_filter) = @_;
+    my ($self, $source, $aid, $runs_filter, $exclude_runs_filter, $project_id) = @_;
 
     my $dbh = $self->dbh;
     require Test2::Harness2::Util::JSON;
@@ -1734,7 +1758,7 @@ sub _populate_summary_rows {
             next if grep { $_ eq $run_ord } @$exclude_runs_filter;
         }
 
-        $self->_populate_run_row($source, $aid, $run_ord);
+        $self->_populate_run_row($source, $aid, $run_ord, $project_id);
 
         if ($source->can('services')) {
             for my $name ($source->services($run_ord)) {
@@ -1777,7 +1801,7 @@ sub _encode_json_or_undef {
 }
 
 sub _populate_run_row {
-    my ($self, $source, $aid, $run_ord) = @_;
+    my ($self, $source, $aid, $run_ord, $project_id) = @_;
     my $dbh = $self->dbh;
 
     my $artifact = eval { $source->artifacts($run_ord) } or return;
@@ -1798,6 +1822,7 @@ sub _populate_run_row {
     $set{spec}         = $self->_encode_json_or_undef($spec)          if $spec;
     $set{state}        = $self->_encode_json_or_undef($report)        if $report;
     $set{status}       = (defined $report && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+    $set{project_id}   = $project_id                                  if defined $project_id;
 
     my %where = (archive_id => $aid, run_ord => $run_ord);
 

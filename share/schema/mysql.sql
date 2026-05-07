@@ -22,6 +22,12 @@
 -- INSERT and stores compressed=1. (No native zstd-capable server-side
 -- compression on stock MySQL.)
 
+CREATE TABLE projects (
+    project_id      BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    name            VARCHAR(255) NOT NULL,
+    UNIQUE KEY projects_name_uk (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE archives (
     archive_id          BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_uuid        BINARY(16)   NOT NULL,
@@ -44,6 +50,7 @@ CREATE TRIGGER archives_uuid_str_upd
 CREATE TABLE runs (
     run_id           BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_id       BIGINT       NOT NULL,
+    project_id       BIGINT       NOT NULL,
     run_ord          INT          NOT NULL,
     run_uuid         BINARY(16)   NOT NULL,
     run_uuid_string  CHAR(36),
@@ -65,9 +72,11 @@ CREATE TABLE runs (
     UNIQUE KEY runs_archive_uuid_string_uk (archive_id, run_uuid_string),
     UNIQUE KEY runs_archive_ord_uk         (archive_id, run_ord),
     KEY runs_archive_idx (archive_id),
+    KEY runs_project_idx (project_id),
     KEY runs_status_idx  (status),
     KEY runs_pass_idx    (pass),
-    CONSTRAINT runs_archive_fk FOREIGN KEY (archive_id) REFERENCES archives(archive_id) ON DELETE CASCADE
+    CONSTRAINT runs_archive_fk FOREIGN KEY (archive_id) REFERENCES archives(archive_id) ON DELETE CASCADE,
+    CONSTRAINT runs_project_fk FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TRIGGER runs_uuid_str_ins
