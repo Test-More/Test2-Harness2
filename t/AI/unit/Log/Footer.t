@@ -64,6 +64,7 @@ subtest 'round-trip various format ids' => sub {
 };
 
 subtest 'round-trip preserves all numeric fields' => sub {
+    no warnings 'portable';   # 64-bit hex literals exceed 0xFFFFFFFF
     my $packed = pack_footer(
         format_id   => 'TAR',
         flags       => FLAG_META_COMPRESSED,
