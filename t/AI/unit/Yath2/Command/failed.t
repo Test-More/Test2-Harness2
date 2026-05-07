@@ -20,7 +20,8 @@ sub build_logdir {
     {
         open my $fh, '>', "$tmp/runs/1/jobs/1/1/spec.jsonl" or die $!;
         print $fh encode_json({
-            test_file  => {absolute => '/abs/passing.t', relative => 't/passing.t'},
+            absolute   => '/abs/passing.t',
+            relative   => 't/passing.t',
             queued_at  => 1000,
             started_at => 1001,
         }), "\n";
@@ -40,7 +41,8 @@ sub build_logdir {
     {
         open my $fh, '>', "$tmp/runs/1/jobs/2/1/spec.jsonl" or die $!;
         print $fh encode_json({
-            test_file  => {absolute => '/abs/failing.t', relative => 't/failing.t'},
+            absolute   => '/abs/failing.t',
+            relative   => 't/failing.t',
             queued_at  => 1000,
             started_at => 1001,
         }), "\n";
@@ -75,8 +77,7 @@ sub collect_results {
                 my $spec   = $arts->spec_iter->first   // {};
                 my $report = $arts->report_iter->last  // {};
 
-                my $tf  = $spec->{test_file} // {};
-                my $rel = $tf->{relative} // $tf->{file};
+                my $rel = $spec->{relative};
                 next unless defined $rel;
 
                 $by_file{$rel} = {
@@ -126,9 +127,8 @@ subtest 'spec_iter and report_iter decode fields correctly' => sub {
     my $spec   = $arts->spec_iter->first  // {};
     my $report = $arts->report_iter->last // {};
 
-    my $tf = $spec->{test_file} // {};
-    is($tf->{relative}, 't/failing.t', 'spec relative path is t/failing.t');
-    is($tf->{absolute}, '/abs/failing.t', 'spec absolute path is /abs/failing.t');
+    is($spec->{relative}, 't/failing.t',   'spec relative path is t/failing.t');
+    is($spec->{absolute}, '/abs/failing.t', 'spec absolute path is /abs/failing.t');
 
     is($report->{pass},     0,    'report pass=0 for failing job');
     is($report->{exit},     1,    'report exit=1 for failing job');

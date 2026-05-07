@@ -248,7 +248,7 @@ sub request_handler_launch_job {
             ipc_harness  => $self->{+HARNESS_NAME},
             kill_timeout => $self->{+KILL_TIMEOUT},
             spec         => {
-                test_file => $test_file_spec->TO_JSON,
+                %{ $test_file_spec->TO_JSON },
                 run_id    => $run_id,
                 job_id    => $job_id,
                 job_try   => $job_try,

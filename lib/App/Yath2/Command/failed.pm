@@ -86,8 +86,7 @@ sub run {
                 my $arts = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
 
                 my $spec = $arts->spec_iter->first // {};
-                my $tf   = $spec->{test_file}      // {};
-                my $rel  = $tf->{relative} // $tf->{file};
+                my $rel  = $spec->{relative};
                 next unless defined $rel;
 
                 my $report = $arts->report_iter->last // {};

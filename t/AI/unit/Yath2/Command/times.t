@@ -25,7 +25,8 @@ sub build_logdir {
 
         open my $fh, '>', "$tmp/runs/1/jobs/$jid/1/spec.jsonl" or die $!;
         print $fh encode_json({
-            test_file  => {relative => "t/$name.t", absolute => "/abs/t/$name.t"},
+            relative   => "t/$name.t",
+            absolute   => "/abs/t/$name.t",
             queued_at  => 99,
             started_at => $start,
         }), "\n";
@@ -60,8 +61,7 @@ sub collect_times {
             my $spec   = $arts->spec_iter->first  // {};
             my $report = $arts->report_iter->last // {};
 
-            my $tf   = $spec->{test_file} // {};
-            my $file = $tf->{relative} // $tf->{file} // $tf->{absolute};
+            my $file = $spec->{relative} // $spec->{absolute};
             next unless defined $file;
 
             my $start = $spec->{started_at};

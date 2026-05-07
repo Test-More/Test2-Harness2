@@ -102,8 +102,7 @@ sub run {
             my $spec   = $arts->spec_iter->first // {};
             my $report = $arts->report_iter->last // {};
 
-            my $tf = $spec->{test_file} // {};
-            my $file = $tf->{relative} // $tf->{file} // $tf->{absolute};
+            my $file = $spec->{relative} // $spec->{absolute};
             next unless defined $file;
 
             my $start = $spec->{started_at};

@@ -1882,8 +1882,7 @@ sub _populate_job_rows {
             $latest_try_ord  = $try_ord;
             $latest_pass     = $set{pass};
             $latest_status   = $set{status};
-            my $tf = ref($spec) eq 'HASH' && ref($spec->{test_file}) eq 'HASH' ? $spec->{test_file} : undef;
-            $latest_file     = $tf ? ($tf->{relative} // $tf->{absolute} // $tf->{file}) : undef;
+            $latest_file     = ref($spec) eq 'HASH' ? ($spec->{relative} // $spec->{absolute}) : undef;
             $latest_spec_json = $set{spec};
         }
 

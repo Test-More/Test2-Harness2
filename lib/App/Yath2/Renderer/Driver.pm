@@ -373,11 +373,9 @@ sub _job_spec {
     };
     $row //= {};
 
-    my $tf = ref($row->{test_file}) eq 'HASH' ? $row->{test_file} : {};
     my %out;
-    $out{abs_file}   = $tf->{absolute}     if defined $tf->{absolute};
-    $out{rel_file}   = $tf->{relative}     if defined $tf->{relative};
-    $out{abs_file} //= $tf->{file}         if defined $tf->{file};
+    $out{abs_file}   = $row->{absolute}    if defined $row->{absolute};
+    $out{rel_file}   = $row->{relative}    if defined $row->{relative};
     $out{queued_at}  = $row->{queued_at}   if defined $row->{queued_at};
     $out{started_at} = $row->{started_at}  if defined $row->{started_at};
 

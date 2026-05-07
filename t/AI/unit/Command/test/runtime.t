@@ -54,8 +54,9 @@ my $log = FakeLog->new(
     jobs => {
         "0/0/0" => FakeArtifact->new(
             spec => {
-                test_file => {absolute => '/tmp/a.t', relative => 't/a.t'},
-                queued_at => 100,
+                absolute   => '/tmp/a.t',
+                relative   => 't/a.t',
+                queued_at  => 100,
                 started_at => 101,
             },
             report => {
@@ -65,7 +66,7 @@ my $log = FakeLog->new(
             },
         ),
         "1/9/0" => FakeArtifact->new(
-            spec   => {test_file => {absolute => '/tmp/b.t', relative => 't/b.t'}, queued_at => 200},
+            spec   => {absolute => '/tmp/b.t', relative => 't/b.t', queued_at => 200},
             report => {
                 pass => 0, exit => 256, exit_decoded => {err => 1, all => 256, dmp => 0, sig => 0},
                 ended_at => 202, times => [0, 0, 0.2, 0],

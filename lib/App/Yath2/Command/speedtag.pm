@@ -129,8 +129,7 @@ sub run {
             my $spec   = $arts->spec_iter->first // {};
             my $report = $arts->report_iter->last // {};
 
-            my $tf = $spec->{test_file} // {};
-            my $file = $tf->{absolute} // $tf->{file};
+            my $file = $spec->{absolute};
             next unless defined $file;
 
             $file = clean_path($file);
