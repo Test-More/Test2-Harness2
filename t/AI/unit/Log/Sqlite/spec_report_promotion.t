@@ -135,11 +135,13 @@ my $run = $dbh->selectrow_hashref(
 );
 ok(defined $run, 'runs row exists');
 
-# Promoted typed columns from spec.
-is($run->{started_at}, '2026-05-07T00:00:00Z', 'runs.started_at from spec');
+# Promoted typed columns from spec. Raw column is flavor-canonical
+# (sqlite stores DateTime::Format::SQLite shape); compare via
+# _db_datetime_to_iso to match the producer's ISO 'T'/'Z' shape.
+is($db->_db_datetime_to_iso($run->{started_at}), '2026-05-07T00:00:00Z', 'runs.started_at from spec');
 
 # Promoted typed columns from report.
-is($run->{ended_at},     '2026-05-07T00:01:00Z', 'runs.ended_at from report');
+is($db->_db_datetime_to_iso($run->{ended_at}), '2026-05-07T00:01:00Z', 'runs.ended_at from report');
 is($run->{exit},         0,                       'runs.exit from report');
 is($run->{pass},         1,                       'runs.pass from report');
 is($run->{total_jobs},   2,                       'runs.total_jobs from report');
@@ -204,11 +206,11 @@ my $jt = $dbh->selectrow_hashref(q{
 ok(defined $jt, 'job_tries row exists');
 
 # Promoted typed columns from spec.
-is($jt->{queued_at},  '2026-05-07T00:00:00.500Z', 'job_tries.queued_at from spec');
-is($jt->{started_at}, '2026-05-07T00:00:01Z',     'job_tries.started_at from spec');
+is($db->_db_datetime_to_iso($jt->{queued_at}),  '2026-05-07T00:00:00.500Z', 'job_tries.queued_at from spec');
+is($db->_db_datetime_to_iso($jt->{started_at}), '2026-05-07T00:00:01Z',     'job_tries.started_at from spec');
 
 # Promoted typed columns from report.
-is($jt->{ended_at},        '2026-05-07T00:00:02Z', 'job_tries.ended_at from report');
+is($db->_db_datetime_to_iso($jt->{ended_at}), '2026-05-07T00:00:02Z', 'job_tries.ended_at from report');
 is($jt->{exit},            0,                       'job_tries.exit from report');
 is($jt->{pass},            1,                       'job_tries.pass from report');
 is($jt->{pass_count},      5,                       'job_tries.pass_count from report');

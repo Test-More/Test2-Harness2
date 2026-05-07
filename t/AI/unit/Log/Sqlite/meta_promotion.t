@@ -90,7 +90,10 @@ sub build_minimal_log {
     ok(defined $row->{user_},        'archives."user" populated');
     ok(defined $row->{yath_version}, 'archives.yath_version populated');
     ok(defined $row->{sealed_at},    'archives.sealed_at non-null');
-    is($row->{sealed_at}, $meta->{created_at},
+    # Raw column shape is flavor-canonical (sqlite stores DateTime::Format::SQLite
+    # 'YYYY-MM-DD HH:MM:SS'); compare via _db_datetime_to_iso to match
+    # meta.json's ISO 'YYYY-MM-DDTHH:MM:SSZ' shape.
+    is($db->_db_datetime_to_iso($row->{sealed_at}), $meta->{created_at},
         'sealed_at equals meta.created_at (D5)');
 
     ok(defined $row->{meta_extras},
@@ -149,7 +152,7 @@ sub build_minimal_log {
           FROM archives WHERE archive_id = ?
     }, undef, $aid);
 
-    is($row->{sealed_at}, $fixed_created_at,
+    is($db->_db_datetime_to_iso($row->{sealed_at}), $fixed_created_at,
         'sealed_at carried over from source meta.created_at (D5)');
     is($row->{host},    'test-host.example',     'host carried over');
     is($row->{user_},   'tester',                'user carried over');

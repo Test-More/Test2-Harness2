@@ -107,17 +107,19 @@ is($rows->[0]{lifetime_ord}, 1, 'lifetime_ord 1 first');
 is($rows->[1]{lifetime_ord}, 2, 'lifetime_ord 2 second');
 is($rows->[2]{lifetime_ord}, 3, 'lifetime_ord 3 third');
 
-# ended_at and exit from each report row.
-is($rows->[0]{ended_at}, '2026-05-07T00:01:00Z', 'row 1 ended_at');
-is($rows->[1]{ended_at}, '2026-05-07T00:02:00Z', 'row 2 ended_at');
-is($rows->[2]{ended_at}, '2026-05-07T00:03:00Z', 'row 3 ended_at');
+# ended_at and exit from each report row. Raw column is flavor-canonical
+# (sqlite stores DateTime::Format::SQLite shape); compare via
+# _db_datetime_to_iso to match the producer's ISO 'T'/'Z' shape.
+is($db->_db_datetime_to_iso($rows->[0]{ended_at}), '2026-05-07T00:01:00Z', 'row 1 ended_at');
+is($db->_db_datetime_to_iso($rows->[1]{ended_at}), '2026-05-07T00:02:00Z', 'row 2 ended_at');
+is($db->_db_datetime_to_iso($rows->[2]{ended_at}), '2026-05-07T00:03:00Z', 'row 3 ended_at');
 
 is($rows->[0]{exit}, 1, 'row 1 exit');
 is($rows->[1]{exit}, 2, 'row 2 exit');
 is($rows->[2]{exit}, 0, 'row 3 exit');
 
 # Only first row gets started_at (one spec row, three reports).
-is($rows->[0]{started_at}, '2026-05-07T00:00:00Z',
+is($db->_db_datetime_to_iso($rows->[0]{started_at}), '2026-05-07T00:00:00Z',
     'row 1 started_at from spec');
 is($rows->[1]{started_at}, undef, 'row 2 started_at NULL (no spec)');
 is($rows->[2]{started_at}, undef, 'row 3 started_at NULL (no spec)');

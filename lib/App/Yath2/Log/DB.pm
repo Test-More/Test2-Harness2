@@ -253,15 +253,72 @@ sub _create_archive {
     return $id;
 }
 
-# Normalize an ISO-8601 timestamp string ('YYYY-MM-DDTHH:MM:SS[.fff]Z')
-# for the active flavor's DATETIME column. Default: pass through (sqlite
-# + postgres accept 'T'/'Z'). Mariadb / mysql override.
-sub _iso_to_db_datetime { $_[1] }
+# Build a DateTime object from a producer-emitted timestamp. Accepts:
+#   * undef                    -> undef
+#   * DateTime object          -> as-is
+#   * Numeric epoch (any frac) -> DateTime::from_epoch UTC
+#   * ISO-8601-ish string      -> DateTime::Format::ISO8601->parse
+#   * any other string         -> undef (caller should pass through)
+sub _to_datetime {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    if (ref $val) {
+        return $val if eval { $val->isa('DateTime') };
+        return undef;
+    }
+    require DateTime;
+    if ($val =~ /\A-?\d+(?:\.\d+)?\z/) {
+        return DateTime->from_epoch(epoch => $val + 0, time_zone => 'UTC');
+    }
+    if ($val =~ /\A\d{4}-\d{2}-\d{2}/) {
+        require DateTime::Format::ISO8601;
+        # ISO8601 parser is lenient; tolerates 'T' or ' ' separator,
+        # optional 'Z' or offset, and fractional seconds.
+        my $tweaked = $val;
+        $tweaked =~ s/ /T/;     # space -> T for the parser
+        return eval { DateTime::Format::ISO8601->parse_datetime($tweaked) };
+    }
+    return undef;
+}
 
-# Reverse of _iso_to_db_datetime -- normalize a DATETIME column value
-# back to ISO-8601 'T'/'Z' shape for meta.json reconstruction. Default
-# pass-through.
-sub _db_datetime_to_iso { $_[1] }
+# Format a DateTime for the active flavor's DATETIME / TIMESTAMPTZ
+# column. Default: ISO-8601 with Z (sqlite + postgres tolerate it).
+# Per-flavor subclasses use DateTime::Format::Pg / MySQL / SQLite.
+sub _format_datetime {
+    my ($self, $dt) = @_;
+    return undef unless defined $dt;
+    return $dt->iso8601 . 'Z';
+}
+
+# Producer-side: turn whatever the producer emitted into a flavor-
+# acceptable string. Falls back to passing through unparseable strings
+# so the DB error message points at the bad value.
+sub _normalize_timestamp {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    my $dt = $self->_to_datetime($val);
+    return defined $dt ? $self->_format_datetime($dt) : $val;
+}
+
+# Meta.json's created_at -> flavor DATETIME column. Single producer-
+# style entry point so the carry-over path in _create_archive works
+# the same way as live producer values.
+sub _iso_to_db_datetime {
+    my ($self, $iso) = @_;
+    return $self->_normalize_timestamp($iso);
+}
+
+# Reverse: column value -> ISO-8601 for meta.json reconstruction.
+# strftime keeps fractional seconds; $dt->iso8601 drops them.
+sub _db_datetime_to_iso {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    my $dt = $self->_to_datetime($val);
+    return $val unless defined $dt;
+    my $ns = $dt->nanosecond;
+    return $dt->strftime('%Y-%m-%dT%H:%M:%SZ') if $ns == 0;
+    return $dt->strftime('%Y-%m-%dT%H:%M:%S.%3NZ');
+}
 
 # Split a meta hash into (extras_json, promoted_hash). Anything in
 # META_PROMOTED_KEYS goes to typed columns; everything else is encoded
@@ -2438,8 +2495,8 @@ sub _populate_run_row {
     my $state_extras_json = %state_extras ? $self->_encode_json_or_undef(\%state_extras) : undef;
 
     my %set;
-    $set{started_at}   = $spec_typed{started_at}                       if defined $spec_typed{started_at};
-    $set{ended_at}     = $report_typed{ended_at}                       if defined $report_typed{ended_at};
+    $set{started_at}   = $self->_normalize_timestamp($spec_typed{started_at})   if defined $spec_typed{started_at};
+    $set{ended_at}     = $self->_normalize_timestamp($report_typed{ended_at})   if defined $report_typed{ended_at};
     $set{exit}         = $report_typed{exit}                           if defined $report_typed{exit};
     $set{exit_decoded} = $self->_encode_json_or_undef($report_typed{exit_decoded})
         if defined $report_typed{exit_decoded};
@@ -2573,8 +2630,8 @@ sub _populate_service_lifetimes {
         my $id           = $spec_typed{id};
         my $service_name = $spec_typed{service_name};
         my $stage_name   = $spec_typed{stage_name};
-        my $started_at   = $spec_typed{started_at};
-        my $ended_at     = $report_typed{ended_at};
+        my $started_at   = $self->_normalize_timestamp($spec_typed{started_at});
+        my $ended_at     = $self->_normalize_timestamp($report_typed{ended_at});
         my $exit_val     = $report_typed{exit};
         my $exit_decoded = exists $report_typed{exit_decoded}
             ? $self->_encode_json_or_undef($report_typed{exit_decoded})
@@ -2698,9 +2755,9 @@ sub _populate_job_rows {
         my $state_extras_json = %state_extras ? $self->_encode_json_or_undef(\%state_extras) : undef;
 
         my %set;
-        $set{queued_at}       = $spec_typed{queued_at}                     if defined $spec_typed{queued_at};
-        $set{started_at}      = $spec_typed{started_at}                    if defined $spec_typed{started_at};
-        $set{ended_at}        = $report_typed{ended_at}                    if defined $report_typed{ended_at};
+        $set{queued_at}       = $self->_normalize_timestamp($spec_typed{queued_at})   if defined $spec_typed{queued_at};
+        $set{started_at}      = $self->_normalize_timestamp($spec_typed{started_at})  if defined $spec_typed{started_at};
+        $set{ended_at}        = $self->_normalize_timestamp($report_typed{ended_at})  if defined $report_typed{ended_at};
         $set{exit}            = $report_typed{exit}                        if defined $report_typed{exit};
         $set{exit_decoded}    = $self->_encode_json_or_undef($report_typed{exit_decoded})
             if defined $report_typed{exit_decoded};
@@ -2978,7 +3035,7 @@ sub _reconstruct_run_spec {
         $row->{spec_extras},
         [
             run_uuid    => $self->_uuid_from_db($row->{run_uuid}),
-            started_at  => $row->{started_at},
+            started_at  => $self->_db_datetime_to_iso($row->{started_at}),
             times       => $self->_maybe_decode_json($row->{times}),
             child_times => $self->_maybe_decode_json($row->{child_times}),
             child_wall  => $row->{child_wall},
@@ -3002,7 +3059,7 @@ sub _reconstruct_run_report {
     my $rec = $self->_merge_extras_and_typed(
         $row->{state_extras},
         [
-            ended_at     => $row->{ended_at},
+            ended_at     => $self->_db_datetime_to_iso($row->{ended_at}),
             exit         => $row->{exit},
             exit_decoded => $self->_maybe_decode_json($row->{exit_decoded}),
             pass         => defined $row->{pass} ? ($row->{pass} ? 1 : 0) : undef,
@@ -3042,7 +3099,7 @@ sub _reconstruct_run_report {
                     try_ord         => $t->{try_ord},
                     (defined $t->{status}          ? (status          => $t->{status})                : ()),
                     (defined $t->{pass}            ? (pass            => $t->{pass} ? 1 : 0)          : ()),
-                    (defined $t->{ended_at}        ? (ended_at        => $t->{ended_at})              : ()),
+                    (defined $t->{ended_at}        ? (ended_at        => $self->_db_datetime_to_iso($t->{ended_at})) : ()),
                     (defined $t->{pass_count}      ? (pass_count      => $t->{pass_count})            : ()),
                     (defined $t->{fail_count}      ? (fail_count      => $t->{fail_count})            : ()),
                     (defined $t->{assertion_count} ? (assertion_count => $t->{assertion_count})       : ()),
@@ -3097,7 +3154,7 @@ sub _reconstruct_service_specs {
                 id           => $row->{id},
                 service_name => $row->{service_name},
                 stage_name   => $row->{stage_name},
-                started_at   => $row->{started_at},
+                started_at   => $self->_db_datetime_to_iso($row->{started_at}),
                 times        => $self->_maybe_decode_json($row->{times}),
                 child_times  => $self->_maybe_decode_json($row->{child_times}),
                 child_wall   => $row->{child_wall},
@@ -3133,7 +3190,7 @@ sub _reconstruct_service_reports {
         my $rec = $self->_merge_extras_and_typed(
             $row->{state_extras},
             [
-                ended_at     => $row->{ended_at},
+                ended_at     => $self->_db_datetime_to_iso($row->{ended_at}),
                 exit         => $row->{exit},
                 exit_decoded => $self->_maybe_decode_json($row->{exit_decoded}),
                 times        => $self->_maybe_decode_json($row->{times}),
@@ -3159,8 +3216,8 @@ sub _reconstruct_job_try_spec {
     my $rec = $self->_merge_extras_and_typed(
         $jt->{spec_extras},
         [
-            queued_at   => $jt->{queued_at},
-            started_at  => $jt->{started_at},
+            queued_at   => $self->_db_datetime_to_iso($jt->{queued_at}),
+            started_at  => $self->_db_datetime_to_iso($jt->{started_at}),
             times       => $self->_maybe_decode_json($jt->{times}),
             child_times => $self->_maybe_decode_json($jt->{child_times}),
             child_wall  => $jt->{child_wall},
@@ -3220,7 +3277,7 @@ sub _reconstruct_job_try_report {
     my $rec = $self->_merge_extras_and_typed(
         $jt->{state_extras},
         [
-            ended_at        => $jt->{ended_at},
+            ended_at        => $self->_db_datetime_to_iso($jt->{ended_at}),
             exit            => $jt->{exit},
             exit_decoded    => $self->_maybe_decode_json($jt->{exit_decoded}),
             pass            => defined $jt->{pass} ? ($jt->{pass} ? 1 : 0) : undef,

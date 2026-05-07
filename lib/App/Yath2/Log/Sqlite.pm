@@ -136,6 +136,31 @@ sub _json_decode {
 # SQLite stores zstd-compressed payloads (per K3).
 sub _payload_compressed_default { 1 }
 
+# Format DateTime for SQLite TEXT timestamp columns. SQLite stores
+# everything as TEXT; we use ISO 8601 with millisecond precision so
+# fractional seconds round-trip. (DateTime::Format::SQLite truncates
+# to whole seconds -- avoid it for write.)
+sub _format_datetime {
+    my ($self, $dt) = @_;
+    return undef unless defined $dt;
+    return $dt->strftime('%Y-%m-%dT%H:%M:%S.%3NZ');
+}
+
+# Parse SQLite TEXT timestamp columns. ISO 'T'/'Z' shape goes through
+# the base class via DateTime::Format::ISO8601; legacy space-separated
+# rows fall back to DateTime::Format::SQLite.
+sub _to_datetime {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    return $val if ref $val && eval { $val->isa('DateTime') };
+    if (!ref $val && $val =~ /\A\d{4}-\d{2}-\d{2} \d/) {
+        require DateTime::Format::SQLite;
+        my $dt = eval { DateTime::Format::SQLite->parse_datetime($val) };
+        return $dt if defined $dt;
+    }
+    return $self->SUPER::_to_datetime($val);
+}
+
 # SQLite's autoinc primary keys map cleanly to last_insert_id with no
 # args.
 sub _last_insert_id {

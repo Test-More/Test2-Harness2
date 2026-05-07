@@ -210,25 +210,25 @@ sub _now_iso {
         int($frac * 1000));
 }
 
-# meta.json's created_at uses canonical ISO 'YYYY-MM-DDTHH:MM:SSZ'.
-# MySQL rejects the 'T'/'Z' shape -- convert.
-sub _iso_to_db_datetime {
-    my ($self, $iso) = @_;
-    return $iso unless defined $iso;
-    my $out = $iso;
-    $out =~ s/T/ /;
-    $out =~ s/Z\z//;
-    return $out;
+# Format DateTime for MySQL DATETIME(6) via DateTime::Format::MySQL.
+sub _format_datetime {
+    my ($self, $dt) = @_;
+    return undef unless defined $dt;
+    require DateTime::Format::MySQL;
+    return DateTime::Format::MySQL->format_datetime($dt);
 }
 
-# Reverse: 'YYYY-MM-DD HH:MM:SS[.fff]' -> ISO 'YYYY-MM-DDTHH:MM:SS[.fff]Z'.
-sub _db_datetime_to_iso {
+# Parse MySQL DATETIME column values via DateTime::Format::MySQL.
+sub _to_datetime {
     my ($self, $val) = @_;
-    return $val unless defined $val;
-    my $out = $val;
-    $out =~ s/ /T/;
-    $out .= 'Z' unless $out =~ /Z\z/;
-    return $out;
+    return undef unless defined $val;
+    return $val if ref $val && eval { $val->isa('DateTime') };
+    if (!ref $val && $val =~ /\A\d{4}-\d{2}-\d{2}\s/) {
+        require DateTime::Format::MySQL;
+        my $dt = eval { DateTime::Format::MySQL->parse_datetime($val) };
+        return $dt if defined $dt;
+    }
+    return $self->SUPER::_to_datetime($val);
 }
 
 sub _last_insert_id {

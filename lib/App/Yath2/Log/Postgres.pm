@@ -184,18 +184,30 @@ sub _last_insert_id {
     return $dbh->last_insert_id(undef, undef, $table, undef);
 }
 
-# Postgres TIMESTAMPTZ stringifies as 'YYYY-MM-DD HH:MM:SS+00' on
-# fetch. Convert to canonical ISO 'YYYY-MM-DDTHH:MM:SSZ' so meta.json
-# round-trips a stable shape regardless of which DB flavor wrote it.
-sub _db_datetime_to_iso {
+# Format DateTime for Postgres TIMESTAMPTZ via DateTime::Format::Pg.
+# The base class's _to_datetime / _normalize_timestamp / _iso_to_db_datetime
+# / _db_datetime_to_iso all funnel through this.
+sub _format_datetime {
+    my ($self, $dt) = @_;
+    return undef unless defined $dt;
+    require DateTime::Format::Pg;
+    return DateTime::Format::Pg->format_datetime($dt);
+}
+
+# Postgres TIMESTAMPTZ on fetch stringifies as 'YYYY-MM-DD HH:MM:SS+00'.
+# Use DateTime::Format::Pg to parse back to a DateTime, then ISO format
+# via the base class default. Falls back to the inherited regex-based
+# pass-through when the value isn't recognisable.
+sub _to_datetime {
     my ($self, $val) = @_;
-    return $val unless defined $val;
-    my $out = $val;
-    $out =~ s/ /T/;
-    # Strip a trailing '+00' / '+0000' / '+00:00' UTC offset.
-    $out =~ s/\+00(?::?00)?\z//;
-    $out .= 'Z' unless $out =~ /Z\z/;
-    return $out;
+    return undef unless defined $val;
+    return $val if ref $val && eval { $val->isa('DateTime') };
+    if (!ref $val && $val =~ /\A\d{4}-\d{2}-\d{2}\s/) {
+        require DateTime::Format::Pg;
+        my $dt = eval { DateTime::Format::Pg->parse_datetime($val) };
+        return $dt if defined $dt;
+    }
+    return $self->SUPER::_to_datetime($val);
 }
 
 1;
