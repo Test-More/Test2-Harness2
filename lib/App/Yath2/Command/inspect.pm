@@ -12,6 +12,7 @@ use Scalar::Util qw/blessed/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use App::Yath2::Log;
+use App::Yath2::Log::Footer ();
 
 use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
@@ -43,6 +44,12 @@ verifies that the harness service entry-point artifacts
 (F<services/harness/spec.jsonl.zst> and
 F<services/harness/events.jsonl.zst>) are present, and prints a
 summary with the runs and global services it contains.
+
+For sealed file-backed archives (tar.zidx and single-archive
+SQLite), C<meta.json> is read directly from the YATHFOOT trailer
+when present, sidestepping the archive's tar / zidx / SQLite
+parser. Older archives without the trailer fall back to the
+artifact-handle path.
 
 For SQLite-backed multi-archive databases, prints one line per
 contained archive with its UUID and run count.
@@ -186,21 +193,66 @@ sub _fill_log_report {
 
     # Surface meta.json if present at the archive root. Live dirs
     # never have one; sealed archives (tar.zidx + DB) always do.
-    my $root = $log->artifacts;
-    if ($root->exists(App::Yath2::Log->META_FILENAME)) {
-        my $bytes;
-        my $ok = eval {
-            $bytes = $root->get(App::Yath2::Log->META_FILENAME);
-            1;
-        };
-        if ($ok) {
-            my $decoded;
-            my $dok = eval { $decoded = decode_json($bytes); 1 };
-            $report->{meta} = $decoded if $dok;
+    # Prefer the YATHFOOT trailer when the source is a sealed file --
+    # extracts meta.json without touching the tar / zidx / SQLite
+    # parser. Falls back to the artifact-handle path for live
+    # directories or older archives without a trailer.
+    my $meta_via_footer = $self->_read_meta_via_footer($self->_log_path($log));
+    if (defined $meta_via_footer) {
+        $report->{meta} = $meta_via_footer;
+    }
+    else {
+        my $root = $log->artifacts;
+        if ($root->exists(App::Yath2::Log->META_FILENAME)) {
+            my $bytes;
+            my $ok = eval {
+                $bytes = $root->get(App::Yath2::Log->META_FILENAME);
+                1;
+            };
+            if ($ok) {
+                my $decoded;
+                my $dok = eval { $decoded = decode_json($bytes); 1 };
+                $report->{meta} = $decoded if $dok;
+            }
         }
     }
 
     return;
+}
+
+# Return the on-disk path of a Log if it has one and is not live;
+# undef for Directory / Live / DB-without-file backends. Used as the
+# input to _read_meta_via_footer so the trailer reader sees only
+# sealed file-backed archives.
+sub _log_path {
+    my ($self, $log) = @_;
+    return undef unless defined $log;
+    return undef if eval { $log->is_live } || $@;
+    return $log->{path} if defined $log->{path};   # TarZIdx
+    return $log->{file} if defined $log->{file};   # Sqlite (file-backed)
+    return undef;
+}
+
+# Try to read meta.json from a sealed file's YATHFOOT trailer. Returns
+# a decoded hashref on success, undef when the trailer is absent or
+# the read fails (so the caller can fall back to the artifact API).
+sub _read_meta_via_footer {
+    my ($self, $path) = @_;
+    return undef unless defined $path && length $path && -f $path;
+
+    require App::Yath2::Log::Footer;
+    return undef unless App::Yath2::Log::Footer::has_footer($path);
+
+    my ($bytes, $footer);
+    my $ok = eval {
+        ($bytes, $footer) = App::Yath2::Log::Footer::read_meta_from_path($path);
+        1;
+    };
+    return undef unless $ok && defined $bytes;
+
+    my $decoded;
+    my $dok = eval { $decoded = decode_json($bytes); 1 };
+    return $dok ? $decoded : undef;
 }
 
 # Fill report for a sqlite path. Lists every archive row in the DB and
@@ -211,6 +263,14 @@ sub _fill_sqlite_report {
 
     require App::Yath2::Log::Sqlite;
     require DBI;
+
+    # For single-archive sealed SQLite files, surface the file-level
+    # meta.json via the YATHFOOT trailer up front so callers see it
+    # at the report root without having to dig into archives[]. The
+    # trailer is absent on multi-archive containers, in which case
+    # the per-archive enumeration below carries the meta.
+    my $meta_via_footer = $self->_read_meta_via_footer($path);
+    $report->{meta} = $meta_via_footer if defined $meta_via_footer;
 
     my $rows;
     my $ok = eval {

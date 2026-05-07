@@ -2893,3 +2893,66 @@ untouched):
 - **All four flavors moved in lock-step.** Every DDL change touched
   `share/schema/{sqlite,mariadb,mysql,postgres}.sql` in the same
   commit.
+
+## Addendum: unified YATHFOOT trailer for sealed archives (2026-05-07)
+
+This addendum covers the trailer added to sealed `.yath` files so
+that external tools can read `meta.json` without parsing tar / zidx
+or SQLite internals. Full spec: `AI_DOCS/2026-05-07-yath-footer.md`.
+
+Key changes:
+
+- **64-byte `YATHFOOT` trailer at the end of every sealed `.yath`
+  file.** Carries head magic (`YATHFOOT`), tail magic
+  (`YATHTAIL`), trailer version, flags (bit0 =
+  `FLAG_META_COMPRESSED`), 4-byte format-id (`'TAR\0'` or
+  `'SQL\0'`), `meta_offset` / `meta_size` / `meta_crc32`,
+  `body_size`, and a backend-specific `format_ptr` (tar: zidx
+  footer offset; sqlite: 0). All multi-byte fields little-endian.
+
+- **Meta payload is `meta.json` bytes, optionally
+  zstd-compressed.** Compression is the default and is recorded in
+  the trailer flags. Trailer + payload together form the tail
+  region: a reader does `seek(-64, SEEK_END)`, unpacks the
+  trailer, then reads `meta_size` bytes at `meta_offset`.
+
+- **Single public reader API: `App::Yath2::Log::Footer`.**
+  Exports `has_footer`, `read_footer_from_path`,
+  `read_meta_from_path`, the `FORMAT_ID_TAR` / `FORMAT_ID_SQL`
+  constants, and `FLAG_META_COMPRESSED`. Backends call
+  `append_meta` (also exported) to write.
+
+- **tar.zidx integration.** Writer appends the trailer after the
+  existing 32-byte zidx footer; trailer's `format_ptr` records the
+  zidx footer offset. The reader consults `format_ptr` instead of
+  the legacy "last 32 bytes" rule. The tar archive's
+  `meta.json.zst` member at offset 0 is retained -- the trailer
+  carries a redundant copy. Acceptable: trailer shape stays
+  uniform across formats and `tar -xf` users still get a
+  recognizable meta artifact.
+
+- **SQLite single-archive integration.** `seal => 1` on
+  `Log::DB::insert` triggers the append after the transaction
+  commits. Trailer placed past `page_count * page_size`; SQLite
+  ignores trailing bytes so `sqlite3` and raw `DBI` continue to
+  work unmodified (verified empirically including
+  `PRAGMA integrity_check`). The in-memory Log instance flags
+  itself sealed and refuses further inserts. Multi-archive SQLite
+  containers do NOT get a trailer.
+
+- **`yath inspect` prefers the trailer.** When the inspect target
+  is a sealed file-backed archive, `meta.json` is read via
+  `App::Yath2::Log::Footer::read_meta_from_path` rather than the
+  artifact-handle path. Live directories and (hypothetical)
+  trailer-less archives fall back to `root->get('meta.json')`.
+
+- **`last_breaking_version` bumped to `2.000012`.** Archives
+  produced before this pass (no trailer) are refused on read.
+  Re-stamping is a manual-tools concern handled later if needed.
+
+- **Integration tests.** `t/AI/integration/footer_round_trip_tar.t`
+  and `.../footer_round_trip_sqlite.t` build synthetic archives
+  end-to-end and verify both yath's own readers and the system
+  `tar` / `sqlite3` CLIs can recover meta and enumerate the
+  archive past the trailer. Each test skips its CLI block cleanly
+  when the corresponding tool is not on PATH.
