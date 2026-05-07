@@ -51,6 +51,19 @@ for my $base (
     $w->close;
 }
 
+# spec.jsonl for each job try -- required now that jobs.test_file_id is NOT NULL.
+for my $pair (
+    ['runs/0/jobs/0/0', 't/job0.t'],
+    ['runs/0/jobs/0/1', 't/job0.t'],
+    ['runs/0/jobs/1/0', 't/job1.t'],
+    ['runs/2/jobs/0/0', 't/job2.t'],
+) {
+    my ($base, $rel) = @$pair;
+    my $w = open_zstd_writer("$src/$base/spec.jsonl.zst");
+    $w->say(encode_json({relative => $rel}));
+    $w->close;
+}
+
 my $writer = App::Yath2::Log::MariaDB->new(dsn => $dsn);
 $writer->insert(App::Yath2::Log->new(dir => $src));
 

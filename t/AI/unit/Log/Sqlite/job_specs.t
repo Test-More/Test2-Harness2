@@ -205,7 +205,9 @@ ok(defined $bar_js, 'job_specs row for t/unit/bar.t archive');
 is($bar_js->{test_file_id}, $bar_tf->{test_file_id},
     'bar.t job_specs.test_file_id matches bar.t test_files row');
 
-# --- Part 5: job without a spec.jsonl gets no job_specs row ---
+# --- Part 5: job without a spec.jsonl (or one lacking 'relative') is rejected ---
+# jobs.test_file_id is NOT NULL; insert() must croak if it cannot resolve a
+# test_file_id for a job before inserting the jobs row.
 
 my $src_nospec = tempdir(CLEANUP => 1);
 make_path("$src_nospec/services/harness");
@@ -218,21 +220,15 @@ for my $base ('services/harness', 'runs/0', 'runs/0/jobs/0/0') {
     $w->close;
 }
 
-my $aid4;
+# Insert should die because the job has no spec.jsonl with a 'relative' key.
+my $err;
 with_project('myproj', sub {
-    $aid4 = $db->insert(App::Yath2::Log->new(dir => $src_nospec));
+    eval { $db->insert(App::Yath2::Log->new(dir => $src_nospec)) };
+    $err = $@;
 });
-ok(defined $aid4, 'insert of archive without spec.jsonl succeeded');
-
-($js_count) = $dbh->selectrow_array('SELECT COUNT(*) FROM job_specs');
-is($js_count, 3, 'still 3 job_specs rows (no new row for job without spec)');
-
-my $nospec_job = $dbh->selectrow_hashref(
-    q{SELECT j.* FROM jobs j JOIN runs r ON j.run_id = r.run_id WHERE r.archive_id = ?},
-    undef, $aid4,
-);
-ok(defined $nospec_job, 'jobs row for no-spec archive exists');
-ok(!defined $nospec_job->{test_file_id},
-    'jobs.test_file_id is NULL when no spec.jsonl');
+ok(defined $err && length $err,
+    'insert() croaks when job has no spec.jsonl with relative key');
+like($err, qr/test_file_id/,
+    'error message mentions test_file_id');
 
 done_testing;

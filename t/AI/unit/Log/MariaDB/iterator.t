@@ -72,6 +72,12 @@ write_jsonl_zst(
     {facet_data => {assert => {pass => 1, details => 'second'}}},
 );
 
+# spec.jsonl -- required now that jobs.test_file_id is NOT NULL.
+write_jsonl_zst(
+    "$src/runs/0/jobs/0/0/spec.jsonl.zst",
+    {relative => 't/dummy.t'},
+);
+
 App::Yath2::Log::MariaDB->new(dsn => $dsn)->insert(App::Yath2::Log->new(dir => $src));
 
 my $log = App::Yath2::Log::MariaDB->new(dsn => $dsn);

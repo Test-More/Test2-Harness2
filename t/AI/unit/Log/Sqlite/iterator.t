@@ -77,6 +77,12 @@ write_jsonl_zst(
     {facet_data => {assert => {pass => 1, details => 'second'}}},
 );
 
+# spec.jsonl -- required now that jobs.test_file_id is NOT NULL.
+write_jsonl_zst(
+    "$src/runs/0/jobs/0/0/spec.jsonl.zst",
+    {relative => 't/dummy.t'},
+);
+
 my $arc_dir = tempdir(CLEANUP => 1);
 my $arc_path = "$arc_dir/run.yath";
 App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');

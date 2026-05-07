@@ -86,6 +86,10 @@ write_jsonl_zst(
     {facet_data => {assert => {pass => 1, details => 'try1 second'}}},
 );
 
+# spec.jsonl for each job try -- required now that jobs.test_file_id is NOT NULL.
+write_jsonl_zst("$src/runs/0/jobs/0/0/spec.jsonl.zst", {relative => 't/dummy.t'});
+write_jsonl_zst("$src/runs/0/jobs/0/1/spec.jsonl.zst", {relative => 't/dummy.t'});
+
 # An attachment to verify pass-through.
 open(my $a, '>', "$src/services/harness/attachments/0001-hello.txt") or die $!;
 print $a "hi there\n";

@@ -36,6 +36,7 @@ use Object::HashBase qw{
     +_walk
     +_seen_starts
     +_closed_starts
+    +_insert_source
 };
 
 # {{{ Abstract base class for DB-backed Log readers / writers.
@@ -1168,11 +1169,49 @@ sub _ensure_job_row {
     );
     return $id if defined $id;
 
+    # Resolve test_file_id from the source's spec.jsonl for this job before
+    # INSERT: the schema requires jobs.test_file_id NOT NULL.
+    my $test_file_id = $self->_resolve_test_file_for_job($run_ord, $job_ord);
+    croak "could not resolve test_file_id for job ($run_ord, $job_ord) -- "
+        . "source must carry a spec.jsonl with a 'relative' key for every job"
+        unless defined $test_file_id;
+
     my $sth = $dbh->prepare(q{
-        INSERT INTO jobs (archive_id, run_id, job_ord) VALUES (?, ?, ?)
+        INSERT INTO jobs (archive_id, run_id, job_ord, test_file_id) VALUES (?, ?, ?, ?)
     });
-    $sth->execute($aid, $rid, $job_ord);
+    $sth->execute($aid, $rid, $job_ord, $test_file_id);
     return $self->_last_insert_id($dbh, 'jobs', 'job_id');
+}
+
+# Walk the source's tries for (run_ord, job_ord), reading spec.jsonl from
+# each until we find a 'relative' key. Resolves (or creates) the test_files
+# row and returns test_file_id. Returns undef if no spec with 'relative' is
+# found. Requires $self->{+_INSERT_SOURCE} to be set (done by insert()).
+sub _resolve_test_file_for_job {
+    my ($self, $run_ord, $job_ord) = @_;
+
+    my $source = $self->{+_INSERT_SOURCE};
+    return undef unless defined $source;
+
+    my $project_id = $self->{+PROJECT_ID};
+    return undef unless defined $project_id;
+
+    my @tries = $source->can('tries')
+        ? eval { $source->tries($run_ord, $job_ord) }
+        : ();
+    return undef unless @tries;
+
+    for my $try_ord (@tries) {
+        my $artifact = eval { $source->artifacts($run_ord, $job_ord, $try_ord) }
+            or next;
+        my $spec = $self->_read_first_jsonl_row($artifact, 'spec.jsonl')
+            or next;
+        my $relative = $spec->{relative};
+        next unless defined $relative && length $relative;
+        return $self->_resolve_or_create_test_file($project_id, $relative);
+    }
+
+    return undef;
 }
 
 sub _ensure_job_try_row {
@@ -1630,6 +1669,11 @@ sub insert {
     my $project_id   = $self->_resolve_or_create_project($project_name);
     $self->{+PROJECT_ID} = $project_id;
 
+    # Make $source visible to _ensure_job_row so it can read spec.jsonl
+    # on demand when creating a jobs row (needed for NOT NULL test_file_id).
+    # Cleared after the artifact loop completes.
+    $self->{+_INSERT_SOURCE} = $source;
+
     # Fresh archive row.
     my $aid = $self->_create_archive($meta->{archive_uuid});
 
@@ -1734,6 +1778,9 @@ sub insert {
         $sth->bind_param(12, 1);
         $sth->execute;
     }
+
+    # Artifact loop complete; clear the source reference.
+    delete $self->{+_INSERT_SOURCE};
 
     # Drop a fresh meta.json into the archive-root scope. Compression
     # follows the caller's compress flag so the whole archive is

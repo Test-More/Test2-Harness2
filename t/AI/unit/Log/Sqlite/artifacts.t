@@ -55,6 +55,23 @@ for my $base (
     $w->close;
 }
 
+# spec.jsonl for each job try -- required now that jobs.test_file_id is NOT NULL.
+{
+    my $w = open_zstd_writer("$src/runs/0/jobs/0/0/spec.jsonl.zst");
+    $w->say(encode_json({relative => 't/job0.t'}));
+    $w->close;
+}
+{
+    my $w = open_zstd_writer("$src/runs/0/jobs/0/1/spec.jsonl.zst");
+    $w->say(encode_json({relative => 't/job0.t'}));
+    $w->close;
+}
+{
+    my $w = open_zstd_writer("$src/runs/0/jobs/1/0/spec.jsonl.zst");
+    $w->say(encode_json({relative => 't/job1.t'}));
+    $w->close;
+}
+
 # Archive then reopen via the SQLite backend.
 my $arc_dir = tempdir(CLEANUP => 1);
 my $arc_path = "$arc_dir/run.yath";

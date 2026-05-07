@@ -391,6 +391,10 @@ sub insert {
     my $project_id   = $self->_resolve_or_create_project($project_name);
     $self->{App::Yath2::Log::DB::PROJECT_ID} = $project_id;
 
+    # Make $source visible to _ensure_job_row so it can read spec.jsonl
+    # on demand when creating a jobs row (needed for NOT NULL test_file_id).
+    $self->{App::Yath2::Log::DB::_INSERT_SOURCE()} = $source;
+
     my $aid = $self->_create_archive($meta->{archive_uuid});
 
     my @files;
@@ -465,6 +469,9 @@ sub insert {
         $sth->bind_param(12, 1);
         $sth->execute;
     }
+
+    # Artifact loop complete; clear the source reference.
+    delete $self->{App::Yath2::Log::DB::_INSERT_SOURCE()};
 
     return $aid;
 }

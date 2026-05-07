@@ -23,6 +23,12 @@ sub build_minimal_log {
         $w->say(encode_json({ping => 1}));
         $w->close;
     }
+
+    # spec.jsonl -- required now that jobs.test_file_id is NOT NULL.
+    my $w = open_zstd_writer("$src/runs/0/jobs/0/0/spec.jsonl.zst");
+    $w->say(encode_json({relative => 't/dummy.t'}));
+    $w->close;
+
     return $src;
 }
 

@@ -116,8 +116,8 @@ CREATE TABLE jobs (
     job_id          BIGINT        NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_id      BIGINT        NOT NULL,
     run_id          BIGINT        NOT NULL,
-    test_file_id    BIGINT,
-    job_ord         INT           NOT NULL,
+    test_file_id    BIGINT       NOT NULL,
+    job_ord         INT          NOT NULL,
     pass            TINYINT(1),
     status          VARCHAR(32),
     retry_count     INT,
@@ -126,7 +126,7 @@ CREATE TABLE jobs (
     KEY jobs_test_file_idx   (test_file_id),
     CONSTRAINT jobs_archive_fk   FOREIGN KEY (archive_id)   REFERENCES archives(archive_id)     ON DELETE CASCADE,
     CONSTRAINT jobs_run_fk       FOREIGN KEY (run_id)       REFERENCES runs(run_id)             ON DELETE CASCADE,
-    CONSTRAINT jobs_test_file_fk FOREIGN KEY (test_file_id) REFERENCES test_files(test_file_id) ON DELETE SET NULL
+    CONSTRAINT jobs_test_file_fk FOREIGN KEY (test_file_id) REFERENCES test_files(test_file_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE job_tries (
@@ -149,7 +149,7 @@ CREATE TABLE job_tries (
 CREATE TABLE job_specs (
     job_spec_id         BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
     job_id              BIGINT       NOT NULL,
-    test_file_id        BIGINT,
+    test_file_id        BIGINT       NOT NULL,
     absolute            VARCHAR(2048),
     category            VARCHAR(64),
     duration            VARCHAR(64),
@@ -172,7 +172,7 @@ CREATE TABLE job_specs (
     KEY job_specs_test_file_idx    (test_file_id),
     KEY job_specs_job_idx          (job_id),
     CONSTRAINT job_specs_job_fk    FOREIGN KEY (job_id)       REFERENCES jobs(job_id)             ON DELETE CASCADE,
-    CONSTRAINT job_specs_tf_fk     FOREIGN KEY (test_file_id) REFERENCES test_files(test_file_id) ON DELETE SET NULL
+    CONSTRAINT job_specs_tf_fk     FOREIGN KEY (test_file_id) REFERENCES test_files(test_file_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE subtests (

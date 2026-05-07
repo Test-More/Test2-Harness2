@@ -94,7 +94,7 @@ CREATE TABLE jobs (
     job_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     archive_id      BIGINT  NOT NULL REFERENCES archives(archive_id)   ON DELETE CASCADE,
     run_id          BIGINT  NOT NULL REFERENCES runs(run_id)           ON DELETE CASCADE,
-    test_file_id    BIGINT           REFERENCES test_files(test_file_id) ON DELETE SET NULL,
+    test_file_id    BIGINT  NOT NULL REFERENCES test_files(test_file_id) ON DELETE CASCADE,
     job_ord         INTEGER NOT NULL,
     pass            BOOLEAN,
     status          TEXT,
@@ -125,7 +125,7 @@ CREATE INDEX job_tries_job_idx ON job_tries(job_id);
 CREATE TABLE job_specs (
     job_spec_id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     job_id              BIGINT  NOT NULL REFERENCES jobs(job_id)             ON DELETE CASCADE,
-    test_file_id        BIGINT           REFERENCES test_files(test_file_id) ON DELETE SET NULL,
+    test_file_id        BIGINT  NOT NULL REFERENCES test_files(test_file_id) ON DELETE CASCADE,
     absolute            TEXT,
     category            TEXT,
     duration            TEXT,
