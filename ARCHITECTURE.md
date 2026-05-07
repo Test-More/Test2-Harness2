@@ -2817,3 +2817,79 @@ Removed (rev-2): `Test2::Harness2::Collector::Test`,
 `Test2::Harness2::Role::Collector::Observer`,
 `Test2::Harness2::Collector::Observer::TestObserver`,
 `App::Yath2::LogArchive` (renamed `App::Yath2::Log`).
+
+## Addendum: schema redesign — spec/report promoted, projects/test_files breakout (2026-05-07)
+
+This addendum covers the DB schema redesign that landed on
+`new_log_refactor` after the rev-2 collector / reader work above.
+Full spec: `AI_DOCS/2026-05-07-schema-redesign.md`. Decisions captured
+in `SCHEMA_REDESIGN_DECISIONS.md` (worktree root, kept as the living
+source-of-truth doc).
+
+Key changes (DB backend only; tar.zidx and directory backends are
+untouched):
+
+- **Spec / report content promoted from artifact rows to typed
+  columns.** `runs`, `job_tries`, and `service_lifetimes` gain typed
+  columns covering every promoted spec/report key, plus `spec_extras`
+  and/or `state_extras` JSON BLOB catch-alls for unmapped keys. The
+  `runs.spec` / `runs.state` / `job_tries.spec` / `job_tries.state` /
+  `services.spec` / `services.state` BLOBs are dropped. Spec / report
+  artifact rows in `artifacts` are dropped, and the
+  `artifacts.artifact_kind` CHECK narrows from
+  `('events','state','spec','report','attachment','arbitrary')` to
+  `('events','attachment','arbitrary')`.
+
+- **`meta.json` content promoted.** `archives` gains typed columns
+  for `host`, `user`, `git_sha`, `project`, `yath_version`,
+  `sealed_at` (= `meta.created_at`), plus `meta_extras` JSON BLOB.
+  The `meta.json` arbitrary artifact row is dropped for the DB
+  backend. Reconstruction via `Log::Artifact->root.get('meta.json')`
+  is unchanged.
+
+- **New tables:** `projects(project_id, name UNIQUE)`;
+  `test_files(test_file_id, project_id, file)` UNIQUE(project_id,
+  file); `job_specs(job_spec_id, job_id, test_file_id, ...)`
+  UNIQUE(job_id) — per-job snapshot of TestFile content;
+  `service_lifetimes(service_lifetime_id, service_id, lifetime_ord,
+  ...)` UNIQUE(service_id, lifetime_ord). FKs:
+  `runs.project_id`, `jobs.test_file_id NOT NULL`,
+  `job_specs.job_id`, `service_lifetimes.service_id`.
+
+- **`services` reduces to identity only** (`name`, `role`, `run_id`).
+  Lifecycle (status, started_at, ended_at, exit, times, spec/report
+  extras) moves to `service_lifetimes`, which is multi-row per
+  service to support restarts.
+
+- **`archive_version` replaces `format_version` + `schema_version`.**
+  Single `archives.archive_version TEXT` column carries
+  `$App::Yath2::Log::VERSION` at write. Class accessor
+  `App::Yath2::Log->last_breaking_version` returns the floor
+  (`'2.000011'` initially); the read path refuses archives below it
+  with a clean error. Bumped manually on breaking changes; no
+  auto-migration.
+
+- **Atomic insert + duplicate-archive rejection.**
+  `DB->insert($source)` does a pre-flight `archive_uuid` uniqueness
+  check (clean error on re-import), then wraps the entire population
+  pass in `begin_work` / `commit` / `rollback`. No partial archives.
+
+- **Reader API surface unchanged.** `Artifact->spec_iter` /
+  `->report_iter` / `root->get('meta.json')` continue to work the
+  same way; for DB backends they now reconstruct on demand from
+  typed columns + extras (and JOIN test_files / job_specs / subtests
+  / job_tries to rebuild aggregated children). Tar / Directory /
+  Live backends still store the JSONL files on disk and are
+  unaffected. `events.jsonl.zst` remains stored as artifact bytes
+  (no events table; out of scope).
+
+- **Producer-side flattening:** `Test2::Harness2::TestFile` drops the
+  redundant `file` slot (deriving `absolute` and `relative` on init);
+  `RunService::request_handler_launch_job` flattens
+  `test_file => {...}` into the spec row root. Producer JSON keys
+  now match column names exactly, removing any need for a rename map
+  at insert time.
+
+- **All four flavors moved in lock-step.** Every DDL change touched
+  `share/schema/{sqlite,mariadb,mysql,postgres}.sql` in the same
+  commit.
