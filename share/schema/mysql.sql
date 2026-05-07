@@ -1,4 +1,4 @@
--- App::Yath2::Log DB backend, MySQL/Percona flavor (schema_version = 1).
+-- App::Yath2::Log DB backend, MySQL/Percona flavor.
 -- Requires MySQL >= 8.0.16 (CHECK enforcement; native JSON; recursive
 -- CTEs; multi-trigger BEFORE INSERT/UPDATE).
 -- All tables: ENGINE=InnoDB, CHARSET=utf8mb4, COLLATE=utf8mb4_unicode_ci.
@@ -32,8 +32,7 @@ CREATE TABLE archives (
     archive_id          BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_uuid        BINARY(16)   NOT NULL,
     archive_uuid_string CHAR(36),
-    format_version      INT          NOT NULL,
-    schema_version      INT          NOT NULL,
+    archive_version     VARCHAR(64)  NOT NULL,
     created_at          DATETIME(6)  NOT NULL,
     sealed_at           DATETIME(6),
     UNIQUE KEY archives_uuid_uk        (archive_uuid),

@@ -1,4 +1,4 @@
--- App::Yath2::Log DB backend, PostgreSQL flavor (schema_version = 1).
+-- App::Yath2::Log DB backend, PostgreSQL flavor.
 -- Tested against PostgreSQL >= 14 (column-level COMPRESSION needs PG14+).
 -- UUIDs supplied client-side (gen_uuid v7).
 --
@@ -24,8 +24,7 @@ CREATE TABLE projects (
 CREATE TABLE archives (
     archive_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     archive_uuid    UUID        NOT NULL,
-    format_version  INTEGER     NOT NULL,
-    schema_version  INTEGER     NOT NULL,
+    archive_version TEXT        NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL,
     sealed_at       TIMESTAMPTZ,
     UNIQUE(archive_uuid)

@@ -9,6 +9,7 @@ use File::Basename qw/dirname/;
 use File::Path qw/make_path/;
 use File::Spec ();
 use Time::HiRes qw/time/;
+use version 0.77 ();
 
 use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
@@ -21,6 +22,7 @@ use Test2::Harness2::LogLayout qw/
     services_run_dir
 /;
 
+use App::Yath2::Log;
 use App::Yath2::Log::Artifact;
 use App::Yath2::Log::Iterator::JSONL;
 
@@ -54,9 +56,6 @@ use Object::HashBase qw{
 #
 # Everything else lives here so the four backends share one body of
 # code.
-
-sub FORMAT_VERSION { 1 }
-sub SCHEMA_VERSION { 1 }
 
 sub init {
     my $self = shift;
@@ -161,7 +160,7 @@ sub _resolve_archive {
     my $uuid = $self->{+UUID};
 
     my $rows = $dbh->selectall_arrayref(
-        q{SELECT archive_id, archive_uuid FROM archives ORDER BY archive_id},
+        q{SELECT archive_id, archive_uuid, archive_version FROM archives ORDER BY archive_id},
         { Slice => {} },
     );
     my $count = scalar @$rows;
@@ -172,8 +171,10 @@ sub _resolve_archive {
     }
 
     if ($count == 1 && !defined $uuid) {
+        my $u = $self->_uuid_from_db($rows->[0]{archive_uuid});
+        $self->_check_archive_version($u, $rows->[0]{archive_version});
         $self->{+ARCHIVE_ID} = $rows->[0]{archive_id};
-        $self->{+UUID} = $self->_uuid_from_db($rows->[0]{archive_uuid});
+        $self->{+UUID} = $u;
         return $self->{+ARCHIVE_ID};
     }
 
@@ -184,6 +185,7 @@ sub _resolve_archive {
     for my $r (@$rows) {
         my $u = $self->_uuid_from_db($r->{archive_uuid});
         if (lc($u) eq lc($uuid)) {
+            $self->_check_archive_version($u, $r->{archive_version});
             $self->{+ARCHIVE_ID} = $r->{archive_id};
             $self->{+UUID} = $u;
             return $self->{+ARCHIVE_ID};
@@ -193,6 +195,20 @@ sub _resolve_archive {
     croak "no archive with uuid '$uuid' in this DB";
 }
 
+# Refuse archives whose archive_version is older than the floor
+# returned by App::Yath2::Log->last_breaking_version. No auto-migration:
+# the user must re-archive with a newer yath, or open the archive with
+# an older yath that still groks it.
+sub _check_archive_version {
+    my ($self, $uuid, $archive_version) = @_;
+    my $floor = App::Yath2::Log->last_breaking_version;
+    croak "archive '$uuid' has no archive_version stamp; refusing to read"
+        unless defined $archive_version && length $archive_version;
+    return if version->parse($archive_version) >= version->parse($floor);
+    croak "archive '$uuid' was written by yath $archive_version; "
+        . "this dist requires >= $floor; refusing to read";
+}
+
 sub _create_archive {
     my ($self, $uuid) = @_;
     $uuid //= gen_uuid();
@@ -200,10 +216,10 @@ sub _create_archive {
     my $now = $self->_now_iso;
 
     my $sth = $dbh->prepare(q{
-        INSERT INTO archives (archive_uuid, format_version, schema_version, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO archives (archive_uuid, archive_version, created_at)
+        VALUES (?, ?, ?)
     });
-    $sth->execute($self->_uuid_to_db($uuid), $self->FORMAT_VERSION, $self->SCHEMA_VERSION, $now);
+    $sth->execute($self->_uuid_to_db($uuid), $App::Yath2::Log::VERSION, $now);
 
     my $id = $self->_last_insert_id($dbh, 'archives', 'archive_id');
     $self->{+ARCHIVE_ID} = $id;

@@ -117,6 +117,13 @@ sub new {
 sub META_FORMAT_VERSION { 1 }
 sub META_FILENAME       { 'meta.json' }
 
+# Earliest archive_version this dist can read. Bump manually when making
+# breaking schema or producer-side changes -- the read path refuses
+# archives whose archive_version is lower than this. There is no
+# auto-migration: an older archive must be re-archived (or read with an
+# older yath) to be consumed.
+sub last_breaking_version { '2.000011' }
+
 # Build the meta.json content for a sealed archive. Returns a hashref
 # with the canonical fields (per F23). Fields:
 #

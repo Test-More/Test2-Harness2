@@ -27,8 +27,11 @@ branch. No Perl code lives in this commit. Implementation of the four
 - The DB backends are **sealed-only**. Live writes go through
   `Log::Directory`; only sealed logs ever land in the DB. (Per
   `LOG_ARCHIVE_DB_QUESTIONS.md` Q10.)
-- Schema starts at `schema_version = 1`. No migration tooling yet (per
-  M2/K16 carried).
+- Each archive carries an `archive_version` text stamp (the
+  `$App::Yath2::Log::VERSION` of the dist that wrote the row). The read
+  path refuses any archive whose `archive_version` is older than
+  `App::Yath2::Log->last_breaking_version` — there is no auto-migration
+  (per M2/K16 carried).
 
 ## 2. Tables
 
@@ -61,8 +64,7 @@ just one row).
 | archive_id      | BIGINT PK                  | auto-increment                                         |
 | archive_uuid    | UUID / BINARY(16) / TEXT   | unique, indexed; native UUID where supported           |
 | archive_uuid_string | TEXT                   | binary-stored flavors only (MySQL/Percona); trigger-populated; for human use |
-| format_version  | INT                        | LogArchive on-disk format version                      |
-| schema_version  | INT                        | DB schema version for migrations                       |
+| archive_version | TEXT / VARCHAR             | dist version (`$App::Yath2::Log::VERSION`) at write time; read path refuses < `last_breaking_version` |
 | created_at      | timestamp                  | when archive was created                               |
 | sealed_at       | timestamp NULL             | non-NULL once writes finished                          |
 
@@ -358,10 +360,14 @@ constructor throws "ambiguous; specify uuid => …". (Per K3 + F11.)
 
 ## 10. Schema versioning + migrations
 
-`archives.schema_version` tracks the schema version used to write the
-archive. Schema starts at `1`. There is no migration tooling in this
-round — once we ship a v2 schema, a separate migration step reads `v1`
-archives and writes `v2` (per K16/M16 carried).
+`archives.archive_version` is a TEXT column carrying
+`$App::Yath2::Log::VERSION` (the version of the writer dist) at insert
+time. The read path resolves the archive row, then refuses to proceed if
+`version->parse(archive_version) < version->parse(App::Yath2::Log->last_breaking_version)`.
+`last_breaking_version` is a hardcoded class accessor on `App::Yath2::Log`,
+bumped manually when a breaking schema or producer-side change ships.
+There is no auto-migration: an older archive must be re-archived (or
+read with an older yath that still understands it).
 
 ## 11. Indexes — summary
 

@@ -236,13 +236,12 @@ sub _create_archive {
     my $now = $self->_now_iso;
 
     my $sth = $dbh->prepare(q{
-        INSERT INTO archives (archive_uuid, format_version, schema_version, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO archives (archive_uuid, archive_version, created_at)
+        VALUES (?, ?, ?)
     });
     $sth->bind_param(1, $self->_uuid_to_db($uuid), DBI::SQL_BINARY());
-    $sth->bind_param(2, $self->FORMAT_VERSION);
-    $sth->bind_param(3, $self->SCHEMA_VERSION);
-    $sth->bind_param(4, $now);
+    $sth->bind_param(2, $App::Yath2::Log::VERSION);
+    $sth->bind_param(3, $now);
     $sth->execute;
 
     my $id = $self->_last_insert_id($dbh, 'archives', 'archive_id');

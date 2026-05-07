@@ -1,4 +1,4 @@
--- App::Yath2::Log DB backend, SQLite flavor (schema_version = 1).
+-- App::Yath2::Log DB backend, SQLite flavor.
 -- Requires SQLite >= 3.45 (JSONB).
 --
 -- The Log::Sqlite backend applies these PRAGMAs at every connection
@@ -33,8 +33,7 @@ CREATE INDEX projects_name_idx ON projects(name);
 CREATE TABLE archives (
     archive_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     archive_uuid    TEXT    NOT NULL COLLATE BINARY,
-    format_version  INTEGER NOT NULL,
-    schema_version  INTEGER NOT NULL,
+    archive_version TEXT    NOT NULL,
     created_at      TEXT    NOT NULL,
     sealed_at       TEXT,
     UNIQUE(archive_uuid)

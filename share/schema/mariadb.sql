@@ -1,4 +1,4 @@
--- App::Yath2::Log DB backend, MariaDB flavor (schema_version = 1).
+-- App::Yath2::Log DB backend, MariaDB flavor.
 -- Requires MariaDB >= 10.7 (native UUID).
 -- All tables: ENGINE=InnoDB, CHARSET=utf8mb4, COLLATE=utf8mb4_unicode_ci.
 --
@@ -31,8 +31,7 @@ CREATE TABLE projects (
 CREATE TABLE archives (
     archive_id      BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_uuid    UUID         NOT NULL,
-    format_version  INT          NOT NULL,
-    schema_version  INT          NOT NULL,
+    archive_version VARCHAR(64)  NOT NULL,
     created_at      DATETIME(6)  NOT NULL,
     sealed_at       DATETIME(6),
     UNIQUE KEY archives_uuid_uk (archive_uuid)
