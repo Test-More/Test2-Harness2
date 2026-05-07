@@ -1,5 +1,10 @@
 -- App::Yath2::Log DB backend, PostgreSQL flavor.
--- Tested against PostgreSQL >= 14 (column-level COMPRESSION needs PG14+).
+-- Tested against PostgreSQL >= 15 for full zstd support; falls back
+-- gracefully on older versions:
+--   * PG15+ with --with-zstd : runs as written (zstd toast compression)
+--   * PG14+ with --with-lz4  : runtime rewrite zstd -> lz4 at bootstrap
+--   * PG14   without lz4     : runtime strips COMPRESSION; uses pglz
+--   * PG13- (no GUC)         : runtime strips COMPRESSION; uses pglz
 -- UUIDs supplied client-side (gen_uuid v7).
 --
 -- Identity convention: every PK is `<thing>_id BIGINT`, every UUID is
@@ -10,8 +15,10 @@
 -- one non-NULL" — zero non-NULL = archive-root scope; exactly one
 -- non-NULL = scoped to that entity.
 --
--- Payload compression: server-side TOAST LZ4 via column-level
+-- Payload compression: server-side TOAST zstd via column-level
 -- COMPRESSION clause. App stores RAW bytes (compressed=FALSE).
+-- App::Yath2::Log::Postgres::_preprocess_schema_sql probes server
+-- support and downgrades to lz4 or strips the clause as needed.
 
 CREATE TYPE artifact_kind_t AS ENUM ('events','attachment','arbitrary');
 
@@ -31,7 +38,7 @@ CREATE TABLE archives (
     git_sha         TEXT,
     project         TEXT,
     yath_version    TEXT,
-    meta_extras     JSONB COMPRESSION lz4,
+    meta_extras     JSONB COMPRESSION zstd,
     UNIQUE(archive_uuid)
 );
 
@@ -53,11 +60,11 @@ CREATE TABLE runs (
     passed_jobs     INTEGER,
     failed_jobs     INTEGER,
     aborted_jobs    INTEGER,
-    times           JSONB COMPRESSION lz4,
-    child_times     JSONB COMPRESSION lz4,
+    times           JSONB COMPRESSION zstd,
+    child_times     JSONB COMPRESSION zstd,
     child_wall      DOUBLE PRECISION,
-    spec_extras     JSONB COMPRESSION lz4,
-    state_extras    JSONB COMPRESSION lz4,
+    spec_extras     JSONB COMPRESSION zstd,
+    state_extras    JSONB COMPRESSION zstd,
     UNIQUE(archive_id, run_uuid),
     UNIQUE(archive_id, run_ord)
 );
@@ -98,12 +105,12 @@ CREATE TABLE service_lifetimes (
     started_at          TIMESTAMPTZ,
     ended_at            TIMESTAMPTZ,
     "exit"              INTEGER,
-    exit_decoded        JSONB COMPRESSION lz4,
-    times               JSONB COMPRESSION lz4,
-    child_times         JSONB COMPRESSION lz4,
+    exit_decoded        JSONB COMPRESSION zstd,
+    times               JSONB COMPRESSION zstd,
+    child_times         JSONB COMPRESSION zstd,
     child_wall          DOUBLE PRECISION,
-    spec_extras         JSONB COMPRESSION lz4,
-    state_extras        JSONB COMPRESSION lz4,
+    spec_extras         JSONB COMPRESSION zstd,
+    state_extras        JSONB COMPRESSION zstd,
     UNIQUE(service_id, lifetime_ord)
 );
 
@@ -147,13 +154,13 @@ CREATE TABLE job_tries (
     pass_count      INTEGER,
     fail_count      INTEGER,
     assertion_count INTEGER,
-    plan            JSONB COMPRESSION lz4,
-    halt            JSONB COMPRESSION lz4,
-    times           JSONB COMPRESSION lz4,
-    child_times     JSONB COMPRESSION lz4,
+    plan            JSONB COMPRESSION zstd,
+    halt            JSONB COMPRESSION zstd,
+    times           JSONB COMPRESSION zstd,
+    child_times     JSONB COMPRESSION zstd,
     child_wall      DOUBLE PRECISION,
-    spec_extras     JSONB COMPRESSION lz4,
-    state_extras    JSONB COMPRESSION lz4,
+    spec_extras     JSONB COMPRESSION zstd,
+    state_extras    JSONB COMPRESSION zstd,
     UNIQUE(job_id, try_ord)
 );
 
@@ -167,8 +174,8 @@ CREATE TABLE job_specs (
     category            TEXT,
     duration            TEXT,
     stage               TEXT,
-    features            JSONB COMPRESSION lz4,
-    switches            JSONB COMPRESSION lz4,
+    features            JSONB COMPRESSION zstd,
+    switches            JSONB COMPRESSION zstd,
     retry               INTEGER,
     retry_isolated      BOOLEAN,
     smoke               BOOLEAN,
@@ -180,7 +187,7 @@ CREATE TABLE job_specs (
     min_slots           INTEGER,
     max_slots           INTEGER,
     ch_dir              TEXT,
-    extras              JSONB COMPRESSION lz4,
+    extras              JSONB COMPRESSION zstd,
     UNIQUE(job_id)
 );
 
@@ -211,7 +218,7 @@ CREATE TABLE artifacts (
     format          TEXT            NOT NULL,
     name            TEXT,
     compressed      BOOLEAN         NOT NULL,
-    payload         BYTEA           COMPRESSION lz4 NOT NULL,
+    payload         BYTEA           COMPRESSION zstd NOT NULL,
     created_at      TIMESTAMPTZ     NOT NULL,
     sealed          BOOLEAN         NOT NULL DEFAULT FALSE,
     CHECK (

@@ -99,32 +99,51 @@ sub _connect_dbh {
     return $dbh;
 }
 
-# Probe whether the server was built with --with-lz4. Postgres ≥14
-# ships the GUC default_toast_compression; setting it to 'lz4' errors
-# when the build lacks lz4 support. Result cached per-instance.
-sub _server_supports_lz4 {
+# Probe which TOAST compression algorithm the server supports. Returns
+# one of: 'zstd' (PG15+ built --with-zstd), 'lz4' (PG14+ built
+# --with-lz4), or undef (older PG, or build without those algos -- fall
+# back to server default, typically pglz). Result cached per-instance.
+#
+# Probe mechanism: setting the default_toast_compression GUC to a value
+# the server doesn't recognise raises an error. The GUC itself was added
+# in PG14, so PG13 and older fail every probe and land in the undef
+# branch (correct -- the per-column COMPRESSION clause didn't exist
+# before PG14 either, so we strip it).
+sub _server_compression {
     my $self = shift;
-    return $self->{_server_supports_lz4} //= do {
+    return $self->{_server_compression} //= do {
         my $dbh = $self->dbh;
-        my $ok = eval {
-            local $dbh->{RaiseError} = 1;
-            local $dbh->{PrintError} = 0;
-            $dbh->do(q{SET LOCAL default_toast_compression = 'lz4'});
-            $dbh->do(q{RESET default_toast_compression});
-            1;
+        my $probe = sub {
+            my ($algo) = @_;
+            return eval {
+                local $dbh->{RaiseError} = 1;
+                local $dbh->{PrintError} = 0;
+                $dbh->do(qq{SET default_toast_compression = '$algo'});
+                $dbh->do(q{RESET default_toast_compression});
+                1;
+            };
         };
-        $ok ? 1 : 0;
+        $probe->('zstd') ? 'zstd' : $probe->('lz4') ? 'lz4' : undef;
     };
 }
 
-# When the server lacks lz4, strip the `COMPRESSION lz4` clauses from
-# the schema. Postgres falls back to default_toast_compression (pglz on
-# stock builds). Preserves the `compressed=FALSE` app-side semantics --
-# server still TOAST-compresses, just with a different algorithm.
+# share/schema/postgres.sql defaults to `COMPRESSION zstd`. Rewrite to
+# match what the server actually supports:
+#   * zstd available -> leave as-is
+#   * lz4 available  -> rewrite zstd -> lz4
+#   * neither (PG13- or unsupported build) -> strip the clause; the
+#     server uses default_toast_compression (pglz on stock builds).
+# App-level `compressed=FALSE` semantics are unchanged in every case --
+# the server still TOAST-compresses, just with a different algorithm.
 sub _preprocess_schema_sql {
     my ($self, $sql) = @_;
-    return $sql if $self->_server_supports_lz4;
-    $sql =~ s/\s+COMPRESSION\s+lz4\b//gi;
+    my $algo = $self->_server_compression;
+    if (!defined $algo) {
+        $sql =~ s/\s+COMPRESSION\s+zstd\b//gi;
+    }
+    elsif ($algo ne 'zstd') {
+        $sql =~ s/(\bCOMPRESSION\s+)zstd\b/$1$algo/gi;
+    }
     return $sql;
 }
 
