@@ -25,8 +25,13 @@ CREATE TABLE archives (
     archive_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     archive_uuid    UUID        NOT NULL,
     archive_version TEXT        NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL,
     sealed_at       TIMESTAMPTZ,
+    host            TEXT,
+    "user"          TEXT,
+    git_sha         TEXT,
+    project         TEXT,
+    yath_version    TEXT,
+    meta_extras     JSONB COMPRESSION lz4,
     UNIQUE(archive_uuid)
 );
 

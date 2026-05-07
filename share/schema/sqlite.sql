@@ -34,8 +34,13 @@ CREATE TABLE archives (
     archive_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     archive_uuid    TEXT    NOT NULL COLLATE BINARY,
     archive_version TEXT    NOT NULL,
-    created_at      TEXT    NOT NULL,
     sealed_at       TEXT,
+    host            TEXT,
+    "user"          TEXT,
+    git_sha         TEXT,
+    project         TEXT,
+    yath_version    TEXT,
+    meta_extras     BLOB,    -- JSON catch-all for meta.json keys not promoted
     UNIQUE(archive_uuid)
 );
 

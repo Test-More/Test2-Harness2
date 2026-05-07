@@ -136,6 +136,20 @@ sub _last_insert_id {
     return $dbh->last_insert_id(undef, undef, $table, undef);
 }
 
+# Postgres TIMESTAMPTZ stringifies as 'YYYY-MM-DD HH:MM:SS+00' on
+# fetch. Convert to canonical ISO 'YYYY-MM-DDTHH:MM:SSZ' so meta.json
+# round-trips a stable shape regardless of which DB flavor wrote it.
+sub _db_datetime_to_iso {
+    my ($self, $val) = @_;
+    return $val unless defined $val;
+    my $out = $val;
+    $out =~ s/ /T/;
+    # Strip a trailing '+00' / '+0000' / '+00:00' UTC offset.
+    $out =~ s/\+00(?::?00)?\z//;
+    $out .= 'Z' unless $out =~ /Z\z/;
+    return $out;
+}
+
 1;
 
 __END__

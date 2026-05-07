@@ -164,14 +164,16 @@ ok($h->exists('attachments/0001-hello.txt'), 'exists for arbitrary file');
 ok(!$h->exists('attachments/nope.txt'),      '!exists for missing');
 is($h->get('attachments/0001-hello.txt'), "hi there\n", 'get reads arbitrary file');
 
-# save IS supported on the Postgres backend.
+# save IS supported on the Postgres backend. Use a non-meta.json
+# filename: meta.json reads now reconstruct from archives columns
+# (D9), so a save+get round-trip would be intercepted.
 {
     my $a = $log->artifacts();
-    my $ret = $a->save('meta.json', '{"foo":1}');
+    my $ret = $a->save('extras.json', '{"foo":1}');
     ok(defined $ret && length $ret, 'save returns identifier');
 
-    is($a->get('meta.json'), '{"foo":1}', 'get reads back');
-    ok($a->exists('meta.json'), 'exists after save');
+    is($a->get('extras.json'), '{"foo":1}', 'get reads back');
+    ok($a->exists('extras.json'), 'exists after save');
 }
 
 {

@@ -210,6 +210,27 @@ sub _now_iso {
         int($frac * 1000));
 }
 
+# meta.json's created_at uses canonical ISO 'YYYY-MM-DDTHH:MM:SSZ'.
+# MySQL rejects the 'T'/'Z' shape -- convert.
+sub _iso_to_db_datetime {
+    my ($self, $iso) = @_;
+    return $iso unless defined $iso;
+    my $out = $iso;
+    $out =~ s/T/ /;
+    $out =~ s/Z\z//;
+    return $out;
+}
+
+# Reverse: 'YYYY-MM-DD HH:MM:SS[.fff]' -> ISO 'YYYY-MM-DDTHH:MM:SS[.fff]Z'.
+sub _db_datetime_to_iso {
+    my ($self, $val) = @_;
+    return $val unless defined $val;
+    my $out = $val;
+    $out =~ s/ /T/;
+    $out .= 'Z' unless $out =~ /Z\z/;
+    return $out;
+}
+
 sub _last_insert_id {
     my ($self, $dbh, $table, $col) = @_;
     return $dbh->last_insert_id(undef, undef, $table, $col);
@@ -229,19 +250,33 @@ sub _last_insert_id {
 # the base class drives. We use bind_param-aware overrides.
 
 sub _create_archive {
-    my ($self, $uuid) = @_;
+    my ($self, $meta) = @_;
+    croak "_create_archive requires a meta hashref"
+        unless ref($meta) eq 'HASH';
     require DBI;
-    $uuid //= gen_uuid();
+    my $uuid = $meta->{archive_uuid} // gen_uuid();
     my $dbh = $self->dbh;
-    my $now = $self->_now_iso;
 
-    my $sth = $dbh->prepare(q{
-        INSERT INTO archives (archive_uuid, archive_version, created_at)
-        VALUES (?, ?, ?)
+    my ($extras_json, undef) = $self->_split_meta_extras($meta);
+
+    # ANSI_QUOTES is on for this session, so "user" is treated as an
+    # identifier. Use the same syntax as the base class for symmetry.
+    my $user_col = $self->_quote_user_col;
+    my $sth = $dbh->prepare(qq{
+        INSERT INTO archives
+            (archive_uuid, archive_version, sealed_at,
+             host, $user_col, git_sha, project, yath_version, meta_extras)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     });
     $sth->bind_param(1, $self->_uuid_to_db($uuid), DBI::SQL_BINARY());
     $sth->bind_param(2, $App::Yath2::Log::VERSION);
-    $sth->bind_param(3, $now);
+    $sth->bind_param(3, $self->_iso_to_db_datetime($meta->{created_at}));
+    $sth->bind_param(4, $meta->{host});
+    $sth->bind_param(5, $meta->{user});
+    $sth->bind_param(6, $meta->{git_sha});
+    $sth->bind_param(7, $meta->{project});
+    $sth->bind_param(8, $meta->{yath_version});
+    $sth->bind_param(9, $extras_json);
     $sth->execute;
 
     my $id = $self->_last_insert_id($dbh, 'archives', 'archive_id');
@@ -381,9 +416,9 @@ sub insert {
     $self->bootstrap_schema;
 
     require App::Yath2::Log;
-    my $meta = App::Yath2::Log->build_archive_meta(
-        archive_uuid => $opts{archive_uuid},
-    );
+    # Per D5/D9: carry source meta.json verbatim when present, mint
+    # otherwise. archives row is populated entirely from this hash.
+    my $meta = $self->_resolve_insert_meta($source, \%opts);
 
     # Resolve (find-or-create) the projects row for this archive.
     my $project_name = $meta->{project} // 'unknown';
@@ -394,7 +429,7 @@ sub insert {
     # on demand when creating a jobs row (needed for NOT NULL test_file_id).
     $self->{App::Yath2::Log::DB::_INSERT_SOURCE()} = $source;
 
-    my $aid = $self->_create_archive($meta->{archive_uuid});
+    my $aid = $self->_create_archive($meta);
 
     my @files;
     if ($source->can('list_files')) {
@@ -408,6 +443,9 @@ sub insert {
     my @ordered;
     for my $rel (@files) {
         next if $rel eq 'LIVE';
+        # meta.json is reconstructed from archives columns (D9), not
+        # carried as an artifact row.
+        next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
         (my $logical = $rel) =~ s/\.zst\z//;
         if ($rel =~ /\.zst\z/) {
             $seen_logical{$logical} = $rel;
@@ -473,12 +511,11 @@ sub insert {
     delete $self->{App::Yath2::Log::DB::_INSERT_SOURCE()};
 
     # Mirror the base-class flow: populate summary rows
-    # (runs / services / service_lifetimes / jobs / job_tries / ...) and
-    # stamp sealed_at on the archive.
+    # (runs / services / service_lifetimes / jobs / job_tries / ...).
+    # sealed_at was set during _create_archive from $meta->{created_at}
+    # (D5: it carries the source's live->sealed timestamp, not insert
+    # wall time).
     $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
-
-    $dbh->do(q{UPDATE archives SET sealed_at = ? WHERE archive_id = ?},
-        undef, $self->_now_iso, $aid);
 
     return $aid;
 }

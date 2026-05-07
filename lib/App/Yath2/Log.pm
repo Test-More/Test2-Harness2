@@ -117,6 +117,15 @@ sub new {
 sub META_FORMAT_VERSION { 1 }
 sub META_FILENAME       { 'meta.json' }
 
+# Canonical meta.json keys promoted to archives table columns. Anything
+# else lands in archives.meta_extras (JSON catch-all). archive_uuid is
+# included even though it is its own column -- listing it here keeps
+# meta_extras free of the duplicate. format_version is intentionally NOT
+# promoted; it round-trips through meta_extras.
+sub META_PROMOTED_KEYS {
+    qw(archive_uuid created_at host user git_sha project yath_version)
+}
+
 # Earliest archive_version this dist can read. Bump manually when making
 # breaking schema or producer-side changes -- the read path refuses
 # archives whose archive_version is lower than this. There is no

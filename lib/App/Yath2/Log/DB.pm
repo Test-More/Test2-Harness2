@@ -210,22 +210,73 @@ sub _check_archive_version {
 }
 
 sub _create_archive {
-    my ($self, $uuid) = @_;
-    $uuid //= gen_uuid();
+    my ($self, $meta) = @_;
+    croak "_create_archive requires a meta hashref"
+        unless ref($meta) eq 'HASH';
+    my $uuid = $meta->{archive_uuid} // gen_uuid();
     my $dbh = $self->dbh;
-    my $now = $self->_now_iso;
 
-    my $sth = $dbh->prepare(q{
-        INSERT INTO archives (archive_uuid, archive_version, created_at)
-        VALUES (?, ?, ?)
+    my ($extras_json, undef) = $self->_split_meta_extras($meta);
+
+    my $user_col = $self->_quote_user_col;
+    my $sth = $dbh->prepare(qq{
+        INSERT INTO archives
+            (archive_uuid, archive_version, sealed_at,
+             host, $user_col, git_sha, project, yath_version, meta_extras)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     });
-    $sth->execute($self->_uuid_to_db($uuid), $App::Yath2::Log::VERSION, $now);
+    $sth->execute(
+        $self->_uuid_to_db($uuid),
+        $App::Yath2::Log::VERSION,
+        $self->_iso_to_db_datetime($meta->{created_at}),
+        $meta->{host},
+        $meta->{user},
+        $meta->{git_sha},
+        $meta->{project},
+        $meta->{yath_version},
+        $extras_json,
+    );
 
     my $id = $self->_last_insert_id($dbh, 'archives', 'archive_id');
     $self->{+ARCHIVE_ID} = $id;
     $self->{+UUID} = $uuid;
     return $id;
 }
+
+# Normalize an ISO-8601 timestamp string ('YYYY-MM-DDTHH:MM:SS[.fff]Z')
+# for the active flavor's DATETIME column. Default: pass through (sqlite
+# + postgres accept 'T'/'Z'). Mariadb / mysql override.
+sub _iso_to_db_datetime { $_[1] }
+
+# Reverse of _iso_to_db_datetime -- normalize a DATETIME column value
+# back to ISO-8601 'T'/'Z' shape for meta.json reconstruction. Default
+# pass-through.
+sub _db_datetime_to_iso { $_[1] }
+
+# Split a meta hash into (extras_json, promoted_hash). Anything in
+# META_PROMOTED_KEYS goes to typed columns; everything else is encoded
+# as JSON for archives.meta_extras. Returns (undef, $promoted) when
+# there are no extra keys so we don't burn an empty '{}' blob.
+sub _split_meta_extras {
+    my ($self, $meta) = @_;
+    my %promoted = map { $_ => 1 } App::Yath2::Log->META_PROMOTED_KEYS;
+    my (%extras, %prom);
+    for my $k (keys %$meta) {
+        if ($promoted{$k}) {
+            $prom{$k} = $meta->{$k};
+        }
+        else {
+            $extras{$k} = $meta->{$k};
+        }
+    }
+    my $json = %extras ? $self->_encode_json_or_undef(\%extras) : undef;
+    return ($json, \%prom);
+}
+
+# SQL fragment for the keyword-clashing 'user' column. Default uses
+# ANSI double-quote (sqlite + postgres + mariadb in ANSI_QUOTES);
+# MySQL/MariaDB classes override to backticks.
+sub _quote_user_col { '"user"' }
 
 # Subclasses may override (Postgres needs RETURNING).
 sub _last_insert_id {
@@ -797,6 +848,15 @@ sub _format_for_name {
 # .zst probe, plaintext for the plain probe -- callers pick one).
 sub _artifact_exists {
     my ($self, $rel) = @_;
+
+    # Archive-root meta.json is reconstructed from the archives row
+    # (D9: meta promotion). Exists when we have an archive at all.
+    if (defined $rel && ($rel eq 'meta.json' || $rel eq 'meta.json.zst')) {
+        my $aid = eval { $self->_archive_id_or_die };
+        return (0, 0) unless defined $aid;
+        return (1, $rel =~ /\.zst\z/ ? 1 : 0);
+    }
+
     my $info = $self->_parse_artifact_path($rel) or return (0, 0);
 
     if ($self->_is_reconstruct_target($info)) {
@@ -937,6 +997,17 @@ sub _scope_fk_values {
 # mismatch (caller probed the wrong form) by re-shaping on the fly.
 sub _artifact_read {
     my ($self, $rel) = @_;
+
+    # Archive-root meta.json is reconstructed from the archives row.
+    if (defined $rel && ($rel eq 'meta.json' || $rel eq 'meta.json.zst')) {
+        my $rec = $self->_reconstruct_meta_record
+            or croak "no meta in DB for archive";
+        my $bytes = App::Yath2::Log->encode_archive_meta($rec);
+        return $bytes unless $rel =~ /\.zst\z/;
+        require Test2::Harness2::Util::Zstd;
+        return Test2::Harness2::Util::Zstd::compress_blob($bytes);
+    }
+
     my $info = $self->_parse_artifact_path($rel)
         or croak "cannot parse artifact path: $rel";
 
@@ -1710,6 +1781,28 @@ sub extract {
         close $fh or croak "close '$abs': $!";
     }
 
+    # meta.json is reconstructed from archives columns (D9 -- there is
+    # no artifact row to walk for it). Write it explicitly at the
+    # archive root so an extracted directory looks identical to a
+    # tar.zidx-extracted one.
+    {
+        my $rec = $self->_reconstruct_meta_record;
+        if ($rec) {
+            my $bytes = App::Yath2::Log->encode_archive_meta($rec);
+            my $out_rel = $compressed ? 'meta.json.zst' : 'meta.json';
+            my $out_bytes = $compressed
+                ? Test2::Harness2::Util::Zstd::compress_blob($bytes)
+                : $bytes;
+            my $abs = File::Spec->catfile($dir, $out_rel);
+            my $par = dirname($abs);
+            make_path($par) unless -d $par;
+            open(my $fh, '>', $abs) or croak "open '$abs': $!";
+            binmode $fh;
+            print $fh $out_bytes;
+            close $fh or croak "close '$abs': $!";
+        }
+    }
+
     return App::Yath2::Log::Directory->new(path => $dir, live => 0);
 }
 
@@ -1766,14 +1859,14 @@ sub insert {
 
     require App::Yath2::Log;
 
-    # Build the archive metadata so the same archive_uuid lands on
-    # both the archives row and the fresh meta.json we drop in at
-    # the archive root. If the caller passed an explicit
-    # archive_uuid, honour it; otherwise the meta builder mints one.
-    my $meta = App::Yath2::Log->build_archive_meta(
-        archive_uuid => $opts{archive_uuid},
-    );
-    my $meta_bytes = App::Yath2::Log->encode_archive_meta($meta);
+    # Resolve the archive metadata. Per D5, sealed_at carries the
+    # source archive's live->sealed timestamp (== meta.created_at).
+    # Read the source's existing meta.json verbatim when present so
+    # the carry-over preserves any future-key the source may have;
+    # otherwise mint fresh via build_archive_meta. The caller may
+    # override archive_uuid to disambiguate identity in multi-archive
+    # DBs even when the source is being copied.
+    my $meta = $self->_resolve_insert_meta($source, \%opts);
 
     # Resolve (find-or-create) the projects row for this archive.
     my $project_name = $meta->{project} // 'unknown';
@@ -1785,8 +1878,8 @@ sub insert {
     # Cleared after the artifact loop completes.
     $self->{+_INSERT_SOURCE} = $source;
 
-    # Fresh archive row.
-    my $aid = $self->_create_archive($meta->{archive_uuid});
+    # Fresh archive row -- meta drives all promoted columns.
+    my $aid = $self->_create_archive($meta);
 
     require Test2::Harness2::Util::Zstd;
 
@@ -1893,32 +1986,63 @@ sub insert {
     # Artifact loop complete; clear the source reference.
     delete $self->{+_INSERT_SOURCE};
 
-    # Drop a fresh meta.json into the archive-root scope. Compression
-    # follows the caller's compress flag so the whole archive is
-    # consistent: every body zstd-shaped, or every body plaintext.
-    # `yath extract` decompresses by default, so users see plaintext
-    # meta.json in extracted dirs either way. save() takes the
-    # dispatcher path through _artifact_save which inserts a new
-    # artifact row; archive_root scope is encoded as all three FK
-    # columns NULL.
-    $self->artifacts->save(
-        App::Yath2::Log->META_FILENAME,
-        $meta_bytes,
-        compress => $compress,
-    );
+    # No meta.json artifact-row write: per D9, archive metadata lives
+    # in the typed archives columns + meta_extras. Reads of
+    # meta.json at the archive root reconstruct from those columns
+    # via _reconstruct_meta_record.
 
     # Populate summary columns on runs / jobs / job_tries / services
-    # / subtests, and stamp the archive sealed. The artifact rows are
-    # the authoritative bytes, but the summary columns are what
-    # readers actually query (status / pass / exit / file / etc.) -- a
-    # row of NULLs makes the DB unusable for everything except raw
-    # artifact retrieval.
+    # / subtests. The artifact rows are the authoritative bytes, but
+    # the summary columns are what readers actually query (status /
+    # pass / exit / file / etc.) -- a row of NULLs makes the DB
+    # unusable for everything except raw artifact retrieval.
     $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
 
-    $dbh->do(q{UPDATE archives SET sealed_at = ? WHERE archive_id = ?},
-        undef, $self->_now_iso, $aid);
+    # No sealed_at UPDATE here -- per D5, sealed_at carries the
+    # source's live->sealed transition time and was set at
+    # _create_archive time from $meta->{created_at}.
 
     return $aid;
+}
+
+# Read the source's meta.json if present (carry-over) or mint fresh.
+# Each insert gets a fresh archive_uuid by default so a single source
+# can be inserted multiple times into one DB without colliding; the
+# caller may force a specific UUID via $opts->{archive_uuid}. All
+# other meta keys (created_at -> sealed_at, host, user, git_sha,
+# project, yath_version, plus any future extras) carry over verbatim
+# per D5/D9 -- they reflect the source archive's identity, not the
+# current insert.
+sub _resolve_insert_meta {
+    my ($self, $source, $opts) = @_;
+    my $meta;
+
+    my $root = eval { $source->artifacts };
+    if ($root && eval { $root->exists(App::Yath2::Log->META_FILENAME) }) {
+        my $bytes = eval { $root->get(App::Yath2::Log->META_FILENAME) };
+        if (defined $bytes && length $bytes) {
+            my $decoded = eval { decode_json($bytes) };
+            $meta = $decoded if ref($decoded) eq 'HASH';
+        }
+    }
+    unless ($meta) {
+        $meta = App::Yath2::Log->build_archive_meta(
+            archive_uuid => $opts->{archive_uuid},
+        );
+    }
+
+    # archive_uuid is per-insert identity. Honour an explicit caller
+    # override; otherwise mint a fresh one even if the source meta
+    # carried one (the DB archive needs unique identity from any
+    # source we replicate).
+    if (defined $opts->{archive_uuid}) {
+        $meta->{archive_uuid} = $opts->{archive_uuid};
+    }
+    else {
+        $meta->{archive_uuid} = gen_uuid();
+    }
+
+    return $meta;
 }
 
 # After the artifact bytes are in the DB, walk the source's runs /
@@ -2623,6 +2747,42 @@ sub _reconstruct_report_records {
     elsif ($scope_kind eq 'service') { return $self->_reconstruct_service_reports($scope_id) }
     elsif ($scope_kind eq 'job_try') { return $self->_reconstruct_job_try_report($scope_id) }
     return undef;
+}
+
+# Reconstruct the meta.json hash for the active archive from typed
+# columns + meta_extras. Returns a hashref ready to JSON-encode, or
+# undef when the archive row is gone.
+sub _reconstruct_meta_record {
+    my ($self) = @_;
+    my $aid = $self->_archive_id_or_die;
+    my $dbh = $self->dbh;
+
+    my $user_col = $self->_quote_user_col;
+    my @cols = $dbh->selectrow_array(
+        qq{SELECT archive_uuid, sealed_at, host, $user_col, git_sha,
+                  project, yath_version, meta_extras
+             FROM archives WHERE archive_id = ?},
+        undef, $aid,
+    );
+    return undef unless @cols;
+
+    my ($uuid_db, $sealed_at, $host, $user, $git_sha,
+        $project, $yath_version, $extras) = @cols;
+
+    my %meta;
+    if (defined $extras) {
+        my $decoded = $self->_maybe_decode_json($extras);
+        %meta = %$decoded if ref($decoded) eq 'HASH';
+    }
+    $meta{archive_uuid} = $self->_uuid_from_db($uuid_db);
+    $meta{created_at}   = $self->_db_datetime_to_iso($sealed_at) if defined $sealed_at;
+    $meta{host}         = $host         if defined $host;
+    $meta{user}         = $user         if defined $user;
+    $meta{git_sha}      = $git_sha      if defined $git_sha;
+    $meta{project}      = $project      if defined $project;
+    $meta{yath_version} = $yath_version if defined $yath_version;
+
+    return \%meta;
 }
 
 sub _reconstruct_run_spec {

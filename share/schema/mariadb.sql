@@ -32,8 +32,13 @@ CREATE TABLE archives (
     archive_id      BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
     archive_uuid    UUID         NOT NULL,
     archive_version VARCHAR(64)  NOT NULL,
-    created_at      DATETIME(6)  NOT NULL,
     sealed_at       DATETIME(6),
+    host            VARCHAR(255),
+    `user`          VARCHAR(255),
+    git_sha         VARCHAR(64),
+    project         VARCHAR(255),
+    yath_version    VARCHAR(64),
+    meta_extras     JSON,
     UNIQUE KEY archives_uuid_uk (archive_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -147,6 +147,28 @@ sub _now_iso {
         int($frac * 1000));
 }
 
+# meta.json's created_at uses canonical ISO 'YYYY-MM-DDTHH:MM:SSZ'.
+# Convert to MariaDB DATETIME shape: replace 'T' with ' ', drop the
+# trailing 'Z'. Pass undef through.
+sub _iso_to_db_datetime {
+    my ($self, $iso) = @_;
+    return $iso unless defined $iso;
+    my $out = $iso;
+    $out =~ s/T/ /;
+    $out =~ s/Z\z//;
+    return $out;
+}
+
+# Reverse: 'YYYY-MM-DD HH:MM:SS[.fff]' -> ISO 'YYYY-MM-DDTHH:MM:SS[.fff]Z'.
+sub _db_datetime_to_iso {
+    my ($self, $val) = @_;
+    return $val unless defined $val;
+    my $out = $val;
+    $out =~ s/ /T/;
+    $out .= 'Z' unless $out =~ /Z\z/;
+    return $out;
+}
+
 require Time::HiRes;
 
 # DBI::last_insert_id with a table arg works for MariaDB AUTO_INCREMENT
