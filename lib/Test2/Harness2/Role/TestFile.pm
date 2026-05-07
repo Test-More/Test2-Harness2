@@ -9,12 +9,13 @@ use File::Spec ();
 
 use Role::Tiny;
 
-# file is the only attribute without a sensible default -- every TestFile
-# is ultimately about a path. The remaining attributes have defaults
-# provided below, which satisfy the role's interface requirement without
-# dictating a storage model; consumers that want per-instance overrides
-# shadow them (typically via Object::HashBase + init).
-requires 'file';
+# absolute and relative together fully describe a test file's path.
+# Consumers must provide both accessors; the role derives its path helpers
+# from them. (The legacy `file` slot has been dropped -- see init in
+# concrete classes for how a caller-supplied `file` arg is resolved into
+# absolute + relative and then discarded.)
+requires 'absolute';
+requires 'relative';
 
 # Per-feature defaults consulted by check_feature when the caller
 # supplies no explicit default and the consumer's data has no entry
@@ -73,7 +74,7 @@ sub defaults {
 
 sub json_fields {
     return qw{
-        file absolute relative
+        absolute relative
         min_slots max_slots
         category duration stage
         conflicts
@@ -134,8 +135,6 @@ sub meta_get {
 
 # {{{ Derived path helpers + simple predicates
 
-sub absolute      { File::Spec->rel2abs($_[0]->file) }
-sub relative      { File::Spec->abs2rel($_[0]->file) }
 sub is_executable { -x $_[0]->absolute }
 sub has_conflicts { scalar($_[0]->conflicts_list) ? 1 : 0 }
 
@@ -224,6 +223,15 @@ sub rehydrate {
     my $class = delete $args{__test_file_class__}
         or croak "No rehydration class was present in the data";
 
+    # Handle the legacy `file` key that old archives may carry. Derive
+    # `absolute` + `relative` from it if they are not already present,
+    # then drop `file` so it is not passed to the constructor (the slot
+    # no longer exists).
+    if (my $legacy_file = delete $args{file}) {
+        $args{absolute} //= File::Spec->rel2abs($legacy_file);
+        $args{relative} //= File::Spec->abs2rel($legacy_file);
+    }
+
     return $class->new(%args);
 }
 
@@ -269,7 +277,7 @@ hash.
     use warnings;
 
     use Object::HashBase qw{
-        <file
+        <absolute <relative
         <min_slots <max_slots
         <category <duration <stage
         <conflicts
@@ -288,7 +296,13 @@ hash.
 
     sub init {
         my $self = shift;
-        croak "'file' is required" unless defined $self->{+FILE};
+        # Accept a `file` arg and derive absolute/relative from it.
+        if (my $file = delete $self->{file}) {
+            $self->{+ABSOLUTE} //= File::Spec->rel2abs($file);
+            $self->{+RELATIVE} //= File::Spec->abs2rel($file);
+        }
+        croak "'absolute' (or 'file') is required"
+            unless defined $self->{+ABSOLUTE};
         # Per-instance defaults (shadow the role methods only where the
         # consumer actually allocated a slot for the attribute).
         $self->{+CATEGORY} //= 'general';
@@ -297,9 +311,12 @@ hash.
 
 =head1 REQUIRED METHODS
 
-Only C<file> is required. Every other attribute has a default
-implementation on the role that returns the documented default; consumers
-may shadow those defaults with their own accessors.
+C<absolute> and C<relative> are required. Every other attribute has a
+default implementation on the role that returns the documented default;
+consumers may shadow those defaults with their own accessors. Concrete
+classes typically accept a C<file> argument in their C<init> and derive
+C<absolute> + C<relative> from it, then discard C<file> so it is never
+stored or serialized.
 
 =head1 PROVIDED METHODS
 
@@ -320,13 +337,16 @@ Consumers may override to add or remove fields.
 
 =item $path = $tf->absolute
 
-Absolute path, derived via L<File::Spec/rel2abs> from C<file>. Override
-if the consumer caches an absolute form.
+Absolute path to the test file. Required by the role; provided by each
+concrete consumer (typically via an C<Object::HashBase> slot). Concrete
+classes derive this from a C<file> argument during C<init>.
 
 =item $path = $tf->relative
 
-Relative path, derived via L<File::Spec/abs2rel> from C<file>. Override
-if the consumer wants to preserve a caller-supplied relative form.
+Relative path to the test file (relative to cwd at construction time).
+Required by the role; provided by each concrete consumer (typically via
+an C<Object::HashBase> slot). Concrete classes derive this from a C<file>
+argument during C<init>.
 
 =item $val = $tf->feature($name)
 
@@ -428,26 +448,32 @@ L<Test2::Harness2::Run/from_files> does this via
 L<Test2::Harness2::Util/load_module>), deletes C<__test_file_class__>
 from the args, and calls C<< $class->new(%args) >>.
 
-C<absolute> and C<relative> are preserved even though they are
-derived -- rehydration may happen when reviewing a log on a different
-machine where the file no longer exists and the derivations cannot
-be recomputed. Classes that override C<rehydrate> may treat those
-fields as authoritative; classes that do not simply ignore the extra
-constructor args.
+C<absolute> and C<relative> are the canonical path fields emitted by
+C<TO_JSON>. Old archives may contain a C<file> key; C<rehydrate> strips
+it before passing args to the constructor so legacy payloads are
+silently tolerated without breaking consumers that no longer have a
+C<file> slot.
 
 =back
 
 =head1 ATTRIBUTES
 
-C<file> is required. Every other attribute has a default implementation
-on the role; the role does not know how a consumer stores an override.
+C<absolute> and C<relative> are required. Every other attribute has a
+default implementation on the role; the role does not know how a consumer
+stores an override.
 
 =over 4
 
-=item file (no sensible default)
+=item absolute (required)
 
-Path identifying the test file. Absolute or relative; L</absolute> and
-L</relative> both derive from this value.
+Absolute path to the test file. Concrete classes typically derive this
+from a caller-supplied C<file> argument during C<init>.
+
+=item relative (required)
+
+Relative path to the test file (relative to cwd at construction time).
+Concrete classes typically derive this from a caller-supplied C<file>
+argument during C<init>.
 
 =item min_slots, max_slots
 

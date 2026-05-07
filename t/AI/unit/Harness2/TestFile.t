@@ -6,7 +6,7 @@ use Test2::Harness2::TestFile;
 
 subtest 'defaults fill in sensibly' => sub {
     my $tf = Test2::Harness2::TestFile->new(file => 't/foo.t');
-    ok(File::Spec->file_name_is_absolute($tf->file), 'file made absolute');
+    ok(File::Spec->file_name_is_absolute($tf->absolute), 'absolute is an absolute path');
     is($tf->relative,         't/foo.t', 'relative preserved as given');
     is($tf->min_slots,        1,         'min_slots defaults to 1');
     is($tf->max_slots,        undef,     'max_slots defaults to undef');
@@ -21,7 +21,6 @@ subtest 'defaults fill in sensibly' => sub {
 subtest 'accepts an absolute path' => sub {
     my $abs = File::Spec->rel2abs('t/foo.t');
     my $tf  = Test2::Harness2::TestFile->new(file => $abs);
-    is($tf->file,     $abs,                      'abs path preserved');
     is($tf->absolute, $abs,                      'absolute matches');
     is($tf->relative, File::Spec->abs2rel($abs), 'relative derived');
 };
@@ -47,11 +46,11 @@ subtest 'honours supplied attributes' => sub {
     is($tf->feature('nope'),    undef, 'missing feature is undef');
 };
 
-subtest 'file is required' => sub {
+subtest 'file (or absolute) is required' => sub {
     my $ok  = eval { Test2::Harness2::TestFile->new; 1 };
     my $err = $@;
-    ok(!$ok, 'croaks without file');
-    like($err, qr/file/);
+    ok(!$ok, 'croaks without file or absolute');
+    like($err, qr/absolute/);
 };
 
 subtest 'consumes the TestFile role' => sub {
@@ -73,12 +72,13 @@ subtest 'TO_JSON round-trips through rehydrate' => sub {
     );
     my $json = $tf->TO_JSON;
 
-    is($json->{file},      '/abs/t/foo.t', 'file round-trips');
+    ok(!exists $json->{file},   'file key is NOT emitted by TO_JSON');
+    is($json->{absolute},  '/abs/t/foo.t', 'absolute emitted');
+    is($json->{relative},  File::Spec->abs2rel('/abs/t/foo.t'), 'relative emitted');
     is($json->{min_slots}, 3,              'min_slots round-trips');
     is($json->{category},  'immiscible',   'category round-trips');
     is($json->{conflicts}, ['db'],         'conflicts round-trips');
     is($json->{features},  {preload => 1}, 'features round-trips');
-    is($json->{absolute},  '/abs/t/foo.t', 'absolute emitted for downstream readers');
     is(
         $json->{__test_file_class__},
         'Test2::Harness2::TestFile',
@@ -87,9 +87,16 @@ subtest 'TO_JSON round-trips through rehydrate' => sub {
 
     my $rebuilt = Test2::Harness2::TestFile->rehydrate($json);
     isa_ok($rebuilt, ['Test2::Harness2::TestFile'], 'rebuilt is the same class');
-    is($rebuilt->min_slots, 3,            'rehydrate preserves min_slots');
-    is($rebuilt->category,  'immiscible', 'rehydrate preserves category');
-    is($rebuilt->conflicts, ['db'],       'rehydrate preserves conflicts');
+    is($rebuilt->absolute,  '/abs/t/foo.t', 'rehydrate preserves absolute');
+    is($rebuilt->min_slots, 3,              'rehydrate preserves min_slots');
+    is($rebuilt->category,  'immiscible',   'rehydrate preserves category');
+    is($rebuilt->conflicts, ['db'],         'rehydrate preserves conflicts');
+
+    # Legacy payload carrying `file` is tolerated (file key stripped on rehydrate).
+    my $legacy = {%$json, file => '/old/path.t'};
+    $legacy->{__test_file_class__} = 'Test2::Harness2::TestFile';
+    my $legacy_rebuilt = Test2::Harness2::TestFile->rehydrate($legacy);
+    is($legacy_rebuilt->absolute, '/abs/t/foo.t', 'legacy file key ignored; absolute wins');
 };
 
 done_testing;

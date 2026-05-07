@@ -8,7 +8,8 @@ use Carp qw/croak/;
 use File::Spec ();
 
 use Object::HashBase qw{
-    <file
+    <absolute
+    <relative
 
     <min_slots
     <max_slots
@@ -48,14 +49,19 @@ with 'Test2::Harness2::Role::TestFile';
 sub init {
     my $self = shift;
 
-    my $file = $self->{+FILE};
-    croak "'file' is a required attribute" unless defined $file && length $file;
+    # Accept a `file` argument for convenience; derive absolute + relative
+    # from it and then discard the value (the slot no longer exists).
+    if (my $file = delete $self->{file}) {
+        $self->{+ABSOLUTE} //= File::Spec->rel2abs($file);
+        $self->{+RELATIVE} //= File::Spec->abs2rel($file);
+    }
 
-    # Resolve to an absolute path once so a later chdir does not redirect
-    # the launch. The role's ->absolute/->relative methods both derive from
-    # this stored value.
-    $self->{+FILE} = File::Spec->rel2abs($file)
-        unless File::Spec->file_name_is_absolute($file);
+    croak "'absolute' (or 'file') is a required attribute"
+        unless defined $self->{+ABSOLUTE} && length $self->{+ABSOLUTE};
+
+    # Ensure both derived forms are present even when only one was supplied.
+    $self->{+ABSOLUTE} //= File::Spec->rel2abs($self->{+RELATIVE});
+    $self->{+RELATIVE} //= File::Spec->abs2rel($self->{+ABSOLUTE});
 
     # Fill in per-instance defaults. HashBase accessors shadow the role's
     # default methods, so leaving a slot undef would make the accessor

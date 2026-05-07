@@ -725,10 +725,10 @@ sub find_project_files {
     if ($durations && $durations->{sorted}) {
         my %all_tests = map { ($_->relative() => $_) } @tests;
         push @out => delete($all_tests{$_}) for @{$durations->{sorted}};
-        push @out => map { $a->rank <=> $b->rank || $a->file cmp $b->file } values %all_tests;
+        push @out => map { $a->rank <=> $b->rank || $a->absolute cmp $b->absolute } values %all_tests;
     }
     else {
-        @out = sort { $a->rank <=> $b->rank || $a->file cmp $b->file } @tests;
+        @out = sort { $a->rank <=> $b->rank || $a->absolute cmp $b->absolute } @tests;
     }
 
     return \@out;
@@ -751,7 +751,7 @@ sub exclude_file {
 
     push @out => "File has a do-not-run directive inside it." unless $test->check_feature(run => 1);
 
-    my $full = $test->file;
+    my $full = $test->absolute;
     my $rel  = $test->relative;
 
     push @out => 'File is in the exclude list.' if $self->exclude_files->{$full} || $self->exclude_files->{$rel};

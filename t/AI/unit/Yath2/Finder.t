@@ -44,7 +44,7 @@ subtest 'basic discovery finds .t and .t2 files' => sub {
     my $files = $finder->find_files([]);
 
     is(scalar @$files, 2, 'found two files');
-    my @exts = sort map { (my $e = $_->file) =~ s/.*\.//; $e } @$files;
+    my @exts = sort map { (my $e = $_->absolute) =~ s/.*\.//; $e } @$files;
     is(\@exts, [qw/t t2/], 'correct extensions');
 };
 
@@ -61,7 +61,7 @@ subtest '--extensions restricts to custom suffixes' => sub {
     my $files = $finder->find_files([]);
 
     is(scalar @$files, 2, 'found two custom-extension files');
-    my @names = sort map { (my $n = $_->file) =~ s{.*/}{}; $n } @$files;
+    my @names = sort map { (my $n = $_->absolute) =~ s{.*/}{}; $n } @$files;
     is(\@names, [qw/b.tx c.txx/], 'correct filenames');
 };
 
@@ -77,7 +77,7 @@ subtest '--exclude-file removes a named file' => sub {
     my $files = $finder->find_files([]);
 
     is(scalar @$files, 1, 'one file remains');
-    is($files->[0]->file, $keep, 'kept the right file');
+    is($files->[0]->absolute, $keep, 'kept the right file');
 };
 
 subtest '--exclude-patterns skips matching files' => sub {
@@ -93,7 +93,7 @@ subtest '--exclude-patterns skips matching files' => sub {
     my $files = $finder->find_files([]);
 
     is(scalar @$files, 2, 'two non-matching files remain');
-    my $excluded = grep { $_->file =~ /integration/ } @$files;
+    my $excluded = grep { $_->absolute =~ /integration/ } @$files;
     ok(!$excluded, 'excluded file absent');
 };
 
@@ -115,7 +115,7 @@ subtest '--exclude-list reads exclusions from a file' => sub {
     my $files = $finder->find_files([]);
 
     is(scalar @$files, 1, 'one file survives exclusion list');
-    is($files->[0]->file, $keep, 'correct file kept');
+    is($files->[0]->absolute, $keep, 'correct file kept');
 };
 
 subtest 'default_search is used when no explicit search given' => sub {

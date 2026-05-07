@@ -105,8 +105,8 @@ subtest timeouts => sub {
     is(
         warnings { $bad->scan },
         [
-            "'EVENTX' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at " . $bad->file . " line 1.\n",
-            "'POSTEXITX' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at " . $bad->file . " line 2.\n",
+            "'EVENTX' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at " . $bad->absolute . " line 1.\n",
+            "'POSTEXITX' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at " . $bad->absolute . " line 2.\n",
         ],
         "Got warnings for bad timeout types",
     );

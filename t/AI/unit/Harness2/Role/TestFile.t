@@ -20,7 +20,7 @@ use Test2::Harness2::Role::TestFile;
     }
 
     for my $attr (qw{
-        file
+        absolute relative
         min_slots max_slots
         category duration stage
         conflicts
@@ -56,7 +56,8 @@ use Test2::Harness2::Role::TestFile;
         return bless \%attrs, $class;
     }
 
-    sub file { $_[0]->{file} }
+    sub absolute { $_[0]->{absolute} }
+    sub relative { $_[0]->{relative} }
 
     with 'Test2::Harness2::Role::TestFile';
 }
@@ -99,13 +100,14 @@ subtest 'mutable defaults are fresh per call' => sub {
 
 subtest 'default methods use accessors, not $self hash' => sub {
     my $tf = T::Role::TestFile::Closure->new(
-        file      => '/abs/t/a.t',
+        absolute  => '/abs/t/a.t',
+        relative  => File::Spec->abs2rel('/abs/t/a.t'),
         conflicts => ['db'],
         features  => {preload => 1},
     );
 
-    is($tf->absolute, '/abs/t/a.t',                      'absolute via ->file');
-    is($tf->relative, File::Spec->abs2rel('/abs/t/a.t'), 'relative via ->file');
+    is($tf->absolute, '/abs/t/a.t',                      'absolute returned directly');
+    is($tf->relative, File::Spec->abs2rel('/abs/t/a.t'), 'relative returned directly');
 
     is($tf->feature('preload'), 1,     'feature via ->features');
     is($tf->feature('missing'), undef, 'feature returns undef when missing');
@@ -123,18 +125,19 @@ subtest 'conflicts_list tolerates undef conflicts' => sub {
 
 subtest 'TO_JSON uses json_fields and tags the class' => sub {
     my $tf = T::Role::TestFile::Closure->new(
-        file      => '/abs/t/a.t',
+        absolute  => '/abs/t/a.t',
+        relative  => File::Spec->abs2rel('/abs/t/a.t'),
         min_slots => 2,
         conflicts => ['db'],
         features  => {preload => 1},
     );
     my $json = $tf->TO_JSON;
-    is($json->{file},      '/abs/t/a.t',                      'file emitted');
+    ok(!exists $json->{file},   'file key is NOT emitted');
+    is($json->{absolute},  '/abs/t/a.t',                      'absolute emitted');
+    is($json->{relative},  File::Spec->abs2rel('/abs/t/a.t'), 'relative emitted');
     is($json->{min_slots}, 2,                                 'min_slots emitted');
     is($json->{conflicts}, ['db'],                            'conflicts emitted');
     is($json->{features},  {preload => 1},                    'features emitted');
-    is($json->{absolute},  '/abs/t/a.t',                      'derived absolute is emitted for downstream readers');
-    is($json->{relative},  File::Spec->abs2rel('/abs/t/a.t'), 'derived relative is emitted');
     is(
         $json->{__test_file_class__},
         'T::Role::TestFile::Closure',
@@ -151,14 +154,14 @@ subtest 'json_fields is overridable' => sub {
 
         our @ISA = ('T::Role::TestFile::Closure');
 
-        sub json_fields { qw/file min_slots/ }
+        sub json_fields { qw/absolute min_slots/ }
     }
 
-    my $tf   = T::Role::TestFile::Sub->new(file => '/x', min_slots => 4, conflicts => ['db']);
+    my $tf   = T::Role::TestFile::Sub->new(absolute => '/x', relative => 'x', min_slots => 4, conflicts => ['db']);
     my $json = $tf->TO_JSON;
     is(
         [sort keys %$json],
-        [sort qw/file min_slots __test_file_class__/],
+        [sort qw/absolute min_slots __test_file_class__/],
         'only overridden fields (plus class tag) emitted',
     );
 };
@@ -173,7 +176,7 @@ subtest 'rehydrate: class is taken from the data, absolute/relative pass through
         use warnings;
 
         use Object::HashBase qw{
-            <file
+            <absolute <relative
             <min_slots <max_slots
             <category <duration <stage
             <conflicts
@@ -190,25 +193,22 @@ subtest 'rehydrate: class is taken from the data, absolute/relative pass through
         with 'Test2::Harness2::Role::TestFile';
     }
 
-    my $tf   = T::Role::TestFile::Hashy->new(file => '/abs/x.t', min_slots => 3);
+    my $tf   = T::Role::TestFile::Hashy->new(absolute => '/abs/x.t', relative => 'abs/x.t', min_slots => 3);
     my $json = $tf->TO_JSON;
 
     # Invocant ignored: the class comes from __test_file_class__ in
     # the data. Call as a function:
     my $rebuilt = Test2::Harness2::Role::TestFile::rehydrate($json);
     isa_ok($rebuilt, ['T::Role::TestFile::Hashy'], 'rebuilt from the data-encoded class');
-    is($rebuilt->file,      '/abs/x.t', 'file round-trips');
+    is($rebuilt->absolute,  '/abs/x.t', 'absolute round-trips');
     is($rebuilt->min_slots, 3,          'min_slots round-trips');
-
-    # absolute and relative are passed through to new() even though
-    # the consumer doesn't store them -- classes that override can
-    # treat them as authoritative.
-    is($rebuilt->{absolute}, '/abs/x.t', 'absolute passed through to constructor args');
-    ok(defined $rebuilt->{relative}, 'relative passed through to constructor args');
 
     # The class tag is consumed; it does not leak into the
     # constructor args.
     ok(!exists $rebuilt->{__test_file_class__}, '__test_file_class__ tag stripped before new');
+
+    # Legacy `file` key is stripped, not passed to the constructor.
+    ok(!exists $rebuilt->{file}, 'legacy file key stripped by rehydrate');
 
     # As a class-method call, the invocant is ignored and the class
     # in the data wins.
@@ -218,7 +218,20 @@ subtest 'rehydrate: class is taken from the data, absolute/relative pass through
         'class-method form uses the data-encoded class'
     );
 
-    my $missing = {file => '/x'};
+    # Legacy payload: has `file` key (from old archive), no `absolute`.
+    # rehydrate strips `file` and passes through whatever remains.
+    my $legacy = {
+        __test_file_class__ => 'T::Role::TestFile::Hashy',
+        absolute            => '/abs/x.t',
+        relative            => 'abs/x.t',
+        file                => '/old/path.t',
+        min_slots           => 5,
+    };
+    my $legacy_rebuilt = Test2::Harness2::Role::TestFile::rehydrate($legacy);
+    is($legacy_rebuilt->absolute,  '/abs/x.t', 'legacy file key ignored; absolute wins');
+    is($legacy_rebuilt->min_slots, 5,          'min_slots preserved from legacy payload');
+
+    my $missing = {absolute => '/x', relative => 'x'};
     like(
         dies { Test2::Harness2::Role::TestFile::rehydrate($missing) },
         qr/No rehydration class was present/,
