@@ -125,8 +125,11 @@ yath(
         my $out = shift;
         like($out->{output}, qr/^Type:\s+sqlite/m, 'Type sqlite');
         like($out->{output}, qr/^Valid:\s+yes/m, 'Valid yes');
-        like($out->{output}, qr/^Archives:\s+1/m, 'Archives: 1 line');
-        like($out->{output}, qr/^\s*-\s+\S+\s+\(\d+ runs?\)/m, 'archive line with run count');
+        # Single-archive sealed sqlite: meta block from YATHFOOT replaces
+        # the redundant "Archives: 1 / - <uuid>" list.
+        like($out->{output}, qr/^Archive UUID:\s+\S+/m, 'Archive UUID line from meta');
+        like($out->{output}, qr/^Yath version:\s+\S+/m, 'Yath version line from meta');
+        like($out->{output}, qr/^Runs:\s+/m, 'Runs summary printed');
     },
 );
 # }}}

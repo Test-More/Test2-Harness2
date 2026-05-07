@@ -361,19 +361,6 @@ sub _format_human {
 
     $out .= "Valid:    yes\n";
 
-    if (($r->{type} // '') eq 'sqlite' && $r->{archives}) {
-        my @arcs = @{$r->{archives}};
-        $out .= sprintf("Archives: %d\n", scalar @arcs);
-        for my $a (@arcs) {
-            my $rc = $a->{run_count} // 0;
-            my $tag = $rc == 1 ? "1 run" : "$rc runs";
-            $out .= sprintf("  - %-36s  (%s)\n", $a->{uuid} // '?', $tag);
-            $out .= sprintf("      INVALID: %s\n", $a->{error})
-                if !$a->{valid} && defined $a->{error};
-        }
-        return $out;
-    }
-
     if (my $m = $r->{meta}) {
         $out .= sprintf("Archive UUID: %s\n", $m->{archive_uuid}) if defined $m->{archive_uuid};
         $out .= sprintf("Created at:   %s\n", $m->{created_at})   if defined $m->{created_at};
@@ -382,6 +369,31 @@ sub _format_human {
         $out .= sprintf("Git SHA:      %s\n", $m->{git_sha})      if defined $m->{git_sha};
         $out .= sprintf("Project:      %s\n", $m->{project})      if defined $m->{project};
         $out .= sprintf("Yath version: %s\n", $m->{yath_version}) if defined $m->{yath_version};
+    }
+
+    if (($r->{type} // '') eq 'sqlite' && $r->{archives}) {
+        my @arcs = @{$r->{archives}};
+        # Single-archive sealed SQLite: meta above already covers the
+        # archive uuid; skip the redundant one-line list. Multi-archive
+        # containers (no footer meta) still get the full list.
+        my $skip_list = (@arcs == 1 && $r->{meta});
+        unless ($skip_list) {
+            $out .= sprintf("Archives: %d\n", scalar @arcs);
+            for my $a (@arcs) {
+                my $rc = $a->{run_count} // 0;
+                my $tag = $rc == 1 ? "1 run" : "$rc runs";
+                $out .= sprintf("  - %-36s  (%s)\n", $a->{uuid} // '?', $tag);
+                $out .= sprintf("      INVALID: %s\n", $a->{error})
+                    if !$a->{valid} && defined $a->{error};
+            }
+            return $out;
+        }
+        # Single-archive: fall through to harness/runs summary using the
+        # archive's sub-report.
+        my $a = $arcs[0];
+        $r->{harness} //= $a->{harness};
+        $r->{runs}    //= $a->{runs};
+        $r->{globals} //= $a->{globals};
     }
 
     my $h = $r->{harness} || {};
