@@ -99,6 +99,35 @@ sub _connect_dbh {
     return $dbh;
 }
 
+# Probe whether the server was built with --with-lz4. Postgres ≥14
+# ships the GUC default_toast_compression; setting it to 'lz4' errors
+# when the build lacks lz4 support. Result cached per-instance.
+sub _server_supports_lz4 {
+    my $self = shift;
+    return $self->{_server_supports_lz4} //= do {
+        my $dbh = $self->dbh;
+        my $ok = eval {
+            local $dbh->{RaiseError} = 1;
+            local $dbh->{PrintError} = 0;
+            $dbh->do(q{SET LOCAL default_toast_compression = 'lz4'});
+            $dbh->do(q{RESET default_toast_compression});
+            1;
+        };
+        $ok ? 1 : 0;
+    };
+}
+
+# When the server lacks lz4, strip the `COMPRESSION lz4` clauses from
+# the schema. Postgres falls back to default_toast_compression (pglz on
+# stock builds). Preserves the `compressed=FALSE` app-side semantics --
+# server still TOAST-compresses, just with a different algorithm.
+sub _preprocess_schema_sql {
+    my ($self, $sql) = @_;
+    return $sql if $self->_server_supports_lz4;
+    $sql =~ s/\s+COMPRESSION\s+lz4\b//gi;
+    return $sql;
+}
+
 # Postgres' native UUID type returns lowercase. The codebase uses
 # gen_uuid() which produces uppercase. Normalize both directions to
 # uppercase so equality checks against externally-supplied uuids work.

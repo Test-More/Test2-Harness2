@@ -103,6 +103,11 @@ sub _now_iso {
 
 sub _connect_dbh { croak "subclass must implement _connect_dbh()" }
 
+# Per-flavor schema rewrite hook. Default: pass-through. Subclasses
+# override to mutate the schema SQL before execution (e.g. Postgres
+# strips `COMPRESSION lz4` clauses when the server build lacks lz4).
+sub _preprocess_schema_sql { $_[1] }
+
 # Has the DB ever been bootstrapped (i.e., does the archives table exist)?
 sub _is_bootstrapped {
     my $self = shift;
@@ -122,6 +127,10 @@ sub bootstrap_schema {
     open(my $fh, '<', $path) or croak "cannot open schema file '$path': $!";
     my $sql = do { local $/; <$fh> };
     close $fh;
+
+    # Per-flavor preprocessing hook (e.g. Postgres rewrites
+    # `COMPRESSION lz4` to the default when lz4 isn't compiled in).
+    $sql = $self->_preprocess_schema_sql($sql);
 
     # Strip SQL comments (-- to end of line).
     $sql =~ s{--[^\n]*\n}{\n}g;
