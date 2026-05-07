@@ -285,6 +285,28 @@ sub _create_archive {
     return $id;
 }
 
+# MySQL/MariaDB-via-mysqld-binary: archive_uuid is BINARY(16). The
+# base-class _check_archive_uuid_unique uses selectrow_array with no
+# explicit bind type, which DBD::MariaDB treats as TEXT and never
+# matches the stored binary bytes. Bind explicitly as SQL_BINARY so
+# the pre-flight check actually finds the existing row.
+sub _check_archive_uuid_unique {
+    my ($self, $uuid) = @_;
+    return unless defined $uuid && length $uuid;
+    require DBI;
+    my $dbh = $self->dbh;
+
+    my $sth = $dbh->prepare(
+        q{SELECT archive_id FROM archives WHERE archive_uuid = ?});
+    $sth->bind_param(1, $self->_uuid_to_db($uuid), DBI::SQL_BINARY());
+    $sth->execute;
+    my ($existing) = $sth->fetchrow_array;
+    $sth->finish;
+    return unless defined $existing;
+
+    croak "archive uuid '$uuid' already exists; not re-imported";
+}
+
 sub _ensure_run_row {
     my ($self, $run_ord) = @_;
     require DBI;
@@ -413,12 +435,46 @@ sub insert {
         if defined $runs && defined $exclude_runs;
 
     my $dbh = $self->dbh;
+    # MySQL/MariaDB implicitly commit DDL inside a transaction, so
+    # bootstrap_schema (CREATE TABLE / INDEX) MUST run before
+    # begin_work or any rollback would be rendered a no-op.
     $self->bootstrap_schema;
 
     require App::Yath2::Log;
-    # Per D5/D9: carry source meta.json verbatim when present, mint
-    # otherwise. archives row is populated entirely from this hash.
+    # Per D5/D6/D9: carry source meta.json verbatim when present, mint
+    # otherwise. archive_uuid carries over so re-import is detected.
     my $meta = $self->_resolve_insert_meta($source, \%opts);
+
+    # Pre-flight uniqueness (D6): collide cleanly before opening tx.
+    $self->_check_archive_uuid_unique($meta->{archive_uuid});
+
+    # Wrap the whole population pass in a transaction (D6).
+    $dbh->begin_work;
+    my $aid;
+    my $ok = eval {
+        $aid = $self->_mysql_insert_body(
+            $source, $meta, $runs, $exclude_runs,
+        );
+        1;
+    };
+    my $err = $@;
+
+    if ($ok) {
+        $dbh->commit;
+    }
+    else {
+        my $rb_ok = eval { $dbh->rollback; 1 };
+        warn "rollback failed after insert error: $@" unless $rb_ok;
+        delete $self->{App::Yath2::Log::DB::_INSERT_SOURCE()};
+        die $err;
+    }
+
+    return $aid;
+}
+
+sub _mysql_insert_body {
+    my ($self, $source, $meta, $runs, $exclude_runs) = @_;
+    my $dbh = $self->dbh;
 
     # Resolve (find-or-create) the projects row for this archive.
     my $project_name = $meta->{project} // 'unknown';

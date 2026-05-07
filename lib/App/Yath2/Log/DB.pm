@@ -1855,18 +1855,62 @@ sub insert {
     my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
 
     my $dbh = $self->dbh;
+    # bootstrap_schema runs DDL (CREATE TABLE / INDEX). Some flavors
+    # implicitly commit DDL inside a transaction, which would render
+    # our rollback a no-op for the rows we'd already written. Always
+    # bootstrap BEFORE begin_work.
     $self->bootstrap_schema;
 
     require App::Yath2::Log;
 
     # Resolve the archive metadata. Per D5, sealed_at carries the
     # source archive's live->sealed timestamp (== meta.created_at).
-    # Read the source's existing meta.json verbatim when present so
-    # the carry-over preserves any future-key the source may have;
-    # otherwise mint fresh via build_archive_meta. The caller may
-    # override archive_uuid to disambiguate identity in multi-archive
-    # DBs even when the source is being copied.
+    # Per D5+D6, archive_uuid carries over verbatim so re-importing
+    # the same source raises a clean error rather than silently
+    # duplicating it under a fresh uuid.
     my $meta = $self->_resolve_insert_meta($source, \%opts);
+
+    # Pre-flight uniqueness check (D6). If the source's archive_uuid
+    # already exists in this DB, refuse the re-import cleanly --
+    # before opening any transaction so there is no partial state
+    # to roll back.
+    $self->_check_archive_uuid_unique($meta->{archive_uuid});
+
+    # Wrap the entire population pass in a single transaction (D6).
+    # Any die mid-insert -> full rollback; no partial archive rows.
+    $dbh->begin_work;
+    my $aid;
+    my $ok = eval {
+        $aid = $self->_insert_body($source, $meta, $compress, $runs, $exclude_runs);
+        1;
+    };
+    my $err = $@;
+
+    if ($ok) {
+        $dbh->commit;
+    }
+    else {
+        # Rollback the failed transaction. Any rollback failure is
+        # secondary to the original error; warn so it isn't lost.
+        my $rb_ok = eval { $dbh->rollback; 1 };
+        warn "rollback failed after insert error: $@" unless $rb_ok;
+        # Insert state ($self->{+_INSERT_SOURCE}, +PROJECT_ID,
+        # +ARCHIVE_ID, +UUID) may have been left set by the partial
+        # body. Clear so a retry against the same Log instance is
+        # not poisoned.
+        delete $self->{+_INSERT_SOURCE};
+        die $err;
+    }
+
+    return $aid;
+}
+
+# The transaction body of insert(). Split out so insert() can wrap
+# this in begin_work / commit / rollback without growing a giant
+# eval block in the public method. Returns the new archive_id.
+sub _insert_body {
+    my ($self, $source, $meta, $compress, $runs, $exclude_runs) = @_;
+    my $dbh = $self->dbh;
 
     # Resolve (find-or-create) the projects row for this archive.
     my $project_name = $meta->{project} // 'unknown';
@@ -1875,7 +1919,8 @@ sub insert {
 
     # Make $source visible to _ensure_job_row so it can read spec.jsonl
     # on demand when creating a jobs row (needed for NOT NULL test_file_id).
-    # Cleared after the artifact loop completes.
+    # Cleared at the end of the body. On rollback the caller clears
+    # it as well.
     $self->{+_INSERT_SOURCE} = $source;
 
     # Fresh archive row -- meta drives all promoted columns.
@@ -2006,13 +2051,18 @@ sub insert {
 }
 
 # Read the source's meta.json if present (carry-over) or mint fresh.
-# Each insert gets a fresh archive_uuid by default so a single source
-# can be inserted multiple times into one DB without colliding; the
-# caller may force a specific UUID via $opts->{archive_uuid}. All
-# other meta keys (created_at -> sealed_at, host, user, git_sha,
-# project, yath_version, plus any future extras) carry over verbatim
-# per D5/D9 -- they reflect the source archive's identity, not the
-# current insert.
+# Per D5+D6: archive_uuid is a fixed value per archive that carries
+# over verbatim from the source. The caller may force a specific UUID
+# via $opts->{archive_uuid} (which wins over both source and minted).
+# A live-dir source has no meta.json; in that case build_archive_meta
+# mints fresh. All other meta keys (created_at -> sealed_at, host,
+# user, git_sha, project, yath_version, plus any future extras) carry
+# over verbatim per D5/D9 -- they reflect the source archive's
+# identity, not the current insert.
+#
+# Re-import detection (D6) relies on the source's archive_uuid
+# colliding with an existing destination row; so we MUST NOT mint a
+# fresh uuid when the source already carries one.
 sub _resolve_insert_meta {
     my ($self, $source, $opts) = @_;
     my $meta;
@@ -2026,23 +2076,42 @@ sub _resolve_insert_meta {
         }
     }
     unless ($meta) {
+        # Live-dir source (no meta.json) -- mint fresh.
         $meta = App::Yath2::Log->build_archive_meta(
             archive_uuid => $opts->{archive_uuid},
         );
     }
 
-    # archive_uuid is per-insert identity. Honour an explicit caller
-    # override; otherwise mint a fresh one even if the source meta
-    # carried one (the DB archive needs unique identity from any
-    # source we replicate).
+    # Caller's explicit override wins over both source and minted.
     if (defined $opts->{archive_uuid}) {
         $meta->{archive_uuid} = $opts->{archive_uuid};
     }
-    else {
-        $meta->{archive_uuid} = gen_uuid();
-    }
+
+    # Source's archive_uuid carries over verbatim. Mint only when
+    # nothing supplied it (defensive -- e.g. a meta.json that lacked
+    # the key).
+    $meta->{archive_uuid} //= gen_uuid();
 
     return $meta;
+}
+
+# Pre-flight uniqueness check on archive_uuid. If a row already
+# exists with this uuid we throw a clean error (D6) BEFORE opening a
+# transaction; deferring to the DB's UNIQUE constraint would also
+# work but the error message varies by flavor and would happen
+# mid-tx. The check assumes bootstrap_schema has already run.
+sub _check_archive_uuid_unique {
+    my ($self, $uuid) = @_;
+    return unless defined $uuid && length $uuid;
+    my $dbh = $self->dbh;
+
+    my ($existing) = $dbh->selectrow_array(
+        q{SELECT archive_id FROM archives WHERE archive_uuid = ?},
+        undef, $self->_uuid_to_db($uuid),
+    );
+    return unless defined $existing;
+
+    croak "archive uuid '$uuid' already exists; not re-imported";
 }
 
 # After the artifact bytes are in the DB, walk the source's runs /

@@ -131,15 +131,20 @@ yath(
 );
 # }}}
 
-# {{{ Multi-archive sqlite — insert the same source twice
+# {{{ Multi-archive sqlite — insert the same source three times
+# (D6: archive_uuid carries over from the source, so a vanilla
+# re-insert would now refuse as a duplicate. Use explicit override
+# uuids to land three distinct archive rows.)
 my $sqlite_multi = "$tmp/multi.yath";
 {
     require App::Yath2::Log::Sqlite;
+    require Test2::Util::UUID;
+    Test2::Util::UUID->import('gen_uuid');
     my $dest = App::Yath2::Log::Sqlite->new(file => $sqlite_multi);
     my $src  = App::Yath2::Log->new(dir => $logs_dir);
-    $dest->insert($src);
-    $dest->insert($src);
-    $dest->insert($src);
+    $dest->insert($src, archive_uuid => gen_uuid());
+    $dest->insert($src, archive_uuid => gen_uuid());
+    $dest->insert($src, archive_uuid => gen_uuid());
 }
 
 yath(

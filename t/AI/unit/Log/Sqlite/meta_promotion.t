@@ -158,10 +158,12 @@ sub build_minimal_log {
     is($row->{project},      'carry-over-test', 'project carried over');
     is($row->{yath_version}, '2.000099',        'yath_version carried over');
 
-    # Each insert mints a fresh archive_uuid (the source uuid is not
-    # forced onto the DB row).
-    isnt(uc($row->{archive_uuid}), uc($source_uuid),
-        'fresh archive_uuid minted (not carried over identity)');
+    # Source's archive_uuid carries over verbatim (D5+D6). The DB
+    # archive_uuid equals the source's, so a re-import of the same
+    # source can be detected as a duplicate rather than silently
+    # duplicated under a fresh uuid.
+    is(uc($row->{archive_uuid}), uc($source_uuid),
+        'archive_uuid carried over from source meta (D5+D6)');
 
     # meta_extras carries format_version + the unknown 'harness' key.
     my $extras = decode_json($row->{meta_extras});
