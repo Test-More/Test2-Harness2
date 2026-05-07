@@ -1949,6 +1949,10 @@ sub _insert_body {
         # Skip any meta.json the source already had; we mint a fresh
         # one below keyed to the new archive_uuid.
         next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
+        # B9: spec.jsonl / report.jsonl / state.jsonl are reconstructed
+        # from typed columns + *_extras at read time; do not write them
+        # as artifact rows.
+        next if $rel =~ m{(?:^|/)(?:spec|report|state)\.jsonl(?:\.zst)?\z};
         (my $logical = $rel) =~ s/\.zst\z//;
         if ($rel =~ /\.zst\z/) {
             # Prefer the .zst variant -- replace any prior plain entry.

@@ -215,7 +215,7 @@ CREATE TABLE artifacts (
     run_id          BIGINT,
     service_id      BIGINT,
     job_try_id      BIGINT,
-    artifact_kind   ENUM('events','state','spec','report','attachment','arbitrary') NOT NULL,
+    artifact_kind   ENUM('events','attachment','arbitrary') NOT NULL,
     format          VARCHAR(64)  NOT NULL,
     name            VARCHAR(255),
     compressed      TINYINT(1)   NOT NULL,
@@ -227,7 +227,7 @@ CREATE TABLE artifacts (
     -- they are NULL, which MariaDB treats as distinct in UNIQUE — so
     -- the per-scope UNIQUE only constrains the right subset of rows.
     -- An extra `__name` token disambiguates NULL `name` (standard
-    -- streams: events/spec/state/report) within the scope.
+    -- streams: events) within the scope.
     run_scope_run_id          BIGINT       GENERATED ALWAYS AS (CASE WHEN run_id     IS NOT NULL AND service_id IS NULL AND job_try_id IS NULL THEN run_id     ELSE NULL END) VIRTUAL,
     service_scope_service_id  BIGINT       GENERATED ALWAYS AS (CASE WHEN service_id IS NOT NULL AND run_id     IS NULL AND job_try_id IS NULL THEN service_id ELSE NULL END) VIRTUAL,
     job_try_scope_job_try_id  BIGINT       GENERATED ALWAYS AS (CASE WHEN job_try_id IS NOT NULL AND run_id     IS NULL AND service_id IS NULL THEN job_try_id ELSE NULL END) VIRTUAL,

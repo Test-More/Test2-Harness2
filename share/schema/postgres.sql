@@ -13,7 +13,7 @@
 -- Payload compression: server-side TOAST LZ4 via column-level
 -- COMPRESSION clause. App stores RAW bytes (compressed=FALSE).
 
-CREATE TYPE artifact_kind_t AS ENUM ('events','state','spec','report','attachment','arbitrary');
+CREATE TYPE artifact_kind_t AS ENUM ('events','attachment','arbitrary');
 
 CREATE TABLE projects (
     project_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

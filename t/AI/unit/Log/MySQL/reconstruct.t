@@ -136,7 +136,9 @@ my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
 ok(defined $aid, 'insert succeeded');
 
 my $dbh = $db->dbh;
-$dbh->do(q{DELETE FROM artifacts WHERE artifact_kind IN ('spec', 'report')});
+# B9: spec/report artifact rows are not written; reconstruction is the
+# only read path. The narrowed ENUM would reject 'spec'/'report' values
+# even if we tried to insert them.
 
 my $log = App::Yath2::Log::MySQL->new(dsn => $dsn);
 

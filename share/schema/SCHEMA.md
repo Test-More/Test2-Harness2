@@ -44,8 +44,10 @@ services        service-scope summary (global or run-scoped)
 jobs            job-scope summary
 job_tries       per-try summary
 subtests        top-level subtests of each try (for fast pass/fail lookup)
-artifacts       events / spec / state / report / attachment / arbitrary
-                payloads (sub-archive scope via three nullable FKs)
+artifacts       events / attachment / arbitrary
+                payloads (sub-archive scope via three nullable FKs).
+                spec / state / report bytes are not stored as artifact
+                rows; they are reconstructed from typed columns + extras.
 ```
 
 There is **no** separate `attachments` table — attachments are just
@@ -171,9 +173,12 @@ Populated when the try is sealed. (Per F9.)
 
 ### 2.7 artifacts
 
-The actual events / spec / state / report / attachment / arbitrary
-payloads. Sub-archive scope is expressed by three nullable FK columns:
-exactly zero (= archive-root scope) or exactly one is non-NULL.
+The actual events / attachment / arbitrary payloads. Sub-archive scope
+is expressed by three nullable FK columns: exactly zero (= archive-root
+scope) or exactly one is non-NULL. spec / state / report bytes are not
+stored here; they are reconstructed from typed columns + `*_extras`
+JSON catch-alls on the relevant scope row (runs, services,
+service_lifetimes, job_tries) at read time.
 
 | column          | type                       | notes                                                 |
 |-----------------|----------------------------|-------------------------------------------------------|
@@ -184,7 +189,7 @@ exactly zero (= archive-root scope) or exactly one is non-NULL.
 | run_id          | BIGINT FK NULL             | → runs (ON DELETE CASCADE); set iff scope is `run`     |
 | service_id      | BIGINT FK NULL             | → services (ON DELETE CASCADE); set iff scope is `service` |
 | job_try_id      | BIGINT FK NULL             | → job_tries (ON DELETE CASCADE); set iff scope is `job_try` |
-| artifact_kind   | TEXT (or ENUM)             | 'events' \| 'state' \| 'spec' \| 'report' \| 'attachment' \| 'arbitrary' |
+| artifact_kind   | TEXT (or ENUM)             | 'events' \| 'attachment' \| 'arbitrary' |
 | format          | TEXT                       | 'jsonl' \| 'json' \| 'csv' \| 'html' \| ...           |
 | name            | TEXT NULL                  | filename for `attachment` and `arbitrary` kinds; NULL for the standard streaming kinds |
 | compressed      | BOOLEAN                    | payload is zstd-compressed                            |

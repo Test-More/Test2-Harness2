@@ -231,7 +231,7 @@ CREATE TABLE artifacts (
       + (CASE WHEN job_try_id IS NULL THEN 1 ELSE 0 END)
         >= 2
     ),
-    CHECK (artifact_kind IN ('events','state','spec','report','attachment','arbitrary')),
+    CHECK (artifact_kind IN ('events','attachment','arbitrary')),
     UNIQUE(archive_id, artifact_uuid)
 );
 

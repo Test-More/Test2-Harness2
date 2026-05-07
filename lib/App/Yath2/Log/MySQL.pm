@@ -502,6 +502,10 @@ sub _mysql_insert_body {
         # meta.json is reconstructed from archives columns (D9), not
         # carried as an artifact row.
         next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
+        # B9: spec.jsonl / report.jsonl / state.jsonl are reconstructed
+        # from typed columns + *_extras at read time; do not write them
+        # as artifact rows.
+        next if $rel =~ m{(?:^|/)(?:spec|report|state)\.jsonl(?:\.zst)?\z};
         (my $logical = $rel) =~ s/\.zst\z//;
         if ($rel =~ /\.zst\z/) {
             $seen_logical{$logical} = $rel;

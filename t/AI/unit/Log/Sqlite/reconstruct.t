@@ -160,14 +160,13 @@ my $db = App::Yath2::Log::Sqlite->new(dsn => "dbi:SQLite:$db_path");
 my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
 ok(defined $aid, 'insert succeeded');
 
-# Drop ALL spec/report artifact rows so reconstruction is the only path
-# that can possibly serve these reads. Anything that still works is
-# necessarily coming from the typed columns.
+# B9: spec/report artifact rows are no longer written by insert(); the
+# only read path is reconstruction from typed columns + extras. Verify
+# the table really is empty of those kinds before exercising reads.
 my $dbh = $db->dbh;
-$dbh->do(q{DELETE FROM artifacts WHERE artifact_kind IN ('spec', 'report')});
 my ($n) = $dbh->selectrow_array(
-    q{SELECT count(*) FROM artifacts WHERE artifact_kind IN ('spec', 'report')});
-is($n, 0, 'all spec/report artifact rows deleted -- reads exercise reconstruction');
+    q{SELECT count(*) FROM artifacts WHERE artifact_kind IN ('spec', 'report', 'state')});
+is($n, 0, 'no spec/report/state artifact rows present -- reads exercise reconstruction');
 
 # Reopen via the public API to mirror real consumer use.
 my $log = App::Yath2::Log->new(file => $db_path);

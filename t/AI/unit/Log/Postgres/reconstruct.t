@@ -136,7 +136,9 @@ my $aid = $pg->insert(App::Yath2::Log->new(dir => build_source()));
 ok(defined $aid, 'insert succeeded');
 
 my $dbh = $pg->dbh;
-$dbh->do(q{DELETE FROM artifacts WHERE artifact_kind IN ('spec', 'report')});
+# B9: spec/report artifact rows are not written; reconstruction is the
+# only read path. The narrowed ENUM would reject 'spec'/'report' values
+# even if we tried to insert them.
 
 # Reopen via the Postgres class directly (no public auto-detect for Pg DSN).
 my $log = App::Yath2::Log::Postgres->new(dsn => $dsn);
