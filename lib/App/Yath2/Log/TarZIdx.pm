@@ -1080,7 +1080,14 @@ sub archive {
         require App::Yath2::Log::Sqlite;
         croak "destination '$out' already exists" if -e $out;
         my $dest = App::Yath2::Log::Sqlite->new(file => $out);
-        $dest->insert($self, runs => $runs, exclude_runs => $exclude_runs);
+        # seal => 1: single-archive sealed file; append YATHFOOT
+        # trailer + zstd-compressed meta.json past the body.
+        $dest->insert(
+            $self,
+            runs         => $runs,
+            exclude_runs => $exclude_runs,
+            seal         => 1,
+        );
         return $dest;
     }
 

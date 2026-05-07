@@ -741,12 +741,16 @@ sub archive {
         croak "destination '$out' already exists" if -e $out;
         my $dest = App::Yath2::Log::Sqlite->new(file => $out);
         # DB::insert builds the archive metadata and drops a fresh
-        # meta.json into the archive root itself.
+        # meta.json into the archive root itself. seal => 1 appends
+        # the YATHFOOT trailer (and a zstd-compressed copy of
+        # meta.json) past the SQLite body so external tools can read
+        # meta.json without a SQLite parser.
         $dest->insert(
             $self,
             runs         => $runs,
             exclude_runs => $exclude_runs,
             compress     => $compress,
+            seal         => 1,
         );
         return $dest;
     }

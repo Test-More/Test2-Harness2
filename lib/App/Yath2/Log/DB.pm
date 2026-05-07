@@ -35,6 +35,7 @@ use Object::HashBase qw{
     <uuid
     <archive_id
     <project_id
+    <sealed
     +_walk
     +_seen_starts
     +_closed_starts
@@ -1829,7 +1830,14 @@ sub archive {
     if ($format eq 'sqlite') {
         require App::Yath2::Log::Sqlite;
         my $dest = App::Yath2::Log::Sqlite->new(file => $out);
-        $dest->insert($self, runs => $runs, exclude_runs => $exclude_runs);
+        # seal => 1: this is a single-archive sealed file; append the
+        # YATHFOOT trailer + zstd-compressed meta.json past the body.
+        $dest->insert(
+            $self,
+            runs         => $runs,
+            exclude_runs => $exclude_runs,
+            seal         => 1,
+        );
         return $dest;
     }
 
@@ -1845,6 +1853,9 @@ sub archive {
 sub insert {
     my ($self, $source, %opts) = @_;
     croak "source log is required" unless defined $source;
+
+    croak "Log is sealed; further inserts not permitted"
+        if $self->{+SEALED};
 
     my ($runs, $exclude_runs) = $self->_normalize_run_filters(\%opts);
 
@@ -1902,7 +1913,93 @@ sub insert {
         die $err;
     }
 
+    # F3: caller asked for a single-archive sealed file -- after commit
+    # checkpoint the WAL into the main file, disconnect the dbh, and
+    # append meta.json + the 64-byte YATHFOOT trailer past the SQLite
+    # body. Subsequent inserts on this instance will croak (the
+    # +SEALED slot prevents silent corruption).
+    if ($opts{seal}) {
+        $self->_seal_with_footer($meta);
+    }
+
     return $aid;
+}
+
+# Resolve the on-disk path backing this Log instance, or undef when
+# the backend is not file-backed. The Sqlite subclass uses a 'file'
+# slot; we also fall back to parsing 'dbi:SQLite:dbname=...' DSNs so
+# Sqlite instances opened with dsn => still work. Postgres / MariaDB /
+# MySQL backends do not have a single-file backing and return undef
+# here so seal => 1 can refuse them cleanly.
+sub _db_file_path {
+    my $self = shift;
+    return $self->{file} if defined $self->{file};
+    my $dsn = $self->{+DSN};
+    return undef unless defined $dsn;
+    return $1 if $dsn =~ /dbname=([^;]+)/i;
+    return $1 if $dsn =~ /dbi:SQLite:([^;]+)\z/i;
+    return undef;
+}
+
+# F3: write meta.json + 64-byte YATHFOOT trailer past the SQLite body.
+# Sequence:
+#   1. PRAGMA wal_checkpoint(TRUNCATE) -- merge WAL into main file.
+#   2. Disconnect the dbh (flushes / releases the file).
+#   3. Validate disk size == page_count * page_size.
+#   4. Append zstd-compressed meta.json + 64-byte trailer.
+# After append the +SEALED slot prevents further inserts on this
+# instance.
+sub _seal_with_footer {
+    my ($self, $meta) = @_;
+
+    my $path = $self->_db_file_path
+        or croak "seal => 1 is only supported for file-backed (sqlite) Log backends.";
+
+    my $dbh = $self->dbh;
+
+    my ($page_count) = $dbh->selectrow_array('PRAGMA page_count');
+    my ($page_size)  = $dbh->selectrow_array('PRAGMA page_size');
+    croak "_seal_with_footer: PRAGMA page_count returned undef"
+        unless defined $page_count;
+    croak "_seal_with_footer: PRAGMA page_size returned undef"
+        unless defined $page_size;
+
+    # Merge the WAL into the main file so trailing bytes go past the
+    # full body. wal_checkpoint(TRUNCATE) is a no-op (or harmless
+    # error) on non-WAL journal modes.
+    eval { $dbh->do('PRAGMA wal_checkpoint(TRUNCATE)') };
+
+    $dbh->disconnect;
+    delete $self->{+DBH};
+
+    # After checkpoint+disconnect the on-disk file should hold all
+    # pages. Recompute page_count*page_size by reading the file size:
+    # the WAL fold may have grown the main file, but the relationship
+    # body_size == file_size must hold for the trailer to be
+    # consistent. If a stale -wal / -shm sidecar still exists, leave
+    # it alone -- the seal trailer ignores them.
+    my $body_size = -s $path;
+    croak "_seal_with_footer: cannot stat '$path': $!"
+        unless defined $body_size;
+
+    my $expected = $page_count * $page_size;
+    croak "_seal_with_footer: file size $body_size != page_count*page_size $expected"
+        unless $body_size == $expected;
+
+    require App::Yath2::Log;
+    my $meta_bytes = App::Yath2::Log->encode_archive_meta($meta);
+
+    require App::Yath2::Log::Footer;
+    App::Yath2::Log::Footer::append_meta(
+        $path,
+        $meta_bytes,
+        format_id  => App::Yath2::Log::Footer::FORMAT_ID_SQL(),
+        compressed => 1,
+        body_size  => $body_size,
+    );
+
+    $self->{+SEALED} = 1;
+    return;
 }
 
 # The transaction body of insert(). Split out so insert() can wrap
