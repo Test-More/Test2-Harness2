@@ -154,9 +154,27 @@ is([$h_ext->attachments], [$h_orig->attachments], 'extracted attachments listing
 is($h_db->attachment('0001-hello.txt'),  "hi there\n", 'sqlite attachment bytes match');
 is($h_ext->attachment('0001-hello.txt'), "hi there\n", 'extracted attachment bytes match');
 
-# events / spec / report parity.
+# events / spec / report parity. events are byte-for-byte from the
+# events.jsonl artifact row. spec / report are reconstructed from
+# typed columns + extras for DB backends (post-B5), so byte-level
+# equality across key order isn't guaranteed -- compare decoded.
 is($h_db->events, $h_orig->events,  'harness events bytes match');
-is($h_db->spec,   $h_orig->spec,    'harness spec bytes match');
+
+use Test2::Harness2::Util::JSON ();
+sub _decode_jsonl_records {
+    my ($bytes) = @_;
+    my @out;
+    for my $line (split /\n/, $bytes // '') {
+        next unless length $line;
+        push @out => Test2::Harness2::Util::JSON::decode_json($line);
+    }
+    return \@out;
+}
+is(
+    _decode_jsonl_records($h_db->spec),
+    _decode_jsonl_records($h_orig->spec),
+    'harness spec records match (modulo key order)',
+);
 
 # tar.zidx -> sqlite passes through cleanly.
 {

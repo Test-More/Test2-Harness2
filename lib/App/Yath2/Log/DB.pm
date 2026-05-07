@@ -771,9 +771,23 @@ sub _format_for_name {
 # regardless of the .zst suffix; the .zst probe always wins so we
 # return a zst-shaped exist for both forms only when stored compressed,
 # and a plain-shaped exist only when stored plain.
+#
+# spec.jsonl / report.jsonl on run/service/job_try scopes are
+# reconstructed from typed columns + extras at read time (see B5 /
+# Reconstruction API). For those paths "exists" is decided by the
+# presence of the entity row itself, not the artifact row: B9 will drop
+# the spec/report artifact rows entirely. We always advertise the .zst
+# form for reconstructed bodies (read returns compressed bytes for the
+# .zst probe, plaintext for the plain probe -- callers pick one).
 sub _artifact_exists {
     my ($self, $rel) = @_;
     my $info = $self->_parse_artifact_path($rel) or return (0, 0);
+
+    if ($self->_is_reconstruct_target($info)) {
+        return (0, 0) unless $self->_entity_exists_for_scope(
+            $info->{scope_kind}, $info->{scope_id});
+        return (1, $info->{is_zst} ? 1 : 0);
+    }
 
     my $row = $self->_select_artifact_row($info);
     return (0, 0) unless $row;
@@ -788,6 +802,51 @@ sub _artifact_exists {
     return (0, 0) if $stored_compressed != $probed_zst;
 
     return (1, $probed_zst);
+}
+
+# True when the parsed path is a spec.jsonl or report.jsonl on a
+# run/service/job_try scope -- the cases reconstructed from typed
+# columns + extras at read time.
+sub _is_reconstruct_target {
+    my ($self, $info) = @_;
+    return 0 unless ref($info) eq 'HASH';
+    my $kind = $info->{artifact_kind} // '';
+    return 0 unless $kind eq 'spec' || $kind eq 'report';
+    my $scope = $info->{scope_kind} // '';
+    return 0 if $scope eq 'archive';
+    return 1;
+}
+
+# True when the entity referenced by ($scope_kind, $scope_id) exists.
+# scope_id is already a DB id (from _parse_artifact_path), but a
+# defensive existence check still keeps us safe against stale ids.
+sub _entity_exists_for_scope {
+    my ($self, $scope_kind, $scope_id) = @_;
+    return 0 unless defined $scope_id;
+    my $dbh = $self->dbh;
+    my $aid = $self->_archive_id_or_die;
+    if ($scope_kind eq 'run') {
+        my ($n) = $dbh->selectrow_array(
+            q{SELECT count(*) FROM runs WHERE archive_id = ? AND run_id = ?},
+            undef, $aid, $scope_id,
+        );
+        return $n ? 1 : 0;
+    }
+    if ($scope_kind eq 'service') {
+        my ($n) = $dbh->selectrow_array(
+            q{SELECT count(*) FROM services WHERE archive_id = ? AND service_id = ?},
+            undef, $aid, $scope_id,
+        );
+        return $n ? 1 : 0;
+    }
+    if ($scope_kind eq 'job_try') {
+        my ($n) = $dbh->selectrow_array(
+            q{SELECT count(*) FROM job_tries WHERE job_try_id = ?},
+            undef, $scope_id,
+        );
+        return $n ? 1 : 0;
+    }
+    return 0;
 }
 
 sub _select_artifact_row {
@@ -864,6 +923,11 @@ sub _artifact_read {
     my ($self, $rel) = @_;
     my $info = $self->_parse_artifact_path($rel)
         or croak "cannot parse artifact path: $rel";
+
+    if ($self->_is_reconstruct_target($info)) {
+        return $self->_artifact_read_reconstructed($info);
+    }
+
     my $row = $self->_select_artifact_row($info)
         or croak "no such artifact in DB: $rel";
 
@@ -882,6 +946,27 @@ sub _artifact_read {
     # blobs (json snapshots) decompress fine via decompress_blob, but
     # _decompress_jsonl_bytes handles both shapes.
     return $self->_decompress_jsonl_bytes($payload);
+}
+
+# Reconstruct spec.jsonl / report.jsonl bytes from typed columns +
+# extras for a run / service / job_try scope. Returns plaintext bytes
+# unless $info->{is_zst} is set (then zstd-compressed bytes).
+sub _artifact_read_reconstructed {
+    my ($self, $info) = @_;
+    my $records = $info->{artifact_kind} eq 'spec'
+        ? $self->_reconstruct_spec_records($info->{scope_kind}, $info->{scope_id})
+        : $self->_reconstruct_report_records($info->{scope_kind}, $info->{scope_id});
+    $records ||= [];
+
+    my $plain = '';
+    for my $rec (@$records) {
+        $plain .= encode_json($rec) . "\n";
+    }
+
+    return $plain unless $info->{is_zst};
+
+    require Test2::Harness2::Util::Zstd;
+    return Test2::Harness2::Util::Zstd::compress_blob($plain);
 }
 
 # Subclasses override for binary payload handling (Postgres BYTEA bind
@@ -914,6 +999,16 @@ sub _artifact_iter_records {
     my $rel = defined $base && length $base ? "$base/$stem" : $stem;
 
     my $info = $self->_parse_artifact_path($rel) or return undef;
+
+    if ($self->_is_reconstruct_target($info)) {
+        return undef unless $self->_entity_exists_for_scope(
+            $info->{scope_kind}, $info->{scope_id});
+        my $records = $info->{artifact_kind} eq 'spec'
+            ? $self->_reconstruct_spec_records($info->{scope_kind}, $info->{scope_id})
+            : $self->_reconstruct_report_records($info->{scope_kind}, $info->{scope_id});
+        return $records || [];
+    }
+
     my $row = $self->_select_artifact_row($info) or return undef;
 
     my $payload = $self->_payload_to_bytes($row->{payload});
@@ -1909,6 +2004,18 @@ sub _encode_json_or_undef {
     return defined $out ? $out : undef;
 }
 
+# Decode a JSON column value. Tolerates a value that has already been
+# decoded by the driver (Postgres' JSONB sometimes auto-decodes via
+# DBD::Pg). Returns undef on undef / decode failure / empty string.
+sub _maybe_decode_json {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    return $val if ref($val);
+    return undef unless length $val;
+    my $decoded = eval { decode_json($val) };
+    return $decoded;
+}
+
 # Keys promoted from a run spec.jsonl row to typed columns on `runs`.
 # `run_uuid` is identity (already promoted at _ensure_run_row time);
 # listed here so it doesn't leak into spec_extras. `times` /
@@ -2449,6 +2556,355 @@ sub _update_row {
     $sth->execute(@$set{@cols}, @$where{@wcols});
     return;
 }
+
+# {{{ Reconstruction (spec.jsonl / report.jsonl from typed columns)
+#
+# Reverse of _populate_run_row / _populate_service_lifetimes /
+# _populate_job_rows: rebuild the spec.jsonl / report.jsonl record
+# arrays from typed columns + decoded *_extras. Used by the artifact
+# read path for spec / report on run / service / job_try scopes -- and
+# (post-B9) the only path. Aggregated keys (`subtests`, `jobs`) are
+# rebuilt via JOIN; data preservation is the goal, not byte-exact
+# round-trip.
+
+# Layer typed-col pairs over a decoded extras hash. `$typed_pairs` is
+# an arrayref of [$key => $value, ...]; values that are undef are
+# skipped (preserves "key not present in original" vs "key was null").
+# Typed cols win on collision (the population code excludes them from
+# extras during writes, but layered-over-extras is still safer).
+sub _merge_extras_and_typed {
+    my ($self, $extras_json, $typed_pairs) = @_;
+    my %record;
+    my $decoded = $self->_maybe_decode_json($extras_json);
+    if (ref($decoded) eq 'HASH') {
+        %record = %$decoded;
+    }
+    for (my $i = 0; $i + 1 < scalar @$typed_pairs; $i += 2) {
+        my ($k, $v) = @{$typed_pairs}[$i, $i + 1];
+        next unless defined $v;
+        $record{$k} = $v;
+    }
+    return \%record;
+}
+
+sub _reconstruct_spec_records {
+    my ($self, $scope_kind, $scope_id) = @_;
+    return undef if $scope_kind eq 'archive';
+    return undef unless defined $scope_id;
+
+    if    ($scope_kind eq 'run')     { return $self->_reconstruct_run_spec($scope_id) }
+    elsif ($scope_kind eq 'service') { return $self->_reconstruct_service_specs($scope_id) }
+    elsif ($scope_kind eq 'job_try') { return $self->_reconstruct_job_try_spec($scope_id) }
+    return undef;
+}
+
+sub _reconstruct_report_records {
+    my ($self, $scope_kind, $scope_id) = @_;
+    return undef if $scope_kind eq 'archive';
+    return undef unless defined $scope_id;
+
+    if    ($scope_kind eq 'run')     { return $self->_reconstruct_run_report($scope_id) }
+    elsif ($scope_kind eq 'service') { return $self->_reconstruct_service_reports($scope_id) }
+    elsif ($scope_kind eq 'job_try') { return $self->_reconstruct_job_try_report($scope_id) }
+    return undef;
+}
+
+sub _reconstruct_run_spec {
+    my ($self, $run_id) = @_;
+    my $dbh = $self->dbh;
+
+    my $row = $dbh->selectrow_hashref(
+        q{SELECT * FROM runs WHERE run_id = ?},
+        undef, $run_id,
+    );
+    return [] unless $row;
+
+    my $rec = $self->_merge_extras_and_typed(
+        $row->{spec_extras},
+        [
+            run_uuid    => $self->_uuid_from_db($row->{run_uuid}),
+            started_at  => $row->{started_at},
+            times       => $self->_maybe_decode_json($row->{times}),
+            child_times => $self->_maybe_decode_json($row->{child_times}),
+            child_wall  => $row->{child_wall},
+        ],
+    );
+
+    delete $rec->{$_} for qw(jobs subtests services);
+    return [$rec];
+}
+
+sub _reconstruct_run_report {
+    my ($self, $run_id) = @_;
+    my $dbh = $self->dbh;
+
+    my $row = $dbh->selectrow_hashref(
+        q{SELECT * FROM runs WHERE run_id = ?},
+        undef, $run_id,
+    );
+    return [] unless $row;
+
+    my $rec = $self->_merge_extras_and_typed(
+        $row->{state_extras},
+        [
+            ended_at     => $row->{ended_at},
+            exit         => $row->{exit},
+            exit_decoded => $self->_maybe_decode_json($row->{exit_decoded}),
+            pass         => defined $row->{pass} ? ($row->{pass} ? 1 : 0) : undef,
+            total_jobs   => $row->{total_jobs},
+            passed_jobs  => $row->{passed_jobs},
+            failed_jobs  => $row->{failed_jobs},
+            aborted_jobs => $row->{aborted_jobs},
+            times        => $self->_maybe_decode_json($row->{times}),
+            child_times  => $self->_maybe_decode_json($row->{child_times}),
+            child_wall   => $row->{child_wall},
+        ],
+    );
+
+    # Rebuild jobs[] aggregate via JOIN. The original run-level report
+    # producer emitted a per-job summary array; we reconstruct it as
+    # [{job_ord, status, pass, retry_count, tries => [...]}]. Byte-level
+    # round-trip is not the goal (D2): preservation of data is.
+    my $jobs = $dbh->selectall_arrayref(q{
+        SELECT job_id, job_ord, status, pass, retry_count
+          FROM jobs
+         WHERE run_id = ?
+         ORDER BY job_ord
+    }, { Slice => {} }, $run_id);
+    if ($jobs && @$jobs) {
+        my @out;
+        for my $j (@$jobs) {
+            my $tries = $dbh->selectall_arrayref(q{
+                SELECT try_ord, status, pass, exit_decoded, ended_at,
+                       pass_count, fail_count, assertion_count
+                  FROM job_tries
+                 WHERE job_id = ?
+                 ORDER BY try_ord
+            }, { Slice => {} }, $j->{job_id});
+            my @tries_out;
+            for my $t (@$tries) {
+                push @tries_out => {
+                    try_ord         => $t->{try_ord},
+                    (defined $t->{status}          ? (status          => $t->{status})                : ()),
+                    (defined $t->{pass}            ? (pass            => $t->{pass} ? 1 : 0)          : ()),
+                    (defined $t->{ended_at}        ? (ended_at        => $t->{ended_at})              : ()),
+                    (defined $t->{pass_count}      ? (pass_count      => $t->{pass_count})            : ()),
+                    (defined $t->{fail_count}      ? (fail_count      => $t->{fail_count})            : ()),
+                    (defined $t->{assertion_count} ? (assertion_count => $t->{assertion_count})       : ()),
+                    (defined $t->{exit_decoded}
+                        ? (exit_decoded => $self->_maybe_decode_json($t->{exit_decoded})) : ()),
+                };
+            }
+            push @out => {
+                job_ord => $j->{job_ord},
+                (defined $j->{status}      ? (status      => $j->{status})           : ()),
+                (defined $j->{pass}        ? (pass        => $j->{pass} ? 1 : 0)     : ()),
+                (defined $j->{retry_count} ? (retry_count => $j->{retry_count})      : ()),
+                tries => \@tries_out,
+            };
+        }
+        $rec->{jobs} = \@out;
+    }
+
+    delete $rec->{subtests};
+    delete $rec->{services};
+    return [$rec];
+}
+
+sub _reconstruct_service_specs {
+    my ($self, $service_id) = @_;
+    my $dbh = $self->dbh;
+
+    my $svc = $dbh->selectrow_hashref(
+        q{SELECT role FROM services WHERE service_id = ?},
+        undef, $service_id,
+    );
+
+    my $rows = $dbh->selectall_arrayref(q{
+        SELECT lifetime_ord, type, id, service_name, stage_name,
+               started_at, times, child_times, child_wall, spec_extras
+          FROM service_lifetimes
+         WHERE service_id = ?
+         ORDER BY lifetime_ord
+    }, { Slice => {} }, $service_id);
+
+    return [] unless $rows && @$rows;
+
+    my @out;
+    # Round-trip count: emit one record per service_lifetimes row even
+    # when fields are mostly null (D2 explicitly accepts that byte-level
+    # round-trip count of spec rows is not preserved -- only data is).
+    for my $row (@$rows) {
+        my $rec = $self->_merge_extras_and_typed(
+            $row->{spec_extras},
+            [
+                type         => $row->{type},
+                id           => $row->{id},
+                service_name => $row->{service_name},
+                stage_name   => $row->{stage_name},
+                started_at   => $row->{started_at},
+                times        => $self->_maybe_decode_json($row->{times}),
+                child_times  => $self->_maybe_decode_json($row->{child_times}),
+                child_wall   => $row->{child_wall},
+                # role lives on the parent services row; promote to every
+                # reconstructed spec record (population kept it on the
+                # FIRST spec row that supplied it, but we don't preserve
+                # which row -- D2 byte-level round-trip is not required).
+                (defined $svc && defined $svc->{role}
+                    ? (role => $svc->{role}) : ()),
+            ],
+        );
+        push @out => $rec;
+    }
+    return \@out;
+}
+
+sub _reconstruct_service_reports {
+    my ($self, $service_id) = @_;
+    my $dbh = $self->dbh;
+
+    my $rows = $dbh->selectall_arrayref(q{
+        SELECT lifetime_ord, ended_at, "exit", exit_decoded,
+               times, child_times, child_wall, state_extras
+          FROM service_lifetimes
+         WHERE service_id = ?
+         ORDER BY lifetime_ord
+    }, { Slice => {} }, $service_id);
+
+    return [] unless $rows && @$rows;
+
+    my @out;
+    for my $row (@$rows) {
+        my $rec = $self->_merge_extras_and_typed(
+            $row->{state_extras},
+            [
+                ended_at     => $row->{ended_at},
+                exit         => $row->{exit},
+                exit_decoded => $self->_maybe_decode_json($row->{exit_decoded}),
+                times        => $self->_maybe_decode_json($row->{times}),
+                child_times  => $self->_maybe_decode_json($row->{child_times}),
+                child_wall   => $row->{child_wall},
+            ],
+        );
+        push @out => $rec;
+    }
+    return \@out;
+}
+
+sub _reconstruct_job_try_spec {
+    my ($self, $job_try_id) = @_;
+    my $dbh = $self->dbh;
+
+    my $jt = $dbh->selectrow_hashref(
+        q{SELECT * FROM job_tries WHERE job_try_id = ?},
+        undef, $job_try_id,
+    );
+    return [] unless $jt;
+
+    my $rec = $self->_merge_extras_and_typed(
+        $jt->{spec_extras},
+        [
+            queued_at   => $jt->{queued_at},
+            started_at  => $jt->{started_at},
+            times       => $self->_maybe_decode_json($jt->{times}),
+            child_times => $self->_maybe_decode_json($jt->{child_times}),
+            child_wall  => $jt->{child_wall},
+        ],
+    );
+
+    # Merge in job_specs typed cols + decoded extras + test_files.relative.
+    my $js = $dbh->selectrow_hashref(q{
+        SELECT js.*, tf.relative AS relative
+          FROM job_specs js
+          JOIN test_files tf ON tf.test_file_id = js.test_file_id
+         WHERE js.job_id = ?
+    }, undef, $jt->{job_id});
+
+    if ($js) {
+        # Decoded job_specs.extras first; typed columns overwrite.
+        my $extras = $self->_maybe_decode_json($js->{extras});
+        if (ref($extras) eq 'HASH') {
+            for my $k (keys %$extras) {
+                next if exists $rec->{$k};   # job_tries.spec_extras wins
+                $rec->{$k} = $extras->{$k};
+            }
+        }
+
+        # Promoted typed columns (only when defined).
+        $rec->{relative} = $js->{relative} if defined $js->{relative};
+        for my $k (qw(absolute category duration stage retry
+                      event_timeout post_exit_timeout min_slots max_slots ch_dir))
+        {
+            $rec->{$k} = $js->{$k} if defined $js->{$k};
+        }
+        # Boolean-ish promoted ints: keep as 0/1 when defined.
+        for my $k (qw(retry_isolated smoke isolation non_perl is_binary)) {
+            $rec->{$k} = $js->{$k} ? 1 : 0 if defined $js->{$k};
+        }
+        # JSON columns.
+        for my $k (qw(features switches)) {
+            my $decoded = $self->_maybe_decode_json($js->{$k});
+            $rec->{$k} = $decoded if defined $decoded;
+        }
+    }
+
+    delete $rec->{subtests};
+    return [$rec];
+}
+
+sub _reconstruct_job_try_report {
+    my ($self, $job_try_id) = @_;
+    my $dbh = $self->dbh;
+
+    my $jt = $dbh->selectrow_hashref(
+        q{SELECT * FROM job_tries WHERE job_try_id = ?},
+        undef, $job_try_id,
+    );
+    return [] unless $jt;
+
+    my $rec = $self->_merge_extras_and_typed(
+        $jt->{state_extras},
+        [
+            ended_at        => $jt->{ended_at},
+            exit            => $jt->{exit},
+            exit_decoded    => $self->_maybe_decode_json($jt->{exit_decoded}),
+            pass            => defined $jt->{pass} ? ($jt->{pass} ? 1 : 0) : undef,
+            pass_count      => $jt->{pass_count},
+            fail_count      => $jt->{fail_count},
+            assertion_count => $jt->{assertion_count},
+            plan            => $self->_maybe_decode_json($jt->{plan}),
+            halt            => $self->_maybe_decode_json($jt->{halt}),
+            times           => $self->_maybe_decode_json($jt->{times}),
+            child_times     => $self->_maybe_decode_json($jt->{child_times}),
+            child_wall      => $jt->{child_wall},
+        ],
+    );
+
+    # Rebuild subtests[] via JOIN.
+    my $subtests = $dbh->selectall_arrayref(q{
+        SELECT name, pass, count_pass, count_fail
+          FROM subtests
+         WHERE job_try_id = ?
+         ORDER BY ord
+    }, { Slice => {} }, $job_try_id);
+
+    if ($subtests && @$subtests) {
+        my @out;
+        for my $s (@$subtests) {
+            push @out => {
+                name => $s->{name},
+                pass => $s->{pass} ? 1 : 0,
+                (defined $s->{count_pass} ? (count_pass => $s->{count_pass}) : ()),
+                (defined $s->{count_fail} ? (count_fail => $s->{count_fail}) : ()),
+            };
+        }
+        $rec->{subtests} = \@out;
+    }
+
+    return [$rec];
+}
+
+# }}}
 
 sub _normalize_run_filters {
     my ($self, $opts) = @_;
