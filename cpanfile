@@ -7,6 +7,7 @@ requires "B" => "0";
 requires "Capture::Tiny" => "0.48";
 requires "Carp" => "0";
 requires "Class::C3" => "0.35";
+requires "Compress::Raw::Zlib" => "0";
 requires "Compress::Zstd" => "0.20";
 requires "Consumer::NonBlock" => "0.002";
 requires "Cpanel::JSON::XS" => "4.38";
