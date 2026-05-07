@@ -2,6 +2,15 @@ package App::Yath2::Log::TarZIdx;
 use strict;
 use warnings;
 
+# The 32-byte zidx footer and the YATHFOOT trailer use pack Q< (unsigned
+# 64-bit little-endian); requires perl built with 64-bit native int.
+use Config ();
+BEGIN {
+    die "App::Yath2::Log::TarZIdx requires perl with 64-bit native int "
+      . "(\$Config{ivsize} >= 8); this perl reports ivsize=$Config::Config{ivsize}.\n"
+        if $Config::Config{ivsize} < 8;
+}
+
 our $VERSION = '2.000012';
 
 use Carp qw/croak/;

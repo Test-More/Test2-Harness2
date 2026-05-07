@@ -2,6 +2,17 @@ package App::Yath2::Log::Footer;
 use strict;
 use warnings;
 
+# Trailer pack template uses Q< (unsigned 64-bit little-endian); requires
+# perl built with 64-bit native int. pack 'Q' itself is fixed at 8 bytes
+# regardless of $Config{ivsize}, so this guard remains correct for any
+# future >=64-bit perl (incl. hypothetical 128-bit builds).
+use Config ();
+BEGIN {
+    die "App::Yath2::Log::Footer requires perl with 64-bit native int "
+      . "(\$Config{ivsize} >= 8); this perl reports ivsize=$Config::Config{ivsize}.\n"
+        if $Config::Config{ivsize} < 8;
+}
+
 our $VERSION = '2.000012';
 
 use Carp qw/croak/;
