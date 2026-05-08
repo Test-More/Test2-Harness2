@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000012';
 
 use Carp qw/croak/;
+use File::Basename ();
 use File::Spec ();
 
 use Role::Tiny;
@@ -25,31 +26,40 @@ requires qw{
 sub preprocess_schema_sql { $_[1] }
 
 # Locate share/schema/$flavor.sql. Resolution order:
-#   1. dev tree: ./share/schema/$flavor.sql relative to the cwd.
-#   2. installed: File::ShareDir::dist_dir('Test2-Harness') . "/schema/$flavor.sql"
+#   1. dev tree: walk up from __FILE__ looking for a sibling
+#      share/schema/$flavor.sql (development checkout).
+#   2. installed: File::ShareDir::dist_dir('Test2-Harness2')
+#                 . "/schema/$flavor.sql"
 sub schema_file {
     my $self = shift;
     my $flavor = $self->flavor;
     my $name   = "$flavor.sql";
 
-    my @candidates;
-    push @candidates, File::Spec->catfile('share', 'schema', $name);
+    my @tried;
+
+    my $dir = __FILE__;
+    for (1 .. 10) {
+        $dir = File::Basename::dirname($dir);
+        my $candidate = File::Spec->catfile($dir, 'share', 'schema', $name);
+        push @tried, $candidate;
+        return $candidate if -e $candidate;
+        last if $dir eq '/' || $dir eq '.';
+    }
 
     my $dist_share;
     my $ok = eval {
         require File::ShareDir;
-        $dist_share = File::ShareDir::dist_dir('Test2-Harness');
+        $dist_share = File::ShareDir::dist_dir('Test2-Harness2');
         1;
     };
-    push @candidates, File::Spec->catfile($dist_share, 'schema', $name)
-        if $ok && $dist_share;
-
-    for my $path (@candidates) {
-        return $path if -f $path;
+    if ($ok && $dist_share) {
+        my $candidate = File::Spec->catfile($dist_share, 'schema', $name);
+        push @tried, $candidate;
+        return $candidate if -e $candidate;
     }
 
     croak "could not locate schema file for flavor '$flavor'; tried: "
-        . join(', ', @candidates);
+        . join(', ', @tried);
 }
 
 # Probe for the archives table. False on any DBI error.
