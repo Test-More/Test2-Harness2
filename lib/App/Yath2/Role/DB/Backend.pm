@@ -25,6 +25,13 @@ requires qw{
 # when the server build lacks it).
 sub preprocess_schema_sql { $_[1] }
 
+# Per-statement skip hook. Default: never skip. Consumers override for
+# flavor quirks where individual schema statements must be elided at
+# bootstrap time (e.g., App::Yath2::DB::Internal::MySQL skips CREATE
+# TRIGGER when the live server is MariaDB, whose dialect rejects the
+# MySQL-only BIN_TO_UUID() builtin used in the trigger bodies).
+sub _should_skip_schema_statement { 0 }
+
 # Locate share/schema/$flavor.sql. Resolution order:
 #   1. dev tree: walk up from __FILE__ looking for a sibling
 #      share/schema/$flavor.sql (development checkout).
@@ -88,6 +95,7 @@ sub bootstrap_schema {
         $stmt =~ s/^\s+//;
         $stmt =~ s/\s+$//;
         next unless length $stmt;
+        next if $self->_should_skip_schema_statement($stmt);
         $self->dbh->do($stmt) or croak "schema bootstrap failed: " . $self->dbh->errstr;
     }
     return;

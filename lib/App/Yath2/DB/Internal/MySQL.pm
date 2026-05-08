@@ -101,39 +101,16 @@ sub _apply_session_state {
     return;
 }
 
-# The base class' bootstrap parses schema.sql and ->do()s each
-# statement. The MySQL schema's triggers call BIN_TO_UUID() which is
-# MySQL-only; against a MariaDB server (which is what most distros
-# install via the mysqld -> mariadbd symlink) those triggers fail.
-# Skip trigger statements on a MariaDB server -- the companion
-# <col>_string fields will simply stay NULL, which is harmless because
-# the application never reads them.
-sub bootstrap_schema {
-    my $self = shift;
-    return if $self->_is_bootstrapped;
-
-    my $dbh = $self->dbh;
-    my $path = $self->schema_file;
-    open(my $fh, '<', $path) or croak "cannot open schema file '$path': $!";
-    my $sql = do { local $/; <$fh> };
-    close $fh;
-
-    $sql = $self->preprocess_schema_sql($sql);
-
-    my $skip_triggers = $self->_server_is_mariadb;
-
-    $sql =~ s{--[^\n]*\n}{\n}g;
-
-    my @statements = grep { /\S/ } split /;\s*\n/, $sql;
-
-    for my $stmt (@statements) {
-        $stmt =~ s/^\s+//;
-        $stmt =~ s/\s+$//;
-        next unless length $stmt;
-        next if $skip_triggers && $stmt =~ /^CREATE\s+TRIGGER\b/i;
-        $dbh->do($stmt) or croak "schema bootstrap failed: " . $dbh->errstr;
-    }
-    return;
+# The MySQL schema's triggers call BIN_TO_UUID(), which is MySQL-only;
+# against a MariaDB server (what most distros install via the
+# mysqld -> mariadbd symlink) those triggers fail. Skip CREATE TRIGGER
+# statements on a MariaDB server -- the companion <col>_string fields
+# will simply stay NULL, which is harmless because the application
+# never reads them.
+sub _should_skip_schema_statement {
+    my ($self, $stmt) = @_;
+    return 0 unless $self->_server_is_mariadb;
+    return $stmt =~ /^CREATE\s+TRIGGER\b/i ? 1 : 0;
 }
 
 # UUIDs are stored as BINARY(16). gen_uuid() returns a 36-char canonical
