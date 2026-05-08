@@ -306,9 +306,19 @@ sub has_archive {
 sub scoped {
     my ($self, $uuid) = @_;
     croak "scoped() requires a uuid" unless defined $uuid;
+    # Propagate flavor_override to the new instance. The DBD::MariaDB
+    # driver speaks both MySQL and MariaDB, so flavor() cannot reliably
+    # distinguish them from the driver name alone — the caller-supplied
+    # override is the only source of truth, and dropping it here would
+    # cause the new instance to silently misclassify (e.g. choose the
+    # MariaDB Internal helper's text-uuid codec for a MySQL BINARY(16)
+    # column, breaking _resolve_archive's uuid match).
     return ref($self)->new(
         schema => $self->{+SCHEMA},
         uuid   => $uuid,
+        (defined $self->{+FLAVOR_OVERRIDE}
+            ? (flavor_override => $self->{+FLAVOR_OVERRIDE})
+            : ()),
     );
 }
 
