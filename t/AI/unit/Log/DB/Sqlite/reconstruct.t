@@ -175,7 +175,7 @@ my ($n) = $dbh->selectrow_array(
 is($n, 0, 'no spec/report/state artifact rows present -- reads exercise reconstruction');
 
 # Reopen via the public API to mirror real consumer use.
-my $log = App::Yath2::Log->new(file => $db_path);
+my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
 
 # --- run-scope spec ---
 {

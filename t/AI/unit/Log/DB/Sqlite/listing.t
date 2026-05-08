@@ -61,7 +61,7 @@ for_each_log_db_backend(sub {
     my $arc_path = "$arc_dir/run.yath";
     App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');
 
-    my $log = App::Yath2::Log->new(file => $arc_path);
+    my $log = App::Yath2::Log->new(file => $arc_path, backend => $backend);
     isa_ok($log, ['App::Yath2::Log::DB']);
 
     is([$log->services], ['harness', 'preload-perl'], 'global services alphabetical');
@@ -105,12 +105,12 @@ for_each_log_db_backend(sub {
         my $u = $writer->uuid;
 
         like(
-            dies { App::Yath2::Log->new(file => $arc_path) },
+            dies { App::Yath2::Log->new(file => $arc_path, backend => $backend) },
             qr/ambiguous; specify uuid =>/,
             'multi-archive .yath without uuid throws',
         );
 
-        my $picked = App::Yath2::Log->new(file => $arc_path, uuid => $u);
+        my $picked = App::Yath2::Log->new(file => $arc_path, uuid => $u, backend => $backend);
         isa_ok($picked, ['App::Yath2::Log::DB']);
     }
 

@@ -78,7 +78,7 @@ for_each_log_db_backend(sub {
         }, undef, $aid);
 
         # Open a fresh DB instance against the same file.
-        my $log = App::Yath2::Log->new(file => $db_path);
+        my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
         my $root = $log->artifacts;
         ok($root->exists('meta.json'), 'meta.json visible at archive root');
 
@@ -183,7 +183,7 @@ for_each_log_db_backend(sub {
         ok(!exists $extras->{host},         'host not in meta_extras');
 
         # Reconstructed meta.json restores the unknown key for readers.
-        my $log = App::Yath2::Log->new(file => $db_path);
+        my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
         my $bytes = $log->artifacts->get('meta.json');
         my $meta = decode_json($bytes);
         is($meta->{harness}, 'something_unknown',

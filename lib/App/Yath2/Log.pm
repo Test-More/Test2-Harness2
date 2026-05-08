@@ -96,7 +96,8 @@ sub new {
         if ($kind eq 'sqlite') {
             require App::Yath2::DB;
             require App::Yath2::Log::DB;
-            my $db = App::Yath2::DB->open(file => $path);
+            my $backend = delete $args{backend} // 'internal';
+            my $db = App::Yath2::DB->open(file => $path, backend => $backend);
 
             # Single-archive sqlite shorthand: pick the singleton archive
             # when uuid not given; throw on multi-archive ambiguity.
@@ -435,6 +436,10 @@ App::Yath2::Log - Dispatcher for the yath log reader API.
     my $log = App::Yath2::Log->new(live => $logs_dir);     # live workdir
     my $log = App::Yath2::Log->new(dir  => $logs_dir);     # sealed dir
     my $log = App::Yath2::Log->new(file => $yath_file);    # *.yath (auto-detect)
+    my $log = App::Yath2::Log->new(                        # pick DB backend
+        file    => $yath_file,
+        backend => 'dbic',                                 # default 'internal'
+    );
     my $log = App::Yath2::Log->new(dbh  => $dbh, uuid => $u);
     my $log = App::Yath2::Log->new(
         dsn   => $dsn,
@@ -597,6 +602,12 @@ C<< App::Yath2::Log->new(file => $path) >> targets a single archive:
 when a SQLite C<.yath> file holds more than one archive, the
 constructor throws "ambiguous; specify uuid => ..." so the caller
 must pick one explicitly.
+
+The C<file => ...> form also accepts a C<< backend => 'internal' | 'dbic' >>
+selector, defaulting to C<'internal'>. This is the same backend
+selector L<App::Yath2::DB/open> takes; it picks which DB-access
+implementation services the read path. Production callers that
+do not care can omit it.
 
 For workflows that explicitly want to enumerate archives in a
 multi-archive DB (server-shaped DBs, multi-archive sqlite files),

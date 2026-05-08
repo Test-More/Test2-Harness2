@@ -93,7 +93,7 @@ for_each_log_db_backend(sub {
     my $arc_path = "$arc_dir/run.yath";
     App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');
 
-    my $log = App::Yath2::Log->new(file => $arc_path);
+    my $log = App::Yath2::Log->new(file => $arc_path, backend => $backend);
     isa_ok($log, ['App::Yath2::Log::DB']);
 
     # Drive the iterator and collect everything.
@@ -139,7 +139,7 @@ for_each_log_db_backend(sub {
 
     # events() list-context drains.
     {
-        my $log2 = App::Yath2::Log->new(file => $arc_path);
+        my $log2 = App::Yath2::Log->new(file => $arc_path, backend => $backend);
         my @first = $log2->events(0);
         is(scalar(@first), scalar(@collected),
             'events() first call returns full record set');
