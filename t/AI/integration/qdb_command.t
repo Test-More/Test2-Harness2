@@ -62,7 +62,7 @@ subtest 'flavor meta' => sub {
     is($mariadb[5], 1,                             'mariadb needs create db');
 
     my @mysql = App::Yath2::Command::qdb::_flavor_meta('mysql');
-    is($mysql[0], 'MySQL',                       'mysql driver');
+    is($mysql[0], 'MySQLCom',                    'mysql driver (Oracle/Community)');
     is($mysql[4], 'App::Yath2::Log::MySQL',      'mysql backend class');
 
     my @percona = App::Yath2::Command::qdb::_flavor_meta('percona');

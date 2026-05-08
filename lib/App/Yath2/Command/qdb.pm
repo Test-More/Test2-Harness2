@@ -59,7 +59,11 @@ sub _flavor_meta {
             'App::Yath2::Log::MariaDB', 1);
     }
     if ($flavor eq 'mysql') {
-        return ('MySQL', 'mysql', 'mysql', [],
+        # MySQLCom forces the Oracle/Community MySQL driver.
+        # The plain 'MySQL' driver is an ANY-style picker that chooses
+        # MariaDB first when a mariadbd binary is on PATH (system
+        # /usr/bin/mariadbd is symlinked from mysqld on most distros).
+        return ('MySQLCom', 'mysql', 'mysql', [],
             'App::Yath2::Log::MySQL', 1);
     }
     if ($flavor eq 'percona') {
