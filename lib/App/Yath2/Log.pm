@@ -96,8 +96,8 @@ sub new {
         if ($kind eq 'sqlite') {
             require App::Yath2::DB;
             require App::Yath2::Log::DB;
-            my $backend = delete $args{backend} // 'internal';
-            my $db = App::Yath2::DB->open(file => $path, backend => $backend);
+            my $backend = delete $args{backend} // 'sql';
+            my $db = App::Yath2::DB->new(file => $path, backend => $backend);
 
             # Single-archive sqlite shorthand: pick the singleton archive
             # when uuid not given; throw on multi-archive ambiguity.
@@ -109,7 +109,7 @@ sub new {
                     if @uuids > 1;
                 $uuid = $uuids[0];
             }
-            return App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
+            return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
         }
         if ($kind eq 'tar.zidx') {
             require App::Yath2::Log::TarZIdx;
@@ -124,7 +124,7 @@ sub new {
         require App::Yath2::DB;
         require App::Yath2::Log::DB;
         my $uuid = delete $args{uuid};
-        my $db = App::Yath2::DB->open(%args);
+        my $db = App::Yath2::DB->new(%args);
         unless (defined $uuid) {
             my @uuids = $db->archives;
             croak "no archives in this DB" if @uuids == 0;
@@ -132,7 +132,7 @@ sub new {
                 if @uuids > 1;
             $uuid = $uuids[0];
         }
-        return App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
+        return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
     }
 
     croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
@@ -441,7 +441,7 @@ App::Yath2::Log - Dispatcher for the yath log reader API.
     my $log = App::Yath2::Log->new(file => $yath_file);    # *.yath (auto-detect)
     my $log = App::Yath2::Log->new(                        # pick DB backend
         file    => $yath_file,
-        backend => 'dbic',                                 # default 'internal'
+        backend => 'dbic',                                 # default 'sql'
     );
     my $log = App::Yath2::Log->new(dbh  => $dbh, uuid => $u);
     my $log = App::Yath2::Log->new(
@@ -606,19 +606,19 @@ when a SQLite C<.yath> file holds more than one archive, the
 constructor throws "ambiguous; specify uuid => ..." so the caller
 must pick one explicitly.
 
-The C<file => ...> form also accepts a C<< backend => 'internal' | 'dbic' >>
-selector, defaulting to C<'internal'>. This is the same backend
-selector L<App::Yath2::DB/open> takes; it picks which DB-access
-implementation services the read path. Production callers that
-do not care can omit it.
+The C<file => ...> form also accepts a C<< backend => 'sql' | 'dbic' >>
+selector, defaulting to C<'sql'>. This is the same backend selector
+L<App::Yath2::DB/new> takes; it picks which DB-access implementation
+services the read path. Production callers that do not care can omit
+it.
 
 For workflows that explicitly want to enumerate archives in a
 multi-archive DB (server-shaped DBs, multi-archive sqlite files),
 use L<App::Yath2::DB>:
 
-    my $db = App::Yath2::DB->open(file => $multi_yath);
+    my $db = App::Yath2::DB->new(file => $multi_yath);
     for my $uuid ($db->archives) {
-        my $log = App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
+        my $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
         ...;
     }
 

@@ -143,12 +143,58 @@ sub _detect_flavor {
 # Object::HashBase) because some callers may want to mix this class
 # with their own role consumption later; minimal accessor surface keeps
 # the implementation transparent.
-sub _BACKEND  () { 'backend' }
-sub _UUID     () { 'uuid' }
-sub _AID      () { 'archive_id' }
+sub _BACKEND        () { 'backend' }
+sub _UUID           () { 'uuid' }
+sub _AID            () { 'archive_id' }
+sub _LEGACY_BACKEND () { '_legacy_backend' }
 
 sub new {
     my ($class, %args) = @_;
+
+    # Phase 4 internal-use shortcut: caller passes a fully-built backend
+    # instance (a doer of App::Yath2::Role::DB::Backend) and we wrap it
+    # without re-running backend selection. Used by App::Yath2::Log::DB
+    # to wrap legacy backend instances handed in via the deprecated
+    # `backend => $obj` constructor shape during the gap phase. Plan to
+    # remove this hatch once the rebuild reaches Phase 9 and Log::DB
+    # only sees `db => ...` callers.
+    if (my $bi = delete $args{backend_instance}) {
+        croak "backend_instance must consume App::Yath2::Role::DB::Backend"
+            unless eval { $bi->DOES('App::Yath2::Role::DB::Backend') };
+
+        # Two flavors of $bi during the gap phase:
+        #   - A new-style backend (App::Yath2::DB::SQL / DBIC) that
+        #     implements the Phase 2 primitives (archive_rows, etc).
+        #     Store directly; both new + legacy methods route through it.
+        #   - A legacy App::Yath2::DB::Internal::* instance, which has the
+        #     full legacy surface but NONE of the new primitives. We wrap
+        #     it by spinning up a fresh App::Yath2::DB::SQL bound to the
+        #     same dbh for the new read paths and stashing the Internal
+        #     instance pre-cached as our legacy backend so write/walker
+        #     traffic still goes to the same connection.
+        my $self;
+        if ($bi->isa('App::Yath2::DB::Internal')) {
+            require App::Yath2::DB::SQL;
+            my $sql = App::Yath2::DB::SQL->new(
+                dbh    => $bi->dbh,
+                flavor => $bi->flavor,
+            );
+            $self = bless {
+                _BACKEND()        => $sql,
+                _LEGACY_BACKEND() => $bi,
+            }, $class;
+        }
+        else {
+            $self = bless {
+                _BACKEND() => $bi,
+            }, $class;
+        }
+
+        if (defined (my $u = $args{uuid})) {
+            $self->{_UUID()} = _canon_uuid($u);
+        }
+        return $self;
+    }
 
     my $backend_name = delete $args{backend};
     # 'internal' is a deprecated alias for 'sql' during Phase 3; do
@@ -199,6 +245,103 @@ sub new {
 sub backend { $_[0]->{_BACKEND()} }
 sub dbh     { $_[0]->{_BACKEND()}->dbh }
 sub flavor  { $_[0]->{_BACKEND()}->flavor }
+
+# Phase 4 gap-shim: methods that App::Yath2::DB does NOT yet implement
+# natively (event/events/end_of_events/reset, artifacts factory,
+# extract/archive/insert, _artifact_save) still need to work for
+# App::Yath2::Log::DB callers during the rebuild's middle phases. We
+# route them through a legacy backend that has the full surface:
+#
+#   - DBIC backend: already implements every legacy method (the
+#     BEGIN-block forwarder + native methods + Role::DB::Backend's
+#     `artifacts` default), so it is its own legacy backend.
+#
+#   - SQL backend: stub-only on legacy methods (croaks NYI), so we
+#     spin up an `App::Yath2::DB::Internal::*` sibling sharing the
+#     same dbh and serve legacy traffic out of it. The sibling reads
+#     and writes the same underlying tables; transactional state stays
+#     consistent because there's only one DBI connection.
+#
+# Lazy-built and cached. Phases 6-7 reroute the remaining methods to
+# native App::Yath2::DB code, after which this helper can be deleted.
+sub _legacy_backend {
+    my $self = shift;
+    return $self->{_LEGACY_BACKEND()} if defined $self->{_LEGACY_BACKEND()};
+
+    my $backend = $self->{_BACKEND()};
+    if ($backend->isa('App::Yath2::DB::DBIC')) {
+        return $self->{_LEGACY_BACKEND()} = $backend;
+    }
+
+    my $flavor = $self->flavor;
+    my $class = internal_class_for_flavor($flavor);
+    my $file = mod2file($class);
+    my $ok = eval { require $file; 1 };
+    my $err = $@;
+    croak "could not load legacy backend '$class': $err" unless $ok;
+
+    my %extra;
+    # Forward the file path on sqlite so the Internal helper's seal=>1
+    # path resolution still works through the gap.
+    if ($flavor eq 'sqlite' && $backend->can('file')) {
+        my $f = $backend->file;
+        $extra{file} = $f if defined $f;
+    }
+    $extra{uuid} = $self->{_UUID()} if defined $self->{_UUID()};
+
+    my $obj = $class->new(dbh => $backend->dbh, flavor => $flavor, %extra);
+    return $self->{_LEGACY_BACKEND()} = $obj;
+}
+
+# DB-backed logs have no on-disk path per artifact. Mirrors the
+# Role::DB::Backend default, exposed here so App::Yath2::Log::DB can
+# call $self->{db}->absolute_path(...) without hitting AUTOLOAD or
+# missing-method errors.
+sub absolute_path {
+    my ($self, $rel) = @_;
+    croak "absolute_path is unavailable for the DB backend; "
+        . "extract first or read via the Log API ($rel)";
+}
+
+# Phase 4 gap-shim: get a legacy backend scoped to $uuid with
+# archive_id already resolved. Bypasses the legacy backend's own
+# uuid lookup, which fails across the canonical-hex / DB-native
+# case mismatch (App::Yath2::DB returns canonical lowercase hex
+# from archives(); legacy SQLite stores uppercase via Internal's
+# identity codec). Resolving the archive_id at the new layer (which
+# does case-insensitive matching) and seeding it on the legacy
+# instance sidesteps the mismatch entirely.
+sub legacy_scoped_for_uuid {
+    my ($self, $uuid) = @_;
+    croak "uuid required" unless defined $uuid;
+    my $aid = $self->_resolve_archive_id($uuid);
+    my $legacy = $self->_legacy_backend;
+
+    # Two paths:
+    #   - DBIC backend: it implements services/runs/jobs natively but
+    #     forwards the heavier methods (event/insert/extract/...) to a
+    #     lazy Internal helper, AND has no _artifact_save of its own
+    #     (Artifact handles bind to _internal_for_artifact). Skip the
+    #     DBIC layer entirely for the gap shim and return the Internal
+    #     helper directly -- it carries the full surface we need.
+    #
+    #   - Internal-style backend: scoped() returns a fresh Internal
+    #     instance bound to the same dbh; pre-seed archive_id so its
+    #     _resolve_archive short-circuits on the canonical-hex uuid.
+    if ($legacy->isa('App::Yath2::DB::DBIC')) {
+        my $inner = $legacy->_internal->scoped($uuid);
+        $inner->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $aid;
+        $inner->{App::Yath2::DB::Internal::UUID()} //= _canon_uuid($uuid);
+        return $inner;
+    }
+
+    my $scoped = $legacy->scoped($uuid);
+    if ($scoped->isa('App::Yath2::DB::Internal')) {
+        $scoped->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $aid;
+        $scoped->{App::Yath2::DB::Internal::UUID()} //= _canon_uuid($uuid);
+    }
+    return $scoped;
+}
 
 sub uuid {
     my $self = shift;

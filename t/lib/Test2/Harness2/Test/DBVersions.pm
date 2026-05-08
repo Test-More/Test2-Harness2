@@ -10,10 +10,18 @@ use Test2::Tools::QuickDB ();
 
 our @EXPORT_OK = qw/discover_db_versions for_each_db_version get_quiet_db for_each_log_db_backend/;
 
-# Run $body once per backend ('internal' and 'dbic'), wrapped in a
-# named subtest. Body receives the backend name as its only arg. The
-# 'dbic' iteration is skipped when DBIx::Class isn't installed (so
-# hosts without the optional dependency stay green).
+# Run $body once per backend, wrapped in a named subtest. Body
+# receives the backend name as its only arg. The 'dbic' iteration is
+# skipped when DBIx::Class isn't installed (so hosts without the
+# optional dependency stay green).
+#
+# Backend names track the in-flight DB rebuild
+# (AI_DOCS/2026-05-08-yath-db-rebuild.md). During Phases 4-5 the SQL
+# backend (App::Yath2::DB::SQL) does not yet implement write paths, so
+# the test surface still iterates the legacy 'internal' name; that
+# routes through App::Yath2::DB::Internal::* which carries the full
+# read+write surface. Switching to 'sql' becomes safe once Phase 6
+# adds App::Yath2::DB->insert and the SQL backend's write primitives.
 sub for_each_log_db_backend {
     my ($body) = @_;
     require Test2::V0;

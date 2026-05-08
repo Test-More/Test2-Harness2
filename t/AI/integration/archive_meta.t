@@ -86,7 +86,11 @@ build_dir($src);
     my $meta = decode_json($a->get('meta.json'));
     is($meta->{format_version}, 1, 'sqlite meta: format_version 1');
     like($meta->{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'sqlite meta: archive_uuid shape');
-    is($meta->{archive_uuid}, $log->uuid, 'sqlite meta archive_uuid matches archives row');
+    # archive_uuid round-trips through canonical lowercase hex in
+    # App::Yath2::DB; legacy gen_uuid output is uppercase. Compare
+    # case-insensitively.
+    is(lc($meta->{archive_uuid}), lc($log->uuid),
+        'sqlite meta archive_uuid matches archives row');
 
     # Extract sqlite to dir and verify meta lands too.
     my $extract = "$tmp/sql-extracted";
@@ -121,7 +125,8 @@ build_dir($src);
         my $a = $log->artifacts;
         ok($a->exists('meta.json'), "archive $u has meta.json");
         my $meta = decode_json($a->get('meta.json'));
-        is($meta->{archive_uuid}, $u, "archive $u meta.json archive_uuid matches");
+        is(lc($meta->{archive_uuid}), lc($u),
+            "archive $u meta.json archive_uuid matches");
     }
 }
 # }}}
