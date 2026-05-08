@@ -285,6 +285,4 @@ App::Yath2::Util::IPC - IPC info file helpers
 
 Helpers for writing, reading, and discovering yath IPC info files.
 
-See C<docs/superpowers/specs/2026-04-25-ipc-info-file-design.md>.
-
 =cut

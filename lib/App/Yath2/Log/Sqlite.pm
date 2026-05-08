@@ -105,7 +105,7 @@ sub _connect_dbh {
         %$attrs,
     });
 
-    # SQLite open-time PRAGMAs (per SCHEMA.md §8).
+    # SQLite open-time PRAGMAs (per share/schema/SCHEMA.md §8).
     $dbh->do('PRAGMA journal_mode = WAL');
     $dbh->do('PRAGMA synchronous = NORMAL');
     $dbh->do('PRAGMA busy_timeout = 5000');
@@ -133,7 +133,7 @@ sub _json_decode {
     return decode_json($val);
 }
 
-# SQLite stores zstd-compressed payloads (per K3).
+# SQLite stores zstd-compressed payloads.
 sub _payload_compressed_default { 1 }
 
 # Format DateTime for SQLite TEXT timestamp columns. SQLite stores
@@ -200,9 +200,8 @@ App::Yath2::Log::Sqlite - SQLite-backed Log reader / writer.
 
 SQLite-backed Log backend. Subclasses L<App::Yath2::Log::DB>,
 inheriting the full reader / writer API and providing only the
-SQLite-specific bits: connection setup, the open-time PRAGMAs
-documented in SCHEMA.md, schema bootstrap from
-F<share/schema/sqlite.sql>, and TEXT(36) UUID storage.
+SQLite-specific bits: connection setup, open-time PRAGMAs, schema
+bootstrap from F<share/schema/sqlite.sql>, and TEXT(36) UUID storage.
 
 =head1 SOURCE
 

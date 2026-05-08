@@ -450,14 +450,17 @@ sub insert {
     $self->bootstrap_schema;
 
     require App::Yath2::Log;
-    # Per D5/D6/D9: carry source meta.json verbatim when present, mint
-    # otherwise. archive_uuid carries over so re-import is detected.
+    # Per AI_DOCS/2026-05-07-schema-redesign.md §D5/§D6/§D9: carry source
+    # meta.json verbatim when present, mint otherwise. archive_uuid carries
+    # over so re-import is detected.
     my $meta = $self->_resolve_insert_meta($source, \%opts);
 
-    # Pre-flight uniqueness (D6): collide cleanly before opening tx.
+    # Pre-flight uniqueness (AI_DOCS/2026-05-07-schema-redesign.md §D6):
+    # collide cleanly before opening tx.
     $self->_check_archive_uuid_unique($meta->{archive_uuid});
 
-    # Wrap the whole population pass in a transaction (D6).
+    # Wrap the whole population pass in a transaction
+    # (AI_DOCS/2026-05-07-schema-redesign.md §D6).
     $dbh->begin_work;
     my $aid;
     my $ok = eval {
@@ -508,10 +511,11 @@ sub _mysql_insert_body {
     my @ordered;
     for my $rel (@files) {
         next if $rel eq 'LIVE';
-        # meta.json is reconstructed from archives columns (D9), not
-        # carried as an artifact row.
+        # meta.json is reconstructed from archives columns
+        # (AI_DOCS/2026-05-07-schema-redesign.md §D9), not carried as
+        # an artifact row.
         next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
-        # B9: spec.jsonl / report.jsonl / state.jsonl are reconstructed
+        # spec.jsonl / report.jsonl / state.jsonl are reconstructed
         # from typed columns + *_extras at read time; do not write them
         # as artifact rows.
         next if $rel =~ m{(?:^|/)(?:spec|report|state)\.jsonl(?:\.zst)?\z};
@@ -582,8 +586,8 @@ sub _mysql_insert_body {
     # Mirror the base-class flow: populate summary rows
     # (runs / services / service_lifetimes / jobs / job_tries / ...).
     # sealed_at was set during _create_archive from $meta->{created_at}
-    # (D5: it carries the source's live->sealed timestamp, not insert
-    # wall time).
+    # (AI_DOCS/2026-05-07-schema-redesign.md §D5: it carries the source's
+    # live->sealed timestamp, not insert wall time).
     $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
 
     return $aid;

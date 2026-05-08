@@ -25,11 +25,11 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer compress_blob/;
 use Test2::Harness2::Util::IPC qw/pid_is_running set_procname swap_io ipc_default_connect_args atomic_pipe_compression_args apply_atomic_pipe_compression/;
 
-# Single Collector class (post new_log_refactor M2 step 4+5). The
-# Logger and Observer abstractions are gone; the collector writes its
-# three .jsonl.zst files directly. Test-job collectors carry an
-# Auditor::Test (which has absorbed TestObserver's IPC duties); run
-# and service collectors are dumb pass-throughs.
+# Single Collector class. The Logger and Observer abstractions are
+# gone; the collector writes its three .jsonl.zst files directly.
+# Test-job collectors carry an Auditor::Test (which has absorbed
+# TestObserver's IPC duties); run and service collectors are dumb
+# pass-throughs.
 #
 # Construction takes:
 #   type    'Job' | 'Run' | 'Service'   -- required
@@ -301,16 +301,16 @@ sub _run_collector {
     $self->_open_writers();
     my $spec_hash = $self->_write_spec_row();
 
-    # The harness's own collector (no parent service per F19) drops a
-    # LIVE sentinel at <logdir>/LIVE so consumers can detect a still-
-    # being-written log. Removed in _finalize_collection on clean exit
-    # (per F20 = a). A crashed harness leaves a stale LIVE which
-    # consumers can use to spot abnormal termination.
+    # The harness's own collector (no parent service) drops a LIVE
+    # sentinel at <logdir>/LIVE so consumers can detect a still-being-
+    # written log. Removed in _finalize_collection on clean exit. A
+    # crashed harness leaves a stale LIVE which consumers can use to
+    # spot abnormal termination.
     $self->_create_live_sentinel;
 
     # Tell the parent service we're up. Emission is skipped for
-    # collectors with no parent (per F19: both ipc_parent and ipc_run
-    # undef -- today only the harness collector matches).
+    # collectors with no parent (both ipc_parent and ipc_run undef --
+    # today only the harness collector matches).
     $self->_emit_collector_start($spec_hash);
 
     # Signal handlers. Installed with `local` so they restore automatically
@@ -435,10 +435,10 @@ sub _open_writers {
     $self->{+_REPORT_WRITER} = open_zstd_writer($report_path);
 }
 
-# Append the spec row. Always one row per startup (B7 / B11). The row
-# is whatever `spec` hash the caller handed us, plus the collector
-# pid. Returns the assembled hash so the caller can reuse it for the
-# matching collector_start IPC emission (M2 step 6).
+# Append the spec row. Always one row per startup. The row is whatever
+# `spec` hash the caller handed us, plus the collector pid. Returns
+# the assembled hash so the caller can reuse it for the matching
+# collector_start IPC emission.
 sub _write_spec_row {
     my $self = shift;
     my $w = $self->{+_SPEC_WRITER} or return;
@@ -494,7 +494,7 @@ sub send_ipc {
 }
 
 # Pick the parent IPC target for the lifecycle pair (collector_start /
-# collector_end). Per B4 routing:
+# collector_end). Routing:
 #
 #   * Job collectors    -- ipc_run is the immediate parent (run service)
 #                          and is also where the lifecycle IPC goes.
@@ -506,7 +506,7 @@ sub send_ipc {
 #   * Service collectors -- run-scoped or global -- send to ipc_parent
 #                           (run service or harness respectively).
 #   * Harness collector  -- both ipc_parent and ipc_run undef, returns
-#                           undef so the caller skips emission per F19.
+#                           undef so the caller skips emission.
 sub _lifecycle_ipc_target {
     my $self = shift;
     my $type = $self->{+TYPE} // '';
@@ -538,8 +538,8 @@ sub _lifecycle_base_payload {
 
 # True when this collector is the top-of-tree harness collector: no
 # parent service to notify, no enclosing run. Today exactly one
-# collector matches (the one App::Yath2::Command::test interposes) per
-# F19. Used to gate the LIVE sentinel lifecycle.
+# collector matches (the one App::Yath2::Command::test interposes).
+# Used to gate the LIVE sentinel lifecycle.
 sub _is_top_level_harness {
     my $self = shift;
     return 0 if defined $self->{+IPC_PARENT};
@@ -547,8 +547,8 @@ sub _is_top_level_harness {
     return 1;
 }
 
-# Drop the LIVE sentinel at <logdir>/LIVE. Per F20 the file content is
-# a literal "1\n" so a stale LIVE is trivially distinguishable from an
+# Drop the LIVE sentinel at <logdir>/LIVE. The file content is a
+# literal "1\n" so a stale LIVE is trivially distinguishable from an
 # empty placeholder. Only the top-level harness collector creates it.
 sub _create_live_sentinel {
     my $self = shift;
@@ -560,9 +560,9 @@ sub _create_live_sentinel {
 }
 
 # Remove the LIVE sentinel if present. Called by _finalize_collection
-# on clean exit (F20 = a). A crashing harness skips this and leaves
-# the file in place -- consumers (e.g. the test command's renderer
-# child) use that as a hint that something went wrong.
+# on clean exit. A crashing harness skips this and leaves the file in
+# place -- consumers (e.g. the test command's renderer child) use that
+# as a hint that something went wrong.
 sub _remove_live_sentinel {
     my $self = shift;
     return unless $self->_is_top_level_harness;
@@ -591,12 +591,12 @@ sub _emit_collector_start {
 }
 
 # Send collector_end IPC to the lifecycle target if one exists.
-# Per B5 + F3 + C6: payload always carries exit/exit_decoded/ended_at
-# plus a state hash. For Jobs the state hash is the auditor's final
-# state; for Run/Service it carries just the exit/timing info (the
-# service-emitted collector_report facet rides through the event
-# stream separately and is merged into report.jsonl.zst by the
-# collector before this emission -- see _write_report_row).
+# Payload always carries exit/exit_decoded/ended_at plus a state hash.
+# For Jobs the state hash is the auditor's final state; for Run/Service
+# it carries just the exit/timing info (the service-emitted
+# collector_report facet rides through the event stream separately and
+# is merged into report.jsonl.zst by the collector before this
+# emission -- see _write_report_row).
 sub _emit_collector_end {
     my ($self, $child_exit) = @_;
 
@@ -923,13 +923,13 @@ sub _finalize_collection {
 
     # Clean exit of the top-level harness collector: drop the LIVE
     # sentinel so consumers tailing the dir can tell the harness
-    # finished gracefully (F20 = a).
+    # finished gracefully.
     $self->_remove_live_sentinel;
 
     return;
 }
 
-# Append the report.jsonl.zst row before exit. Per F2 / F3 / F4:
+# Append the report.jsonl.zst row before exit:
 #
 #   Job:      auditor's final state hash, then any in-stream
 #             collector_report facet content (rare for jobs but
@@ -989,8 +989,8 @@ sub _write_report_row {
 
 # Best-effort projection of an Auditor::Test instance's final state
 # into a plain hashref. Prefers final_state() when the auditor exposes
-# it (post M2 step 9); falls back to reading public accessors one by
-# one for older / minimal auditor classes.
+# it; falls back to reading public accessors one by one for older /
+# minimal auditor classes.
 sub _auditor_final_state {
     my ($self, $auditor) = @_;
     return undef unless $auditor;
@@ -1283,11 +1283,10 @@ sub _process_event {
 
 # Write phase. Extract any base64 attachment hashes into
 # <base>/attachments/, capture any collector_report facet content
-# (per F3/F4: service emits one final event with collector_report
-# containing service-side aggregate state for the report row),
-# mutate the event facet to point at archive_path (stripping
-# data/encoding), then append the rewritten event as JSON to
-# events.jsonl.zst.
+# (services emit one final event with collector_report containing
+# service-side aggregate state for the report row), mutate the
+# event facet to point at archive_path (stripping data/encoding),
+# then append the rewritten event as JSON to events.jsonl.zst.
 sub _write_event {
     my $self = shift;
     my ($event) = @_;
@@ -1748,13 +1747,11 @@ Test2::Harness2::Collector - Single collector class for tests, runs, and service
 
 =head1 DESCRIPTION
 
-Post-C<new_log_refactor> (M2 step 4+5), the collector is a single
-non-subclassed class that takes a C<type =E<gt> 'Job' | 'Run' |
-'Service'> slot and writes its own log artifacts directly to disk.
-The C<Logger> and C<Observer> abstractions are gone; the
-per-collector trio (C<spec.jsonl.zst>, C<events.jsonl.zst>,
-C<report.jsonl.zst>) is written by the collector itself under its
-base directory.
+The collector is a single non-subclassed class that takes a
+C<type =E<gt> 'Job' | 'Run' | 'Service'> slot and writes its own log
+artifacts directly to disk. The per-collector trio
+(C<spec.jsonl.zst>, C<events.jsonl.zst>, C<report.jsonl.zst>) is
+written by the collector itself under its base directory.
 
 =head1 PIPELINE
 

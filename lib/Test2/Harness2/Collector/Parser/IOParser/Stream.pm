@@ -72,10 +72,10 @@ recording the source stream (C<STDOUT> or C<STDERR>) and the original line
 verbatim. No C<from_stream> facet is attached in that case; the two are
 mutually exclusive per event.
 
-After the new_log_refactor the parser no longer stamps event_id / stamp
-onto the event or its harness facet; identifier fields (run_id / job_id /
-job_try) are likewise no longer populated by the parser. Those fields are
-injected by the Log iterator on read in a later refactor step.
+The parser does not stamp event_id / stamp onto the event or its
+harness facet; identifier fields (run_id / job_id / job_try) are
+likewise not populated by the parser. Those fields are injected by
+the Log iterator on read.
 
 =head1 USAGE
 

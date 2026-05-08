@@ -40,8 +40,8 @@ use Object::HashBase qw{
 # through fresh Log objects returned from `log($uuid)`, all of which
 # share the same DBI handle so we never reconnect.
 #
-# Future work (per F11): metadata, status, run-count summaries on
-# archive listings. For now the listing is just a flat list of UUIDs.
+# Future work: metadata, status, run-count summaries on archive
+# listings. For now the listing is just a flat list of UUIDs.
 
 sub init {
     my $self = shift;
@@ -239,9 +239,8 @@ archive UUIDs; C<< $ldb->log($uuid) >> returns a fresh
 L<App::Yath2::Log> object scoped to that archive, sharing the
 underlying DBI handle so subsequent reads do not reconnect.
 
-This is the "future-work" object referenced in the new_log_refactor
-F11 followup: C<< App::Yath2::Log->new(file => $sqlite_with_2_archives) >>
-still throws on ambiguity; a caller wanting to enumerate uses LogDB
+C<< App::Yath2::Log->new(file => $sqlite_with_2_archives) >> still
+throws on ambiguity; a caller wanting to enumerate uses C<LogDB>
 instead.
 
 =head1 CONSTRUCTORS

@@ -129,10 +129,10 @@ sub set_smoke {
 # {{{ check_feature override
 #
 # The role's check_feature is a pure data lookup. The scanner-aware
-# override here adds the "fork/preload need a perl interpreter and
-# only -w switches" safety net documented in TEST_FILE_AUDIT.md §2.7.
-# Mirrors the legacy / old2 logic that was previously baked into
-# test_settings; current 2.0 hoisted it into check_feature.
+# override here adds a safety net: fork/preload need a perl interpreter
+# and only switches that fork-safe perl can honor (-w). Mirrors the
+# legacy / old2 logic that was previously baked into test_settings;
+# current 2.0 hoisted it into check_feature.
 
 sub check_feature {
     my ($self, $feature, $default) = @_;
@@ -380,7 +380,7 @@ sub _scan {
             # Legacy uses //= against a fresh %headers hash so the first
             # JOB-SLOTS wins. init() pre-seeds MIN_SLOTS from role
             # defaults, so a scan-local tracker carries the "first-wins"
-            # semantic. Pitfall #5; Q3.4 = (c).
+            # semantic.
             next if $job_slots_set;
             $self->{+MIN_SLOTS} = $1;
             $self->{+MAX_SLOTS} = $2 || $1;

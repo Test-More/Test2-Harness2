@@ -134,11 +134,11 @@ sub init {
     $self->{+SUBSCRIBERS}       //= {};
     $self->{+SUBSCRIBER_RETRY}  //= {};
 
-    # Sequential run-ord allocator (B2/B3): every accepted run gets
-    # the next ordinal integer starting at 0. The counter is per
-    # harness-process; persistent runners reuse the same harness so
-    # ords climb monotonically across runs in a session, with gaps
-    # possible (e.g. accepted-then-purged runs).
+    # Sequential run-ord allocator: every accepted run gets the next
+    # ordinal integer starting at 0. The counter is per harness-process;
+    # persistent runners reuse the same harness so ords climb
+    # monotonically across runs in a session, with gaps possible
+    # (e.g. accepted-then-purged runs).
     $self->{+RUN_ORD_COUNTER}   //= 1;
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
@@ -147,12 +147,12 @@ sub init {
 
     $self->_init_resources;
 
-    # Loggers / observers were removed in the new_log_refactor (M2 step
-    # 4+5); the collector now writes its own spec/events/report files
-    # directly. Constructor args named `loggers`, `service_loggers`,
-    # `test_loggers`, `extend_loggers`, and `extend_test_loggers` are
-    # silently swallowed so legacy callers do not crash, but they have
-    # no effect on the on-disk layout.
+    # Loggers / observers were removed; the collector now writes its
+    # own spec/events/report files directly. Constructor args named
+    # `loggers`, `service_loggers`, `test_loggers`, `extend_loggers`,
+    # and `extend_test_loggers` are silently swallowed so legacy
+    # callers do not crash, but they have no effect on the on-disk
+    # layout.
     delete $self->{loggers};
     delete $self->{service_loggers};
     delete $self->{test_loggers};
@@ -227,9 +227,9 @@ sub start {
     # The interpose collector has no parent service to notify -- it
     # is the top of its own tree. ipc_parent stays undef. ipc_harness
     # points at the service-side name so the collector identifies its
-    # owning service even though it has no upward IPC peer per F19.
-    # bus_id is passed explicitly because the harness's own collector
-    # has no parent to derive from.
+    # owning service even though it has no upward IPC peer. bus_id is
+    # passed explicitly because the harness's own collector has no
+    # parent to derive from.
     Test2::Harness2::Collector->interpose(
         type        => 'Service',
         id          => $self->{+NAME},
@@ -323,10 +323,9 @@ sub request_handler_queue_test_run {
     return {ok => 0, error => "'files' must be a non-empty arrayref"}
         unless ref($files) eq 'ARRAY' && @$files;
 
-    # Logger options were dropped in the new_log_refactor (M2 step
-    # 4+5). Drop them from the payload so the Run constructor never
-    # sees them. Kept as a tidy filter so older clients passing them
-    # don't fail the request.
+    # Logger options were dropped. Strip them from the payload so the
+    # Run constructor never sees them. Kept as a tidy filter so older
+    # clients passing them don't fail the request.
     my %run_logger_opts;
 
     # --set-hash-seed (Phase 7.2): when both the harness and the
@@ -542,8 +541,7 @@ sub run_on_general_message {
     # Lifecycle reflection from child collectors that route their
     # collector_start/_end up to the harness: run-service collectors
     # and global services. The harness collector itself has no parent
-    # and skips emission entirely (per F19) so we never receive its
-    # own pair.
+    # and skips emission entirely so we never receive its own pair.
     return $self->_handle_collector_start($content)
         if defined $kind && $kind eq 'collector_start';
 

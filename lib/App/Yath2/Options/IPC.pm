@@ -72,7 +72,6 @@ App::Yath2::Options::IPC - IPC option group for yath commands
 =head1 DESCRIPTION
 
 Provides --ipc-dir, --ipc-dir-order, --ipc-protocol, and --ipc-file
-options. Driven by the IPC info file design (see
-docs/superpowers/specs/2026-04-25-ipc-info-file-design.md).
+options for locating and selecting yath IPC info files.
 
 =cut

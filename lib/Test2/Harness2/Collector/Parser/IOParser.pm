@@ -199,9 +199,9 @@ undef without constructing an event.
 
 The method orchestrates two steps in order: C<get_event> constructs a fresh
 event (or reuses one passed in via C<event>), and C<parse_stream_line>
-populates the stream-specific facets. After the new_log_refactor the parser
-no longer stamps event_id / stamp / about.uuid onto the event; canonical
-homes for those fields live in the appropriate facets (trace.stamp, etc.).
+populates the stream-specific facets. The parser does not stamp
+event_id / stamp / about.uuid onto the event; canonical homes for those
+fields live in the appropriate facets (trace.stamp, etc.).
 
 =item $event = $parser->get_event(%params)
 

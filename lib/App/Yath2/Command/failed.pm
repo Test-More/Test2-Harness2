@@ -150,7 +150,7 @@ sub run {
 
 # Collect failing top-level subtest names across every failed try for
 # a given file. Subtests come from each try's report.jsonl.zst final
-# state (per F9: { name, pass, count_pass, count_fail }).
+# state ({ name, pass, count_pass, count_fail }).
 sub _collect_subtest_names {
     my ($ends) = @_;
     my %seen;

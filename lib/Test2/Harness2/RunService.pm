@@ -127,8 +127,8 @@ sub init {
     $self->{+RUN_FAILING_EMITTED}    = 0;
     $self->{+RUN_COMPLETED_EMITTED}  = 0;
 
-    # Logger / observer plumbing was removed in the new_log_refactor
-    # (M2 step 4+5); ignore any lingering caller-supplied slots.
+    # Logger / observer plumbing was removed; ignore any lingering
+    # caller-supplied slots.
     delete $self->{loggers};
     delete $self->{test_loggers};
 
@@ -656,10 +656,10 @@ sub _handle_gen_msg_test_job_completed {
     delete $self->{+PENDING_SYNTH_COMPLETIONS}->{$job_id};
 
     # Stash the full per-job state hash so the run service's eventual
-    # collector_report aggregate (M2 step 6+9) can be assembled from
-    # in-memory state without disk reads (per F18). The payload from
-    # Auditor::Test._emit_completed already carries every field we
-    # need (pass/exit/plan/halt/counts/timing); just snapshot it.
+    # collector_report aggregate can be assembled from in-memory state
+    # without disk reads. The payload from Auditor::Test._emit_completed
+    # already carries every field we need (pass/exit/plan/halt/counts/
+    # timing); just snapshot it.
     $self->{+COMPLETED_JOB_STATES}->{$job_id} = {%$content};
 
     # Flip the run's pass state if a job came in failing without
@@ -816,15 +816,15 @@ sub run_on_cleanup {
     # Emit the terminal run_completed + collector_report event. The
     # run collector picks up the collector_report facet via its
     # write_phase and merges it into runs/<id>/report.jsonl.zst at
-    # exit (per F3/F4: single event, two facets).
+    # exit (single event, two facets).
     $self->emit_run_completed;
 
     $self->emit_service_event(kind => 'service_stopped');
 }
 
-# Emit the terminal run_completed + collector_report two-facet event
-# (per F4 = A). Built from in-memory COMPLETED_JOB_STATES plus the
-# pass/start/end stamps the run service tracks itself.
+# Emit the terminal run_completed + collector_report two-facet event.
+# Built from in-memory COMPLETED_JOB_STATES plus the pass/start/end
+# stamps the run service tracks itself.
 sub emit_run_completed {
     my $self = shift;
 
@@ -836,11 +836,11 @@ sub emit_run_completed {
     my $now    = time;
     my $report = $self->_build_collector_report($now);
 
-    # Two-facet event per F4=A: harness.run_completed (state-flip
-    # announcement) + top-level collector_report (data the run
-    # collector merges into report.jsonl.zst via _capture_collector_report).
-    # emit_raw -- not emit_event -- so collector_report lands at the
-    # top of facet_data, not nested under harness.
+    # Two-facet event: harness.run_completed (state-flip announcement)
+    # + top-level collector_report (data the run collector merges into
+    # report.jsonl.zst via _capture_collector_report). emit_raw -- not
+    # emit_event -- so collector_report lands at the top of facet_data,
+    # not nested under harness.
     $em->emit_raw({
         facet_data => {
             harness => {
@@ -858,9 +858,8 @@ sub emit_run_completed {
 }
 
 # Walk COMPLETED_JOB_STATES (per-job state hashes the run service
-# accumulated from each test_job_completed IPC -- per F18) and
-# assemble the run-level aggregate the run collector merges into
-# report.jsonl.zst.
+# accumulated from each test_job_completed IPC) and assemble the
+# run-level aggregate the run collector merges into report.jsonl.zst.
 sub _build_collector_report {
     my $self = shift;
     my ($now) = @_;
@@ -1029,9 +1028,8 @@ sub start {
 
     # The run collector lives under runs/<run_id>/ -- type='Run' with
     # id=<run_id>. The run service is the collector's "parent service"
-    # for IPC purposes (so the run service can ingest its own
-    # collector_start/end into runs/<run_id>/events.jsonl.zst once
-    # M2 step 6 lands).
+    # for IPC purposes so the run service can ingest its own
+    # collector_start/end into runs/<run_id>/events.jsonl.zst.
     Test2::Harness2::Collector->interpose(
         type         => 'Run',
         id           => $self->{+RUN_ID},

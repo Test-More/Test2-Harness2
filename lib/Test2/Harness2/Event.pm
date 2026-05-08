@@ -33,9 +33,9 @@ sub clear_compressed_form {
 }
 
 # Shortcut accessors that read from canonical homes inside facet_data.
-# After the new_log_refactor, identifier and timing fields no longer live
-# on the event hash directly -- they live in the facets that own them.
-# These accessors paper over the relocation for callers that still want
+# Identifier and timing fields no longer live on the event hash
+# directly -- they live in the facets that own them. These accessors
+# paper over the relocation for callers that still want
 # `$event->stamp` / `$event->pid` / etc.
 #
 # event_id is intentionally a stub returning undef: the field is no

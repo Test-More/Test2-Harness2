@@ -1072,7 +1072,7 @@ sub extract {
 # archive($out, %opts).
 #
 # tar.zidx -> tar.zidx: copy the archive to $out, optionally filtering
-# runs. tar.zidx -> sqlite: not implemented (M2 step 14).
+# runs. tar.zidx -> sqlite: not implemented.
 sub archive {
     my ($self, $out, %opts) = @_;
     croak "output path is required" unless defined $out && length $out;

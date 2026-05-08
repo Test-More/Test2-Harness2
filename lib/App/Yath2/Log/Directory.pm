@@ -186,7 +186,7 @@ sub _numeric_immediate_children {
 # artifacts(@positional)
 # artifacts({...})  -- hashref form
 #
-# Forms (per E1):
+# Forms:
 #
 #   artifacts()                            -> archive root (for save/get)
 #   artifacts($service_name)               -> global service
@@ -196,8 +196,8 @@ sub _numeric_immediate_children {
 #   artifacts($run_id, $job_id, $job_try)  -> specific try
 #   artifacts({service => ..., run_id => ..., job_id => ..., job_try => ...})
 #
-# Service names cannot start with a digit (per E1 amendment), so a
-# pure-digit first positional unambiguously means run id.
+# Service names cannot start with a digit, so a pure-digit first
+# positional unambiguously means run id.
 sub artifacts {
     my $self = shift;
 
@@ -208,10 +208,11 @@ sub artifacts {
 
     if (@args == 1) {
         my $arg = $args[0];
-        # Disambiguate: pure-digit -> run id (per E1). For non-digit
-        # arguments, treat as service if a global service of that
-        # name exists; otherwise as run_id (current writers may use
-        # UUIDs as run_ids during the transition to ord ints).
+        # Disambiguate: pure-digit -> run id (service names cannot start
+        # with a digit). For non-digit arguments, treat as service if a
+        # global service of that name exists; otherwise as run_id
+        # (current writers may use UUIDs as run_ids during the transition
+        # to ord ints).
         if (defined $arg && $arg =~ /^\d+\z/) {
             return $self->_artifacts_from_args({run_id => $arg});
         }
@@ -224,8 +225,8 @@ sub artifacts {
 
     if (@args == 2) {
         my ($run_id, $second) = @args;
-        # Per E1: service names cannot start with a digit. So a
-        # numeric second arg always means job_id; otherwise service.
+        # Service names cannot start with a digit, so a numeric second
+        # arg always means job_id; otherwise service.
         if (defined $second && $second =~ /^\d+\z/) {
             return $self->_artifacts_from_args({run_id => $run_id, job_id => $second});
         }
@@ -566,13 +567,12 @@ sub _top_is_done {
 
     return 1 if $self->{+CLOSED_STARTS}->{$cpid};
 
-    # H2 = A: the parent is supposed to emit a synthetic
-    # harness_collector_end on a peer-gone. Until that machinery is
-    # universal, accept "LIVE marker absent" as the last-resort
-    # liveness signal: once the harness collector has shut down (and
-    # taken LIVE with it), nothing new will append to any nested
-    # events.jsonl.zst, so any SEEN_STARTS without a matching end is
-    # effectively closed.
+    # The parent is supposed to emit a synthetic harness_collector_end
+    # on a peer-gone. Until that machinery is universal, accept
+    # "LIVE marker absent" as the last-resort liveness signal: once
+    # the harness collector has shut down (and taken LIVE with it),
+    # nothing new will append to any nested events.jsonl.zst, so any
+    # SEEN_STARTS without a matching end is effectively closed.
     return 1 unless $self->_live_marker_present;
 
     return 0;
@@ -631,7 +631,7 @@ sub end_of_events {
     # Live: stack drained. Normally we wait until all known starts
     # have matching ends; if the LIVE sentinel is gone the harness
     # has shut down and nothing more will append, so any unclosed
-    # start is treated as closed (matches H2 fallback in
+    # start is treated as closed (matches the LIVE-marker fallback in
     # _top_is_done).
     if ($self->_live_marker_present) {
         for my $cpid (keys %{$self->{+SEEN_STARTS}}) {
@@ -781,7 +781,7 @@ sub archive {
         return $arc;
     }
 
-    croak "TarZIdx archive writer not yet implemented (M2 step 10c)";
+    croak "TarZIdx archive writer not yet implemented";
 }
 
 sub _normalize_run_filters {

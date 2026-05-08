@@ -16,7 +16,7 @@ use Role::Tiny::With;
 with 'Test2::Harness2::Role::Auditor';
 
 # Auditor::Test absorbs the IPC duties that used to live in
-# TestObserver (post new_log_refactor M2 step 4+5):
+# TestObserver:
 #
 #   test_job_started     emitted from startup($collector)
 #   test_job_diagnosing  emitted from audit_event on the first
@@ -25,7 +25,7 @@ with 'Test2::Harness2::Role::Auditor';
 #   test_job_failing     emitted from audit_event on the first
 #                         failing assertion / error-without-amnesty
 #   test_job_completed   emitted from shutdown($collector) (which
-#                         also forwards the final state hash per F18)
+#                         also forwards the final state hash)
 #   job_release          emitted from shutdown alongside
 #                         test_job_completed
 #
@@ -152,8 +152,8 @@ sub has_plan { defined $_[0]->{+PLAN} }
 
 # Final-state hash for downstream consumers (collector report row,
 # IPC test_job_completed payload). Includes the top-level subtest
-# summary (per F9: name / pass / count_pass / count_fail). Order in
-# the subtests array is insertion order (as seen in the stream).
+# summary (name / pass / count_pass / count_fail). Order in the
+# subtests array is insertion order (as seen in the stream).
 sub final_state {
     my $self = shift;
 
@@ -329,7 +329,7 @@ sub _emit_failing {
 
 # test_job_completed payload includes the FULL job state hash so the
 # run service can accumulate per-job state in memory without reading
-# disk (per F18). job_release fires alongside on the harness bus.
+# disk. job_release fires alongside on the harness bus.
 sub _emit_completed {
     my $self = shift;
     return if $self->{+_EMITTED_COMPLETED};
@@ -640,10 +640,10 @@ sub _subtest_process_parent {
         push @{$self->{+PASSING_SUBTESTS} //= []} => $name;
     }
 
-    # Track top-level subtests with their per-subtest counts (per F9).
-    # Only the top-level auditor (NESTED == 0) records these; nested
-    # sub-auditors track their own children but those are not the
-    # top-level summary the run service forwards.
+    # Track top-level subtests with their per-subtest counts. Only the
+    # top-level auditor (NESTED == 0) records these; nested sub-auditors
+    # track their own children but those are not the top-level summary
+    # the run service forwards.
     if ($self->{+NESTED} == 0) {
         my $top = $self->{+TOP_LEVEL_SUBTESTS} //= [];
         push @$top => {
@@ -849,9 +849,8 @@ mismatched assertion counts or buffered-subtest-end recovery).
 
 =head2 Absorbed L<TestObserver> duties
 
-Post-C<new_log_refactor> M2 step 4+5, this auditor also handles the
-upward-facing IPC duties that used to live in
-C<Test2::Harness2::Collector::Observer::TestObserver>:
+This auditor also handles the upward-facing IPC duties that used to
+live in C<Test2::Harness2::Collector::Observer::TestObserver>:
 
 =over 4
 
@@ -873,7 +872,7 @@ error-without-amnesty.
 =item C<test_job_completed>
 
 Emitted from C<shutdown($collector)>; carries the auditor's final
-state hash (per amendment F18).
+state hash.
 
 =item C<job_release>
 
@@ -888,8 +887,8 @@ never holds its own bus connection.
 
 The auditor also tracks the set of top-level subtests it observed
 along with their pass/fail state. This is what the run service's
-C<collector_report> facet (per F17) aggregates across jobs to
-describe per-test subtest state in the run-level summary.
+C<collector_report> facet aggregates across jobs to describe
+per-test subtest state in the run-level summary.
 
 =head1 SYNOPSIS
 

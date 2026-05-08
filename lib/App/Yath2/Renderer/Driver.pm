@@ -14,9 +14,9 @@ use App::Yath2::Log;
 use App::Yath2::OutputManager;
 use App::Yath2::Options::Renderer;
 
-# Renderer driver for the new_log_refactor test command (M2 step 11+12).
-# Runs in a forked child process; reads events from an on-disk live Log
-# directory via App::Yath2::Log::Live, synthesizes the lifecycle facets
+# Renderer driver for the test command. Runs in a forked child process;
+# reads events from an on-disk live Log directory via
+# App::Yath2::Log::Live, synthesizes the lifecycle facets
 # the renderer chain expects (harness_run / harness_run_end /
 # harness_job_queued / harness_job_start / harness_job_end /
 # harness_job_exit) from the run service's skinny transition events
@@ -59,7 +59,7 @@ sub run {
     my %seen_run_end;        # run_id => 1
     my $synth_queue = [];    # queue of synthesized lifecycle events to dispatch first
 
-    # Detection state for F22 stuck-EOE timeout (live mode only): once
+    # Detection state for the stuck-EOE timeout (live mode only): once
     # the harness pid disappears (or the LIVE sentinel goes away),
     # allow $grace seconds of quiescence before bailing out and
     # reporting an EOE bug. Sealed mode never polls -- the iterator is
@@ -118,7 +118,7 @@ sub run {
             last;
         }
 
-        # F22: detect stuck iterator. If harness pid is gone or the LIVE
+        # Detect stuck iterator. If harness pid is gone or the LIVE
         # sentinel disappeared and EOE is still false, give the iterator
         # 10 seconds of grace, then bail with a clear error.
         my $harness_gone = $harness_pid && !kill(0 => $harness_pid);

@@ -15,7 +15,7 @@ use Exporter qw/import/;
 # extension-less in the logical sense -- callers append '.json',
 # '.jsonl', '.zst', etc. at their own layer.
 #
-# Layout (post new_log_refactor):
+# Layout:
 #
 #   services/<id>/                          -- global (non-run) services
 #   runs/<run_id>/                          -- run collector base

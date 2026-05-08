@@ -109,11 +109,10 @@ sub run {
     # or with a nonzero code if the EOE-timeout safeguard fired.
     my $renderer_exit = $self->_reap_renderer($renderer_pid);
 
-    # Final exit: combine IPC verdict + renderer exit code per I3
-    # ("if either log or ipc reports something is wrong, then there
-    # should be a failure"). The renderer's exit code is nonzero only
-    # when the EOE safeguard fired -- normal renderer completion is 0
-    # regardless of pass/fail.
+    # Final exit: combine IPC verdict + renderer exit code -- if either
+    # log or ipc reports something is wrong, the result is a failure.
+    # The renderer's exit code is nonzero only when the EOE safeguard
+    # fired; normal renderer completion is 0 regardless of pass/fail.
     my $log_pass = $renderer_exit == 0;
     my $final_pass = ($ipc_pass && $log_pass) ? 1 : 0;
 
@@ -281,8 +280,9 @@ sub _queue_run {
 
 # Fork a renderer child process. The child runs
 # App::Yath2::Renderer::Driver against the live log dir and exits when
-# the iterator reports EOE (or after the F22 safeguard fires). Returns
-# the pid in the parent; never returns in the child (POSIX::_exit).
+# the iterator reports EOE (or after the stuck-EOE safeguard fires).
+# Returns the pid in the parent; never returns in the child
+# (POSIX::_exit).
 #
 # The child must NOT touch any inherited IPC handles or Spawn refs
 # (their DESTROYs would otherwise terminate the harness on child

@@ -80,11 +80,12 @@ sub _as_atomic_pipe {
 sub emit_event {
     my ($self, %fields) = @_;
 
-    # Build a minimal harness-facet-only event. After the new_log_refactor
-    # we no longer stamp event_id / stamp on the event hash itself or on
-    # the harness facet -- callers that need timing or identity put it in
-    # the facets that own it (trace.stamp/pid/tid for timing, harness.run_id
-    # / harness.job_id / harness.job_try for identifiers).
+    # Build a minimal harness-facet-only event. We do not stamp
+    # event_id / stamp on the event hash itself or on the harness
+    # facet -- callers that need timing or identity put it in the
+    # facets that own it (trace.stamp/pid/tid for timing,
+    # harness.run_id / harness.job_id / harness.job_try for
+    # identifiers).
     my $event = {
         facet_data => {
             harness => {%fields},
@@ -257,9 +258,6 @@ In practice this limitation only matters in contrived test scenarios that
 drive a tight C<print> / C<write_message> loop on the same pipe fd.  Normal
 test processes (via C<Test2::Formatter::Stream2>) and normal service code
 produce coarser interleaving and are not affected.
-
-See C<ARCHITECTURE.md> Addendum A (GH#389) for the full investigation
-notes, including the Collector read-loop analysis.
 
 =head1 SOURCE
 

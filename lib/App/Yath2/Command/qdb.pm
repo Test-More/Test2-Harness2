@@ -39,8 +39,8 @@ flavor-VERSION form, e.g. postgres-15 or mariadb-12.2. When ~/dbs has
 no matching install, falls back to whatever's on the system PATH.
 
 Multiple archives load into the same DB as distinct rows in the
-archives table (multi-archive container behavior). Re-importing the
-same archive uuid is refused per D6.
+archives table (multi-archive container behavior). Re-importing an
+archive with the same uuid is refused.
     EOT
 }
 

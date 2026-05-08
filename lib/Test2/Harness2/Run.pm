@@ -28,9 +28,9 @@ use Object::HashBase qw{
 
 # Default retry interval the harness will use when a launch_job
 # request to a run service or preload stage times out waiting for
-# its ack (see ARCHITECTURE.md / former IPC_AND_LOGGERS §14).
-# Overridable per-run by setting launch_job_timeout at construction;
-# a future CLI option will expose this to the user.
+# its ack (see ARCHITECTURE.md §14). Overridable per-run by setting
+# launch_job_timeout at construction; a future CLI option will expose
+# this to the user.
 use constant DEFAULT_LAUNCH_JOB_TIMEOUT_SECS => 5;
 
 sub init {
@@ -45,8 +45,8 @@ sub init {
     $self->{+RESOURCES}          //= [];
     $self->{+LAUNCH_JOB_TIMEOUT} //= DEFAULT_LAUNCH_JOB_TIMEOUT_SECS;
 
-    # Per-run logger overrides were dropped in the new_log_refactor
-    # (M2 step 4+5). Silently swallow legacy slots for back-compat.
+    # Per-run logger overrides were dropped. Silently swallow legacy
+    # slots for back-compat.
     delete $self->{loggers};
     delete $self->{extend_loggers};
     delete $self->{test_loggers};

@@ -16,10 +16,10 @@ use Time::HiRes ();
 use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 
-# Dispatcher class for the new_log_refactor reader API. This class is
-# NOT a base class: it has no instance state of its own. It exists to
-# pick the right backend class given the constructor's argument shape
-# and return a fresh instance of that class.
+# Dispatcher class for the Log reader API. This class is NOT a base
+# class: it has no instance state of its own. It exists to pick the
+# right backend class given the constructor's argument shape and
+# return a fresh instance of that class.
 #
 # Backend selection by argument shape:
 #
@@ -134,7 +134,7 @@ sub META_PROMOTED_KEYS {
 sub last_breaking_version { '2.000012' }
 
 # Build the meta.json content for a sealed archive. Returns a hashref
-# with the canonical fields (per F23). Fields:
+# with the canonical fields. Fields:
 #
 #   format_version  -- META_FORMAT_VERSION (currently 1)
 #   archive_uuid    -- a fresh UUID (or the caller-supplied one)

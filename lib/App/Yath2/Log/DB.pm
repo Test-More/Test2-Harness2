@@ -154,7 +154,7 @@ sub bootstrap_schema {
 # {{{ Archive resolution
 #
 # After bootstrap (or on read), pick the archive row this Log instance
-# operates against. F11 rules:
+# operates against. Rules:
 #
 #   - 0 archives + read access -> throw "no archives in this DB".
 #   - 1 archive + uuid omitted -> use the singleton.
@@ -907,17 +907,18 @@ sub _format_for_name {
 # and a plain-shaped exist only when stored plain.
 #
 # spec.jsonl / report.jsonl on run/service/job_try scopes are
-# reconstructed from typed columns + extras at read time (see B5 /
+# reconstructed from typed columns + extras at read time (see the
 # Reconstruction API). For those paths "exists" is decided by the
-# presence of the entity row itself, not the artifact row: B9 will drop
-# the spec/report artifact rows entirely. We always advertise the .zst
-# form for reconstructed bodies (read returns compressed bytes for the
-# .zst probe, plaintext for the plain probe -- callers pick one).
+# presence of the entity row itself, not the artifact row: spec/report
+# artifact rows are not stored. We always advertise the .zst form for
+# reconstructed bodies (read returns compressed bytes for the .zst
+# probe, plaintext for the plain probe -- callers pick one).
 sub _artifact_exists {
     my ($self, $rel) = @_;
 
     # Archive-root meta.json is reconstructed from the archives row
-    # (D9: meta promotion). Exists when we have an archive at all.
+    # (AI_DOCS/2026-05-07-schema-redesign.md §D9: meta promotion).
+    # Exists when we have an archive at all.
     if (defined $rel && ($rel eq 'meta.json' || $rel eq 'meta.json.zst')) {
         my $aid = eval { $self->_archive_id_or_die };
         return (0, 0) unless defined $aid;
@@ -1848,10 +1849,10 @@ sub extract {
         close $fh or croak "close '$abs': $!";
     }
 
-    # meta.json is reconstructed from archives columns (D9 -- there is
-    # no artifact row to walk for it). Write it explicitly at the
-    # archive root so an extracted directory looks identical to a
-    # tar.zidx-extracted one.
+    # meta.json is reconstructed from archives columns
+    # (AI_DOCS/2026-05-07-schema-redesign.md §D9 -- there is no artifact
+    # row to walk for it). Write it explicitly at the archive root so an
+    # extracted directory looks identical to a tar.zidx-extracted one.
     {
         my $rec = $self->_reconstruct_meta_record;
         if ($rec) {
@@ -1940,21 +1941,22 @@ sub insert {
 
     require App::Yath2::Log;
 
-    # Resolve the archive metadata. Per D5, sealed_at carries the
-    # source archive's live->sealed timestamp (== meta.created_at).
-    # Per D5+D6, archive_uuid carries over verbatim so re-importing
-    # the same source raises a clean error rather than silently
-    # duplicating it under a fresh uuid.
+    # Resolve the archive metadata. Per AI_DOCS/2026-05-07-schema-redesign.md
+    # §D5, sealed_at carries the source archive's live->sealed timestamp
+    # (== meta.created_at). Per §D5+§D6, archive_uuid carries over
+    # verbatim so re-importing the same source raises a clean error
+    # rather than silently duplicating it under a fresh uuid.
     my $meta = $self->_resolve_insert_meta($source, \%opts);
 
-    # Pre-flight uniqueness check (D6). If the source's archive_uuid
-    # already exists in this DB, refuse the re-import cleanly --
-    # before opening any transaction so there is no partial state
-    # to roll back.
+    # Pre-flight uniqueness check (AI_DOCS/2026-05-07-schema-redesign.md
+    # §D6). If the source's archive_uuid already exists in this DB, refuse
+    # the re-import cleanly -- before opening any transaction so there is
+    # no partial state to roll back.
     $self->_check_archive_uuid_unique($meta->{archive_uuid});
 
-    # Wrap the entire population pass in a single transaction (D6).
-    # Any die mid-insert -> full rollback; no partial archive rows.
+    # Wrap the entire population pass in a single transaction
+    # (AI_DOCS/2026-05-07-schema-redesign.md §D6). Any die mid-insert
+    # -> full rollback; no partial archive rows.
     $dbh->begin_work;
     my $aid;
     my $ok = eval {
@@ -1979,7 +1981,7 @@ sub insert {
         die $err;
     }
 
-    # F3: caller asked for a single-archive sealed file -- after commit
+    # Caller asked for a single-archive sealed file -- after commit
     # checkpoint the WAL into the main file, disconnect the dbh, and
     # append meta.json + the 64-byte YATHFOOT trailer past the SQLite
     # body. Subsequent inserts on this instance will croak (the
@@ -2007,7 +2009,7 @@ sub _db_file_path {
     return undef;
 }
 
-# F3: write meta.json + 64-byte YATHFOOT trailer past the SQLite body.
+# Write meta.json + 64-byte YATHFOOT trailer past the SQLite body.
 # Sequence:
 #   1. PRAGMA wal_checkpoint(TRUNCATE) -- merge WAL into main file.
 #   2. Disconnect the dbh (flushes / releases the file).
@@ -2112,7 +2114,7 @@ sub _insert_body {
         # Skip any meta.json the source already had; we mint a fresh
         # one below keyed to the new archive_uuid.
         next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
-        # B9: spec.jsonl / report.jsonl / state.jsonl are reconstructed
+        # spec.jsonl / report.jsonl / state.jsonl are reconstructed
         # from typed columns + *_extras at read time; do not write them
         # as artifact rows.
         next if $rel =~ m{(?:^|/)(?:spec|report|state)\.jsonl(?:\.zst)?\z};
@@ -2198,10 +2200,10 @@ sub _insert_body {
     # Artifact loop complete; clear the source reference.
     delete $self->{+_INSERT_SOURCE};
 
-    # No meta.json artifact-row write: per D9, archive metadata lives
-    # in the typed archives columns + meta_extras. Reads of
-    # meta.json at the archive root reconstruct from those columns
-    # via _reconstruct_meta_record.
+    # No meta.json artifact-row write: per AI_DOCS/2026-05-07-schema-redesign.md
+    # §D9, archive metadata lives in the typed archives columns +
+    # meta_extras. Reads of meta.json at the archive root reconstruct
+    # from those columns via _reconstruct_meta_record.
 
     # Populate summary columns on runs / jobs / job_tries / services
     # / subtests. The artifact rows are the authoritative bytes, but
@@ -2210,24 +2212,24 @@ sub _insert_body {
     # unusable for everything except raw artifact retrieval.
     $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
 
-    # No sealed_at UPDATE here -- per D5, sealed_at carries the
-    # source's live->sealed transition time and was set at
-    # _create_archive time from $meta->{created_at}.
+    # No sealed_at UPDATE here -- per AI_DOCS/2026-05-07-schema-redesign.md
+    # §D5, sealed_at carries the source's live->sealed transition time
+    # and was set at _create_archive time from $meta->{created_at}.
 
     return $aid;
 }
 
 # Read the source's meta.json if present (carry-over) or mint fresh.
-# Per D5+D6: archive_uuid is a fixed value per archive that carries
-# over verbatim from the source. The caller may force a specific UUID
-# via $opts->{archive_uuid} (which wins over both source and minted).
-# A live-dir source has no meta.json; in that case build_archive_meta
-# mints fresh. All other meta keys (created_at -> sealed_at, host,
-# user, git_sha, project, yath_version, plus any future extras) carry
-# over verbatim per D5/D9 -- they reflect the source archive's
-# identity, not the current insert.
+# Per AI_DOCS/2026-05-07-schema-redesign.md §D5+§D6: archive_uuid is a
+# fixed value per archive that carries over verbatim from the source.
+# The caller may force a specific UUID via $opts->{archive_uuid}
+# (which wins over both source and minted). A live-dir source has no
+# meta.json; in that case build_archive_meta mints fresh. All other
+# meta keys (created_at -> sealed_at, host, user, git_sha, project,
+# yath_version, plus any future extras) carry over verbatim per §D5/§D9
+# -- they reflect the source archive's identity, not the current insert.
 #
-# Re-import detection (D6) relies on the source's archive_uuid
+# Re-import detection (§D6) relies on the source's archive_uuid
 # colliding with an existing destination row; so we MUST NOT mint a
 # fresh uuid when the source already carries one.
 sub _resolve_insert_meta {
@@ -2263,7 +2265,8 @@ sub _resolve_insert_meta {
 }
 
 # Pre-flight uniqueness check on archive_uuid. If a row already
-# exists with this uuid we throw a clean error (D6) BEFORE opening a
+# exists with this uuid we throw a clean error
+# (AI_DOCS/2026-05-07-schema-redesign.md §D6) BEFORE opening a
 # transaction; deferring to the DB's UNIQUE constraint would also
 # work but the error message varies by flavor and would happen
 # mid-tx. The check assumes bootstrap_schema has already run.
@@ -2537,11 +2540,12 @@ our @SERVICE_LIFETIME_REPORT_PROMOTED_KEYS = qw(
 );
 
 # Walk a service's spec.jsonl and report.jsonl artifacts and project
-# them into service_lifetimes rows -- one row per start/end cycle. D1:
-# services may restart, so report.jsonl can have multiple rows; spec
-# rows may be sparser. Pair by ord index (1-based). The parent
-# services row is identity-only (name/role/run_id); role is promoted
-# from the first non-null spec row that carries a `role` key.
+# them into service_lifetimes rows -- one row per start/end cycle.
+# Per AI_DOCS/2026-05-07-schema-redesign.md §D1: services may restart,
+# so report.jsonl can have multiple rows; spec rows may be sparser.
+# Pair by ord index (1-based). The parent services row is identity-only
+# (name/role/run_id); role is promoted from the first non-null spec row
+# that carries a `role` key.
 sub _populate_service_lifetimes {
     my ($self, $source, $aid, $name, $run_ord) = @_;
     my $dbh = $self->dbh;
@@ -2956,10 +2960,10 @@ sub _param_type_for_col { undef }
 # Reverse of _populate_run_row / _populate_service_lifetimes /
 # _populate_job_rows: rebuild the spec.jsonl / report.jsonl record
 # arrays from typed columns + decoded *_extras. Used by the artifact
-# read path for spec / report on run / service / job_try scopes -- and
-# (post-B9) the only path. Aggregated keys (`subtests`, `jobs`) are
-# rebuilt via JOIN; data preservation is the goal, not byte-exact
-# round-trip.
+# read path for spec / report on run / service / job_try scopes --
+# the only path, since spec/report rows are never persisted as
+# artifacts. Aggregated keys (`subtests`, `jobs`) are rebuilt via
+# JOIN; data preservation is the goal, not byte-exact round-trip.
 
 # Layer typed-col pairs over a decoded extras hash. `$typed_pairs` is
 # an arrayref of [$key => $value, ...]; values that are undef are
@@ -3094,7 +3098,8 @@ sub _reconstruct_run_report {
     # Rebuild jobs[] aggregate via JOIN. The original run-level report
     # producer emitted a per-job summary array; we reconstruct it as
     # [{job_ord, status, pass, retry_count, tries => [...]}]. Byte-level
-    # round-trip is not the goal (D2): preservation of data is.
+    # round-trip is not the goal (AI_DOCS/2026-05-07-schema-redesign.md
+    # §D2): preservation of data is.
     my $jobs = $dbh->selectall_arrayref(q{
         SELECT job_id, job_ord, status, pass, retry_count
           FROM jobs
@@ -3162,8 +3167,9 @@ sub _reconstruct_service_specs {
 
     my @out;
     # Round-trip count: emit one record per service_lifetimes row even
-    # when fields are mostly null (D2 explicitly accepts that byte-level
-    # round-trip count of spec rows is not preserved -- only data is).
+    # when fields are mostly null (AI_DOCS/2026-05-07-schema-redesign.md
+    # §D2 explicitly accepts that byte-level round-trip count of spec
+    # rows is not preserved -- only data is).
     for my $row (@$rows) {
         my $rec = $self->_merge_extras_and_typed(
             $row->{spec_extras},
@@ -3179,7 +3185,8 @@ sub _reconstruct_service_specs {
                 # role lives on the parent services row; promote to every
                 # reconstructed spec record (population kept it on the
                 # FIRST spec row that supplied it, but we don't preserve
-                # which row -- D2 byte-level round-trip is not required).
+                # which row -- AI_DOCS/2026-05-07-schema-redesign.md §D2
+                # byte-level round-trip is not required).
                 (defined $svc && defined $svc->{role}
                     ? (role => $svc->{role}) : ()),
             ],
@@ -3381,7 +3388,7 @@ C<App::Yath2::Log::MySQL>.
 It implements the full reader API (services / runs / jobs / tries
 listing, depth-first event iterator with path-aware identifier
 injection, artifacts handle factory) using SQL against the schema
-described in C<share/schema/SCHEMA.md>.
+under F<share/schema/>.
 
 Subclasses provide the small number of flavor-specific bits:
 

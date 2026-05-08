@@ -42,6 +42,17 @@ Filename convention: `AI_DOCS/<YYYY-MM-DD>-<short-slug>.md`.
 
 Any decision to deviate from `ARCHITECTURE.md` must **also** be recorded as an addendum section appended to `ARCHITECTURE.md` itself, explaining and justifying the deviation. `ARCHITECTURE.md` remains the authoritative spec; addenda exist so anyone reading it sees the deviation and its reasoning in one place. This rule applies regardless of whether an AI_DOC is also written.
 
+### Referencing AI docs from code
+
+User-facing text — POD, command `description` / `summary` / help output, `die` / `warn` / `croak` / `print` strings, and any other diagnostic shown to users — must **never** reference AI docs or any `.md` document (including `ARCHITECTURE.md`, `SCHEMA.md`, AI_DOCS entries, planning files, etc.). If the rule or behavior matters to the user, restate it in plain prose; if it does not, drop the reference. Users cannot read AI docs and should not be pointed at them.
+
+Regular `#` comments in code may reference an AI doc, but only when **both** of these hold:
+
+1. The referenced document is tracked in git. Comments must not reference untracked or gitignored files (e.g. `NEW_LOG_REFACTOR_*.md`, `docs/superpowers/...`, scratch planning files). Untracked docs can be deleted, renamed, or moved at any time, leaving the comment dangling.
+2. The reference is specific: full path (or the document's repository-relative name) **plus** the exact section identifier — e.g. `AI_DOCS/2026-05-07-schema-redesign.md §D6`, `share/schema/SCHEMA.md §8`, `ARCHITECTURE.md §14`. A bare token like `D6`, `F18`, `K3`, or `M2 step 4+5` is not acceptable on its own — without a document name and section anchor a future reader cannot tell which document it points to.
+
+When neither condition can be met, drop the cryptic code and state the rule itself in the comment so the surrounding prose stands on its own.
+
 ## Testing
 
 - Use `Test2::V0` in unit tests where possible.
