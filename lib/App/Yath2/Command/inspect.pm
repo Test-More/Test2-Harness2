@@ -108,7 +108,7 @@ sub _build_report {
         return \%r;
     }
 
-    my $kind = App::Yath2::Log->_detect_file_kind($path);
+    my $kind = App::Yath2::Log->detect_file_kind($path);
     if ($kind eq 'unknown') {
         $r{type}  = 'unknown';
         $r{error} = "not a yath log archive (no sqlite or tar.zidx magic)";

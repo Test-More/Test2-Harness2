@@ -91,7 +91,7 @@ sub _detect_flavor {
         return 'sqlite' unless -e $f;
 
         require App::Yath2::Log;
-        my $kind = App::Yath2::Log->_detect_file_kind($f);
+        my $kind = App::Yath2::Log->detect_file_kind($f);
         return 'sqlite' if $kind eq 'sqlite';
         croak "file '$f' is not a SQLite database";
     }

@@ -92,7 +92,7 @@ sub new {
         croak "file '$path' is a directory; use dir => or live => instead"
             if -d $path;
 
-        my $kind = $class->_detect_file_kind($path);
+        my $kind = $class->detect_file_kind($path);
         if ($kind eq 'sqlite') {
             require App::Yath2::DB;
             require App::Yath2::Log::DB;
@@ -269,7 +269,7 @@ sub encode_archive_meta {
 # 16-byte 'SQLite format 3\0' header; sealed yath archives (tar.zidx
 # and SQL-sealed) end with the 64-byte YATHFOOT trailer carrying a
 # 4-byte format_id. We sniff both.
-sub _detect_file_kind {
+sub detect_file_kind {
     my ($class, $path) = @_;
 
     require App::Yath2::Log::Footer;
