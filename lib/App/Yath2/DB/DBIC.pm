@@ -113,14 +113,26 @@ sub init {
 
 sub flavor {
     my $self = shift;
-    my $t = $self->{+SCHEMA}->storage->sqlt_type // '';
-    return {
+    my $t = $self->{+SCHEMA}->storage->sqlt_type;
+    my $f = {
         SQLite     => 'sqlite',
         PostgreSQL => 'postgres',
         MySQL      => 'mysql',
         MariaDB    => 'mariadb',
-    }->{$t} // lc($t);
+    }->{$t // ''};
+    croak "unsupported flavor '" . ($t // '<undef>') . "' (DBIC sqlt_type)"
+        unless $f;
+    return $f;
 }
+
+# UUID codec: route through the lazy Internal helper so DBIC.pm doesn't
+# duplicate the per-flavor UUID conversion logic. Internal::Sqlite is
+# identity, Internal::Postgres / ::MariaDB upper-case, ::MySQL packs
+# canonical-string <-> BINARY(16). All read paths returning archive_uuid
+# values must run through _uuid_from_db; all bind/find paths taking a
+# caller-supplied uuid must run through _uuid_to_db.
+sub _uuid_to_db   { $_[0]->_internal->_uuid_to_db($_[1])   }
+sub _uuid_from_db { $_[0]->_internal->_uuid_from_db($_[1]) }
 
 # Always return a live handle (DBIC's storage reconnects as needed).
 # Override the slot accessor HashBase generated for `<dbh` so callers
@@ -183,8 +195,11 @@ sub _archive_id_or_die {
 
     my $u = $self->{+UUID};
     if (defined $u) {
+        # Caller-supplied uuid is canonical hex; convert to the DB-native
+        # form before binding (BINARY(16) on MySQL, uppercase on
+        # Postgres / MariaDB, identity on SQLite).
         my $row = $self->{+SCHEMA}->resultset('Archive')
-            ->find({ archive_uuid => $u });
+            ->find({ archive_uuid => $self->_uuid_to_db($u) });
         croak "no archive '$u' in this DB" unless $row;
         $self->{+ARCHIVE_ID} = $row->archive_id;
         $self->_internal->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $row->archive_id;
@@ -195,10 +210,15 @@ sub _archive_id_or_die {
     # Single-archive convenience: if exactly one archive exists, use it.
     my @rows = $self->{+SCHEMA}->resultset('Archive')->all;
     if (@rows == 1) {
+        # archive_uuid coming back from DBIC is in DB-native form; stash
+        # the canonical (decoded) form in $self->{+UUID} so external
+        # callers see a normal hex uuid rather than packed bytes /
+        # uppercase strings.
+        my $canon = $self->_uuid_from_db($rows[0]->archive_uuid);
         $self->{+ARCHIVE_ID} = $rows[0]->archive_id;
-        $self->{+UUID}       = $rows[0]->archive_uuid;
+        $self->{+UUID}       = $canon;
         $self->_internal->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $self->{+ARCHIVE_ID};
-        $self->_internal->{App::Yath2::DB::Internal::UUID()}       = $self->{+UUID};
+        $self->_internal->{App::Yath2::DB::Internal::UUID()}       = $canon;
         return $self->{+ARCHIVE_ID};
     }
 
@@ -210,7 +230,10 @@ sub _archive_id_or_die {
 
 sub archives {
     my $self = shift;
-    return map { $_->archive_uuid }
+    # archive_uuid columns come back in DB-native form (BINARY(16) on
+    # MySQL, uppercase strings on Postgres / MariaDB). Round-trip every
+    # row through _uuid_from_db so callers always see canonical hex.
+    return map { $self->_uuid_from_db($_->archive_uuid) }
            $self->{+SCHEMA}->resultset('Archive')
                 ->search(undef, { order_by => 'archive_id' })->all;
 }
