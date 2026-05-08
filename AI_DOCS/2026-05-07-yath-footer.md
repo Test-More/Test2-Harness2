@@ -218,7 +218,7 @@ The SQLite flow with `seal => 1`:
    - `meta_offset = body_size`
    - `meta_size   = length(compressed_meta_bytes)`
 
-After seal, the in-memory `App::Yath2::Log::Sqlite` instance
+After seal, the in-memory `App::Yath2::Log::DB::Sqlite` instance
 flags itself sealed and refuses further `insert()`. SQLite still
 reads the file fine -- it ignores trailing bytes past
 `page_count * page_size` -- so raw `DBI->connect` and `sqlite3`

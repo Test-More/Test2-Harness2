@@ -736,10 +736,10 @@ sub archive {
     my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
 
     if ($format eq 'sqlite') {
-        require App::Yath2::Log::Sqlite;
+        require App::Yath2::Log::DB::Sqlite;
         # Refuse to clobber an existing destination -- fresh file only.
         croak "destination '$out' already exists" if -e $out;
-        my $dest = App::Yath2::Log::Sqlite->new(file => $out);
+        my $dest = App::Yath2::Log::DB::Sqlite->new(file => $out);
         # DB::insert builds the archive metadata and drops a fresh
         # meta.json into the archive root itself. seal => 1 appends
         # the YATHFOOT trailer (and a zstd-compressed copy of

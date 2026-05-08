@@ -94,8 +94,8 @@ sub new {
 
         my $kind = $class->_detect_file_kind($path);
         if ($kind eq 'sqlite') {
-            require App::Yath2::Log::Sqlite;
-            return App::Yath2::Log::Sqlite->new(file => $path, %args);
+            require App::Yath2::Log::DB::Sqlite;
+            return App::Yath2::Log::DB::Sqlite->new(file => $path, %args);
         }
         if ($kind eq 'tar.zidx') {
             require App::Yath2::Log::TarZIdx;
@@ -107,8 +107,8 @@ sub new {
 
     # Database connection forms.
     if (defined $args{dbh} || defined $args{dsn}) {
-        require App::Yath2::Log::Sqlite;
-        return App::Yath2::Log::Sqlite->new(%args);
+        require App::Yath2::Log::DB::Sqlite;
+        return App::Yath2::Log::DB::Sqlite->new(%args);
     }
 
     croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
@@ -500,7 +500,7 @@ A tar.zidx archive (USTAR + per-file zstd + a trailing index for
 random-access reads). Read-only; archive() and insert() construct
 new archives.
 
-=item L<App::Yath2::Log::Sqlite> / Postgres / MariaDB / MySQL
+=item L<App::Yath2::Log::DB::Sqlite> / Postgres / MariaDB / MySQL
 
 The four SQL-backed flavors. Share L<App::Yath2::Log::DB> as
 abstract base; per-flavor classes only provide DSN construction,
@@ -588,9 +588,9 @@ hands out, so opening many archives does not reconnect.
 =head1 SEE ALSO
 
 L<App::Yath2::Log::Live>, L<App::Yath2::Log::Directory>,
-L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::Sqlite>,
-L<App::Yath2::Log::Postgres>, L<App::Yath2::Log::MariaDB>,
-L<App::Yath2::Log::MySQL>, L<App::Yath2::Log::Artifact>,
+L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::DB::Sqlite>,
+L<App::Yath2::Log::DB::Postgres>, L<App::Yath2::Log::DB::MariaDB>,
+L<App::Yath2::Log::DB::MySQL>, L<App::Yath2::Log::Artifact>,
 L<App::Yath2::Log::Iterator::JSONL>, L<App::Yath2::LogDB>,
 L<Test2::Harness2::LogLayout>, L<App::Yath2::Command::inspect>.
 

@@ -2700,8 +2700,8 @@ argument shape:
 | `dir  => $dir`      | `App::Yath2::Log::Directory`       |
 | `file => $f`        | `Log::TarZIdx` or `Log::Sqlite`    |
 |                     | (auto-detected by magic bytes)     |
-| `dbh  => ...`       | `App::Yath2::Log::Sqlite`          |
-| `dsn  => ...`       | `App::Yath2::Log::Sqlite` /        |
+| `dbh  => ...`       | `App::Yath2::Log::DB::Sqlite`          |
+| `dsn  => ...`       | `App::Yath2::Log::DB::Sqlite` /        |
 |                     | `Log::Postgres` / `Log::MariaDB` / |
 |                     | `Log::MySQL`                       |
 
@@ -2795,10 +2795,10 @@ Plaintext archives are bigger but trivially greppable. CLI:
     App::Yath2::Log::Directory           sealed dir backend
     App::Yath2::Log::TarZIdx             tar.zidx archive backend
     App::Yath2::Log::DB                  abstract DB backend
-    App::Yath2::Log::Sqlite              sqlite-on-DB
-    App::Yath2::Log::Postgres            postgres-on-DB
-    App::Yath2::Log::MariaDB             mariadb-on-DB
-    App::Yath2::Log::MySQL               mysql-on-DB
+    App::Yath2::Log::DB::Sqlite              sqlite-on-DB
+    App::Yath2::Log::DB::Postgres            postgres-on-DB
+    App::Yath2::Log::DB::MariaDB             mariadb-on-DB
+    App::Yath2::Log::DB::MySQL               mysql-on-DB
     App::Yath2::Log::Artifact            per-collector handle
     App::Yath2::Log::Iterator::JSONL     per-file iterator
     App::Yath2::LogDB                    multi-archive DB container

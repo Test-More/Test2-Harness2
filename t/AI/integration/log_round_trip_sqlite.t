@@ -117,7 +117,7 @@ unlink $arc_path;
 $dir_log->archive($arc_path, format => 'sqlite');
 
 my $sqlite_log = App::Yath2::Log->new(file => $arc_path);
-isa_ok($sqlite_log, ['App::Yath2::Log::Sqlite']);
+isa_ok($sqlite_log, ['App::Yath2::Log::DB::Sqlite']);
 
 my @from_sqlite = drain_iterator($sqlite_log);
 is(scalar(@from_sqlite), scalar(@from_dir),
@@ -188,7 +188,7 @@ is(
     unlink $sqlite_path;
     $tar->archive($sqlite_path, format => 'sqlite');
     my $tar_sqlite = App::Yath2::Log->new(file => $sqlite_path);
-    isa_ok($tar_sqlite, ['App::Yath2::Log::Sqlite']);
+    isa_ok($tar_sqlite, ['App::Yath2::Log::DB::Sqlite']);
 
     my @from_tar_sqlite = drain_iterator($tar_sqlite);
     is(\@from_tar_sqlite, \@from_dir, 'tar.zidx -> sqlite events match original');

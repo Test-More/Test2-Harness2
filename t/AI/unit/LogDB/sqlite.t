@@ -7,7 +7,7 @@ use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
-use App::Yath2::Log::Sqlite;
+use App::Yath2::Log::DB::Sqlite;
 use App::Yath2::LogDB;
 
 # Build three small directory logs and insert them as three archives
@@ -39,7 +39,7 @@ my $db_path = "$tmp/multi.yath";
 # Build the multi-archive SQLite by inserting each source.
 my @inserted_uuids;
 {
-    my $writer = App::Yath2::Log::Sqlite->new(file => $db_path);
+    my $writer = App::Yath2::Log::DB::Sqlite->new(file => $db_path);
     for my $d ($dir1, $dir2, $dir3) {
         my $src = App::Yath2::Log->new(dir => $d);
         $writer->insert($src);
@@ -68,7 +68,7 @@ is(scalar @inserted_uuids, 3, 'three archives inserted');
     # log($uuid) returns a working Log object scoped to that archive.
     for my $u (@uuids) {
         my $log = $ldb->log($u);
-        isa_ok($log, ['App::Yath2::Log::Sqlite']);
+        isa_ok($log, ['App::Yath2::Log::DB::Sqlite']);
         is($log->uuid, $u, 'log uuid matches');
 
         # Each archive contains the harness service + 1 run.

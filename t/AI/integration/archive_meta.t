@@ -98,9 +98,9 @@ build_dir($src);
 
 # {{{ insert() into multi-archive DB drops a fresh meta.json per archive
 {
-    require App::Yath2::Log::Sqlite;
+    require App::Yath2::Log::DB::Sqlite;
     my $db_path = "$tmp/multi.yath";
-    my $writer = App::Yath2::Log::Sqlite->new(file => $db_path);
+    my $writer = App::Yath2::Log::DB::Sqlite->new(file => $db_path);
 
     my @uuids;
     for (1 .. 3) {

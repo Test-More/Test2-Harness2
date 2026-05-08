@@ -10,7 +10,7 @@ use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 
 use App::Yath2::Log;
-use App::Yath2::Log::Sqlite;
+use App::Yath2::Log::DB::Sqlite;
 use App::Yath2::Log::Footer qw{
     FOOTER_SIZE
     FORMAT_ID_SQL
@@ -149,7 +149,7 @@ SKIP: {
 
 # {{{ yath's own reader still works on the trailer-bearing archive.
 my $log = App::Yath2::Log->new(file => $arc_path);
-isa_ok($log, ['App::Yath2::Log::Sqlite']);
+isa_ok($log, ['App::Yath2::Log::DB::Sqlite']);
 
 my @runs = $log->runs;
 ok(scalar(@runs) >= 1, 'Sqlite->runs returns at least one run');

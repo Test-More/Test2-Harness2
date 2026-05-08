@@ -56,7 +56,7 @@ sub _flavor_meta {
 
     if ($flavor eq 'mariadb') {
         return ('MariaDB', 'mariadb', 'mariadb', ['mysql'],
-            'App::Yath2::Log::MariaDB', 1);
+            'App::Yath2::Log::DB::MariaDB', 1);
     }
     if ($flavor eq 'mysql') {
         # MySQLCom forces the Oracle/Community MySQL driver.
@@ -64,15 +64,15 @@ sub _flavor_meta {
         # MariaDB first when a mariadbd binary is on PATH (system
         # /usr/bin/mariadbd is symlinked from mysqld on most distros).
         return ('MySQLCom', 'mysql', 'mysql', [],
-            'App::Yath2::Log::MySQL', 1);
+            'App::Yath2::Log::DB::MySQL', 1);
     }
     if ($flavor eq 'percona') {
         return ('Percona', 'percona', 'mysql', [],
-            'App::Yath2::Log::MySQL', 1);
+            'App::Yath2::Log::DB::MySQL', 1);
     }
     if ($flavor eq 'postgres' || $flavor eq 'postgresql') {
         return ('PostgreSQL', 'postgresql', 'psql', [],
-            'App::Yath2::Log::Postgres', 0);
+            'App::Yath2::Log::DB::Postgres', 0);
     }
 
     croak "yath db: unsupported flavor '$flavor' "

@@ -388,7 +388,7 @@ prior single-version behavior.
 - New `t/AI/unit/Log/Postgres/preprocess_schema.t` covers
   `_preprocess_schema_sql` (zstd / lz4 / strip / case-insensitive /
   pglz pass-through paths). Stubs `_server_compression` via
-  `local *App::Yath2::Log::Postgres::_server_compression` so no real
+  `local *App::Yath2::Log::DB::Postgres::_server_compression` so no real
   postgres needed. The `//=` cache miss for an `undef` value would
   otherwise fall through to the dbh probe.
 - Sqlite test assertions updated to compare timestamps via

@@ -1895,8 +1895,8 @@ sub archive {
     }
 
     if ($format eq 'sqlite') {
-        require App::Yath2::Log::Sqlite;
-        my $dest = App::Yath2::Log::Sqlite->new(file => $out);
+        require App::Yath2::Log::DB::Sqlite;
+        my $dest = App::Yath2::Log::DB::Sqlite->new(file => $out);
         # seal => 1: this is a single-archive sealed file; append the
         # YATHFOOT trailer + zstd-compressed meta.json past the body.
         $dest->insert(
@@ -3381,9 +3381,9 @@ App::Yath2::Log::DB - Abstract base class for DB-backed Log backends.
 =head1 DESCRIPTION
 
 C<App::Yath2::Log::DB> is the abstract base for the four DB-backed
-Log implementations: L<App::Yath2::Log::Sqlite>,
-C<App::Yath2::Log::Postgres>, C<App::Yath2::Log::MariaDB>, and
-C<App::Yath2::Log::MySQL>.
+Log implementations: L<App::Yath2::Log::DB::Sqlite>,
+C<App::Yath2::Log::DB::Postgres>, C<App::Yath2::Log::DB::MariaDB>, and
+C<App::Yath2::Log::DB::MySQL>.
 
 It implements the full reader API (services / runs / jobs / tries
 listing, depth-first event iterator with path-aware identifier

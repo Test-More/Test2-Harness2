@@ -17,7 +17,7 @@
 --
 -- Payload compression: server-side TOAST zstd via column-level
 -- COMPRESSION clause. App stores RAW bytes (compressed=FALSE).
--- App::Yath2::Log::Postgres::_preprocess_schema_sql probes server
+-- App::Yath2::Log::DB::Postgres::_preprocess_schema_sql probes server
 -- support and downgrades to lz4 or strips the clause as needed.
 
 CREATE TYPE artifact_kind_t AS ENUM ('events','attachment','arbitrary');

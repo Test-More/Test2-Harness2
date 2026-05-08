@@ -116,7 +116,7 @@ sub _detect_flavor {
     if (defined $self->{+FILE}) {
         # File path: only sqlite is supported as a single-file flavor.
         # For a brand-new file (does not yet exist) we assume sqlite;
-        # that matches the App::Yath2::Log::Sqlite "open with file =>
+        # that matches the App::Yath2::Log::DB::Sqlite "open with file =>
         # creates the DB" behavior.
         my $f = $self->{+FILE};
         return 'sqlite' unless -e $f;
@@ -133,10 +133,10 @@ sub _detect_flavor {
 
 sub _backend_class_for {
     my ($flavor) = @_;
-    return 'App::Yath2::Log::Sqlite'   if $flavor eq 'sqlite';
-    return 'App::Yath2::Log::Postgres' if $flavor eq 'postgres';
-    return 'App::Yath2::Log::MariaDB'  if $flavor eq 'mariadb';
-    return 'App::Yath2::Log::MySQL'    if $flavor eq 'mysql';
+    return 'App::Yath2::Log::DB::Sqlite'   if $flavor eq 'sqlite';
+    return 'App::Yath2::Log::DB::Postgres' if $flavor eq 'postgres';
+    return 'App::Yath2::Log::DB::MariaDB'  if $flavor eq 'mariadb';
+    return 'App::Yath2::Log::DB::MySQL'    if $flavor eq 'mysql';
     croak "unknown flavor: $flavor";
 }
 
@@ -302,9 +302,9 @@ Returns the shared L<DBI> handle.
 
 =head1 SEE ALSO
 
-L<App::Yath2::Log>, L<App::Yath2::Log::DB>, L<App::Yath2::Log::Sqlite>,
-L<App::Yath2::Log::Postgres>, L<App::Yath2::Log::MariaDB>,
-L<App::Yath2::Log::MySQL>.
+L<App::Yath2::Log>, L<App::Yath2::Log::DB>, L<App::Yath2::Log::DB::Sqlite>,
+L<App::Yath2::Log::DB::Postgres>, L<App::Yath2::Log::DB::MariaDB>,
+L<App::Yath2::Log::DB::MySQL>.
 
 =head1 SOURCE
 
