@@ -7,6 +7,12 @@ our $VERSION = '2.000012';
 use Carp qw/croak/;
 use File::Basename ();
 use File::Spec ();
+use Test2::Harness2::LogLayout qw/
+    run_dir
+    job_dir
+    service_global_dir
+    service_run_dir
+/;
 
 use Role::Tiny;
 
@@ -21,7 +27,7 @@ requires qw{
     dbh flavor _archive_id_or_die
     services runs jobs tries last_try
     has_service has_run has_job has_try
-    artifacts event events end_of_events reset
+    event events end_of_events reset
     extract archive insert
     archives archive_count has_archive scoped
     _artifact_rows_for_archive
@@ -155,6 +161,126 @@ sub _stem_for_artifact_row {
 }
 
 # ----- role-provided archive-shaped methods -----
+
+# artifacts(...) -- factory for App::Yath2::Log::Artifact handles.
+# Pure arg-parsing + base-path construction; the per-row DB lookups
+# happen later when the Artifact is queried. Both backends supply the
+# same has_run / has_job / has_try / has_service / last_try natively
+# so this orchestration runs unchanged on either.
+#
+# Accepted shapes:
+#   ()                         archive-root handle
+#   ({key => val, ...})        hashref -- accepts service / run_id /
+#                              job_id / job_try
+#   ($run_id)                  positional shorthand
+#   ($service_name)            positional shorthand (when has_service)
+#   ($run_id, $service_name)   run-scoped service
+#   ($run_id, $job_id)         job at last_try
+#   ($run_id, $job_id, $try)   specific job try
+sub artifacts {
+    my $self = shift;
+
+    return $self->_artifacts_from_args($_[0]) if @_ == 1 && ref($_[0]) eq 'HASH';
+    return $self->_artifacts_root             unless @_;
+
+    my @args = @_;
+    if (@args == 1) {
+        my $arg = $args[0];
+        if (defined $arg && $arg =~ /^\d+\z/) {
+            return $self->_artifacts_from_args({run_id => $arg});
+        }
+        if (defined $arg && $self->has_service($arg)) {
+            return $self->_artifacts_from_args({service => $arg});
+        }
+        return $self->_artifacts_from_args({run_id => $arg});
+    }
+    if (@args == 2) {
+        my ($run_id, $second) = @args;
+        if (defined $second && $second =~ /^\d+\z/) {
+            return $self->_artifacts_from_args({run_id => $run_id, job_id => $second});
+        }
+        return $self->_artifacts_from_args({run_id => $run_id, service => $second});
+    }
+    if (@args == 3) {
+        my ($run_id, $job_id, $job_try) = @args;
+        return $self->_artifacts_from_args({
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $job_try,
+        });
+    }
+    croak "artifacts() got too many positional arguments";
+}
+
+sub _artifacts_root {
+    my $self = shift;
+    require App::Yath2::Log::Artifact;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self,
+        root => undef,
+        base => undef,
+        live => 0,
+    );
+}
+
+sub _make_artifact {
+    my ($self, $base) = @_;
+    require App::Yath2::Log::Artifact;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self,
+        root => undef,
+        base => $base,
+        live => 0,
+    );
+}
+
+sub _artifacts_from_args {
+    my ($self, $args) = @_;
+    my $service = $args->{service};
+    my $run_id  = $args->{run_id};
+    my $job_id  = $args->{job_id};
+    my $job_try = $args->{job_try};
+
+    croak "service name cannot start with a digit"
+        if defined $service && $service =~ /^\d/;
+
+    if (defined $service) {
+        if (defined $run_id) {
+            croak "no such run: $run_id" unless $self->has_run($run_id);
+            croak "no such service: $service in run $run_id"
+                unless $self->has_service($service, $run_id);
+            return $self->_make_artifact(service_run_dir($run_id, $service));
+        }
+        croak "no such service: $service"
+            unless $self->has_service($service);
+        return $self->_make_artifact(service_global_dir($service));
+    }
+
+    if (defined $job_id) {
+        croak "run_id is required when job_id is given"
+            unless defined $run_id;
+        croak "no such run: $run_id"          unless $self->has_run($run_id);
+        croak "no such job: $run_id/$job_id"  unless $self->has_job($run_id, $job_id);
+
+        if (!defined $job_try) {
+            my $lt = $self->last_try($run_id, $job_id);
+            croak "no tries for job $run_id/$job_id"
+                unless defined $lt;
+            $job_try = $lt;
+        }
+        croak "no such try: $run_id/$job_id/$job_try"
+            unless $self->has_try($run_id, $job_id, $job_try);
+
+        return $self->_make_artifact(job_dir($run_id, $job_id, $job_try));
+    }
+
+    if (defined $run_id) {
+        croak "no such run: $run_id" unless $self->has_run($run_id);
+        return $self->_make_artifact(run_dir($run_id));
+    }
+
+    return $self->_artifacts_root;
+}
 
 # list_files() -- enumerate every artifact in this archive as an
 # on-disk-relative path. Drives extract/archive serialization and the

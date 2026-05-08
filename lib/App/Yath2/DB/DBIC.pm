@@ -24,7 +24,7 @@ use Role::Tiny::With;
 # installs them ahead of `with`.
 BEGIN {
     for my $m (qw{
-        artifacts event events end_of_events EOE reset
+        event events end_of_events EOE reset
         extract archive insert
     }) {
         no strict 'refs';
@@ -456,6 +456,48 @@ sub _job_db_id {
     );
     croak "no job with ord $job_ord in run $run_ord" unless $row;
     return $row->job_id;
+}
+
+# ----- Artifact handle binding -----
+#
+# The role's _make_artifact / _artifacts_root construct
+# App::Yath2::Log::Artifact handles with log => $self. Artifact then
+# calls private _artifact_exists / _artifact_read / _artifact_save /
+# _artifact_iter_records / _artifact_list_dir / _artifact_open_fh /
+# _decompress_jsonl_bytes back into the log. Those are Internal-side
+# (heavy codec coupling); rather than duplicate or proxy them, point
+# the Artifact at the Internal helper, which already shares this
+# instance's dbh + archive/uuid state.
+sub _make_artifact {
+    my ($self, $base) = @_;
+    require App::Yath2::Log::Artifact;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self->_internal_for_artifact,
+        root => undef,
+        base => $base,
+        live => 0,
+    );
+}
+
+sub _artifacts_root {
+    my $self = shift;
+    require App::Yath2::Log::Artifact;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self->_internal_for_artifact,
+        root => undef,
+        base => undef,
+        live => 0,
+    );
+}
+
+sub _internal_for_artifact {
+    my $self = shift;
+    my $i = $self->_internal;
+    $i->{App::Yath2::DB::Internal::UUID()} //= $self->{+UUID}
+        if defined $self->{+UUID};
+    $i->{App::Yath2::DB::Internal::ARCHIVE_ID()} //= $self->{+ARCHIVE_ID}
+        if defined $self->{+ARCHIVE_ID};
+    return $i;
 }
 
 # ----- Group A: native DBIC primitives feeding role helpers -----

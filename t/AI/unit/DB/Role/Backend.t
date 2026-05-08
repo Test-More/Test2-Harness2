@@ -15,7 +15,7 @@ my @required = sort qw{
     dbh flavor _archive_id_or_die
     services runs jobs tries last_try
     has_service has_run has_job has_try
-    artifacts event events end_of_events reset
+    event events end_of_events reset
     extract archive insert
     archives archive_count has_archive scoped
     _artifact_rows_for_archive
@@ -23,7 +23,9 @@ my @required = sort qw{
 # Concrete methods provided by the role:
 my @provided = sort qw{
     bootstrap_schema preprocess_schema_sql schema_file _is_bootstrapped
-    list_files _base_for_artifact_row _stem_for_artifact_row
+    list_files artifacts
+    _base_for_artifact_row _stem_for_artifact_row
+    _artifacts_root _make_artifact _artifacts_from_args
 };
 
 # requires() introspection.
@@ -44,7 +46,7 @@ for my $m (@provided) {
         dbh flavor _archive_id_or_die
         services runs jobs tries last_try
         has_service has_run has_job has_try
-        artifacts event events end_of_events reset
+        event events end_of_events reset
         extract archive insert
         archives archive_count has_archive scoped
         _artifact_rows_for_archive

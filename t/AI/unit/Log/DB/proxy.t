@@ -19,7 +19,7 @@ use App::Yath2::Log::DB;
     for my $m (qw{
         services runs jobs tries last_try
         has_service has_run has_job has_try
-        artifacts event events end_of_events reset
+        event events end_of_events reset
         extract archive insert
     }) {
         no strict 'refs';
