@@ -2,7 +2,7 @@ package Test2::Harness2::Util::JSONL::Reader;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Errno qw/ESPIPE/;

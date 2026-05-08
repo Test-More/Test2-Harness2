@@ -2,7 +2,7 @@ package App::Yath2::Command::speedtag;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Cwd qw/getcwd/;
@@ -10,8 +10,7 @@ use Cwd qw/getcwd/;
 use Test2::Harness2::Util qw/clean_path/;
 use Test2::Harness2::Util::File::JSON;
 
-use App::Yath2::LogArchive();
-use App::Yath2::Streamer::Static();
+use App::Yath2::Log();
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -71,8 +70,8 @@ HARNESS-DURATION-* header on every test file according to the supplied
 thresholds. LOG is either a .yath archive file or a directory that looks like
 \$workdir/logs.
 
-Per-job durations are derived from harness_job_start / harness_job_end stamps
-emitted by App::Yath2::Streamer::Static.
+Per-job durations come from each try's spec.jsonl.zst (started_at) and
+report.jsonl.zst (ended_at) final states.
     EOT
 }
 
@@ -93,16 +92,16 @@ sub run {
 
     my $initial_dir = clean_path(getcwd());
 
-    my $log = shift @$args;
-    unless (defined $log && length $log) {
-        $log = App::Yath2::LogArchive->find_latest($settings);
-        print STDERR "yath speedtag: using latest archive: $log\n"
-            if defined $log && length $log;
+    my $path = shift @$args;
+    unless (defined $path && length $path) {
+        $path = App::Yath2::Log->find_latest($settings);
+        print STDERR "yath speedtag: using latest archive: $path\n"
+            if defined $path && length $path;
     }
     die "You must specify a log archive or directory\n"
-        unless defined $log && length $log;
-    die "Log source '$log' does not exist\n" unless -e $log;
-    $self->{+LOG} = $log;
+        unless defined $path && length $path;
+    die "Log source '$path' does not exist\n" unless -e $path;
+    $self->{+LOG} = $path;
 
     $self->{+MAX_SHORT}  = shift @$args if @$args;
     $self->{+MAX_MEDIUM} = shift @$args if @$args;
@@ -112,51 +111,36 @@ sub run {
     die "max medium duration must be an integer, got '$self->{+MAX_MEDIUM}'\n"
         unless $self->{+MAX_MEDIUM} && $self->{+MAX_MEDIUM} =~ m/^\d+$/;
 
-    require App::Yath2::LogArchive;
-    my @runs = App::Yath2::LogArchive->open(path => $log)->runs;
-    die "No runs found in '$log'\n" unless @runs;
+    my $log = App::Yath2::Log->new(auto => $path);
 
-    my $streamer = App::Yath2::Streamer::Static->new(
-        log    => $log,
-        runs   => [@runs],
-        global => 1,
-    );
+    my @runs = $log->runs;
+    die "No runs found in '$path'\n" unless @runs;
 
     my $durations_file = $settings->speedtag->generate_durations_file;
     my %durations;
 
-    # Per-job state we accumulate as the lifecycle stream replays.
-    # Each completed job carries a started_at + completed_at stamp; we
-    # tag and emit the moment we have both.
-    my %job_state;
     my %tagged;
-    $streamer->stream(
-        callback => sub {
-            my ($event) = @_;
-            my $f = $event->facet_data // {};
+    for my $rid (@runs) {
+        for my $jid ($log->jobs($rid)) {
+            my $try = $log->last_try($rid, $jid);
+            next unless defined $try;
 
-            if (my $start = $f->{harness_job_start}) {
-                my $jid = $start->{job_id} // $event->{job_id} // return;
-                $job_state{$jid}{start} //= $start->{stamp}    // $event->stamp;
-                $job_state{$jid}{file}  //= $start->{abs_file} // $start->{file};
-                return;
-            }
+            my $arts   = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
+            my $spec   = $arts->spec_iter->first // {};
+            my $report = $arts->report_iter->last // {};
 
-            return unless my $end = $f->{harness_job_end};
-
-            my $jid  = $end->{job_id}   // $event->{job_id} // return;
-            my $file = $end->{abs_file} // $end->{file}     // $job_state{$jid}{file};
-            return unless $file;
+            my $file = $spec->{absolute};
+            next unless defined $file;
 
             $file = clean_path($file);
-            return if $tagged{$file}++;
+            next if $tagged{$file}++;
 
-            my $start = $job_state{$jid}{start};
-            my $stop  = $end->{stamp} // $event->stamp;
-            return unless defined $start && defined $stop;
+            my $start = $spec->{started_at};
+            my $stop  = $report->{ended_at};
+            next unless defined $start && defined $stop;
 
             my $time = $stop - $start;
-            return unless $time > 0;
+            next unless $time > 0;
 
             my $dur =
                   $time < $self->{+MAX_SHORT}  ? 'short'
@@ -166,7 +150,7 @@ sub run {
             my $rfh;
             unless (open($rfh, '<', $file)) {
                 warn "Could not open file $file for reading\n";
-                return;
+                next;
             }
 
             my @lines;
@@ -206,21 +190,21 @@ sub run {
                 chomp($old);
                 chomp($new);
                 print "Old Header: $old\nNew Header: $new\n\n";
-                return;
+                next;
             }
 
             my $wfh;
             unless (open($wfh, '>', $file)) {
                 warn "Could not open file $file for writing\n";
-                return;
+                next;
             }
 
             print $wfh @lines;
             close($wfh);
 
             print "Tagged '$dur': $file\n";
-        },
-    );
+        }
+    }
 
     if ($durations_file) {
         my $jfile = Test2::Harness2::Util::File::JSON->new(

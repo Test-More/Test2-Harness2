@@ -2,11 +2,10 @@ package Test2::Harness2::Run::Job;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
-use Test2::Util::UUID qw/gen_uuid/;
 
 use Role::Tiny ();
 
@@ -24,6 +23,8 @@ sub init {
 
     croak "'run_id' is a required attribute"
         unless defined $self->{+RUN_ID};
+    croak "'job_id' is a required attribute"
+        unless defined $self->{+JOB_ID};
 
     my $tf = $self->{+TEST_FILE};
     croak "'test_file' is a required attribute" unless defined $tf;
@@ -31,8 +32,7 @@ sub init {
     croak "'test_file' must consume Test2::Harness2::Role::TestFile, got " . (blessed($tf) ? "a " . ref($tf) : ref($tf) || "a non-ref")
         unless blessed($tf) && Role::Tiny::does_role($tf, 'Test2::Harness2::Role::TestFile');
 
-    $self->{+JOB_ID}  //= gen_uuid();
-    $self->{+JOB_TRY} //= 0;
+    $self->{+JOB_TRY} //= 1;
 }
 
 sub test_file_abs { $_[0]->{+TEST_FILE}->absolute }
@@ -86,11 +86,12 @@ the caller must hand in an already-built role consumer.
 
 =item run_id (required)
 
-UUID of the parent L<Test2::Harness2::Run>.
+Sequential ordinal id of the parent L<Test2::Harness2::Run>.
 
-=item job_id
+=item job_id (required)
 
-UUID for this job (auto-generated if not supplied).
+Sequential ordinal id for this job within its run, allocated by the run
+service.
 
 =item job_try
 

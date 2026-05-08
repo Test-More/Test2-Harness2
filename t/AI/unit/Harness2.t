@@ -13,9 +13,9 @@ use Test2::Harness2::Test::ResourceService qw//;
 
 # The jump_to subtest drives the interpose path with a stub ipcm_info; the
 # collector would otherwise try to talk to a real IPC bus on startup and
-# leak "collector_artifacts send failed" warnings onto STDERR. Stubbing the handle
-# class keeps the unit test clean. Inherited through fork into the service
-# and collector processes.
+# leak send-failure warnings onto STDERR. Stubbing the handle class keeps
+# the unit test clean. Inherited through fork into the service and
+# collector processes.
 BEGIN {
     require IPC::Manager;
     no warnings 'once', 'redefine';
@@ -218,19 +218,23 @@ subtest 'queue_test_run enqueues and returns run_id' => sub {
 
     my $res = $h->request_handler_queue_test_run({files => _tfs('t/a.t', 't/b.t')});
     ok($res->{ok}, 'accepted');
-    like($res->{run_id}, qr/^[0-9A-F-]{36}$/i, 'returns a run_id');
+    is($res->{run_id}, 1, 'first run gets ord 1');
 
     my $status = $h->request_handler_status;
     is(scalar @{$status->{queue}},             1,              'one run queued');
     is($status->{queue}[0]{run_id},            $res->{run_id}, 'matches returned id');
     is(scalar @{$status->{queue}[0]{pending}}, 2,              'two pending jobs');
+
+    my $res2 = $h->request_handler_queue_test_run({files => _tfs('t/c.t')});
+    is($res2->{run_id}, 2, 'second run gets ord 2');
 };
 
-subtest 'queue_test_run uses provided run_id when given' => sub {
+subtest 'queue_test_run rejects caller-supplied run_id (harness owns ord allocation)' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
     my $res = $h->request_handler_queue_test_run({files => _tfs('t/x.t'), run_id => 'my-id'});
-    is($res->{run_id}, 'my-id');
+    ok(!$res->{ok}, 'rejected');
+    like($res->{error}, qr/run_id/);
 };
 
 subtest 'queue_test_run does not write the runs/<id>.json snapshot (run service does)' => sub {
@@ -259,9 +263,9 @@ subtest 'queue_test_run emits run_queued only (job_queued moved to run service)'
 
     is(scalar @emitted,   1,            'exactly one event emitted');
     is($emitted[0]{kind}, 'run_queued', 'event is run_queued');
-    ok($emitted[0]{run_data},         'run_queued has run_data');
-    ok($emitted[0]{run_data}{run_id}, 'run_data carries run_id');
-    ok($emitted[0]{run_data}{jobs},   'run_data inlines jobs');
+    ok($emitted[0]{run_data},                'run_queued has run_data');
+    ok(defined $emitted[0]{run_data}{run_id}, 'run_data carries run_id');
+    ok($emitted[0]{run_data}{jobs},           'run_data inlines jobs');
 };
 
 subtest 'queue_test_run rejects when state is not running' => sub {
@@ -360,9 +364,9 @@ subtest 'run_on_all delegates job launch to the run service via IPC' => sub {
         $payload->{env}{T2_HARNESS_MY_JOB_CONCURRENCY}, 1,
         'JobCount concurrency env var propagated via the payload',
     );
-    like($payload->{run_id}, qr/^[0-9A-F-]{36}$/i, 'run_id in payload');
-    like($payload->{job_id}, qr/^[0-9A-F-]{36}$/i, 'job_id in payload');
-    is($payload->{job_try}, 0, 'job_try 0 in payload');
+    is($payload->{run_id}, 1, 'run_id in payload');
+    is($payload->{job_id}, 1, 'job_id in payload');
+    is($payload->{job_try}, 1, 'job_try 1 in payload');
 
     my @running = values %{$h->{running_jobs}};
     is(scalar @running,    1,     'one running job tracked');
@@ -496,7 +500,7 @@ subtest 'run_state_update to the last-done state emits run_ended' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
-    my $run = Test2::Harness2::Run->from_files(files => _tfs('/abs/done.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/done.t'));
     push @{$h->{queue}} => $run;
     my ($job) = @{$run->jobs};
     my $rstate = $h->{run_states}{$run->run_id} = Test2::Harness2::Run::State->new(
@@ -547,7 +551,7 @@ subtest 'perform_hard_stop TERMs tracked pids and reaps them' => sub {
 
     my $fake_handle = bless {pid => $child_pid}, 'Test2::Harness2::Collector::Handle';
 
-    my $run    = Test2::Harness2::Run->from_files(files => _tfs('dummy.t'));
+    my $run    = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('dummy.t'));
     my ($job)  = @{$run->jobs};
     my $job_id = $job->job_id;
     my $rstate = $h->{run_states}{$run->run_id} = Test2::Harness2::Run::State->new(
@@ -603,7 +607,7 @@ subtest 'run_on_general_message - job_complete_notify is a no-op' => sub {
         kind    => 'job_complete_notify',
         run_id  => 'r1',
         job_id  => 'j1',
-        job_try => 0,
+        job_try => 1,
     } };
 
     my @warnings;
@@ -612,34 +616,6 @@ subtest 'run_on_general_message - job_complete_notify is a no-op' => sub {
     my $ok = eval { $h->run_on_general_message($fake_msg); 1 };
     ok($ok, 'job_complete_notify message does not die');
     is(\@warnings, [], 'no warnings for known kind');
-};
-
-subtest 'run_on_general_message - collector_artifacts is now silent on harness' => sub {
-    # Handled by the run service now; a stray copy reaching the harness
-    # must be dropped without emitting anything and without warning.
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    my $fake_msg = bless {}, 'FakeMsgLoggers';
-    no warnings 'once';
-    *FakeMsgLoggers::content = sub { {
-        kind    => 'collector_artifacts',
-        run_id  => 'R',
-        job_id  => 'J',
-        job_try => 0,
-        loggers => {'Test2::Harness2::Collector::Logger::JSONL' => [{jsonl_file => '/x'}]},
-    } };
-
-    my @emitted;
-    my @warnings;
-    no warnings 'redefine';
-    local *Test2::Harness2::emit_service_event = sub { push @emitted => {@_[1 .. $#_]} };
-    local $SIG{__WARN__} = sub { push @warnings => @_ };
-
-    $h->run_on_general_message($fake_msg);
-
-    is(scalar @emitted,  0, 'no service event emitted on the harness');
-    is(scalar @warnings, 0, 'no warning about the message kind');
 };
 
 subtest 'run_on_general_message - resource state messages flip the named resource' => sub {
@@ -848,7 +824,7 @@ subtest 'restart: healthy runtime resets the attempts counter' => sub {
 subtest 'harness spawns a run service lazily for each run it considers' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
-    my $run = Test2::Harness2::Run->from_files(files => _tfs('x.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('x.t'));
     my $h   = Test2::Harness2->new(workdir => $dir);
     push @{$h->{queue}} => $run;
     $h->_scheduler_queue_run($run);
@@ -888,7 +864,7 @@ subtest 'harness spawns a run service lazily for each run it considers' => sub {
 
 subtest 'harness spawns a run service even when the run has no resources' => sub {
     my $dir = tempdir(CLEANUP => 1);
-    my $run = Test2::Harness2::Run->from_files(files => _tfs('/abs/y.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/y.t'));
     my $h   = Test2::Harness2->new(workdir => $dir);
     $h->{ipcm_info} = {fake => 1};
     push @{$h->{queue}} => $run;
@@ -916,9 +892,9 @@ subtest 'run-service pid is recognized by run_on_pid and dropped cleanly' => sub
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
-    $h->{run_services}{r1} = {
+    $h->{run_services}{1} = {
         pid        => 91_050,
-        run        => Test2::Harness2::Run->new(run_id => 'r1'),
+        run        => Test2::Harness2::Run->new(run_id => 1),
         started_at => time,
     };
 
@@ -927,7 +903,7 @@ subtest 'run-service pid is recognized by run_on_pid and dropped cleanly' => sub
     # RunService is responsible for cascading shutdown to its children).
     $h->run_on_pid(91_050, 0);
 
-    ok(!exists $h->{run_services}{r1}, 'run-service pid cleared from tracking');
+    ok(!exists $h->{run_services}{1}, 'run-service pid cleared from tracking');
 };
 
 subtest 'per-run resources participate in _evaluate_resources_for' => sub {
@@ -940,6 +916,7 @@ subtest 'per-run resources participate in _evaluate_resources_for' => sub {
     my $h = Test2::Harness2->new(workdir => $dir, resources => [$global_limiter]);
 
     my $run = Test2::Harness2::Run->from_files(
+        run_id    => 0,
         files     => _tfs('x.t'),
         resources => [$run_limiter],
     );
@@ -958,7 +935,7 @@ subtest 'per-run resources participate in _evaluate_resources_for' => sub {
 
 subtest 'run_on_cleanup signals run services for uncompleted runs' => sub {
     my $dir = tempdir(CLEANUP => 1);
-    my $run = Test2::Harness2::Run->from_files(files => _tfs('never-runs.t'));
+    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('never-runs.t'));
 
     my $h = Test2::Harness2->new(workdir => $dir);
     push @{$h->{queue}} => $run;
@@ -1219,7 +1196,7 @@ subtest 'start - jump_to unwinds the interpose child via Long::Jump' => sub {
 
     waitpid($outer, 0);
     is($? >> 8, 0, 'interpose child reached the setjump with a CODE-ref payload');
-    ok(-e "$dir/logs/services/harness/events.jsonl", 'service log file was created by the collector');
+    ok(-e "$dir/logs/services/harness/events.jsonl.zst", 'service events file was created by the collector');
 };
 
 subtest 'run_on_start sets up pgid (smoke test)' => sub {
@@ -1305,7 +1282,7 @@ subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
         resources => [Test2::Harness2::Resource::JobCount->new(slots => 1)],
     );
 
-    my $run    = Test2::Harness2::Run->from_files(files => _tfs('/abs/orphan.t'));
+    my $run    = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/orphan.t'));
     my $job_id = $run->jobs->[0]->job_id;
     push @{$h->{queue}} => $run;
     my $rstate = $h->{run_states}{$run->run_id} = Test2::Harness2::Run::State->new(

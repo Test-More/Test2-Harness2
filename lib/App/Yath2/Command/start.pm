@@ -2,7 +2,7 @@ package App::Yath2::Command::start;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 # XXX TODO: App::Yath2::IPC removed (PR #390) — start/daemon functionality needs new IPC
 # XXX TODO: Test2::Harness2::Instance removed (PR #390) — instance management needs reimplementing
@@ -237,12 +237,12 @@ sub collector {
     open(my $log, '>', $out_file) or die "Could not open '$out_file' for writing: $!";
     $log->autoflush(1);
 
-    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(job_id => 0, job_try => 0, run_id => 0, type => 'runner');
+    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(job_id => 1, job_try => 1, run_id => 1, type => 'runner');
     return $self->{+COLLECTOR} = Test2::Harness2::Collector->new(
         parser       => $parser,
-        job_id       => 0,
-        job_try      => 0,
-        run_id       => 0,
+        job_id       => 1,
+        job_try      => 1,
+        run_id       => 1,
         always_flush => 1,
         output       => sub {
             for my $e (@_) {

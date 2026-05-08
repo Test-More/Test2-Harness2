@@ -111,7 +111,10 @@ subtest 'tinysleep - returns early when a signal arrives' => sub {
 };
 
 subtest 'load_module - loads a module once and is idempotent' => sub {
-    my $name = 'Test2::Harness2::Collector::Logger::JSONL';
+    # Pick a stable module that exists for the whole life of the
+    # distribution; the previous victim (Collector::Logger::JSONL)
+    # was deleted in the new_log_refactor.
+    my $name = 'Test2::Harness2::Collector::Parser::IOParser';
 
     my $ret = load_module($name);
     is($ret, $name, 'returns the module name');

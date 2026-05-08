@@ -66,17 +66,23 @@ subtest 'stderr non-comment falls back to from_stream' => sub {
     is($fd->{info}[0]{debug},      1,        "stderr marked debug");
 };
 
-subtest 'normalize_event still runs on TAP and non-TAP events' => sub {
+subtest 'parser does not stamp identifier mirrors on TAP or non-TAP events' => sub {
     my $p = parser();
 
+    # After the new_log_refactor, the parser no longer populates
+    # event_id / stamp / run_id / job_id / job_try on the harness
+    # facet. Those fields are injected by the Log iterator on read in
+    # a later refactor step.
     my $tap_ev = $p->parse_io(stream => 'stdout', line => 'ok 1');
-    ok(defined $tap_ev->facet_data->{harness}{event_id}, "TAP event has event_id");
-    ok(defined $tap_ev->facet_data->{harness}{stamp},    "TAP event has stamp");
-    ok(!exists $tap_ev->facet_data->{harness}{run_id}, "no run_id stamp on TAP event");
+    my $tap_h  = $tap_ev->facet_data->{harness};
+    ok(!defined $tap_h || !exists $tap_h->{event_id}, "no event_id on TAP event harness facet");
+    ok(!defined $tap_h || !exists $tap_h->{stamp},    "no stamp on TAP event harness facet");
+    ok(!defined $tap_h || !exists $tap_h->{run_id},   "no run_id on TAP event harness facet");
 
     my $raw_ev = $p->parse_io(stream => 'stdout', line => 'not tap');
-    ok(defined $raw_ev->facet_data->{harness}{event_id}, "raw event has event_id");
-    ok(!exists $raw_ev->facet_data->{harness}{run_id}, "no run_id stamp on raw event");
+    my $raw_h  = $raw_ev->facet_data->{harness};
+    ok(!defined $raw_h || !exists $raw_h->{event_id}, "no event_id on raw event harness facet");
+    ok(!defined $raw_h || !exists $raw_h->{run_id},   "no run_id on raw event harness facet");
 };
 
 subtest 'returns undef for undef line' => sub {

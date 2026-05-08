@@ -2,7 +2,7 @@ package App::Yath2::Command::run;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use List::Util qw/first/;
 use Time::HiRes qw/sleep time/;
@@ -128,7 +128,7 @@ sub run {
     die "API Failure: " . encode_pretty_json($res->{api})
         unless $res->{api}->{success};
 
-    # XXX TODO replace this with App::Yath::LogArchive at some point?
+    # XXX TODO replace this with App::Yath::Log at some point?
 
     my $run_complete;
     while (!$run_complete) {
@@ -137,7 +137,7 @@ sub run {
 
         $run_complete //= 1 unless $client->active;
 
-        # XXX TODO replace the poller loop with App::Yath::LogArchive usage somewhere?
+        # XXX TODO replace the poller loop with App::Yath::Log usage somewhere?
 
         while (my $msg = $client->get_message(blocking => !$run_complete, timeout => 0.2)) {
             if ($msg->terminate || $msg->run_complete) {
@@ -213,8 +213,8 @@ sub stop_plugins_and_renderers {
 
     $self->handle_event(Test2::Harness2::Event->new(
         run_id     => $settings->run->run_id,
-        job_id     => 0,
-        job_try    => 0,
+        job_id     => 1,
+        job_try    => 1,
         event_id   => gen_uuid(),
         stamp      => time,
         facet_data => {harness_final => $auditor->final_data},

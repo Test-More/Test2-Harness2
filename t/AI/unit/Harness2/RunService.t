@@ -57,11 +57,10 @@ subtest 'constructs with required attributes' => sub {
     is($svc->workdir,  $dir,      'workdir stored');
     ok(-d "$dir/logs/runs/r-1/services", 'services dir created at construction');
 
-    # No default loggers: caller (harness, typically) decides what
-    # artifacts to write for a run. Empty loggers means no run.jsonl
-    # / run.json at all unless explicitly requested.
-    is($svc->loggers,      [], 'loggers default is empty arrayref');
-    is($svc->test_loggers, [], 'test_loggers default is empty arrayref');
+    # Logger / observer plumbing was removed in the new_log_refactor
+    # (M2 step 4+5); the run service no longer carries logger slots.
+    ok(!$svc->can('loggers'),      'no loggers slot post-refactor');
+    ok(!$svc->can('test_loggers'), 'no test_loggers slot post-refactor');
 };
 
 subtest 'requires workdir' => sub {
@@ -261,10 +260,11 @@ subtest 'aggregation: test_job_started marks running and broadcasts' => sub {
     is($run_state[0]{run_data}{running}, [$jid], 'snapshot carries running list');
 
     my @muts = grep { $_->{kind} eq 'run_mutation' } @emits;
-    is(scalar @muts, 1, 'exactly one run_mutation event emitted');
+    is(scalar @muts, 0, 'no run_mutation event emitted (channel retired post-refactor; full snapshot now IPC-only)');
 
     my @starts = grep { $_->{kind} eq 'job_started' } @emits;
     is(scalar @starts, 1, 'job_started lifecycle event emitted');
+    ok(defined $starts[0]{stamp}, 'job_started event carries explicit stamp');
 };
 
 subtest 'aggregation: test_job_completed is idempotent (observer + watchdog race)' => sub {

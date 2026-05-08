@@ -2,7 +2,7 @@ package App::Yath2::TestFile;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use File::Spec ();
@@ -13,7 +13,7 @@ use Test2::Harness2::Util qw/open_file clean_path/;
 use Test2::Util::UUID qw/gen_uuid/;
 
 use Object::HashBase qw{
-    <file <absolute <relative
+    <absolute <relative
     +_scanned +_shbang
     +features +switches
     +category +duration +stage
@@ -38,14 +38,19 @@ with 'Test2::Harness2::Role::TestFile';
 sub init {
     my $self = shift;
 
-    my $file = $self->{+FILE};
-    croak "'file' is a required attribute" unless defined $file && length $file;
+    # Accept a `file` argument for convenience; derive absolute + relative
+    # from it and then discard the value (the slot no longer exists).
+    my $file = delete $self->{file};
+
+    # If neither absolute nor file was given there is nothing to work with.
+    $file //= $self->{+ABSOLUTE} // $self->{+RELATIVE};
+    croak "'file' (or 'absolute') is a required attribute"
+        unless defined $file && length $file;
 
     # Canonicalize the path before storing so a later chdir does not
     # redirect the launch. clean_path returns an absolute, normalized
     # form. Mirrors reference/legacy/.../TestFile.pm:67-71.
     $file = clean_path($file, 0);
-    $self->{+FILE} = $file;
 
     croak "Invalid test file '$file'" unless -f $file;
 
@@ -324,7 +329,7 @@ sub _scan {
                         $retry_set               = 1;
                     }
                     else {
-                        warn "Unknown 'HARNESS-RETRY' argument '$arg' at $self->{+FILE} line $ln.\n";
+                        warn "Unknown 'HARNESS-RETRY' argument '$arg' at $self->{+ABSOLUTE} line $ln.\n";
                     }
                 }
             }
@@ -360,7 +365,7 @@ sub _scan {
                 if $type eq 'post' && defined $num && $num eq 'exit';
 
             if ($type !~ m/^(?:event|postexit)$/) {
-                warn "'" . uc($type) . "' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at $self->{+FILE} line $ln.\n";
+                warn "'" . uc($type) . "' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at $self->{+ABSOLUTE} line $ln.\n";
                 next;
             }
 
@@ -392,7 +397,7 @@ sub _scan {
             push @{$self->{+META}{$key}} => $val;
         }
         else {
-            warn "Unknown harness directive '$dir' at $self->{+FILE} line $ln.\n";
+            warn "Unknown harness directive '$dir' at $self->{+ABSOLUTE} line $ln.\n";
         }
     }
 
@@ -445,7 +450,7 @@ sub queue_item {
     my $self = shift;
     my ($job_name, $run_id, %inject) = @_;
 
-    die "The '$self->{+FILE}' test specifies that it should not be run by Test2::Harness.\n"
+    die "The '$self->{+ABSOLUTE}' test specifies that it should not be run by Test2::Harness.\n"
         unless $self->check_feature(run => 1);
 
     my $category  = $self->check_category;
@@ -490,7 +495,7 @@ sub queue_item {
         category  => $category,
         conflicts => [$self->conflicts_list],
         duration  => $duration,
-        file      => $self->file,
+        file      => $self->absolute,
         rel_file  => $self->relative,
         job_id    => gen_uuid(),
         job_name  => $job_name,

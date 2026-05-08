@@ -71,15 +71,23 @@ subtest 'passing assertion' => sub {
 
     is(@out, 1, "one event returned");
     my $ev = $out[0];
-    ok($ev->{event_id}, "event has event_id");
-    ok(!exists $ev->{run_id},                      "run_id not stamped on event");
-    ok(!exists $ev->{job_id},                      "job_id not stamped on event");
-    ok(!exists $ev->{job_try},                     "job_try not stamped on event");
-    ok(!exists $ev->{facet_data}{harness}{run_id}, "run_id not stamped on harness facet");
-    ok(!exists $ev->{facet_data}{harness}{job_id}, "job_id not stamped on harness facet");
-    ok(!exists $ev->{facet_data}{harness}{job_try}, "job_try not stamped on harness facet");
-    is($ev->{facet_data}{harness}{event_id}, $ev->{event_id}, "event_id mirrored into harness facet");
-    ok(!$ev->{facet_data}{about}, "about facet not autovivified when absent from input");
+
+    # After the new_log_refactor the auditor no longer stamps event_id /
+    # stamp / about.uuid / harness.event_id / harness.stamp / run_id /
+    # job_id / job_try anywhere -- those are either stripped entirely
+    # (event UUIDs) or injected by the Log iterator on read in a later
+    # refactor step.
+    ok(!exists $ev->{event_id},                       "event_id not stamped on event");
+    ok(!exists $ev->{stamp},                          "stamp not stamped on event");
+    ok(!exists $ev->{run_id},                         "run_id not stamped on event");
+    ok(!exists $ev->{job_id},                         "job_id not stamped on event");
+    ok(!exists $ev->{job_try},                        "job_try not stamped on event");
+    ok(!exists $ev->{facet_data}{harness}{event_id},  "event_id not stamped on harness facet");
+    ok(!exists $ev->{facet_data}{harness}{stamp},     "stamp not stamped on harness facet");
+    ok(!exists $ev->{facet_data}{harness}{run_id},    "run_id not stamped on harness facet");
+    ok(!exists $ev->{facet_data}{harness}{job_id},    "job_id not stamped on harness facet");
+    ok(!exists $ev->{facet_data}{harness}{job_try},   "job_try not stamped on harness facet");
+    ok(!$ev->{facet_data}{about},                     "about facet not autovivified when absent from input");
 };
 
 subtest 'failing assertion' => sub {
@@ -219,57 +227,17 @@ subtest 'non-zero exit produces fail facets' => sub {
     );
 };
 
-subtest 'event_id is preserved when already set on event' => sub {
-    my $a   = mk();
-    my $eid = gen_uuid();
-    my @out = $a->audit_event({event_id => $eid, facet_data => {assert => {pass => 1}}});
-    is($out[0]->{event_id},                      $eid, "existing event_id preserved");
-    is($out[0]->{facet_data}{harness}{event_id}, $eid, "harness.event_id mirrors");
-    ok(!$out[0]->{facet_data}{about}, "about facet not autovivified");
-};
-
-subtest 'event_id mirrors into about.uuid when about facet is already present' => sub {
-    my $a   = mk();
-    my $eid = gen_uuid();
-    my @out = $a->audit_event({
-        event_id   => $eid,
-        facet_data => {
-            assert => {pass    => 1},
-            about  => {details => 'something'},
-        },
-    });
-    is($out[0]->{facet_data}{about}{uuid}, $eid,
-        'about.uuid stamped when about facet was present');
-};
-
-subtest 'event_id sourced from facet_data.harness.event_id' => sub {
-    my $a   = mk();
-    my $eid = gen_uuid();
-    my @out = $a->audit_event({
-        facet_data => {
-            assert  => {pass     => 1},
-            harness => {event_id => $eid},
-        }
-    });
-    is($out[0]->{event_id}, $eid, "event_id taken from harness facet");
-};
-
-subtest 'event_id sourced from facet_data.about.uuid' => sub {
-    my $a   = mk();
-    my $eid = gen_uuid();
-    my @out = $a->audit_event({
-        facet_data => {
-            assert => {pass => 1},
-            about  => {uuid => $eid},
-        }
-    });
-    is($out[0]->{event_id}, $eid, "event_id taken from about.uuid");
-};
-
-subtest 'event_id generated when missing everywhere' => sub {
+subtest 'auditor does not generate or mirror event_id / about.uuid' => sub {
     my $a   = mk();
     my @out = $a->audit_event({facet_data => {assert => {pass => 1}}});
-    like($out[0]->{event_id}, qr/^[0-9A-F-]{36}$/i, "uuid-shaped event_id generated");
+
+    # Event UUIDs are no longer generated anywhere on the live-write
+    # path. Existing fields (if a caller passed them) are not removed,
+    # but the auditor never adds them and never mirrors them across
+    # facets. about.uuid is only set when the caller put one there.
+    ok(!exists $out[0]->{event_id},                      'no event_id generated');
+    ok(!exists $out[0]->{facet_data}{harness}{event_id}, 'no harness.event_id mirror');
+    ok(!exists $out[0]->{facet_data}{about},             'no about facet autovivified');
 };
 
 subtest 'STDERR from_tap events bypass subtest processing' => sub {
@@ -376,11 +344,9 @@ subtest 'subtest_start emits a synthetic subtest_started announcement' => sub {
     my $a = mk();
 
     my @out = $a->audit_event({
-        event_id   => 'ST-1',
-        stamp      => 1234.5,
         facet_data => {
-            harness => {subtest_start => 1, stamp => 1234.5, nested => 0},
-            trace   => {frame => ['main', 't/foo.t', 42]},
+            harness => {subtest_start => 1, nested => 0},
+            trace   => {frame => ['main', 't/foo.t', 42], stamp => 1234.5},
         },
     });
 
@@ -390,10 +356,13 @@ subtest 'subtest_start emits a synthetic subtest_started announcement' => sub {
     ok($ann->{facet_data}{harness}{subtest_started}, 'new subtest_started flag set');
     ok(!$ann->{facet_data}{harness}{subtest_start},  'raw subtest_start not re-emitted');
     is($ann->{facet_data}{harness}{nested}, 0, 'nested preserved');
-    is($ann->{facet_data}{harness}{stamp},  1234.5, 'harness stamp preserved');
-    is($ann->{stamp}, 1234.5, 'top-level stamp preserved');
     is($ann->{facet_data}{trace}{frame}, ['main', 't/foo.t', 42], 'trace preserved');
-    isnt($ann->{event_id}, 'ST-1', 'announcement has its own event_id');
+    is($ann->{facet_data}{trace}{stamp}, 1234.5, 'trace.stamp preserved');
+
+    # No event_id mirrors anywhere -- the auditor no longer mints a
+    # uuid for synthetic announcements.
+    ok(!exists $ann->{event_id},                     'no top-level event_id on announcement');
+    ok(!exists $ann->{facet_data}{harness}{event_id}, 'no harness.event_id on announcement');
 
     # The original event is still stashed internally for subsequent
     # subtest-close processing.
@@ -409,7 +378,6 @@ subtest 'subtest_start does not announce when not at this auditor level' => sub 
     # but the announcement must not fire because this is not the
     # auditor's own level.
     my @out = $a->audit_event({
-        event_id   => 'ST-NESTED',
         facet_data => {
             harness  => {subtest_start => 1},
             from_tap => {source => 'STDOUT', details => 'ok 1 - sub {'},
@@ -494,22 +462,10 @@ subtest 'nested subtest names do not leak into the top-level auditor lists' => s
     is($a->failing_subtests, [],        'no failing subtests recorded');
 };
 
-subtest 'event_id mismatch across facets is rejected' => sub {
-    my $a  = mk();
-    my $id = gen_uuid();
-    my $ok = eval {
-        $a->audit_event({
-            event_id   => $id,
-            facet_data => {
-                harness => {event_id => $id},
-                about   => {uuid     => gen_uuid()},
-            },
-        });
-        1;
-    };
-    my $err = $@;
-    ok(!$ok, 'croaks on mismatch');
-    like($err, qr/event_id mismatch/, 'error mentions mismatch');
-};
+# NOTE: the legacy 'event_id mismatch across facets is rejected' check is
+# gone. After the new_log_refactor the auditor does not consult event_id
+# anywhere, so there is no mismatch for it to reject -- if a caller
+# stamps inconsistent event_id mirrors across facets, the auditor lets
+# the event through unmodified.
 
 done_testing;

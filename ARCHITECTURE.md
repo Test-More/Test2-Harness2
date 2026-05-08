@@ -1435,7 +1435,7 @@ namespaces**, each with its own responsibility:
 |----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `Test2::Harness2`          | The primary harness runtime. Spins up services and resources, executes runs, captures output and results, cleans up processes. Described above.                                                                                                                                                                                                |
 | `Test2::Formatter::Stream2` | The in-test Test2 formatter that serialises events over atomic pipes to the collector. Lives outside the `Test2::Harness2` namespace because it loads inside test processes. See §21.                                                                                                                                                          |
-| `App::Yath2`               | The new application layer. Built on `App::Yath::Script` and `Getopt::Yath`. Turns user input (`yath ...` commands, config files) into requests to start or utilise `Test2::Harness2` services. Handles test discovery, deciding which loggers to attach, assembling runs, starting and stopping harness services, the artifact-reading layer that feeds renderers (see §13), and log-archive create / extract utilities. |
+| `App::Yath2`               | The new application layer. Built on `App::Yath::Script` and `Getopt::Yath`. Turns user input (`yath ...` commands, config files) into requests to start or utilise `Test2::Harness2` services. Handles test discovery, deciding which loggers to attach, assembling runs, starting and stopping harness services, the artifact-reading layer that feeds renderers (see §13), and log create / extract utilities. |
 | `App::Yath2::DB`             | Optional. Defines how to store and reference logs of runs in a database.                                                                                                                                                                                                                                                                        |
 | `App::Yath2::UI`             | Optional. A web interface over an `App::Yath2::DB` database.                                                                                                                                                                                                                                                                                      |
 
@@ -2085,7 +2085,7 @@ run-scoped service's own lifecycle records. Each service gets its
 own `services/<name>/` directory; per-logger leaves land inside
 (`events.jsonl` from `Logger::JSONL`, `state.json` from
 `Logger::JSON`). The directory itself is the run-scoped service
-existence signal -- `LogArchive::services($run_id)` walks the
+existence signal -- `Log::services($run_id)` walks the
 immediate children of `runs/<run>/services/`. Produced when a
 `Logger::JSONL` / `Logger::JSON` is attached to the service's
 collector (not by default).
@@ -2100,7 +2100,7 @@ Each service has its own `services/<name>/` directory; per-logger
 leaves are `events.jsonl` (from `Logger::JSONL`) and `state.json`
 (from `Logger::JSON`). The directory itself is the
 harness-scoped service existence signal --
-`LogArchive::services()` walks the immediate children of
+`Log::services()` walks the immediate children of
 `services/`. Produced only when `Logger::JSONL` / `Logger::JSON`
 are attached to the service collector.
 
@@ -2352,7 +2352,7 @@ archive format yath produces or reads. Tar manipulation is pure Perl
 prereq). Normal write / read flow never spawns an external process.
 
 The `tar.zidx` reader and writer live in a single consolidated
-module at `lib/App/Yath2/LogArchive/TarZIdx.pm`. Per-entry index
+module at `lib/App/Yath2/Log/TarZIdx.pm`. Per-entry index
 entries gain an `inner` field (`"zstd"` for plaintext sources
 wrapped in an inner zstd frame, `"none"` for already-`.zst` source
 files stored verbatim).
@@ -2396,13 +2396,13 @@ for debugging or training-input pipelines.
 See `AI_DOCS/2026-04-29-full-audit-refactor.md` for the full
 record. Headline deviations from the rest of this document:
 
-### `App::Yath2::LogArchive::Format` is gone
+### `App::Yath2::Log::Format` is gone
 
 Format detection collapses to a `-d` test on the path. The
 catalogue indirection only made sense when there were multiple
 archive formats; tar.zidx is the only one yath produces. The
 `TAR_ZIDX_MAGIC` / `TAR_ZIDX_FOOTER_LEN` constants live in
-`LogArchive::TarZIdx`. `viable()` and `default_writer_format()` no
+`Log::TarZIdx`. `viable()` and `default_writer_format()` no
 longer exist.
 
 ### Loggers identify themselves by class name, not `file_ext`
@@ -2410,14 +2410,14 @@ longer exist.
 The `file_ext` requirement on `Test2::Harness2::Role::Collector::Logger`
 is dropped. An artifact with extension `.xyz` is produced by
 `Test2::Harness2::Collector::Logger::XYZ` (also tried as `Xyz` and
-`xyz`). `LogArchive` resolves the class on demand per ext and
+`xyz`). `Log` resolves the class on demand per ext and
 caches the result.
 
 ### `artifacts.json[.zst]` manifest is dropped
 
 `Test2::Harness2::_write_artifacts_manifest` and the per-run
 counterpart in `RunService` are removed. The on-disk manifest is
-no longer a thing. `LogArchive::artifacts` and `iter_artifacts`
+no longer a thing. `Log::artifacts` and `iter_artifacts`
 walk `list_files()` and dispatch by extension. `manifest_drift()`
 is gone.
 
@@ -2431,7 +2431,7 @@ The directory itself is the existence signal -- empty
 `runs/<id>/`, `runs/<id>/tests/<job>/`, and
 `services/<name>/` directories all count. The previous
 `spec.json[.zst]` marker check and the `include_empty` option are
-gone. `LogArchive` gains a `list_dirs()` backend method; the
+gone. `Log` gains a `list_dirs()` backend method; the
 Directory backend walks the filesystem, the TarZIdx backend reads
 explicit directory entries from the index and additionally derives
 parent-of-file paths so older archives still report their
@@ -2456,19 +2456,19 @@ per-logger leaf is the producer's class basename role
 `Test2::Harness2::Collector::Logger::JSON` handles the event by
 writing `runs/<run_id>/spec.json.zst`, gated on `is_run`.
 
-### `App::Yath2::LogArchive::Role::ChangeWatch` is gone
+### `App::Yath2::Log::Role::ChangeWatch` is gone
 
 Replaced by a `static` flag on `FileMonitor` and on the
-`LogArchive` base class. `Artifact` no longer carries change-watch
+`Log` base class. `Artifact` no longer carries change-watch
 methods; instead it exposes `->watch` returning a fresh
-`FileMonitor` with the artifact as the delegate. `LogArchive`
+`FileMonitor` with the artifact as the delegate. `Log`
 gains `watch_artifact($logical)` as a one-liner shortcut.
 
 ### `Test2::Harness2::Util::CwdIndex` is gone
 
 Replaced by `./last_log.yath` (an unconditional symlink the test
 command writes after every archive) plus
-`App::Yath2::LogArchive->find_latest($settings)` (canonical no-arg
+`App::Yath2::Log->find_latest($settings)` (canonical no-arg
 discovery: symlink first, else glob `${TMPDIR}/${project}-${user}-*.yath`
 sorted by stamp + hi-res mtime tiebreak; refuses to glob when
 project resolves to `__UNKNOWN__`).
@@ -2492,11 +2492,11 @@ to a project-prefixed form:
 `find_ipc_files` filters by `command =>`. The `nonce`/`persistent`
 type tag is gone from the JSON payload too.
 
-### `Options::Logging` -> `Options::LogArchive`
+### `Options::Logging` -> `Options::Log`
 
 The user-facing log archive destination options live in
-`App::Yath2::Options::LogArchive` (group `log_archive`, category
-"Log Archive Options"). `Renderer::Logger`'s separate `logging`
+`App::Yath2::Options::Log` (group `log`, category
+"Log Options"). `Renderer::Logger`'s separate `logging`
 group is unrelated and unaffected.
 
 ### `Util::Zstd::Writer->say` embeds the newline in the frame
@@ -2507,3 +2507,452 @@ yields valid jsonl directly; `yath extract` no longer reinserts
 newlines between records. The cached-compressed-frame fast path
 on `Logger::JSONL` is dropped (the cache held bare bytes with no
 newline).
+
+### `new_log_refactor` M2 step 4+5 — Single Collector class, no Logger / Observer
+
+The `Test2::Harness2::Collector::Test`, `Test2::Harness2::Collector::Service`,
+`Test2::Harness2::Collector::Logger::JSONL`,
+`Test2::Harness2::Collector::Logger::JSON`,
+`Test2::Harness2::Role::Collector::Logger`,
+`Test2::Harness2::Role::Collector::Observer`, and
+`Test2::Harness2::Collector::Observer::TestObserver` modules are gone.
+Their roles collapse to:
+
+- A single `Test2::Harness2::Collector` class that takes
+  `type => 'Job' | 'Run' | 'Service'` plus an `id` slot. The
+  collector writes its `spec.jsonl.zst`, `events.jsonl.zst`, and
+  `report.jsonl.zst` files directly under its base directory
+  (computed by `Test2::Harness2::LogLayout::collector_base_dir`).
+  No more logger plugin slots; no more observer chain.
+
+- Test-job collectors carry an `Auditor::Test` instance that has
+  absorbed every IPC duty `TestObserver` used to perform:
+  `test_job_started` (from `startup`), `test_job_diagnosing` /
+  `test_job_failing` (from `audit_event` on the relevant transitions),
+  and `test_job_completed` + `job_release` (from `shutdown`).
+
+- Run and service collectors are dumb pass-throughs: parser →
+  write_phase. No auditor.
+
+The pipeline is now strictly:
+
+    parser -> [Auditor::Test on type=Job] -> write_phase
+
+The on-disk layout uses `runs/<id>/jobs/<id>/<try>/` (was
+`runs/<id>/tests/<id>/<try>/`).
+
+#### Rev-2 insight: who owns the state matters
+
+This refactor was prompted by the observation that the previous
+design conflated event-source with state-owner. **Tests are state
+producers**: their state lives entirely in the events streamed out
+of the test process and is reconstructed by an Auditor sitting next
+to the test-job collector. That justifies an Auditor for test-job
+collectors and lets the Auditor emit the IPC transition messages.
+
+**Runs and services act on state**: their state lives in the run
+service / global service process itself, not in the collector that
+just observes its stdout/stderr. So those collectors are dumb
+pass-throughs, and the IPC transition events for runs (run_failing,
+run_completed, etc.) are emitted by the run service directly into
+its own outgoing event stream — the run collector writes them to
+`runs/<id>/events.jsonl.zst` like any other event.
+
+The earlier design's `parent_io` and Observer-managed-state
+machinery was an attempt to put state-tracking next to every
+collector regardless of where the state actually lived. The new
+shape mirrors the ownership model directly.
+
+#### What follow-up steps still cover
+
+- M2 step 6 wires up `collector_start` / `collector_end` IPC so a
+  parent service can ingest the lifecycle of every child collector
+  it spawns into its own events stream.
+- M2 step 7 extracts base64-encoded attachments out of events into
+  `<base>/attachments/<filename>` during the write phase.
+- M2 step 10 rewrites the reader side (`App::Yath2::Log` and
+  subclasses) for the new layout. Until that lands, the reader
+  surface is intentionally broken; tests under `t/AI/unit/Log/`,
+  `t/AI/unit/Streamer/`, and several `t/AI/integration/*` files
+  carry an environment-gated `skip_all` until step 10 reworks them.
+
+### `new_log_refactor` rev-2 — collector pipeline + Log reader
+
+This addendum collects the rev-2 amendments that landed across M2
+of `new_log_refactor`. It supersedes any earlier section that
+described the old `LogArchive` / `Logger` / `Observer` shape.
+
+#### State producers vs state consumers
+
+The single design rule that drove every other decision in the
+branch:
+
+- **Tests are state producers.** The state of a running test lives
+  in the events the test process emits. There is no other source
+  of truth; an Auditor sitting next to the test-job collector
+  reconstructs the state from that stream. So:
+  - The test-job collector carries an `Auditor::Test` instance.
+  - The auditor handles all upward-facing IPC for the test
+    (test_job_started / test_job_diagnosing / test_job_failing /
+    test_job_completed / job_release).
+  - There is no separate `TestObserver`; its IPC duties moved
+    into the auditor.
+
+- **Runs and services act on state.** Their state lives in the
+  run service / global service process itself, not in the
+  collector that observes the service's stdout/stderr. So:
+  - Run / Service collectors are dumb pass-throughs. No auditor.
+  - State-transition events (`run_failing`, `run_completed`,
+    harness-level transitions) are emitted by the service process
+    directly into its own outgoing events stream. The run
+    collector simply writes them to
+    `runs/<id>/events.jsonl.zst`.
+
+The earlier rev's `parent_io` machinery and the separate
+`TestObserver` were attempts to attach state-tracking to every
+collector regardless of where the state actually lived. The new
+shape mirrors the ownership model.
+
+#### Collector pipeline
+
+A single `Test2::Harness2::Collector` class. No subclasses, no
+plugin slots for loggers or observers. Construction takes the
+identity (`type` + `id` + `run_id` + `job_try`) and a `logdir`;
+the collector writes its trio of files
+(`spec.jsonl.zst`, `events.jsonl.zst`, `report.jsonl.zst`)
+directly under its base directory (computed by
+`Test2::Harness2::LogLayout::collector_base_dir`).
+
+Pipeline:
+
+    parser -> [Auditor::Test on type=Job] -> write_phase
+
+`parser` ingests stdout / stderr (TAP, structured events, etc.)
+into structured event objects. `write_phase` decodes any
+`harness_attachment` facets, writes them to
+`<base>/attachments/<filename>`, replaces the in-event payload
+with a path reference, and appends the (possibly auditor-emitted)
+event to `events.jsonl.zst`.
+
+`spec.jsonl.zst` gets exactly one row at startup describing the
+collected thing (its identity, command line, env, etc.).
+`report.jsonl.zst` gets exactly one row at shutdown describing
+the final state (exit code, pass/fail summary for tests, peer
+state for services). `report.jsonl.zst` replaces the previous
+rev's `state.json`.
+
+#### `collector_start` / `collector_end` IPC
+
+When a collector starts, it sends a `collector_start` IPC message
+to its parent service; when its child has exited and the audit /
+write phase has flushed, it sends a `collector_end`. The parent
+service translates each into an event in its own outgoing events
+stream:
+
+- `harness_collector_start` carries the new collector's identity
+  (type, id, run_id, job_try, collector_pid) and is what the
+  reader's depth-first iterator pivots on to push a child reader
+  onto its stack.
+- `harness_collector_end` carries the matching `collector_pid`
+  plus the child's exit info / final state hash. The reader pops
+  the corresponding child reader from its stack on this event.
+
+Because the reflection happens in the parent service, every
+collector's lifecycle is recorded as ordinary events in a single
+service's `events.jsonl.zst`. There is no separate collector
+metadata file and no parallel IPC channel for "what files this
+collector produced".
+
+#### On-disk layout
+
+Per `Test2::Harness2::LogLayout`:
+
+    services/<name>/                          global services
+    runs/<run_id>/                            run collector
+    runs/<run_id>/services/<name>/            run-scoped services
+    runs/<run_id>/jobs/<job_id>/<job_try>/    per-job per-try
+
+Each base directory holds:
+
+    spec.jsonl.zst        one-row, written at startup
+    events.jsonl.zst      append-only, one or more rows
+    report.jsonl.zst      one-row, written at shutdown
+    attachments/<file>    optional, per write_phase decode
+
+At the log root:
+
+    LIVE                  sentinel: present while the harness is
+                          running, removed on clean shutdown,
+                          absent on crash.
+
+Run and job identifiers are sequential ord ints scoped to the
+archive (per amendment K1 / step 26). UUIDs are kept only as
+logical archive identifiers (DB `archives.archive_uuid` etc.).
+
+#### `App::Yath2::Log` reader API
+
+`App::Yath2::Log->new(...)` is a pure dispatcher. Backend by
+argument shape:
+
+| arg                 | backend                            |
+| ------------------- | ---------------------------------- |
+| `live => $dir`      | `App::Yath2::Log::Live`            |
+| `dir  => $dir`      | `App::Yath2::Log::Directory`       |
+| `file => $f`        | `Log::TarZIdx` or `Log::Sqlite`    |
+|                     | (auto-detected by magic bytes)     |
+| `dbh  => ...`       | `App::Yath2::Log::Sqlite`          |
+| `dsn  => ...`       | `App::Yath2::Log::Sqlite` /        |
+|                     | `Log::Postgres` / `Log::MariaDB` / |
+|                     | `Log::MySQL`                       |
+
+Magic-byte detection: SQLite magic (`'SQLite format 3\\0'`,
+header) wins first, then the tar.zidx footer marker
+(`'YZIDXv1\\0'`, last 32 bytes). Anything else is rejected with a
+hard error.
+
+Every backend exposes the same surface:
+
+- **Listing**: `services` / `runs` / `jobs` / `tries` /
+  `last_try` / `has_run` / `has_job` / `has_try` / `has_service`.
+- **Artifacts factory**: `artifacts(...)` returns a
+  `App::Yath2::Log::Artifact` handle. Positional forms — `()`,
+  `($svc)`, `($run)`, `($run, $svc)`, `($run, $job)`,
+  `($run, $job, $try)` — plus a hashref form
+  `({service => ..., run_id => ..., job_id => ..., job_try => ...})`.
+  Service names cannot start with a digit so the positional
+  disambiguator is unambiguous.
+- **Per-artifact API** on the handle: `events` / `events_zst` /
+  `events_iter`; `spec` / `spec_zst` / `spec_iter`;
+  `report` / `report_zst` / `report_iter`; `attachment(name)`;
+  `attachments`; `exists($file)`; `get($file, %opts)`;
+  `save($file, $content, %opts)`.
+- **Depth-first event iterator**: `event($timeout)`, `events()`,
+  `EOE`, `reset`. Starts at
+  `services/harness/events.jsonl.zst`; pushes a child reader on
+  every `harness_collector_start`; pops on the matching
+  `harness_collector_end`.
+- **Path-aware identifier injection**: events surfaced by the
+  iterator get `harness.run_id` / `job_id` / `job_try` /
+  `service_name` injected based on which on-disk file they came
+  from. This is the read-side replacement for the old writer-side
+  identifier mirroring.
+
+The DB backends share `App::Yath2::Log::DB` as their abstract
+base. Per-flavor classes provide DSN construction, schema
+bootstrap from `share/schema/<flavor>.sql`, UUID + JSON codecs,
+and payload bind hooks. The `archives` table makes multi-archive
+the universal model: a "single sqlite .yath" is just N=1 in the
+same table.
+
+#### LIVE sentinel — disambiguating live vs sealed
+
+The harness collector writes `LIVE` at the log root on startup
+and removes it on clean shutdown. The reader uses its presence to
+decide live vs sealed when both modes are otherwise possible:
+
+- `App::Yath2::Log::Live` (a thin subclass forcing `live=1`) and
+  `App::Yath2::Log::Directory` with `live=0` already pick the
+  mode from the constructor.
+- The iterator's `_top_is_done` and `end_of_events` checks fall
+  back to "LIVE absent" as the last-resort liveness signal so
+  that a crashed harness that left the sentinel-removal step
+  un-run does not stall the iterator forever.
+
+`extract` and `archive` skip the sentinel when packaging.
+
+#### `inspect` command (M2 step 21)
+
+`yath inspect <path>` is the one entry point that intentionally
+does *not* construct a full `Log` object up front: for a
+multi-archive sqlite file the constructor would refuse to pick a
+default, so `inspect` opens the DB directly to enumerate
+`archives` rows and validates each archive in a fresh `Sqlite`
+instance scoped by `uuid`. For tar.zidx files and directories the
+single-archive form is used.
+
+Validation: `services/harness/spec.jsonl(.zst)` exists and has at
+least one parseable row; `services/harness/events.jsonl(.zst)`
+exists. No deeper checking.
+
+`--json` produces a machine-readable report (single hash for
+single-archive logs, with an `archives` arrayref for sqlite
+multi-archive).
+
+#### Plaintext archive mode (`compress => 0`)
+
+Every backend's archive entry point accepts `compress => 0`,
+producing an archive whose bodies are stored as plaintext
+instead of zstd-wrapped. tar.zidx adds a third value for the
+per-entry `inner` field: `'plain'` (versus `'zstd'` and
+`'none'` which both mean "stored bytes are zstd-shaped").
+Plaintext archives are bigger but trivially greppable. CLI:
+`yath test --no-log-compress` and `yath archive --no-log-compress`.
+
+#### Module map (post-rev-2)
+
+    App::Yath2::Log                      dispatcher
+    App::Yath2::Log::Live                live workdir backend
+    App::Yath2::Log::Directory           sealed dir backend
+    App::Yath2::Log::TarZIdx             tar.zidx archive backend
+    App::Yath2::Log::DB                  abstract DB backend
+    App::Yath2::Log::Sqlite              sqlite-on-DB
+    App::Yath2::Log::Postgres            postgres-on-DB
+    App::Yath2::Log::MariaDB             mariadb-on-DB
+    App::Yath2::Log::MySQL               mysql-on-DB
+    App::Yath2::Log::Artifact            per-collector handle
+    App::Yath2::Log::Iterator::JSONL     per-file iterator
+    App::Yath2::LogDB                    multi-archive DB container
+    App::Yath2::Command::inspect         `yath inspect <path>`
+
+    Test2::Harness2::Collector           single collector class
+    Test2::Harness2::Collector::Auditor::Test
+                                         test auditor + IPC
+    Test2::Harness2::LogLayout           path templates
+
+Removed (rev-2): `Test2::Harness2::Collector::Test`,
+`Test2::Harness2::Collector::Service`,
+`Test2::Harness2::Collector::Logger::JSONL`,
+`Test2::Harness2::Collector::Logger::JSON`,
+`Test2::Harness2::Role::Collector::Logger`,
+`Test2::Harness2::Role::Collector::Observer`,
+`Test2::Harness2::Collector::Observer::TestObserver`,
+`App::Yath2::LogArchive` (renamed `App::Yath2::Log`).
+
+## Addendum: schema redesign — spec/report promoted, projects/test_files breakout (2026-05-07)
+
+This addendum covers the DB schema redesign that landed on
+`new_log_refactor` after the rev-2 collector / reader work above.
+Full spec: `AI_DOCS/2026-05-07-schema-redesign.md`. Decisions captured
+in `SCHEMA_REDESIGN_DECISIONS.md` (worktree root, kept as the living
+source-of-truth doc).
+
+Key changes (DB backend only; tar.zidx and directory backends are
+untouched):
+
+- **Spec / report content promoted from artifact rows to typed
+  columns.** `runs`, `job_tries`, and `service_lifetimes` gain typed
+  columns covering every promoted spec/report key, plus `spec_extras`
+  and/or `state_extras` JSON BLOB catch-alls for unmapped keys. The
+  `runs.spec` / `runs.state` / `job_tries.spec` / `job_tries.state` /
+  `services.spec` / `services.state` BLOBs are dropped. Spec / report
+  artifact rows in `artifacts` are dropped, and the
+  `artifacts.artifact_kind` CHECK narrows from
+  `('events','state','spec','report','attachment','arbitrary')` to
+  `('events','attachment','arbitrary')`.
+
+- **`meta.json` content promoted.** `archives` gains typed columns
+  for `host`, `user`, `git_sha`, `project`, `yath_version`,
+  `sealed_at` (= `meta.created_at`), plus `meta_extras` JSON BLOB.
+  The `meta.json` arbitrary artifact row is dropped for the DB
+  backend. Reconstruction via `Log::Artifact->root.get('meta.json')`
+  is unchanged.
+
+- **New tables:** `projects(project_id, name UNIQUE)`;
+  `test_files(test_file_id, project_id, file)` UNIQUE(project_id,
+  file); `job_specs(job_spec_id, job_id, test_file_id, ...)`
+  UNIQUE(job_id) — per-job snapshot of TestFile content;
+  `service_lifetimes(service_lifetime_id, service_id, lifetime_ord,
+  ...)` UNIQUE(service_id, lifetime_ord). FKs:
+  `runs.project_id`, `jobs.test_file_id NOT NULL`,
+  `job_specs.job_id`, `service_lifetimes.service_id`.
+
+- **`services` reduces to identity only** (`name`, `role`, `run_id`).
+  Lifecycle (status, started_at, ended_at, exit, times, spec/report
+  extras) moves to `service_lifetimes`, which is multi-row per
+  service to support restarts.
+
+- **`archive_version` replaces `format_version` + `schema_version`.**
+  Single `archives.archive_version TEXT` column carries
+  `$App::Yath2::Log::VERSION` at write. Class accessor
+  `App::Yath2::Log->last_breaking_version` returns the floor
+  (`'2.000011'` initially); the read path refuses archives below it
+  with a clean error. Bumped manually on breaking changes; no
+  auto-migration.
+
+- **Atomic insert + duplicate-archive rejection.**
+  `DB->insert($source)` does a pre-flight `archive_uuid` uniqueness
+  check (clean error on re-import), then wraps the entire population
+  pass in `begin_work` / `commit` / `rollback`. No partial archives.
+
+- **Reader API surface unchanged.** `Artifact->spec_iter` /
+  `->report_iter` / `root->get('meta.json')` continue to work the
+  same way; for DB backends they now reconstruct on demand from
+  typed columns + extras (and JOIN test_files / job_specs / subtests
+  / job_tries to rebuild aggregated children). Tar / Directory /
+  Live backends still store the JSONL files on disk and are
+  unaffected. `events.jsonl.zst` remains stored as artifact bytes
+  (no events table; out of scope).
+
+- **Producer-side flattening:** `Test2::Harness2::TestFile` drops the
+  redundant `file` slot (deriving `absolute` and `relative` on init);
+  `RunService::request_handler_launch_job` flattens
+  `test_file => {...}` into the spec row root. Producer JSON keys
+  now match column names exactly, removing any need for a rename map
+  at insert time.
+
+- **All four flavors moved in lock-step.** Every DDL change touched
+  `share/schema/{sqlite,mariadb,mysql,postgres}.sql` in the same
+  commit.
+
+## Addendum: unified YATHFOOT trailer for sealed archives (2026-05-07)
+
+This addendum covers the trailer added to sealed `.yath` files so
+that external tools can read `meta.json` without parsing tar / zidx
+or SQLite internals. Full spec: `AI_DOCS/2026-05-07-yath-footer.md`.
+
+Key changes:
+
+- **64-byte `YATHFOOT` trailer at the end of every sealed `.yath`
+  file.** Carries head magic (`YATHFOOT`), tail magic
+  (`YATHTAIL`), trailer version, flags (bit0 =
+  `FLAG_META_COMPRESSED`), 4-byte format-id (`'TAR\0'` or
+  `'SQL\0'`), `meta_offset` / `meta_size` / `meta_crc32`,
+  `body_size`, and a backend-specific `format_ptr` (tar: zidx
+  footer offset; sqlite: 0). All multi-byte fields little-endian.
+
+- **Meta payload is `meta.json` bytes, optionally
+  zstd-compressed.** Compression is the default and is recorded in
+  the trailer flags. Trailer + payload together form the tail
+  region: a reader does `seek(-64, SEEK_END)`, unpacks the
+  trailer, then reads `meta_size` bytes at `meta_offset`.
+
+- **Single public reader API: `App::Yath2::Log::Footer`.**
+  Exports `has_footer`, `read_footer_from_path`,
+  `read_meta_from_path`, the `FORMAT_ID_TAR` / `FORMAT_ID_SQL`
+  constants, and `FLAG_META_COMPRESSED`. Backends call
+  `append_meta` (also exported) to write.
+
+- **tar.zidx integration.** Writer appends the trailer after the
+  existing 32-byte zidx footer; trailer's `format_ptr` records the
+  zidx footer offset. The reader consults `format_ptr` instead of
+  the legacy "last 32 bytes" rule. The tar archive's
+  `meta.json.zst` member at offset 0 is retained -- the trailer
+  carries a redundant copy. Acceptable: trailer shape stays
+  uniform across formats and `tar -xf` users still get a
+  recognizable meta artifact.
+
+- **SQLite single-archive integration.** `seal => 1` on
+  `Log::DB::insert` triggers the append after the transaction
+  commits. Trailer placed past `page_count * page_size`; SQLite
+  ignores trailing bytes so `sqlite3` and raw `DBI` continue to
+  work unmodified (verified empirically including
+  `PRAGMA integrity_check`). The in-memory Log instance flags
+  itself sealed and refuses further inserts. Multi-archive SQLite
+  containers do NOT get a trailer.
+
+- **`yath inspect` prefers the trailer.** When the inspect target
+  is a sealed file-backed archive, `meta.json` is read via
+  `App::Yath2::Log::Footer::read_meta_from_path` rather than the
+  artifact-handle path. Live directories and (hypothetical)
+  trailer-less archives fall back to `root->get('meta.json')`.
+
+- **`last_breaking_version` bumped to `2.000012`.** Archives
+  produced before this pass (no trailer) are refused on read.
+  Re-stamping is a manual-tools concern handled later if needed.
+
+- **Integration tests.** `t/AI/integration/footer_round_trip_tar.t`
+  and `.../footer_round_trip_sqlite.t` build synthetic archives
+  end-to-end and verify both yath's own readers and the system
+  `tar` / `sqlite3` CLIs can recover meta and enumerate the
+  archive past the trailer. Each test skips its CLI block cleanly
+  when the corresponding tool is not on PATH.

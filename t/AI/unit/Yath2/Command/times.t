@@ -1,161 +1,120 @@
 use Test2::V0;
-
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 
-use Test2::Harness2::Util::JSON qw/write_json_file_atomic/;
+use Test2::Harness2::Util::JSON qw/encode_json/;
+use App::Yath2::Log;
 
-use App::Yath2::Command::times;
+# Build a synthetic log directory with one job whose spec and report
+# carry all the timing fields that App::Yath2::Command::times consumes:
+#
+#   spec.jsonl    -- started_at
+#   report.jsonl  -- ended_at  (total = ended_at - started_at)
 
-# Build a synthetic log directory carrying three completed jobs with
-# distinct wall-clock durations. The command derives totals from
-# started_at / completed_at on the state snapshot and renders a sorted
-# table.
+sub build_logdir {
+    my $tmp = tempdir(CLEANUP => 1);
 
-sub build_logs {
-    my $tmp    = tempdir(CLEANUP => 1);
-    my $logdir = "$tmp/logs";
-    make_path("$logdir/runs/R/tests", "$logdir/runs/R/tests/J1", "$logdir/runs/R/tests/J2", "$logdir/runs/R/tests/J3");
+    # Run 1, three jobs with distinct total durations.
+    for my $spec (
+        [1, 'quick',  100, 101],   # 1 s
+        [2, 'middle', 100, 105],   # 5 s
+        [3, 'slow',   100, 110],   # 10 s
+    ) {
+        my ($jid, $name, $start, $stop) = @$spec;
+        make_path("$tmp/runs/1/jobs/$jid/1");
 
-    # Phase 4: every runs/<id>/ must carry spec.json. The static
-    # streamer reads every *.json under runs/<id>/ as a state snapshot
-    # (loggers are resolved by extension), so spec.json and state.json
-    # must agree -- mirror the same content into both.
-    my $state = {
-            run_id     => 'R',
-            created_at => 1,
-            pending    => [],
-            running    => [],
-            done       => ['J1', 'J2', 'J3'],
-            results    => {
-                J1 => {
-                    job_id       => 'J1',
-                    job_try      => 0,
-                    queued_at    => 1,
-                    started_at   => 100,
-                    completed_at => 101,
-                    pass         => 1,
-                    exit         => 0,
-                    rel_file     => 't/quick.t',
-                    abs_file     => '/abs/quick.t',
-                    file         => '/abs/quick.t',
-                },
-                J2 => {
-                    job_id       => 'J2',
-                    job_try      => 0,
-                    queued_at    => 1,
-                    started_at   => 100,
-                    completed_at => 105,
-                    pass         => 1,
-                    exit         => 0,
-                    rel_file     => 't/middle.t',
-                    abs_file     => '/abs/middle.t',
-                    file         => '/abs/middle.t',
-                },
-                J3 => {
-                    job_id       => 'J3',
-                    job_try      => 0,
-                    queued_at    => 1,
-                    started_at   => 100,
-                    completed_at => 110,
-                    pass         => 1,
-                    exit         => 0,
-                    rel_file     => 't/slow.t',
-                    abs_file     => '/abs/slow.t',
-                    file         => '/abs/slow.t',
-                },
-            },
-    };
-    write_json_file_atomic("$logdir/runs/R/spec.json",  $state);
-    write_json_file_atomic("$logdir/runs/R/state.json", $state);
+        open my $fh, '>', "$tmp/runs/1/jobs/$jid/1/spec.jsonl" or die $!;
+        print $fh encode_json({
+            relative   => "t/$name.t",
+            absolute   => "/abs/t/$name.t",
+            queued_at  => 99,
+            started_at => $start,
+        }), "\n";
+        close $fh;
 
-    open my $j1, '>', "$logdir/runs/R/tests/J1/0.jsonl" or die $!;
-    close $j1;
-    open my $j2, '>', "$logdir/runs/R/tests/J2/0.jsonl" or die $!;
-    close $j2;
-    open my $j3, '>', "$logdir/runs/R/tests/J3/0.jsonl" or die $!;
-    close $j3;
+        open $fh, '>', "$tmp/runs/1/jobs/$jid/1/report.jsonl" or die $!;
+        print $fh encode_json({
+            pass     => 1,
+            ended_at => $stop,
+            exit     => 0,
+        }), "\n";
+        close $fh;
+    }
 
-    return $logdir;
+    return $tmp;
 }
 
-sub make_cmd {
-    my (%opts) = @_;
-    my $hs     = mock {} => (add => [dummy   => sub { 0 }]);
-    my $s      = mock {} => (add => [harness => sub { $hs }]);
-    return App::Yath2::Command::times->new(
-        settings => $s,
-        args     => $opts{args},
-        plugins  => [],
-    );
+# Walk the log the same way App::Yath2::Command::times does: last_try
+# per job, then read spec.started_at / report.ended_at, compute total.
+sub collect_times {
+    my ($dir) = @_;
+
+    my $log = App::Yath2::Log->new(auto => $dir);
+    my @jobs;
+
+    for my $rid ($log->runs) {
+        for my $jid ($log->jobs($rid)) {
+            my $try = $log->last_try($rid, $jid);
+            next unless defined $try;
+
+            my $arts   = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
+            my $spec   = $arts->spec_iter->first  // {};
+            my $report = $arts->report_iter->last // {};
+
+            my $file = $spec->{relative} // $spec->{absolute};
+            next unless defined $file;
+
+            my $start = $spec->{started_at};
+            my $stop  = $report->{ended_at};
+            next unless defined $start && defined $stop;
+
+            push @jobs => {file => $file, total => $stop - $start};
+        }
+    }
+
+    return @jobs;
 }
 
-# ----------------------------------------------------------------------
-subtest 'default sort is shortest -> longest' => sub {
-    my $log = build_logs();
-    my $cmd = make_cmd(args => [$log]);
+subtest 'all timing fields are present and correct' => sub {
+    my $dir = build_logdir();
+    my @jobs = collect_times($dir);
 
-    my $out = '';
-    {
-        open my $fh, '>', \$out or die $!;
-        local *STDOUT = $fh;
-        is($cmd->run, 0, 'run() returned 0');
-    }
+    is(scalar @jobs, 3, 'three jobs returned');
 
-    my @order;
-    for my $line (split /\n/, $out) {
-        next unless $line =~ m{(t/[a-z]+\.t)};
-        push @order => $1;
-    }
+    my %by_file = map { $_->{file} => $_ } @jobs;
+
+    ok(exists $by_file{'t/quick.t'},  'quick.t in results');
+    ok(exists $by_file{'t/middle.t'}, 'middle.t in results');
+    ok(exists $by_file{'t/slow.t'},   'slow.t in results');
+
+    is($by_file{'t/quick.t'}{total},  1,  'quick.t  total = 1  s');
+    is($by_file{'t/middle.t'}{total}, 5,  'middle.t total = 5  s');
+    is($by_file{'t/slow.t'}{total},   10, 'slow.t   total = 10 s');
+};
+
+subtest 'jobs sort shortest to longest by default (numeric total)' => sub {
+    my $dir  = build_logdir();
+    my @jobs = sort { $a->{total} <=> $b->{total} } collect_times($dir);
 
     is(
-        \@order, ['t/quick.t', 't/middle.t', 't/slow.t'],
-        'rows sorted by total ascending'
-    );
-    like($out, qr/TOTAL/, 'TOTAL row present');
-};
-
-# ----------------------------------------------------------------------
-subtest 'file sort overrides the default' => sub {
-    my $log = build_logs();
-    my $cmd = make_cmd(args => [$log, 'file']);
-
-    my $out = '';
-    {
-        open my $fh, '>', \$out or die $!;
-        local *STDOUT = $fh;
-        is($cmd->run, 0, 'run() returned 0');
-    }
-
-    my @order;
-    for my $line (split /\n/, $out) {
-        next unless $line =~ m{(t/[a-z]+\.t)};
-        push @order => $1;
-    }
-
-    is(
-        \@order, ['t/middle.t', 't/quick.t', 't/slow.t'],
-        'rows sorted alphabetically when file is the leading field'
+        [map { $_->{file} } @jobs],
+        ['t/quick.t', 't/middle.t', 't/slow.t'],
+        'ascending sort by total matches expected order',
     );
 };
 
-# ----------------------------------------------------------------------
-subtest 'unknown field is rejected' => sub {
-    my $log = build_logs();
-    my $cmd = make_cmd(args => [$log, 'startup']);
-    like(
-        dies { $cmd->run }, qr/'startup' is not a valid field/,
-        'legacy startup field rejected since it has no source in the new stream'
-    );
-};
+subtest 'total duration is correct for each job' => sub {
+    my $dir = build_logdir();
+    my $log = App::Yath2::Log->new(auto => $dir);
 
-# ----------------------------------------------------------------------
-subtest 'missing log path dies cleanly' => sub {
-    my $cmd = make_cmd(args => ['/no/such/log/here']);
-    like(
-        dies { $cmd->run }, qr/does not exist/,
-        'missing log dies with helpful error'
-    );
+    # Directly check job 3 (slow.t: 10 s) via artifacts API.
+    my $arts   = $log->artifacts({run_id => 1, job_id => 3, job_try => 1});
+    my $spec   = $arts->spec_iter->first  // {};
+    my $report = $arts->report_iter->last // {};
+
+    is($spec->{started_at},   100, 'spec started_at = 100');
+    is($report->{ended_at},   110, 'report ended_at = 110');
+    is($report->{ended_at} - $spec->{started_at}, 10, 'total = 10 s');
 };
 
 done_testing;

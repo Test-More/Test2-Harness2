@@ -23,7 +23,7 @@ my $idx_root = tempdir(CLEANUP => 1);
 $ENV{XDG_RUNTIME_DIR} = $idx_root;
 
 use App::Yath2::Command::test;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
 package Fake::Workspace;
 sub new                  { bless {workdir => $_[1]}, $_[0] }
@@ -79,10 +79,12 @@ package Fake::Tests;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
 
-package Fake::LogArchive;
-sub new  { bless {}, $_[0] }
-sub file { undef }
-sub dir  { undef }
+package Fake::Log;
+sub new    { bless {}, $_[0] }
+sub file   { undef }
+sub dir    { undef }
+sub format   { 'tar' }
+sub compress { 1 }
 
 package Fake::Settings;
 
@@ -97,7 +99,7 @@ sub new {
         finder      => Fake::Finder->new,
         resource    => Fake::Resource->new,
         tests       => Fake::Tests->new,
-        log_archive => Fake::LogArchive->new,
+        log => Fake::Log->new,
     } => $class;
 }
 sub workspace   { $_[0]->{workspace} }
@@ -108,7 +110,7 @@ sub term        { $_[0]->{term} }
 sub finder      { $_[0]->{finder} }
 sub resource    { $_[0]->{resource} }
 sub tests       { $_[0]->{tests} }
-sub log_archive { $_[0]->{log_archive} }
+sub log { $_[0]->{log} }
 sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;
@@ -171,18 +173,21 @@ like(
     'archive name uses ${project}-${user}-${stamp}-${pid}.yath pattern',
 );
 
-my $la    = App::Yath2::LogArchive->open(path => $archive);
+my $la    = App::Yath2::Log->new(file => $archive);
 my %files = map { $_ => 1 } $la->list_files;
 
-ok($files{'services/harness/events.jsonl.zst'}, 'archive contains harness JSONL log');
-ok($files{'services/harness/state.json.zst'},   'archive contains harness JSON  log');
+# Post new_log_refactor on-disk layout: per-collector spec/events/report
+# .jsonl.zst trio.
+ok($files{'services/harness/events.jsonl.zst'}, 'archive contains harness events.jsonl.zst');
+ok($files{'services/harness/spec.jsonl.zst'},   'archive contains harness spec.jsonl.zst');
+ok($files{'services/harness/report.jsonl.zst'}, 'archive contains harness report.jsonl.zst');
 ok(
-    (grep { m{^runs/[^/]+/tests/[^/]+/\d+\.jsonl\.zst\z} } keys %files),
-    'archive contains at least one per-try JSONL (runs/<run>/tests/<job>/<try>.jsonl.zst)'
+    (grep { m{^runs/[^/]+/jobs/[^/]+/\d+/events\.jsonl\.zst\z} } keys %files),
+    'archive contains at least one per-try events.jsonl.zst'
 );
 ok(
-    (grep { m{^runs/[^/]+/tests/[^/]+/\d+\.json\.zst\z} } keys %files),
-    'archive contains at least one per-try JSON (runs/<run>/tests/<job>/<try>.json.zst)'
+    (grep { m{^runs/[^/]+/jobs/[^/]+/\d+/spec\.jsonl\.zst\z} } keys %files),
+    'archive contains at least one per-try spec.jsonl.zst'
 );
 
 # The default archive destination is now under the system tmpdir,

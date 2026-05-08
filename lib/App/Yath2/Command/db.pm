@@ -2,7 +2,7 @@ package App::Yath2::Command::db;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use App::Yath2UI::Server;
 use App::Yath2UI::Schema::Util qw/schema_config_from_settings/;
@@ -11,8 +11,8 @@ use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
 use Object::HashBase;
 
-sub summary     { "Start a yath database server" }
-sub description { "Starts a database that can be used to temporarily store data (data is deleted when server shuts down)" }
+sub summary     { "Start a yath2-UI server (with optional ephemeral database)" }
+sub description { "Starts a yath2-UI server with an embedded ephemeral database for temporary data storage. Data is deleted when the server shuts down." }
 sub group       { "database" }
 
 sub cli_args { "" }

@@ -2,7 +2,7 @@ package App::Yath2::Renderer::Default;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Getopt::Yath::Term qw/term_size USE_COLOR/;
 use App::Yath2::Renderer::Default::Composer();
@@ -544,8 +544,11 @@ sub render_tree {
     my $job = '';
     my $jid = $self->_event_job_id($f);
     if (defined $jid || $f->{harness}) {
-        my $id     = $jid // 0;
-        my $number = $id ? $self->{+JOB_NUMBERS}->{$id} //= $self->{+JOBNUM_COUNTER}++ : $id;
+        my $has_jid = defined $jid;
+        my $id      = $jid // 0;
+        my $number  = $has_jid
+            ? ($self->{+JOB_NUMBERS}->{$id} //= $self->{+JOBNUM_COUNTER}++)
+            : $id;
 
         my $theme = $self->{+THEME};
         my $color = $theme->get_term_color(job => $id);
@@ -561,10 +564,12 @@ sub render_tree {
 
         # Match 1.0's spacing: "job  1" (number right-aligned within the
         # max number width) or "RUNNER" left-aligned to the same width as
-        # "job <number>".
+        # "job <number>". `defined $jid` rather than truthiness so job 0
+        # (the first ord-int job per run) does not get rendered as the
+        # bare RUNNER label.
         my $label_width = 4 + $len;    # "job " + max number width
         $label_width = 6 if $label_width < 6;
-        if ($id) {
+        if ($has_jid) {
             $job = sprintf("%sjob %${len}s%s ", $color, $number, $reset || '');
         }
         else {

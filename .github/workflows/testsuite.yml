@@ -71,7 +71,7 @@ jobs:
           # Install runtime + test + configure + develop. The develop
           # group carries the modules that used to live in
           # .github/cpanfile.ci plus optional backends (e.g.
-          # Compress::Zstd) that gate LogArchive test coverage.
+          # Compress::Zstd) that gate Log test coverage.
           # Do NOT pass --with-suggests: RuntimeSuggests includes
           # Win32::Console::ANSI / Win32::Job, which fail to configure
           # on Linux runners ("OS unsupported").
@@ -129,7 +129,7 @@ jobs:
           # Install runtime + test + configure + develop. The develop
           # group carries the modules that used to live in
           # .github/cpanfile.ci plus optional backends (e.g.
-          # Compress::Zstd) that gate LogArchive test coverage.
+          # Compress::Zstd) that gate Log test coverage.
           # Do NOT pass --with-suggests: RuntimeSuggests includes
           # Win32::Console::ANSI / Win32::Job, which fail to configure
           # on Linux runners ("OS unsupported").
@@ -218,7 +218,7 @@ jobs:
           # Install runtime + test + configure + develop. The develop
           # group carries the modules that used to live in
           # .github/cpanfile.ci plus optional backends (e.g.
-          # Compress::Zstd) that gate LogArchive test coverage.
+          # Compress::Zstd) that gate Log test coverage.
           # Do NOT pass --with-suggests: RuntimeSuggests includes
           # Win32::Console::ANSI / Win32::Job, which fail to configure
           # on Linux runners ("OS unsupported").

@@ -15,10 +15,10 @@ BEGIN {
 
 use Atomic::Pipe;
 use Test2::Harness2::Collector;
-use Test2::Harness2::Collector::Logger::JSONL;
+use Test2::Harness2::Util::Zstd qw/open_zstd_reader/;
 
-# The collector fires a collector_artifacts IPC message after loggers start. No
-# real bus is running here, so stub the handle out.
+# Collectors connect to the IPC bus during startup. No real bus is
+# running here, so stub the handle out.
 BEGIN {
     require IPC::Manager;
     no warnings 'once', 'redefine';
@@ -38,16 +38,34 @@ BEGIN {
 }
 
 my $tmpdir = tempdir(CLEANUP => 1);
+my $next_id = 0;
 
+# Read events.jsonl.zst (post new_log_refactor: collectors write
+# zstd-compressed jsonl directly, one frame per line).
 sub read_events {
     my ($file) = @_;
-    open(my $fh, '<', $file) or die "Could not open $file: $!";
+    return () unless -f $file;
+    my $r   = open_zstd_reader($file);
     my @evs;
-    while (my $line = <$fh>) {
+    while (defined(my $line = $r->readline)) {
         chomp $line;
-        push @evs, decode_json($line);
+        next unless length $line;
+        # Filter out the harness_process_exit synth event the
+        # collector always emits in _finalize_collection -- the
+        # subtests only care about events that actually came from
+        # the writer's parsed stream.
+        my $row = decode_json($line);
+        next if $row->{facet_data} && $row->{facet_data}{harness_process_exit};
+        push @evs, $row;
     }
+    $r->close;
     return @evs;
+}
+
+# Helper to build the events.jsonl.zst path for this test's collector.
+sub events_path_for {
+    my ($id) = @_;
+    return "$tmpdir/services/$id/events.jsonl.zst";
 }
 
 # Helper: spawn a writer that emits a scripted mix of lines and JSON bursts
@@ -116,26 +134,34 @@ subtest 'stdout JSON burst becomes a decoded event, not a line' => sub {
         ['stderr', 'message', qq/{"event_id":"$event->{event_id}"}/],
     ]);
 
-    my $out = "$tmpdir/burst.jsonl";
-
-    my $c = Test2::Harness2::Collector->spawn(ipc_parent => "test-peer", ipc_harness => "test-peer", 
-        ipcm_info => {},
-        stdout    => $out_r,
-        stderr    => $err_r,
-        pid       => $child,
-        parser    => 'Test2::Harness2::Collector::Parser::IOParser',
-        loggers   => [['Test2::Harness2::Collector::Logger::JSONL', output_file => $out]],
+    my $svc_id = 'burst-' . ++$next_id;
+    my $c = Test2::Harness2::Collector->spawn(
+        type        => 'Service',
+        id          => $svc_id,
+        logdir      => $tmpdir,
+        ipc_parent  => "test-peer",
+        ipc_harness => "test-peer",
+        ipcm_info   => {},
+        stdout      => $out_r,
+        stderr      => $err_r,
+        pid         => $child,
+        parser      => 'Test2::Harness2::Collector::Parser::IOParser',
     );
     $c->wait();
     waitpid($child, 0);
 
-    my @evs = read_events($out);
+    my @evs = read_events(events_path_for($svc_id));
     is(scalar @evs, 1, "one event produced (no line event from burst, no event from sync marker)");
 
     my $e = $evs[0];
-    is($e->{event_id},                    $event->{event_id}, "event_id preserved from burst");
-    is($e->{facet_data}{assert}{pass},    1,                  "assert.pass preserved");
-    is($e->{facet_data}{assert}{details}, 'synthetic',        "assert.details preserved");
+
+    # The wire-level event_id is used by the collector for STDOUT/STDERR
+    # sync matching but is stripped before the event reaches the parser
+    # pipeline. It must NOT appear on the persisted event.
+    ok(!exists $e->{event_id}, "wire-level event_id stripped from persisted event");
+
+    is($e->{facet_data}{assert}{pass},    1,           "assert.pass preserved");
+    is($e->{facet_data}{assert}{details}, 'synthetic', "assert.details preserved");
     ok(!$e->{facet_data}{from_stream}, "burst event did NOT get a from_stream facet");
     ok(!$e->{facet_data}{info},        "burst event did NOT get a wrapping info entry");
 };
@@ -159,19 +185,22 @@ subtest 'sync marker orders stdout lines + event + stderr text' => sub {
         ['stdout', 'line',    'after-stdout'],
     ]);
 
-    my $out = "$tmpdir/sync.jsonl";
-
-    my $c = Test2::Harness2::Collector->spawn(ipc_parent => "test-peer", ipc_harness => "test-peer", 
-        ipcm_info => {},
-        stdout    => $out_r,
-        stderr    => $err_r,
-        pid       => $child,
-        loggers   => [['Test2::Harness2::Collector::Logger::JSONL', output_file => $out]],
+    my $svc_id = 'sync-' . ++$next_id;
+    my $c = Test2::Harness2::Collector->spawn(
+        type        => 'Service',
+        id          => $svc_id,
+        logdir      => $tmpdir,
+        ipc_parent  => "test-peer",
+        ipc_harness => "test-peer",
+        ipcm_info   => {},
+        stdout      => $out_r,
+        stderr      => $err_r,
+        pid         => $child,
     );
     $c->wait();
     waitpid($child, 0);
 
-    my @evs = read_events($out);
+    my @evs = read_events(events_path_for($svc_id));
 
     # Describe each event as either its stream+line or its about.details
     my @ordered = map {

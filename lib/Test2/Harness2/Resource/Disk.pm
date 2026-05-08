@@ -2,7 +2,7 @@ package Test2::Harness2::Resource::Disk;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 

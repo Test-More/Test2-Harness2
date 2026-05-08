@@ -5,7 +5,7 @@ use warnings;
 use Getopt::Yath::Term qw/color/;
 use List::Util qw/shuffle/;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Object::HashBase qw{
     use_color

@@ -1,35 +1,36 @@
-use strict;
-use warnings;
-
 use Test2::V0;
+use warnings;
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
 use File::Spec ();
 
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 use App::Yath2::Command::archive;
 use App::Yath2::Command::extract;
-use Test2::Harness2::Util::Zstd qw/compress_blob compress_file_atomic/;
+use Test2::Harness2::Util::Zstd qw/compress_blob compress_file_atomic open_zstd_writer/;
 
-# Build a small logdir-shaped tree with a .json.zst artifact and a
-# .jsonl.zst event stream. Loggers are now classified by file
-# extension at read time, so no on-disk manifest is needed.
+# Build a small logdir-shaped tree using the post-new_log_refactor
+# layout: per-collector spec/events/report.jsonl(.zst), with no
+# state.json.
 sub _make_logdir {
     my $dir = tempdir(CLEANUP => 1);
     make_path("$dir/services/harness");
 
-    # A compressed snapshot.
-    compress_file_atomic(
-        "$dir/services/harness/state.json.zst",
-        qq[{"kind":"harness","run_id":"R"}],
-    );
+    # spec.jsonl.zst with one row.
+    my $w_spec = open_zstd_writer("$dir/services/harness/spec.jsonl.zst");
+    $w_spec->say(qq[{"type":"Service","id":"harness","collector_pid":1234}]);
+    $w_spec->close;
 
-    # A jsonl stream: two frames each compressed standalone.
-    my $event = compress_blob(qq[{"event":"a"}\n]);
-    open my $fh, '>', "$dir/services/harness/events.jsonl.zst" or die $!;
-    binmode $fh;
-    print $fh $event x 2;
-    close $fh;
+    # events.jsonl.zst with two rows.
+    my $w_evt = open_zstd_writer("$dir/services/harness/events.jsonl.zst");
+    $w_evt->say(qq[{"facet_data":{"harness":{"note":"a"}}}]);
+    $w_evt->say(qq[{"facet_data":{"harness":{"note":"b"}}}]);
+    $w_evt->close;
+
+    # report.jsonl.zst with one row.
+    my $w_rep = open_zstd_writer("$dir/services/harness/report.jsonl.zst");
+    $w_rep->say(qq[{"exit":0}]);
+    $w_rep->close;
 
     return $dir;
 }
@@ -47,6 +48,18 @@ sub orig_tmp         { undef }
     package Fake::Extract;
     sub new           { bless { no_decompress => $_[1] // 0 }, $_[0] }
     sub no_decompress { $_[0]->{no_decompress} }
+    sub run           { [] }
+    sub exclude_run   { [] }
+
+    package Fake::Archive;
+    sub new         { bless {}, $_[0] }
+    sub run         { [] }
+    sub exclude_run { [] }
+
+    package Fake::Log;
+    sub new      { bless {}, $_[0] }
+    sub format   { 'tar' }
+    sub compress { 1 }
 
     package Fake::Settings;
     sub new {
@@ -54,10 +67,14 @@ sub orig_tmp         { undef }
         bless {
             yath    => Fake::Yath->new($p{cwd}),
             extract => Fake::Extract->new($p{no_decompress} // 0),
+            archive => Fake::Archive->new,
+            log     => Fake::Log->new,
         }, $class;
     }
     sub yath    { $_[0]->{yath} }
     sub extract { $_[0]->{extract} }
+    sub archive { $_[0]->{archive} }
+    sub log     { $_[0]->{log} }
 }
 
 sub _run_cmd {
@@ -89,29 +106,20 @@ subtest 'archive + extract (default decompresses)' => sub {
     is($err, '', 'extract: no exception');
 
     # .zst suffix stripped from output
-    ok(-f "$dest/services/harness/state.json",   'json snapshot extracted plaintext');
-    ok(-f "$dest/services/harness/events.jsonl", 'jsonl stream extracted plaintext');
-    ok(!-f "$dest/services/harness/state.json.zst",
-        'no .zst suffix on output');
+    ok(-f "$dest/services/harness/spec.jsonl",   'spec extracted plaintext');
+    ok(-f "$dest/services/harness/events.jsonl", 'events extracted plaintext');
+    ok(-f "$dest/services/harness/report.jsonl", 'report extracted plaintext');
+    ok(!-f "$dest/services/harness/spec.jsonl.zst",
+        'no .zst suffix on extracted output');
 
-    # Plaintext content is human-readable
-    open my $rfh, '<', "$dest/services/harness/state.json" or die $!;
-    my $body = do { local $/; <$rfh> };
-    close $rfh;
-    like($body, qr/"kind":"harness"/, 'json content readable');
+    # The extracted tree is a valid sealed log.
+    my $log = App::Yath2::Log->new(dir => $dest);
+    isa_ok($log, ['App::Yath2::Log::Directory']);
+    is([$log->services], ['harness'], 'extracted dir has harness service');
 
-    # The extracted tree is itself a valid Directory-shape archive
-    # (yath replay /tmp/extracted/ should work). Loggers are now
-    # resolved by extension at read time -- no manifest required.
-    my $la = App::Yath2::LogArchive->open(path => $dest);
-    is(
-        $la->artifacts,
-        {
-            append  => { 'services/harness/events' => ['services/harness/events.jsonl'] },
-            replace => { 'services/harness/state'  => ['services/harness/state.json']   },
-        },
-        'LogArchive::Directory reads the extracted tree (append/replace shape)',
-    );
+    # Bytes round-trip through Artifact API.
+    my $a = $log->artifacts({service => 'harness'});
+    like($a->events, qr/note":"a"/, 'events bytes contain note a');
 };
 
 subtest 'archive + extract --no-decompress preserves .zst' => sub {
@@ -126,10 +134,10 @@ subtest 'archive + extract --no-decompress preserves .zst' => sub {
     (undef, undef, $err) = _run_cmd('App::Yath2::Command::extract', {no_decompress => 1}, $arc, $dest);
     is($err, '', 'extract: no exception');
 
-    ok(-f "$dest/services/harness/state.json.zst",   'json.zst preserved');
-    ok(-f "$dest/services/harness/events.jsonl.zst", 'jsonl.zst preserved');
-    ok(!-f "$dest/services/harness/state.json",
-        'no plaintext json when --no-decompress');
+    ok(-f "$dest/services/harness/spec.jsonl.zst",   'spec.jsonl.zst preserved');
+    ok(-f "$dest/services/harness/events.jsonl.zst", 'events.jsonl.zst preserved');
+    ok(!-f "$dest/services/harness/spec.jsonl",
+        'no plaintext spec when --no-decompress');
 };
 
 done_testing;

@@ -2,16 +2,13 @@ package Test2::Formatter::Stream2;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use IO::Handle;
 
 use Carp qw/croak confess/;
 use Scalar::Util qw/blessed/;
-use Time::HiRes qw/time/;
-use Test2::Util qw/get_tid/;
 
-use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util qw/hub_truth apply_encoding/;
 use Test2::Harness2::Util::EventEmitter;
 
@@ -21,7 +18,6 @@ use Object::HashBase qw{
     <no_header
     <no_numbers
     <no_diag
-    <stream_id
     <tb
     <tb_handles
     <emitter
@@ -39,8 +35,6 @@ sub init {
     # here and let the emitter handle the actual pipe wrapping.
     confess "Test2::Formatter::Stream2 must be loaded inside a Test2::Harness2::Collector child (T2_HARNESS2_PIPE_COUNT is not set)"
         unless $ENV{T2_HARNESS2_PIPE_COUNT};
-
-    $self->{+STREAM_ID} = 1;
 
     STDOUT->autoflush(1);
     STDERR->autoflush(1);
@@ -66,18 +60,29 @@ sub record {
     # Local is expensive! Only do it if we really need to.
     local ($\, $,) = (undef, '') if $\ || $,;
 
-    my $id = $self->{+STREAM_ID}++;
-    $self->_send_event(
-        $facets,
-        stream_id    => $id,
-        assert_count => $self->{+NO_NUMBERS} ? undef : $num,
-    );
+    # Test2 passes the running assertion counter as $num. The canonical
+    # home for the assertion number is facet_data.assert.number, which
+    # Test2 already populates upstream; we do not mirror it onto the
+    # event hash. stream_id is similarly redundant -- on-disk row
+    # position provides per-emitter ordering -- so we no longer stamp
+    # it either.
+    $self->_send_event($facets);
 }
 
 # Serialize an event and send it to the collector parent: full JSON payload as
-# an atomic message burst on STDOUT, and a tiny {"event_id":...} sync marker
-# on STDERR (when STDERR is its own pipe) so the collector can keep STDERR
-# text ordered against the events.
+# an atomic message burst on STDOUT, and a small sync marker on STDERR (when
+# STDERR is its own pipe) so the collector can keep STDERR text ordered
+# against the events.
+#
+# This formatter no longer stamps event_id / about.uuid / top-level
+# stamp / pid / tid onto the event hash. The canonical homes for those
+# fields are inside the trace facet (stamp/pid/tid) which Test2 already
+# populates upstream; event UUIDs are no longer generated at all. The
+# wire-level sync identifier the EventEmitter uses to pair STDOUT bursts
+# with STDERR sync markers lives only on the wire JSON. Downstream
+# consumers that want a stable per-event ordering key should use the
+# event's row position in events.jsonl, which is monotonic per
+# emitter by construction.
 sub _send_event {
     my $self = shift;
     my ($in, %fields) = @_;
@@ -97,15 +102,7 @@ sub _send_event {
         $event  = \%fields;
     }
 
-    my $event_id = $event->{event_id} //= $facets->{about}->{uuid} //= $fields{event_id} //= gen_uuid();
-    $facets->{about}->{uuid} //= $event_id;
-
     $event->{facet_data} = $facets;
-    $event->{event_id}   = $event_id;
-
-    $event->{stamp} //= time;
-    $event->{tid}   //= get_tid();
-    $event->{pid}   //= $$;
 
     {
         no warnings 'once';
@@ -319,11 +316,6 @@ both STDOUT and STDERR via L<Test2::Harness2::Util/apply_encoding>.
 Mirror the Test::Builder formatter flags. Affect what is written for each
 event (header / diagnostic info / assertion numbers respectively). When the
 TB bridge is active, settings are propagated to it as well.
-
-=item stream_id
-
-Monotonically-increasing stream sequence number stamped onto every event so
-the collector / loggers can preserve emission order across pipes.
 
 =item tb / tb_handles
 

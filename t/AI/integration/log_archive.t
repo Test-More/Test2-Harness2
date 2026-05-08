@@ -1,13 +1,12 @@
 use Test2::V0;
 
 use File::Temp qw/tempdir tempfile/;
-use Time::HiRes qw/sleep/;
+use Time::HiRes qw/sleep time/;
 
 use lib 't/lib';
 use Test2::Harness2::TestFile;
-use Test2::Harness2::Test::Loggers qw/classic_harness_loggers classic_test_loggers/;
 use Test2::Harness2;
-use App::Yath2::LogArchive;
+use App::Yath2::Log;
 
 sub wait_until {
     my ($check, $timeout_sec) = @_;
@@ -26,13 +25,7 @@ open my $fh, '>', $tf or die;
 print $fh "use Test2::V0; ok(1); done_testing;\n";
 close $fh;
 
-my $spawn = Test2::Harness2->spawn(
-    workdir         => $dir,
-    kill_timeout    => 5,
-    loggers         => classic_harness_loggers($dir),
-    service_loggers => classic_test_loggers(),
-    test_loggers    => classic_test_loggers(),
-);
+my $spawn = Test2::Harness2->spawn(workdir => $dir, kill_timeout => 5);
 
 $spawn->queue_test_run(files => [Test2::Harness2::TestFile->new(file => $tf)]);
 
@@ -47,38 +40,39 @@ wait_until(
 $spawn->finish;
 $spawn->wait;
 
-my $dir_la = App::Yath2::LogArchive->open(path => "$dir/logs");
-isa_ok($dir_la, 'App::Yath2::LogArchive::Directory');
+my $dir_log = App::Yath2::Log->new(dir => "$dir/logs");
+isa_ok($dir_log, ['App::Yath2::Log::Directory']);
 
-my @runs = $dir_la->runs;
+my @runs = $dir_log->runs;
 is(scalar(@runs), 1, 'exactly one run on disk');
 my $run_id = $runs[0];
 
-my $global = $dir_la->artifacts;
-ok(
-    (grep { m{^services/} } keys %{$global->{append} // {}}, keys %{$global->{replace} // {}}),
-    'global artifacts include at least one services/ entry'
-);
+# Sanity: harness service exists at the global scope.
+ok($dir_log->has_service('harness'), 'harness service present');
 
-my $run_scope = $dir_la->artifacts($run_id);
-ok(
-    scalar(keys %{$run_scope->{append} // {}}) + scalar(keys %{$run_scope->{replace} // {}}),
-    'per-run artifacts non-empty'
-);
+# Run artifact handle is non-trivial.
+my $run_a = $dir_log->artifacts($run_id);
+isa_ok($run_a, ['App::Yath2::Log::Artifact']);
 
+# Bytes of the run's spec.jsonl(.zst): non-empty.
+ok(length($run_a->spec) > 0, 'run spec non-empty');
+
+# tar.zidx round trip: archive the dir, open the file, sanity check.
 my (undef, $archive) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
 unlink $archive;
-App::Yath2::LogArchive->open(dir => "$dir/logs")->archive($archive);
+App::Yath2::Log->new(dir => "$dir/logs")->archive($archive);
 ok(-s $archive, 'archive non-empty');
 
-my $arc_la = App::Yath2::LogArchive->open(path => $archive);
-ok(
-    ref($arc_la) =~ /^App::Yath2::LogArchive::TarZIdx/,
-    'opened tar.zidx backend (' . ref($arc_la) . ')'
-);
+my $arc = App::Yath2::Log->new(file => $archive);
+isa_ok($arc, ['App::Yath2::Log::TarZIdx']);
 
-is($arc_la->artifacts,          $dir_la->artifacts,          'global artifacts round-trip');
-is([$arc_la->runs],             [$dir_la->runs],             'runs round-trip');
-is($arc_la->artifacts($run_id), $dir_la->artifacts($run_id), 'run artifacts round-trip');
+# Reader API is fully implemented for tar.zidx now: the listing /
+# artifacts methods should report the same shape the Directory log
+# reports for the same source.
+is([$arc->runs], [$run_id], 'tar.zidx: same runs as Directory log');
+ok($arc->has_service('harness'), 'tar.zidx: harness service present');
+
+my $arc_run_a = $arc->artifacts($run_id);
+ok(length($arc_run_a->spec) > 0, 'tar.zidx: run spec non-empty');
 
 done_testing;

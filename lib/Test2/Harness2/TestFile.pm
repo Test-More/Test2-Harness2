@@ -2,13 +2,13 @@ package Test2::Harness2::TestFile;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use File::Spec ();
 
 use Object::HashBase qw{
-    <file <absolute <relative
+    <absolute <relative
     <features <switches
     <category <duration <stage
     <conflicts
@@ -27,10 +27,20 @@ with 'Test2::Harness2::Role::TestFile';
 
 sub init {
     my $self = shift;
-    croak "'file' is required" unless defined $self->{+FILE};
 
-    $self->{+ABSOLUTE} //= File::Spec->rel2abs($self->{+FILE});
-    $self->{+RELATIVE} //= File::Spec->abs2rel($self->{+FILE});
+    # Accept a `file` argument for convenience; derive absolute + relative
+    # from it and then discard the value (the slot no longer exists).
+    if (my $file = delete $self->{file}) {
+        $self->{+ABSOLUTE} //= File::Spec->rel2abs($file);
+        $self->{+RELATIVE} //= File::Spec->abs2rel($file);
+    }
+
+    croak "'absolute' (or 'file') is required"
+        unless defined $self->{+ABSOLUTE} && length $self->{+ABSOLUTE};
+
+    # Ensure both derived forms are present even when only one was supplied.
+    $self->{+ABSOLUTE} //= File::Spec->rel2abs($self->{+RELATIVE});
+    $self->{+RELATIVE} //= File::Spec->abs2rel($self->{+ABSOLUTE});
 
     # HashBase slot accessors shadow the role's default methods. Seed
     # every slot the role documents a default for so the accessor
@@ -85,7 +95,7 @@ supply a value.
     use Test2::Harness2::TestFile;
 
     my $tf = Test2::Harness2::TestFile->new(
-        file      => 't/foo.t',
+        file      => 't/foo.t',   # convenience: derives absolute + relative
         category  => 'general',
         duration  => 'short',
         conflicts => ['db'],

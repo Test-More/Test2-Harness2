@@ -37,6 +37,10 @@ sub clean_output {
     # order so the renderer assigns job 1/2/... differently each run.
     $out->{output} =~ s/\bjob\s+\d+\b/job N/g;
 
+    # Normalize per-fixture job UUIDs in tables. Each regenerated
+    # archive carries fresh UUIDs; the golden file uses a placeholder.
+    $out->{output} =~ s/\b[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\b/UUID-PLACEHOLDER/g;
+
     # Strip absolute-path prefix from any repo-rooted `t/...`
     # reference anywhere in the output. The recorded archive
     # carries paths from whichever machine generated it (e.g.

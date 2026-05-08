@@ -2,7 +2,7 @@ package App::Yath2::Options::Harness;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Getopt::Yath;
 option_group {group => 'harness', category => 'Harness Options'} => sub {

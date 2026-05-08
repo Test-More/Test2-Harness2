@@ -1,16 +1,16 @@
-( PASSED )  job N    t/Yath/integration/replay/pass.tx
-( FAILED )  job N    t/Yath/integration/replay/fail.tx
 [  FAIL  ]  job N  + Fail
 (  DIAG  )  job N    Failed test 'Fail'
 (  DIAG  )  job N    at t/Yath/integration/replay/fail.tx line 3.
 < REASON >  job N    Test script returned error (Err: 1)
 < REASON >  job N    Assertion failures were encountered (Count: 1)
+( PASSED )  job N    t/Yath/integration/replay/pass.tx
+( FAILED )  job N    t/Yath/integration/replay/fail.tx
 The following jobs failed:
-+--------------------------------------+-----------------------------------+
-| Job ID                               | Test File                         |
-+--------------------------------------+-----------------------------------+
-| 019DEA13-05B0-73DA-8828-2D7912ECE82D | t/Yath/integration/replay/fail.tx |
-+--------------------------------------+-----------------------------------+
++--------+-----------------------------------+
+| Job ID | Test File                         |
++--------+-----------------------------------+
+| 2      | t/Yath/integration/replay/fail.tx |
++--------+-----------------------------------+
 Yath Result Summary
 Fail Count: 1
 File Count: 2

@@ -2,7 +2,7 @@ package Test2::Harness2::Util::File::Stream;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use Test2::Harness2::Util qw/lock_file unlock_file/;

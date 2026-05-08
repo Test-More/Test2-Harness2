@@ -11,6 +11,8 @@ use ExtUtils::MakeMaker;
 use Config qw/%Config/;
 die "OS unsupported\nTest2-Harness2 currently only works on systems that support true forking.\n"
     unless $Config{d_fork};
+die "OS unsupported\nTest2-Harness2 requires perl with 64-bit native int (\$Config{ivsize} >= 8); this perl reports ivsize=$Config{ivsize}.\n"
+    if $Config{ivsize} < 8;
 if ($ENV{AUTOMATED_TESTING}) {
     my $is_njh = 0;
     $is_njh ||= -d '/export/home/njh';
@@ -63,6 +65,10 @@ my %WriteMakefileArgs = (
     "DBIx::QuickDB" => 0,
     "Data::Dumper" => 0,
     "DateTime" => 0,
+    "DateTime::Format::ISO8601" => 0,
+    "DateTime::Format::MySQL" => 0,
+    "DateTime::Format::Pg" => 0,
+    "DateTime::Format::SQLite" => 0,
     "Email::Sender::Simple" => 0,
     "Email::Simple" => 0,
     "Email::Simple::Creator" => 0,
@@ -181,6 +187,10 @@ my %FallbackPrereqs = (
   "DBIx::QuickDB" => 0,
   "Data::Dumper" => 0,
   "DateTime" => 0,
+  "DateTime::Format::ISO8601" => 0,
+  "DateTime::Format::MySQL" => 0,
+  "DateTime::Format::Pg" => 0,
+  "DateTime::Format::SQLite" => 0,
   "Email::Sender::Simple" => 0,
   "Email::Simple" => 0,
   "Email::Simple::Creator" => 0,

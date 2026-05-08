@@ -72,10 +72,12 @@ package Fake::Tests2;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
 
-package Fake::LogArchive2;
-sub new  { bless {}, $_[0] }
-sub file { undef }
-sub dir  { undef }
+package Fake::Log2;
+sub new    { bless {}, $_[0] }
+sub file   { undef }
+sub dir    { undef }
+sub format   { 'tar' }
+sub compress { 1 }
 
 package Fake::Settings2;
 
@@ -90,7 +92,7 @@ sub new {
         finder      => Fake::Finder2->new,
         resource    => Fake::Resource2->new,
         tests       => Fake::Tests2->new,
-        log_archive => Fake::LogArchive2->new,
+        log => Fake::Log2->new,
     } => $class;
 }
 sub workspace   { $_[0]->{workspace} }
@@ -101,7 +103,7 @@ sub term        { $_[0]->{term} }
 sub finder      { $_[0]->{finder} }
 sub resource    { $_[0]->{resource} }
 sub tests       { $_[0]->{tests} }
-sub log_archive { $_[0]->{log_archive} }
+sub log { $_[0]->{log} }
 sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;
@@ -159,7 +161,10 @@ unlike($out, qr/^\{/m,        'no bare JSON objects on their own lines');
 # Renderer::Default injects a PASSED info line when harness_job_end arrives.
 like($out, qr/PASSED/, 'PASSED marker appears in rendered output');
 
-# The assertion name from the inner test should flow through the renderer.
+# Per-job assertion text flows through the renderer's depth-first
+# walk of the on-disk log (the renderer driver descends into per-job
+# events.jsonl.zst when it sees a harness_collector_start for the
+# job).
 like($out, qr/a passing assertion/, 'assertion details visible in rendered output');
 
 done_testing;

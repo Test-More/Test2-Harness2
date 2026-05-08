@@ -2,7 +2,7 @@ package Test2::Harness2::Role::Service;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use POSIX qw/:sys_wait_h getpgrp/;
@@ -121,7 +121,7 @@ sub run_on_start {
     #   * we (the child) block in emit_service_event waiting for the
     #     collector's STDERR sync ack;
     #   * the collector's parser is not draining yet (it runs after
-    #     _send_logger_metadata, which is the one waiting on us).
+    #     logger startup, which is the one waiting on us).
     #
     # The two processes deadlock for the full peer_active timeout.
     # Touching $self->client here breaks the cycle: registration is

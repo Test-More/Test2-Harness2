@@ -2,7 +2,7 @@ package App::Yath2::Filter::Quiet;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use parent 'App::Yath2::Filter';
 
@@ -29,7 +29,7 @@ App::Yath2::Filter::Quiet - Pass only job and run summary events
 
 =head1 DESCRIPTION
 
-Passes only C<harness_job_end> and C<harness_run_end> Streamer lifecycle
+Passes only C<harness_job_end> and C<harness_run_end> harness lifecycle
 events. All other events (individual assertions, diagnostics, plan, etc.)
 are dropped. Suitable for quiet output modes where the user only wants
 to know which jobs passed and which failed.

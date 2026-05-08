@@ -82,10 +82,12 @@ package Fake::TestsGroup;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
 
-package Fake::LogArchiveGroup;
-sub new  { bless {}, $_[0] }
-sub file { undef }
-sub dir  { undef }
+package Fake::LogGroup;
+sub new    { bless {}, $_[0] }
+sub file   { undef }
+sub dir    { undef }
+sub format   { 'tar' }
+sub compress { 1 }
 
 package Fake::Settings;
 
@@ -96,7 +98,7 @@ sub new {
     $a{finder}      //= Fake::FinderGroup->new;
     $a{resource}    //= Fake::ResourceGroup->new;
     $a{tests}       //= Fake::TestsGroup->new;
-    $a{log_archive} //= Fake::LogArchiveGroup->new;
+    $a{log} //= Fake::LogGroup->new;
     return bless \%a => $class;
 }
 sub workspace   { $_[0]->{workspace} }
@@ -107,7 +109,7 @@ sub term        { $_[0]->{term} }
 sub finder      { $_[0]->{finder} }
 sub resource    { $_[0]->{resource} }
 sub tests       { $_[0]->{tests} }
-sub log_archive { $_[0]->{log_archive} }
+sub log { $_[0]->{log} }
 sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 
 package main;

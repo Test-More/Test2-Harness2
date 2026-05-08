@@ -2,7 +2,7 @@ package Test2::Harness2;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use File::Path qw/make_path/;
@@ -10,7 +10,7 @@ use File::Spec ();
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util qw/parse_exit tinysleep load_module/;
+use Test2::Harness2::Util qw/parse_exit tinysleep/;
 use Test2::Harness2::Util::IPC qw/ipc_default_spawn_args/;
 use POSIX qw/WNOHANG/;
 
@@ -31,10 +31,7 @@ use Object::HashBase qw{
     <name
     <ipc_parent
     <job_id
-    <loggers
-    <service_loggers
     <test_auditor
-    <test_loggers
     <kill_timeout
     <parent_pids
     <jump_to
@@ -51,9 +48,9 @@ use Object::HashBase qw{
     +completed_runs
     +finish_after_initial_run
     +emitter
-    +artifacts
     +subscribers
     +subscriber_retry
+    +run_ord_counter
     watch_pids
     own_pgroup
 };
@@ -134,9 +131,15 @@ sub init {
     $self->{+COMPLETED_RUNS}    //= {};
     $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
-    $self->{+ARTIFACTS}         //= {};
     $self->{+SUBSCRIBERS}       //= {};
     $self->{+SUBSCRIBER_RETRY}  //= {};
+
+    # Sequential run-ord allocator (B2/B3): every accepted run gets
+    # the next ordinal integer starting at 0. The counter is per
+    # harness-process; persistent runners reuse the same harness so
+    # ords climb monotonically across runs in a session, with gaps
+    # possible (e.g. accepted-then-purged runs).
+    $self->{+RUN_ORD_COUNTER}   //= 1;
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
     croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
@@ -144,40 +147,19 @@ sub init {
 
     $self->_init_resources;
 
-    # Loggers default to empty: the caller decides what (if anything)
-    # gets written to disk. Three independent lists control the three
-    # service tiers the harness manages:
-    #
-    #   loggers          Run on the harness's OWN Collector interpose.
-    #                    A typical harness config might put a JSONL +
-    #                    JSON pair here pointing at
-    #                    "$logdir/services/$NAME.{jsonl,json}".
-    #
-    #   service_loggers  Applied to each child service the harness
-    #                    starts (RunService and resource services).
-    #                    Runs may extend or replace this list per-run
-    #                    via queue_test_run.
-    #
-    #   test_loggers     Applied to the per-test-job Collector spawned
-    #                    inside a RunService. Runs may extend or
-    #                    replace this list per-run via queue_test_run.
-    #
-    # Each slot is an arrayref of logger specs: either a blessed
-    # logger instance or an arrayref [$class, %args] that the
-    # Collector instantiates in the child process.
-    $self->{+LOGGERS}         //= [];
-    $self->{+SERVICE_LOGGERS} //= [];
-    $self->{+TEST_LOGGERS}    //= [];
+    # Loggers / observers were removed in the new_log_refactor (M2 step
+    # 4+5); the collector now writes its own spec/events/report files
+    # directly. Constructor args named `loggers`, `service_loggers`,
+    # `test_loggers`, `extend_loggers`, and `extend_test_loggers` are
+    # silently swallowed so legacy callers do not crash, but they have
+    # no effect on the on-disk layout.
+    delete $self->{loggers};
+    delete $self->{service_loggers};
+    delete $self->{test_loggers};
+    delete $self->{extend_loggers};
+    delete $self->{extend_test_loggers};
 
-    croak "'loggers' must be an arrayref"
-        unless ref($self->{+LOGGERS}) eq 'ARRAY';
-    croak "'service_loggers' must be an arrayref"
-        unless ref($self->{+SERVICE_LOGGERS}) eq 'ARRAY';
-    croak "'test_loggers' must be an arrayref"
-        unless ref($self->{+TEST_LOGGERS}) eq 'ARRAY';
-
-    # The test auditor default is still set here: it's a class-level
-    # concern, not a per-instance logger, and a run-complete
+    # The test auditor default is still set here: a run-complete
     # pass/fail verdict is useless without it.
     $self->{+TEST_AUDITOR} //= 'Test2::Harness2::Collector::Auditor::Test';
 }
@@ -215,11 +197,8 @@ sub start {
     }
 
     # Construct the service object in the pre-fork process.  init() creates
-    # $workdir/logs/services/ and populates default loggers.
+    # $workdir/logs/services/.
     my $self = $class->new(%args);
-
-    # Grab the loggers to hand to interpose before forking.
-    my $loggers = $self->{+LOGGERS};
 
     # Everything the interpose child needs to do after the pipes are wired up
     # is packaged here so it can either run inline (the normal path) or be
@@ -246,29 +225,23 @@ sub start {
     my $jump_to = $self->{+JUMP_TO};
 
     # The interpose collector has no parent service to notify -- it
-    # is the top of its own tree. ipc_parent stays undef; ipc_harness
-    # points at the service-side name so the collector can still
-    # deliver its end-of-life report to the harness if ever consumed
-    # by an external orchestrator on the same bus.
-    # Top-of-tree interpose: no ipc_parent means the Service
-    # subclass's builder cannot derive a bus_id, so pass one
-    # explicitly. The collector identifies by the harness's own
-    # bus name. is_harness_collector => 1 suppresses the
-    # collector_exiting / collector_artifacts sends that would
-    # otherwise target this collector's own (dying) child service.
-    require Test2::Harness2::Collector::Service;
-    Test2::Harness2::Collector::Service->interpose(
-        ipcm_info            => $self->ipcm_info,
-        ipc_parent           => undef,
-        ipc_run              => undef,
-        ipc_harness          => $self->{+NAME},
-        bus_id               => "collector:" . $self->{+NAME},
-        is_harness_collector => 1,
-        logdir               => $self->{+LOGDIR},
-        service_name         => $self->{+NAME},
-        loggers              => $loggers,
-        parser               => 'Test2::Harness2::Collector::Parser::IOParser',
-        parent_pids          => [$caller_pid],
+    # is the top of its own tree. ipc_parent stays undef. ipc_harness
+    # points at the service-side name so the collector identifies its
+    # owning service even though it has no upward IPC peer per F19.
+    # bus_id is passed explicitly because the harness's own collector
+    # has no parent to derive from.
+    Test2::Harness2::Collector->interpose(
+        type        => 'Service',
+        id          => $self->{+NAME},
+        logdir      => $self->{+LOGDIR},
+        ipcm_info   => $self->ipcm_info,
+        ipc_parent  => undef,
+        ipc_run     => undef,
+        ipc_harness => $self->{+NAME},
+        bus_id      => "collector:service:" . $self->{+NAME},
+        parser      => 'Test2::Harness2::Collector::Parser::IOParser',
+        parent_pids => [$caller_pid],
+        spec        => {service_name => $self->{+NAME}, role => 'harness'},
         (defined($jump_to) ? (jump_to => $jump_to, jump_payload => $run_service) : ()),
     );
 
@@ -350,14 +323,11 @@ sub request_handler_queue_test_run {
     return {ok => 0, error => "'files' must be a non-empty arrayref"}
         unless ref($files) eq 'ARRAY' && @$files;
 
-    # loggers / extend_loggers and test_loggers / extend_test_loggers
-    # carry the caller's per-run intent. The Run constructor
-    # validates mutual exclusivity and shape; surface a tidy error
-    # response rather than letting the croak escape.
+    # Logger options were dropped in the new_log_refactor (M2 step
+    # 4+5). Drop them from the payload so the Run constructor never
+    # sees them. Kept as a tidy filter so older clients passing them
+    # don't fail the request.
     my %run_logger_opts;
-    for my $k (qw/loggers extend_loggers test_loggers extend_test_loggers/) {
-        $run_logger_opts{$k} = $payload->{$k} if defined $payload->{$k};
-    }
 
     # --set-hash-seed (Phase 7.2): when both the harness and the
     # incoming run have an explicit seed, they must match. Any
@@ -383,10 +353,19 @@ sub request_handler_queue_test_run {
             if $run_seed ne $harness_seed;
     }
 
+    # Allocate the next run ordinal up-front so we can hand it to
+    # Run->from_files. A caller-supplied run_id is rejected: run ids
+    # are owned by the harness and incoming payload values would
+    # collide with the counter.
+    return {ok => 0, error => "'run_id' is allocated by the harness; do not pass it"}
+        if defined $payload->{run_id};
+
+    my $run_id = $self->{+RUN_ORD_COUNTER}++;
+
     my $ok = eval {
         my $run = Test2::Harness2::Run->from_files(
-            files => $files,
-            (defined $payload->{run_id}    ? (run_id    => $payload->{run_id})    : ()),
+            files     => $files,
+            run_id    => $run_id,
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
             %run_logger_opts,
         );
@@ -560,24 +539,56 @@ sub run_on_general_message {
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
-    # Run-scoped collector_artifacts (run_id defined) flow to the run
-    # service, which logs them as job_loggers on the run's own emitter.
-    # Global collector_artifacts (no run_id -- e.g. from a resource-
-    # service collector) merge into the in-memory ARTIFACTS map for
-    # subscriber fan-out.
-    if (defined $kind && $kind eq 'collector_artifacts') {
-        return $self->_handle_global_collector_artifacts($content)
-            unless defined $content->{run_id};
-        return;
-    }
+    # Lifecycle reflection from child collectors that route their
+    # collector_start/_end up to the harness: run-service collectors
+    # and global services. The harness collector itself has no parent
+    # and skips emission entirely (per F19) so we never receive its
+    # own pair.
+    return $self->_handle_collector_start($content)
+        if defined $kind && $kind eq 'collector_start';
 
-    # Run service forwarded its current artifact set so any run-scoped
-    # subscriber can be brought up to date. Merge into our global map
-    # and fan out.
-    return $self->_handle_run_artifacts_update($content)
-        if defined $kind && $kind eq 'run_artifacts_update';
+    return $self->_handle_collector_end($content)
+        if defined $kind && $kind eq 'collector_end';
 
     warn "Test2::Harness2: unhandled general message kind: " . (defined $kind ? "'$kind'" : '(none)') . "\n";
+
+    return;
+}
+
+# Reflect a collector_start IPC (from a run-service collector or a
+# global-service collector) into the harness's own outgoing event
+# stream. The harness's own collector picks it up via the standard
+# pipeline and writes a harness_collector_start row into
+# services/harness/events.jsonl.zst. That row is the entry-point a
+# Log iterator follows to descend into a run's or global service's
+# events.jsonl.zst.
+sub _handle_collector_start {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $em = $self->{+EMITTER} or return;
+    # Emit as a top-level harness_collector_start facet (NOT nested
+    # under facet_data.harness) so the Log iterator's depth-first walk
+    # can detect it via $event->{facet_data}{harness_collector_start}.
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_start => {%$content},
+        },
+    });
+
+    return;
+}
+
+sub _handle_collector_end {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $em = $self->{+EMITTER} or return;
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_end => {%$content},
+        },
+    });
 
     return;
 }
@@ -627,140 +638,18 @@ sub _handle_resource_state_message {
     return;
 }
 
-sub _seed_artifacts_from_loggers {
-    my $self = shift;
-
-    # Harness LOGGERS are final after service init: no logger added or
-    # removed after this point reaches the harness's own interpose
-    # collector (already forked). We build metadata eagerly here so
-    # the in-memory ARTIFACTS map (used for fan-out to artifact
-    # subscribers) reflects the full configured logger set, including
-    # arrayref specs ([$class, %args]) which the collector child
-    # otherwise instantiates independently in its own process.
-    for my $item (@{$self->{+LOGGERS} // []}) {
-        my $inst = $self->_logger_instance_for_metadata($item) or next;
-        next unless $inst->can('metadata');
-        $inst->prepare_output_locations;
-        my $meta = $inst->metadata;
-        next unless ref($meta) eq 'HASH';
-        $self->_merge_artifacts({ref($inst) => [$meta]});
-    }
-
-    return;
-}
-
-# Return an instance suitable for calling metadata()/prepare_output_locations.
-# Blessed specs are returned as-is. Arrayref specs ([$class, %args]) and
-# bare class-name strings are instantiated with harness-scope identity so
-# metadata() resolves output paths the same way the interpose collector's
-# own instantiation would. This does not open file handles (loggers defer
-# that to startup()), so it is fork-safe.
-sub _logger_instance_for_metadata {
-    my ($self, $item) = @_;
-
-    return $item if blessed($item);
-
-    my ($class, @args);
-    if (ref($item) eq 'ARRAY') {
-        ($class, @args) = @$item;
-    }
-    elsif (!ref($item) && defined $item && length $item) {
-        $class = $item;
-    }
-    else {
-        return undef;
-    }
-
-    my %identity = (
-        logdir       => $self->{+LOGDIR},
-        service_name => $self->{+NAME},
-        ipcm_info    => $self->ipcm_info,
-    );
-
-    my $inst;
-    my $ok  = eval { load_module($class); $inst = $class->new(%identity, @args); 1 };
-    my $err = $@;
-    unless ($ok) {
-        warn "Test2::Harness2: failed to pre-instantiate logger '$class' for metadata: $err";
-        return undef;
-    }
-
-    return $inst;
-}
-
-sub _merge_artifacts {
-    my ($self, $loggers) = @_;
-
-    my $logdir    = $self->{+LOGDIR};
-    my $artifacts = $self->{+ARTIFACTS} //= {};
-
-    for my $class (keys %$loggers) {
-        for my $meta (@{$loggers->{$class}}) {
-            for my $key (keys %$meta) {
-                next unless $key =~ /_file\z/;
-                my $abs = $meta->{$key};
-                next unless defined $abs && length $abs;
-                my $rel = File::Spec->abs2rel($abs, $logdir);
-                if (exists $artifacts->{$rel} && $artifacts->{$rel} ne $class) {
-                    warn "Test2::Harness2: artifact '$rel' already claimed by $artifacts->{$rel}, ignoring duplicate from $class\n";
-                    next;
-                }
-                $artifacts->{$rel} = $class;
-            }
-        }
-    }
-
-    return;
-}
-
-sub _handle_global_collector_artifacts {
-    my ($self, $content) = @_;
-
-    $self->_merge_artifacts($content->{loggers} // {});
-    $self->_notify_artifact_subscribers(scope => 'harness');
-    return;
-}
-
-# Merge a run service's current artifact table into our global map
-# (entries are already logdir-relative) and notify run-scope
-# subscribers. The mapping lives only in memory; readers of the
-# on-disk archive derive the same map by extension lookup.
-sub _handle_run_artifacts_update {
-    my ($self, $content) = @_;
-
-    my $run_id    = $content->{run_id};
-    my $artifacts = $content->{artifacts};
-
-    return unless defined $run_id && ref($artifacts) eq 'HASH';
-
-    my $all = $self->{+ARTIFACTS} //= {};
-    for my $rel (keys %$artifacts) {
-        next unless defined $rel && length $rel;
-        my $class = $artifacts->{$rel};
-        if (exists $all->{$rel} && defined($all->{$rel}) && $all->{$rel} ne $class) {
-            warn "Test2::Harness2: artifact '$rel' already claimed by $all->{$rel}, ignoring duplicate from $class\n";
-            next;
-        }
-        $all->{$rel} = $class;
-    }
-
-    $self->_notify_artifact_subscribers(scope => 'run', run_id => $run_id);
-    return;
-}
-
 # ----------------------------------------------------------------------
-# Subscription API. Consumers (typically App::Yath2::Streamer) ask to
-# be told when run state or artifact tables change. The harness is the
-# only service that carries this registry; run services publish state
-# upstream via _send_to_harness, the harness then fans out to any
-# matching subscribers.
+# Subscription API. Consumers (typically the test command) ask to
+# be told when run state changes. The harness is the only service that
+# carries this registry; run services publish state upstream via
+# _send_to_harness, the harness then fans out to any matching
+# subscribers.
 #
 # Registry shape:
 #   { $peer_name => {
-#         global    => $bool,      # harness-scope artifacts + (future) harness state
-#         runs      => { $id=>1 }, # run ids the subscriber watches
-#         state     => $bool,      # want state change messages
-#         artifacts => $bool,      # want artifact change messages
+#         global => $bool,      # (future) harness-level state
+#         runs   => { $id=>1 }, # run ids the subscriber watches
+#         state  => $bool,      # want state change messages
 #     } }
 sub request_handler_subscribe {
     my ($self, $payload, $msg) = @_;
@@ -769,9 +658,8 @@ sub request_handler_subscribe {
     return {ok => 0, error => "subscribe requires an IPC message context"}
         unless defined $peer && length $peer;
 
-    my $global    = $payload->{global}    ? 1 : 0;
-    my $state     = $payload->{state}     ? 1 : 0;
-    my $artifacts = $payload->{artifacts} ? 1 : 0;
+    my $global = $payload->{global} ? 1 : 0;
+    my $state  = $payload->{state}  ? 1 : 0;
 
     my @run_ids;
     push @run_ids => $payload->{run}     if defined $payload->{run};
@@ -786,27 +674,16 @@ sub request_handler_subscribe {
     }
 
     my $entry = $self->{+SUBSCRIBERS}->{$peer} //= {
-        global    => 0,
-        runs      => {},
-        state     => 0,
-        artifacts => 0,
+        global => 0,
+        runs   => {},
+        state  => 0,
     };
-    $entry->{global}    ||= $global;
-    $entry->{state}     ||= $state;
-    $entry->{artifacts} ||= $artifacts;
+    $entry->{global}     ||= $global;
+    $entry->{state}      ||= $state;
     $entry->{runs}->{$_} = 1 for @run_ids;
 
-    # Send initial snapshots for the freshly-added scope so the
-    # subscriber does not need to separately request them. Artifacts
-    # are sent before state to reduce the race where a state message
-    # references an artifact the consumer has not been told about yet.
-    if ($artifacts) {
-        $self->_send_artifact_snapshot($peer, scope => 'harness')
-            if $global;
-        for my $rid (@run_ids) {
-            $self->_send_artifact_snapshot($peer, scope => 'run', run_id => $rid);
-        }
-    }
+    # Send an initial state snapshot for each freshly-added run so the
+    # subscriber does not need to separately request it.
     if ($state) {
         for my $rid (@run_ids) {
             $self->_send_state_snapshot($peer, run_id => $rid);
@@ -829,8 +706,8 @@ sub request_handler_unsubscribe {
     return {ok => 1};
 }
 
-# Fan-out. Called from _handle_run_state_update and artifact merge
-# sites. Full snapshot each time; consumers diff on their side.
+# Fan-out. Called from _handle_run_state_update. Full snapshot each
+# time; consumers diff on their side.
 sub _notify_state_subscribers {
     my ($self, $run_id, $run_data) = @_;
     return unless defined $run_id;
@@ -848,29 +725,6 @@ sub _notify_state_subscribers {
                 state  => $run_data,
             },
         );
-    }
-    return;
-}
-
-sub _notify_artifact_subscribers {
-    my ($self, %params) = @_;
-    my $scope  = $params{scope};
-    my $run_id = $params{run_id};
-
-    return unless defined $scope;
-
-    for my $peer (keys %{$self->{+SUBSCRIBERS}}) {
-        my $entry = $self->{+SUBSCRIBERS}->{$peer};
-        next unless $entry->{artifacts};
-
-        if ($scope eq 'harness') {
-            next unless $entry->{global};
-            $self->_send_artifact_snapshot($peer, scope => 'harness');
-        }
-        elsif ($scope eq 'run') {
-            next unless defined $run_id && $entry->{runs}->{$run_id};
-            $self->_send_artifact_snapshot($peer, scope => 'run', run_id => $run_id);
-        }
     }
     return;
 }
@@ -907,42 +761,6 @@ sub _send_state_snapshot {
             state  => $run_data,
         },
     );
-}
-
-sub _send_artifact_snapshot {
-    my ($self, $peer, %params) = @_;
-    my $scope = $params{scope} or return;
-
-    my $artifacts;
-    if ($scope eq 'harness') {
-        $artifacts = {%{$self->{+ARTIFACTS} // {}}};
-    }
-    elsif ($scope eq 'run') {
-        my $run_id = $params{run_id} or return;
-        # Filter the harness's merged map down to entries scoped to
-        # this run. Matches both run-level files (runs/$run_id.jsonl,
-        # runs/$run_id.json) and nested paths (runs/$run_id/tests/...,
-        # runs/$run_id/services/...) so subscribers tail the run
-        # service's own log alongside per-test artifacts.
-        my $all = $self->{+ARTIFACTS} // {};
-        $artifacts = {
-            map  { $_ => $all->{$_} }
-            grep { m{^runs/\Q$run_id\E(?:[./]|\z)} }
-                keys %$all
-        };
-    }
-    else {
-        return;
-    }
-
-    my $msg = {
-        type      => 'artifacts',
-        item      => ($scope eq 'harness' ? 'harness' : 'run'),
-        artifacts => $artifacts,
-    };
-    $msg->{run_id} = $params{run_id} if $scope eq 'run';
-
-    $self->_send_to_subscriber($peer => $msg);
 }
 
 # Deliver one message to a subscriber. Uses the service's own
@@ -1337,7 +1155,6 @@ sub run_should_end {
 # we only supply the harness-specific startup step.
 sub service_on_start {
     my $self = shift;
-    $self->_seed_artifacts_from_loggers;
     $self->start_resource_services($self->{+RESOURCES}, scope => 'global');
     return;
 }
@@ -1608,9 +1425,8 @@ sub _finalize_run_if_complete {
 # All three paths route the job through a real Collector launch --
 # skip runs a one-liner that calls skip_all, fail runs a one-liner
 # that dies, abort is per-job fail for the whole remaining run.
-# That way the loggers, auditor, and on-disk artifacts are produced
-# the same way they would be for a real test; no job is ever silently
-# dropped.
+# That way the auditor and on-disk artifacts are produced the same
+# way they would be for a real test; no job is ever silently dropped.
 #
 # Returns 'launched', 'defer' (limiter full), or 'skip' (the
 # unavailable-action launch is impossible: e.g. no job-limiter is
@@ -1786,14 +1602,6 @@ sub _ensure_run_service_started {
     my $run_id = $run->run_id;
     my $bus    = "run-$run_id";
 
-    # Effective logger lists for this run: the harness's defaults,
-    # possibly overridden or extended by the Run's own intent slots.
-    # service_loggers flow to the RunService's own event output and
-    # to resource services scoped to this run; test_loggers flow to
-    # each per-job Collector launched inside the run.
-    my $svc_loggers  = $run->effective_service_loggers($self->{+SERVICE_LOGGERS});
-    my $test_loggers = $run->effective_test_loggers($self->{+TEST_LOGGERS});
-
     my $pid = Test2::Harness2::RunService->spawn(
         workdir      => $self->{+WORKDIR},
         logdir       => $self->{+LOGDIR},
@@ -1802,8 +1610,6 @@ sub _ensure_run_service_started {
         parent_pids  => [$$],
         harness_name => $self->{+NAME},
         kill_timeout => $self->{+KILL_TIMEOUT},
-        loggers      => $svc_loggers,
-        test_loggers => $test_loggers,
     );
 
     $self->{+RUN_SERVICES}->{$run_id} = {
@@ -1936,14 +1742,10 @@ sub _launch_job {
                 request   => 'launch_job',
                 run_id    => $run_id,
                 job_id    => $job_id,
-                job_try   => 0,
+                job_try   => 1,
                 test_file => $job->test_file_abs,
                 env       => \%env,
                 auditor   => $self->{+TEST_AUDITOR},
-                # Omit loggers from the payload: the run service uses
-                # its own TEST_LOGGERS slot (populated at spawn from
-                # the run's effective test_loggers) when the payload
-                # doesn't override.
                 (defined $opts{launch} ? (launch => $opts{launch}) : ()),
             },
         );

@@ -2,7 +2,7 @@ package App::Yath2::Options::Run;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Util::UUID qw/gen_uuid/;

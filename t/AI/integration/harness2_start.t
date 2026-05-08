@@ -1,12 +1,12 @@
 use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;
-use Cpanel::JSON::XS qw/decode_json/;
 use POSIX qw/_exit/;
 
 use lib 't/lib';
 use Test2::Harness2::TestFile;
-use Test2::Harness2::Test::Loggers qw/classic_harness_loggers classic_test_loggers/;
+use Test2::Harness2::Util::Zstd qw/open_zstd_reader/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use Test2::Harness2;
 
@@ -27,8 +27,6 @@ my $pid = fork // die $!;
 if (!$pid) {
     Test2::Harness2->start(
         workdir                  => $dir,
-        loggers                  => classic_harness_loggers($dir),
-        test_loggers             => classic_test_loggers(),
         test_run                 => {files => [Test2::Harness2::TestFile->new(file => $test_file)]},
         finish_after_initial_run => 1,
     );
@@ -39,23 +37,24 @@ waitpid $pid, 0;
 my $exit = $? >> 8;
 is($exit, 0, 'service exited cleanly');
 
-ok(-e "$dir/logs/services/harness/events.jsonl", 'service log written');
+ok(-e "$dir/logs/services/harness/events.jsonl.zst", 'service events log written');
+ok(-e "$dir/logs/services/harness/spec.jsonl.zst",   'service spec log written');
+ok(-e "$dir/logs/services/harness/report.jsonl.zst", 'service report log written');
 
-# The run's services/ scratch dir is still created at RunService
-# construction (resources scoped to the run land under there), so a
-# run_id directory is visible even with no service loggers.
 opendir my $dh, "$dir/logs/runs" or die "Cannot open $dir/logs/runs: $!";
 my @run_dirs = grep { !/^\./ && -d "$dir/logs/runs/$_" } readdir $dh;
 closedir $dh;
 is(scalar @run_dirs, 1, 'one run dir');
 
-# No .json / .jsonl assertion here: this test does not pass any
-# service_loggers, so the run service deliberately writes nothing.
-
-# Read the service log and confirm key events are present.
-open my $slog, '<', "$dir/logs/services/harness/events.jsonl" or die "Cannot open harness.jsonl: $!";
-my @events = map { decode_json($_) } grep { /\S/ } <$slog>;
-close $slog;
+# Read the service events log and confirm key events made it through.
+my $r = open_zstd_reader("$dir/logs/services/harness/events.jsonl.zst");
+my @events;
+while (defined(my $line = $r->readline)) {
+    chomp $line;
+    next unless length $line;
+    push @events, decode_json($line);
+}
+$r->close;
 
 my %kinds = map { ($_->{facet_data}{harness}{kind} // '') => 1 } @events;
 ok($kinds{service_started}, 'service_started event present');

@@ -2,7 +2,7 @@ package Test2::Harness2::Spawn;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use POSIX qw/:sys_wait_h/;
@@ -158,13 +158,12 @@ sub wait_until_idle {
     }
 }
 
-# Ask the harness to forward state and/or artifact updates to this
-# handle's IPC client. %params are the harness's subscribe payload:
-#   global    => $bool
-#   run       => $run_id
-#   runs      => [$run_id1, ...]
-#   state     => $bool
-#   artifacts => $bool
+# Ask the harness to forward state updates to this handle's IPC
+# client. %params are the harness's subscribe payload:
+#   global => $bool
+#   run    => $run_id
+#   runs   => [$run_id1, ...]
+#   state  => $bool
 # Croaks if the harness returns an error (e.g. unknown run_id).
 sub subscribe {
     my $self = shift;

@@ -2,7 +2,7 @@ package Test2::Harness2::RunService;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use File::Path qw/make_path/;
@@ -31,8 +31,6 @@ use Object::HashBase qw{
     <ipcm_info
     <parent_pids
     <harness_name
-    <loggers
-    <test_loggers
     <collector_grace_secs
     +run
     +run_state
@@ -40,9 +38,14 @@ use Object::HashBase qw{
     <resource_services
     +test_jobs
     +completed_job_ids
+    +completed_job_states
     +pending_synth_completions
     +emitter
-    +artifacts
+    +started_at
+    +ended_at
+    +run_pass
+    +run_failing_emitted
+    +run_completed_emitted
     watch_pids
     own_pgroup
 };
@@ -110,23 +113,24 @@ sub init {
     $self->{+RESOURCE_SERVICES}         //= {};
     $self->{+TEST_JOBS}                 //= {};
     $self->{+COMPLETED_JOB_IDS}         //= {};
+    $self->{+COMPLETED_JOB_STATES}      //= {};
     $self->{+PENDING_SYNTH_COMPLETIONS} //= {};
     $self->{+WATCH_PIDS}                //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}                //= 0;
     $self->{+COLLECTOR_GRACE_SECS}      //= DEFAULT_COLLECTOR_GRACE_SECS;
-    $self->{+ARTIFACTS}                 //= {};
 
-    # Logger lists default to empty: the caller (typically the harness,
-    # via effective_service_loggers / effective_test_loggers) decides
-    # what, if anything, gets written to disk. Mirrors the harness's
-    # own "caller decides" pattern on its LOGGERS slot.
-    $self->{+LOGGERS}      //= [];
-    $self->{+TEST_LOGGERS} //= [];
+    # Run-level pass/fail latched by run_failing emission. Starts undef
+    # (no jobs seen yet); flips to 1 implicitly on first successful job
+    # observation, and to 0 on the first failing job (which also emits
+    # run_failing into the local event stream).
+    $self->{+RUN_PASS}               = 1;
+    $self->{+RUN_FAILING_EMITTED}    = 0;
+    $self->{+RUN_COMPLETED_EMITTED}  = 0;
 
-    croak "'loggers' must be an arrayref"
-        unless ref($self->{+LOGGERS}) eq 'ARRAY';
-    croak "'test_loggers' must be an arrayref"
-        unless ref($self->{+TEST_LOGGERS}) eq 'ARRAY';
+    # Logger / observer plumbing was removed in the new_log_refactor
+    # (M2 step 4+5); ignore any lingering caller-supplied slots.
+    delete $self->{loggers};
+    delete $self->{test_loggers};
 
     # The Run is now an immutable spec; lifecycle state lives on a
     # paired Run::State the run service owns. Construct the State
@@ -183,20 +187,11 @@ sub request_handler_launch_job {
     }
 
     my $job_id   = $payload->{job_id};
-    my $job_try  = $payload->{job_try} // 0;
+    my $job_try  = $payload->{job_try} // 1;
     my $run_id   = $payload->{run_id}  // $self->{+RUN_ID};
     my $log_file = $payload->{log_file};
     my $env      = $payload->{env} // {};
     my $auditor  = $payload->{auditor};
-    # Per-job logger spec list. Defaults to the RunService's own
-    # TEST_LOGGERS (set at spawn time from the run's effective
-    # test_loggers list). Callers can override per-launch via the
-    # payload -- not used from the standard harness path but kept
-    # for targeted launches (e.g. unavailable-action skip /
-    # unavailable-action fail). This service no longer injects any
-    # hard-coded JSONL / JSON pair -- if the caller wants those, they
-    # include the specs (typically with placeholder paths, see below).
-    my $payload_loggers = $payload->{loggers} // $self->{+TEST_LOGGERS} // [];
     my $test_file_abs   = $payload->{test_file};
     my $launch_cmd      = $payload->{launch};
 
@@ -221,41 +216,45 @@ sub request_handler_launch_job {
         $launch_cmd = [$^X, (map { "-I$_" } @extra_inc), '-Ilib', $test_file_abs];
     }
 
-    # Default the payload-level log_file only if the caller wants one;
-    # loggers are otherwise driven entirely by the payload_loggers
-    # specs. Kept for back-compat with callers that pass log_file
-    # explicitly.
     $log_file //= undef;
 
-    # Snapshot-style loggers (JSON sidecar) need a 'spec' object to
-    # serialize at startup. When the caller did not provide one,
-    # synthesize a minimal TestFile from the launch payload's
-    # test_file path so the resulting .json includes the relative
-    # and absolute test-file paths. Callers that supply their own
-    # spec are left alone.
     my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
 
-    my @logger_specs = map { _maybe_inject_test_file_spec($_, $test_file_spec) } @$payload_loggers;
+    # queued_at is recorded once per job at run service init in
+    # _seed_run_state. Pull it back out here so the per-job
+    # spec.jsonl artifact carries the queue-time stamp -- renderers
+    # use it instead of the (now-retired) run_mutation snapshot.
+    my $queued_at;
+    if (my $rs = $self->{+RUN_STATE}) {
+        my $r = $rs->results->{$job_id};
+        $queued_at = $r->{queued_at} if $r && defined $r->{queued_at};
+    }
 
     my $handle;
     my $spawn_ok = eval {
-        require Test2::Harness2::Collector::Test;
-        $handle = Test2::Harness2::Collector::Test->spawn(
+        $handle = Test2::Harness2::Collector->spawn(
+            type         => 'Job',
+            id           => $job_id,
+            run_id       => $run_id,
+            job_try      => $job_try,
             launch       => $launch_cmd,
             new_pgroup   => 1,
             parent_pids  => [$$],
             env_vars     => {T2_FORMATTER => 'Stream2', %$env},
             logdir       => $self->{+LOGDIR},
-            run_id       => $run_id,
-            job_id       => $job_id,
-            job_try      => $job_try,
             ipcm_info    => $self->ipcm_info,
             ipc_parent   => $self->{+NAME},
             ipc_run      => $self->{+NAME},
             ipc_harness  => $self->{+HARNESS_NAME},
             kill_timeout => $self->{+KILL_TIMEOUT},
+            spec         => {
+                %{ $test_file_spec->TO_JSON },
+                run_id    => $run_id,
+                job_id    => $job_id,
+                job_try   => $job_try,
+                (defined $queued_at ? (queued_at => $queued_at) : ()),
+            },
             (defined $auditor ? (auditor => $auditor) : ()),
-            loggers => [@logger_specs],
         );
         1;
     };
@@ -341,23 +340,37 @@ sub service_started_fields {
 sub service_on_start {
     my $self = shift;
 
-    # Stamp the start time on the State so the persisted state.json
-    # has it the moment any consumer reads it. Idempotent.
+    # Stamp the start time on the State so the persisted
+    # report.jsonl.zst row has it once the run service exits.
+    # Idempotent.
     $self->{+RUN_STATE}->mark_started;
 
-    # Emit run_queued so the JSON logger writes the immutable Run
-    # spec to runs/<run_id>/spec.json.zst. Sent before run_mutation
-    # so the spec is on disk by the time any state-consumer wakes
-    # up; the spec is queue-time-frozen and never changes after.
+    # Mirror the start stamp on our own slot so the collector_report
+    # facet emitted at shutdown can carry it without round-tripping
+    # through Run::State.
+    $self->{+STARTED_AT} //= time;
+
+    # Skinny run-level transition events. Renderers consume these
+    # plus per-job spec.jsonl / report.jsonl artifacts; the bulky
+    # full-snapshot run_mutation event was retired (it shipped a
+    # complete results map on every state change, growing O(N^2)
+    # with job count). Authoritative state mirroring still flows
+    # to the harness via the run_state_update IPC channel below.
+    my @job_ids = map { $_->job_id } @{$self->{+RUN}->jobs};
     $self->_emit_run_log_event(
-        kind     => 'run_queued',
-        run_data => $self->{+RUN}->TO_JSON,
+        kind       => 'run_queued',
+        queued_at  => $self->{+RUN}->created_at,
+        total_jobs => scalar(@job_ids),
+        job_ids    => \@job_ids,
+    );
+    $self->_emit_run_log_event(
+        kind       => 'run_started',
+        started_at => $self->{+STARTED_AT},
     );
 
-    # Emit an initial run_mutation so the JSON logger lands a file
-    # immediately, even for a run that never mutates during its
-    # lifetime (e.g. all jobs skipped due to broken resources).
-    $self->_broadcast_run_state;
+    # Authoritative full-snapshot mirror to the harness. IPC only;
+    # nothing on disk.
+    $self->_send_run_state_to_harness;
 
     # Bring up the run's resource services. The harness has already
     # validated the resource set (needed + non-permanent) before
@@ -517,6 +530,7 @@ sub _handle_gen_msg_test_job_started {
 
     $self->_emit_run_log_event(
         kind     => 'job_started',
+        stamp    => $started_at,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $job_id,
@@ -524,7 +538,7 @@ sub _handle_gen_msg_test_job_started {
         },
     );
 
-    $self->_broadcast_run_state;
+    $self->_send_run_state_to_harness;
     return;
 }
 
@@ -533,6 +547,7 @@ sub _handle_gen_msg_test_job_diagnosing {
 
     $self->_emit_run_log_event(
         kind     => 'job_diagnosing',
+        stamp    => time,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $content->{job_id},
@@ -547,12 +562,84 @@ sub _handle_gen_msg_test_job_failing {
 
     $self->_emit_run_log_event(
         kind     => 'job_failing',
+        stamp    => time,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $content->{job_id},
             job_try => $content->{job_try},
         },
     );
+
+    # First failing job in the run -- flip run_pass to 0 and emit
+    # run_failing into our local event stream so the run collector
+    # records it in runs/<id>/events.jsonl.zst. Subsequent failing
+    # jobs do not re-emit (state-flip event, not per-failure
+    # broadcast).
+    if (!$self->{+RUN_FAILING_EMITTED}) {
+        $self->{+RUN_FAILING_EMITTED} = 1;
+        $self->{+RUN_PASS}            = 0;
+
+        $self->_emit_run_failing(
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+        );
+    }
+
+    return;
+}
+
+# Emit run_failing on the run service's own outgoing event stream.
+# Run collector picks it up via the standard pipeline and writes a
+# row carrying the harness facet under runs/<id>/events.jsonl.zst.
+sub _emit_run_failing {
+    my ($self, %fields) = @_;
+
+    my $em = $self->{+EMITTER} or return;
+
+    $em->emit_event(
+        run_failing => {
+            run_id  => $self->{+RUN_ID},
+            job_id  => $fields{job_id},
+            job_try => $fields{job_try},
+            stamp   => time,
+        },
+    );
+
+    return;
+}
+
+# Reflect a collector_start IPC from a child collector (job or
+# run-scoped service) into our own outgoing event stream. The run's
+# collector picks it up via the standard pipeline and writes a
+# harness_collector_start row into runs/<run_id>/events.jsonl.zst.
+# This is the discovery hook a Log iterator uses to descend into
+# the child collector's events.jsonl.zst.
+sub _handle_gen_msg_collector_start {
+    my ($self, $content) = @_;
+
+    my $em = $self->{+EMITTER} or return;
+    # Top-level facet (not nested in facet_data.harness) so the Log
+    # iterator can spot it via $event->{facet_data}{harness_collector_start}
+    # and descend into the child collector's events.jsonl.zst.
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_start => {%$content},
+        },
+    });
+
+    return;
+}
+
+sub _handle_gen_msg_collector_end {
+    my ($self, $content) = @_;
+
+    my $em = $self->{+EMITTER} or return;
+    $em->emit_raw({
+        facet_data => {
+            harness_collector_end => {%$content},
+        },
+    });
+
     return;
 }
 
@@ -561,12 +648,33 @@ sub _handle_gen_msg_test_job_completed {
 
     my $job_id = $content->{job_id} // return;
 
-    # Idempotent guard: the observer-emitted message and the
+    # Idempotent guard: the auditor-emitted message and the
     # watchdog-synthesized message can race. First one wins; the
     # second is dropped.
     return if $self->{+COMPLETED_JOB_IDS}->{$job_id};
     $self->{+COMPLETED_JOB_IDS}->{$job_id} = 1;
     delete $self->{+PENDING_SYNTH_COMPLETIONS}->{$job_id};
+
+    # Stash the full per-job state hash so the run service's eventual
+    # collector_report aggregate (M2 step 6+9) can be assembled from
+    # in-memory state without disk reads (per F18). The payload from
+    # Auditor::Test._emit_completed already carries every field we
+    # need (pass/exit/plan/halt/counts/timing); just snapshot it.
+    $self->{+COMPLETED_JOB_STATES}->{$job_id} = {%$content};
+
+    # Flip the run's pass state if a job came in failing without
+    # having previously emitted test_job_failing (e.g. a synthesized
+    # completion of a vanished collector). The first run_failing
+    # emission wins; subsequent flips are silent.
+    if (!$content->{pass} && !$self->{+RUN_FAILING_EMITTED}) {
+        $self->{+RUN_FAILING_EMITTED} = 1;
+        $self->{+RUN_PASS}            = 0;
+
+        $self->_emit_run_failing(
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+        );
+    }
 
     # Record the authoritative verdict + exit details keyed by
     # job_id so the State snapshot can carry them out to the harness
@@ -594,73 +702,21 @@ sub _handle_gen_msg_test_job_completed {
     my $err = $@;
     warn "run service could not mark job '$job_id' done: $err" unless $ok;
 
+    # Skinny completion event: just enough for the renderer to flip
+    # state. Detailed timing / counts / exit_decoded live in the per-
+    # job report.jsonl artifact; renderers fetch on demand.
     $self->_emit_run_log_event(
         kind     => 'job_completed',
+        stamp    => $content->{completed_at} // time,
         job_info => {
             run_id  => $content->{run_id},
             job_id  => $job_id,
             job_try => $content->{job_try},
         },
-        exit       => $content->{exit},
-        codes      => $content->{codes},
-        pass       => $content->{pass},
-        pass_count => $content->{pass_count},
-        fail_count => $content->{fail_count},
+        pass => $content->{pass},
     );
 
-    $self->_broadcast_run_state;
-    return;
-}
-
-sub _handle_gen_msg_collector_artifacts {
-    my ($self, $content) = @_;
-
-    $self->_merge_artifacts($content->{loggers} // {});
-
-    # Forward the merged artifact set to the harness so it can fan out
-    # to any run-scoped subscribers. The mapping is in-memory only;
-    # consumers reading the on-disk archive derive the same map from
-    # the file tree (extension -> Logger::<XYZ>).
-    $self->_send_to_harness({
-        kind      => 'run_artifacts_update',
-        run_id    => $self->{+RUN_ID},
-        artifacts => {%{$self->{+ARTIFACTS} // {}}},
-    });
-
-    $self->_emit_run_log_event(
-        kind     => 'job_loggers',
-        job_info => {
-            run_id  => $content->{run_id},
-            job_id  => $content->{job_id},
-            job_try => $content->{job_try},
-        },
-        loggers => $content->{loggers} // {},
-    );
-    return;
-}
-
-sub _merge_artifacts {
-    my ($self, $loggers) = @_;
-
-    my $logdir    = $self->{+LOGDIR};
-    my $artifacts = $self->{+ARTIFACTS} //= {};
-
-    for my $class (keys %$loggers) {
-        for my $meta (@{$loggers->{$class}}) {
-            for my $key (keys %$meta) {
-                next unless $key =~ /_file\z/;
-                my $abs = $meta->{$key};
-                next unless defined $abs && length $abs;
-                my $rel = File::Spec->abs2rel($abs, $logdir);
-                if (exists $artifacts->{$rel} && $artifacts->{$rel} ne $class) {
-                    warn "Test2::Harness2::RunService: artifact '$rel' already claimed by $artifacts->{$rel}, ignoring duplicate from $class\n";
-                    next;
-                }
-                $artifacts->{$rel} = $class;
-            }
-        }
-    }
-
+    $self->_send_run_state_to_harness;
     return;
 }
 
@@ -685,27 +741,20 @@ sub _emit_run_log_event {
     return;
 }
 
-# After any mutation to the Run::State: fire a run_mutation event onto
-# the run's own emitter (so the JSON logger will overwrite its snapshot)
-# and send a run_state_update IPC to the harness carrying the full
-# State->TO_JSON payload so the harness's mirror stays in sync.
-#
-# Full snapshots, not diffs. Simpler, and the payloads are small
-# enough that per-mutation replay is not a concern.
-sub _broadcast_run_state {
+# Send a run_state_update IPC to the harness with the full
+# State->TO_JSON snapshot so the harness's mirror stays authoritative.
+# IPC only -- the on-disk run-events stream carries skinny transition
+# events instead (run_queued / run_started / job_started /
+# job_completed / run_failing / run_completed). Renderers reconstruct
+# whatever per-job detail they need from spec.jsonl / report.jsonl
+# artifacts.
+sub _send_run_state_to_harness {
     my $self = shift;
-
-    my $snap = $self->{+RUN_STATE}->TO_JSON;
-
-    $self->_emit_run_log_event(
-        kind     => 'run_mutation',
-        run_data => $snap,
-    );
 
     $self->_send_to_harness({
         kind     => 'run_state_update',
         run_id   => $self->{+RUN_ID},
-        run_data => $snap,
+        run_data => $self->{+RUN_STATE}->TO_JSON,
     });
 
     return;
@@ -758,13 +807,136 @@ sub run_on_cleanup {
     # Stamp finish time + completed flag on the State so the persisted
     # snapshot reflects the terminal state.
     $self->{+RUN_STATE}->mark_finished;
+    $self->{+ENDED_AT} //= time;
 
-    # Final run_mutation so the JSON logger's cached snapshot
-    # reflects the run's terminal state before the collector shuts
-    # down and writes the sidecar file.
-    $self->_broadcast_run_state;
+    # Final run_state_update IPC so the harness mirror sees the
+    # terminal state before run_completed lands.
+    $self->_send_run_state_to_harness;
+
+    # Emit the terminal run_completed + collector_report event. The
+    # run collector picks up the collector_report facet via its
+    # write_phase and merges it into runs/<id>/report.jsonl.zst at
+    # exit (per F3/F4: single event, two facets).
+    $self->emit_run_completed;
 
     $self->emit_service_event(kind => 'service_stopped');
+}
+
+# Emit the terminal run_completed + collector_report two-facet event
+# (per F4 = A). Built from in-memory COMPLETED_JOB_STATES plus the
+# pass/start/end stamps the run service tracks itself.
+sub emit_run_completed {
+    my $self = shift;
+
+    return if $self->{+RUN_COMPLETED_EMITTED};
+    $self->{+RUN_COMPLETED_EMITTED} = 1;
+
+    my $em = $self->{+EMITTER} or return;
+
+    my $now    = time;
+    my $report = $self->_build_collector_report($now);
+
+    # Two-facet event per F4=A: harness.run_completed (state-flip
+    # announcement) + top-level collector_report (data the run
+    # collector merges into report.jsonl.zst via _capture_collector_report).
+    # emit_raw -- not emit_event -- so collector_report lands at the
+    # top of facet_data, not nested under harness.
+    $em->emit_raw({
+        facet_data => {
+            harness => {
+                run_id        => $self->{+RUN_ID},
+                run_completed => {
+                    run_id => $self->{+RUN_ID},
+                    stamp  => $now,
+                },
+            },
+            collector_report => $report,
+        },
+    });
+
+    return;
+}
+
+# Walk COMPLETED_JOB_STATES (per-job state hashes the run service
+# accumulated from each test_job_completed IPC -- per F18) and
+# assemble the run-level aggregate the run collector merges into
+# report.jsonl.zst.
+sub _build_collector_report {
+    my $self = shift;
+    my ($now) = @_;
+    $now //= time;
+
+    my $states = $self->{+COMPLETED_JOB_STATES} // {};
+
+    my $passed  = 0;
+    my $failed  = 0;
+    my $aborted = 0;
+
+    my %jobs_by_id;
+    for my $jid (keys %$states) {
+        my $st = $states->{$jid} // {};
+        my $job_pass = $st->{pass} ? 1 : 0;
+        if ($job_pass) {
+            $passed++;
+        }
+        else {
+            $failed++;
+            $aborted++ if $st->{synth};
+        }
+
+        # Resolve test file for this job from the Run's queue-time
+        # job spec. Jobs that were only synthesized (no original
+        # entry) won't have a Run::Job; fall back to whatever the
+        # state hash carries.
+        my $file = $st->{file};
+        if (!defined $file) {
+            for my $job (@{$self->{+RUN}->jobs}) {
+                next unless $job->job_id eq $jid;
+                my $tf = $job->test_file;
+                $file = $tf->absolute if $tf;
+                last;
+            }
+        }
+
+        my $tries = defined($st->{job_try}) ? $st->{job_try} : 1;
+
+        $jobs_by_id{$jid} = {
+            job_id     => $jid,
+            file       => $file,
+            pass       => $job_pass,
+            tries      => $tries,
+            subtests   => [@{$st->{subtests} // []}],
+        };
+    }
+
+    # Stable ordering: order from the Run's own jobs spec; any
+    # remaining ids get appended in sort order so the array stays
+    # deterministic.
+    my @ordered;
+    my %placed;
+    for my $job (@{$self->{+RUN}->jobs}) {
+        my $jid = $job->job_id;
+        next unless exists $jobs_by_id{$jid};
+        push @ordered, $jobs_by_id{$jid};
+        $placed{$jid} = 1;
+    }
+    for my $jid (sort keys %jobs_by_id) {
+        next if $placed{$jid};
+        push @ordered, $jobs_by_id{$jid};
+    }
+
+    my $total = scalar @ordered;
+
+    return {
+        pass         => $self->{+RUN_PASS} ? 1 : 0,
+        started_at   => $self->{+STARTED_AT},
+        ended_at     => $self->{+ENDED_AT} // $now,
+        total_jobs   => $total,
+        passed_jobs  => $passed,
+        failed_jobs  => $failed,
+        aborted_jobs => $aborted,
+        jobs         => \@ordered,
+    };
 }
 
 # ----------------------------------------------------------------------
@@ -817,9 +989,8 @@ sub emit_service_event {
 
     my $em = $self->{+EMITTER} or return;    # no emitter in unit tests
     $em->emit_event(
-        job_id  => $self->{+JOB_ID},
-        run_id  => $self->{+RUN_ID},
-        job_try => 0,
+        job_id => $self->{+JOB_ID},
+        run_id => $self->{+RUN_ID},
         %fields,
     );
 
@@ -846,15 +1017,7 @@ sub start {
 
     my $self = $class->new(%args);
 
-    my $loggers = $self->{+LOGGERS};
-
-    # Everything the interpose child needs after the pipes are wired up.
     my $run_service = sub {
-        # The EventEmitter wraps STDOUT (and, when the interpose
-        # collector advertises separate pipes via T2_HARNESS2_PIPE_COUNT,
-        # STDERR) for the sync marker. We use the process-wide cached
-        # instance so anything else in this service that emits shares
-        # one wrapper around the real FDs.
         $self->{+EMITTER} = Test2::Harness2::Util::EventEmitter->std;
 
         my $self_ref = $self;
@@ -864,28 +1027,32 @@ sub start {
         POSIX::_exit($exit // 0);
     };
 
-    # is_run => 1 marks the loggers as belonging to the run-service
-    # collector so the role's path derivation lands the .jsonl /
-    # .json under runs/<run_id>/ rather than runs/<run_id>/services/.
-    require Test2::Harness2::Collector::Service;
-    Test2::Harness2::Collector::Service->interpose(
+    # The run collector lives under runs/<run_id>/ -- type='Run' with
+    # id=<run_id>. The run service is the collector's "parent service"
+    # for IPC purposes (so the run service can ingest its own
+    # collector_start/end into runs/<run_id>/events.jsonl.zst once
+    # M2 step 6 lands).
+    Test2::Harness2::Collector->interpose(
+        type         => 'Run',
+        id           => $self->{+RUN_ID},
+        run_id       => $self->{+RUN_ID},
         ipcm_info    => $self->ipcm_info,
         ipc_parent   => $self->{+HARNESS_NAME},
         ipc_run      => $self->{+NAME},
         ipc_harness  => $self->{+HARNESS_NAME},
-        bus_id       => "collector:" . $self->{+NAME},
-        is_run       => 1,
+        bus_id       => "collector:run:" . $self->{+RUN_ID},
         logdir       => $self->{+LOGDIR},
-        service_name => $self->{+RUN_ID},
-        run_id       => $self->{+RUN_ID},
-        loggers      => $loggers,
         parser       => 'Test2::Harness2::Collector::Parser::IOParser',
         parent_pids  => [$caller_pid],
         kill_timeout => $self->{+KILL_TIMEOUT},
+        spec         => {
+            run_id   => $self->{+RUN_ID},
+            run_uuid => $self->{+RUN}->run_uuid,
+            name     => $self->{+NAME},
+            harness  => $self->{+HARNESS_NAME},
+        },
     );
 
-    # Reached only in the interpose child; the interpose parent becomes
-    # the collector and exits from _interpose_parent before returning.
     $run_service->();
 }
 
@@ -912,32 +1079,6 @@ sub spawn {
     # Child: take over the process and run the service loop.
     $class->start(%args);
     POSIX::_exit(255);    # start() should never return
-}
-
-# Auto-inject 'spec' for Logger::JSON when the caller did not
-# provide one. Without a spec the snapshot file is written with
-# only exit/pass and no identifying fields; injecting a TestFile
-# here gives the .json the file / absolute / relative paths the
-# consumer expects. Blessed instances pass through untouched.
-sub _maybe_inject_test_file_spec {
-    my ($spec, $test_file_spec) = @_;
-
-    return $spec if blessed($spec);
-    return $spec unless $test_file_spec;
-
-    my $class = ref($spec) eq 'ARRAY' ? $spec->[0] : $spec;
-    return $spec unless defined $class && !ref($class);
-    return $spec unless $class eq 'Test2::Harness2::Collector::Logger::JSON';
-
-    if (ref($spec) eq 'ARRAY') {
-        my %args = @{$spec}[1 .. $#$spec];
-        return $spec if exists $args{spec};
-        $args{spec} = $test_file_spec;
-        return [$class, %args];
-    }
-
-    # Bare class-name spec: upgrade to [$class, spec => $tf].
-    return [$class, spec => $test_file_spec];
 }
 
 1;

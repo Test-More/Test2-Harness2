@@ -5,7 +5,7 @@ use warnings;
 # Implementation note: this resource accepts a --utilize percentage; the
 # gating mechanism is wired up in a follow-up step.
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Carp qw/croak/;
 use File::Spec();

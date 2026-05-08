@@ -2,7 +2,7 @@ package App::Yath2::Command::replay;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Object::HashBase qw{
     <settings
@@ -13,12 +13,9 @@ use Object::HashBase qw{
 };
 
 use Carp qw/croak/;
-use Cwd qw/getcwd/;
 
-use App::Yath2::LogArchive();
-use App::Yath2::Streamer::Static();
-use App::Yath2::OutputManager();
-use App::Yath2::Options::Renderer();
+use App::Yath2::Log();
+use App::Yath2::Renderer::Driver();
 
 use Getopt::Yath;
 include_options(
@@ -33,21 +30,18 @@ sub args_include_tests { 0 }
 sub group              { 'log parsing' }
 sub summary            { 'Replay events from a log archive or directory' }
 
-sub cli_args { "[--] LOG [RUN_ID ...]" }
+sub cli_args { "[--] LOG" }
 
 sub description {
     return <<"    EOT";
 Replays the event stream recorded in a completed yath log. LOG is either a
 .yath archive file or a directory that looks like \$workdir/logs (i.e. carries
-runs/<id>/ subdirectories for the runs it stores). RUN_IDs, if any, restrict
-the replay to the listed runs; with none, every run stored in the archive
-is replayed.
+runs/<id>/ subdirectories for the runs it stores).
 
 Output is rendered through the same renderer pipeline as 'yath test', so
 colors, formatting, and summary output match a live run.
 
-Exit code is 0 when every replayed run passed, non-zero otherwise (or when
-the archive has no runs at all).
+Exit code is 0 when every replayed run passed, non-zero otherwise.
     EOT
 }
 
@@ -62,68 +56,61 @@ sub run {
     my $args = $self->{+ARGS} // [];
     shift @$args if @$args && $args->[0] eq '--';
 
-    my $log = shift @$args;
-    unless (defined $log && length $log) {
-        $log = App::Yath2::LogArchive->find_latest($self->{+SETTINGS});
-        print STDERR "yath replay: using latest archive: $log\n"
-            if defined $log && length $log;
+    my $path = shift @$args;
+    unless (defined $path && length $path) {
+        $path = App::Yath2::Log->find_latest($self->{+SETTINGS});
+        print STDERR "yath replay: using latest archive: $path\n"
+            if defined $path && length $path;
     }
 
-    die "Usage: yath replay LOG [RUN_ID ...]\n"
-        unless defined $log && length $log;
+    die "Usage: yath replay LOG\n"
+        unless defined $path && length $path;
 
-    die "Log source '$log' does not exist\n"
-        unless -e $log;
+    die "Log source '$path' does not exist\n"
+        unless -e $path;
 
-    # Requested run ids: default to the full set the archive carries.
-    my @requested = @$args;
-    unless (@requested) {
-        my $archive = App::Yath2::LogArchive->open(path => $log);
-        @requested = $archive->runs;
-        die "No runs found in '$log'\n" unless @requested;
-    }
+    die "extra arguments after LOG\n" if @$args;
 
-    my $streamer = App::Yath2::Streamer::Static->new(
-        log    => $log,
-        runs   => [@requested],
-        global => 1,
+    my $log = App::Yath2::Log->new(auto => $path);
+
+    my $exit = App::Yath2::Renderer::Driver->run(
+        log      => $log,
+        settings => $self->{+SETTINGS},
     );
 
-    my $settings  = $self->{+SETTINGS};
-    my $om        = App::Yath2::OutputManager->new;
-    my $renderers = App::Yath2::Options::Renderer->init_renderers($settings);
-    $om->add_renderer($_) for @$renderers;
-
-    my $fail_runs = 0;
-    my %seen_end;
-    $streamer->stream(
-        callback => sub {
-            my ($event) = @_;
-            my $fd = $event->facet_data // {};
-            if (my $end = $fd->{harness_run_end}) {
-                my $rid = $end->{run_id} // $event->run_id;
-                $seen_end{$rid} = 1 if defined $rid;
-                $fail_runs++ unless $end->{pass};
-            }
-            $om->dispatch($event);
-        },
-        # Exit when we have seen a run_end for every requested run.
-        exit_if => sub { keys(%seen_end) >= scalar(@requested) ? 1 : 0 },
-    );
-
-    $om->end_of_events;
-    $om->finish;
-
-    # Any requested run that never produced a run_end counts as a
-    # failure. The static replay cannot synthesise a terminal state
-    # for a run that was not completed when the archive was taken.
-    for my $rid (@requested) {
-        next if $seen_end{$rid};
-        print STDERR "replay: run '$rid' has no terminal state in archive\n";
-        $fail_runs++;
+    # Renderer driver returns 0 on clean termination; nonzero only when
+    # the EOE-timeout safeguard fired (live mode) -- impossible in
+    # sealed mode. Pass/fail comes from the per-job report.jsonl.zst
+    # final state we walk after the renderer is done.
+    if ($exit == 0) {
+        $exit = _runs_failed($log) ? 1 : 0;
     }
 
-    return $fail_runs ? 1 : 0;
+    return $exit;
+}
+
+# Walk every (run, job, last-try) report.jsonl.zst and return true if
+# any try did not pass. A run with no jobs is treated as a failure
+# (matches the previous static-iteration behaviour).
+sub _runs_failed {
+    my ($log) = @_;
+
+    my @runs = $log->runs;
+    return 1 unless @runs;
+
+    for my $rid (@runs) {
+        my $any_jobs = 0;
+        for my $jid ($log->jobs($rid)) {
+            $any_jobs++;
+            my $try = $log->last_try($rid, $jid);
+            next unless defined $try;
+            my $report = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try})->report_iter->last;
+            return 1 unless $report && $report->{pass};
+        }
+        return 1 unless $any_jobs;
+    }
+
+    return 0;
 }
 
 1;

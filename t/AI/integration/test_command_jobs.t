@@ -82,10 +82,12 @@ package Fake::Tests2;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
 
-package Fake::LogArchive2;
-sub new  { bless {}, $_[0] }
-sub file { undef }
-sub dir  { undef }
+package Fake::Log2;
+sub new    { bless {}, $_[0] }
+sub file   { undef }
+sub dir    { undef }
+sub format   { 'tar' }
+sub compress { 1 }
 
 package Fake::Yath2Group;
 sub new     { bless {}, $_[0] }
@@ -102,7 +104,7 @@ sub new {
         resource    => $resource,
         finder      => Fake::Finder2->new,
         tests       => Fake::Tests2->new,
-        log_archive => Fake::LogArchive2->new,
+        log => Fake::Log2->new,
         yath        => Fake::Yath2Group->new,
     } => $class;
 }
@@ -111,7 +113,7 @@ sub ipc         { $_[0]->{ipc} }
 sub resource    { $_[0]->{resource} }
 sub finder      { $_[0]->{finder} }
 sub tests       { $_[0]->{tests} }
-sub log_archive { $_[0]->{log_archive} }
+sub log { $_[0]->{log} }
 sub yath        { $_[0]->{yath} }
 sub check_group { exists $_[0]->{$_[1]} ? 1 : 0 }
 

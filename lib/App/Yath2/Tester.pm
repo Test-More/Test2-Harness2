@@ -2,7 +2,7 @@ package App::Yath2::Tester;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 use Test2::API qw/context run_subtest/;
 use Test2::Tools::Compare qw/is/;
@@ -420,7 +420,7 @@ C<.yath> archive so that the full run log is preserved after the process
 exits. The archive path is accessible via C<< $result->{log}->name >>.
 C<< $result->{log} >> is an instance of L<Test2::Harness2::Util::File::JSONL>
 used as a thin wrapper that exposes the path via C<< ->name >>; pass that
-path to L<App::Yath2::LogArchive> to read events.
+path to L<App::Yath2::Log> to read events.
 
 =item no_app_path => $bool
 
@@ -461,7 +461,7 @@ The output produced by the yath command.
 Present when C<< log => 1 >> was passed. An instance of
 L<Test2::Harness2::Util::File::JSONL> wrapping a temporary C<.yath> archive
 path. Call C<< $result->{log}->name >> to get the archive path, then pass it
-to L<App::Yath2::LogArchive> to parse run events.
+to L<App::Yath2::Log> to parse run events.
 
 B<Note:> By default no workdir is kept, you must specify the C<< log => 1 >>
 argument to enable it.

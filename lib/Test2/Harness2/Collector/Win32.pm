@@ -2,7 +2,7 @@ package Test2::Harness2::Collector::Win32;
 use strict;
 use warnings;
 
-our $VERSION = '2.000011';
+our $VERSION = '2.000012';
 
 # All methods in this file are installed into the
 # Test2::Harness2::Collector class namespace below. The file itself
@@ -37,9 +37,20 @@ sub _spawn_collector_win32 {
         unless defined $self->{+LAUNCH};
 
     my %params = (
+        type         => $self->{+TYPE},
+        id           => $self->{+ID},
+        run_id       => $self->{+RUN_ID},
+        job_try      => $self->{+JOB_TRY},
+        logdir       => $self->{+LOGDIR},
+        spec         => $self->{+SPEC},
         launch       => $self->{+LAUNCH},
         env_vars     => $self->{+ENV_VARS},
         kill_timeout => $self->{+KILL_TIMEOUT},
+        ipcm_info    => $self->{+IPCM_INFO},
+        ipc_parent   => $self->{+IPC_PARENT},
+        ipc_run      => $self->{+IPC_RUN},
+        ipc_harness  => $self->{+IPC_HARNESS},
+        bus_id       => $self->{+BUS_ID},
     );
 
     $params{parent_pids} = $self->{+PARENT_PIDS} if $self->{+PARENT_PIDS};
@@ -53,29 +64,13 @@ sub _spawn_collector_win32 {
         $params{parser} = $parser;
     }
 
-    # Loggers must be specified as class names or [class, @args] arrayrefs on
-    # Windows, since blessed instances cannot be serialized to the spawned
-    # collector process.
-    for my $item (@{$self->{+_LOGGERS_SPEC}}) {
-        croak "Blessed logger instances cannot be passed to a Windows collector; use class name or [class, \@args] form"
-            if blessed($item);
-    }
-    $params{loggers} = $self->{+_LOGGERS_SPEC};
-
-    # Auditor follows the same constraint -- class name or [class, %args]
-    # arrayref only on Windows, since blessed instances cannot be serialized.
-    if (defined $self->_auditor_spec) {
+    # Auditor must be class name or [class, %args] arrayref only on
+    # Windows, since blessed instances cannot be serialized.
+    if (defined $self->{+_AUDITOR_SPEC}) {
         croak "Blessed auditor instances cannot be passed to a Windows collector; use class name or [class, \@args] form"
-            if blessed($self->_auditor_spec);
-        $params{auditor} = $self->_auditor_spec;
+            if blessed($self->{+_AUDITOR_SPEC});
+        $params{auditor} = $self->{+_AUDITOR_SPEC};
     }
-
-    # Observers: same Windows-serialization constraint as loggers.
-    for my $item (@{$self->{+_OBSERVERS_SPEC} // []}) {
-        croak "Blessed observer instances cannot be passed to a Windows collector; use class name or [class, \@args] form"
-            if blessed($item);
-    }
-    $params{observers} = $self->{+_OBSERVERS_SPEC} if $self->{+_OBSERVERS_SPEC};
 
     my $json_file = Test2::Harness2::Util::JSON::encode_json_file(\%params);
 
