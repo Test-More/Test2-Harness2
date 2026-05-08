@@ -563,6 +563,411 @@ sub _artifact_rows_for_archive {
 # role and the role's defaults move up in scope, this delegation list
 # shrinks; eventually the BEGIN forwarder above can be retired.
 
+# ----- DB rebuild Phase 2: native read primitives + local codecs -----
+#
+# Codec helpers ported body-for-body from App::Yath2::DB::Internal::*
+# so DBIC speaks canonical Perl values without borrowing an Internal
+# helper. The forwarder above still uses _internal for the
+# Phase 4-7 surface (event/insert/extract/etc); the primitives below
+# are independent.
+
+sub _flavor_uuid_to_db {
+    my ($self, $u) = @_;
+    return undef unless defined $u;
+    my $f = $self->flavor;
+    return $u                 if $f eq 'sqlite';
+    return uc($u)             if $f eq 'postgres' || $f eq 'mariadb';
+    if ($f eq 'mysql') {
+        (my $h = $u) =~ tr/-//d;
+        return pack('H*', $h);
+    }
+    return $u;
+}
+
+sub _flavor_uuid_from_db {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    my $f = $self->flavor;
+    if ($f eq 'mysql') {
+        return undef unless length($val) == 16;
+        my $hex = lc unpack('H*', $val);
+        return join '-',
+            substr($hex,  0, 8),
+            substr($hex,  8, 4),
+            substr($hex, 12, 4),
+            substr($hex, 16, 4),
+            substr($hex, 20);
+    }
+    return lc("$val");
+}
+
+sub _maybe_decode_json {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    return $val if ref $val;
+    require Test2::Harness2::Util::JSON;
+    return Test2::Harness2::Util::JSON::decode_json($val);
+}
+
+# -- archive layer ----------------------------------------------------------
+
+sub archive_rows {
+    my $self = shift;
+    my @out;
+    for my $row ($self->{+SCHEMA}->resultset('Archive')->search(
+        undef, { order_by => 'archive_id' },
+    )->all)
+    {
+        push @out, {
+            archive_id      => $row->archive_id,
+            archive_uuid    => $self->_flavor_uuid_from_db($row->archive_uuid),
+            archive_version => $row->archive_version,
+            sealed_at       => $row->sealed_at,
+            host            => $row->host,
+            user            => $row->archive_user,
+            git_sha         => $row->git_sha,
+            project         => $row->project,
+            yath_version    => $row->yath_version,
+            meta_extras     => $self->_maybe_decode_json($row->meta_extras),
+        };
+    }
+    return \@out;
+}
+
+sub archive_for_uuid {
+    my ($self, $canon) = @_;
+    return undef unless defined $canon;
+    for my $row (@{ $self->archive_rows }) {
+        return $row if lc($row->{archive_uuid}) eq lc($canon);
+    }
+    return undef;
+}
+
+# archive_count is already provided above via ResultSet->count.
+
+# -- run / job / try / service rows ----------------------------------------
+
+sub run_rows {
+    my ($self, $aid) = @_;
+    croak "archive_id required" unless defined $aid;
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('Run')->search(
+        { archive_id => $aid },
+        { order_by   => 'run_ord' },
+    )->all)
+    {
+        push @out, {
+            run_id     => $r->run_id,
+            run_ord    => $r->run_ord,
+            run_uuid   => $self->_flavor_uuid_from_db($r->run_uuid),
+            status     => $r->status,
+            aborted    => $r->aborted   ? 1 : 0,
+            timed_out  => $r->timed_out ? 1 : 0,
+            project_id => $r->project_id,
+        };
+    }
+    return \@out;
+}
+
+sub service_rows {
+    my ($self, $aid, %filter) = @_;
+    croak "archive_id required" unless defined $aid;
+    my %where = (archive_id => $aid);
+    if (exists $filter{run_id}) {
+        $where{run_id} = $filter{run_id};
+    }
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('Service')->search(
+        \%where, { order_by => 'service_id' },
+    )->all)
+    {
+        push @out, {
+            service_id => $r->service_id,
+            name       => $r->name,
+            run_id     => $r->run_id,
+        };
+    }
+    return \@out;
+}
+
+sub job_rows {
+    my ($self, $aid, $rid) = @_;
+    croak "archive_id required" unless defined $aid;
+    croak "run_id required"     unless defined $rid;
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('Job')->search(
+        { archive_id => $aid, run_id => $rid },
+        { order_by   => 'job_ord' },
+    )->all)
+    {
+        push @out, {
+            job_id       => $r->job_id,
+            job_ord      => $r->job_ord,
+            test_file_id => $r->test_file_id,
+        };
+    }
+    return \@out;
+}
+
+sub try_rows {
+    my ($self, $jid) = @_;
+    croak "job_id required" unless defined $jid;
+    my @json_cols = qw/exit_decoded plan halt times child_times
+                       spec_extras state_extras/;
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('JobTry')->search(
+        { job_id => $jid },
+        { order_by => 'try_ord' },
+    )->all)
+    {
+        my %h = $r->get_columns;
+        for my $c (@json_cols) {
+            $h{$c} = $self->_maybe_decode_json($h{$c}) if exists $h{$c};
+        }
+        push @out, \%h;
+    }
+    return \@out;
+}
+
+# -- existence checks -------------------------------------------------------
+
+sub run_exists {
+    my ($self, $aid, $run_ord) = @_;
+    return 0 unless defined $aid && defined $run_ord;
+    return 0 unless $run_ord =~ /^\d+\z/;
+    return $self->{+SCHEMA}->resultset('Run')->search(
+        { archive_id => $aid, run_ord => $run_ord }
+    )->count ? 1 : 0;
+}
+
+sub job_exists {
+    my ($self, $aid, $rid, $job_ord) = @_;
+    return 0 unless defined $aid && defined $rid && defined $job_ord;
+    return 0 unless $job_ord =~ /^\d+\z/;
+    return $self->{+SCHEMA}->resultset('Job')->search(
+        { archive_id => $aid, run_id => $rid, job_ord => $job_ord }
+    )->count ? 1 : 0;
+}
+
+sub try_exists {
+    my ($self, $jid, $try_ord) = @_;
+    return 0 unless defined $jid && defined $try_ord;
+    return 0 unless $try_ord =~ /^\d+\z/;
+    return $self->{+SCHEMA}->resultset('JobTry')->search(
+        { job_id => $jid, try_ord => $try_ord }
+    )->count ? 1 : 0;
+}
+
+sub service_exists {
+    my ($self, $aid, $name, $rid) = @_;
+    return 0 unless defined $aid && defined $name;
+    my %where = (archive_id => $aid, name => $name);
+    $where{run_id} = $rid; # undef binds to NULL in DBIC SQL::Abstract
+    return $self->{+SCHEMA}->resultset('Service')->search(\%where)->count ? 1 : 0;
+}
+
+# -- id-for-ord lookups -----------------------------------------------------
+
+sub run_id_for_ord {
+    my ($self, $aid, $run_ord) = @_;
+    croak "archive_id required" unless defined $aid;
+    croak "run_ord required"    unless defined $run_ord;
+    my $row = $self->{+SCHEMA}->resultset('Run')->find(
+        { archive_id => $aid, run_ord => $run_ord }
+    );
+    croak "no run with ord $run_ord" unless $row;
+    return $row->run_id;
+}
+
+sub job_id_for_ord {
+    my ($self, $aid, $rid, $job_ord) = @_;
+    croak "archive_id required" unless defined $aid;
+    croak "run_id required"     unless defined $rid;
+    croak "job_ord required"    unless defined $job_ord;
+    my $row = $self->{+SCHEMA}->resultset('Job')->find(
+        { archive_id => $aid, run_id => $rid, job_ord => $job_ord }
+    );
+    croak "no job with ord $job_ord in run_id $rid" unless $row;
+    return $row->job_id;
+}
+
+sub try_id_for_ord {
+    my ($self, $jid, $try_ord) = @_;
+    croak "job_id required"  unless defined $jid;
+    croak "try_ord required" unless defined $try_ord;
+    my $row = $self->{+SCHEMA}->resultset('JobTry')->find(
+        { job_id => $jid, try_ord => $try_ord }
+    );
+    croak "no try with ord $try_ord in job_id $jid" unless $row;
+    return $row->job_try_id;
+}
+
+sub service_id_for_name {
+    my ($self, $aid, $name, $rid) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "service name required" unless defined $name;
+    my %where = (archive_id => $aid, name => $name);
+    $where{run_id} = $rid;
+    my $row = $self->{+SCHEMA}->resultset('Service')->search(\%where)->first;
+    return $row ? $row->service_id : undef;
+}
+
+# -- artifact rows ----------------------------------------------------------
+
+sub artifact_rows_for_archive {
+    my ($self, $aid, %opts) = @_;
+    croak "archive_id required" unless defined $aid;
+    my $with_payload = $opts{with_payload} ? 1 : 0;
+
+    my $rs = $self->{+SCHEMA}->resultset('Artifact')->search(
+        { 'me.archive_id' => $aid },
+        { prefetch => [
+            'run',
+            { service => 'run' },
+            { job_try => { job => 'run' } },
+        ],
+          order_by => 'me.artifact_id',
+        },
+    );
+
+    my @rows;
+    while (my $a = $rs->next) {
+        my %r = (
+            artifact_id   => $a->artifact_id,
+            run_id        => $a->run_id,
+            service_id    => $a->service_id,
+            job_try_id    => $a->job_try_id,
+            artifact_kind => $a->artifact_kind,
+            format        => $a->format,
+            name          => $a->name,
+            compressed    => $a->compressed ? 1 : 0,
+        );
+        if (my $svc = $a->service) {
+            $r{service_name} = $svc->name;
+            if (my $sr = $svc->run) { $r{s_run_ord} = $sr->run_ord }
+        }
+        if (my $rn = $a->run) {
+            $r{run_ord} = $rn->run_ord;
+        }
+        if (my $jt = $a->job_try) {
+            $r{try_ord} = $jt->try_ord;
+            if (my $j = $jt->job) {
+                $r{job_ord} = $j->job_ord;
+                if (my $jr = $j->run) { $r{j_run_ord} = $jr->run_ord }
+            }
+        }
+        $r{payload} = $a->payload if $with_payload;
+        push @rows, \%r;
+    }
+    return \@rows;
+}
+
+sub artifact_row_for_scope {
+    my ($self, $aid, $scope_kind, $scope_id, $kind, $name) = @_;
+    croak "archive_id required"  unless defined $aid;
+    croak "scope_kind required"  unless defined $scope_kind;
+    croak "artifact_kind required" unless defined $kind;
+
+    my %where = (archive_id => $aid, artifact_kind => $kind);
+    if ($scope_kind eq 'run') {
+        $where{run_id}     = $scope_id;
+        $where{service_id} = undef;
+        $where{job_try_id} = undef;
+    }
+    elsif ($scope_kind eq 'service') {
+        $where{service_id} = $scope_id;
+        $where{run_id}     = undef;
+        $where{job_try_id} = undef;
+    }
+    elsif ($scope_kind eq 'job_try') {
+        $where{job_try_id} = $scope_id;
+        $where{run_id}     = undef;
+        $where{service_id} = undef;
+    }
+    elsif ($scope_kind eq 'archive') {
+        $where{run_id}     = undef;
+        $where{service_id} = undef;
+        $where{job_try_id} = undef;
+    }
+    else {
+        croak "unknown scope_kind: $scope_kind";
+    }
+    $where{name} = defined $name ? $name : undef;
+
+    my $row = $self->{+SCHEMA}->resultset('Artifact')->search(\%where)->first;
+    return undef unless $row;
+
+    return {
+        artifact_id => $row->artifact_id,
+        compressed  => $row->compressed ? 1 : 0,
+        payload     => $row->payload,
+        format      => $row->format,
+    };
+}
+
+sub artifact_payload {
+    my ($self, $artifact_id) = @_;
+    croak "artifact_id required" unless defined $artifact_id;
+    my $row = $self->{+SCHEMA}->resultset('Artifact')->find($artifact_id);
+    return undef unless $row;
+    return $row->payload;
+}
+
+# -- spec / report data layer ----------------------------------------------
+
+sub job_spec_rows {
+    my ($self, $jid, $try_ord) = @_;
+    croak "job_id required" unless defined $jid;
+    my @json_cols = qw/features switches extras/;
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('JobSpec')->search(
+        { job_id => $jid },
+        { order_by => 'job_spec_id' },
+    )->all)
+    {
+        my %h = $r->get_columns;
+        for my $c (@json_cols) {
+            $h{$c} = $self->_maybe_decode_json($h{$c}) if exists $h{$c};
+        }
+        push @out, \%h;
+    }
+    return \@out;
+}
+
+sub service_lifetime_rows {
+    my ($self, $sid) = @_;
+    croak "service_id required" unless defined $sid;
+    my @json_cols = qw/exit_decoded times child_times spec_extras state_extras/;
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('ServiceLifetime')->search(
+        { service_id => $sid },
+        { order_by => 'lifetime_ord' },
+    )->all)
+    {
+        my %h = $r->get_columns;
+        for my $c (@json_cols) {
+            $h{$c} = $self->_maybe_decode_json($h{$c}) if exists $h{$c};
+        }
+        push @out, \%h;
+    }
+    return \@out;
+}
+
+sub subtest_rows {
+    my ($self, $jtid) = @_;
+    croak "job_try_id required" unless defined $jtid;
+    my @out;
+    for my $r ($self->{+SCHEMA}->resultset('Subtest')->search(
+        { job_try_id => $jtid },
+        { order_by => 'ord' },
+    )->all)
+    {
+        my %h = $r->get_columns;
+        push @out, \%h;
+    }
+    return \@out;
+}
+
 1;
 
 __END__
