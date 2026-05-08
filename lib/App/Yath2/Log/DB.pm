@@ -39,12 +39,19 @@ sub _backend {
 
 # 1:1 delegation. Public surface matches Log::Directory / Log::TarZIdx
 # so Log::DB instances are interchangeable with the other archive
-# backends from a caller's view.
+# backends from a caller's view. The private _artifact_* family is
+# what App::Yath2::Log::Artifact calls back into; delegating those to
+# the backend keeps the Artifact handle ignorant of whether its log
+# is filesystem-shaped or DB-shaped.
 for my $m (qw{
     services runs jobs tries last_try
     has_service has_run has_job has_try
     artifacts event events end_of_events EOE reset
     list_files extract archive insert
+    absolute_path
+    _artifact_exists _artifact_read _artifact_iter_records
+    _artifact_list_dir _artifact_open_fh _artifact_save
+    _decompress_jsonl_bytes
 }) {
     no strict 'refs';
     *{$m} = sub {
@@ -52,6 +59,12 @@ for my $m (qw{
         return $self->_backend->$m(@_);
     };
 }
+
+# Apply the Log role after our own methods are installed so role
+# defaults (which would otherwise be installed first and then
+# clobbered, generating redefine warnings) yield to our definitions.
+use Role::Tiny::With;
+with 'App::Yath2::Role::Log';
 
 1;
 

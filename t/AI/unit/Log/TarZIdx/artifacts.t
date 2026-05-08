@@ -145,7 +145,7 @@ is($h->get('attachments/0001-hello.txt'), "hi there\n", 'get reads arbitrary fil
 # save is not supported on tar.zidx (not currently writable).
 like(
     dies { $h->save('runtime.json', '{}') },
-    qr/save is not supported/,
+    qr/tar\.zidx archives are read-only/,
     'save on tar.zidx croaks',
 );
 

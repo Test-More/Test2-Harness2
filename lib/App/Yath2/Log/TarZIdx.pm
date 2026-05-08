@@ -37,6 +37,11 @@ use App::Yath2::Log::Iterator::JSONL;
 
 use Object::HashBase qw/path +_index +_seen_starts +_closed_starts +_walk/;
 
+# Role::Log is applied at the bottom of this file (after every sub
+# is defined) so role defaults yield to our existing implementations
+# without triggering "Subroutine X redefined" warnings.
+use Role::Tiny::With;
+
 # tar.zidx is the single archive format yath produces. Layout:
 # a USTAR-format tar with per-entry payloads (each individually
 # zstd-compressed when the source was plaintext, or stored verbatim
@@ -736,6 +741,16 @@ sub _artifact_list_dir {
     return sort keys %names;
 }
 
+# tar.zidx archives are sealed: every entry's offset/size lives in the
+# zstd-compressed index that pins the trailer. Mutating a single entry
+# in place would invalidate the index. Callers that want to amend an
+# archive must extract -> mutate the directory -> re-archive.
+sub _artifact_save {
+    my ($self, %p) = @_;
+    croak "tar.zidx archives are read-only; "
+        . "extract first, modify the directory, then re-archive";
+}
+
 # }}}
 
 # {{{ Iterator (depth-first walk)
@@ -1398,6 +1413,8 @@ sub _decompress_multi_frame {
 }
 
 # }}}
+
+with 'App::Yath2::Role::Log';
 
 1;
 
