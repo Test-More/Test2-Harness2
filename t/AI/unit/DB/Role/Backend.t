@@ -7,18 +7,23 @@ ok( lives { require App::Yath2::Role::DB::Backend }, 'loads App::Yath2::Role::DB
 ok( Role::Tiny->is_role('App::Yath2::Role::DB::Backend'),
     'is a Role::Tiny role' );
 
-# Required methods declared.
+# Required methods declared. _archive_id_or_die +
+# _artifact_rows_for_archive are role-level primitives consumers
+# implement so the role can supply orchestration like list_files
+# without poking at flavor-specific SQL or ResultSets.
 my @required = sort qw{
-    dbh flavor
+    dbh flavor _archive_id_or_die
     services runs jobs tries last_try
     has_service has_run has_job has_try
     artifacts event events end_of_events reset
-    list_files extract archive insert
+    extract archive insert
     archives archive_count has_archive scoped
+    _artifact_rows_for_archive
 };
 # Concrete methods provided by the role:
 my @provided = sort qw{
     bootstrap_schema preprocess_schema_sql schema_file _is_bootstrapped
+    list_files _base_for_artifact_row _stem_for_artifact_row
 };
 
 # requires() introspection.
@@ -36,12 +41,13 @@ for my $m (@provided) {
     package Test::FakeBackend;
     use Role::Tiny::With;
     for my $m (qw{
-        dbh flavor
+        dbh flavor _archive_id_or_die
         services runs jobs tries last_try
         has_service has_run has_job has_try
         artifacts event events end_of_events reset
-        list_files extract archive insert
+        extract archive insert
         archives archive_count has_archive scoped
+        _artifact_rows_for_archive
     }) {
         no strict 'refs';
         *{$m} = sub { die "$m unimplemented" };

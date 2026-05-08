@@ -1703,88 +1703,35 @@ sub reset {
 
 # {{{ extract / archive / insert
 
-sub list_files {
-    my $self = shift;
-    my $aid = $self->_archive_id_or_die;
+# DB primitive consumed by App::Yath2::Role::DB::Backend::list_files
+# (and other archive-shaped orchestrators). Returns an arrayref of
+# hashrefs, one per artifacts row in the given archive_id, with the
+# scope FKs and joined ord/name fields the role helpers need to
+# compute on-disk paths. Includes j_run_ord (run_ord through
+# job_tries -> jobs -> runs) so _base_for_artifact_row never has to
+# fall back to a per-row lookup.
+sub _artifact_rows_for_archive {
+    my ($self, $aid) = @_;
     my $dbh = $self->dbh;
-    my $rows = $dbh->selectall_arrayref(q{
-        SELECT a.run_id, a.service_id, a.job_try_id,
+    return $dbh->selectall_arrayref(q{
+        SELECT a.artifact_id,
+               a.run_id, a.service_id, a.job_try_id,
                a.artifact_kind, a.format, a.name, a.compressed,
-               s.name AS service_name, s.run_id AS s_run_id,
-               r.run_ord AS run_ord,
-               j.job_ord AS job_ord, j.run_id AS j_run_id,
-               t.try_ord AS try_ord, t.job_id AS t_job_id,
-               sr.run_ord AS s_run_ord
+               s.name  AS service_name,
+               sr.run_ord AS s_run_ord,
+               r.run_ord  AS run_ord,
+               t.try_ord  AS try_ord,
+               j.job_ord  AS job_ord,
+               jr.run_ord AS j_run_ord
           FROM artifacts a
-          LEFT JOIN services s  ON a.service_id = s.service_id
-          LEFT JOIN runs sr     ON s.run_id     = sr.run_id
-          LEFT JOIN runs r      ON a.run_id     = r.run_id
-          LEFT JOIN job_tries t ON a.job_try_id = t.job_try_id
-          LEFT JOIN jobs j      ON t.job_id     = j.job_id
+          LEFT JOIN services  s  ON a.service_id = s.service_id
+          LEFT JOIN runs      sr ON s.run_id     = sr.run_id
+          LEFT JOIN runs      r  ON a.run_id     = r.run_id
+          LEFT JOIN job_tries t  ON a.job_try_id = t.job_try_id
+          LEFT JOIN jobs      j  ON t.job_id     = j.job_id
+          LEFT JOIN runs      jr ON j.run_id     = jr.run_id
          WHERE a.archive_id = ?
     }, { Slice => {} }, $aid);
-
-    my @paths;
-    for my $row (@$rows) {
-        my $base = $self->_base_for_artifact_row($row);
-        next unless defined $base;
-        my $stem = $self->_stem_for_artifact_row($row);
-        next unless defined $stem;
-        my $rel = length $base ? "$base/$stem" : $stem;
-        $rel .= '.zst' if $row->{compressed};
-        push @paths => $rel;
-    }
-    return @paths;
-}
-
-# Compute the on-disk-relative "directory" for an artifact row. The
-# row carries the three nullable scope FKs; we infer scope kind by
-# which one is set. All three NULL = archive-root scope.
-sub _base_for_artifact_row {
-    my ($self, $row) = @_;
-    if (defined $row->{job_try_id}) {
-        # Need run_ord, job_ord, try_ord. The list_files / extract JOIN
-        # already supplies these via t/j/jr (extract uses j_run_ord).
-        my $rord = defined $row->{j_run_ord} ? $row->{j_run_ord} : do {
-            my $dbh = $self->dbh;
-            my ($r) = $dbh->selectrow_array(q{
-                SELECT r.run_ord
-                  FROM job_tries t JOIN jobs j ON t.job_id = j.job_id
-                                   JOIN runs r ON j.run_id = r.run_id
-                 WHERE t.job_try_id = ?
-            }, undef, $row->{job_try_id});
-            $r;
-        };
-        return undef unless defined $rord;
-        return "runs/$rord/jobs/$row->{job_ord}/$row->{try_ord}";
-    }
-    if (defined $row->{service_id}) {
-        my $name = $row->{service_name};
-        return defined $row->{s_run_ord}
-            ? "runs/$row->{s_run_ord}/services/$name"
-            : "services/$name";
-    }
-    if (defined $row->{run_id}) {
-        return "runs/$row->{run_ord}";
-    }
-    # All three FKs NULL -> archive-root scope.
-    return '';
-}
-
-sub _stem_for_artifact_row {
-    my ($self, $row) = @_;
-    my $kind = $row->{artifact_kind};
-    if ($kind eq 'events' || $kind eq 'spec' || $kind eq 'state' || $kind eq 'report') {
-        my $fmt = $row->{format} // 'jsonl';
-        return "$kind.$fmt";
-    }
-    if ($kind eq 'attachment') {
-        return "attachments/" . $row->{name};
-    }
-    if ($kind eq 'arbitrary') {
-        return $row->{name};
-    }
-    return undef;
 }
 
 # extract($dir, %opts) -- materialize the archive into a directory

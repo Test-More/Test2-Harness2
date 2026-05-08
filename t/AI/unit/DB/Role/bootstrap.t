@@ -12,8 +12,9 @@ use App::Yath2::Role::DB::Backend;
         services runs jobs tries last_try
         has_service has_run has_job has_try
         artifacts event events end_of_events reset
-        list_files extract archive insert
+        extract archive insert
         archives archive_count has_archive scoped
+        _archive_id_or_die _artifact_rows_for_archive
     }) {
         no strict 'refs';
         *{$m} = sub { die "$m unimplemented" };

@@ -11,13 +11,20 @@ use File::Spec ();
 use Role::Tiny;
 
 # Required methods. Implementers must provide every one.
+#
+# Two layers split: high-level archive-shaped methods that the role
+# itself provides as flavor-agnostic orchestration, and low-level
+# DB-touching primitives that each consumer (raw SQL on
+# App::Yath2::DB::Internal, ResultSet on App::Yath2::DB::DBIC)
+# implements directly.
 requires qw{
-    dbh flavor
+    dbh flavor _archive_id_or_die
     services runs jobs tries last_try
     has_service has_run has_job has_try
     artifacts event events end_of_events reset
-    list_files extract archive insert
+    extract archive insert
     archives archive_count has_archive scoped
+    _artifact_rows_for_archive
 };
 
 # Default identity preprocessor. Consumers override for flavor quirks
@@ -99,6 +106,73 @@ sub bootstrap_schema {
         $self->dbh->do($stmt) or croak "schema bootstrap failed: " . $self->dbh->errstr;
     }
     return;
+}
+
+# ----- flavor-agnostic helpers -----
+#
+# Both backends populate _artifact_rows_for_archive with the same row
+# shape, so the row -> on-disk-path computation is shared here. Keep
+# helpers private (leading underscore) to make the layering explicit:
+# the role consumes consumer-supplied DB primitives and exposes the
+# archive-shaped surface.
+
+# Compute the on-disk-relative "directory" for an artifact row. The
+# row carries the three nullable scope FKs; we infer scope kind by
+# which one is set. All three NULL = archive-root scope.
+sub _base_for_artifact_row {
+    my ($self, $row) = @_;
+    if (defined $row->{job_try_id}) {
+        my $rord = $row->{j_run_ord};
+        return undef unless defined $rord;
+        return "runs/$rord/jobs/$row->{job_ord}/$row->{try_ord}";
+    }
+    if (defined $row->{service_id}) {
+        my $name = $row->{service_name};
+        return defined $row->{s_run_ord}
+            ? "runs/$row->{s_run_ord}/services/$name"
+            : "services/$name";
+    }
+    if (defined $row->{run_id}) {
+        return "runs/$row->{run_ord}";
+    }
+    return '';
+}
+
+sub _stem_for_artifact_row {
+    my ($self, $row) = @_;
+    my $kind = $row->{artifact_kind};
+    if ($kind eq 'events' || $kind eq 'spec' || $kind eq 'state' || $kind eq 'report') {
+        my $fmt = $row->{format} // 'jsonl';
+        return "$kind.$fmt";
+    }
+    if ($kind eq 'attachment') {
+        return "attachments/" . $row->{name};
+    }
+    if ($kind eq 'arbitrary') {
+        return $row->{name};
+    }
+    return undef;
+}
+
+# ----- role-provided archive-shaped methods -----
+
+# list_files() -- enumerate every artifact in this archive as an
+# on-disk-relative path. Drives extract/archive serialization and the
+# `inspect` CLI. Pure orchestration on top of _artifact_rows_for_archive.
+sub list_files {
+    my $self = shift;
+    my $aid = $self->_archive_id_or_die;
+    my @paths;
+    for my $row (@{ $self->_artifact_rows_for_archive($aid) }) {
+        my $base = $self->_base_for_artifact_row($row);
+        next unless defined $base;
+        my $stem = $self->_stem_for_artifact_row($row);
+        next unless defined $stem;
+        my $rel = length $base ? "$base/$stem" : $stem;
+        $rel .= '.zst' if $row->{compressed};
+        push @paths => $rel;
+    }
+    return @paths;
 }
 
 1;

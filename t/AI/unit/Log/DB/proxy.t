@@ -20,12 +20,13 @@ use App::Yath2::Log::DB;
         services runs jobs tries last_try
         has_service has_run has_job has_try
         artifacts event events end_of_events reset
-        list_files extract archive insert
+        extract archive insert
     }) {
         no strict 'refs';
         *{$m} = sub { my $self = shift; $self->_record($m => @_); 'rv' };
     }
-    for my $m (qw{ archives archive_count has_archive flavor dbh }) {
+    for my $m (qw{ archives archive_count has_archive flavor dbh
+                   _archive_id_or_die _artifact_rows_for_archive }) {
         no strict 'refs';
         *{$m} = sub { 'stub' };
     }

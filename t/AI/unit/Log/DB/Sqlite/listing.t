@@ -91,6 +91,16 @@ for_each_log_db_backend(sub {
     like(dies { $log->tries(0, 99) }, qr/no such job/, 'tries on missing job croaks');
     like(dies { $log->services(99) }, qr/no such run/, 'services on missing run croaks');
 
+    # list_files: every backend must enumerate the same set of archive
+    # paths. The role-level orchestration calls _artifact_rows_for_archive
+    # (per-backend primitive); this is the parity check on the primitive.
+    my @files = sort $log->list_files;
+    ok(scalar(@files) >= 1, 'list_files returns entries');
+    ok(grep({ m{^services/harness/events\.jsonl(\.zst)?$} } @files),
+        'list_files: harness service events.jsonl present');
+    ok(grep({ m{^runs/0/jobs/0/0/} } @files),
+        'list_files: run 0 job 0 try 0 path present');
+
     # Multi-archive ambiguity (per F11): inserting a second archive into
     # the same SQLite forces the caller to pass uuid => ... on reopen.
     {

@@ -25,7 +25,7 @@ use Role::Tiny::With;
 BEGIN {
     for my $m (qw{
         artifacts event events end_of_events EOE reset
-        list_files extract archive insert
+        extract archive insert
     }) {
         no strict 'refs';
         *{ __PACKAGE__ . "::$m" } = sub {
@@ -458,6 +458,55 @@ sub _job_db_id {
     return $row->job_id;
 }
 
+# ----- Group A: native DBIC primitives feeding role helpers -----
+
+# DB primitive consumed by App::Yath2::Role::DB::Backend::list_files.
+# Returns an arrayref of hashrefs, one per artifacts row in the given
+# archive_id, with the scope FKs and joined ord/name fields the role
+# helpers need to compute on-disk paths. Shape parity with the
+# Internal raw-SQL implementation.
+sub _artifact_rows_for_archive {
+    my ($self, $aid) = @_;
+    my $rs = $self->{+SCHEMA}->resultset('Artifact')->search(
+        { 'me.archive_id' => $aid },
+        { prefetch => [
+            'run',
+            { service => 'run' },
+            { job_try => { job => 'run' } },
+        ] },
+    );
+
+    my @rows;
+    while (my $a = $rs->next) {
+        my %r = (
+            artifact_id   => $a->artifact_id,
+            run_id        => $a->run_id,
+            service_id    => $a->service_id,
+            job_try_id    => $a->job_try_id,
+            artifact_kind => $a->artifact_kind,
+            format        => $a->format,
+            name          => $a->name,
+            compressed    => $a->compressed,
+        );
+        if (my $svc = $a->service) {
+            $r{service_name} = $svc->name;
+            if (my $sr = $svc->run) { $r{s_run_ord} = $sr->run_ord }
+        }
+        if (my $rn = $a->run) {
+            $r{run_ord} = $rn->run_ord;
+        }
+        if (my $jt = $a->job_try) {
+            $r{try_ord} = $jt->try_ord;
+            if (my $j = $jt->job) {
+                $r{job_ord} = $j->job_ord;
+                if (my $jr = $j->run) { $r{j_run_ord} = $jr->run_ord }
+            }
+        }
+        push @rows, \%r;
+    }
+    return \@rows;
+}
+
 # ----- Group A: delegated to Internal helper -----
 #
 # These methods carry deeply-coupled flavor-specific behavior (UUID
@@ -467,6 +516,10 @@ sub _job_db_id {
 # the same dbh; we forward verbatim. Return shapes match Internal
 # exactly so the parameterised cross-backend tests Layer 1 introduces
 # can compare both backends side-by-side.
+#
+# As primitives (e.g. _artifact_rows_for_archive) get extracted to the
+# role and the role's defaults move up in scope, this delegation list
+# shrinks; eventually the BEGIN forwarder above can be retired.
 
 1;
 
