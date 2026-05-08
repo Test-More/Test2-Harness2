@@ -48,8 +48,8 @@ with 'App::Yath2::Role::DB::Backend';
 
 # {{{ Abstract base class for DB-backed Log readers / writers.
 #
-# Concrete subclasses (Log::Sqlite / Log::Postgres / Log::MariaDB /
-# Log::MySQL) provide the small number of flavor-specific bits:
+# Concrete subclasses (App::Yath2::DB::Internal::{Sqlite,Postgres,
+# MariaDB,MySQL}) provide the small number of flavor-specific bits:
 #
 #   - schema_file()              -- path to the bootstrap .sql
 #   - schema_flavor()            -- short name ('sqlite', 'postgres', ...)
@@ -1986,7 +1986,8 @@ sub insert {
         # Rollback the failed transaction. Any rollback failure is
         # secondary to the original error; warn so it isn't lost.
         my $rb_ok = eval { $dbh->rollback; 1 };
-        warn "rollback failed after insert error: $@" unless $rb_ok;
+        my $rb_err = $@;
+        warn "rollback failed after insert error: $rb_err" unless $rb_ok;
         # Insert state ($self->{+_INSERT_SOURCE}, +PROJECT_ID,
         # +ARCHIVE_ID, +UUID) may have been left set by the partial
         # body. Clear so a retry against the same Log instance is

@@ -454,7 +454,8 @@ sub insert {
     }
     else {
         my $rb_ok = eval { $dbh->rollback; 1 };
-        warn "rollback failed after insert error: $@" unless $rb_ok;
+        my $rb_err = $@;
+        warn "rollback failed after insert error: $rb_err" unless $rb_ok;
         delete $self->{App::Yath2::DB::Internal::_INSERT_SOURCE()};
         die $err;
     }
