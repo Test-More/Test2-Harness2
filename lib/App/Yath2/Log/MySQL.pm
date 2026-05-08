@@ -168,6 +168,15 @@ sub _uuid_to_db {
     return pack('H*', $h);
 }
 
+# BINARY(16) UUID columns must bind via SQL_BINARY or DBD::MariaDB
+# treats the raw bytes as TEXT and rejects them as too long.
+sub _param_type_for_col {
+    my ($self, $table, $col) = @_;
+    require DBI;
+    return DBI::SQL_BINARY() if $col =~ /_uuid\z/;
+    return undef;
+}
+
 sub _uuid_from_db {
     my ($self, $bytes) = @_;
     return undef unless defined $bytes;

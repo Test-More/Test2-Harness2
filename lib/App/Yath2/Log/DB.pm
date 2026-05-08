@@ -2929,9 +2929,27 @@ sub _update_row {
             . join(' AND ', map { $q->($_) . ' = ?' } @wcols);
 
     my $sth = $self->dbh->prepare($sql);
-    $sth->execute(@$set{@cols}, @$where{@wcols});
+    my $idx = 1;
+    for my $c (@cols) {
+        my %attrs;
+        my $type = $self->_param_type_for_col($table, $c);
+        $attrs{TYPE} = $type if defined $type;
+        $sth->bind_param($idx++, $set->{$c}, %attrs ? \%attrs : ());
+    }
+    for my $c (@wcols) {
+        my %attrs;
+        my $type = $self->_param_type_for_col($table, $c);
+        $attrs{TYPE} = $type if defined $type;
+        $sth->bind_param($idx++, $where->{$c}, %attrs ? \%attrs : ());
+    }
+    $sth->execute;
     return;
 }
+
+# Per-flavor column-name -> DBI bind type hint. Default: undef
+# (driver guesses). MySQL/MariaDB override to bind BINARY(16) UUID
+# columns as SQL_BINARY.
+sub _param_type_for_col { undef }
 
 # {{{ Reconstruction (spec.jsonl / report.jsonl from typed columns)
 #
