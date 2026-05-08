@@ -772,7 +772,7 @@ sub _parse_artifact_path {
             scope_kind => $scope_kind,
             scope_id   => $scope_id,
             artifact_kind => 'attachment',
-            format        => _format_for_name($1),
+            format        => $self->_format_for_name($1),
             name          => $1,
             is_zst        => $2 ? 1 : 0,
             scope_ords    => {
@@ -793,7 +793,7 @@ sub _parse_artifact_path {
         scope_kind => $scope_kind,
         scope_id   => $scope_id,
         artifact_kind => 'arbitrary',
-        format        => _format_for_name($base_name),
+        format        => $self->_format_for_name($base_name),
         name          => $base_name,
         is_zst        => $is_zst,
         scope_ords    => {
@@ -803,16 +803,7 @@ sub _parse_artifact_path {
     };
 }
 
-# Light heuristics matching what the schema's `format` column expects.
-sub _format_for_name {
-    my ($name) = @_;
-    return 'json'  if $name =~ /\.json\z/i;
-    return 'jsonl' if $name =~ /\.jsonl\z/i;
-    return 'csv'   if $name =~ /\.csv\z/i;
-    return 'html'  if $name =~ /\.html?\z/i;
-    return 'txt'   if $name =~ /\.txt\z/i;
-    return 'bin';
-}
+# _format_for_name moved to App::Yath2::Role::DB::Backend.
 
 # }}}
 
@@ -949,39 +940,8 @@ sub _select_artifact_row {
     return $row;
 }
 
-# Translate a logical (scope_kind, scope_id) pair into a SQL WHERE
-# fragment over the three nullable FK columns + bind values. The
-# fragment never includes "archive_id = ?" — callers prepend that.
-sub _scope_where_clause {
-    my ($self, $scope_kind, $scope_id) = @_;
-    if ($scope_kind eq 'run') {
-        return ('run_id = ? AND service_id IS NULL AND job_try_id IS NULL', $scope_id);
-    }
-    if ($scope_kind eq 'service') {
-        return ('service_id = ? AND run_id IS NULL AND job_try_id IS NULL', $scope_id);
-    }
-    if ($scope_kind eq 'job_try') {
-        return ('job_try_id = ? AND run_id IS NULL AND service_id IS NULL', $scope_id);
-    }
-    if ($scope_kind eq 'archive') {
-        return ('run_id IS NULL AND service_id IS NULL AND job_try_id IS NULL');
-    }
-    croak "unknown scope_kind: $scope_kind";
-}
-
-# For INSERT: returns a hashref { run_id => ..., service_id => ...,
-# job_try_id => ... }, with exactly zero or one set based on the
-# scope_kind/scope_id pair. Used to pick FK column values.
-sub _scope_fk_values {
-    my ($self, $scope_kind, $scope_id) = @_;
-    my %v = (run_id => undef, service_id => undef, job_try_id => undef);
-    if ($scope_kind eq 'run')      { $v{run_id}     = $scope_id }
-    elsif ($scope_kind eq 'service') { $v{service_id} = $scope_id }
-    elsif ($scope_kind eq 'job_try') { $v{job_try_id} = $scope_id }
-    elsif ($scope_kind eq 'archive') { }
-    else { croak "unknown scope_kind: $scope_kind" }
-    return \%v;
-}
+# _scope_where_clause + _scope_fk_values moved to
+# App::Yath2::Role::DB::Backend.
 
 # Read raw bytes for $rel. The Artifact handle calls this only after
 # _artifact_exists confirmed which form is real, so the bytes we
@@ -1158,30 +1118,8 @@ sub _artifact_list_dir {
     return map { $_->[0] } @$rows;
 }
 
-sub _decompress_jsonl_bytes {
-    my ($self, $bytes) = @_;
-    require Test2::Harness2::Util::Zstd;
-    require Compress::Zstd;
-
-    my $out = '';
-    my $offset = 0;
-    while ($offset < length $bytes) {
-        my $size = Test2::Harness2::Util::Zstd::zstd_frame_size(substr($bytes, $offset));
-        croak "incomplete zstd frame in jsonl bytes" unless defined $size;
-        my $frame = substr($bytes, $offset, $size);
-        $offset += $size;
-        my $plain = Compress::Zstd::decompress($frame);
-        croak "zstd decompress failed in jsonl bytes" unless defined $plain;
-        $out .= $plain;
-    }
-    return $out;
-}
-
-sub absolute_path {
-    my ($self, $rel) = @_;
-    croak "absolute_path is unavailable for the DB backend; "
-        . "extract first or read via the Log API ($rel)";
-}
+# _decompress_jsonl_bytes + absolute_path moved to
+# App::Yath2::Role::DB::Backend.
 
 # Save artifact bytes. Args mirror the Artifact contract:
 #   rel                full target relative path (with .zst suffix when compressed)

@@ -160,6 +160,85 @@ sub _stem_for_artifact_row {
     return undef;
 }
 
+# Light heuristics matching what the schema's `format` column expects.
+# Used by _parse_artifact_path during INSERT-side path tagging and by
+# any reader that wants to classify a name on the fly.
+sub _format_for_name {
+    my $name = ref($_[0]) ? $_[1] : $_[0];
+    return 'json'  if $name =~ /\.json\z/i;
+    return 'jsonl' if $name =~ /\.jsonl\z/i;
+    return 'csv'   if $name =~ /\.csv\z/i;
+    return 'html'  if $name =~ /\.html?\z/i;
+    return 'txt'   if $name =~ /\.txt\z/i;
+    return 'bin';
+}
+
+# Translate a logical (scope_kind, scope_id) pair into a SQL WHERE
+# fragment over the three nullable FK columns + bind values. The
+# fragment never includes "archive_id = ?" -- callers prepend that.
+# Used by the row-fetch primitives both backends layer on top of.
+sub _scope_where_clause {
+    my ($self, $scope_kind, $scope_id) = @_;
+    if ($scope_kind eq 'run') {
+        return ('run_id = ? AND service_id IS NULL AND job_try_id IS NULL', $scope_id);
+    }
+    if ($scope_kind eq 'service') {
+        return ('service_id = ? AND run_id IS NULL AND job_try_id IS NULL', $scope_id);
+    }
+    if ($scope_kind eq 'job_try') {
+        return ('job_try_id = ? AND run_id IS NULL AND service_id IS NULL', $scope_id);
+    }
+    if ($scope_kind eq 'archive') {
+        return ('run_id IS NULL AND service_id IS NULL AND job_try_id IS NULL');
+    }
+    croak "unknown scope_kind: $scope_kind";
+}
+
+# For INSERT: returns a hashref { run_id => ..., service_id => ...,
+# job_try_id => ... }, with exactly zero or one set based on the
+# scope_kind / scope_id pair. Used to pick FK column values.
+sub _scope_fk_values {
+    my ($self, $scope_kind, $scope_id) = @_;
+    my %v = (run_id => undef, service_id => undef, job_try_id => undef);
+    if    ($scope_kind eq 'run')     { $v{run_id}     = $scope_id }
+    elsif ($scope_kind eq 'service') { $v{service_id} = $scope_id }
+    elsif ($scope_kind eq 'job_try') { $v{job_try_id} = $scope_id }
+    elsif ($scope_kind eq 'archive') { }
+    else { croak "unknown scope_kind: $scope_kind" }
+    return \%v;
+}
+
+# Streaming zstd decompress: events files are multi-frame, whole-file
+# snapshots are single-frame. Concat-decoded payloads are correct
+# either way. Pure zstd plumbing; no DB or flavor coupling.
+sub _decompress_jsonl_bytes {
+    my ($self, $bytes) = @_;
+    require Test2::Harness2::Util::Zstd;
+    require Compress::Zstd;
+
+    my $out = '';
+    my $offset = 0;
+    while ($offset < length $bytes) {
+        my $size = Test2::Harness2::Util::Zstd::zstd_frame_size(substr($bytes, $offset));
+        croak "incomplete zstd frame in jsonl bytes" unless defined $size;
+        my $frame = substr($bytes, $offset, $size);
+        $offset += $size;
+        my $plain = Compress::Zstd::decompress($frame);
+        croak "zstd decompress failed in jsonl bytes" unless defined $plain;
+        $out .= $plain;
+    }
+    return $out;
+}
+
+# DB-backed Logs do not have a per-artifact filesystem path. Callers
+# wanting on-disk bytes must extract() into a directory first, or use
+# the Artifact handle's API to read bytes through the backend.
+sub absolute_path {
+    my ($self, $rel) = @_;
+    croak "absolute_path is unavailable for the DB backend; "
+        . "extract first or read via the Log API ($rel)";
+}
+
 # ----- role-provided archive-shaped methods -----
 
 # artifacts(...) -- factory for App::Yath2::Log::Artifact handles.
