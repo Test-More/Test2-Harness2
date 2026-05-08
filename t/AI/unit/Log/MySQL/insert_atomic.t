@@ -7,7 +7,9 @@ use Test2::Tools::QuickDB;
 use lib 't/lib';
 use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
 for_each_db_version([qw/mysql percona/], sub {
-    skipall_unless_can_db(driver => 'MySQL');
+    my ($ver, $bin, $prefix) = @_;
+    my $DRV = ($prefix // '') eq 'percona' ? 'Percona' : 'MySQLCom';
+    skipall_unless_can_db(driver => $DRV);
 
     use File::Temp qw/tempdir/;
     use File::Path qw/make_path/;
@@ -20,7 +22,7 @@ for_each_db_version([qw/mysql percona/], sub {
 
     # B8 (D6): atomic insert + duplicate-archive rejection.
 
-    my $qdb = get_db({ driver => 'MySQL' });
+    my $qdb = get_db({ driver => $DRV });
     {
     my $admin = DBI->connect(
         $qdb->connect_string, undef, undef,

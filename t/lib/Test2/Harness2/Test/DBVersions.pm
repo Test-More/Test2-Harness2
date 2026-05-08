@@ -30,7 +30,7 @@ sub discover_db_versions {
             next unless $entry =~ /\A\Q$prefix\E-/;
             my $bin = "$home/dbs/$entry/bin";
             next unless -d $bin;
-            push @hits => [$entry, $bin];
+            push @hits => [$entry, $bin, $prefix];
         }
         closedir $dh;
         push @found => sort { $a->[0] cmp $b->[0] } @hits;
@@ -54,16 +54,18 @@ sub discover_db_versions {
 # rest of the process and silently invalidate later subtests. Each
 # fork starts with fresh package state.
 #
-# $body is called with two args: ($version_name, $bin_path). In
-# fallback mode (no versions discovered), $version_name = 'system'
-# and $bin_path = undef, and the body runs in the parent process —
+# $body is called with three args: ($version_name, $bin_path, $prefix).
+# $prefix is the matched ~/dbs/<prefix>-* token (e.g. 'mysql' vs
+# 'percona') so the body can pick a flavor-specific QuickDB driver. In
+# fallback mode (no versions discovered), all three are passed as
+# ('system', undef, undef) and the body runs in the parent process —
 # preserving prior single-version behavior.
 sub for_each_db_version {
     my ($prefixes, $body) = @_;
     my @versions = discover_db_versions(@$prefixes);
 
     if (!@versions) {
-        $body->('system', undef);
+        $body->('system', undef, undef);
         return;
     }
 
@@ -71,11 +73,11 @@ sub for_each_db_version {
     require Test2::V0;
     require Test2::AsyncSubtest;
     for my $v (@versions) {
-        my ($name, $bin) = @$v;
+        my ($name, $bin, $prefix) = @$v;
         my $st = Test2::AsyncSubtest->new(name => $name);
         $st->run_fork(sub {
             local $ENV{PATH} = "$bin:$ENV{PATH}";
-            $body->($name, $bin);
+            $body->($name, $bin, $prefix);
         });
         $st->finish;
     }

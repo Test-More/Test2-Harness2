@@ -7,7 +7,9 @@ use Test2::Tools::QuickDB;
 use lib 't/lib';
 use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
 for_each_db_version([qw/mysql percona/], sub {
-    skipall_unless_can_db(driver => 'MySQL');
+    my ($ver, $bin, $prefix) = @_;
+    my $DRV = ($prefix // '') eq 'percona' ? 'Percona' : 'MySQLCom';
+    skipall_unless_can_db(driver => $DRV);
 
     use File::Temp qw/tempdir/;
     use File::Path qw/make_path/;
@@ -18,7 +20,7 @@ for_each_db_version([qw/mysql percona/], sub {
     use App::Yath2::Log;
     use App::Yath2::Log::MySQL;
 
-    my $qdb = get_db({ driver => 'MySQL' });
+    my $qdb = get_db({ driver => $DRV });
     {
     my $admin = DBI->connect(
         $qdb->connect_string, undef, undef,
@@ -159,9 +161,10 @@ for_each_db_version([qw/mysql percona/], sub {
     my $columns = $dbh->selectall_arrayref(
     q{SELECT column_name FROM information_schema.columns
        WHERE table_schema = DATABASE() AND table_name = 'services'},
-    { Slice => {} },
     );
-    my %col_names = map { $_->{column_name} => 1 } @$columns;
+    # MySQL 8/9 returns uppercase column names; MariaDB returns lowercase.
+    # Normalize via lc on the single-column rows.
+    my %col_names = map { lc($_->[0]) => 1 } @$columns;
     ok(!exists $col_names{spec},   'services.spec column dropped');
     ok(!exists $col_names{state},  'services.state column dropped');
     ok(!exists $col_names{status}, 'services.status column dropped');
