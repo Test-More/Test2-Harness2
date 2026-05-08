@@ -153,7 +153,10 @@ sub flavor {
     # sqlt_type doesn't distinguish MariaDB from MySQL when DBD::MariaDB
     # is the underlying driver (both come back as 'MySQL'). Sniff the
     # actual server first, fall back to sqlt_type.
-    my $driver = eval { $self->{+SCHEMA}->storage->dbh->{Driver}{Name} } // '';
+    my $driver;
+    my $ok = eval { $driver = $self->{+SCHEMA}->storage->dbh->{Driver}{Name}; 1 };
+    my $err = $@;
+    $driver //= '';
     return 'mariadb' if $driver eq 'MariaDB';
     return 'mysql'   if $driver eq 'mysql';
     my $t = $self->{+SCHEMA}->storage->sqlt_type;

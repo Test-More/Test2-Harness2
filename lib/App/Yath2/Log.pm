@@ -185,7 +185,10 @@ sub build_archive_meta {
     my $stamp = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
         $gm[5] + 1900, $gm[4] + 1, $gm[3], $gm[2], $gm[1], $gm[0]);
 
-    my $host = eval { Sys::Hostname::hostname() } // 'unknown';
+    my $host;
+    my $host_ok = eval { $host = Sys::Hostname::hostname(); 1 };
+    my $host_err = $@;
+    $host //= 'unknown';
     my $user = $ENV{USER}
         // $ENV{USERNAME}
         // (eval { (getpwuid($<))[0] } || undef);
