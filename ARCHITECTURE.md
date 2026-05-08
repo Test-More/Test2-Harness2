@@ -2698,12 +2698,19 @@ argument shape:
 | ------------------- | ---------------------------------- |
 | `live => $dir`      | `App::Yath2::Log::Live`            |
 | `dir  => $dir`      | `App::Yath2::Log::Directory`       |
-| `file => $f`        | `Log::TarZIdx` or `Log::Sqlite`    |
-|                     | (auto-detected by magic bytes)     |
-| `dbh  => ...`       | `App::Yath2::Log::DB::Sqlite`          |
-| `dsn  => ...`       | `App::Yath2::Log::DB::Sqlite` /        |
-|                     | `Log::Postgres` / `Log::MariaDB` / |
-|                     | `Log::MySQL`                       |
+| `file => $f`        | `Log::TarZIdx` or `App::Yath2::`   |
+|                     | `Log::DB` (auto-detected by magic  |
+|                     | bytes; the latter wraps a sqlite-  |
+|                     | flavor `Role::DB::Backend` doer)   |
+| `dbh  => ...`       | `App::Yath2::Log::DB`              |
+| `dsn  => ...`       | `App::Yath2::Log::DB`              |
+
+`App::Yath2::Log::DB` is a thin proxy: it forwards through a
+`Role::DB::Backend` doer (an `App::Yath2::DB::Internal::*` instance
+by default, an `App::Yath2::DB::DBIC` instance when
+`backend => 'dbic'`) and pins itself to one `archive_uuid`. The DB
+flavor is derived from the DSN / dbh; the `backend =>` selector
+picks Internal vs DBIC. See "DB backend selection" below.
 
 Magic-byte detection: SQLite magic (`'SQLite format 3\\0'`,
 header) wins first, then the tar.zidx footer marker
@@ -2737,12 +2744,64 @@ Every backend exposes the same surface:
   from. This is the read-side replacement for the old writer-side
   identifier mirroring.
 
-The DB backends share `App::Yath2::Log::DB` as their abstract
-base. Per-flavor classes provide DSN construction, schema
-bootstrap from `share/schema/<flavor>.sql`, UUID + JSON codecs,
-and payload bind hooks. The `archives` table makes multi-archive
-the universal model: a "single sqlite .yath" is just N=1 in the
-same table.
+DB-backed access goes through `App::Yath2::Role::DB::Backend`.
+Two implementations consume the role: `App::Yath2::DB::Internal`
+(with per-flavor subclasses `App::Yath2::DB::Internal::Sqlite`,
+`...::Postgres`, `...::MariaDB`, `...::MySQL`) emitting raw SQL,
+and `App::Yath2::DB::DBIC` wrapping a `DBIx::Class::Schema`
+subclass. Both backends use the SAME schema files: bootstrap is
+always SQL-file-driven via the role's `bootstrap_schema`, which
+reads `share/schema/<flavor>.sql`. DBIC's `deploy()` is never
+called. The per-flavor pieces (DSN construction, UUID + JSON
+codecs, payload bind hooks) live in the `Internal::*` subclasses;
+DBIC handles flavor through DBIx::Class storage detection plus a
+small `flavor_override` slot for DBD::MariaDB-vs-MySQL
+disambiguation.
+
+`App::Yath2::Log::DB` is a thin proxy that forwards through
+whichever backend was selected (see "DB backend selection"
+below). The `archives` table makes multi-archive the universal
+model: a "single sqlite .yath" is just N=1 in the same table.
+
+#### DB backend selection
+
+Two implementations of `App::Yath2::Role::DB::Backend` are
+available:
+
+- **`backend => 'internal'`** (default): `App::Yath2::DB::Internal`,
+  with per-flavor subclasses `App::Yath2::DB::Internal::{Sqlite,
+  Postgres,MariaDB,MySQL}`. Emits SQL directly. This is what yath
+  itself uses for read/write traffic.
+
+- **`backend => 'dbic'`**: `App::Yath2::DB::DBIC`, a single class
+  wrapping a `DBIx::Class::Schema` subclass with hand-written
+  Result classes. Flavor handled by DBIC's storage detection plus
+  a small `flavor_override` slot for DBD::MariaDB-vs-MySQL
+  disambiguation. Targeted at downstream consumers (e.g.
+  `App::Yath2::UI`) that want ResultSet-shaped access. The heavier
+  Group-A methods delegate to a shared `Internal::*` helper bound
+  to the same dbh, so transactional state is consistent.
+
+Both consume the same role; functional behavior is identical.
+Bootstrap is always driven by `share/schema/$flavor.sql` -- DBIC's
+`deploy()` is never called. The proxy `App::Yath2::Log::DB`
+delegates blindly through whichever backend was selected.
+
+Pick a backend at construction:
+
+    my $db  = App::Yath2::DB->open(file => $path);                  # internal
+    my $db  = App::Yath2::DB->open(file => $path, backend => 'dbic');
+    my $log = App::Yath2::Log::DB->new(backend => $db, uuid => $u);
+
+The `*_uuid_string` shadow columns are MySQL-only schema furniture
+populated by `BEFORE INSERT` / `BEFORE UPDATE` triggers
+(`SET NEW.<col>_uuid_string = BIN_TO_UUID(NEW.<col>_uuid)`). DBIC
+Result classes do NOT model these columns; both the Internal and
+DBIC backends read/write only the binary UUID column, and the
+trigger keeps the human-readable shadow in sync. The schema parity
+test (`t/AI/unit/DB/DBIC/schema_parity.t`) anchors on
+`share/schema/sqlite.sql`, so the shadow doesn't appear there at
+all.
 
 #### LIVE sentinel — disambiguating live vs sealed
 
@@ -2794,14 +2853,38 @@ Plaintext archives are bigger but trivially greppable. CLI:
     App::Yath2::Log::Live                live workdir backend
     App::Yath2::Log::Directory           sealed dir backend
     App::Yath2::Log::TarZIdx             tar.zidx archive backend
-    App::Yath2::Log::DB                  abstract DB backend
-    App::Yath2::Log::DB::Sqlite              sqlite-on-DB
-    App::Yath2::Log::DB::Postgres            postgres-on-DB
-    App::Yath2::Log::DB::MariaDB             mariadb-on-DB
-    App::Yath2::Log::DB::MySQL               mysql-on-DB
+    App::Yath2::Log::DB                  thin proxy: archive-shaped
+                                         (matches Log::Directory and
+                                         Log::TarZIdx); wraps a
+                                         Role::DB::Backend doer + uuid.
+    App::Yath2::Role::DB::Backend        the role Log::DB consumes;
+                                         group A covers the
+                                         per-archive surface, group B
+                                         covers multi-archive
+                                         (archives / archive_count /
+                                         has_archive / scoped).
+                                         Provides a concrete
+                                         bootstrap_schema that reads
+                                         share/schema/$flavor.sql.
+    App::Yath2::DB                       top-level + open() factory.
+    App::Yath2::DB::Internal             abstract base for the raw-SQL
+                                         backend (~3000 LoC of shared
+                                         SQL body).
+    App::Yath2::DB::Internal::Sqlite         per-flavor subclasses.
+    App::Yath2::DB::Internal::Postgres
+    App::Yath2::DB::Internal::MariaDB
+    App::Yath2::DB::Internal::MySQL
+    App::Yath2::DB::DBIC                 single-class DBIC backend;
+                                         the heavier Group-A methods
+                                         delegate through a shared
+                                         Internal::* helper bound to
+                                         the same dbh.
+    App::Yath2::DB::DBIC::Schema         DBIx::Class::Schema subclass.
+    App::Yath2::DB::DBIC::Result::*      hand-written Result classes;
+                                         UUID columns only -- no
+                                         *_uuid_string.
     App::Yath2::Log::Artifact            per-collector handle
     App::Yath2::Log::Iterator::JSONL     per-file iterator
-    App::Yath2::LogDB                    multi-archive DB container
     App::Yath2::Command::inspect         `yath inspect <path>`
 
     Test2::Harness2::Collector           single collector class
@@ -2817,6 +2900,9 @@ Removed (rev-2): `Test2::Harness2::Collector::Test`,
 `Test2::Harness2::Role::Collector::Observer`,
 `Test2::Harness2::Collector::Observer::TestObserver`,
 `App::Yath2::LogArchive` (renamed `App::Yath2::Log`).
+
+The previously-planned `App::Yath2DB` namespace was renamed to
+`App::Yath2::DB` before either was implemented.
 
 ## Addendum: schema redesign — spec/report promoted, projects/test_files breakout (2026-05-07)
 
