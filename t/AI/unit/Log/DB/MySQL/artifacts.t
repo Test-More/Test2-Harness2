@@ -94,9 +94,9 @@ for_each_db_version([qw/mysql percona/], sub {
     $w->close;
     }
 
-    App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => )->insert(App::Yath2::Log->new(dir => $src));
+    App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend)->insert(App::Yath2::Log->new(dir => $src));
 
-    my $log = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $log = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     {
     my $a = $log->artifacts();
     isa_ok($a, ['App::Yath2::Log::Artifact']);

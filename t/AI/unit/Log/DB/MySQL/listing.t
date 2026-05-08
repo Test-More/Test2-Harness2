@@ -70,10 +70,10 @@ for_each_db_version([qw/mysql percona/], sub {
     $w->close;
     }
 
-    my $writer = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $writer = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $writer->insert(App::Yath2::Log->new(dir => $src));
 
-    my $log = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $log = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     is([$log->services], ['harness', 'preload-perl'], 'global services alphabetical');
     is([$log->services(0)], ['run'], 'run-scoped services');
     is([$log->runs], [0, 2], 'runs ascending integer');
@@ -108,17 +108,17 @@ for_each_db_version([qw/mysql percona/], sub {
     $w->say(encode_json({ping => 'archive2'}));
     $w->close;
 
-    my $w2 = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $w2 = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $w2->insert(App::Yath2::Log->new(dir => $src2));
 
     like(
-        dies { App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => )->runs },
+        dies { App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend)->runs },
         qr/ambiguous; specify uuid =>/,
         'multi-archive without uuid throws',
     );
 
     my $u = $w2->uuid;
-    my $picked = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => )->scoped($u);
+    my $picked = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend)->scoped($u);
     }
 
     # 0-archive case: a fresh empty DB is allowed; reads throw.
@@ -131,7 +131,7 @@ for_each_db_version([qw/mysql percona/], sub {
     $admin->disconnect;
 
     my $empty = $qdb->connect_string('yath_log_test_listing_empty');
-    my $w = App::Yath2::DB->open(dsn => $empty, flavor => "mysql", backend => );
+    my $w = App::Yath2::DB->open(dsn => $empty, flavor => "mysql", backend => $backend);
     like(dies { $w->runs }, qr/no archives in this DB/, 'reads on empty DB throw');
     }
 

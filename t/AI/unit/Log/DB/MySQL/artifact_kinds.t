@@ -66,7 +66,7 @@ for_each_db_version([qw/mysql percona/], sub {
     return $src;
     }
 
-    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $db->bootstrap_schema;
 
     my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));

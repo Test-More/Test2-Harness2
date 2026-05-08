@@ -51,7 +51,7 @@ for_each_db_version([qw/mysql percona/], sub {
     return $src;
     }
 
-    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $db->bootstrap_schema;
 
     my $src = build_minimal_log();
@@ -71,7 +71,7 @@ for_each_db_version([qw/mysql percona/], sub {
      WHERE archive_id = ? AND artifact_kind = 'arbitrary' AND name = 'meta.json'
     }, undef, $aid);
 
-    my $log  = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $log  = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     my $root = $log->artifacts;
     ok($root->exists('meta.json'), 'meta.json visible at archive root');
 

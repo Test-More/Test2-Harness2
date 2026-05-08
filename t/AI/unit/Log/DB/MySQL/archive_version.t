@@ -51,7 +51,7 @@ for_each_db_version([qw/mysql percona/], sub {
     return $src;
     }
 
-    my $writer = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $writer = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $writer->bootstrap_schema;
 
     my $src = build_minimal_log();
@@ -68,7 +68,7 @@ for_each_db_version([qw/mysql percona/], sub {
     {
     my $reader;
     ok(
-        lives { $reader = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => ) },
+        lives { $reader = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend) },
         'reader opens at current version',
     );
     is([$reader->runs], [0], 'reader sees the run');
@@ -80,7 +80,7 @@ for_each_db_version([qw/mysql percona/], sub {
     );
 
     like(
-    dies { App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => ) },
+    dies { App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend) },
     qr/refusing to read/,
     'reader refuses archive whose archive_version < last_breaking_version',
     );
@@ -90,7 +90,7 @@ for_each_db_version([qw/mysql percona/], sub {
     undef, $App::Yath2::Log::VERSION, $aid,
     );
     ok(
-    lives { App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => ) },
+    lives { App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend) },
     'reader works once archive_version is back at current',
     );
 

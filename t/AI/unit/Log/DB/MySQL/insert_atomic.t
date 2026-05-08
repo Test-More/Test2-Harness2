@@ -80,7 +80,7 @@ for_each_db_version([qw/mysql percona/], sub {
 
     # {{{ Test 1: duplicate-uuid rejection.
     {
-    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     clean_db($dbh);
@@ -108,7 +108,7 @@ for_each_db_version([qw/mysql percona/], sub {
     # monkey-patch is portable because we patch the base-class symbol
     # inherited by both flavors.
     {
-    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     clean_db($dbh);
@@ -144,7 +144,7 @@ for_each_db_version([qw/mysql percona/], sub {
 
     # {{{ Test 3: explicit archive_uuid override.
     {
-    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $db = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     clean_db($dbh);

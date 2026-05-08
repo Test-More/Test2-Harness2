@@ -94,7 +94,7 @@ for_each_db_version([qw/mysql percona/], sub {
     }
 
     my $src = build_log_with_restarts();
-    my $mysql = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $mysql = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     my $aid = $mysql->insert(App::Yath2::Log->new(dir => $src));
     ok(defined $aid, 'insert() succeeded');
 

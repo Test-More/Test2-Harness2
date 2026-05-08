@@ -84,9 +84,9 @@ for_each_db_version([qw/mysql percona/], sub {
     {relative => 't/dummy.t'},
     );
 
-    App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => )->insert(App::Yath2::Log->new(dir => $src));
+    App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend)->insert(App::Yath2::Log->new(dir => $src));
 
-    my $log = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $log = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     my @collected;
     while (my $e = $log->event(0)) {
     push @collected => $e;
@@ -126,7 +126,7 @@ for_each_db_version([qw/mysql percona/], sub {
     is($first->{facet_data}{harness}{note}, 'harness up', 'reset rewinds');
 
     {
-    my $log2 = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => );
+    my $log2 = App::Yath2::DB->open(dsn => $dsn, flavor => "mysql", backend => $backend);
     my @first = $log2->events(0);
     is(scalar(@first), scalar(@collected),
         'events() first call returns full record set');
