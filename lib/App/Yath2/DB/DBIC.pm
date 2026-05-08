@@ -1201,7 +1201,7 @@ App::Yath2::DB::DBIC - DBIx::Class backend for yath DB-archive storage.
 
     use App::Yath2::DB;
 
-    my $db = App::Yath2::DB->open(
+    my $db = App::Yath2::DB->new(
         file    => '/tmp/run.yath',
         backend => 'dbic',
     );

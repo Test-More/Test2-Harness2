@@ -20,15 +20,10 @@ use Object::HashBase qw{
 use Role::Tiny::With;
 with 'App::Yath2::Role::DB::Backend';
 
-# Single-class raw-DBI backend introduced by the DB rebuild
-# (AI_DOCS/2026-05-08-yath-db-rebuild.md). Phase 2 fills in the read
-# primitives; later phases add write primitives. Flavor differences
-# (UUID bind shape, payload binding, MariaDB trigger skip) live inside
-# individual methods rather than per-flavor subclasses.
-#
-# The role's `requires` list still reflects the legacy Internal-shaped
-# contract during Phases 2-7; Phase 9 swaps it to the new primitive
-# list and removes the stub fillers.
+# Single-class raw-DBI backend implementing
+# App::Yath2::Role::DB::Backend. Flavor differences (UUID bind shape,
+# payload binding, MariaDB trigger skip) live inside individual methods
+# rather than per-flavor subclasses.
 
 sub init {
     my $self = shift;
@@ -852,10 +847,10 @@ sub scoped {
     return $sib;
 }
 
-# Phase 6 reroute: Group-A write methods on the backend wrap themselves
-# in an App::Yath2::DB instance and delegate. Lets `App::Yath2::DB->open`
-# callers (the legacy backend-instance entry point) keep working with
-# the new write paths without forcing them through `->new`.
+# Group-A write methods on the backend wrap themselves in an
+# App::Yath2::DB instance and delegate. Lets callers that constructed
+# a bare backend (e.g. App::Yath2::DB::SQL->new(dsn => ...)) reach the
+# new write paths without forcing them through App::Yath2::DB->new.
 sub _wrap_self_in_db {
     my $self = shift;
     require App::Yath2::DB;
@@ -912,9 +907,9 @@ sub _artifact_save {
     return $self->_wrap_self_in_db->save_artifact($uuid, %p);
 }
 
-# Artifact-handle private methods. The App::Yath2::Log::Artifact handle
-# delegates to its {log} slot which, for App::Yath2::DB->open callers,
-# is the bare backend. Route through the data layer so the new
+# Artifact-handle private methods. The App::Yath2::Log::Artifact
+# handle delegates to its {log} slot which, when constructed against
+# a bare backend, lands here. Route through the data layer so the
 # canonical-bytes paths are exercised.
 sub _artifact_exists {
     my ($self, $rel) = @_;
@@ -1399,16 +1394,8 @@ App::Yath2::DB::SQL - raw-DBI backend for App::Yath2::DB.
 =head1 DESCRIPTION
 
 Single-class backend implementing L<App::Yath2::Role::DB::Backend> via
-direct DBI calls. Replaces the per-flavor C<App::Yath2::DB::Internal::*>
-tree as part of the DB rebuild
-(L<AI_DOCS/2026-05-08-yath-db-rebuild.md>). Flavor differences
-(UUID bind shape, payload binding, MariaDB trigger skip) are handled
-inside individual methods.
-
-=head1 STATUS
-
-Phase 2: read primitives implemented. Write primitives land in Phase 5;
-event walker / extract / archive / insert in Phases 6-7.
+direct DBI calls. Flavor differences (UUID bind shape, payload binding,
+MariaDB trigger skip) are handled inside individual methods.
 
 =head1 SOURCE
 

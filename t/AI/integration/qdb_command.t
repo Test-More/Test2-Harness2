@@ -45,29 +45,29 @@ subtest 'flavor parse' => sub {
 
 subtest 'flavor meta' => sub {
     my @postgres = App::Yath2::Command::qdb::_flavor_meta('postgres');
-    is($postgres[0], 'PostgreSQL',                   'postgres -> PostgreSQL driver');
-    is($postgres[1], 'postgresql',                   'postgres -> postgresql prefix');
-    is($postgres[2], 'psql',                         'postgres shell');
-    is($postgres[4], 'App::Yath2::DB::Internal::Postgres', 'postgres backend class');
-    is($postgres[5], 0,                              'postgres does not need create db');
+    is($postgres[0], 'PostgreSQL', 'postgres -> PostgreSQL driver');
+    is($postgres[1], 'postgresql', 'postgres -> postgresql prefix');
+    is($postgres[2], 'psql',       'postgres shell');
+    is($postgres[4], 'postgres',   'postgres -> postgres flavor');
+    is($postgres[5], 0,            'postgres does not need create db');
 
     my @postgresql = App::Yath2::Command::qdb::_flavor_meta('postgresql');
     is($postgresql[0], 'PostgreSQL', 'postgresql alias resolves');
 
     my @mariadb = App::Yath2::Command::qdb::_flavor_meta('mariadb');
-    is($mariadb[0], 'MariaDB',                     'mariadb driver');
-    is($mariadb[2], 'mariadb',                     'mariadb shell');
-    is($mariadb[3], ['mysql'],                     'mariadb falls back to mysql');
-    is($mariadb[4], 'App::Yath2::DB::Internal::MariaDB', 'mariadb backend class');
-    is($mariadb[5], 1,                             'mariadb needs create db');
+    is($mariadb[0], 'MariaDB',   'mariadb driver');
+    is($mariadb[2], 'mariadb',   'mariadb shell');
+    is($mariadb[3], ['mysql'],   'mariadb falls back to mysql');
+    is($mariadb[4], 'mariadb',   'mariadb -> mariadb flavor');
+    is($mariadb[5], 1,           'mariadb needs create db');
 
     my @mysql = App::Yath2::Command::qdb::_flavor_meta('mysql');
-    is($mysql[0], 'MySQLCom',                    'mysql driver (Oracle/Community)');
-    is($mysql[4], 'App::Yath2::DB::Internal::MySQL', 'mysql backend class');
+    is($mysql[0], 'MySQLCom', 'mysql driver (Oracle/Community)');
+    is($mysql[4], 'mysql',    'mysql -> mysql flavor');
 
     my @percona = App::Yath2::Command::qdb::_flavor_meta('percona');
-    is($percona[0], 'Percona',                       'percona driver');
-    is($percona[4], 'App::Yath2::DB::Internal::MySQL', 'percona reuses mysql backend');
+    is($percona[0], 'Percona', 'percona driver');
+    is($percona[4], 'mysql',   'percona reuses mysql flavor');
 
     like(
         dies { App::Yath2::Command::qdb::_flavor_meta('sqlite') },

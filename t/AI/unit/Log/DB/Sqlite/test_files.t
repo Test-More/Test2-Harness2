@@ -72,8 +72,8 @@ for_each_log_db_backend(sub {
     my ($backend) = @_;
 
     # ensure_project_row / ensure_test_file_row are canonical backend
-    # primitives; both backends expose them directly.
-    my $sql = sub { $_[0] };
+    # primitives; reach through the wrapper to the backend.
+    my $sql = sub { $_[0]->backend };
 
     # --- Part 1: ensure_test_file_row unit-level test ---
 

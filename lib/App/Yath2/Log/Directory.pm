@@ -744,7 +744,7 @@ sub archive {
         require App::Yath2::DB;
         # Refuse to clobber an existing destination -- fresh file only.
         croak "destination '$out' already exists" if -e $out;
-        my $dest = App::Yath2::DB->open(file => $out);
+        my $dest = App::Yath2::DB->new(file => $out);
         # DB::insert builds the archive metadata and drops a fresh
         # meta.json into the archive root itself. seal => 1 appends
         # the YATHFOOT trailer (and a zstd-compressed copy of

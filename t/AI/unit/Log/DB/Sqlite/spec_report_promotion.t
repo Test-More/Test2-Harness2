@@ -9,7 +9,6 @@ use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
 use App::Yath2::DB;
-use App::Yath2::DB::Internal;
 
 use lib 't/lib';
 use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
@@ -107,41 +106,17 @@ sub build_log {
     return $src;
 }
 
-# --- Promoted-key constants exposed for downstream (backend-independent) ---
-
-ok(scalar(@App::Yath2::DB::Internal::RUNS_SPEC_PROMOTED_KEYS) > 0,
-    '@RUNS_SPEC_PROMOTED_KEYS non-empty');
-ok((grep { $_ eq 'started_at' } @App::Yath2::DB::Internal::RUNS_SPEC_PROMOTED_KEYS),
-    'started_at in @RUNS_SPEC_PROMOTED_KEYS');
-ok((grep { $_ eq 'ended_at'   } @App::Yath2::DB::Internal::RUNS_REPORT_PROMOTED_KEYS),
-    'ended_at in @RUNS_REPORT_PROMOTED_KEYS');
-ok((grep { $_ eq 'jobs' } @App::Yath2::DB::Internal::RUNS_AGGREGATED_KEYS),
-    'jobs in @RUNS_AGGREGATED_KEYS');
-ok((grep { $_ eq 'subtests' } @App::Yath2::DB::Internal::RUNS_AGGREGATED_KEYS),
-    'subtests in @RUNS_AGGREGATED_KEYS');
-ok((grep { $_ eq 'services' } @App::Yath2::DB::Internal::RUNS_AGGREGATED_KEYS),
-    'services in @RUNS_AGGREGATED_KEYS');
-
-ok(scalar(@App::Yath2::DB::Internal::JOB_TRIES_SPEC_PROMOTED_KEYS) > 0,
-    '@JOB_TRIES_SPEC_PROMOTED_KEYS non-empty');
-ok((grep { $_ eq 'queued_at' } @App::Yath2::DB::Internal::JOB_TRIES_SPEC_PROMOTED_KEYS),
-    'queued_at in @JOB_TRIES_SPEC_PROMOTED_KEYS');
-ok((grep { $_ eq 'plan' } @App::Yath2::DB::Internal::JOB_TRIES_REPORT_PROMOTED_KEYS),
-    'plan in @JOB_TRIES_REPORT_PROMOTED_KEYS');
-ok((grep { $_ eq 'subtests' } @App::Yath2::DB::Internal::JOB_TRIES_AGGREGATED_KEYS),
-    'subtests in @JOB_TRIES_AGGREGATED_KEYS');
+# The promoted-key sets used to be exposed as package globals; they
+# are now private to App::Yath2::DB. The behavioural assertions below
+# (per backend) cover the same contract: inserting a spec/report
+# round-trips into typed columns + a *_extras catch-all.
 
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Phase 6: codecs live on the App::Yath2::DB wrapper, not on the
-    # backend instance. Wrap the backend so we can call _format_iso8601
-    # for timestamp ISO comparisons.
-    my $sql = sub {
-        my ($db) = @_;
-        require App::Yath2::DB;
-        return App::Yath2::DB->_wrap_backend($db);
-    };
+    # Codecs (_db_datetime_to_iso etc.) live on the App::Yath2::DB
+    # wrapper itself, which is what App::Yath2::DB->new returns; calls
+    # below land directly on $db.
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
     unlink $db_path;
@@ -161,9 +136,9 @@ for_each_log_db_backend(sub {
     );
     ok(defined $run, 'runs row exists');
 
-    is($sql->($db)->_db_datetime_to_iso($run->{started_at}), '2026-05-07T00:00:00Z', 'runs.started_at from spec');
+    is($db->_db_datetime_to_iso($run->{started_at}), '2026-05-07T00:00:00Z', 'runs.started_at from spec');
 
-    is($sql->($db)->_db_datetime_to_iso($run->{ended_at}), '2026-05-07T00:01:00Z', 'runs.ended_at from report');
+    is($db->_db_datetime_to_iso($run->{ended_at}), '2026-05-07T00:01:00Z', 'runs.ended_at from report');
     is($run->{exit},         0,                       'runs.exit from report');
     is($run->{pass},         1,                       'runs.pass from report');
     is($run->{total_jobs},   2,                       'runs.total_jobs from report');
@@ -222,10 +197,10 @@ for_each_log_db_backend(sub {
     }, undef, $aid);
     ok(defined $jt, 'job_tries row exists');
 
-    is($sql->($db)->_db_datetime_to_iso($jt->{queued_at}),  '2026-05-07T00:00:00.500Z', 'job_tries.queued_at from spec');
-    is($sql->($db)->_db_datetime_to_iso($jt->{started_at}), '2026-05-07T00:00:01Z',     'job_tries.started_at from spec');
+    is($db->_db_datetime_to_iso($jt->{queued_at}),  '2026-05-07T00:00:00.500Z', 'job_tries.queued_at from spec');
+    is($db->_db_datetime_to_iso($jt->{started_at}), '2026-05-07T00:00:01Z',     'job_tries.started_at from spec');
 
-    is($sql->($db)->_db_datetime_to_iso($jt->{ended_at}), '2026-05-07T00:00:02Z', 'job_tries.ended_at from report');
+    is($db->_db_datetime_to_iso($jt->{ended_at}), '2026-05-07T00:00:02Z', 'job_tries.ended_at from report');
     is($jt->{exit},            0,                       'job_tries.exit from report');
     is($jt->{pass},            1,                       'job_tries.pass from report');
     is($jt->{pass_count},      5,                       'job_tries.pass_count from report');

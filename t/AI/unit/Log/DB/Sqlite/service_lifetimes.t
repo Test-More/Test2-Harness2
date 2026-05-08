@@ -77,12 +77,8 @@ sub build_log_with_restarts {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Wrap the backend so we can call codec helpers (_db_datetime_to_iso).
-    my $sql = sub {
-        my ($db) = @_;
-        require App::Yath2::DB;
-        return App::Yath2::DB->_wrap_backend($db);
-    };
+    # Codec helpers (_db_datetime_to_iso) live on the App::Yath2::DB
+    # wrapper itself, which is what App::Yath2::DB->new returns.
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
     unlink $db_path;
@@ -113,15 +109,15 @@ for_each_log_db_backend(sub {
     is($rows->[1]{lifetime_ord}, 2, 'lifetime_ord 2 second');
     is($rows->[2]{lifetime_ord}, 3, 'lifetime_ord 3 third');
 
-    is($sql->($db)->_db_datetime_to_iso($rows->[0]{ended_at}), '2026-05-07T00:01:00Z', 'row 1 ended_at');
-    is($sql->($db)->_db_datetime_to_iso($rows->[1]{ended_at}), '2026-05-07T00:02:00Z', 'row 2 ended_at');
-    is($sql->($db)->_db_datetime_to_iso($rows->[2]{ended_at}), '2026-05-07T00:03:00Z', 'row 3 ended_at');
+    is($db->_db_datetime_to_iso($rows->[0]{ended_at}), '2026-05-07T00:01:00Z', 'row 1 ended_at');
+    is($db->_db_datetime_to_iso($rows->[1]{ended_at}), '2026-05-07T00:02:00Z', 'row 2 ended_at');
+    is($db->_db_datetime_to_iso($rows->[2]{ended_at}), '2026-05-07T00:03:00Z', 'row 3 ended_at');
 
     is($rows->[0]{exit}, 1, 'row 1 exit');
     is($rows->[1]{exit}, 2, 'row 2 exit');
     is($rows->[2]{exit}, 0, 'row 3 exit');
 
-    is($sql->($db)->_db_datetime_to_iso($rows->[0]{started_at}), '2026-05-07T00:00:00Z',
+    is($db->_db_datetime_to_iso($rows->[0]{started_at}), '2026-05-07T00:00:00Z',
         'row 1 started_at from spec');
     is($rows->[1]{started_at}, undef, 'row 2 started_at NULL (no spec)');
     is($rows->[2]{started_at}, undef, 'row 3 started_at NULL (no spec)');

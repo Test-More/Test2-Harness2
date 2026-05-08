@@ -21,8 +21,8 @@ use Role::Tiny;
 # Two layers split: high-level archive-shaped methods that the role
 # itself provides as flavor-agnostic orchestration, and low-level
 # DB-touching primitives that each consumer (raw SQL on
-# App::Yath2::DB::Internal, ResultSet on App::Yath2::DB::DBIC)
-# implements directly.
+# App::Yath2::DB::SQL, ResultSet on App::Yath2::DB::DBIC) implements
+# directly.
 requires qw{
     dbh flavor _archive_id_or_die
     services runs jobs tries last_try
@@ -34,13 +34,13 @@ requires qw{
 };
 
 # Default identity preprocessor. Consumers override for flavor quirks
-# (e.g., App::Yath2::DB::Internal::Postgres strips COMPRESSION lz4
-# when the server build lacks it).
+# (e.g., App::Yath2::DB::SQL strips COMPRESSION lz4 from the Postgres
+# schema when the server build lacks it).
 sub preprocess_schema_sql { $_[1] }
 
 # Per-statement skip hook. Default: never skip. Consumers override for
 # flavor quirks where individual schema statements must be elided at
-# bootstrap time (e.g., App::Yath2::DB::Internal::MySQL skips CREATE
+# bootstrap time (e.g., App::Yath2::DB::SQL on MySQL skips CREATE
 # TRIGGER when the live server is MariaDB, whose dialect rejects the
 # MySQL-only BIN_TO_UUID() builtin used in the trigger bodies).
 sub _should_skip_schema_statement { 0 }
@@ -402,7 +402,7 @@ App::Yath2::Role::DB::Backend - the role yath DB-archive backends consume.
 =head1 DESCRIPTION
 
 The role L<App::Yath2::Log::DB> depends on. Two implementations satisfy
-it: L<App::Yath2::DB::Internal> (raw SQL) and L<App::Yath2::DB::DBIC>
+it: L<App::Yath2::DB::SQL> (raw SQL) and L<App::Yath2::DB::DBIC>
 (DBIx::Class).
 
 =head1 REQUIRED METHODS

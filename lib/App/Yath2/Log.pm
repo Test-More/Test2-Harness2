@@ -536,11 +536,10 @@ new archives.
 A thin proxy that wraps any backend doing
 L<App::Yath2::Role::DB::Backend>. Construct backends via
 L<App::Yath2::DB>; the proxy delegates the archive-shaped surface
-to the chosen backend (raw SQL via
-L<App::Yath2::DB::Internal>, or DBIx::Class via
-L<App::Yath2::DB::DBIC>). All DB shapes are multi-archive: a
-"single sqlite .yath file" is just the N=1 case in the same
-C<archives> table.
+to the chosen backend (raw SQL via L<App::Yath2::DB::SQL>, or
+DBIx::Class via L<App::Yath2::DB::DBIC>). All DB shapes are
+multi-archive: a "single sqlite .yath file" is just the N=1 case
+in the same C<archives> table.
 
 =back
 

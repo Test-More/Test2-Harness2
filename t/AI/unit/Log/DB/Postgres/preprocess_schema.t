@@ -1,12 +1,12 @@
 use Test2::V0;
 use Test2::Require::Module 'DBD::Pg';
 
-# Unit-style test for App::Yath2::DB::Internal::Postgres::preprocess_schema_sql.
-# Does not start a real Postgres server; stubs _server_compression to
-# simulate each branch.
+# Unit-style test for App::Yath2::DB::SQL::preprocess_schema_sql on
+# the Postgres flavor. Does not start a real Postgres server; stubs
+# _pg_server_compression to simulate each branch.
 
-use App::Yath2::DB;
-use App::Yath2::DB::Internal::Postgres;
+use App::Yath2::DB::SQL;
+
 my $sample = <<'EOSQL';
 CREATE TABLE t (
     a INT,
@@ -16,15 +16,17 @@ CREATE TABLE t (
 );
 EOSQL
 
-# Bless directly to skip the DBH connection. Override
-# _server_compression for the duration of $code so undef ('strip')
+# Bless directly to skip the DBH connection. Force the postgres flavor
+# slot so preprocess_schema_sql takes the postgres branch, and override
+# _pg_server_compression for the duration of $code so undef ('strip')
 # is reachable (the production method's //= caches the do-block,
 # bypassing pre-set undef slots).
 sub with_compression {
     my ($algo, $code) = @_;
-    my $db = bless {}, 'App::Yath2::DB::Internal::Postgres';
+    my $db = bless { App::Yath2::DB::SQL::FLAVOR() => 'postgres' },
+        'App::Yath2::DB::SQL';
     no warnings 'redefine';
-    local *App::Yath2::DB::Internal::Postgres::_server_compression = sub { $algo };
+    local *App::Yath2::DB::SQL::_pg_server_compression = sub { $algo };
     $code->($db);
 }
 

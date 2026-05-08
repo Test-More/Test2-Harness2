@@ -62,9 +62,9 @@ for_each_log_db_backend(sub {
     my $db = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend);
     $db->bootstrap_schema;
 
-    # ensure_project_row is the canonical backend primitive; both
-    # backends expose it directly.
-    my $sql_helper = $db;
+    # ensure_project_row is the canonical backend primitive; reach
+    # through the wrapper to the backend.
+    my $sql_helper = $db->backend;
 
     {
         my $id1 = $sql_helper->ensure_project_row('myproj');

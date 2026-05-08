@@ -46,33 +46,31 @@ archive with the same uuid is refused.
 
 # Map a user-facing flavor token to internal driver / dir-prefix /
 # shell-binary tuple. Returns:
-#   ($driver, $prefix, $shell_bin, \@shell_alts, $backend_class, $needs_create_db)
+#   ($driver, $prefix, $shell_bin, \@shell_alts, $db_flavor, $needs_create_db)
 #
-# $needs_create_db is 1 for MariaDB/MySQL/Percona where we have to
-# CREATE DATABASE before bootstrapping schema, 0 for Postgres which
-# uses the pre-created 'quickdb' database.
+# $db_flavor is the canonical flavor token consumed by App::Yath2::DB
+# ('mariadb', 'mysql', 'postgres'). $needs_create_db is 1 for
+# MariaDB/MySQL/Percona where we have to CREATE DATABASE before
+# bootstrapping schema, 0 for Postgres which uses the pre-created
+# 'quickdb' database.
 sub _flavor_meta {
     my ($flavor) = @_;
 
     if ($flavor eq 'mariadb') {
-        return ('MariaDB', 'mariadb', 'mariadb', ['mysql'],
-            'App::Yath2::DB::Internal::MariaDB', 1);
+        return ('MariaDB', 'mariadb', 'mariadb', ['mysql'], 'mariadb', 1);
     }
     if ($flavor eq 'mysql') {
         # MySQLCom forces the Oracle/Community MySQL driver.
         # The plain 'MySQL' driver is an ANY-style picker that chooses
         # MariaDB first when a mariadbd binary is on PATH (system
         # /usr/bin/mariadbd is symlinked from mysqld on most distros).
-        return ('MySQLCom', 'mysql', 'mysql', [],
-            'App::Yath2::DB::Internal::MySQL', 1);
+        return ('MySQLCom', 'mysql', 'mysql', [], 'mysql', 1);
     }
     if ($flavor eq 'percona') {
-        return ('Percona', 'percona', 'mysql', [],
-            'App::Yath2::DB::Internal::MySQL', 1);
+        return ('Percona', 'percona', 'mysql', [], 'mysql', 1);
     }
     if ($flavor eq 'postgres' || $flavor eq 'postgresql') {
-        return ('PostgreSQL', 'postgresql', 'psql', [],
-            'App::Yath2::DB::Internal::Postgres', 0);
+        return ('PostgreSQL', 'postgresql', 'psql', [], 'postgres', 0);
     }
 
     croak "yath db: unsupported flavor '$flavor' "
@@ -181,7 +179,7 @@ sub _resolve_bin_dir {
 # Postgres the QuickDB driver pre-creates 'quickdb' so we can connect
 # directly.
 sub _load_archives {
-    my ($db, $driver, $backend_class, $needs_create_db, $archives) = @_;
+    my ($db, $driver, $db_flavor, $needs_create_db, $archives) = @_;
 
     my $dsn;
     if ($needs_create_db) {
@@ -206,22 +204,19 @@ sub _load_archives {
         $dsn = $db->connect_string;
     }
 
-    require(_class_to_path($backend_class));
+    require App::Yath2::DB;
 
     for my $path (@$archives) {
         my $src = App::Yath2::Log->new(auto => $path);
-        my $dest = $backend_class->new(dsn => $dsn);
+        my $dest = App::Yath2::DB->new(
+            dsn     => $dsn,
+            backend => 'sql',
+            flavor  => $db_flavor,
+        );
         $dest->insert($src);
     }
 
     return $dsn;
-}
-
-sub _class_to_path {
-    my ($class) = @_;
-    my $p = $class;
-    $p =~ s{::}{/}g;
-    return "$p.pm";
 }
 
 # Print a connection-info banner to STDERR. Defensive on optional
@@ -360,7 +355,7 @@ sub run {
 
     my ($flavor, $version) = _parse_flavor($flavor_arg);
     my ($driver, $prefix, $shell_bin, $shell_alts,
-        $backend_class, $needs_create_db) = _flavor_meta($flavor);
+        $db_flavor, $needs_create_db) = _flavor_meta($flavor);
 
     my $bin_dir = _resolve_bin_dir($prefix, $version);
     my $bin_label;
@@ -381,7 +376,7 @@ sub run {
         autostop => 1,
     });
 
-    my $loaded_dsn = _load_archives($db, $driver, $backend_class, $needs_create_db, \@archives);
+    my $loaded_dsn = _load_archives($db, $driver, $db_flavor, $needs_create_db, \@archives);
 
     my $resolved_shell = _resolve_shell_bin($shell_bin, $shell_alts);
     _print_banner($db, $driver, $bin_dir, $bin_label, $loaded_dsn, \@archives, $resolved_shell);

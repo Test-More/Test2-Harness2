@@ -9,7 +9,6 @@ use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
 use App::Yath2::DB;
-use App::Yath2::DB::Internal;
 
 use lib 't/lib';
 use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
@@ -85,16 +84,10 @@ sub build_log_with_spec {
     return ($src, \%spec);
 }
 
-# --- Part 1: @JOB_SPECS_PROMOTED_KEYS constant (backend-independent) ---
-
-my @promoted = @App::Yath2::DB::Internal::JOB_SPECS_PROMOTED_KEYS;
-ok(scalar @promoted > 0, '@JOB_SPECS_PROMOTED_KEYS is non-empty');
-ok((grep { $_ eq 'absolute'  } @promoted), 'absolute in promoted keys');
-ok((grep { $_ eq 'category'  } @promoted), 'category in promoted keys');
-ok((grep { $_ eq 'duration'  } @promoted), 'duration in promoted keys');
-ok((grep { $_ eq 'switches'  } @promoted), 'switches in promoted keys');
-ok(!(grep { $_ eq 'relative' } @promoted),
-    'relative is NOT in promoted keys (goes to test_files.relative)');
+# Per-backend assertions check that an inserted spec.jsonl row is split
+# into the expected typed columns + spec_extras catch-all. The list of
+# promoted keys is no longer exposed as a public constant; the
+# behavioural test below covers the same contract end-to-end.
 
 for_each_log_db_backend(sub {
     my ($backend) = @_;

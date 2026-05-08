@@ -1103,7 +1103,7 @@ sub archive {
     if ($format eq 'sqlite') {
         require App::Yath2::DB;
         croak "destination '$out' already exists" if -e $out;
-        my $dest = App::Yath2::DB->open(file => $out);
+        my $dest = App::Yath2::DB->new(file => $out);
         # seal => 1: single-archive sealed file; append YATHFOOT
         # trailer + zstd-compressed meta.json past the body.
         $dest->insert(

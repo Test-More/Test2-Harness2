@@ -10,143 +10,26 @@ use File::Path qw/make_path/;
 use File::Spec ();
 use Time::HiRes ();
 
-use Test2::Harness2::Util qw/mod2file/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Util::UUID qw/gen_uuid/;
 
 # App::Yath2::DB is the backend-agnostic data access + transformation
-# layer for yath log archives stored in a database. Two distinct entry
-# points:
-#
-#   - App::Yath2::DB->open(...)   -- legacy factory; returns a backend
-#                                     instance directly (a doer of
-#                                     App::Yath2::Role::DB::Backend).
-#                                     Existing callers depend on this
-#                                     shape; preserved verbatim.
-#
-#   - App::Yath2::DB->new(...)    -- new shape introduced by the DB
-#                                     rebuild. Returns an
-#                                     App::Yath2::DB instance wrapping
-#                                     a backend. Owns codecs,
-#                                     reconstruction, and the
-#                                     archive-shaped read API.
+# layer for yath log archives stored in a database. Construct via
+# ->new(...) (or its back-compat alias ->open(...)); both return an
+# App::Yath2::DB wrapper that owns codecs, reconstruction, and the
+# archive-shaped read API. Per-strategy backends (App::Yath2::DB::SQL
+# raw-DBI; App::Yath2::DB::DBIC DBIx::Class) live behind ->backend and
+# expose only row-level primitives.
 #
 # See AI_DOCS/2026-05-08-yath-db-rebuild.md for the rebuild plan.
 
-# ---------------------------------------------------------------------------
-# Legacy factory: ->open
-# ---------------------------------------------------------------------------
-
-# open(file => $path, backend => 'internal'|'sql'|'dbic')
-# open(dsn  => $dsn,  user => $u, pass => $p, attrs => \%a, backend => ...)
-# open(dbh  => $dbh,  backend => ...)
-#
-# Returns a Role::DB::Backend doer with no uuid set (multi-archive
-# capable). Use ->scoped($uuid) or wrap in App::Yath2::Log::DB to
-# scope to one archive.
-sub open {
-    my ($class, %args) = @_;
-
-    croak "App::Yath2::DB->open requires one of: file, dsn, dbh"
-        unless defined $args{file}
-        || defined $args{dsn}
-        || defined $args{dbh};
-
-    my $backend = delete $args{backend} // 'internal';
-    my $impl = _backend_class($backend, %args);
-
-    my $file = mod2file($impl);
-    my $ok = eval { require $file; 1 };
-    my $err = $@;
-    croak "could not load backend '$impl': $err" unless $ok;
-
-    # The DBIC backend accepts an explicit flavor override (caller
-    # knows whether they're talking to MariaDB or MySQL through the
-    # DBD::MariaDB driver). The Internal backends already had `flavor`
-    # consumed by _backend_class; rename for DBIC. The new SQL backend
-    # consumes `flavor` directly via its HashBase slot.
-    if ($backend eq 'dbic' && defined $args{flavor}) {
-        $args{flavor_override} = delete $args{flavor};
-    }
-    elsif ($backend ne 'sql') {
-        delete $args{flavor};
-    }
-    # backend=sql: leave $args{flavor} alone; SQL.pm's HashBase
-    # accepts +flavor and the override propagates correctly.
-
-    return $impl->new(%args);
-}
-
-sub _backend_class {
-    my ($name, %args) = @_;
-    return 'App::Yath2::DB::DBIC' if $name eq 'dbic';
-    return 'App::Yath2::DB::SQL'  if $name eq 'sql';
-    if ($name eq 'internal') {
-        return internal_class_for_flavor(_detect_flavor(%args));
-    }
-    croak "unknown backend '$name' (expected 'sql', 'dbic', or 'internal')";
-}
-
-# Public helper: map a flavor token ('sqlite', 'postgres', 'mariadb',
-# 'mysql') to its concrete App::Yath2::DB::Internal::* class name.
-# Shared with App::Yath2::DB::DBIC, which lazily wraps an Internal
-# helper bound to the same dbh.
-my %INTERNAL_FLAVOR_CLASS = (
-    sqlite   => 'App::Yath2::DB::Internal::Sqlite',
-    postgres => 'App::Yath2::DB::Internal::Postgres',
-    mariadb  => 'App::Yath2::DB::Internal::MariaDB',
-    mysql    => 'App::Yath2::DB::Internal::MySQL',
-);
-
-sub internal_class_for_flavor {
-    my $flavor = shift;
-    croak "flavor is required" unless defined $flavor && length $flavor;
-    my $class = $INTERNAL_FLAVOR_CLASS{$flavor}
-        or croak "unknown internal flavor '$flavor'";
-    return $class;
-}
-
-# Detect flavor from open() inputs. Caller may also pass flavor =>
-# explicitly to override.
-sub _detect_flavor {
-    my %args = @_;
-    return $args{flavor} if defined $args{flavor};
-
-    if (defined $args{dsn}) {
-        my $dsn = $args{dsn};
-        return 'postgres' if $dsn =~ /^dbi:Pg:/i;
-        return 'mariadb'  if $dsn =~ /^dbi:MariaDB:/i;
-        return 'mysql'    if $dsn =~ /^dbi:mysql:/i;
-        return 'sqlite'   if $dsn =~ /^dbi:SQLite:/i;
-        croak "could not detect flavor from DSN: $dsn";
-    }
-
-    if (defined $args{dbh}) {
-        my $name = $args{dbh}->{Driver}{Name} // '';
-        return 'sqlite'   if $name eq 'SQLite';
-        return 'postgres' if $name eq 'Pg';
-        return 'mariadb'  if $name eq 'MariaDB';
-        return 'mysql'    if $name eq 'mysql';
-        croak "could not detect flavor from dbh (DBI driver: $name)";
-    }
-
-    if (defined $args{file}) {
-        # File path: only sqlite is supported as a single-file flavor.
-        # New file (does not exist) is assumed sqlite (we'll create it).
-        my $f = $args{file};
-        return 'sqlite' unless -e $f;
-
-        require App::Yath2::Log;
-        my $kind = App::Yath2::Log->detect_file_kind($f);
-        return 'sqlite' if $kind eq 'sqlite';
-        croak "file '$f' is not a SQLite database";
-    }
-
-    croak "no flavor source available (no file/dbh/dsn)";
-}
+# Back-compat alias for ->new. Existing callers use ->open(...) with
+# the same argument shape; forward verbatim. New code should call
+# ->new directly.
+sub open { my $class = shift; $class->new(@_) }
 
 # ---------------------------------------------------------------------------
-# New shape: ->new returns an App::Yath2::DB instance wrapping a backend
+# ->new returns an App::Yath2::DB instance wrapping a backend
 # ---------------------------------------------------------------------------
 
 # Slot keys for the wrapper instance. Kept as bare constants (not
@@ -188,14 +71,13 @@ sub _wrap_backend {
 sub new {
     my ($class, %args) = @_;
 
-    my $backend_name = delete $args{backend};
-    # 'internal' is a deprecated alias for 'sql' during Phase 3; do
-    # not warn yet (warning lands in a later phase to keep test output
-    # quiet during the rebuild).
-    if (defined $backend_name && $backend_name eq 'internal') {
-        $backend_name = 'sql';
-    }
-    $backend_name //= 'sql';
+    croak "App::Yath2::DB->new requires one of: file, dsn, dbh, schema"
+        unless defined $args{file}
+        || defined $args{dsn}
+        || defined $args{dbh}
+        || defined $args{schema};
+
+    my $backend_name = delete $args{backend} // 'sql';
 
     my $backend;
     if (my $schema = delete $args{schema}) {
@@ -238,6 +120,14 @@ sub backend { $_[0]->{_BACKEND()} }
 sub dbh     { $_[0]->{_BACKEND()}->dbh }
 sub flavor  { $_[0]->{_BACKEND()}->flavor }
 
+# True after insert(seal => 1) appended the YATHFOOT trailer.
+sub sealed  { $_[0]->{_SEALED()} ? 1 : 0 }
+
+# Schema bootstrap is owned by the backend (see
+# App::Yath2::Role::DB::Backend); expose a thin pass-through so callers
+# operating on a wrapper can bootstrap without reaching for ->backend.
+sub bootstrap_schema { my $self = shift; $self->{_BACKEND()}->bootstrap_schema(@_) }
+
 # DB-backed logs have no on-disk path per artifact. Mirrors the
 # Role::DB::Backend default, exposed here so App::Yath2::Log::DB can
 # call $self->{db}->absolute_path(...) without hitting AUTOLOAD or
@@ -251,6 +141,10 @@ sub absolute_path {
 sub uuid {
     my $self = shift;
     return $self->{_UUID()} if defined $self->{_UUID()};
+    # After insert(), the most recently created archive uuid is exposed
+    # via $self->{_LAST_INSERT_UUID()}; mirror back-compat with the
+    # bare-backend ->uuid contract that callers depended on.
+    return $self->{_LAST_INSERT_UUID()} if defined $self->{_LAST_INSERT_UUID()};
     return undef;
 }
 
@@ -397,9 +291,23 @@ sub has_archive {
 # Resolve canonical hex uuid -> archive_id. Croaks if absent. Also
 # enforces the archive_version floor (refuses archives older than
 # App::Yath2::Log->last_breaking_version).
+#
+# When called with no uuid (and the wrapper has no scoped uuid), fall
+# back to "the only archive in this DB" if there is exactly one --
+# preserving the legacy single-archive convenience. Multi-archive
+# wrappers must scope explicitly via ->scoped($uuid) or pass uuid =>
+# to the listing method.
 sub _resolve_archive_id {
     my ($self, $uuid) = @_;
-    croak "uuid required" unless defined $uuid;
+
+    unless (defined $uuid) {
+        my @uuids = $self->archives;
+        croak "no archives in this DB" unless @uuids;
+        croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+            if @uuids > 1;
+        $uuid = $uuids[0];
+    }
+
     my $canon = _canon_uuid($uuid)
         or croak "bad uuid: $uuid";
 
@@ -407,6 +315,40 @@ sub _resolve_archive_id {
         or croak "no archive '$canon' in this DB";
     $self->_check_archive_version($canon, $row->{archive_version});
     return $row->{archive_id};
+}
+
+# Pick the implicit uuid for a multi-archive wrapper used in single-
+# archive shorthand: returns the wrapper's scoped uuid if set,
+# otherwise resolves to the only archive in the DB (croaks on
+# zero-archive or ambiguous multi-archive cases).
+sub _implicit_uuid {
+    my $self = shift;
+    return $self->{_UUID()} if defined $self->{_UUID()};
+    my @uuids = $self->archives;
+    croak "no archives in this DB" unless @uuids;
+    croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+        if @uuids > 1;
+    return $uuids[0];
+}
+
+# Listing/event API has two valid call shapes:
+#   $db->services($uuid, $run_ord?)   -- explicit uuid first
+#   $db->services($run_ord?)          -- legacy single-archive shape
+#
+# Distinguish by checking whether the first positional arg parses as a
+# canonical UUID. If it does, treat it as $uuid; if not, fall back to
+# the wrapper's scoped uuid (or the implicit "only archive" resolution
+# in _resolve_archive_id) and shift the arg back into the run_ord slot.
+#
+# Returns the leading uuid (which may be undef -> implicit) followed by
+# the remaining positional args reshaped accordingly.
+sub _shape_uuid_args {
+    my $self = shift;
+    my @args = @_;
+    if (@args && defined $args[0] && _canon_uuid($args[0])) {
+        return @args;    # ($uuid, @rest) shape
+    }
+    return ($self->{_UUID()}, @args);    # implicit-uuid shape
 }
 
 sub _check_archive_version {
@@ -458,14 +400,16 @@ sub meta {
 # via the backend, then emit the simple ord/name list.
 
 sub runs {
-    my ($self, $uuid) = @_;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $self = shift;
+    my ($uuid) = $self->_shape_uuid_args(@_);
+    my $aid = $self->_resolve_archive_id($uuid);
     return map { $_->{run_ord} } @{ $self->{_BACKEND()}->run_rows($aid) };
 }
 
 sub services {
-    my ($self, $uuid, $run_ord) = @_;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $self = shift;
+    my ($uuid, $run_ord) = $self->_shape_uuid_args(@_);
+    my $aid = $self->_resolve_archive_id($uuid);
     if (defined $run_ord) {
         croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
         my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
@@ -479,19 +423,21 @@ sub services {
 }
 
 sub jobs {
-    my ($self, $uuid, $run_ord) = @_;
+    my $self = shift;
+    my ($uuid, $run_ord) = $self->_shape_uuid_args(@_);
     croak "run_id is required" unless defined $run_ord;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = $self->_resolve_archive_id($uuid);
     croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
     my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
     return map { $_->{job_ord} } @{ $self->{_BACKEND()}->job_rows($aid, $rid) };
 }
 
 sub tries {
-    my ($self, $uuid, $run_ord, $job_ord) = @_;
+    my $self = shift;
+    my ($uuid, $run_ord, $job_ord) = $self->_shape_uuid_args(@_);
     croak "run_id is required" unless defined $run_ord;
     croak "job_id is required" unless defined $job_ord;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = $self->_resolve_archive_id($uuid);
     croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
     my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
     croak "no such job: $run_ord/$job_ord"
@@ -501,8 +447,19 @@ sub tries {
 }
 
 sub last_try {
-    my ($self, $uuid, $run_ord, $job_ord) = @_;
-    my @t = $self->tries($uuid, $run_ord, $job_ord);
+    my $self = shift;
+    my ($uuid, $run_ord, $job_ord) = $self->_shape_uuid_args(@_);
+    # Forward as the explicit-uuid shape so the inner tries() call
+    # doesn't re-trigger the legacy shape detection on (undef, 0, 0).
+    croak "run_id is required" unless defined $run_ord;
+    croak "job_id is required" unless defined $job_ord;
+    my $aid = $self->_resolve_archive_id($uuid);
+    croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
+    my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
+    croak "no such job: $run_ord/$job_ord"
+        unless $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
+    my $jid = $self->{_BACKEND()}->job_id_for_ord($aid, $rid, $job_ord);
+    my @t = map { $_->{try_ord} } @{ $self->{_BACKEND()}->try_rows($jid) };
     return undef unless @t;
     return $t[-1];
 }
@@ -511,39 +468,52 @@ sub last_try {
 # return 0 rather than croak.
 
 sub has_run {
-    my ($self, $uuid, $run_ord) = @_;
+    my $self = shift;
+    my ($uuid, $run_ord) = $self->_shape_uuid_args(@_);
     return 0 unless defined $run_ord && length $run_ord;
     return 0 unless $run_ord =~ /^\d+\z/;
-    my $aid = eval { $self->_resolve_archive_id($uuid // $self->{_UUID()}) };
+    my $aid = eval { $self->_resolve_archive_id($uuid) };
     return 0 unless defined $aid;
     return $self->{_BACKEND()}->run_exists($aid, $run_ord);
 }
 
 sub has_job {
-    my ($self, $uuid, $run_ord, $job_ord) = @_;
-    return 0 unless $self->has_run($uuid, $run_ord);
+    my $self = shift;
+    my ($uuid, $run_ord, $job_ord) = $self->_shape_uuid_args(@_);
+    return 0 unless defined $run_ord && length $run_ord;
+    return 0 unless $run_ord =~ /^\d+\z/;
     return 0 unless defined $job_ord && length $job_ord;
     return 0 unless $job_ord =~ /^\d+\z/;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = eval { $self->_resolve_archive_id($uuid) };
+    return 0 unless defined $aid;
+    return 0 unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
     my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
     return $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
 }
 
 sub has_try {
-    my ($self, $uuid, $run_ord, $job_ord, $try_ord) = @_;
-    return 0 unless $self->has_job($uuid, $run_ord, $job_ord);
+    my $self = shift;
+    my ($uuid, $run_ord, $job_ord, $try_ord) = $self->_shape_uuid_args(@_);
+    return 0 unless defined $run_ord && length $run_ord;
+    return 0 unless $run_ord =~ /^\d+\z/;
+    return 0 unless defined $job_ord && length $job_ord;
+    return 0 unless $job_ord =~ /^\d+\z/;
     return 0 unless defined $try_ord && length $try_ord;
     return 0 unless $try_ord =~ /^\d+\z/;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = eval { $self->_resolve_archive_id($uuid) };
+    return 0 unless defined $aid;
+    return 0 unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
     my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
+    return 0 unless $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
     my $jid = $self->{_BACKEND()}->job_id_for_ord($aid, $rid, $job_ord);
     return $self->{_BACKEND()}->try_exists($jid, $try_ord);
 }
 
 sub has_service {
-    my ($self, $uuid, $name, $run_ord) = @_;
+    my $self = shift;
+    my ($uuid, $name, $run_ord) = $self->_shape_uuid_args(@_);
     return 0 unless defined $name && length $name;
-    my $aid = eval { $self->_resolve_archive_id($uuid // $self->{_UUID()}) };
+    my $aid = eval { $self->_resolve_archive_id($uuid) };
     return 0 unless defined $aid;
     if (defined $run_ord) {
         return 0 unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
@@ -558,8 +528,9 @@ sub has_service {
 # ---------------------------------------------------------------------------
 
 sub list_files {
-    my ($self, $uuid) = @_;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $self = shift;
+    my ($uuid) = $self->_shape_uuid_args(@_);
+    my $aid = $self->_resolve_archive_id($uuid);
     my $rows = $self->{_BACKEND()}->artifact_rows_for_archive($aid);
     my @paths;
     for my $row (@$rows) {
@@ -794,12 +765,11 @@ sub _entity_exists_for_scope {
 # Artifact read API
 # ---------------------------------------------------------------------------
 
-# Returns ($exists, $is_zst). Mirrors the contract of
-# App::Yath2::DB::Internal::_artifact_exists exactly: both .zst and
-# plain forms are reported separately, attachments and arbitrary files
-# only "exist" at the form they were stored, and standard streams that
-# are reconstructed (spec.jsonl / report.jsonl on run/service/job_try
-# scopes) always advertise both forms.
+# Returns ($exists, $is_zst). Both .zst and plain forms are reported
+# separately: attachments and arbitrary files only "exist" at the form
+# they were stored; standard streams that are reconstructed
+# (spec.jsonl / report.jsonl on run/service/job_try scopes) always
+# advertise both forms.
 sub artifact_exists {
     my ($self, $uuid, $rel) = @_;
     my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
@@ -1006,16 +976,17 @@ sub artifact_save {
 # Event walker (depth-first walk over collector trees)
 # ---------------------------------------------------------------------------
 
-# Body ported from App::Yath2::DB::Internal's event/events/end_of_events/
-# reset + walker helpers. Each public entry point takes a $uuid first;
-# walker state lives on this instance keyed implicitly by uuid (callers
-# either work on a scoped instance via $db->scoped($uuid) or wrap in
-# App::Yath2::Log::DB which delegates with its cached uuid). Calling
-# ->event($uuid) on a multi-archive App::Yath2::DB stores walker state
-# scoped to whichever uuid was first invoked; ->reset clears it.
+# Each public entry point takes a $uuid first; walker state lives on
+# this instance keyed implicitly by uuid (callers either work on a
+# scoped instance via $db->scoped($uuid) or wrap in App::Yath2::Log::DB
+# which delegates with its cached uuid). Calling ->event($uuid) on a
+# multi-archive App::Yath2::DB stores walker state scoped to whichever
+# uuid was first invoked; ->reset clears it.
 
 sub event {
-    my ($self, $uuid, $timeout) = @_;
+    my $self = shift;
+    my ($uuid, $timeout) = $self->_shape_uuid_args(@_);
+    $uuid //= eval { $self->_implicit_uuid };
 
     my $walk = $self->_walk_state($uuid);
     my $stack = $walk->{stack};
@@ -1078,7 +1049,9 @@ sub event {
 }
 
 sub events {
-    my ($self, $uuid, $timeout) = @_;
+    my $self = shift;
+    my ($uuid, $timeout) = $self->_shape_uuid_args(@_);
+    $uuid //= eval { $self->_implicit_uuid };
     my @out;
     while (1) {
         my $e = $self->event($uuid, 0);
@@ -1091,10 +1064,12 @@ sub events {
     return @out;
 }
 
-sub EOE { $_[0]->end_of_events($_[1]) }
+sub EOE { my $self = shift; $self->end_of_events(@_) }
 
 sub end_of_events {
-    my ($self, $uuid) = @_;
+    my $self = shift;
+    my ($uuid) = $self->_shape_uuid_args(@_);
+    $uuid //= eval { $self->_implicit_uuid };
     my $walk = $self->_walk_state($uuid);
     my $stack = $walk->{stack};
 
@@ -1109,7 +1084,7 @@ sub end_of_events {
 }
 
 sub reset {
-    my ($self, $uuid) = @_;
+    my $self = shift;
     delete $self->{_WALK()};
     delete $self->{_SEEN_STARTS()};
     delete $self->{_CLOSED_STARTS()};
@@ -1215,7 +1190,9 @@ sub _inject_identifiers {
 # {log} ref; we hand it a scoped instance so those methods (defined
 # below) implicitly use the right uuid.
 sub artifacts {
-    my ($self, $uuid, @args) = @_;
+    my $self = shift;
+    my ($uuid, @args) = $self->_shape_uuid_args(@_);
+    $uuid //= eval { $self->_implicit_uuid };
     croak "uuid required" unless defined $uuid;
     require Test2::Harness2::LogLayout;
 
@@ -2922,22 +2899,22 @@ App::Yath2::DB - top-level entry point for yath DB-archive backends.
 
     use App::Yath2::DB;
 
-    # Legacy factory: returns a backend instance directly.
-    my $db = App::Yath2::DB->open(file => '/tmp/runs.yath');
+    my $db = App::Yath2::DB->new(file => '/tmp/runs.yath');
 
-    my $db = App::Yath2::DB->open(
-        dsn  => 'dbi:Pg:dbname=yath',
-        user => 'yath',
-        pass => 'yath',
+    my $db = App::Yath2::DB->new(
+        dsn     => 'dbi:Pg:dbname=yath',
+        user    => 'yath',
+        pass    => 'yath',
         backend => 'dbic',
     );
 
-    # New shape: returns an App::Yath2::DB instance wrapping a backend.
-    my $db = App::Yath2::DB->new(file => '/tmp/runs.yath');
     for my $uuid ($db->archives) {
         my $scoped = $db->scoped($uuid);
         my @runs   = $scoped->runs;
     }
+
+C<App::Yath2::DB-E<gt>open(...)> is preserved as a back-compat alias
+for C<-E<gt>new(...)>; new code should call C<-E<gt>new>.
 
 =head1 BACKENDS
 
@@ -2953,10 +2930,6 @@ L<App::Yath2::DB::SQL>. Single class, raw-DBI, flavor-aware.
 
 L<App::Yath2::DB::DBIC>. Single class wrapping a
 L<DBIx::Class::Schema>; flavor handled by storage detection.
-
-=item C<backend =E<gt> 'internal'>
-
-Deprecated alias for C<sql>. Will be removed in a future release.
 
 =back
 

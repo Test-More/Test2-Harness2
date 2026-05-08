@@ -42,13 +42,9 @@ sub build_minimal_log {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Helper: wrap the backend in App::Yath2::DB so we can call codec
-    # helpers (_db_datetime_to_iso) that live on the data layer.
-    my $sql = sub {
-        my ($db) = @_;
-        require App::Yath2::DB;
-        return App::Yath2::DB->_wrap_backend($db);
-    };
+    # Codec helpers (_db_datetime_to_iso) live on the App::Yath2::DB
+    # wrapper itself, which is what App::Yath2::DB->new returns; calls
+    # below land directly on $db.
 
     # {{{ Round-trip: insert a fresh source, reconstruct meta.json, assert
     # typed columns populated and content matches.
@@ -104,7 +100,7 @@ for_each_log_db_backend(sub {
         ok(defined $row->{user_},        'archives."user" populated');
         ok(defined $row->{yath_version}, 'archives.yath_version populated');
         ok(defined $row->{sealed_at},    'archives.sealed_at non-null');
-        is($sql->($db)->_db_datetime_to_iso($row->{sealed_at}), $meta->{created_at},
+        is($db->_db_datetime_to_iso($row->{sealed_at}), $meta->{created_at},
             'sealed_at equals meta.created_at (D5)');
 
         ok(defined $row->{meta_extras},
@@ -163,7 +159,7 @@ for_each_log_db_backend(sub {
               FROM archives WHERE archive_id = ?
         }, undef, $aid);
 
-        is($sql->($db)->_db_datetime_to_iso($row->{sealed_at}), $fixed_created_at,
+        is($db->_db_datetime_to_iso($row->{sealed_at}), $fixed_created_at,
             'sealed_at carried over from source meta.created_at (D5)');
         is($row->{host},    'test-host.example',     'host carried over');
         is($row->{user_},   'tester',                'user carried over');
