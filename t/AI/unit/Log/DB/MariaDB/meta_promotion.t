@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
     {
     my $admin = DBI->connect(
@@ -48,7 +49,7 @@ for_each_db_version([qw/mariadb/], sub {
     return $src;
     }
 
-    my $db = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
 
     my $src = build_minimal_log();
@@ -68,7 +69,7 @@ for_each_db_version([qw/mariadb/], sub {
      WHERE archive_id = ? AND artifact_kind = 'arbitrary' AND name = 'meta.json'
     }, undef, $aid);
 
-    my $log  = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $log  = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     my $root = $log->artifacts;
     ok($root->exists('meta.json'), 'meta.json visible at archive root');
 
@@ -97,6 +98,7 @@ for_each_db_version([qw/mariadb/], sub {
     ok(!exists $extras->{archive_uuid},  'archive_uuid not duplicated');
     ok(!exists $extras->{host},          'host not duplicated');
 
+    });
 });
 
 done_testing;

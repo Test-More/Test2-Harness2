@@ -8,6 +8,9 @@ use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
 
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
+
 # Mirrors t/AI/unit/Log/TarZIdx/iterator.t but archives the directory
 # to a SQLite .yath and drives the iterator off the SQLite backend.
 
@@ -83,62 +86,66 @@ write_jsonl_zst(
     {relative => 't/dummy.t'},
 );
 
-my $arc_dir = tempdir(CLEANUP => 1);
-my $arc_path = "$arc_dir/run.yath";
-App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');
+for_each_log_db_backend(sub {
+    my ($backend) = @_;
 
-my $log = App::Yath2::Log->new(file => $arc_path);
-isa_ok($log, ['App::Yath2::Log::DB::Sqlite']);
+    my $arc_dir = tempdir(CLEANUP => 1);
+    my $arc_path = "$arc_dir/run.yath";
+    App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');
 
-# Drive the iterator and collect everything.
-my @collected;
-while (my $e = $log->event(0)) {
-    push @collected => $e;
-    last if @collected > 100;
-}
+    my $log = App::Yath2::Log->new(file => $arc_path);
+    isa_ok($log, ['App::Yath2::Log::DB']);
 
-ok($log->EOE, 'EOE flips true after stack drains');
+    # Drive the iterator and collect everything.
+    my @collected;
+    while (my $e = $log->event(0)) {
+        push @collected => $e;
+        last if @collected > 100;
+    }
 
-my @notes;
-my @asserts;
-my @starts;
-my @ends;
-for my $e (@collected) {
-    my $fd = $e->{facet_data};
-    push @notes,   $fd->{harness}{note}      if $fd->{harness} && $fd->{harness}{note};
-    push @asserts, $fd->{assert}{details}    if $fd->{assert};
-    push @starts,  $fd->{harness_collector_start} if $fd->{harness_collector_start};
-    push @ends,    $fd->{harness_collector_end}   if $fd->{harness_collector_end};
-}
+    ok($log->end_of_events, 'EOE flips true after stack drains');
 
-is(\@notes, ['harness up', 'run started', 'run done', 'harness shutting down'],
-    'depth-first notes order');
-is(\@asserts, ['first', 'second'], 'job events surfaced between run start and end');
-is(scalar(@starts), 2, 'two collector_start events');
-is(scalar(@ends),   2, 'two collector_end events');
+    my @notes;
+    my @asserts;
+    my @starts;
+    my @ends;
+    for my $e (@collected) {
+        my $fd = $e->{facet_data};
+        push @notes,   $fd->{harness}{note}      if $fd->{harness} && $fd->{harness}{note};
+        push @asserts, $fd->{assert}{details}    if $fd->{assert};
+        push @starts,  $fd->{harness_collector_start} if $fd->{harness_collector_start};
+        push @ends,    $fd->{harness_collector_end}   if $fd->{harness_collector_end};
+    }
 
-# Path-aware identifier injection.
-my @assert_events = grep { $_->{facet_data}{assert} } @collected;
-is(scalar(@assert_events), 2, 'two assert events');
-for my $e (@assert_events) {
-    is($e->{facet_data}{harness}{run_id},  0, 'run_id injected');
-    is($e->{facet_data}{harness}{job_id},  0, 'job_id injected');
-    is($e->{facet_data}{harness}{job_try}, 0, 'job_try injected');
-}
+    is(\@notes, ['harness up', 'run started', 'run done', 'harness shutting down'],
+        'depth-first notes order');
+    is(\@asserts, ['first', 'second'], 'job events surfaced between run start and end');
+    is(scalar(@starts), 2, 'two collector_start events');
+    is(scalar(@ends),   2, 'two collector_end events');
 
-# Reset re-runs from the top.
-$log->reset;
-my $first = $log->event(0);
-is($first->{facet_data}{harness}{note}, 'harness up', 'reset rewinds');
+    # Path-aware identifier injection.
+    my @assert_events = grep { $_->{facet_data}{assert} } @collected;
+    is(scalar(@assert_events), 2, 'two assert events');
+    for my $e (@assert_events) {
+        is($e->{facet_data}{harness}{run_id},  0, 'run_id injected');
+        is($e->{facet_data}{harness}{job_id},  0, 'job_id injected');
+        is($e->{facet_data}{harness}{job_try}, 0, 'job_try injected');
+    }
 
-# events() list-context drains.
-{
-    my $log2 = App::Yath2::Log->new(file => $arc_path);
-    my @first = $log2->events(0);
-    is(scalar(@first), scalar(@collected),
-        'events() first call returns full record set');
-    my @second = $log2->events(0);
-    is(\@second, [undef], 'events() returns (undef) once drained');
-}
+    # Reset re-runs from the top.
+    $log->reset;
+    my $first = $log->event(0);
+    is($first->{facet_data}{harness}{note}, 'harness up', 'reset rewinds');
+
+    # events() list-context drains.
+    {
+        my $log2 = App::Yath2::Log->new(file => $arc_path);
+        my @first = $log2->events(0);
+        is(scalar(@first), scalar(@collected),
+            'events() first call returns full record set');
+        my @second = $log2->events(0);
+        is(\@second, [undef], 'events() returns (undef) once drained');
+    }
+});
 
 done_testing;

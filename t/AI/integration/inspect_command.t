@@ -140,10 +140,10 @@ yath(
 # uuids to land three distinct archive rows.)
 my $sqlite_multi = "$tmp/multi.yath";
 {
-    require App::Yath2::Log::DB::Sqlite;
+    require App::Yath2::DB;
     require Test2::Util::UUID;
     Test2::Util::UUID->import('gen_uuid');
-    my $dest = App::Yath2::Log::DB::Sqlite->new(file => $sqlite_multi);
+    my $dest = App::Yath2::DB->open(file => $sqlite_multi);
     my $src  = App::Yath2::Log->new(dir => $logs_dir);
     $dest->insert($src, archive_uuid => gen_uuid());
     $dest->insert($src, archive_uuid => gen_uuid());

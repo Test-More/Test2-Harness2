@@ -78,7 +78,7 @@ my $arc_path = "$arc_dir/run.yath";
 App::Yath2::Log->new(dir => $src)->archive($arc_path, format => 'sqlite');
 
 my $log = App::Yath2::Log->new(file => $arc_path);
-isa_ok($log, ['App::Yath2::Log::DB::Sqlite']);
+isa_ok($log, ['App::Yath2::Log::DB']);
 
 # artifacts() positional/hashref forms.
 {

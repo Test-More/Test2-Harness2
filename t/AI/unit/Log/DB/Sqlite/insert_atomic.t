@@ -8,7 +8,10 @@ use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
-use App::Yath2::Log::DB::Sqlite;
+use App::Yath2::DB;
+
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
 
 # B8 (D6): insert() wraps the entire population pass in a DB
 # transaction. Any mid-insert die rolls back; the source's
@@ -51,104 +54,107 @@ sub build_source {
     return $src;
 }
 
-sub fresh_db {
-    my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
-    unlink $db_path;
-    my $db = App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path");
-    $db->bootstrap_schema;
-    return $db;
-}
+for_each_log_db_backend(sub {
+    my ($backend) = @_;
 
-# {{{ Test 1: duplicate-uuid rejection.
-# Inserting the same source twice fails on the second call with a
-# clean error and leaves the archives table at exactly 1 row.
-{
-    my $uuid = '019D2B1A-8000-7000-8000-CAFEBABE1001';
-    my $src  = build_source(archive_uuid => $uuid);
-    my $db   = fresh_db();
-
-    my $aid = $db->insert(App::Yath2::Log->new(dir => $src));
-    ok(defined $aid, 'first insert succeeds');
-
-    my $err;
-    my $ok = eval {
-        $db->insert(App::Yath2::Log->new(dir => $src));
-        1;
-    };
-    $err = $@;
-    ok(!$ok, 're-insert dies');
-    like($err, qr/already exists; not re-imported/,
-        'clean error message');
-
-    my ($n) = $db->dbh->selectrow_array(
-        q{SELECT count(*) FROM archives});
-    is($n, 1, 'exactly one archives row -- re-import did not partially populate');
-}
-# }}}
-
-# {{{ Test 2: atomic rollback.
-# If a helper called inside the transaction body dies, the entire
-# insert rolls back: archives, runs, jobs, job_tries, services,
-# service_lifetimes, subtests, artifacts, test_files, job_specs all
-# remain empty.
-{
-    my $src = build_source();    # live-dir source -- mints fresh uuid
-    my $db  = fresh_db();
-
-    # Monkey-patch _populate_summary_rows to die after the artifact
-    # loop has already inserted rows. The transaction must roll all
-    # of those back.
-    no warnings 'redefine';
-    my $orig = \&App::Yath2::Log::DB::_populate_summary_rows;
-    local *App::Yath2::Log::DB::_populate_summary_rows = sub {
-        die "synthetic mid-insert failure\n";
+    my $fresh_db = sub {
+        my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
+        unlink $db_path;
+        return App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend);
     };
 
-    my $ok = eval { $db->insert(App::Yath2::Log->new(dir => $src)); 1 };
-    my $err = $@;
-    ok(!$ok, 'insert dies when inner helper dies');
-    like($err, qr/synthetic mid-insert failure/,
-        'original error is propagated');
+    # {{{ Test 1: duplicate-uuid rejection.
+    # Inserting the same source twice fails on the second call with a
+    # clean error and leaves the archives table at exactly 1 row.
+    {
+        my $uuid = '019D2B1A-8000-7000-8000-CAFEBABE1001';
+        my $src  = build_source(archive_uuid => $uuid);
+        my $db   = $fresh_db->();
 
-    my $dbh = $db->dbh;
-    for my $table (qw/
-        archives runs jobs job_tries services service_lifetimes
-        subtests artifacts test_files job_specs
-    /) {
-        my ($n) = $dbh->selectrow_array("SELECT count(*) FROM $table");
-        is($n, 0, "$table empty after rollback");
+        my $aid = $db->insert(App::Yath2::Log->new(dir => $src));
+        ok(defined $aid, 'first insert succeeds');
+
+        my $err;
+        my $ok = eval {
+            $db->insert(App::Yath2::Log->new(dir => $src));
+            1;
+        };
+        $err = $@;
+        ok(!$ok, 're-insert dies');
+        like($err, qr/already exists; not re-imported/,
+            'clean error message');
+
+        my ($n) = $db->dbh->selectrow_array(
+            q{SELECT count(*) FROM archives});
+        is($n, 1, 'exactly one archives row -- re-import did not partially populate');
     }
+    # }}}
 
-    # Restore and retry: the same source inserts cleanly with no
-    # leftover state.
-    local *App::Yath2::Log::DB::_populate_summary_rows = $orig;
-    my $aid = eval { $db->insert(App::Yath2::Log->new(dir => $src)) };
-    ok(defined $aid, 'retry after rollback succeeds');
-    my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
-    is($n, 1, 'one archives row after retry');
-}
-# }}}
+    # {{{ Test 2: atomic rollback.
+    # If a helper called inside the transaction body dies, the entire
+    # insert rolls back: archives, runs, jobs, job_tries, services,
+    # service_lifetimes, subtests, artifacts, test_files, job_specs all
+    # remain empty.
+    {
+        my $src = build_source();    # live-dir source -- mints fresh uuid
+        my $db  = $fresh_db->();
 
-# {{{ Test 3: explicit archive_uuid override wins over source meta.
-{
-    my $src_uuid = '019D2B1A-8000-7000-8000-CAFEBABE3001';
-    my $ovr_uuid = '019D2B1A-8000-7000-8000-CAFEBABE3002';
-    my $src      = build_source(archive_uuid => $src_uuid);
-    my $db       = fresh_db();
+        # Monkey-patch _populate_summary_rows on the Internal base
+        # (raw-SQL helper). Both backends route through it: the dbic
+        # backend forwards insert() to its Internal helper, so the
+        # patch covers it too.
+        no warnings 'redefine';
+        my $orig = \&App::Yath2::DB::Internal::_populate_summary_rows;
+        local *App::Yath2::DB::Internal::_populate_summary_rows = sub {
+            die "synthetic mid-insert failure\n";
+        };
 
-    my $aid = $db->insert(
-        App::Yath2::Log->new(dir => $src),
-        archive_uuid => $ovr_uuid,
-    );
-    ok(defined $aid, 'override insert succeeds');
+        my $ok = eval { $db->insert(App::Yath2::Log->new(dir => $src)); 1 };
+        my $err = $@;
+        ok(!$ok, 'insert dies when inner helper dies');
+        like($err, qr/synthetic mid-insert failure/,
+            'original error is propagated');
 
-    my ($got) = $db->dbh->selectrow_array(
-        q{SELECT archive_uuid FROM archives WHERE archive_id = ?},
-        undef, $aid,
-    );
-    is(uc($got), uc($ovr_uuid),
-        'override archive_uuid wins over source meta (D6)');
-}
-# }}}
+        my $dbh = $db->dbh;
+        for my $table (qw/
+            archives runs jobs job_tries services service_lifetimes
+            subtests artifacts test_files job_specs
+        /) {
+            my ($n) = $dbh->selectrow_array("SELECT count(*) FROM $table");
+            is($n, 0, "$table empty after rollback");
+        }
+
+        # Restore and retry: the same source inserts cleanly with no
+        # leftover state.
+        local *App::Yath2::DB::Internal::_populate_summary_rows = $orig;
+        my $aid = eval { $db->insert(App::Yath2::Log->new(dir => $src)) };
+        ok(defined $aid, 'retry after rollback succeeds');
+        my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
+        is($n, 1, 'one archives row after retry');
+    }
+    # }}}
+
+    # {{{ Test 3: explicit archive_uuid override wins over source meta.
+    {
+        my $src_uuid = '019D2B1A-8000-7000-8000-CAFEBABE3001';
+        my $ovr_uuid = '019D2B1A-8000-7000-8000-CAFEBABE3002';
+        my $src      = build_source(archive_uuid => $src_uuid);
+        my $db       = $fresh_db->();
+
+        my $aid = $db->insert(
+            App::Yath2::Log->new(dir => $src),
+            archive_uuid => $ovr_uuid,
+        );
+        ok(defined $aid, 'override insert succeeds');
+
+        my ($got) = $db->dbh->selectrow_array(
+            q{SELECT archive_uuid FROM archives WHERE archive_id = ?},
+            undef, $aid,
+        );
+        is(uc($got), uc($ovr_uuid),
+            'override archive_uuid wins over source meta (D6)');
+    }
+    # }}}
+});
 
 done_testing;

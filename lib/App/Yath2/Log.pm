@@ -94,8 +94,21 @@ sub new {
 
         my $kind = $class->_detect_file_kind($path);
         if ($kind eq 'sqlite') {
-            require App::Yath2::Log::DB::Sqlite;
-            return App::Yath2::Log::DB::Sqlite->new(file => $path, %args);
+            require App::Yath2::DB;
+            require App::Yath2::Log::DB;
+            my $db = App::Yath2::DB->open(file => $path);
+
+            # Single-archive sqlite shorthand: pick the singleton archive
+            # when uuid not given; throw on multi-archive ambiguity.
+            my $uuid = delete $args{uuid};
+            unless (defined $uuid) {
+                my @uuids = $db->archives;
+                croak "no archives in this sqlite log" if @uuids == 0;
+                croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+                    if @uuids > 1;
+                $uuid = $uuids[0];
+            }
+            return App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
         }
         if ($kind eq 'tar.zidx') {
             require App::Yath2::Log::TarZIdx;
@@ -107,8 +120,18 @@ sub new {
 
     # Database connection forms.
     if (defined $args{dbh} || defined $args{dsn}) {
-        require App::Yath2::Log::DB::Sqlite;
-        return App::Yath2::Log::DB::Sqlite->new(%args);
+        require App::Yath2::DB;
+        require App::Yath2::Log::DB;
+        my $uuid = delete $args{uuid};
+        my $db = App::Yath2::DB->open(%args);
+        unless (defined $uuid) {
+            my @uuids = $db->archives;
+            croak "no archives in this DB" if @uuids == 0;
+            croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+                if @uuids > 1;
+            $uuid = $uuids[0];
+        }
+        return App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
     }
 
     croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
@@ -500,13 +523,16 @@ A tar.zidx archive (USTAR + per-file zstd + a trailing index for
 random-access reads). Read-only; archive() and insert() construct
 new archives.
 
-=item L<App::Yath2::Log::DB::Sqlite> / Postgres / MariaDB / MySQL
+=item L<App::Yath2::Log::DB>
 
-The four SQL-backed flavors. Share L<App::Yath2::Log::DB> as
-abstract base; per-flavor classes only provide DSN construction,
-schema bootstrap, UUID + JSON codecs, and payload bind hooks. All
-DB shapes are multi-archive: a "single sqlite .yath file" is just
-the N=1 case in the same C<archives> table.
+A thin proxy that wraps any backend doing
+L<App::Yath2::Role::DB::Backend>. Construct backends via
+L<App::Yath2::DB>; the proxy delegates the archive-shaped surface
+to the chosen backend (raw SQL via
+L<App::Yath2::DB::Internal>, or DBIx::Class via
+L<App::Yath2::DB::DBIC>). All DB shapes are multi-archive: a
+"single sqlite .yath file" is just the N=1 case in the same
+C<archives> table.
 
 =back
 
@@ -574,24 +600,23 @@ must pick one explicitly.
 
 For workflows that explicitly want to enumerate archives in a
 multi-archive DB (server-shaped DBs, multi-archive sqlite files),
-use L<App::Yath2::LogDB>:
+use L<App::Yath2::DB>:
 
-    my $ldb = App::Yath2::LogDB->new(file => $multi_yath);
-    for my $uuid ($ldb->archives) {
-        my $log = $ldb->log($uuid);
+    my $db = App::Yath2::DB->open(file => $multi_yath);
+    for my $uuid ($db->archives) {
+        my $log = App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
         ...;
     }
 
-C<LogDB> shares its DBI handle across the per-archive Log objects it
-hands out, so opening many archives does not reconnect.
+The backend shares its DBI handle across the per-archive proxy
+objects so opening many archives does not reconnect.
 
 =head1 SEE ALSO
 
 L<App::Yath2::Log::Live>, L<App::Yath2::Log::Directory>,
-L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::DB::Sqlite>,
-L<App::Yath2::Log::DB::Postgres>, L<App::Yath2::Log::DB::MariaDB>,
-L<App::Yath2::Log::DB::MySQL>, L<App::Yath2::Log::Artifact>,
-L<App::Yath2::Log::Iterator::JSONL>, L<App::Yath2::LogDB>,
+L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::DB>,
+L<App::Yath2::DB>, L<App::Yath2::Log::Artifact>,
+L<App::Yath2::Log::Iterator::JSONL>,
 L<Test2::Harness2::LogLayout>, L<App::Yath2::Command::inspect>.
 
 =head1 SOURCE

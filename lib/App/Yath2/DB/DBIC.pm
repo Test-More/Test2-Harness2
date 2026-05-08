@@ -10,6 +10,8 @@ use Object::HashBase qw{
     <file <dsn <user <pass <attrs <dbh
     <schema
     <uuid <archive_id
+    <sealed
+    <flavor_override
     +_internal
 };
 
@@ -34,7 +36,32 @@ BEGIN {
                 && !defined $i->{App::Yath2::DB::Internal::ARCHIVE_ID()};
             $i->{App::Yath2::DB::Internal::UUID()} //= $self->{+UUID}
                 if defined $self->{+UUID};
-            return $i->$m(@_);
+            # Honor list / scalar context the caller invoked us in;
+            # events() in particular returns a list and the caller
+            # captures it into an array.
+            my $wantarray = wantarray;
+            my @rv;
+            my $rv;
+            if ($wantarray) {
+                @rv = $i->$m(@_);
+            } elsif (defined $wantarray) {
+                $rv = $i->$m(@_);
+            } else {
+                $i->$m(@_);
+            }
+            # Mirror state changes back. insert() in particular sets
+            # ARCHIVE_ID + UUID + SEALED on the Internal helper; without
+            # mirroring, callers reading $self->uuid / $self->archive_id
+            # / $self->sealed after insert() get undef on the DBIC outer.
+            $self->{+ARCHIVE_ID} = $i->{App::Yath2::DB::Internal::ARCHIVE_ID()}
+                if defined $i->{App::Yath2::DB::Internal::ARCHIVE_ID()};
+            $self->{+UUID} = $i->{App::Yath2::DB::Internal::UUID()}
+                if defined $i->{App::Yath2::DB::Internal::UUID()};
+            $self->{+SEALED} = $i->{App::Yath2::DB::Internal::SEALED()}
+                if $i->{App::Yath2::DB::Internal::SEALED()};
+            return @rv if $wantarray;
+            return $rv if defined $wantarray;
+            return;
         };
     }
 }
@@ -106,6 +133,13 @@ sub init {
     else {
         croak "DBIC backend requires one of: schema, dbh, dsn, file";
     }
+
+    # Bootstrap goes through the Internal helper so DBIC's
+    # preprocess_schema_sql (which delegates to Internal) doesn't
+    # cause recursive bootstrap. Internal's init runs bootstrap_schema
+    # itself, so just instantiating _internal here suffices.
+    $self->_internal;
+
     return;
 }
 
@@ -113,6 +147,15 @@ sub init {
 
 sub flavor {
     my $self = shift;
+    # Caller-supplied flavor wins (caller knows whether they're talking
+    # to MySQL or MariaDB through DBD::MariaDB).
+    return $self->{+FLAVOR_OVERRIDE} if defined $self->{+FLAVOR_OVERRIDE};
+    # sqlt_type doesn't distinguish MariaDB from MySQL when DBD::MariaDB
+    # is the underlying driver (both come back as 'MySQL'). Sniff the
+    # actual server first, fall back to sqlt_type.
+    my $driver = eval { $self->{+SCHEMA}->storage->dbh->{Driver}{Name} } // '';
+    return 'mariadb' if $driver eq 'MariaDB';
+    return 'mysql'   if $driver eq 'mysql';
     my $t = $self->{+SCHEMA}->storage->sqlt_type;
     my $f = {
         SQLite     => 'sqlite',
@@ -179,7 +222,13 @@ sub _internal {
         require $file;
 
         my $dbh = $self->dbh;
-        my $obj = $class->new(dbh => $dbh, (defined $self->{+UUID} ? (uuid => $self->{+UUID}) : ()));
+        my %extra;
+        $extra{uuid} = $self->{+UUID} if defined $self->{+UUID};
+        # The Sqlite Internal helper uses {file} for seal => 1 path
+        # resolution. Forward it from the DBIC outer when present so
+        # insert(seal => 1) works on the DBIC backend too.
+        $extra{file} = $self->{+FILE} if $flavor eq 'sqlite' && defined $self->{+FILE};
+        my $obj = $class->new(dbh => $dbh, %extra);
         # Mirror archive_id resolution if we already resolved one.
         $obj->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $self->{+ARCHIVE_ID}
             if defined $self->{+ARCHIVE_ID};
@@ -201,6 +250,7 @@ sub _archive_id_or_die {
         my $row = $self->{+SCHEMA}->resultset('Archive')
             ->find({ archive_uuid => $self->_uuid_to_db($u) });
         croak "no archive '$u' in this DB" unless $row;
+        $self->_internal->_check_archive_version($u, $row->archive_version);
         $self->{+ARCHIVE_ID} = $row->archive_id;
         $self->_internal->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $row->archive_id;
         $self->_internal->{App::Yath2::DB::Internal::UUID()} //= $u;
@@ -215,6 +265,7 @@ sub _archive_id_or_die {
         # callers see a normal hex uuid rather than packed bytes /
         # uppercase strings.
         my $canon = $self->_uuid_from_db($rows[0]->archive_uuid);
+        $self->_internal->_check_archive_version($canon, $rows[0]->archive_version);
         $self->{+ARCHIVE_ID} = $rows[0]->archive_id;
         $self->{+UUID}       = $canon;
         $self->_internal->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $self->{+ARCHIVE_ID};

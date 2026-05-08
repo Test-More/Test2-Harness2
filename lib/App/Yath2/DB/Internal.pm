@@ -115,9 +115,9 @@ sub _connect_dbh { croak "subclass must implement _connect_dbh()" }
 
 # }}}
 
-# {{{ Group-B: multi-archive container methods. Lifted from
-# App::Yath2::LogDB so this class can be used as the multi-archive entry
-# point directly (no separate handle).
+# {{{ Group-B: multi-archive container methods. Backends expose them
+# directly so this class can be used as the multi-archive entry point
+# without a separate handle.
 
 # HashBase generated a flavor accessor that returns the slot verbatim.
 # Override so callers always get a defined string (we lazily fall back
@@ -203,6 +203,12 @@ sub _resolve_archive {
     }
 
     if (!defined $uuid) {
+        # missing_ok in the multi-archive case: leave unresolved. Group-A
+        # operations will fail later via _archive_id_or_die when they
+        # actually need a uuid; that's the right place to error since
+        # the caller may legitimately want to enumerate archives()
+        # before scoping into a specific one.
+        return undef if $missing_ok;
         croak "ambiguous; specify uuid => ... (this DB holds $count archives)";
     }
 
@@ -426,8 +432,14 @@ sub _resolve_or_create_test_file {
 sub _archive_id_or_die {
     my $self = shift;
     my $aid = $self->{+ARCHIVE_ID};
-    croak "no archives in this DB" unless defined $aid;
-    return $aid;
+    return $aid if defined $aid;
+
+    # ARCHIVE_ID is unset because init's _resolve_archive(missing_ok => 1)
+    # didn't pick a singleton. Re-query so we can report a precise error
+    # (zero archives vs. ambiguous multi-archive without uuid).
+    my $count = $self->dbh->selectrow_array(q{SELECT count(*) FROM archives});
+    croak "no archives in this DB" if !$count;
+    croak "ambiguous; specify uuid => ... (this DB holds $count archives)";
 }
 
 # Numeric-aware sort that mirrors Directory's behavior.

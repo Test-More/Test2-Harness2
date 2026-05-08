@@ -8,7 +8,34 @@ use Importer Importer => 'import';
 
 use Test2::Tools::QuickDB ();
 
-our @EXPORT_OK = qw/discover_db_versions for_each_db_version get_quiet_db/;
+our @EXPORT_OK = qw/discover_db_versions for_each_db_version get_quiet_db for_each_log_db_backend/;
+
+# Run $body once per backend ('internal' and 'dbic'), wrapped in a
+# named subtest. Body receives the backend name as its only arg. The
+# 'dbic' iteration is skipped when DBIx::Class isn't installed (so
+# hosts without the optional dependency stay green).
+sub for_each_log_db_backend {
+    my ($body) = @_;
+    require Test2::V0;
+    # Test2::V0 seeds srand from local date for reproducibility, which
+    # means parallel test workers all use the SAME random state and
+    # File::Temp::tempfile() produces colliding paths across processes.
+    # Re-seed with PID so each worker's temp paths are unique. The
+    # backend-iteration tests do not depend on srand reproducibility
+    # (no rand() in assertions), so this is safe.
+    srand(time ^ ($$ + ($$ << 15)));
+    for my $name (qw/internal dbic/) {
+        if ($name eq 'dbic') {
+            my $ok = eval { require DBIx::Class; 1 };
+            unless ($ok) {
+                Test2::V0::diag("skipping dbic backend: DBIx::Class not available");
+                next;
+            }
+        }
+        Test2::V0::subtest("backend=$name" => sub { $body->($name) });
+    }
+    return;
+}
 
 # Tracks DBs returned by get_quiet_db so we can call ->stop on them at
 # process exit (END). $qdb->stop disconnects DBI handles owned by the

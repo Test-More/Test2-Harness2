@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
     {
     my $admin = DBI->connect(
@@ -67,12 +68,10 @@ for_each_db_version([qw/mariadb/], sub {
     $w->close;
     }
 
-    my $writer = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $writer = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $writer->insert(App::Yath2::Log->new(dir => $src));
 
-    my $log = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
-    isa_ok($log, ['App::Yath2::Log::DB::MariaDB']);
-
+    my $log = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     is([$log->services], ['harness', 'preload-perl'], 'global services alphabetical');
     is([$log->services(0)], ['run'], 'run-scoped services');
     is([$log->runs], [0, 2], 'runs ascending integer');
@@ -107,18 +106,17 @@ for_each_db_version([qw/mariadb/], sub {
     $w->say(encode_json({ping => 'archive2'}));
     $w->close;
 
-    my $w2 = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $w2 = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $w2->insert(App::Yath2::Log->new(dir => $src2));
 
     like(
-        dies { App::Yath2::Log::DB::MariaDB->new(dsn => $dsn)->runs },
+        dies { App::Yath2::DB->open(dsn => $dsn, backend => $backend)->runs },
         qr/ambiguous; specify uuid =>/,
         'multi-archive without uuid throws',
     );
 
     my $u = $w2->uuid;
-    my $picked = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn, uuid => $u);
-    isa_ok($picked, ['App::Yath2::Log::DB::MariaDB']);
+    my $picked = App::Yath2::DB->open(dsn => $dsn, backend => $backend)->scoped($u);
     }
 
     # 0-archive case: a fresh empty DB is allowed; reads throw.
@@ -131,11 +129,11 @@ for_each_db_version([qw/mariadb/], sub {
     $admin->disconnect;
 
     my $empty = $qdb->connect_string('yath_log_test_listing_empty');
-    my $w = App::Yath2::Log::DB::MariaDB->new(dsn => $empty);
-    isa_ok($w, ['App::Yath2::Log::DB::MariaDB']);
+    my $w = App::Yath2::DB->open(dsn => $empty, backend => $backend);
     like(dies { $w->runs }, qr/no archives in this DB/, 'reads on empty DB throw');
     }
 
+    });
 });
 
 done_testing;

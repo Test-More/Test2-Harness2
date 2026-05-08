@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/postgresql/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'PostgreSQL');
 
     use File::Temp qw/tempdir/;
@@ -16,15 +18,14 @@ for_each_db_version([qw/postgresql/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::Postgres;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'PostgreSQL' });
     {
     my $admin = DBI->connect(
         $qdb->connect_string('postgres'), undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1, pg_enable_utf8 => 1 },
     ) or die "connect: $DBI::errstr";
-    $admin->do('CREATE DATABASE yath_log_test_svclife');
+    eval { $admin->do('CREATE DATABASE yath_log_test_svclife'); };
     $admin->disconnect;
     }
     my $dsn = $qdb->connect_string('yath_log_test_svclife');
@@ -91,7 +92,7 @@ for_each_db_version([qw/postgresql/], sub {
     }
 
     my $src = build_log_with_restarts();
-    my $pg  = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $pg  = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     my $aid = $pg->insert(App::Yath2::Log->new(dir => $src));
     ok(defined $aid, 'insert() succeeded');
 
@@ -168,6 +169,7 @@ for_each_db_version([qw/postgresql/], sub {
     ok(!exists $col_names{status}, 'services.status column dropped');
     ok( exists $col_names{role},   'services.role column present');
 
+    });
 });
 
 done_testing;

@@ -98,9 +98,10 @@ build_dir($src);
 
 # {{{ insert() into multi-archive DB drops a fresh meta.json per archive
 {
-    require App::Yath2::Log::DB::Sqlite;
+    require App::Yath2::DB;
+    require App::Yath2::Log::DB;
     my $db_path = "$tmp/multi.yath";
-    my $writer = App::Yath2::Log::DB::Sqlite->new(file => $db_path);
+    my $writer = App::Yath2::DB->open(file => $db_path);
 
     my @uuids;
     for (1 .. 3) {
@@ -112,12 +113,11 @@ build_dir($src);
     is(scalar @uuids, 3, 'three archives inserted');
     is(scalar(do { my %s; @s{@uuids} = (); keys %s }), 3, 'each archive has a unique uuid');
 
-    require App::Yath2::LogDB;
-    my $ldb = App::Yath2::LogDB->new(file => $db_path);
-    is($ldb->archive_count, 3, 'LogDB: 3 archives');
+    my $db = App::Yath2::DB->open(file => $db_path);
+    is($db->archive_count, 3, 'DB: 3 archives');
 
     for my $u (@uuids) {
-        my $log = $ldb->log($u);
+        my $log = App::Yath2::Log::DB->new(backend => $db, uuid => $u);
         my $a = $log->artifacts;
         ok($a->exists('meta.json'), "archive $u has meta.json");
         my $meta = decode_json($a->get('meta.json'));

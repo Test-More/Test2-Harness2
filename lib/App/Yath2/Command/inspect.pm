@@ -118,7 +118,7 @@ sub _build_report {
     $r{type} = $kind;
 
     if ($kind eq 'sqlite') {
-        require App::Yath2::Log::DB::Sqlite;
+        require App::Yath2::DB;
         $self->_fill_sqlite_report(\%r, $path);
         return \%r;
     }
@@ -261,7 +261,8 @@ sub _read_meta_via_footer {
 sub _fill_sqlite_report {
     my ($self, $report, $path) = @_;
 
-    require App::Yath2::Log::DB::Sqlite;
+    require App::Yath2::DB;
+    require App::Yath2::Log::DB;
     require DBI;
 
     # For single-archive sealed SQLite files, surface the file-level
@@ -309,7 +310,8 @@ sub _fill_sqlite_report {
 
         my $log;
         my $aok = eval {
-            $log = App::Yath2::Log::DB::Sqlite->new(file => $path, uuid => $uuid);
+            my $db = App::Yath2::DB->open(file => $path);
+            $log = App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
             1;
         };
         unless ($aok) {

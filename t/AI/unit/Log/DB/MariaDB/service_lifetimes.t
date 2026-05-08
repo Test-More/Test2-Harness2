@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
     {
     my $admin = DBI->connect(
@@ -91,7 +92,7 @@ for_each_db_version([qw/mariadb/], sub {
     }
 
     my $src = build_log_with_restarts();
-    my $mariadb = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $mariadb = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     my $aid = $mariadb->insert(App::Yath2::Log->new(dir => $src));
     ok(defined $aid, 'insert() succeeded');
 
@@ -167,6 +168,7 @@ for_each_db_version([qw/mariadb/], sub {
     ok(!exists $col_names{status}, 'services.status column dropped');
     ok( exists $col_names{role},   'services.role column present');
 
+    });
 });
 
 done_testing;

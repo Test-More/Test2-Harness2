@@ -8,7 +8,10 @@ use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
-use App::Yath2::Log::DB::Sqlite;
+use App::Yath2::DB;
+
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
 
 # B5: Reconstruction API. The DB backend serves spec.jsonl /
 # report.jsonl on run / service / job_try scopes by reading typed
@@ -154,9 +157,12 @@ sub build_source {
     return $src;
 }
 
+for_each_log_db_backend(sub {
+    my ($backend) = @_;
+
 my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
 unlink $db_path;
-my $db = App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path");
+my $db = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend);
 my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
 ok(defined $aid, 'insert succeeded');
 
@@ -304,5 +310,7 @@ my $log = App::Yath2::Log->new(file => $db_path);
     my $rec = decode_json($lines[0]);
     is($rec->{started_at}, '2026-05-07T00:00:00Z', 'spec bytes decode round-trips');
 }
+
+});
 
 done_testing;

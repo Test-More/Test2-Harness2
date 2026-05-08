@@ -8,7 +8,7 @@ use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
-use App::Yath2::Log::DB::Sqlite;
+use App::Yath2::DB;
 
 # C1: Cross-archive aggregate test.
 #
@@ -85,7 +85,7 @@ sub build_log {
 # Fresh DB.
 my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
 unlink $db_path;
-my $db  = App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path");
+my $db  = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path");
 $db->bootstrap_schema;
 my $dbh = $db->dbh;
 

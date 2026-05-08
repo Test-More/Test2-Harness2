@@ -30,6 +30,16 @@ sub open {
     my $err = $@;
     croak "could not load backend '$impl': $err" unless $ok;
 
+    # The DBIC backend accepts an explicit flavor override (caller
+    # knows whether they're talking to MariaDB or MySQL through the
+    # DBD::MariaDB driver). The Internal backends already had `flavor`
+    # consumed by _backend_class; rename for DBIC.
+    if ($backend eq 'dbic' && defined $args{flavor}) {
+        $args{flavor_override} = delete $args{flavor};
+    } else {
+        delete $args{flavor};
+    }
+
     return $impl->new(%args);
 }
 
@@ -38,8 +48,13 @@ sub _backend_class {
     return 'App::Yath2::DB::DBIC' if $name eq 'dbic';
     if ($name eq 'internal') {
         my $flavor = _detect_flavor(%args);
-        return "App::Yath2::DB::Internal::\u${flavor}"
-            if $flavor =~ /^(sqlite|postgres|mariadb|mysql)$/;
+        my $sub = {
+            sqlite   => 'Sqlite',
+            postgres => 'Postgres',
+            mariadb  => 'MariaDB',
+            mysql    => 'MySQL',
+        }->{$flavor};
+        return "App::Yath2::DB::Internal::$sub" if $sub;
         croak "unknown internal flavor '$flavor'";
     }
     croak "unknown backend '$name' (expected 'internal' or 'dbic')";

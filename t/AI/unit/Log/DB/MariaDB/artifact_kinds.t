@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -17,8 +19,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
     {
     my $admin = DBI->connect(
@@ -63,7 +64,7 @@ for_each_db_version([qw/mariadb/], sub {
     return $src;
     }
 
-    my $db = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
 
     my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
@@ -120,6 +121,7 @@ for my $bad (qw(spec report state)) {
     );
 }
 
+    });
 });
 
 done_testing;
