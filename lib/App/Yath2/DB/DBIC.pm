@@ -968,6 +968,226 @@ sub subtest_rows {
     return \@out;
 }
 
+# -- write primitives (Phase 5) ---------------------------------------------
+#
+# Mirrors App::Yath2::DB::SQL's write API on the DBIC layer. All input
+# args are canonical Perl values (UUIDs as 36-char lowercase hex; JSON
+# columns as decoded refs; datetimes as ISO-8601 strings; payloads as
+# raw bytes). Per-flavor bind concerns: UUID columns route through
+# _flavor_uuid_to_db; payload (BYTEA on Postgres / LONGBLOB on MySQL /
+# BLOB on SQLite) is bound via $schema->storage->dbh_do for the row
+# UPDATE / INSERT to ensure DBD::Pg / DBD::MariaDB get the correct type
+# hints (DBIC's create()/update() does not always set the right bind
+# type when the Result column is declared 'blob' but the underlying
+# column is BYTEA / BINARY). Because DBIC and the SQL backend both
+# share the same dbh shape, we delegate the actual DB call through a
+# parallel SQL backend instance so flavor-specific bind code lives in
+# exactly one place. The shared App::Yath2::DB::SQL instance is bound
+# to the same dbh as our DBIC schema, so transactional state stays
+# consistent.
+
+sub _shared_sql_backend {
+    my $self = shift;
+    return $self->{__shared_sql} //= do {
+        require App::Yath2::DB::SQL;
+        # Cannot pass `flavor => ...` to App::Yath2::DB::SQL->new because
+        # SQL.pm's HashBase declares it as a +flavor (reader, no
+        # constructor accept). Set it manually after construction.
+        my $obj = App::Yath2::DB::SQL->new(dbh => $self->dbh);
+        $obj->{App::Yath2::DB::SQL::FLAVOR()} = $self->flavor;
+        $obj;
+    };
+}
+
+sub archive_create {
+    my ($self, $fields) = @_;
+    return $self->_shared_sql_backend->archive_create($fields);
+}
+
+sub mark_sealed {
+    my ($self, $aid, $when) = @_;
+    croak "archive_id required" unless defined $aid;
+    $self->{+SCHEMA}->resultset('Archive')->search({ archive_id => $aid })
+        ->update({ sealed_at => $when });
+    return;
+}
+
+sub ensure_project_row {
+    my ($self, $name) = @_;
+    croak "project name required" unless defined $name && length $name;
+    my $row = $self->{+SCHEMA}->resultset('Project')->find_or_create(
+        { name => $name },
+        { key => 'projects_name_uk' },
+    );
+    return $row->project_id;
+}
+
+sub ensure_test_file_row {
+    my ($self, $project_id, $relative) = @_;
+    croak "project_id required"    unless defined $project_id;
+    croak "relative path required" unless defined $relative && length $relative;
+    my $row = $self->{+SCHEMA}->resultset('TestFile')->find_or_create(
+        { project_id => $project_id, relative => $relative },
+        { key => 'test_files_project_relative_uk' },
+    );
+    return $row->test_file_id;
+}
+
+sub ensure_run_row {
+    my ($self, $aid, $run_ord, $project_id) = @_;
+    # Routed through the shared SQL backend so the per-flavor UUID bind
+    # stays in one place. Once routed, the row is visible to subsequent
+    # DBIC reads through the same dbh.
+    return $self->_shared_sql_backend->ensure_run_row($aid, $run_ord, $project_id);
+}
+
+sub ensure_service_row {
+    my ($self, $aid, $name, $run_id) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "service name required" unless defined $name && length $name;
+
+    my %where = (archive_id => $aid, name => $name);
+    $where{run_id} = $run_id; # undef binds to NULL in SQL::Abstract
+
+    my $rs = $self->{+SCHEMA}->resultset('Service');
+    my $existing = $rs->search(\%where)->first;
+    return $existing->service_id if $existing;
+
+    my $row = $rs->create({
+        archive_id => $aid,
+        run_id     => $run_id,
+        name       => $name,
+    });
+    return $row->service_id;
+}
+
+sub ensure_job_row {
+    my ($self, $aid, $run_id, $job_ord, $test_file_id) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "run_id required"       unless defined $run_id;
+    croak "job_ord required"      unless defined $job_ord;
+    croak "test_file_id required" unless defined $test_file_id;
+
+    my $rs = $self->{+SCHEMA}->resultset('Job');
+    my $existing = $rs->search({
+        archive_id => $aid, run_id => $run_id, job_ord => $job_ord,
+    })->first;
+    return $existing->job_id if $existing;
+
+    my $row = $rs->create({
+        archive_id   => $aid,
+        run_id       => $run_id,
+        job_ord      => $job_ord,
+        test_file_id => $test_file_id,
+    });
+    return $row->job_id;
+}
+
+sub ensure_job_try_row {
+    my ($self, $job_id, $try_ord) = @_;
+    croak "job_id required"  unless defined $job_id;
+    croak "try_ord required" unless defined $try_ord;
+
+    my $rs = $self->{+SCHEMA}->resultset('JobTry');
+    my $existing = $rs->search({ job_id => $job_id, try_ord => $try_ord })->first;
+    return $existing->job_try_id if $existing;
+
+    my $row = $rs->create({
+        job_id  => $job_id,
+        try_ord => $try_ord,
+    });
+    return $row->job_try_id;
+}
+
+sub artifact_create {
+    my ($self, $fields) = @_;
+    # The artifact INSERT is the most flavor-sensitive write (UUID +
+    # BYTEA + datetime). Route through the shared SQL backend so all
+    # flavor-specific bind logic lives in one place and DBIC consumers
+    # don't have to second-guess Result column data_type declarations.
+    return $self->_shared_sql_backend->artifact_create($fields);
+}
+
+sub artifact_update {
+    my ($self, $artifact_id, $fields) = @_;
+    return $self->_shared_sql_backend->artifact_update($artifact_id, $fields);
+}
+
+sub job_spec_create {
+    my ($self, $job_id, $fields) = @_;
+    croak "job_id required"           unless defined $job_id;
+    croak "fields hashref required"   unless ref($fields) eq 'HASH';
+    croak "test_file_id required"     unless defined $fields->{test_file_id};
+
+    my %row = (job_id => $job_id);
+    my @scalar_cols = qw/test_file_id absolute category duration stage
+                         retry retry_isolated smoke isolation non_perl
+                         is_binary event_timeout post_exit_timeout
+                         min_slots max_slots ch_dir/;
+    for my $c (@scalar_cols) {
+        $row{$c} = $fields->{$c} if exists $fields->{$c};
+    }
+    require Test2::Harness2::Util::JSON;
+    for my $c (qw/features switches extras/) {
+        next unless exists $fields->{$c};
+        my $v = $fields->{$c};
+        $row{$c} = ref($v) ? Test2::Harness2::Util::JSON::encode_json($v) : $v;
+    }
+
+    my $obj = $self->{+SCHEMA}->resultset('JobSpec')->create(\%row);
+    return $obj->job_spec_id;
+}
+
+sub service_lifetime_create {
+    my ($self, $service_id, $fields) = @_;
+    croak "service_id required"     unless defined $service_id;
+    croak "fields hashref required" unless ref($fields) eq 'HASH';
+    croak "lifetime_ord required"   unless defined $fields->{lifetime_ord};
+
+    my %row = (service_id => $service_id);
+
+    my @scalar_cols = qw/lifetime_ord status type id service_name stage_name
+                         started_at ended_at child_wall/;
+    for my $c (@scalar_cols) {
+        $row{$c} = $fields->{$c} if exists $fields->{$c};
+    }
+    # The Result class declares an accessor 'lifetime_exit' for the
+    # 'exit' column (avoids clobbering CORE::exit). Set via column name
+    # in the create() hashref -- DBIC accepts both column and accessor
+    # names there.
+    $row{exit} = $fields->{exit} if exists $fields->{exit};
+
+    require Test2::Harness2::Util::JSON;
+    for my $c (qw/exit_decoded times child_times spec_extras state_extras/) {
+        next unless exists $fields->{$c};
+        my $v = $fields->{$c};
+        $row{$c} = ref($v) ? Test2::Harness2::Util::JSON::encode_json($v) : $v;
+    }
+
+    my $obj = $self->{+SCHEMA}->resultset('ServiceLifetime')->create(\%row);
+    return $obj->service_lifetime_id;
+}
+
+sub subtest_create {
+    my ($self, $job_try_id, $fields) = @_;
+    croak "job_try_id required"     unless defined $job_try_id;
+    croak "fields hashref required" unless ref($fields) eq 'HASH';
+    croak "name required"           unless defined $fields->{name};
+    croak "ord required"            unless defined $fields->{ord};
+
+    my %row = (
+        job_try_id => $job_try_id,
+        name       => $fields->{name},
+        pass       => $fields->{pass} ? 1 : 0,
+        ord        => $fields->{ord},
+    );
+    for my $c (qw/count_pass count_fail/) {
+        $row{$c} = $fields->{$c} if exists $fields->{$c};
+    }
+    my $obj = $self->{+SCHEMA}->resultset('Subtest')->create(\%row);
+    return $obj->subtest_id;
+}
+
 1;
 
 __END__

@@ -8,7 +8,8 @@ use Carp qw/croak/;
 use File::Basename qw/dirname/;
 use File::Path qw/make_path/;
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json encode_json/;
+use Test2::Util::UUID qw/gen_uuid/;
 
 use Object::HashBase qw{
     <dsn <user <pass <attrs <dbh <file
@@ -810,21 +811,418 @@ sub _artifact_rows_for_archive {
     return $self->artifact_rows_for_archive($aid);
 }
 
-# -- write primitive stubs (Phase 5) ----------------------------------------
+# -- write primitives (Phase 5) ---------------------------------------------
+#
+# All write primitives accept canonical Perl values from the data layer
+# (UUIDs as 36-char lowercase hex; JSON as decoded Perl refs; datetimes
+# as ISO-8601 strings; payloads as raw bytes). Each method translates
+# to flavor-native bind shapes here at the boundary; the data layer
+# never sees flavor-native blobs / packed bytes / native JSON strings.
 
-sub archive_create       { croak 'NYI: archive_create (Phase 5)' }
-sub mark_sealed          { croak 'NYI: mark_sealed (Phase 5)' }
-sub ensure_run_row       { croak 'NYI: ensure_run_row (Phase 5)' }
-sub ensure_service_row   { croak 'NYI: ensure_service_row (Phase 5)' }
-sub ensure_job_row       { croak 'NYI: ensure_job_row (Phase 5)' }
-sub ensure_job_try_row   { croak 'NYI: ensure_job_try_row (Phase 5)' }
-sub ensure_test_file_row { croak 'NYI: ensure_test_file_row (Phase 5)' }
-sub ensure_project_row   { croak 'NYI: ensure_project_row (Phase 5)' }
-sub artifact_create      { croak 'NYI: artifact_create (Phase 5)' }
-sub artifact_update      { croak 'NYI: artifact_update (Phase 5)' }
-sub job_spec_create         { croak 'NYI: job_spec_create (Phase 5)' }
-sub service_lifetime_create { croak 'NYI: service_lifetime_create (Phase 5)' }
-sub subtest_create          { croak 'NYI: subtest_create (Phase 5)' }
+# Postgres uses RETURNING to grab the new id; everyone else uses DBI's
+# last_insert_id with table + col.
+sub _last_insert_id {
+    my ($self, $table, $col) = @_;
+    my $dbh = $self->dbh;
+    if ($self->flavor eq 'postgres') {
+        return $dbh->last_insert_id(undef, undef, $table, undef);
+    }
+    return $dbh->last_insert_id(undef, undef, $table, $col);
+}
+
+# Bind a UUID column at $idx with the right driver-side type hint.
+# Mirrors _bind_uuid; named differently to make INSERT-side intent clear.
+sub _bind_uuid_param {
+    my ($self, $sth, $idx, $canon) = @_;
+    $self->_bind_uuid($sth, $idx, $canon);
+    return;
+}
+
+sub _maybe_encode_json {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    return $val unless ref $val;
+    return encode_json($val);
+}
+
+# -- archive layer ----------------------------------------------------------
+
+sub archive_create {
+    my ($self, $fields) = @_;
+    croak "archive_create requires a hashref of fields"
+        unless ref($fields) eq 'HASH';
+    croak "archive_uuid required"    unless defined $fields->{archive_uuid};
+    croak "archive_version required" unless defined $fields->{archive_version};
+
+    require DBI;
+    my $dbh = $self->dbh;
+    my $flavor = $self->flavor;
+
+    my $extras_json = $self->_maybe_encode_json($fields->{meta_extras});
+    my $user_col = $self->_quote_user_col;
+
+    my $sth = $dbh->prepare(qq{
+        INSERT INTO archives
+            (archive_uuid, archive_version, sealed_at,
+             host, $user_col, git_sha, project, yath_version, meta_extras)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    });
+
+    if ($flavor eq 'mysql') {
+        $sth->bind_param(1, $self->_uuid_to_db($fields->{archive_uuid}), DBI::SQL_BINARY());
+    }
+    else {
+        $sth->bind_param(1, $self->_uuid_to_db($fields->{archive_uuid}));
+    }
+    $sth->bind_param(2, $fields->{archive_version});
+    $sth->bind_param(3, $fields->{sealed_at});
+    $sth->bind_param(4, $fields->{host});
+    $sth->bind_param(5, $fields->{user});
+    $sth->bind_param(6, $fields->{git_sha});
+    $sth->bind_param(7, $fields->{project});
+    $sth->bind_param(8, $fields->{yath_version});
+    $sth->bind_param(9, $extras_json);
+    $sth->execute;
+
+    return $self->_last_insert_id('archives', 'archive_id');
+}
+
+sub mark_sealed {
+    my ($self, $archive_id, $when) = @_;
+    croak "archive_id required" unless defined $archive_id;
+    my $dbh = $self->dbh;
+    $dbh->do(
+        q{UPDATE archives SET sealed_at = ? WHERE archive_id = ?},
+        undef, $when, $archive_id,
+    );
+    return;
+}
+
+# -- find-or-create rows ----------------------------------------------------
+
+sub ensure_project_row {
+    my ($self, $name) = @_;
+    croak "project name required" unless defined $name && length $name;
+
+    my $dbh = $self->dbh;
+    my ($id) = $dbh->selectrow_array(
+        q{SELECT project_id FROM projects WHERE name = ?},
+        undef, $name,
+    );
+    return $id if defined $id;
+
+    $dbh->do(
+        q{INSERT INTO projects (name) VALUES (?)},
+        undef, $name,
+    );
+    return $self->_last_insert_id('projects', 'project_id');
+}
+
+sub ensure_test_file_row {
+    my ($self, $project_id, $relative) = @_;
+    croak "project_id required"     unless defined $project_id;
+    croak "relative path required"  unless defined $relative && length $relative;
+
+    my $dbh = $self->dbh;
+    my ($id) = $dbh->selectrow_array(
+        q{SELECT test_file_id FROM test_files WHERE project_id = ? AND relative = ?},
+        undef, $project_id, $relative,
+    );
+    return $id if defined $id;
+
+    $dbh->do(
+        q{INSERT INTO test_files (project_id, relative) VALUES (?, ?)},
+        undef, $project_id, $relative,
+    );
+    return $self->_last_insert_id('test_files', 'test_file_id');
+}
+
+sub ensure_run_row {
+    my ($self, $aid, $run_ord, $project_id) = @_;
+    croak "archive_id required" unless defined $aid;
+    croak "run_ord required"    unless defined $run_ord;
+    croak "project_id required" unless defined $project_id;
+
+    require DBI;
+    my $dbh = $self->dbh;
+    my $flavor = $self->flavor;
+
+    my ($id) = $dbh->selectrow_array(
+        q{SELECT run_id FROM runs WHERE archive_id = ? AND run_ord = ?},
+        undef, $aid, $run_ord,
+    );
+    return $id if defined $id;
+
+    my $run_uuid = lc(gen_uuid());
+    my $sth = $dbh->prepare(q{
+        INSERT INTO runs (archive_id, project_id, run_ord, run_uuid,
+                          status, aborted, timed_out)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    });
+    $sth->bind_param(1, $aid);
+    $sth->bind_param(2, $project_id);
+    $sth->bind_param(3, $run_ord);
+    if ($flavor eq 'mysql') {
+        $sth->bind_param(4, $self->_uuid_to_db($run_uuid), DBI::SQL_BINARY());
+    }
+    else {
+        $sth->bind_param(4, $self->_uuid_to_db($run_uuid));
+    }
+    $sth->bind_param(5, 'unknown');
+    $sth->bind_param(6, 0);
+    $sth->bind_param(7, 0);
+    $sth->execute;
+
+    return $self->_last_insert_id('runs', 'run_id');
+}
+
+sub ensure_service_row {
+    my ($self, $aid, $name, $run_id) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "service name required" unless defined $name && length $name;
+
+    my $dbh = $self->dbh;
+    my ($id) = defined $run_id
+        ? $dbh->selectrow_array(
+            q{SELECT service_id FROM services
+               WHERE archive_id = ? AND run_id = ? AND name = ?},
+            undef, $aid, $run_id, $name)
+        : $dbh->selectrow_array(
+            q{SELECT service_id FROM services
+               WHERE archive_id = ? AND run_id IS NULL AND name = ?},
+            undef, $aid, $name);
+    return $id if defined $id;
+
+    $dbh->do(
+        q{INSERT INTO services (archive_id, run_id, name) VALUES (?, ?, ?)},
+        undef, $aid, $run_id, $name,
+    );
+    return $self->_last_insert_id('services', 'service_id');
+}
+
+sub ensure_job_row {
+    my ($self, $aid, $run_id, $job_ord, $test_file_id) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "run_id required"       unless defined $run_id;
+    croak "job_ord required"      unless defined $job_ord;
+    croak "test_file_id required" unless defined $test_file_id;
+
+    my $dbh = $self->dbh;
+    my ($id) = $dbh->selectrow_array(
+        q{SELECT job_id FROM jobs WHERE archive_id = ? AND run_id = ? AND job_ord = ?},
+        undef, $aid, $run_id, $job_ord,
+    );
+    return $id if defined $id;
+
+    $dbh->do(
+        q{INSERT INTO jobs (archive_id, run_id, job_ord, test_file_id)
+            VALUES (?, ?, ?, ?)},
+        undef, $aid, $run_id, $job_ord, $test_file_id,
+    );
+    return $self->_last_insert_id('jobs', 'job_id');
+}
+
+sub ensure_job_try_row {
+    my ($self, $job_id, $try_ord) = @_;
+    croak "job_id required"  unless defined $job_id;
+    croak "try_ord required" unless defined $try_ord;
+
+    my $dbh = $self->dbh;
+    my ($id) = $dbh->selectrow_array(
+        q{SELECT job_try_id FROM job_tries WHERE job_id = ? AND try_ord = ?},
+        undef, $job_id, $try_ord,
+    );
+    return $id if defined $id;
+
+    $dbh->do(
+        q{INSERT INTO job_tries (job_id, try_ord) VALUES (?, ?)},
+        undef, $job_id, $try_ord,
+    );
+    return $self->_last_insert_id('job_tries', 'job_try_id');
+}
+
+# -- artifact rows ----------------------------------------------------------
+
+sub artifact_create {
+    my ($self, $fields) = @_;
+    croak "artifact_create requires a hashref" unless ref($fields) eq 'HASH';
+    croak "archive_id required"    unless defined $fields->{archive_id};
+    croak "artifact_kind required" unless defined $fields->{artifact_kind};
+    croak "format required"        unless defined $fields->{format};
+    croak "created_at required"    unless defined $fields->{created_at};
+
+    require DBI;
+    my $dbh = $self->dbh;
+    my $flavor = $self->flavor;
+
+    my $artifact_uuid = lc(gen_uuid());
+    my $compressed    = $fields->{compressed} ? 1 : 0;
+    my $sealed        = exists $fields->{sealed} ? ($fields->{sealed} ? 1 : 0) : 1;
+    my $payload       = $fields->{payload} // '';
+
+    my $sth = $dbh->prepare(q{
+        INSERT INTO artifacts
+            (archive_id, artifact_uuid, run_id, service_id, job_try_id,
+             artifact_kind, format, name, compressed, payload, created_at, sealed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    });
+    $sth->bind_param(1, $fields->{archive_id});
+    if ($flavor eq 'mysql') {
+        $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid), DBI::SQL_BINARY());
+    }
+    else {
+        $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid));
+    }
+    $sth->bind_param(3, $fields->{run_id});
+    $sth->bind_param(4, $fields->{service_id});
+    $sth->bind_param(5, $fields->{job_try_id});
+    $sth->bind_param(6, $fields->{artifact_kind});
+    $sth->bind_param(7, $fields->{format});
+    $sth->bind_param(8, $fields->{name});
+    $sth->bind_param(9, $compressed);
+    $self->_bind_payload($sth, 10, $payload);
+    $sth->bind_param(11, $fields->{created_at});
+    $sth->bind_param(12, $sealed);
+    $sth->execute;
+
+    return $self->_last_insert_id('artifacts', 'artifact_id');
+}
+
+sub artifact_update {
+    my ($self, $artifact_id, $fields) = @_;
+    croak "artifact_id required" unless defined $artifact_id;
+    croak "fields hashref required" unless ref($fields) eq 'HASH';
+
+    my @cols;
+    my @binders;
+    for my $k (qw/compressed format created_at/) {
+        next unless exists $fields->{$k};
+        push @cols, "$k = ?";
+        my $v = $fields->{$k};
+        $v = $v ? 1 : 0 if $k eq 'compressed';
+        push @binders, [$v, undef];
+    }
+    if (exists $fields->{payload}) {
+        push @cols, 'payload = ?';
+        push @binders, [$fields->{payload}, 'payload'];
+    }
+    return unless @cols;
+
+    my $sql = 'UPDATE artifacts SET ' . join(', ', @cols) . ' WHERE artifact_id = ?';
+    my $dbh = $self->dbh;
+    my $sth = $dbh->prepare($sql);
+    my $i = 1;
+    for my $b (@binders) {
+        my ($val, $kind) = @$b;
+        if (defined $kind && $kind eq 'payload') {
+            $self->_bind_payload($sth, $i, $val);
+        }
+        else {
+            $sth->bind_param($i, $val);
+        }
+        $i++;
+    }
+    $sth->bind_param($i, $artifact_id);
+    $sth->execute;
+    return;
+}
+
+# -- spec / report data layer writers --------------------------------------
+
+# job_specs columns from share/schema/sqlite.sql §8 (job_specs table).
+# Promoted typed columns are left as-is; JSON columns (features, switches,
+# extras) are encoded here.
+sub job_spec_create {
+    my ($self, $job_id, $fields) = @_;
+    croak "job_id required"           unless defined $job_id;
+    croak "fields hashref required"   unless ref($fields) eq 'HASH';
+    croak "test_file_id required"     unless defined $fields->{test_file_id};
+
+    my @cols = ('job_id');
+    my @vals = ($job_id);
+
+    my @scalar_cols = qw/test_file_id absolute category duration stage
+                         retry retry_isolated smoke isolation non_perl
+                         is_binary event_timeout post_exit_timeout
+                         min_slots max_slots ch_dir/;
+    for my $c (@scalar_cols) {
+        next unless exists $fields->{$c};
+        push @cols, $c;
+        push @vals, $fields->{$c};
+    }
+    for my $c (qw/features switches extras/) {
+        next unless exists $fields->{$c};
+        push @cols, $c;
+        push @vals, $self->_maybe_encode_json($fields->{$c});
+    }
+
+    my $placeholders = join(', ', ('?') x scalar(@cols));
+    my $sql = 'INSERT INTO job_specs (' . join(', ', @cols)
+            . ") VALUES ($placeholders)";
+
+    my $dbh = $self->dbh;
+    $dbh->do($sql, undef, @vals);
+    return $self->_last_insert_id('job_specs', 'job_spec_id');
+}
+
+sub service_lifetime_create {
+    my ($self, $service_id, $fields) = @_;
+    croak "service_id required"     unless defined $service_id;
+    croak "fields hashref required" unless ref($fields) eq 'HASH';
+    croak "lifetime_ord required"   unless defined $fields->{lifetime_ord};
+
+    my @cols = ('service_id');
+    my @vals = ($service_id);
+
+    my @scalar_cols = qw/lifetime_ord status type id service_name stage_name
+                         started_at ended_at exit child_wall/;
+    for my $c (@scalar_cols) {
+        next unless exists $fields->{$c};
+        push @cols, $c;
+        push @vals, $fields->{$c};
+    }
+    for my $c (qw/exit_decoded times child_times spec_extras state_extras/) {
+        next unless exists $fields->{$c};
+        push @cols, $c;
+        push @vals, $self->_maybe_encode_json($fields->{$c});
+    }
+
+    # "exit" is a reserved word; quote with the same ANSI-double-quote
+    # the read side uses (ANSI_QUOTES is set on MySQL/MariaDB sessions).
+    my @quoted = map { $_ eq 'exit' ? '"exit"' : $_ } @cols;
+    my $placeholders = join(', ', ('?') x scalar(@cols));
+    my $sql = 'INSERT INTO service_lifetimes (' . join(', ', @quoted)
+            . ") VALUES ($placeholders)";
+
+    my $dbh = $self->dbh;
+    $dbh->do($sql, undef, @vals);
+    return $self->_last_insert_id('service_lifetimes', 'service_lifetime_id');
+}
+
+sub subtest_create {
+    my ($self, $job_try_id, $fields) = @_;
+    croak "job_try_id required"     unless defined $job_try_id;
+    croak "fields hashref required" unless ref($fields) eq 'HASH';
+    croak "name required"           unless defined $fields->{name};
+    croak "ord required"            unless defined $fields->{ord};
+
+    my $pass = $fields->{pass} ? 1 : 0;
+
+    my @cols = qw/job_try_id name pass ord/;
+    my @vals = ($job_try_id, $fields->{name}, $pass, $fields->{ord});
+    for my $c (qw/count_pass count_fail/) {
+        next unless exists $fields->{$c};
+        push @cols, $c;
+        push @vals, $fields->{$c};
+    }
+    my $placeholders = join(', ', ('?') x scalar(@cols));
+    my $sql = 'INSERT INTO subtests (' . join(', ', @cols)
+            . ") VALUES ($placeholders)";
+
+    my $dbh = $self->dbh;
+    $dbh->do($sql, undef, @vals);
+    return $self->_last_insert_id('subtests', 'subtest_id');
+}
 
 1;
 
