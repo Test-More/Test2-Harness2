@@ -5,7 +5,7 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
 for_each_db_version([qw/postgresql/], sub {
     skipall_unless_can_db(driver => 'PostgreSQL');
 
@@ -19,7 +19,7 @@ for_each_db_version([qw/postgresql/], sub {
     use App::Yath2::Log;
     use App::Yath2::Log::Postgres;
 
-    my $qdb = get_db({ driver => 'PostgreSQL' });
+    my $qdb = get_quiet_db({ driver => 'PostgreSQL' });
     {
     my $admin = DBI->connect(
         $qdb->connect_string('postgres'), undef, undef,

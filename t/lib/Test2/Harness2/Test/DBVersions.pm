@@ -6,7 +6,56 @@ our $VERSION = '2.000011';
 
 use Importer Importer => 'import';
 
-our @EXPORT_OK = qw/discover_db_versions for_each_db_version/;
+use Test2::Tools::QuickDB ();
+
+our @EXPORT_OK = qw/discover_db_versions for_each_db_version get_quiet_db/;
+
+# Tracks DBs returned by get_quiet_db so we can call ->stop on them at
+# process exit (END). $qdb->stop disconnects DBI handles owned by the
+# test process before signaling the watcher, which lets postgres exit
+# cleanly under SIGTERM ("smart" shutdown waits for clients) instead of
+# timing out and getting SIGKILL'd. Without this, the implicit DESTROY
+# path uses $watcher->eliminate (no DBI cleanup) and we get noisy
+# "Server taking too long to shut down, sending SIGKILL" warnings plus
+# "FATAL: terminating connection due to unexpected postmaster exit"
+# messages from in-flight backends. Tracked per-pid so a forked subtest
+# (see for_each_db_version) only stops DBs it actually created.
+my %CLEANUP;
+
+END {
+    my $list = delete $CLEANUP{$$} or return;
+    for my $db (@$list) {
+        eval { $db->stop; 1 };
+    }
+}
+
+# get_quiet_db(\%spec) — wraps Test2::Tools::QuickDB::get_db, injecting
+# driver-specific config that suppresses startup chatter to STDERR and
+# registering an END-block teardown that disconnects DBI handles before
+# stopping the server (see %CLEANUP comment above).
+#
+# Postgres normally prints "listening on Unix socket ...", "redirecting
+# log output to logging collector process", and "Future log output ..."
+# at startup; under yath those land in the test's captured STDERR.
+# log_min_messages='fatal' + logging_collector='off' keeps it quiet.
+sub get_quiet_db {
+    my $spec = ref($_[0]) eq 'HASH' ? {%{$_[0]}} : {@_};
+    my $driver = $spec->{driver} // '';
+
+    if ($driver =~ /(?:Postgres|^Pg$)/i) {
+        $spec->{config} //= {};
+        # 'panic' (not 'fatal') so postgres backends do not log the
+        # transient "FATAL: the database system is starting up" line
+        # during bootstrap retries. log_min_messages='fatal' still
+        # logs FATAL; only 'panic' excludes it.
+        $spec->{config}{log_min_messages}  //= "'panic'";
+        $spec->{config}{logging_collector} //= "'off'";
+    }
+
+    my $db = Test2::Tools::QuickDB::get_db($spec);
+    push @{$CLEANUP{$$} //= []}, $db;
+    return $db;
+}
 
 # discover_db_versions(@prefixes) — returns a list of [name, bin_path]
 # for every directory matching ~/dbs/<prefix>-* whose bin/ subdir

@@ -5,7 +5,7 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
 for_each_db_version([qw/mysql percona/], sub {
     my ($ver, $bin, $prefix) = @_;
     my $DRV = ($prefix // '') eq 'percona' ? 'Percona' : 'MySQLCom';
@@ -21,7 +21,7 @@ for_each_db_version([qw/mysql percona/], sub {
     use App::Yath2::Log;
     use App::Yath2::Log::MySQL;
 
-    my $qdb = get_db({ driver => $DRV });
+    my $qdb = get_quiet_db({ driver => $DRV });
     {
     my $admin = DBI->connect(
         $qdb->connect_string, undef, undef,

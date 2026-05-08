@@ -5,7 +5,7 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
 for_each_db_version([qw/mysql percona/], sub {
     my ($ver, $bin, $prefix) = @_;
     my $DRV = ($prefix // '') eq 'percona' ? 'Percona' : 'MySQLCom';
@@ -22,7 +22,7 @@ for_each_db_version([qw/mysql percona/], sub {
 
     # B8 (D6): atomic insert + duplicate-archive rejection.
 
-    my $qdb = get_db({ driver => $DRV });
+    my $qdb = get_quiet_db({ driver => $DRV });
     {
     my $admin = DBI->connect(
         $qdb->connect_string, undef, undef,
