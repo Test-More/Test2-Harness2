@@ -211,14 +211,9 @@ sub preprocess_schema_sql {
 sub _internal {
     my $self = shift;
     return $self->{+_INTERNAL} //= do {
+        require App::Yath2::DB;
         my $flavor = $self->flavor;
-        my $class = "App::Yath2::DB::Internal::\u${flavor}";
-        # Map to canonical class names where the flavor token doesn't
-        # uppercase cleanly to the package name.
-        $class = 'App::Yath2::DB::Internal::Postgres' if $flavor eq 'postgres';
-        $class = 'App::Yath2::DB::Internal::MariaDB'  if $flavor eq 'mariadb';
-        $class = 'App::Yath2::DB::Internal::MySQL'    if $flavor eq 'mysql';
-        $class = 'App::Yath2::DB::Internal::Sqlite'   if $flavor eq 'sqlite';
+        my $class = App::Yath2::DB::internal_class_for_flavor($flavor);
 
         require Test2::Harness2::Util;
         my $file = Test2::Harness2::Util::mod2file($class);

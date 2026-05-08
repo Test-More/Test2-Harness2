@@ -47,17 +47,28 @@ sub _backend_class {
     my ($name, %args) = @_;
     return 'App::Yath2::DB::DBIC' if $name eq 'dbic';
     if ($name eq 'internal') {
-        my $flavor = _detect_flavor(%args);
-        my $sub = {
-            sqlite   => 'Sqlite',
-            postgres => 'Postgres',
-            mariadb  => 'MariaDB',
-            mysql    => 'MySQL',
-        }->{$flavor};
-        return "App::Yath2::DB::Internal::$sub" if $sub;
-        croak "unknown internal flavor '$flavor'";
+        return internal_class_for_flavor(_detect_flavor(%args));
     }
     croak "unknown backend '$name' (expected 'internal' or 'dbic')";
+}
+
+# Public helper: map a flavor token ('sqlite', 'postgres', 'mariadb',
+# 'mysql') to its concrete App::Yath2::DB::Internal::* class name.
+# Shared with App::Yath2::DB::DBIC, which lazily wraps an Internal
+# helper bound to the same dbh.
+my %INTERNAL_FLAVOR_CLASS = (
+    sqlite   => 'App::Yath2::DB::Internal::Sqlite',
+    postgres => 'App::Yath2::DB::Internal::Postgres',
+    mariadb  => 'App::Yath2::DB::Internal::MariaDB',
+    mysql    => 'App::Yath2::DB::Internal::MySQL',
+);
+
+sub internal_class_for_flavor {
+    my $flavor = shift;
+    croak "flavor is required" unless defined $flavor && length $flavor;
+    my $class = $INTERNAL_FLAVOR_CLASS{$flavor}
+        or croak "unknown internal flavor '$flavor'";
+    return $class;
 }
 
 # Detect flavor from open() inputs. Caller may also pass flavor =>
