@@ -42,12 +42,12 @@ sub build_minimal_log {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Helper: get the raw-SQL view of $db (for private methods like
-    # _db_datetime_to_iso). For internal it's $db; for dbic it's the
-    # internal helper sharing the same dbh.
+    # Helper: wrap the backend in App::Yath2::DB so we can call codec
+    # helpers (_db_datetime_to_iso) that live on the data layer.
     my $sql = sub {
         my ($db) = @_;
-        return $backend eq 'dbic' ? $db->_internal : $db;
+        require App::Yath2::DB;
+        return App::Yath2::DB->new(backend_instance => $db);
     };
 
     # {{{ Round-trip: insert a fresh source, reconstruct meta.json, assert

@@ -281,8 +281,9 @@ sub archives {
     my $self = shift;
     # archive_uuid columns come back in DB-native form (BINARY(16) on
     # MySQL, uppercase strings on Postgres / MariaDB). Round-trip every
-    # row through _uuid_from_db so callers always see canonical hex.
-    return map { $self->_uuid_from_db($_->archive_uuid) }
+    # row through _flavor_uuid_from_db so callers always see canonical
+    # lowercase hex (matches App::Yath2::DB::SQL's archive_rows shape).
+    return map { $self->_flavor_uuid_from_db($_->archive_uuid) }
            $self->{+SCHEMA}->resultset('Archive')
                 ->search(undef, { order_by => 'archive_id' })->all;
 }
@@ -1115,57 +1116,18 @@ sub artifact_update {
 
 sub job_spec_create {
     my ($self, $job_id, $fields) = @_;
-    croak "job_id required"           unless defined $job_id;
-    croak "fields hashref required"   unless ref($fields) eq 'HASH';
-    croak "test_file_id required"     unless defined $fields->{test_file_id};
-
-    my %row = (job_id => $job_id);
-    my @scalar_cols = qw/test_file_id absolute category duration stage
-                         retry retry_isolated smoke isolation non_perl
-                         is_binary event_timeout post_exit_timeout
-                         min_slots max_slots ch_dir/;
-    for my $c (@scalar_cols) {
-        $row{$c} = $fields->{$c} if exists $fields->{$c};
-    }
-    require Test2::Harness2::Util::JSON;
-    for my $c (qw/features switches extras/) {
-        next unless exists $fields->{$c};
-        my $v = $fields->{$c};
-        $row{$c} = ref($v) ? Test2::Harness2::Util::JSON::encode_json($v) : $v;
-    }
-
-    my $obj = $self->{+SCHEMA}->resultset('JobSpec')->create(\%row);
-    return $obj->job_spec_id;
+    # Route through the shared SQL backend; same Postgres jsonb-cast
+    # reason as service_lifetime_create.
+    return $self->_shared_sql_backend->job_spec_create($job_id, $fields);
 }
 
 sub service_lifetime_create {
     my ($self, $service_id, $fields) = @_;
-    croak "service_id required"     unless defined $service_id;
-    croak "fields hashref required" unless ref($fields) eq 'HASH';
-    croak "lifetime_ord required"   unless defined $fields->{lifetime_ord};
-
-    my %row = (service_id => $service_id);
-
-    my @scalar_cols = qw/lifetime_ord status type id service_name stage_name
-                         started_at ended_at child_wall/;
-    for my $c (@scalar_cols) {
-        $row{$c} = $fields->{$c} if exists $fields->{$c};
-    }
-    # The Result class declares an accessor 'lifetime_exit' for the
-    # 'exit' column (avoids clobbering CORE::exit). Set via column name
-    # in the create() hashref -- DBIC accepts both column and accessor
-    # names there.
-    $row{exit} = $fields->{exit} if exists $fields->{exit};
-
-    require Test2::Harness2::Util::JSON;
-    for my $c (qw/exit_decoded times child_times spec_extras state_extras/) {
-        next unless exists $fields->{$c};
-        my $v = $fields->{$c};
-        $row{$c} = ref($v) ? Test2::Harness2::Util::JSON::encode_json($v) : $v;
-    }
-
-    my $obj = $self->{+SCHEMA}->resultset('ServiceLifetime')->create(\%row);
-    return $obj->service_lifetime_id;
+    # Route through the shared SQL backend so JSON column binds (jsonb
+    # on Postgres) get the correct cast hint at execute time. DBIC's
+    # generic create() binds 'blob'-declared columns as bytea, which
+    # the server refuses to coerce into jsonb on Postgres.
+    return $self->_shared_sql_backend->service_lifetime_create($service_id, $fields);
 }
 
 sub subtest_create {
@@ -1186,6 +1148,68 @@ sub subtest_create {
     }
     my $obj = $self->{+SCHEMA}->resultset('Subtest')->create(\%row);
     return $obj->subtest_id;
+}
+
+# ----- DB rebuild Phase 6: write methods routed through App::Yath2::DB
+#
+# The BEGIN-block forwarder above still routes event/events/EOE/reset
+# through the legacy Internal helper (Phase 7 retires that). The write
+# methods (insert/extract/archive/_artifact_save) move to the new data
+# layer here -- they ride the DBIC backend's own write primitives via
+# App::Yath2::DB so the Internal helper is never touched on writes.
+
+sub _wrap_self_in_db {
+    my $self = shift;
+    require App::Yath2::DB;
+    return $self->{__db_wrapper} //= App::Yath2::DB->new(backend_instance => $self);
+}
+
+# Override the BEGIN-installed forwarder by redefining at runtime.
+{
+    no warnings 'redefine';
+
+    *insert = sub {
+        my ($self, $source, %opts) = @_;
+        my $rv = $self->_wrap_self_in_db->insert($source, %opts);
+        if (my $u = $self->{__db_wrapper}{_last_insert_uuid}) {
+            # Mirror onto the DBIC backend's HashBase UUID slot so
+            # post-insert $backend->uuid returns the new archive's uuid.
+            $self->{+UUID} = $u;
+        }
+        return $rv;
+    };
+
+    *extract = sub {
+        my ($self, $dir, %opts) = @_;
+        my $uuid = $self->_implicit_uuid_for_op('extract');
+        return $self->_wrap_self_in_db->extract($uuid, $dir, %opts);
+    };
+
+    *archive = sub {
+        my ($self, $out, %opts) = @_;
+        my $uuid = $self->_implicit_uuid_for_op('archive');
+        return $self->_wrap_self_in_db->archive_to($uuid, $out, %opts);
+    };
+}
+
+sub _artifact_save {
+    my ($self, %p) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_save');
+    return $self->_wrap_self_in_db->save_artifact($uuid, %p);
+}
+
+# Single-archive shortcut: when DBIC was scoped to a uuid via ->scoped,
+# use that; otherwise fall back to the only archive. UUID slot is the
+# HashBase-declared accessor.
+sub _implicit_uuid_for_op {
+    my ($self, $op) = @_;
+    return $self->{+UUID} if defined $self->{+UUID};
+    my $db = $self->_wrap_self_in_db;
+    my @uuids = $db->archives;
+    croak "no archives in this DB" unless @uuids;
+    croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+        if @uuids > 1;
+    return $uuids[0];
 }
 
 1;

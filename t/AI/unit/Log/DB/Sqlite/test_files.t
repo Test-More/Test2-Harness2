@@ -71,13 +71,11 @@ sub build_log_with_job {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Helper for accessing private raw-SQL methods on either backend.
-    my $sql = sub {
-        my ($db) = @_;
-        return $backend eq 'dbic' ? $db->_internal : $db;
-    };
+    # ensure_project_row / ensure_test_file_row are canonical backend
+    # primitives; both backends expose them directly.
+    my $sql = sub { $_[0] };
 
-    # --- Part 1: _resolve_or_create_test_file unit-level test ---
+    # --- Part 1: ensure_test_file_row unit-level test ---
 
     my $tmp_dir = tempdir(CLEANUP => 1);
 
@@ -88,20 +86,20 @@ for_each_log_db_backend(sub {
         my $sqlh = $sql->($db);
 
         # Seed a project row for FK.
-        my $proj_id = $sqlh->_resolve_or_create_project('myproj');
+        my $proj_id = $sqlh->ensure_project_row('myproj');
 
-        my $id1 = $sqlh->_resolve_or_create_test_file($proj_id, 't/foo.t');
-        ok(defined $id1, '_resolve_or_create_test_file returns id for new file');
+        my $id1 = $sqlh->ensure_test_file_row($proj_id, 't/foo.t');
+        ok(defined $id1, 'ensure_test_file_row returns id for new file');
 
-        my $id2 = $sqlh->_resolve_or_create_test_file($proj_id, 't/foo.t');
+        my $id2 = $sqlh->ensure_test_file_row($proj_id, 't/foo.t');
         is($id2, $id1, 'idempotent: second call returns same test_file_id');
 
-        my $id3 = $sqlh->_resolve_or_create_test_file($proj_id, 't/bar.t');
+        my $id3 = $sqlh->ensure_test_file_row($proj_id, 't/bar.t');
         ok(defined $id3, 'distinct relative path gets its own id');
         isnt($id3, $id1, 'distinct test_file id differs from first');
 
-        my $proj2 = $sqlh->_resolve_or_create_project('otherproj');
-        my $id4 = $sqlh->_resolve_or_create_test_file($proj2, 't/foo.t');
+        my $proj2 = $sqlh->ensure_project_row('otherproj');
+        my $id4 = $sqlh->ensure_test_file_row($proj2, 't/foo.t');
         ok(defined $id4, 'same relative path under different project gets its own id');
         isnt($id4, $id1, 'cross-project test_file ids differ');
 
@@ -109,9 +107,9 @@ for_each_log_db_backend(sub {
         my ($count) = $dbh->selectrow_array('SELECT COUNT(*) FROM test_files');
         is($count, 3, 'test_files table has 3 rows');
 
-        like(dies { $sqlh->_resolve_or_create_test_file(undef, 't/foo.t') },
+        like(dies { $sqlh->ensure_test_file_row(undef, 't/foo.t') },
              qr/project_id required/, 'croaks on missing project_id');
-        like(dies { $sqlh->_resolve_or_create_test_file($proj_id, '') },
+        like(dies { $sqlh->ensure_test_file_row($proj_id, '') },
              qr/relative path required/, 'croaks on empty relative');
 
         $db->dbh->disconnect;

@@ -41,6 +41,7 @@ use App::Yath2::Log::DB;
         artifact_exists artifact_read artifact_iter_records
         artifact_list_dir artifact_open_fh
         absolute_path
+        extract archive_to insert save_artifact
     }) {
         no strict 'refs';
         *{$m} = sub { my $self = shift; $self->_record($m => @_); 'rv' };
@@ -82,13 +83,18 @@ my $calls = $db->{calls};
 is($calls->[0], [services => $u, 2], 'services delegated with uuid');
 is($calls->[1], [runs     => $u],    'runs delegated with uuid');
 
-# Legacy methods route through _legacy_backend->scoped($uuid).
+# Walker methods (event/events/EOE/reset) still route through
+# _legacy_backend until Phase 7. Insert/extract/archive/_artifact_save
+# (Phase 6) go directly through the App::Yath2::DB instance.
 $log->event;
-$log->insert('source');
 my $legacy_calls = $db->{legacy}{calls};
 is($legacy_calls->[0], [event  => ()],         'event delegated to legacy');
-is($legacy_calls->[1], [insert => 'source'],   'insert delegated to legacy');
-is($db->{scoped_count}, 1, 'scoped() called exactly once across multiple legacy calls');
+is($db->{scoped_count}, 1, 'scoped() called once for the legacy walker chain');
+
+# Phase 6: insert routes through App::Yath2::DB->insert (not legacy).
+$log->insert('source');
+my $insert_call = $calls->[-1];
+is($insert_call, [insert => 'source'], 'insert delegated to App::Yath2::DB->insert');
 
 # Back-compat: backend => $app_yath2_db keeps working (normalizes to db slot).
 my $log2 = App::Yath2::Log::DB->new(backend => $db, uuid => $u);

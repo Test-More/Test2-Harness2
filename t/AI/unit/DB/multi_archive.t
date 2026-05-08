@@ -34,7 +34,13 @@ for_each_log_db_backend(sub {
     }
 
     is($db->archive_count, 3, 'three archives');
-    is([sort $db->archives], [sort @uuids], 'archives lists all UUIDs');
+    # archives() returns canonical lowercase hex; compare on lc() so
+    # the test is independent of gen_uuid()'s native case.
+    is(
+        [sort $db->archives],
+        [sort map { lc } @uuids],
+        'archives lists all UUIDs',
+    );
 
     ok($db->has_archive($uuids[1]), 'has_archive true for present');
     ok(!$db->has_archive(gen_uuid()), 'has_archive false for absent');

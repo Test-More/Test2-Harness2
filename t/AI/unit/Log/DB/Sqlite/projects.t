@@ -55,26 +55,25 @@ sub with_project {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # --- Part 1: _resolve_or_create_project unit-level test ---
+    # --- Part 1: ensure_project_row unit-level test ---
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
     unlink $db_path;
     my $db = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend);
     $db->bootstrap_schema;
 
-    # _resolve_or_create_project lives on the raw-SQL helper. For the dbic
-    # backend we go through its Internal helper view of the same dbh; for
-    # internal we already have it directly.
-    my $sql_helper = $backend eq 'dbic' ? $db->_internal : $db;
+    # ensure_project_row is the canonical backend primitive; both
+    # backends expose it directly.
+    my $sql_helper = $db;
 
     {
-        my $id1 = $sql_helper->_resolve_or_create_project('myproj');
-        ok(defined $id1, '_resolve_or_create_project returns an id for new project');
+        my $id1 = $sql_helper->ensure_project_row('myproj');
+        ok(defined $id1, 'ensure_project_row returns an id for new project');
 
-        my $id2 = $sql_helper->_resolve_or_create_project('myproj');
+        my $id2 = $sql_helper->ensure_project_row('myproj');
         is($id2, $id1, 'second call with same name returns same project_id (idempotent)');
 
-        my $id3 = $sql_helper->_resolve_or_create_project('otherproj');
+        my $id3 = $sql_helper->ensure_project_row('otherproj');
         ok(defined $id3, 'distinct project gets its own id');
         isnt($id3, $id1, 'distinct project id differs from first');
 

@@ -77,9 +77,11 @@ sub build_log_with_restarts {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
+    # Wrap the backend so we can call codec helpers (_db_datetime_to_iso).
     my $sql = sub {
         my ($db) = @_;
-        return $backend eq 'dbic' ? $db->_internal : $db;
+        require App::Yath2::DB;
+        return App::Yath2::DB->new(backend_instance => $db);
     };
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);

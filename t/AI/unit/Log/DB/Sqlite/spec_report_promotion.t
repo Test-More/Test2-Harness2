@@ -134,9 +134,13 @@ ok((grep { $_ eq 'subtests' } @App::Yath2::DB::Internal::JOB_TRIES_AGGREGATED_KE
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
+    # Phase 6: codecs live on the App::Yath2::DB wrapper, not on the
+    # backend instance. Wrap the backend so we can call _format_iso8601
+    # for timestamp ISO comparisons.
     my $sql = sub {
         my ($db) = @_;
-        return $backend eq 'dbic' ? $db->_internal : $db;
+        require App::Yath2::DB;
+        return App::Yath2::DB->new(backend_instance => $db);
     };
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);

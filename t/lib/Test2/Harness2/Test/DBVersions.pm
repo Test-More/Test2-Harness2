@@ -15,13 +15,11 @@ our @EXPORT_OK = qw/discover_db_versions for_each_db_version get_quiet_db for_ea
 # skipped when DBIx::Class isn't installed (so hosts without the
 # optional dependency stay green).
 #
-# Backend names track the in-flight DB rebuild
-# (AI_DOCS/2026-05-08-yath-db-rebuild.md). During Phases 4-5 the SQL
-# backend (App::Yath2::DB::SQL) does not yet implement write paths, so
-# the test surface still iterates the legacy 'internal' name; that
-# routes through App::Yath2::DB::Internal::* which carries the full
-# read+write surface. Switching to 'sql' becomes safe once Phase 6
-# adds App::Yath2::DB->insert and the SQL backend's write primitives.
+# Backend names track the DB rebuild
+# (AI_DOCS/2026-05-08-yath-db-rebuild.md). Phase 6 adds insert/extract/
+# archive_to/save_artifact on App::Yath2::DB, so the test surface
+# iterates the new ('sql', 'dbic') pair. The legacy 'internal' backend
+# remains accepted as a deprecated alias for 'sql' until Phase 9.
 sub for_each_log_db_backend {
     my ($body) = @_;
     require Test2::V0;
@@ -32,7 +30,7 @@ sub for_each_log_db_backend {
     # backend-iteration tests do not depend on srand reproducibility
     # (no rand() in assertions), so this is safe.
     srand(time ^ ($$ + ($$ << 15)));
-    for my $name (qw/internal dbic/) {
+    for my $name (qw/sql dbic/) {
         if ($name eq 'dbic') {
             my $ok = eval { require DBIx::Class; 1 };
             unless ($ok) {

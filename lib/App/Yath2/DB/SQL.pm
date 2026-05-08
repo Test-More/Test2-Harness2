@@ -43,6 +43,29 @@ sub init {
     $self->_apply_session_state;
     $self->bootstrap_schema;
 
+    # Single-archive shortcut + archive_version validation. Only run
+    # for top-level callers (file / dsn entry points). When the caller
+    # hands us a raw dbh we are typically a sub-component (DBIC's
+    # _shared_sql_backend, App::Yath2::DB->new(backend_instance =>)
+    # paths, test scaffolding) -- skip the eager check there so we
+    # don't surprise callers with a partial-state archive lookup.
+    if ($self->{+FILE} || $self->{+DSN}) {
+        $self->_eager_resolve_single_archive;
+    }
+
+    return;
+}
+
+sub _eager_resolve_single_archive {
+    my $self = shift;
+    require App::Yath2::DB;
+    my $db = App::Yath2::DB->new(backend_instance => $self);
+    my @uuids = $db->archives;
+    return unless @uuids == 1;
+    # _resolve_archive_id validates the version floor; let any croak
+    # propagate so the open() call dies.
+    $db->_resolve_archive_id($uuids[0]);
+    $self->{__last_insert_uuid} = $uuids[0];
     return;
 }
 
@@ -782,25 +805,162 @@ sub subtest_rows {
 # disappear when the role's `requires` list is updated.
 
 sub _archive_id_or_die { croak 'NYI: _archive_id_or_die (Phase 4)' }
-sub services           { croak 'NYI: services (Phase 4)' }
-sub runs               { croak 'NYI: runs (Phase 4)' }
-sub jobs               { croak 'NYI: jobs (Phase 4)' }
-sub tries              { croak 'NYI: tries (Phase 4)' }
-sub last_try           { croak 'NYI: last_try (Phase 4)' }
-sub has_service        { croak 'NYI: has_service (Phase 4)' }
-sub has_run            { croak 'NYI: has_run (Phase 4)' }
-sub has_job            { croak 'NYI: has_job (Phase 4)' }
-sub has_try            { croak 'NYI: has_try (Phase 4)' }
-sub event              { croak 'NYI: event (Phase 7)' }
-sub events             { croak 'NYI: events (Phase 7)' }
-sub end_of_events      { croak 'NYI: end_of_events (Phase 7)' }
-sub reset              { croak 'NYI: reset (Phase 7)' }
-sub extract            { croak 'NYI: extract (Phase 6)' }
-sub archive            { croak 'NYI: archive (Phase 6)' }
-sub insert             { croak 'NYI: insert (Phase 6)' }
-sub archives           { croak 'NYI: archives (Phase 4)' }
-sub has_archive        { croak 'NYI: has_archive (Phase 4)' }
-sub scoped             { croak 'NYI: scoped (Phase 4)' }
+
+# Phase 7 still owns the event walker; route through the legacy
+# Internal helper bound to the same dbh until then. Single-archive
+# implicit uuid resolution mirrors the read-side helpers.
+sub _legacy_for_walker {
+    my $self = shift;
+    return $self->{__legacy_walker} //= do {
+        require App::Yath2::DB;
+        my $u = $self->_implicit_uuid_for_op('event');
+        App::Yath2::DB->new(backend_instance => $self)->legacy_scoped_for_uuid($u);
+    };
+}
+
+sub event         { my $s = shift; $s->_legacy_for_walker->event(@_) }
+sub events        { my $s = shift; $s->_legacy_for_walker->events(@_) }
+sub end_of_events { my $s = shift; $s->_legacy_for_walker->end_of_events(@_) }
+sub EOE           { my $s = shift; $s->_legacy_for_walker->end_of_events(@_) }
+sub reset         { my $s = shift; $s->_legacy_for_walker->reset(@_) }
+
+# Group-A read methods: route through the data-layer wrapper. Wrapper
+# resolves an implicit single-archive uuid for the no-arg form so legacy
+# callers `$db->runs` keep working without explicit scoping.
+sub archives    { my $self = shift; $self->_wrap_self_in_db->archives(@_) }
+sub has_archive { my $self = shift; $self->_wrap_self_in_db->has_archive(@_) }
+sub services    { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('services') }; croak $@ if $@; $self->_wrap_self_in_db->services($u, @_) }
+sub runs        { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('runs') };     croak $@ if $@; $self->_wrap_self_in_db->runs($u, @_) }
+sub jobs        { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('jobs') };     croak $@ if $@; $self->_wrap_self_in_db->jobs($u, @_) }
+sub tries       { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('tries') };    croak $@ if $@; $self->_wrap_self_in_db->tries($u, @_) }
+sub last_try    { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('last_try') }; croak $@ if $@; $self->_wrap_self_in_db->last_try($u, @_) }
+sub has_service { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('has_service') }; return 0 if $@; $self->_wrap_self_in_db->has_service($u, @_) }
+sub has_run     { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('has_run') };  return 0 if $@; $self->_wrap_self_in_db->has_run($u, @_) }
+sub has_job     { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('has_job') };  return 0 if $@; $self->_wrap_self_in_db->has_job($u, @_) }
+sub has_try     { my $self = shift; my $u = eval { $self->_implicit_uuid_for_op('has_try') };  return 0 if $@; $self->_wrap_self_in_db->has_try($u, @_) }
+
+sub scoped {
+    my ($self, $uuid) = @_;
+    croak "scoped() requires a uuid" unless defined $uuid;
+    # Spawn a sibling backend bound to the same dbh and stash the uuid
+    # for legacy single-archive read APIs.
+    my $sib = ref($self)->new(
+        dbh    => $self->dbh,
+        flavor => $self->flavor,
+    );
+    $sib->{__last_insert_uuid} = $uuid;
+    return $sib;
+}
+
+# Phase 6 reroute: Group-A write methods on the backend wrap themselves
+# in an App::Yath2::DB instance and delegate. Lets `App::Yath2::DB->open`
+# callers (the legacy backend-instance entry point) keep working with
+# the new write paths without forcing them through `->new`.
+sub _wrap_self_in_db {
+    my $self = shift;
+    require App::Yath2::DB;
+    return $self->{__db_wrapper} //= App::Yath2::DB->new(backend_instance => $self);
+}
+
+sub insert {
+    my ($self, $source, %opts) = @_;
+    croak "Log is sealed; further inserts not permitted"
+        if $self->{__sealed};
+    my $rv = $self->_wrap_self_in_db->insert($source, %opts);
+    # Mirror the new archive's uuid + sealed flag back so legacy
+    # callers can pull them via $backend->uuid / $backend->sealed
+    # right after insert.
+    if (my $u = $self->{__db_wrapper}{_last_insert_uuid}) {
+        $self->{__last_insert_uuid} = $u;
+    }
+    if ($self->{__db_wrapper}{sealed}) {
+        $self->{__sealed} = 1;
+    }
+    return $rv;
+}
+
+# uuid accessor: returns the most recently inserted archive's uuid.
+# The SQL backend has no native uuid slot; this is a convenience for
+# callers that previously relied on Internal's post-insert uuid mirror.
+sub uuid {
+    my $self = shift;
+    return $self->{__last_insert_uuid};
+}
+
+# sealed accessor: true after insert(seal => 1) appended the YATHFOOT
+# trailer to the file. Mirrors the legacy Internal +SEALED slot.
+sub sealed {
+    my $self = shift;
+    return $self->{__sealed};
+}
+
+sub extract {
+    my ($self, $dir, %opts) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('extract');
+    return $self->_wrap_self_in_db->extract($uuid, $dir, %opts);
+}
+
+sub archive {
+    my ($self, $out, %opts) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('archive');
+    return $self->_wrap_self_in_db->archive_to($uuid, $out, %opts);
+}
+
+sub _artifact_save {
+    my ($self, %p) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_save');
+    return $self->_wrap_self_in_db->save_artifact($uuid, %p);
+}
+
+# Artifact-handle private methods. The App::Yath2::Log::Artifact handle
+# delegates to its {log} slot which, for App::Yath2::DB->open callers,
+# is the bare backend. Route through the data layer so the new
+# canonical-bytes paths are exercised.
+sub _artifact_exists {
+    my ($self, $rel) = @_;
+    my $uuid = eval { $self->_implicit_uuid_for_op('_artifact_exists') };
+    return (0, 0) if $@;
+    return $self->_wrap_self_in_db->artifact_exists($uuid, $rel);
+}
+
+sub _artifact_read {
+    my ($self, $rel) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_read');
+    return $self->_wrap_self_in_db->artifact_read($uuid, $rel);
+}
+
+sub _artifact_iter_records {
+    my ($self, $base, $stem) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_iter_records');
+    return $self->_wrap_self_in_db->artifact_iter_records($uuid, $base, $stem);
+}
+
+sub _artifact_list_dir {
+    my ($self, $rel) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_list_dir');
+    return $self->_wrap_self_in_db->artifact_list_dir($uuid, $rel);
+}
+
+sub _artifact_open_fh {
+    my ($self, $rel) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_open_fh');
+    return $self->_wrap_self_in_db->artifact_open_fh($uuid, $rel);
+}
+
+# The SQL backend has no uuid slot (multi-archive by design). For the
+# legacy single-archive entry points, fall back to "the only archive
+# in this DB" when there is exactly one. Croak otherwise so the caller
+# scopes explicitly.
+sub _implicit_uuid_for_op {
+    my ($self, $op) = @_;
+    return $self->{__last_insert_uuid} if defined $self->{__last_insert_uuid};
+    my $db = $self->_wrap_self_in_db;
+    my @uuids = $db->archives;
+    croak "no archives in this DB" unless @uuids;
+    croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+        if @uuids > 1;
+    return $uuids[0];
+}
 
 # Used by the role's list_files orchestration. Keep the legacy name as
 # a thin alias to artifact_rows_for_archive so role-level callers that

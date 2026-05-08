@@ -80,11 +80,9 @@ sub _artifact_iter_records { my $s = shift; $s->{+DB}->artifact_iter_records ($s
 sub _artifact_list_dir     { my $s = shift; $s->{+DB}->artifact_list_dir     ($s->{+UUID}, @_) }
 sub _artifact_open_fh      { my $s = shift; $s->{+DB}->artifact_open_fh      ($s->{+UUID}, @_) }
 
-# Methods that App::Yath2::DB does not yet implement natively. These
-# go through the legacy backend chain (scoped to our uuid) until the
-# remaining rebuild phases (6 for write paths, 7 for the event walker
-# and artifacts factory) lift them onto App::Yath2::DB. The legacy
-# scoped backend is invariant for our uuid -- build once, reuse.
+# Methods still routed through the legacy backend chain (scoped to our
+# uuid) until Phase 7 lifts the event walker and artifacts factory onto
+# App::Yath2::DB.
 sub _legacy_scoped {
     my $self = shift;
     return $self->{+_LEGACY_SCOPED}
@@ -95,10 +93,20 @@ sub event           { my $s = shift; $s->_legacy_scoped->event        (@_) }
 sub events          { my $s = shift; $s->_legacy_scoped->events       (@_) }
 sub end_of_events   { my $s = shift; $s->_legacy_scoped->end_of_events(@_) }
 sub reset           { my $s = shift; $s->_legacy_scoped->reset        (@_) }
-sub extract         { my $s = shift; $s->_legacy_scoped->extract      (@_) }
-sub archive         { my $s = shift; $s->_legacy_scoped->archive      (@_) }
-sub insert          { my $s = shift; $s->_legacy_scoped->insert       (@_) }
-sub _artifact_save  { my $s = shift; $s->_legacy_scoped->_artifact_save(@_) }
+
+# Phase 6: write paths flow through App::Yath2::DB directly.
+#
+# extract: $log->extract($dir, %opts) -> App::Yath2::Log::Directory
+# archive: $log->archive($out, %opts) -> sealed-form Log handle
+# insert:  $log->insert($source, %opts) -> $new_archive_id (integer)
+#
+# insert returns the destination's integer archive_id; the new uuid is
+# accessible on $log->db via {_last_insert_uuid}. Insert does NOT
+# mutate this Log::DB instance's uuid slot.
+sub extract         { my $s = shift; $s->{+DB}->extract       ($s->{+UUID}, @_) }
+sub archive         { my $s = shift; $s->{+DB}->archive_to    ($s->{+UUID}, @_) }
+sub insert          { my $s = shift; $s->{+DB}->insert        (@_) }
+sub _artifact_save  { my $s = shift; $s->{+DB}->save_artifact ($s->{+UUID}, @_) }
 
 # artifacts() factory mirrors Role::DB::Backend's default but binds
 # the resulting App::Yath2::Log::Artifact to $self (a Log::DB) instead

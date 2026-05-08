@@ -111,8 +111,8 @@ for_each_db_version([qw/postgresql/], sub {
     my $src = build_source();    # live-dir, fresh uuid
 
     no warnings 'redefine';
-    my $orig = \&App::Yath2::DB::Internal::_populate_summary_rows;
-    local *App::Yath2::DB::Internal::_populate_summary_rows = sub {
+    my $orig = \&App::Yath2::DB::_populate_summary_rows;
+    local *App::Yath2::DB::_populate_summary_rows = sub {
         die "synthetic mid-insert failure\n";
     };
 
@@ -129,7 +129,7 @@ for_each_db_version([qw/postgresql/], sub {
         is($n, 0, "$table empty after rollback");
     }
 
-    local *App::Yath2::DB::Internal::_populate_summary_rows = $orig;
+    local *App::Yath2::DB::_populate_summary_rows = $orig;
     my $aid = eval { $db->insert(App::Yath2::Log->new(dir => $src)) };
     ok(defined $aid, 'retry after rollback succeeds');
     my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
