@@ -59,6 +59,23 @@ sub _capturing_emitter {
     return Test::CapturingEmitter->new($store);
 }
 
+# RunService normally publishes run_state_update messages through the
+# IPC::Manager bus to the harness service. These tests build the
+# service in isolation (no bus), so capture _send_to_harness into an
+# array instead of letting it try to construct a real handle. We
+# don't assert against @sent_to_harness here -- this stub exists to
+# stop the legitimate "no ipcm_info" warning from RunService and to
+# leave a hook in case future subtests want to inspect IPC traffic.
+our @sent_to_harness;
+{
+    no warnings 'redefine';
+    *Test2::Harness2::RunService::_send_to_harness = sub {
+        my (undef, $msg) = @_;
+        push @sent_to_harness, $msg;
+        return;
+    };
+}
+
 subtest 'run_completed + collector_report aggregate' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
