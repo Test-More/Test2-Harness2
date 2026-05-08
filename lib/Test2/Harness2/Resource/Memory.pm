@@ -7,12 +7,15 @@ use warnings;
 #
 # History-aware TODO (Phase 6.6): when this resource is implemented
 # the sampler should also consult the most recent log -- and, once
-# they exist, App::Yath2DB / App::Yath2UI history -- for per-test
-# memory usage. The decision "is it safe to start this test now given
-# current free memory?" benefits from the historical high-water mark
-# of the test, not just the live system sample. App::Yath2DB and
-# App::Yath2UI are both optional; this resource must continue to
-# work (using only the live sample) when neither is installed.
+# the consumers exist, App::Yath2::DB / App::Yath2::UI history -- for
+# per-test memory usage. The decision "is it safe to start this test
+# now given current free memory?" benefits from the historical high-
+# water mark of the test, not just the live system sample.
+# App::Yath2::DB ships in this dist (per AI_DOCS/2026-05-08-yath-db-
+# namespace.md) but is only loaded by code that explicitly opens a
+# DB-backed log; App::Yath2::UI is a separate optional dist. This
+# resource must continue to work (using only the live sample) when
+# neither is in active use.
 
 our $VERSION = '2.000012';
 
