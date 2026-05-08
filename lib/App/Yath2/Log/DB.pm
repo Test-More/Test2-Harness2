@@ -9,46 +9,19 @@ use Carp qw/croak/;
 use Object::HashBase qw{
     <db
     <uuid
-    +_legacy_scoped
 };
 
 # Thin wrapper around an App::Yath2::DB instance plus an archive UUID.
-# Phase 4 of the DB rebuild (AI_DOCS/2026-05-08-yath-db-rebuild.md §6)
-# reroutes every read method through $self->db (the new
-# App::Yath2::DB API). Methods that App::Yath2::DB does not yet
-# implement natively (event/events/EOE/reset, artifacts factory,
-# extract/archive/insert/_artifact_save) keep delegating through the
-# legacy `$self->db->_legacy_backend->scoped($uuid)` chain until
-# Phases 6 and 7 reroute them.
+# Every Role::Log method is a one-liner delegating to $self->db with
+# our cached uuid prepended.
 
 sub init {
     my $self = shift;
 
-    # Accept both shapes during the rebuild's middle phases:
-    #   - db => $app_yath2_db          (preferred; new shape)
-    #   - backend => $obj              (back-compat; $obj is either an
-    #                                   App::Yath2::DB or a doer of
-    #                                   App::Yath2::Role::DB::Backend)
-    if (defined $self->{+DB}) {
-        croak "'db' must be an App::Yath2::DB instance"
-            unless eval { $self->{+DB}->isa('App::Yath2::DB') };
-    }
-    elsif (defined (my $bk = delete $self->{backend})) {
-        if (eval { $bk->isa('App::Yath2::DB') }) {
-            $self->{+DB} = $bk;
-        }
-        elsif (eval { $bk->DOES('App::Yath2::Role::DB::Backend') }) {
-            require App::Yath2::DB;
-            $self->{+DB} = App::Yath2::DB->new(backend_instance => $bk);
-        }
-        else {
-            croak "'backend' must be an App::Yath2::DB or "
-                . "App::Yath2::Role::DB::Backend doer";
-        }
-    }
-    else {
-        croak "'db' is required (or 'backend' for back-compat)";
-    }
+    croak "'db' is required (must be an App::Yath2::DB instance)"
+        unless defined $self->{+DB};
+    croak "'db' must be an App::Yath2::DB instance"
+        unless eval { $self->{+DB}->isa('App::Yath2::DB') };
 
     croak "'uuid' is required for an archive-scoped Log::DB"
         unless defined $self->{+UUID};
@@ -57,9 +30,6 @@ sub init {
 }
 
 # Read methods: delegate to App::Yath2::DB with our cached uuid.
-# Each is one line; the dispatch is explicit (not for-loop generated)
-# so a future grep for `services` / `runs` / etc. on Log::DB lands on
-# something readable.
 
 sub services        { my $s = shift; $s->{+DB}->services       ($s->{+UUID}, @_) }
 sub runs            { my $s = shift; $s->{+DB}->runs           ($s->{+UUID}, @_) }
@@ -80,153 +50,40 @@ sub _artifact_iter_records { my $s = shift; $s->{+DB}->artifact_iter_records ($s
 sub _artifact_list_dir     { my $s = shift; $s->{+DB}->artifact_list_dir     ($s->{+UUID}, @_) }
 sub _artifact_open_fh      { my $s = shift; $s->{+DB}->artifact_open_fh      ($s->{+UUID}, @_) }
 
-# Methods still routed through the legacy backend chain (scoped to our
-# uuid) until Phase 7 lifts the event walker and artifacts factory onto
-# App::Yath2::DB.
-sub _legacy_scoped {
+# Walker: App::Yath2::DB owns the depth-first event walker now. Each
+# Log::DB instance carries its own scoped DB so walker state stays
+# per-uuid (matches the role contract: each Log handle owns its own
+# walker state).
+sub event           { my $s = shift; $s->_scoped_db->event        ($s->{+UUID}, @_) }
+sub events          { my $s = shift; $s->_scoped_db->events       ($s->{+UUID}, @_) }
+sub end_of_events   { my $s = shift; $s->_scoped_db->end_of_events($s->{+UUID}) }
+sub EOE             { my $s = shift; $s->_scoped_db->EOE          ($s->{+UUID}) }
+sub reset           { my $s = shift; $s->_scoped_db->reset        ($s->{+UUID}) }
+
+# Use a uuid-scoped clone of the underlying App::Yath2::DB so walker
+# state lives in this Log::DB instance (rather than on the shared
+# multi-archive DB). Lazy + cached.
+sub _scoped_db {
     my $self = shift;
-    return $self->{+_LEGACY_SCOPED}
-        //= $self->{+DB}->legacy_scoped_for_uuid($self->{+UUID});
+    return $self->{_scoped_db} //= $self->{+DB}->scoped($self->{+UUID});
 }
 
-sub event           { my $s = shift; $s->_legacy_scoped->event        (@_) }
-sub events          { my $s = shift; $s->_legacy_scoped->events       (@_) }
-sub end_of_events   { my $s = shift; $s->_legacy_scoped->end_of_events(@_) }
-sub reset           { my $s = shift; $s->_legacy_scoped->reset        (@_) }
-
-# Phase 6: write paths flow through App::Yath2::DB directly.
+# Write paths flow through App::Yath2::DB directly.
 #
 # extract: $log->extract($dir, %opts) -> App::Yath2::Log::Directory
 # archive: $log->archive($out, %opts) -> sealed-form Log handle
 # insert:  $log->insert($source, %opts) -> $new_archive_id (integer)
-#
-# insert returns the destination's integer archive_id; the new uuid is
-# accessible on $log->db via {_last_insert_uuid}. Insert does NOT
-# mutate this Log::DB instance's uuid slot.
 sub extract         { my $s = shift; $s->{+DB}->extract       ($s->{+UUID}, @_) }
 sub archive         { my $s = shift; $s->{+DB}->archive_to    ($s->{+UUID}, @_) }
 sub insert          { my $s = shift; $s->{+DB}->insert        (@_) }
 sub _artifact_save  { my $s = shift; $s->{+DB}->save_artifact ($s->{+UUID}, @_) }
 
-# artifacts() factory mirrors Role::DB::Backend's default but binds
-# the resulting App::Yath2::Log::Artifact to $self (a Log::DB) instead
-# of the legacy backend. Without this override, the Artifact handle
-# would dispatch _artifact_* back into the legacy chain and bypass the
-# new App::Yath2::DB read paths -- meaning meta.json reconstruction
-# (and similar) would still come back in legacy DB-native shapes
-# rather than the canonical forms App::Yath2::DB returns. Phase 7
-# moves the factory onto App::Yath2::DB itself; until then this
-# override keeps reads consistent.
-sub artifacts {
-    my $self = shift;
-    require Test2::Harness2::LogLayout;
-
-    return $self->_artifacts_from_args($_[0]) if @_ == 1 && ref($_[0]) eq 'HASH';
-    return $self->_artifacts_root             unless @_;
-
-    my @args = @_;
-    if (@args == 1) {
-        my $arg = $args[0];
-        if (defined $arg && $arg =~ /^\d+\z/) {
-            return $self->_artifacts_from_args({run_id => $arg});
-        }
-        if (defined $arg && $self->has_service($arg)) {
-            return $self->_artifacts_from_args({service => $arg});
-        }
-        return $self->_artifacts_from_args({run_id => $arg});
-    }
-    if (@args == 2) {
-        my ($run_id, $second) = @args;
-        if (defined $second && $second =~ /^\d+\z/) {
-            return $self->_artifacts_from_args({run_id => $run_id, job_id => $second});
-        }
-        return $self->_artifacts_from_args({run_id => $run_id, service => $second});
-    }
-    if (@args == 3) {
-        my ($run_id, $job_id, $job_try) = @args;
-        return $self->_artifacts_from_args({
-            run_id  => $run_id,
-            job_id  => $job_id,
-            job_try => $job_try,
-        });
-    }
-    croak "artifacts() got too many positional arguments";
-}
-
-sub _artifacts_root {
-    my $self = shift;
-    require App::Yath2::Log::Artifact;
-    return App::Yath2::Log::Artifact->new(
-        log  => $self,
-        root => undef,
-        base => undef,
-        live => 0,
-    );
-}
-
-sub _make_artifact {
-    my ($self, $base) = @_;
-    require App::Yath2::Log::Artifact;
-    return App::Yath2::Log::Artifact->new(
-        log  => $self,
-        root => undef,
-        base => $base,
-        live => 0,
-    );
-}
-
-sub _artifacts_from_args {
-    my ($self, $args) = @_;
-    require Test2::Harness2::LogLayout;
-    my $service = $args->{service};
-    my $run_id  = $args->{run_id};
-    my $job_id  = $args->{job_id};
-    my $job_try = $args->{job_try};
-
-    croak "service name cannot start with a digit"
-        if defined $service && $service =~ /^\d/;
-
-    if (defined $service) {
-        if (defined $run_id) {
-            croak "no such run: $run_id" unless $self->has_run($run_id);
-            croak "no such service: $service in run $run_id"
-                unless $self->has_service($service, $run_id);
-            return $self->_make_artifact(
-                Test2::Harness2::LogLayout::service_run_dir($run_id, $service));
-        }
-        croak "no such service: $service"
-            unless $self->has_service($service);
-        return $self->_make_artifact(
-            Test2::Harness2::LogLayout::service_global_dir($service));
-    }
-
-    if (defined $job_id) {
-        croak "run_id is required when job_id is given"
-            unless defined $run_id;
-        croak "no such run: $run_id"          unless $self->has_run($run_id);
-        croak "no such job: $run_id/$job_id"  unless $self->has_job($run_id, $job_id);
-
-        if (!defined $job_try) {
-            my $lt = $self->last_try($run_id, $job_id);
-            croak "no tries for job $run_id/$job_id"
-                unless defined $lt;
-            $job_try = $lt;
-        }
-        croak "no such try: $run_id/$job_id/$job_try"
-            unless $self->has_try($run_id, $job_id, $job_try);
-
-        return $self->_make_artifact(
-            Test2::Harness2::LogLayout::job_dir($run_id, $job_id, $job_try));
-    }
-
-    if (defined $run_id) {
-        croak "no such run: $run_id" unless $self->has_run($run_id);
-        return $self->_make_artifact(
-            Test2::Harness2::LogLayout::run_dir($run_id));
-    }
-
-    return $self->_artifacts_root;
-}
+# Artifact factory: delegated to App::Yath2::DB. The Artifact handle
+# returned binds to a uuid-scoped DB clone, so its private _artifact_*
+# calls land on App::Yath2::DB without going through this Log::DB at
+# all -- meaning bytes are returned in the canonical shapes the data
+# layer produces.
+sub artifacts       { my $s = shift; $s->{+DB}->artifacts      ($s->{+UUID}, @_) }
 
 # Apply the Log role after our own methods are installed so role
 # defaults (which would otherwise be installed first and then

@@ -140,7 +140,7 @@ for_each_log_db_backend(sub {
     my $sql = sub {
         my ($db) = @_;
         require App::Yath2::DB;
-        return App::Yath2::DB->new(backend_instance => $db);
+        return App::Yath2::DB->_wrap_backend($db);
     };
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);

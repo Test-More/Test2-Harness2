@@ -45,10 +45,10 @@ sub init {
 
     # Single-archive shortcut + archive_version validation. Only run
     # for top-level callers (file / dsn entry points). When the caller
-    # hands us a raw dbh we are typically a sub-component (DBIC's
-    # _shared_sql_backend, App::Yath2::DB->new(backend_instance =>)
-    # paths, test scaffolding) -- skip the eager check there so we
-    # don't surprise callers with a partial-state archive lookup.
+    # hands us a raw dbh we are typically a sub-component (test
+    # scaffolding, internal wrap-this-backend-in-a-DB helpers) -- skip
+    # the eager check there so we don't surprise callers with a
+    # partial-state archive lookup.
     if ($self->{+FILE} || $self->{+DSN}) {
         $self->_eager_resolve_single_archive;
     }
@@ -59,7 +59,7 @@ sub init {
 sub _eager_resolve_single_archive {
     my $self = shift;
     require App::Yath2::DB;
-    my $db = App::Yath2::DB->new(backend_instance => $self);
+    my $db = App::Yath2::DB->_wrap_backend($self);
     my @uuids = $db->archives;
     return unless @uuids == 1;
     # _resolve_archive_id validates the version floor; let any croak
@@ -806,23 +806,23 @@ sub subtest_rows {
 
 sub _archive_id_or_die { croak 'NYI: _archive_id_or_die (Phase 4)' }
 
-# Phase 7 still owns the event walker; route through the legacy
-# Internal helper bound to the same dbh until then. Single-archive
-# implicit uuid resolution mirrors the read-side helpers.
-sub _legacy_for_walker {
+# Walker methods route through the data-layer wrapper, which carries
+# its own per-uuid walker state. Cache a uuid-scoped wrapper on first
+# call so successive event() calls share the same walker stack.
+sub _walker_db {
     my $self = shift;
-    return $self->{__legacy_walker} //= do {
+    return $self->{__walker_db} //= do {
         require App::Yath2::DB;
         my $u = $self->_implicit_uuid_for_op('event');
-        App::Yath2::DB->new(backend_instance => $self)->legacy_scoped_for_uuid($u);
+        App::Yath2::DB->_wrap_backend($self, uuid => $u);
     };
 }
 
-sub event         { my $s = shift; $s->_legacy_for_walker->event(@_) }
-sub events        { my $s = shift; $s->_legacy_for_walker->events(@_) }
-sub end_of_events { my $s = shift; $s->_legacy_for_walker->end_of_events(@_) }
-sub EOE           { my $s = shift; $s->_legacy_for_walker->end_of_events(@_) }
-sub reset         { my $s = shift; $s->_legacy_for_walker->reset(@_) }
+sub event         { my $s = shift; my $db = $s->_walker_db; $db->event($db->uuid, @_) }
+sub events        { my $s = shift; my $db = $s->_walker_db; $db->events($db->uuid, @_) }
+sub end_of_events { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
+sub EOE           { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
+sub reset         { my $s = shift; my $db = $s->_walker_db; $db->reset($db->uuid) }
 
 # Group-A read methods: route through the data-layer wrapper. Wrapper
 # resolves an implicit single-archive uuid for the no-arg form so legacy
@@ -859,7 +859,7 @@ sub scoped {
 sub _wrap_self_in_db {
     my $self = shift;
     require App::Yath2::DB;
-    return $self->{__db_wrapper} //= App::Yath2::DB->new(backend_instance => $self);
+    return $self->{__db_wrapper} //= App::Yath2::DB->_wrap_backend($self);
 }
 
 sub insert {

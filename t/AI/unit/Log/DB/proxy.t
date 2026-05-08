@@ -3,32 +3,14 @@ use Test2::Util::UUID qw/gen_uuid/;
 
 use App::Yath2::Log::DB;
 
-# Mock App::Yath2::DB recording every method call, plus a mock legacy
-# backend it returns from _legacy_backend. Read methods land on the
-# mock $db; legacy methods (event/insert/artifacts/etc) land on the
-# scoped legacy backend.
-{
-    package Test::ProxyLegacy;
-    sub new { bless { calls => [] }, shift }
-    sub _record {
-        my ($self, @a) = @_;
-        push @{$self->{calls}}, [@a];
-        return;
-    }
-    for my $m (qw{
-        event events end_of_events reset
-        artifacts extract archive insert
-        _artifact_save
-    }) {
-        no strict 'refs';
-        *{$m} = sub { my $self = shift; $self->_record($m => @_); 'rv' };
-    }
-}
+# Mock App::Yath2::DB recording every method call. Phase 7 ditched the
+# legacy backend chain: walker, write, and artifacts traffic now all
+# land on $self->db with our cached uuid prepended.
 {
     package Test::ProxyDB;
     use App::Yath2::DB;
     our @ISA = ('App::Yath2::DB');
-    sub new { bless { calls => [], legacy => Test::ProxyLegacy->new, scoped_count => 0 }, shift }
+    sub new { bless { calls => [], scoped_count => 0 }, shift }
     sub _record {
         my ($self, @a) = @_;
         push @{$self->{calls}}, [@a];
@@ -42,17 +24,29 @@ use App::Yath2::Log::DB;
         artifact_list_dir artifact_open_fh
         absolute_path
         extract archive_to insert save_artifact
+        artifacts
     }) {
         no strict 'refs';
         *{$m} = sub { my $self = shift; $self->_record($m => @_); 'rv' };
     }
-    # Override legacy_scoped_for_uuid so we don't try to do real
-    # archive_id resolution against the mock backend.
-    sub legacy_scoped_for_uuid {
+    # scoped() returns a uuid-bound sibling that records walker calls
+    # back into the parent so the test can assert on them.
+    sub scoped {
         my ($self, $uuid) = @_;
         $self->{scoped_count}++;
-        push @{$self->{calls}}, [scoped => $uuid];
-        return $self->{legacy};
+        my $sib = bless { parent => $self, uuid => $uuid }, ref($self);
+        return $sib;
+    }
+    # Walker delegates: record on the parent (so the test's $db->{calls}
+    # captures everything from one place).
+    for my $m (qw{event events end_of_events EOE reset}) {
+        no strict 'refs';
+        *{$m} = sub {
+            my $self = shift;
+            my $target = $self->{parent} // $self;
+            $target->_record($m => @_);
+            return 'rv';
+        };
     }
 }
 
@@ -64,7 +58,7 @@ my $log = App::Yath2::Log::DB->new(db => $db, uuid => $u);
 my $err = dies { App::Yath2::Log::DB->new(db => $db) };
 like($err, qr/'uuid' is required/, 'uuid required');
 
-# db (or backend) required.
+# db required.
 my $err2 = dies { App::Yath2::Log::DB->new(uuid => $u) };
 like($err2, qr/'db' is required/, 'db required');
 
@@ -83,47 +77,26 @@ my $calls = $db->{calls};
 is($calls->[0], [services => $u, 2], 'services delegated with uuid');
 is($calls->[1], [runs     => $u],    'runs delegated with uuid');
 
-# Walker methods (event/events/EOE/reset) still route through
-# _legacy_backend until Phase 7. Insert/extract/archive/_artifact_save
-# (Phase 6) go directly through the App::Yath2::DB instance.
+# Walker methods (event/events/EOE/reset) route through a uuid-scoped
+# clone of the App::Yath2::DB. The clone is cached, so repeated walker
+# calls only trigger one ->scoped() call.
 $log->event;
-my $legacy_calls = $db->{legacy}{calls};
-is($legacy_calls->[0], [event  => ()],         'event delegated to legacy');
-is($db->{scoped_count}, 1, 'scoped() called once for the legacy walker chain');
+$log->event;
+is($db->{scoped_count}, 1, 'scoped() called exactly once for walker chain');
+my @walker_calls = grep { $_->[0] eq 'event' } @{$db->{calls}};
+is(scalar(@walker_calls), 2, 'two event() delegations recorded');
+is($walker_calls[0], [event => $u], 'event delegated with uuid');
 
-# Phase 6: insert routes through App::Yath2::DB->insert (not legacy).
+# insert routes through App::Yath2::DB->insert (no uuid -- insert
+# discovers / creates the archive).
 $log->insert('source');
 my $insert_call = $calls->[-1];
 is($insert_call, [insert => 'source'], 'insert delegated to App::Yath2::DB->insert');
 
-# Back-compat: backend => $app_yath2_db keeps working (normalizes to db slot).
-my $log2 = App::Yath2::Log::DB->new(backend => $db, uuid => $u);
-is($log2->{db}, $db, 'backend => $db normalizes to db slot');
-
-# Back-compat: backend => $role_consumer wraps in App::Yath2::DB.
-{
-    package Test::FakeBackend;
-    use Role::Tiny::With;
-    sub new { bless {}, shift }
-    # Stub every required method. We only need DOES to pass; the
-    # Log::DB constructor wraps and never calls into us.
-    for my $m (qw{
-        dbh flavor _archive_id_or_die
-        services runs jobs tries last_try
-        has_service has_run has_job has_try
-        event events end_of_events reset
-        extract archive insert
-        archives archive_count has_archive scoped
-        _artifact_rows_for_archive
-    }) {
-        no strict 'refs';
-        *{$m} = sub { undef };
-    }
-    with 'App::Yath2::Role::DB::Backend';
-}
-my $fake = Test::FakeBackend->new;
-my $log3 = App::Yath2::Log::DB->new(backend => $fake, uuid => $u);
-isa_ok($log3->{db}, ['App::Yath2::DB'], 'role-doer backend wrapped in App::Yath2::DB');
+# artifacts() delegates to App::Yath2::DB->artifacts with uuid prepended.
+$log->artifacts(2, 3, 4);
+my $art_call = $calls->[-1];
+is($art_call, [artifacts => $u, 2, 3, 4], 'artifacts delegated with uuid');
 
 # is_live / static.
 is($log->is_live, 0, 'is_live = 0');

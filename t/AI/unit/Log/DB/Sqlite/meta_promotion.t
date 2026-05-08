@@ -47,7 +47,7 @@ for_each_log_db_backend(sub {
     my $sql = sub {
         my ($db) = @_;
         require App::Yath2::DB;
-        return App::Yath2::DB->new(backend_instance => $db);
+        return App::Yath2::DB->_wrap_backend($db);
     };
 
     # {{{ Round-trip: insert a fresh source, reconstruct meta.json, assert

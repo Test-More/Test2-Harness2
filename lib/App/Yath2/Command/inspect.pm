@@ -310,8 +310,8 @@ sub _fill_sqlite_report {
 
         my $log;
         my $aok = eval {
-            my $db = App::Yath2::DB->open(file => $path);
-            $log = App::Yath2::Log::DB->new(backend => $db, uuid => $uuid);
+            my $db = App::Yath2::DB->new(file => $path);
+            $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
             1;
         };
         unless ($aok) {

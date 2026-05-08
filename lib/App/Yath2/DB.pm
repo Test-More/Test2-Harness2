@@ -156,62 +156,37 @@ sub _detect_flavor {
 sub _BACKEND        () { 'backend' }
 sub _UUID           () { 'uuid' }
 sub _AID            () { 'archive_id' }
-sub _LEGACY_BACKEND () { '_legacy_backend' }
 sub _SEALED            () { 'sealed' }
 sub _INSERT_SOURCE     () { '_insert_source' }
 sub _PROJECT_ID        () { '_project_id' }
 sub _LAST_INSERT_UUID  () { '_last_insert_uuid' }
+sub _WALK              () { '_walk' }
+sub _SEEN_STARTS       () { '_seen_starts' }
+sub _CLOSED_STARTS     () { '_closed_starts' }
+
+# Internal-only constructor: wrap an already-built backend instance (a
+# doer of App::Yath2::Role::DB::Backend) in a new App::Yath2::DB. Used
+# by App::Yath2::DB::SQL / App::Yath2::DB::DBIC's _wrap_self_in_db so
+# their legacy single-archive entry points can route writes / walker /
+# artifacts through the data-layer methods on this class without
+# re-running backend selection.
+sub _wrap_backend {
+    my ($class, $backend, %args) = @_;
+    croak "_wrap_backend requires a backend that does App::Yath2::Role::DB::Backend"
+        unless eval { $backend->DOES('App::Yath2::Role::DB::Backend') };
+
+    my $self = bless { _BACKEND() => $backend }, $class;
+    if (defined (my $u = $args{uuid})) {
+        $self->{_UUID()} = _canon_uuid($u);
+    }
+    elsif ($backend->can('uuid') && defined (my $bu = $backend->uuid)) {
+        $self->{_UUID()} = _canon_uuid($bu);
+    }
+    return $self;
+}
 
 sub new {
     my ($class, %args) = @_;
-
-    # Phase 4 internal-use shortcut: caller passes a fully-built backend
-    # instance (a doer of App::Yath2::Role::DB::Backend) and we wrap it
-    # without re-running backend selection. Used by App::Yath2::Log::DB
-    # to wrap legacy backend instances handed in via the deprecated
-    # `backend => $obj` constructor shape during the gap phase. Plan to
-    # remove this hatch once the rebuild reaches Phase 9 and Log::DB
-    # only sees `db => ...` callers.
-    if (my $bi = delete $args{backend_instance}) {
-        croak "backend_instance must consume App::Yath2::Role::DB::Backend"
-            unless eval { $bi->DOES('App::Yath2::Role::DB::Backend') };
-
-        # Two flavors of $bi during the gap phase:
-        #   - A new-style backend (App::Yath2::DB::SQL / DBIC) that
-        #     implements the Phase 2 primitives (archive_rows, etc).
-        #     Store directly; both new + legacy methods route through it.
-        #   - A legacy App::Yath2::DB::Internal::* instance, which has the
-        #     full legacy surface but NONE of the new primitives. We wrap
-        #     it by spinning up a fresh App::Yath2::DB::SQL bound to the
-        #     same dbh for the new read paths and stashing the Internal
-        #     instance pre-cached as our legacy backend so write/walker
-        #     traffic still goes to the same connection.
-        my $self;
-        if ($bi->isa('App::Yath2::DB::Internal')) {
-            require App::Yath2::DB::SQL;
-            my $sql = App::Yath2::DB::SQL->new(
-                dbh    => $bi->dbh,
-                flavor => $bi->flavor,
-            );
-            $self = bless {
-                _BACKEND()        => $sql,
-                _LEGACY_BACKEND() => $bi,
-            }, $class;
-        }
-        else {
-            $self = bless {
-                _BACKEND() => $bi,
-            }, $class;
-        }
-
-        if (defined (my $u = $args{uuid})) {
-            $self->{_UUID()} = _canon_uuid($u);
-        }
-        elsif ($bi->can('uuid') && defined (my $bu = $bi->uuid)) {
-            $self->{_UUID()} = _canon_uuid($bu);
-        }
-        return $self;
-    }
 
     my $backend_name = delete $args{backend};
     # 'internal' is a deprecated alias for 'sql' during Phase 3; do
@@ -263,53 +238,6 @@ sub backend { $_[0]->{_BACKEND()} }
 sub dbh     { $_[0]->{_BACKEND()}->dbh }
 sub flavor  { $_[0]->{_BACKEND()}->flavor }
 
-# Phase 4 gap-shim: methods that App::Yath2::DB does NOT yet implement
-# natively (event/events/end_of_events/reset, artifacts factory,
-# extract/archive/insert, _artifact_save) still need to work for
-# App::Yath2::Log::DB callers during the rebuild's middle phases. We
-# route them through a legacy backend that has the full surface:
-#
-#   - DBIC backend: already implements every legacy method (the
-#     BEGIN-block forwarder + native methods + Role::DB::Backend's
-#     `artifacts` default), so it is its own legacy backend.
-#
-#   - SQL backend: stub-only on legacy methods (croaks NYI), so we
-#     spin up an `App::Yath2::DB::Internal::*` sibling sharing the
-#     same dbh and serve legacy traffic out of it. The sibling reads
-#     and writes the same underlying tables; transactional state stays
-#     consistent because there's only one DBI connection.
-#
-# Lazy-built and cached. Phases 6-7 reroute the remaining methods to
-# native App::Yath2::DB code, after which this helper can be deleted.
-sub _legacy_backend {
-    my $self = shift;
-    return $self->{_LEGACY_BACKEND()} if defined $self->{_LEGACY_BACKEND()};
-
-    my $backend = $self->{_BACKEND()};
-    if ($backend->isa('App::Yath2::DB::DBIC')) {
-        return $self->{_LEGACY_BACKEND()} = $backend;
-    }
-
-    my $flavor = $self->flavor;
-    my $class = internal_class_for_flavor($flavor);
-    my $file = mod2file($class);
-    my $ok = eval { require $file; 1 };
-    my $err = $@;
-    croak "could not load legacy backend '$class': $err" unless $ok;
-
-    my %extra;
-    # Forward the file path on sqlite so the Internal helper's seal=>1
-    # path resolution still works through the gap.
-    if ($flavor eq 'sqlite' && $backend->can('file')) {
-        my $f = $backend->file;
-        $extra{file} = $f if defined $f;
-    }
-    $extra{uuid} = $self->{_UUID()} if defined $self->{_UUID()};
-
-    my $obj = $class->new(dbh => $backend->dbh, flavor => $flavor, %extra);
-    return $self->{_LEGACY_BACKEND()} = $obj;
-}
-
 # DB-backed logs have no on-disk path per artifact. Mirrors the
 # Role::DB::Backend default, exposed here so App::Yath2::Log::DB can
 # call $self->{db}->absolute_path(...) without hitting AUTOLOAD or
@@ -318,46 +246,6 @@ sub absolute_path {
     my ($self, $rel) = @_;
     croak "absolute_path is unavailable for the DB backend; "
         . "extract first or read via the Log API ($rel)";
-}
-
-# Phase 4 gap-shim: get a legacy backend scoped to $uuid with
-# archive_id already resolved. Bypasses the legacy backend's own
-# uuid lookup, which fails across the canonical-hex / DB-native
-# case mismatch (App::Yath2::DB returns canonical lowercase hex
-# from archives(); legacy SQLite stores uppercase via Internal's
-# identity codec). Resolving the archive_id at the new layer (which
-# does case-insensitive matching) and seeding it on the legacy
-# instance sidesteps the mismatch entirely.
-sub legacy_scoped_for_uuid {
-    my ($self, $uuid) = @_;
-    croak "uuid required" unless defined $uuid;
-    my $aid = $self->_resolve_archive_id($uuid);
-    my $legacy = $self->_legacy_backend;
-
-    # Two paths:
-    #   - DBIC backend: it implements services/runs/jobs natively but
-    #     forwards the heavier methods (event/insert/extract/...) to a
-    #     lazy Internal helper, AND has no _artifact_save of its own
-    #     (Artifact handles bind to _internal_for_artifact). Skip the
-    #     DBIC layer entirely for the gap shim and return the Internal
-    #     helper directly -- it carries the full surface we need.
-    #
-    #   - Internal-style backend: scoped() returns a fresh Internal
-    #     instance bound to the same dbh; pre-seed archive_id so its
-    #     _resolve_archive short-circuits on the canonical-hex uuid.
-    if ($legacy->isa('App::Yath2::DB::DBIC')) {
-        my $inner = $legacy->_internal->scoped($uuid);
-        $inner->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $aid;
-        $inner->{App::Yath2::DB::Internal::UUID()} //= _canon_uuid($uuid);
-        return $inner;
-    }
-
-    my $scoped = $legacy->scoped($uuid);
-    if ($scoped->isa('App::Yath2::DB::Internal')) {
-        $scoped->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $aid;
-        $scoped->{App::Yath2::DB::Internal::UUID()} //= _canon_uuid($uuid);
-    }
-    return $scoped;
 }
 
 sub uuid {
@@ -1112,6 +1000,384 @@ sub artifact_open_fh {
 sub artifact_save {
     my $self = shift;
     return $self->save_artifact(@_);
+}
+
+# ---------------------------------------------------------------------------
+# Event walker (depth-first walk over collector trees)
+# ---------------------------------------------------------------------------
+
+# Body ported from App::Yath2::DB::Internal's event/events/end_of_events/
+# reset + walker helpers. Each public entry point takes a $uuid first;
+# walker state lives on this instance keyed implicitly by uuid (callers
+# either work on a scoped instance via $db->scoped($uuid) or wrap in
+# App::Yath2::Log::DB which delegates with its cached uuid). Calling
+# ->event($uuid) on a multi-archive App::Yath2::DB stores walker state
+# scoped to whichever uuid was first invoked; ->reset clears it.
+
+sub event {
+    my ($self, $uuid, $timeout) = @_;
+
+    my $walk = $self->_walk_state($uuid);
+    my $stack = $walk->{stack};
+
+    while (1) {
+        last unless @$stack;
+
+        my $got;
+        my $owner;
+        for (my $i = $#$stack; $i >= 0; $i--) {
+            my $entry = $stack->[$i];
+            if ($entry->{idx} < scalar @{$entry->{records}}) {
+                $got = $entry->{records}[$entry->{idx}++];
+                $owner = $entry;
+                last;
+            }
+        }
+
+        if (defined $got) {
+            if (my $start = $self->_facet($got, 'harness_collector_start')) {
+                my $cpid = $start->{collector_pid};
+                $self->{_SEEN_STARTS()}{$cpid} = $start if defined $cpid;
+                my $child_base = $self->_base_for_collector_start($start);
+                if (defined $child_base) {
+                    my %args = (uuid => $uuid, base => $child_base, collector_pid => $cpid);
+                    my $type = $start->{type};
+                    if ($type eq 'Job') {
+                        $args{run_id}  = $start->{run_id};
+                        $args{job_id}  = $start->{id};
+                        $args{job_try} = $start->{job_try} // 0;
+                    }
+                    elsif ($type eq 'Run') {
+                        $args{run_id} = $start->{id};
+                    }
+                    elsif ($type eq 'Service') {
+                        $args{service} = $start->{service_name} // $start->{id};
+                        $args{run_id}  = $start->{run_id} if defined $start->{run_id};
+                    }
+                    push @$stack => $self->_open_artifact_walk(%args);
+                }
+                return $self->_inject_identifiers($got, $owner->{ident});
+            }
+
+            if (my $end = $self->_facet($got, 'harness_collector_end')) {
+                my $cpid = $end->{collector_pid};
+                $self->{_CLOSED_STARTS()}{$cpid} = 1 if defined $cpid;
+                return $self->_inject_identifiers($got, $owner->{ident});
+            }
+
+            return $self->_inject_identifiers($got, $owner->{ident});
+        }
+
+        while (@$stack && $stack->[-1]{idx} >= scalar @{$stack->[-1]{records}}) {
+            pop @$stack;
+        }
+        last if !@$stack;
+    }
+
+    return undef;
+}
+
+sub events {
+    my ($self, $uuid, $timeout) = @_;
+    my @out;
+    while (1) {
+        my $e = $self->event($uuid, 0);
+        last unless defined $e;
+        push @out => $e;
+    }
+    if (!@out && $self->end_of_events($uuid)) {
+        return (undef);
+    }
+    return @out;
+}
+
+sub EOE { $_[0]->end_of_events($_[1]) }
+
+sub end_of_events {
+    my ($self, $uuid) = @_;
+    my $walk = $self->_walk_state($uuid);
+    my $stack = $walk->{stack};
+
+    while (@$stack) {
+        my $top = $stack->[-1];
+        if ($top->{idx} < scalar @{$top->{records}}) {
+            return 0;
+        }
+        pop @$stack;
+    }
+    return 1;
+}
+
+sub reset {
+    my ($self, $uuid) = @_;
+    delete $self->{_WALK()};
+    delete $self->{_SEEN_STARTS()};
+    delete $self->{_CLOSED_STARTS()};
+    return;
+}
+
+# Walker bootstrap: seed the stack with the harness root's events.jsonl.
+# The walker self-expands via harness_collector_start facets that
+# announce the next entity (Run / Job / Service) to descend into.
+sub _walk_state {
+    my ($self, $uuid) = @_;
+    return $self->{_WALK()} //= {
+        stack => [
+            $self->_open_artifact_walk(
+                uuid    => $uuid,
+                base    => 'services/harness',
+                run_id  => undef,
+                job_id  => undef,
+                job_try => undef,
+                service => 'harness',
+                collector_pid => undef,
+            ),
+        ],
+    };
+}
+
+sub _open_artifact_walk {
+    my ($self, %args) = @_;
+    my $base = $args{base};
+    my $uuid = $args{uuid} // $self->{_UUID()};
+    my $records = $self->artifact_iter_records($uuid, $base, 'events.jsonl') || [];
+    return {
+        records       => $records,
+        idx           => 0,
+        base          => $base,
+        ident         => {
+            (defined $args{run_id}  ? (run_id  => $args{run_id})  : ()),
+            (defined $args{job_id}  ? (job_id  => $args{job_id})  : ()),
+            (defined $args{job_try} ? (job_try => $args{job_try}) : ()),
+            (defined $args{service} ? (service_name => $args{service}) : ()),
+        },
+        collector_pid => $args{collector_pid},
+    };
+}
+
+sub _facet {
+    my ($self, $event, $name) = @_;
+    return undef unless ref($event) eq 'HASH';
+    my $fd = $event->{facet_data};
+    return undef unless ref($fd) eq 'HASH';
+    return $fd->{$name};
+}
+
+sub _base_for_collector_start {
+    my ($self, $content) = @_;
+    return undef unless ref($content) eq 'HASH';
+    my $type = $content->{type};
+    return undef unless defined $type;
+
+    if ($type eq 'Job') {
+        my $rid = $content->{run_id};
+        my $jid = $content->{id};
+        my $try = $content->{job_try} // 0;
+        return undef unless defined $rid && defined $jid;
+        return "runs/$rid/jobs/$jid/$try";
+    }
+    if ($type eq 'Run') {
+        my $rid = $content->{id};
+        return undef unless defined $rid;
+        return "runs/$rid";
+    }
+    if ($type eq 'Service') {
+        my $name = $content->{service_name} // $content->{id};
+        return undef unless defined $name && length $name;
+        my $rid = $content->{run_id};
+        return defined $rid ? "runs/$rid/services/$name" : "services/$name";
+    }
+    return undef;
+}
+
+sub _inject_identifiers {
+    my ($self, $event, $ident) = @_;
+    return $event unless ref($event) eq 'HASH';
+
+    my $fd = $event->{facet_data} // do { $event->{facet_data} = {}; $event->{facet_data} };
+    my $h = $fd->{harness} // do { $fd->{harness} = {}; $fd->{harness} };
+
+    for my $k (qw/run_id job_id job_try service_name/) {
+        next unless exists $ident->{$k};
+        $h->{$k} //= $ident->{$k};
+    }
+    return $event;
+}
+
+# ---------------------------------------------------------------------------
+# Artifact factory
+# ---------------------------------------------------------------------------
+
+# artifacts($uuid, ...)
+#
+# Returns an App::Yath2::Log::Artifact bound to a uuid-scoped clone of
+# this DB. The Artifact handle calls private _artifact_* methods on its
+# {log} ref; we hand it a scoped instance so those methods (defined
+# below) implicitly use the right uuid.
+sub artifacts {
+    my ($self, $uuid, @args) = @_;
+    croak "uuid required" unless defined $uuid;
+    require Test2::Harness2::LogLayout;
+
+    return $self->_artifacts_from_args($uuid, $args[0])
+        if @args == 1 && ref($args[0]) eq 'HASH';
+    return $self->_artifacts_root($uuid)
+        unless @args;
+
+    if (@args == 1) {
+        my $arg = $args[0];
+        if (defined $arg && $arg =~ /^\d+\z/) {
+            return $self->_artifacts_from_args($uuid, {run_id => $arg});
+        }
+        if (defined $arg && $self->has_service($uuid, $arg)) {
+            return $self->_artifacts_from_args($uuid, {service => $arg});
+        }
+        return $self->_artifacts_from_args($uuid, {run_id => $arg});
+    }
+    if (@args == 2) {
+        my ($run_id, $second) = @args;
+        if (defined $second && $second =~ /^\d+\z/) {
+            return $self->_artifacts_from_args($uuid, {run_id => $run_id, job_id => $second});
+        }
+        return $self->_artifacts_from_args($uuid, {run_id => $run_id, service => $second});
+    }
+    if (@args == 3) {
+        my ($run_id, $job_id, $job_try) = @args;
+        return $self->_artifacts_from_args($uuid, {
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $job_try,
+        });
+    }
+    croak "artifacts() got too many positional arguments";
+}
+
+sub _artifacts_root {
+    my ($self, $uuid) = @_;
+    require App::Yath2::Log::Artifact;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self->scoped($uuid),
+        root => undef,
+        base => undef,
+        live => 0,
+    );
+}
+
+sub _make_artifact {
+    my ($self, $uuid, $base) = @_;
+    require App::Yath2::Log::Artifact;
+    return App::Yath2::Log::Artifact->new(
+        log  => $self->scoped($uuid),
+        root => undef,
+        base => $base,
+        live => 0,
+    );
+}
+
+sub _artifacts_from_args {
+    my ($self, $uuid, $args) = @_;
+    require Test2::Harness2::LogLayout;
+    my $service = $args->{service};
+    my $run_id  = $args->{run_id};
+    my $job_id  = $args->{job_id};
+    my $job_try = $args->{job_try};
+
+    croak "service name cannot start with a digit"
+        if defined $service && $service =~ /^\d/;
+
+    if (defined $service) {
+        if (defined $run_id) {
+            croak "no such run: $run_id" unless $self->has_run($uuid, $run_id);
+            croak "no such service: $service in run $run_id"
+                unless $self->has_service($uuid, $service, $run_id);
+            return $self->_make_artifact($uuid,
+                Test2::Harness2::LogLayout::service_run_dir($run_id, $service));
+        }
+        croak "no such service: $service"
+            unless $self->has_service($uuid, $service);
+        return $self->_make_artifact($uuid,
+            Test2::Harness2::LogLayout::service_global_dir($service));
+    }
+
+    if (defined $job_id) {
+        croak "run_id is required when job_id is given"
+            unless defined $run_id;
+        croak "no such run: $run_id"          unless $self->has_run($uuid, $run_id);
+        croak "no such job: $run_id/$job_id"  unless $self->has_job($uuid, $run_id, $job_id);
+
+        if (!defined $job_try) {
+            my $lt = $self->last_try($uuid, $run_id, $job_id);
+            croak "no tries for job $run_id/$job_id"
+                unless defined $lt;
+            $job_try = $lt;
+        }
+        croak "no such try: $run_id/$job_id/$job_try"
+            unless $self->has_try($uuid, $run_id, $job_id, $job_try);
+
+        return $self->_make_artifact($uuid,
+            Test2::Harness2::LogLayout::job_dir($run_id, $job_id, $job_try));
+    }
+
+    if (defined $run_id) {
+        croak "no such run: $run_id" unless $self->has_run($uuid, $run_id);
+        return $self->_make_artifact($uuid,
+            Test2::Harness2::LogLayout::run_dir($run_id));
+    }
+
+    return $self->_artifacts_root($uuid);
+}
+
+# ---------------------------------------------------------------------------
+# Private artifact accessors used by App::Yath2::Log::Artifact
+# ---------------------------------------------------------------------------
+#
+# App::Yath2::Log::Artifact treats its {log} slot as a Role::Log doer
+# and calls the underscore-prefixed family back. The Artifact factory
+# above hands it a uuid-scoped App::Yath2::DB clone; these methods
+# bridge from the no-uuid Artifact-side calls to the uuid-bearing
+# public methods on this class. Each requires a scoped instance with
+# {uuid} set.
+
+sub _artifact_exists {
+    my ($self, $rel) = @_;
+    croak "_artifact_exists requires a uuid-scoped App::Yath2::DB"
+        unless defined $self->{_UUID()};
+    return $self->artifact_exists($self->{_UUID()}, $rel);
+}
+
+sub _artifact_read {
+    my ($self, $rel) = @_;
+    croak "_artifact_read requires a uuid-scoped App::Yath2::DB"
+        unless defined $self->{_UUID()};
+    return $self->artifact_read($self->{_UUID()}, $rel);
+}
+
+sub _artifact_iter_records {
+    my ($self, $base, $stem) = @_;
+    croak "_artifact_iter_records requires a uuid-scoped App::Yath2::DB"
+        unless defined $self->{_UUID()};
+    return $self->artifact_iter_records($self->{_UUID()}, $base, $stem);
+}
+
+sub _artifact_list_dir {
+    my ($self, $rel) = @_;
+    croak "_artifact_list_dir requires a uuid-scoped App::Yath2::DB"
+        unless defined $self->{_UUID()};
+    return $self->artifact_list_dir($self->{_UUID()}, $rel);
+}
+
+sub _artifact_open_fh {
+    my ($self, $rel) = @_;
+    croak "_artifact_open_fh requires a uuid-scoped App::Yath2::DB"
+        unless defined $self->{_UUID()};
+    return $self->artifact_open_fh($self->{_UUID()}, $rel);
+}
+
+sub _artifact_save {
+    my ($self, %p) = @_;
+    croak "_artifact_save requires a uuid-scoped App::Yath2::DB"
+        unless defined $self->{_UUID()};
+    return $self->save_artifact($self->{_UUID()}, %p);
 }
 
 # ---------------------------------------------------------------------------

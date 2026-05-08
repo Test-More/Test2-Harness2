@@ -117,11 +117,11 @@ build_dir($src);
     is(scalar @uuids, 3, 'three archives inserted');
     is(scalar(do { my %s; @s{@uuids} = (); keys %s }), 3, 'each archive has a unique uuid');
 
-    my $db = App::Yath2::DB->open(file => $db_path);
+    my $db = App::Yath2::DB->new(file => $db_path);
     is($db->archive_count, 3, 'DB: 3 archives');
 
     for my $u (@uuids) {
-        my $log = App::Yath2::Log::DB->new(backend => $db, uuid => $u);
+        my $log = App::Yath2::Log::DB->new(db => $db, uuid => $u);
         my $a = $log->artifacts;
         ok($a->exists('meta.json'), "archive $u has meta.json");
         my $meta = decode_json($a->get('meta.json'));

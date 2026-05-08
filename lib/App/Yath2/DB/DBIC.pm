@@ -12,58 +12,28 @@ use Object::HashBase qw{
     <uuid <archive_id
     <sealed
     <flavor_override
-    +_internal
 };
 
 use Role::Tiny::With;
 
-# Forward the heavier Group-A methods to the Internal helper. The role's
-# `requires` list is checked at compile time when `with` runs, so the
-# subs must exist before the `with` call -- a runtime `for ... no strict
-# refs *{$m} = sub {...}` would fail the role check. A BEGIN block
-# installs them ahead of `with`.
-BEGIN {
-    for my $m (qw{
-        event events end_of_events EOE reset
-        extract archive insert
-    }) {
-        no strict 'refs';
-        *{ __PACKAGE__ . "::$m" } = sub {
-            my $self = shift;
-            my $i = $self->_internal;
-            $i->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $self->{+ARCHIVE_ID}
-                if defined $self->{+ARCHIVE_ID}
-                && !defined $i->{App::Yath2::DB::Internal::ARCHIVE_ID()};
-            $i->{App::Yath2::DB::Internal::UUID()} //= $self->{+UUID}
-                if defined $self->{+UUID};
-            # Honor list / scalar context the caller invoked us in;
-            # events() in particular returns a list and the caller
-            # captures it into an array.
-            my $wantarray = wantarray;
-            my @rv;
-            my $rv;
-            if ($wantarray) {
-                @rv = $i->$m(@_);
-            } elsif (defined $wantarray) {
-                $rv = $i->$m(@_);
-            } else {
-                $i->$m(@_);
-            }
-            # Mirror state changes back. insert() in particular sets
-            # ARCHIVE_ID + UUID + SEALED on the Internal helper; without
-            # mirroring, callers reading $self->uuid / $self->archive_id
-            # / $self->sealed after insert() get undef on the DBIC outer.
-            $self->{+ARCHIVE_ID} = $i->{App::Yath2::DB::Internal::ARCHIVE_ID()}
-                if defined $i->{App::Yath2::DB::Internal::ARCHIVE_ID()};
-            $self->{+UUID} = $i->{App::Yath2::DB::Internal::UUID()}
-                if defined $i->{App::Yath2::DB::Internal::UUID()};
-            $self->{+SEALED} = $i->{App::Yath2::DB::Internal::SEALED()}
-                if $i->{App::Yath2::DB::Internal::SEALED()};
-            return @rv if $wantarray;
-            return $rv if defined $wantarray;
-            return;
-        };
-    }
+# Walker / write methods route through the data-layer wrapper
+# (App::Yath2::DB), which carries every transformation, codec, and
+# walker-state slot. The role's `requires` list is checked at compile
+# time when `with` runs, so each method must be defined before that
+# point.
+sub event         { my $s = shift; my $db = $s->_walker_db; $db->event($db->uuid, @_) }
+sub events        { my $s = shift; my $db = $s->_walker_db; $db->events($db->uuid, @_) }
+sub end_of_events { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
+sub EOE           { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
+sub reset         { my $s = shift; my $db = $s->_walker_db; $db->reset($db->uuid) }
+
+sub _walker_db {
+    my $self = shift;
+    return $self->{__walker_db} //= do {
+        require App::Yath2::DB;
+        my $u = $self->_implicit_uuid_for_op('event');
+        App::Yath2::DB->_wrap_backend($self, uuid => $u);
+    };
 }
 
 with 'App::Yath2::Role::DB::Backend';
@@ -73,15 +43,6 @@ with 'App::Yath2::Role::DB::Backend';
 # This class consumes App::Yath2::Role::DB::Backend. Schema bootstrap
 # remains share/schema/$flavor.sql-driven via the role; $schema->deploy
 # is never called.
-#
-# The Group-A reader/writer surface is broad and tightly coupled to
-# flavor-specific UUID, JSON, datetime, and binary-payload handling.
-# To keep this class focused on the DBIC layer (Result classes,
-# ResultSet-shaped reads), the heavier methods delegate to a shared
-# App::Yath2::DB::Internal::* instance bound to the same DBI handle.
-# Both objects use the same underlying dbh, so transactional state
-# stays consistent; the DBIC schema and the Internal helper are two
-# views over one connection.
 
 sub init {
     my $self = shift;
@@ -119,10 +80,8 @@ sub init {
                 sqlite_unicode => 1,
             },
         );
-        # Apply the same SQLite pragmas the Internal::Sqlite backend
-        # uses (per share/schema/SCHEMA.md §8). Doing it here rather
-        # than in the Internal helper keeps the DBIC-only code path
-        # functional even when nothing has triggered _internal yet.
+        # Apply the SQLite pragmas defined in
+        # share/schema/SCHEMA.md §8.
         my $dbh = $self->{+SCHEMA}->storage->dbh;
         $dbh->do('PRAGMA journal_mode = WAL');
         $dbh->do('PRAGMA synchronous = NORMAL');
@@ -134,12 +93,31 @@ sub init {
         croak "DBIC backend requires one of: schema, dbh, dsn, file";
     }
 
-    # Bootstrap goes through the Internal helper so DBIC's
-    # preprocess_schema_sql (which delegates to Internal) doesn't
-    # cause recursive bootstrap. Internal's init runs bootstrap_schema
-    # itself, so just instantiating _internal here suffices.
-    $self->_internal;
+    # Bootstrap (idempotent): role-provided bootstrap_schema runs
+    # share/schema/$flavor.sql against $self->dbh. Skipped on already-
+    # populated DBs via _is_bootstrapped.
+    $self->bootstrap_schema;
 
+    # Single-archive shortcut + archive_version validation. Only run
+    # for top-level callers (file / dsn entry points) so a sub-component
+    # (caller passing a raw dbh / schema) doesn't get surprised by an
+    # archive lookup at construction time.
+    if ($self->{+FILE} || $self->{+DSN}) {
+        $self->_eager_resolve_single_archive;
+    }
+
+    return;
+}
+
+sub _eager_resolve_single_archive {
+    my $self = shift;
+    my @rows = $self->{+SCHEMA}->resultset('Archive')->all;
+    return unless @rows == 1;
+    # _check_archive_version croaks on out-of-range; let it propagate.
+    my $canon = $self->_uuid_from_db($rows[0]->archive_uuid);
+    $self->_check_archive_version($canon, $rows[0]->archive_version);
+    $self->{+ARCHIVE_ID} = $rows[0]->archive_id;
+    $self->{+UUID}       = $canon;
     return;
 }
 
@@ -171,14 +149,12 @@ sub flavor {
     return $f;
 }
 
-# UUID codec: route through the lazy Internal helper so DBIC.pm doesn't
-# duplicate the per-flavor UUID conversion logic. Internal::Sqlite is
-# identity, Internal::Postgres / ::MariaDB upper-case, ::MySQL packs
-# canonical-string <-> BINARY(16). All read paths returning archive_uuid
-# values must run through _uuid_from_db; all bind/find paths taking a
-# caller-supplied uuid must run through _uuid_to_db.
-sub _uuid_to_db   { $_[0]->_internal->_uuid_to_db($_[1])   }
-sub _uuid_from_db { $_[0]->_internal->_uuid_from_db($_[1]) }
+# UUID codec aliases: callers (including the legacy archive_id
+# resolver below) refer to these names. _flavor_uuid_to_db /
+# _flavor_uuid_from_db are the canonical native bodies defined further
+# down.
+sub _uuid_to_db   { my ($self, $u)   = @_; $self->_flavor_uuid_to_db($u)   }
+sub _uuid_from_db { my ($self, $val) = @_; $self->_flavor_uuid_from_db($val) }
 
 # Always return a live handle (DBIC's storage reconnects as needed).
 # Override the slot accessor HashBase generated for `<dbh` so callers
@@ -188,50 +164,64 @@ sub _uuid_from_db { $_[0]->_internal->_uuid_from_db($_[1]) }
     *dbh = sub { $_[0]->{+SCHEMA}->storage->dbh };
 }
 
-# Reuse the Internal flavor's preprocess_schema_sql override (postgres
-# strips the COMPRESSION zstd clause when the server build lacks it).
+# Postgres-only schema preprocessing: rewrite COMPRESSION zstd clause
+# to whatever the live server actually supports (zstd / lz4 / drop).
+# Same logic as App::Yath2::DB::SQL::preprocess_schema_sql.
 sub preprocess_schema_sql {
     my ($self, $sql) = @_;
     my $flavor = $self->flavor;
     return $sql unless $flavor eq 'postgres';
-    return $self->_internal->preprocess_schema_sql($sql);
+
+    my $algo = $self->_pg_server_compression;
+    if (!defined $algo) {
+        $sql =~ s/\s+COMPRESSION\s+zstd\b//gi;
+    }
+    elsif ($algo ne 'zstd') {
+        $sql =~ s/(\bCOMPRESSION\s+)zstd\b/$1$algo/gi;
+    }
+    return $sql;
 }
 
-# ----- internal-helper bridge -----
-#
-# Lazily create an App::Yath2::DB::Internal::* instance bound to the
-# same dbh. The Internal class houses ~3000 LoC of flavor-aware helpers
-# (UUID codecs, JSON codecs, datetime, binary payload binding, the
-# event walker, populate-summary-rows, reconstruction). Re-implementing
-# all of that in DBIC ResultSet vocabulary would duplicate the file
-# verbatim with no behavior gain. Sharing the dbh is the standard DBIC
-# escape hatch (see DBIx::Class::Storage::DBI documentation on
-# storage->dbh and dbh_do); the two views over one handle stay
-# transactionally consistent.
-sub _internal {
+sub _pg_server_compression {
     my $self = shift;
-    return $self->{+_INTERNAL} //= do {
-        require App::Yath2::DB;
-        my $flavor = $self->flavor;
-        my $class = App::Yath2::DB::internal_class_for_flavor($flavor);
-
-        require Test2::Harness2::Util;
-        my $file = Test2::Harness2::Util::mod2file($class);
-        require $file;
-
+    return $self->{_pg_server_compression} //= do {
         my $dbh = $self->dbh;
-        my %extra;
-        $extra{uuid} = $self->{+UUID} if defined $self->{+UUID};
-        # The Sqlite Internal helper uses {file} for seal => 1 path
-        # resolution. Forward it from the DBIC outer when present so
-        # insert(seal => 1) works on the DBIC backend too.
-        $extra{file} = $self->{+FILE} if $flavor eq 'sqlite' && defined $self->{+FILE};
-        my $obj = $class->new(dbh => $dbh, %extra);
-        # Mirror archive_id resolution if we already resolved one.
-        $obj->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $self->{+ARCHIVE_ID}
-            if defined $self->{+ARCHIVE_ID};
-        $obj;
+        my $probe = sub {
+            my ($algo) = @_;
+            return eval {
+                local $dbh->{RaiseError} = 1;
+                local $dbh->{PrintError} = 0;
+                $dbh->do(qq{SET default_toast_compression = '$algo'});
+                $dbh->do(q{RESET default_toast_compression});
+                1;
+            };
+        };
+        $probe->('zstd') ? 'zstd' : $probe->('lz4') ? 'lz4' : undef;
     };
+}
+
+# DBD::MariaDB reports the same sqlt_type as MySQL, but MariaDB lacks
+# BIN_TO_UUID() (used in mysql.sql CREATE TRIGGER bodies). Detect via
+# SELECT VERSION() and skip CREATE TRIGGER statements when targeting
+# MariaDB.
+sub _server_is_mariadb {
+    my $self = shift;
+    return $self->{_is_mariadb} //= do {
+        my $flavor = $self->flavor;
+        if    ($flavor eq 'mariadb') { 1 }
+        elsif ($flavor eq 'mysql') {
+            my ($v) = $self->dbh->selectrow_array('SELECT VERSION()');
+            (defined $v && $v =~ /MariaDB/i) ? 1 : 0;
+        }
+        else { 0 }
+    };
+}
+
+sub _should_skip_schema_statement {
+    my ($self, $stmt) = @_;
+    return 0 unless $self->flavor eq 'mysql';
+    return 0 unless $self->_server_is_mariadb;
+    return $stmt =~ /^CREATE\s+TRIGGER\b/i ? 1 : 0;
 }
 
 # Resolve archive_id lazily from uuid via the Archive ResultSet.
@@ -248,10 +238,8 @@ sub _archive_id_or_die {
         my $row = $self->{+SCHEMA}->resultset('Archive')
             ->find({ archive_uuid => $self->_uuid_to_db($u) });
         croak "no archive '$u' in this DB" unless $row;
-        $self->_internal->_check_archive_version($u, $row->archive_version);
+        $self->_check_archive_version($u, $row->archive_version);
         $self->{+ARCHIVE_ID} = $row->archive_id;
-        $self->_internal->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $row->archive_id;
-        $self->_internal->{App::Yath2::DB::Internal::UUID()} //= $u;
         return $self->{+ARCHIVE_ID};
     }
 
@@ -263,16 +251,30 @@ sub _archive_id_or_die {
         # callers see a normal hex uuid rather than packed bytes /
         # uppercase strings.
         my $canon = $self->_uuid_from_db($rows[0]->archive_uuid);
-        $self->_internal->_check_archive_version($canon, $rows[0]->archive_version);
+        $self->_check_archive_version($canon, $rows[0]->archive_version);
         $self->{+ARCHIVE_ID} = $rows[0]->archive_id;
         $self->{+UUID}       = $canon;
-        $self->_internal->{App::Yath2::DB::Internal::ARCHIVE_ID()} = $self->{+ARCHIVE_ID};
-        $self->_internal->{App::Yath2::DB::Internal::UUID()}       = $canon;
         return $self->{+ARCHIVE_ID};
     }
 
     croak "no archives in this DB" unless @rows;
     croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@rows) . " archives)";
+}
+
+# Enforce the archive_version floor (refuses archives older than
+# App::Yath2::Log->last_breaking_version). Mirrors App::Yath2::DB's
+# _check_archive_version body (kept here so the resolver above can
+# operate without bouncing back through the data-layer wrapper).
+sub _check_archive_version {
+    my ($self, $uuid, $archive_version) = @_;
+    require App::Yath2::Log;
+    my $floor = App::Yath2::Log->last_breaking_version;
+    croak "archive '$uuid' has no archive_version stamp; refusing to read"
+        unless defined $archive_version && length $archive_version;
+    require version;
+    return if version->parse($archive_version) >= version->parse($floor);
+    croak "archive '$uuid' was written by yath $archive_version; "
+        . "this dist requires >= $floor; refusing to read";
 }
 
 # ----- Group B: multi-archive surface -----
@@ -309,9 +311,9 @@ sub scoped {
     # driver speaks both MySQL and MariaDB, so flavor() cannot reliably
     # distinguish them from the driver name alone — the caller-supplied
     # override is the only source of truth, and dropping it here would
-    # cause the new instance to silently misclassify (e.g. choose the
-    # MariaDB Internal helper's text-uuid codec for a MySQL BINARY(16)
-    # column, breaking _resolve_archive's uuid match).
+    # cause the new instance to silently misclassify (e.g. pick the
+    # MariaDB text-uuid codec for a MySQL BINARY(16) column, breaking
+    # the archive_uuid bind in _archive_id_or_die).
     return ref($self)->new(
         schema => $self->{+SCHEMA},
         uuid   => $uuid,
@@ -459,48 +461,6 @@ sub _job_db_id {
     return $row->job_id;
 }
 
-# ----- Artifact handle binding -----
-#
-# The role's _make_artifact / _artifacts_root construct
-# App::Yath2::Log::Artifact handles with log => $self. Artifact then
-# calls private _artifact_exists / _artifact_read / _artifact_save /
-# _artifact_iter_records / _artifact_list_dir / _artifact_open_fh /
-# _decompress_jsonl_bytes back into the log. Those are Internal-side
-# (heavy codec coupling); rather than duplicate or proxy them, point
-# the Artifact at the Internal helper, which already shares this
-# instance's dbh + archive/uuid state.
-sub _make_artifact {
-    my ($self, $base) = @_;
-    require App::Yath2::Log::Artifact;
-    return App::Yath2::Log::Artifact->new(
-        log  => $self->_internal_for_artifact,
-        root => undef,
-        base => $base,
-        live => 0,
-    );
-}
-
-sub _artifacts_root {
-    my $self = shift;
-    require App::Yath2::Log::Artifact;
-    return App::Yath2::Log::Artifact->new(
-        log  => $self->_internal_for_artifact,
-        root => undef,
-        base => undef,
-        live => 0,
-    );
-}
-
-sub _internal_for_artifact {
-    my $self = shift;
-    my $i = $self->_internal;
-    $i->{App::Yath2::DB::Internal::UUID()} //= $self->{+UUID}
-        if defined $self->{+UUID};
-    $i->{App::Yath2::DB::Internal::ARCHIVE_ID()} //= $self->{+ARCHIVE_ID}
-        if defined $self->{+ARCHIVE_ID};
-    return $i;
-}
-
 # ----- Group A: native DBIC primitives feeding role helpers -----
 
 # DB primitive consumed by App::Yath2::Role::DB::Backend::list_files.
@@ -550,27 +510,12 @@ sub _artifact_rows_for_archive {
     return \@rows;
 }
 
-# ----- Group A: delegated to Internal helper -----
+# ----- Native read primitives + local codecs -----
 #
-# These methods carry deeply-coupled flavor-specific behavior (UUID
-# bind shapes, JSON column codecs, datetime parsing, binary payload
-# bind types, the depth-first event walker, and the spec/report
-# reconstruction layer). The Internal helper provides them all over
-# the same dbh; we forward verbatim. Return shapes match Internal
-# exactly so the parameterised cross-backend tests Layer 1 introduces
-# can compare both backends side-by-side.
-#
-# As primitives (e.g. _artifact_rows_for_archive) get extracted to the
-# role and the role's defaults move up in scope, this delegation list
-# shrinks; eventually the BEGIN forwarder above can be retired.
-
-# ----- DB rebuild Phase 2: native read primitives + local codecs -----
-#
-# Codec helpers ported body-for-body from App::Yath2::DB::Internal::*
-# so DBIC speaks canonical Perl values without borrowing an Internal
-# helper. The forwarder above still uses _internal for the
-# Phase 4-7 surface (event/insert/extract/etc); the primitives below
-# are independent.
+# Codec helpers (UUID per-flavor encode/decode, JSON inflate) live
+# here so DBIC speaks the Role::DB::Backend canonical-Perl-values
+# contract. Walker / write methods route through the data-layer
+# wrapper App::Yath2::DB (see _walker_db / _wrap_self_in_db above).
 
 sub _flavor_uuid_to_db {
     my ($self, $u) = @_;
@@ -1150,52 +1095,80 @@ sub subtest_create {
     return $obj->subtest_id;
 }
 
-# ----- DB rebuild Phase 6: write methods routed through App::Yath2::DB
+# ----- Write methods routed through App::Yath2::DB -----
 #
-# The BEGIN-block forwarder above still routes event/events/EOE/reset
-# through the legacy Internal helper (Phase 7 retires that). The write
-# methods (insert/extract/archive/_artifact_save) move to the new data
-# layer here -- they ride the DBIC backend's own write primitives via
-# App::Yath2::DB so the Internal helper is never touched on writes.
+# insert / extract / archive / _artifact_save all route through the
+# data-layer wrapper, which orchestrates over the DBIC backend's own
+# write primitives (defined further up).
 
 sub _wrap_self_in_db {
     my $self = shift;
     require App::Yath2::DB;
-    return $self->{__db_wrapper} //= App::Yath2::DB->new(backend_instance => $self);
+    return $self->{__db_wrapper} //= App::Yath2::DB->_wrap_backend($self);
 }
 
-# Override the BEGIN-installed forwarder by redefining at runtime.
-{
-    no warnings 'redefine';
+sub insert {
+    my ($self, $source, %opts) = @_;
+    my $rv = $self->_wrap_self_in_db->insert($source, %opts);
+    if (my $u = $self->{__db_wrapper}{_last_insert_uuid}) {
+        # Mirror onto the DBIC backend's HashBase UUID slot so
+        # post-insert $backend->uuid returns the new archive's uuid.
+        $self->{+UUID} = $u;
+    }
+    return $rv;
+}
 
-    *insert = sub {
-        my ($self, $source, %opts) = @_;
-        my $rv = $self->_wrap_self_in_db->insert($source, %opts);
-        if (my $u = $self->{__db_wrapper}{_last_insert_uuid}) {
-            # Mirror onto the DBIC backend's HashBase UUID slot so
-            # post-insert $backend->uuid returns the new archive's uuid.
-            $self->{+UUID} = $u;
-        }
-        return $rv;
-    };
+sub extract {
+    my ($self, $dir, %opts) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('extract');
+    return $self->_wrap_self_in_db->extract($uuid, $dir, %opts);
+}
 
-    *extract = sub {
-        my ($self, $dir, %opts) = @_;
-        my $uuid = $self->_implicit_uuid_for_op('extract');
-        return $self->_wrap_self_in_db->extract($uuid, $dir, %opts);
-    };
-
-    *archive = sub {
-        my ($self, $out, %opts) = @_;
-        my $uuid = $self->_implicit_uuid_for_op('archive');
-        return $self->_wrap_self_in_db->archive_to($uuid, $out, %opts);
-    };
+sub archive {
+    my ($self, $out, %opts) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('archive');
+    return $self->_wrap_self_in_db->archive_to($uuid, $out, %opts);
 }
 
 sub _artifact_save {
     my ($self, %p) = @_;
     my $uuid = $self->_implicit_uuid_for_op('_artifact_save');
     return $self->_wrap_self_in_db->save_artifact($uuid, %p);
+}
+
+# Artifact-handle private methods. The role's artifacts() factory binds
+# Log::Artifact handles with log => $self (the backend itself); those
+# handles dispatch the underscore-prefixed family back. Route through
+# the data-layer wrapper so the canonical bytes paths are exercised.
+sub _artifact_exists {
+    my ($self, $rel) = @_;
+    my $uuid = eval { $self->_implicit_uuid_for_op('_artifact_exists') };
+    return (0, 0) if $@;
+    return $self->_wrap_self_in_db->artifact_exists($uuid, $rel);
+}
+
+sub _artifact_read {
+    my ($self, $rel) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_read');
+    return $self->_wrap_self_in_db->artifact_read($uuid, $rel);
+}
+
+sub _artifact_iter_records {
+    my ($self, $base, $stem) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_iter_records');
+    return $self->_wrap_self_in_db->artifact_iter_records($uuid, $base, $stem);
+}
+
+sub _artifact_list_dir {
+    my ($self, $rel) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_list_dir');
+    return $self->_wrap_self_in_db->artifact_list_dir($uuid, $rel);
+}
+
+sub _artifact_open_fh {
+    my ($self, $rel) = @_;
+    my $uuid = $self->_implicit_uuid_for_op('_artifact_open_fh');
+    return $self->_wrap_self_in_db->artifact_open_fh($uuid, $rel);
 }
 
 # Single-archive shortcut: when DBIC was scoped to a uuid via ->scoped,
