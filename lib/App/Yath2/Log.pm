@@ -157,23 +157,6 @@ sub META_PROMOTED_KEYS {
 # older yath) to be consumed.
 sub last_breaking_version { '2.000012' }
 
-# Build the meta.json content for a sealed archive. Returns a hashref
-# with the canonical fields. Fields:
-#
-#   format_version  -- META_FORMAT_VERSION (currently 1)
-#   archive_uuid    -- a fresh UUID (or the caller-supplied one)
-#   created_at      -- ISO-8601 UTC timestamp
-#   host            -- hostname
-#   user            -- $ENV{USER} or getpwuid($<)
-#   git_sha         -- `git rev-parse HEAD` if cwd is in a git repo,
-#                      else undef
-#   project         -- basename of cwd, or undef
-#   yath_version    -- $App::Yath2::Log::VERSION (per the canonical
-#                      version set across the dist)
-#
-# Live dirs do NOT get meta.json -- only sealed forms do. Callers
-# (Directory->archive, DB->insert, etc.) plumb this in explicitly at
-# seal time.
 sub build_archive_meta {
     my ($class, %p) = @_;
 
@@ -595,6 +578,123 @@ glob in C<TMPDIR>.
 
 Updates F<./last_log.yath> atomically. Refuses to overwrite a
 non-symlink at the target path.
+
+=back
+
+=head1 ARCHIVE META
+
+These class methods own the canonical C<meta.json> shape that every
+sealed archive carries. Live workdirs do not have a meta.json --
+only sealed forms (Directory after C<archive()>, DB after
+C<insert(seal =E<gt> 1)>, etc.) do.
+
+=over 4
+
+=item $meta = App::Yath2::Log->build_archive_meta(%opts)
+
+Construct the canonical C<meta.json> hashref for a sealed archive.
+Recognized options:
+
+=over 4
+
+=item C<archive_uuid =E<gt> $uuid>
+
+Use this uuid instead of minting a fresh one.
+
+=item C<cwd =E<gt> $dir>
+
+Override the working directory used to derive C<project> and
+C<git_sha>. Defaults to L<Cwd/getcwd>.
+
+=back
+
+Returns a hashref with the following fields:
+
+=over 4
+
+=item C<format_version>
+
+Currently C<1> (see C<META_FORMAT_VERSION>).
+
+=item C<archive_uuid>
+
+A fresh UUID, or the caller-supplied one.
+
+=item C<created_at>
+
+ISO-8601 UTC timestamp.
+
+=item C<host>
+
+Hostname (from L<Sys::Hostname>; falls back to C<unknown>).
+
+=item C<user>
+
+C<$ENV{USER}>, C<$ENV{USERNAME}>, or C<getpwuid($E<lt>)> -- whichever
+resolves first.
+
+=item C<git_sha>
+
+C<git rev-parse HEAD> when C<cwd> sits inside a git repo, otherwise
+C<undef>. Best effort: silently C<undef> on any failure.
+
+=item C<project>
+
+Basename of C<cwd>, or C<undef>.
+
+=item C<yath_version>
+
+C<$App::Yath2::Log::VERSION> (the canonical version stamp the dist
+shares).
+
+=back
+
+Callers (Directory's C<archive>, DB's C<insert>, etc.) plumb the
+returned hashref into their own seal paths.
+
+=item $bytes = App::Yath2::Log->encode_archive_meta($meta)
+
+Encode a meta hashref to UTF-8 JSON bytes. Pure
+L<Test2::Harness2::Util::JSON> wrapper.
+
+=item $kind = App::Yath2::Log->detect_file_kind($path)
+
+Sniff a file's on-disk kind. Returns C<sqlite>, C<tar.zidx>, or
+C<unknown>. SQLite databases match the 16-byte
+C<'SQLite format 3\0'> header at offset 0; sealed yath archives
+(both formats) carry the 64-byte YATHFOOT trailer with a 4-byte
+C<format_id> distinguishing them. Used by C<-E<gt>new(file =E<gt>
+$path)> to dispatch to the right backend.
+
+=back
+
+=head2 Constants
+
+=over 4
+
+=item App::Yath2::Log::META_FORMAT_VERSION
+
+Current value: C<1>.
+
+=item App::Yath2::Log::META_FILENAME
+
+Current value: C<'meta.json'>.
+
+=item @keys = App::Yath2::Log->META_PROMOTED_KEYS
+
+The canonical meta.json keys promoted to typed C<archives> table
+columns. Anything else lands in C<archives.meta_extras> as JSON.
+
+=item $ver = App::Yath2::Log->last_breaking_version
+
+Earliest C<archive_version> this dist can read. The DB read path
+refuses any archive whose stamp is lower; there is no auto-migration.
+
+=item App::Yath2::Log::LAST_LOG_SYMLINK
+
+Filename of the in-cwd symlink that always points at the most recent
+archive a C<yath test> run produced from this working directory.
+Currently C<'last_log.yath'>.
 
 =back
 

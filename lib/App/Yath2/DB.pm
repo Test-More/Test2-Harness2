@@ -13,6 +13,19 @@ use Time::HiRes ();
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Util::UUID qw/gen_uuid/;
 
+use Object::HashBase qw{
+    <backend
+    +uuid
+    +archive_id
+    +sealed
+    +_insert_source
+    +_project_id
+    +_last_insert_uuid
+    +_walk
+    +_seen_starts
+    +_closed_starts
+};
+
 # App::Yath2::DB is the backend-agnostic data access + transformation
 # layer for yath log archives stored in a database. Construct via
 # ->new(...) (or its back-compat alias ->open(...)); both return an
@@ -32,21 +45,6 @@ sub open { my $class = shift; $class->new(@_) }
 # ->new returns an App::Yath2::DB instance wrapping a backend
 # ---------------------------------------------------------------------------
 
-# Slot keys for the wrapper instance. Kept as bare constants (not
-# Object::HashBase) because some callers may want to mix this class
-# with their own role consumption later; minimal accessor surface keeps
-# the implementation transparent.
-sub _BACKEND        () { 'backend' }
-sub _UUID           () { 'uuid' }
-sub _AID            () { 'archive_id' }
-sub _SEALED            () { 'sealed' }
-sub _INSERT_SOURCE     () { '_insert_source' }
-sub _PROJECT_ID        () { '_project_id' }
-sub _LAST_INSERT_UUID  () { '_last_insert_uuid' }
-sub _WALK              () { '_walk' }
-sub _SEEN_STARTS       () { '_seen_starts' }
-sub _CLOSED_STARTS     () { '_closed_starts' }
-
 # Internal-only constructor: wrap an already-built backend instance (a
 # doer of App::Yath2::Role::DB::Backend) in a new App::Yath2::DB. Used
 # by App::Yath2::DB::SQL / App::Yath2::DB::DBIC's _wrap_self_in_db so
@@ -58,16 +56,20 @@ sub _wrap_backend {
     croak "_wrap_backend requires a backend that does App::Yath2::Role::DB::Backend"
         unless eval { $backend->DOES('App::Yath2::Role::DB::Backend') };
 
-    my $self = bless { _BACKEND() => $backend }, $class;
+    my $self = bless { BACKEND() => $backend }, $class;
     if (defined (my $u = $args{uuid})) {
-        $self->{_UUID()} = _canon_uuid($u);
+        $self->{+UUID} = _canon_uuid($u);
     }
     elsif ($backend->can('uuid') && defined (my $bu = $backend->uuid)) {
-        $self->{_UUID()} = _canon_uuid($bu);
+        $self->{+UUID} = _canon_uuid($bu);
     }
     return $self;
 }
 
+# Our constructor dispatches on backend selection rather than blessing
+# directly the way Object::HashBase's auto-new() would; suppress the
+# HashBase-generated new() so this dispatcher takes over cleanly.
+no warnings 'redefine';
 sub new {
     my ($class, %args) = @_;
 
@@ -102,11 +104,11 @@ sub new {
     }
 
     my $self = bless {
-        _BACKEND() => $backend,
+        BACKEND() => $backend,
     }, $class;
 
     if (defined (my $u = $args{uuid})) {
-        $self->{_UUID()} = _canon_uuid($u);
+        $self->{+UUID} = _canon_uuid($u);
     }
 
     return $self;
@@ -116,17 +118,17 @@ sub new {
 # Accessors
 # ---------------------------------------------------------------------------
 
-sub backend { $_[0]->{_BACKEND()} }
-sub dbh     { $_[0]->{_BACKEND()}->dbh }
-sub flavor  { $_[0]->{_BACKEND()}->flavor }
+# `backend()` is provided by Object::HashBase via the `<backend` slot.
+sub dbh     { $_[0]->{+BACKEND}->dbh }
+sub flavor  { $_[0]->{+BACKEND}->flavor }
 
 # True after insert(seal => 1) appended the YATHFOOT trailer.
-sub sealed  { $_[0]->{_SEALED()} ? 1 : 0 }
+sub sealed  { $_[0]->{+SEALED} ? 1 : 0 }
 
 # Schema bootstrap is owned by the backend (see
 # App::Yath2::Role::DB::Backend); expose a thin pass-through so callers
 # operating on a wrapper can bootstrap without reaching for ->backend.
-sub bootstrap_schema { my $self = shift; $self->{_BACKEND()}->bootstrap_schema(@_) }
+sub bootstrap_schema { my $self = shift; $self->{+BACKEND}->bootstrap_schema(@_) }
 
 # DB-backed logs have no on-disk path per artifact. Mirrors the
 # Role::DB::Backend default, exposed here so App::Yath2::Log::DB can
@@ -140,21 +142,21 @@ sub absolute_path {
 
 sub uuid {
     my $self = shift;
-    return $self->{_UUID()} if defined $self->{_UUID()};
+    return $self->{+UUID} if defined $self->{+UUID};
     # After insert(), the most recently created archive uuid is exposed
-    # via $self->{_LAST_INSERT_UUID()}; mirror back-compat with the
+    # via $self->{+_LAST_INSERT_UUID}; mirror back-compat with the
     # bare-backend ->uuid contract that callers depended on.
-    return $self->{_LAST_INSERT_UUID()} if defined $self->{_LAST_INSERT_UUID()};
+    return $self->{+_LAST_INSERT_UUID} if defined $self->{+_LAST_INSERT_UUID};
     return undef;
 }
 
 # Resolved DB id for the scoped uuid. Lazy.
 sub archive_id {
     my $self = shift;
-    return $self->{_AID()} if defined $self->{_AID()};
-    return undef unless defined $self->{_UUID()};
-    $self->{_AID()} = $self->_resolve_archive_id($self->{_UUID()});
-    return $self->{_AID()};
+    return $self->{+ARCHIVE_ID} if defined $self->{+ARCHIVE_ID};
+    return undef unless defined $self->{+UUID};
+    $self->{+ARCHIVE_ID} = $self->_resolve_archive_id($self->{+UUID});
+    return $self->{+ARCHIVE_ID};
 }
 
 # Return a NEW App::Yath2::DB scoped to $uuid, sharing the same backend.
@@ -162,8 +164,8 @@ sub scoped {
     my ($self, $uuid) = @_;
     croak "scoped() requires a uuid" unless defined $uuid;
     my $clone = bless {
-        _BACKEND() => $self->{_BACKEND()},
-        _UUID()    => _canon_uuid($uuid),
+        BACKEND() => $self->{+BACKEND},
+        UUID() => _canon_uuid($uuid),
     }, ref($self);
     return $clone;
 }
@@ -269,12 +271,12 @@ sub _format_iso8601 {
 
 sub archives {
     my $self = shift;
-    return map { $_->{archive_uuid} } @{ $self->{_BACKEND()}->archive_rows };
+    return map { $_->{archive_uuid} } @{ $self->{+BACKEND}->archive_rows };
 }
 
 sub archive_count {
     my $self = shift;
-    return $self->{_BACKEND()}->archive_count;
+    return $self->{+BACKEND}->archive_count;
 }
 
 sub has_archive {
@@ -311,7 +313,7 @@ sub _resolve_archive_id {
     my $canon = _canon_uuid($uuid)
         or croak "bad uuid: $uuid";
 
-    my $row = $self->{_BACKEND()}->archive_for_uuid($canon)
+    my $row = $self->{+BACKEND}->archive_for_uuid($canon)
         or croak "no archive '$canon' in this DB";
     $self->_check_archive_version($canon, $row->{archive_version});
     return $row->{archive_id};
@@ -323,7 +325,7 @@ sub _resolve_archive_id {
 # zero-archive or ambiguous multi-archive cases).
 sub _implicit_uuid {
     my $self = shift;
-    return $self->{_UUID()} if defined $self->{_UUID()};
+    return $self->{+UUID} if defined $self->{+UUID};
     my @uuids = $self->archives;
     croak "no archives in this DB" unless @uuids;
     croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
@@ -348,7 +350,7 @@ sub _shape_uuid_args {
     if (@args && defined $args[0] && _canon_uuid($args[0])) {
         return @args;    # ($uuid, @rest) shape
     }
-    return ($self->{_UUID()}, @args);    # implicit-uuid shape
+    return ($self->{+UUID}, @args);    # implicit-uuid shape
 }
 
 sub _check_archive_version {
@@ -372,7 +374,7 @@ sub meta {
     my $canon = _canon_uuid($uuid)
         or croak "bad uuid: $uuid";
 
-    my $row = $self->{_BACKEND()}->archive_for_uuid($canon)
+    my $row = $self->{+BACKEND}->archive_for_uuid($canon)
         or croak "no archive '$canon' in this DB";
     $self->_check_archive_version($canon, $row->{archive_version});
 
@@ -403,7 +405,7 @@ sub runs {
     my $self = shift;
     my ($uuid) = $self->_shape_uuid_args(@_);
     my $aid = $self->_resolve_archive_id($uuid);
-    return map { $_->{run_ord} } @{ $self->{_BACKEND()}->run_rows($aid) };
+    return map { $_->{run_ord} } @{ $self->{+BACKEND}->run_rows($aid) };
 }
 
 sub services {
@@ -411,14 +413,14 @@ sub services {
     my ($uuid, $run_ord) = $self->_shape_uuid_args(@_);
     my $aid = $self->_resolve_archive_id($uuid);
     if (defined $run_ord) {
-        croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-        my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
+        croak "no such run: $run_ord" unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+        my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
         my @rows = sort { $a->{name} cmp $b->{name} }
-            @{ $self->{_BACKEND()}->service_rows($aid, run_id => $rid) };
+            @{ $self->{+BACKEND}->service_rows($aid, run_id => $rid) };
         return map { $_->{name} } @rows;
     }
     my @rows = sort { $a->{name} cmp $b->{name} }
-        @{ $self->{_BACKEND()}->service_rows($aid, run_id => undef) };
+        @{ $self->{+BACKEND}->service_rows($aid, run_id => undef) };
     return map { $_->{name} } @rows;
 }
 
@@ -427,9 +429,9 @@ sub jobs {
     my ($uuid, $run_ord) = $self->_shape_uuid_args(@_);
     croak "run_id is required" unless defined $run_ord;
     my $aid = $self->_resolve_archive_id($uuid);
-    croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-    my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
-    return map { $_->{job_ord} } @{ $self->{_BACKEND()}->job_rows($aid, $rid) };
+    croak "no such run: $run_ord" unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+    my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
+    return map { $_->{job_ord} } @{ $self->{+BACKEND}->job_rows($aid, $rid) };
 }
 
 sub tries {
@@ -438,12 +440,12 @@ sub tries {
     croak "run_id is required" unless defined $run_ord;
     croak "job_id is required" unless defined $job_ord;
     my $aid = $self->_resolve_archive_id($uuid);
-    croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-    my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
+    croak "no such run: $run_ord" unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+    my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
     croak "no such job: $run_ord/$job_ord"
-        unless $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
-    my $jid = $self->{_BACKEND()}->job_id_for_ord($aid, $rid, $job_ord);
-    return map { $_->{try_ord} } @{ $self->{_BACKEND()}->try_rows($jid) };
+        unless $self->{+BACKEND}->job_exists($aid, $rid, $job_ord);
+    my $jid = $self->{+BACKEND}->job_id_for_ord($aid, $rid, $job_ord);
+    return map { $_->{try_ord} } @{ $self->{+BACKEND}->try_rows($jid) };
 }
 
 sub last_try {
@@ -454,12 +456,12 @@ sub last_try {
     croak "run_id is required" unless defined $run_ord;
     croak "job_id is required" unless defined $job_ord;
     my $aid = $self->_resolve_archive_id($uuid);
-    croak "no such run: $run_ord" unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-    my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
+    croak "no such run: $run_ord" unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+    my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
     croak "no such job: $run_ord/$job_ord"
-        unless $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
-    my $jid = $self->{_BACKEND()}->job_id_for_ord($aid, $rid, $job_ord);
-    my @t = map { $_->{try_ord} } @{ $self->{_BACKEND()}->try_rows($jid) };
+        unless $self->{+BACKEND}->job_exists($aid, $rid, $job_ord);
+    my $jid = $self->{+BACKEND}->job_id_for_ord($aid, $rid, $job_ord);
+    my @t = map { $_->{try_ord} } @{ $self->{+BACKEND}->try_rows($jid) };
     return undef unless @t;
     return $t[-1];
 }
@@ -474,7 +476,7 @@ sub has_run {
     return 0 unless $run_ord =~ /^\d+\z/;
     my $aid = eval { $self->_resolve_archive_id($uuid) };
     return 0 unless defined $aid;
-    return $self->{_BACKEND()}->run_exists($aid, $run_ord);
+    return $self->{+BACKEND}->run_exists($aid, $run_ord);
 }
 
 sub has_job {
@@ -486,9 +488,9 @@ sub has_job {
     return 0 unless $job_ord =~ /^\d+\z/;
     my $aid = eval { $self->_resolve_archive_id($uuid) };
     return 0 unless defined $aid;
-    return 0 unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-    my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
-    return $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
+    return 0 unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+    my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
+    return $self->{+BACKEND}->job_exists($aid, $rid, $job_ord);
 }
 
 sub has_try {
@@ -502,11 +504,11 @@ sub has_try {
     return 0 unless $try_ord =~ /^\d+\z/;
     my $aid = eval { $self->_resolve_archive_id($uuid) };
     return 0 unless defined $aid;
-    return 0 unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-    my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
-    return 0 unless $self->{_BACKEND()}->job_exists($aid, $rid, $job_ord);
-    my $jid = $self->{_BACKEND()}->job_id_for_ord($aid, $rid, $job_ord);
-    return $self->{_BACKEND()}->try_exists($jid, $try_ord);
+    return 0 unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+    my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
+    return 0 unless $self->{+BACKEND}->job_exists($aid, $rid, $job_ord);
+    my $jid = $self->{+BACKEND}->job_id_for_ord($aid, $rid, $job_ord);
+    return $self->{+BACKEND}->try_exists($jid, $try_ord);
 }
 
 sub has_service {
@@ -516,11 +518,11 @@ sub has_service {
     my $aid = eval { $self->_resolve_archive_id($uuid) };
     return 0 unless defined $aid;
     if (defined $run_ord) {
-        return 0 unless $self->{_BACKEND()}->run_exists($aid, $run_ord);
-        my $rid = $self->{_BACKEND()}->run_id_for_ord($aid, $run_ord);
-        return $self->{_BACKEND()}->service_exists($aid, $name, $rid);
+        return 0 unless $self->{+BACKEND}->run_exists($aid, $run_ord);
+        my $rid = $self->{+BACKEND}->run_id_for_ord($aid, $run_ord);
+        return $self->{+BACKEND}->service_exists($aid, $name, $rid);
     }
-    return $self->{_BACKEND()}->service_exists($aid, $name, undef);
+    return $self->{+BACKEND}->service_exists($aid, $name, undef);
 }
 
 # ---------------------------------------------------------------------------
@@ -531,12 +533,12 @@ sub list_files {
     my $self = shift;
     my ($uuid) = $self->_shape_uuid_args(@_);
     my $aid = $self->_resolve_archive_id($uuid);
-    my $rows = $self->{_BACKEND()}->artifact_rows_for_archive($aid);
+    my $rows = $self->{+BACKEND}->artifact_rows_for_archive($aid);
     my @paths;
     for my $row (@$rows) {
-        my $base = $self->{_BACKEND()}->_base_for_artifact_row($row);
+        my $base = $self->{+BACKEND}->_base_for_artifact_row($row);
         next unless defined $base;
-        my $stem = $self->{_BACKEND()}->_stem_for_artifact_row($row);
+        my $stem = $self->{+BACKEND}->_stem_for_artifact_row($row);
         next unless defined $stem;
         my $rel = length $base ? "$base/$stem" : $stem;
         $rel .= '.zst' if $row->{compressed};
@@ -567,7 +569,7 @@ sub _parse_artifact_path {
 
     my ($scope_kind, $scope_id);
     my ($run_ord, $job_ord, $try_ord, $service_name);
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
 
     if ($parts[0] eq 'services') {
         return undef unless @parts >= 2;
@@ -732,7 +734,7 @@ sub _is_reconstruct_target {
 sub _entity_exists_for_scope {
     my ($self, $aid, $scope_kind, $scope_id) = @_;
     return 0 unless defined $scope_id;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     if ($scope_kind eq 'run') {
         # scope_id is a run_id; check it belongs to this archive.
         for my $r (@{ $b->run_rows($aid) }) {
@@ -772,7 +774,7 @@ sub _entity_exists_for_scope {
 # advertise both forms.
 sub artifact_exists {
     my ($self, $uuid, $rel) = @_;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = $self->_resolve_archive_id($uuid // $self->{+UUID});
 
     if (defined $rel && ($rel eq 'meta.json' || $rel eq 'meta.json.zst')) {
         return (1, $rel =~ /\.zst\z/ ? 1 : 0);
@@ -787,7 +789,7 @@ sub artifact_exists {
         return (1, $info->{is_zst} ? 1 : 0);
     }
 
-    my $row = $self->{_BACKEND()}->artifact_row_for_scope(
+    my $row = $self->{+BACKEND}->artifact_row_for_scope(
         $aid, $info->{scope_kind}, $info->{scope_id},
         $info->{artifact_kind}, $info->{name},
     );
@@ -801,10 +803,10 @@ sub artifact_exists {
 
 sub artifact_read {
     my ($self, $uuid, $rel) = @_;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = $self->_resolve_archive_id($uuid // $self->{+UUID});
 
     if (defined $rel && ($rel eq 'meta.json' || $rel eq 'meta.json.zst')) {
-        my $rec = $self->meta($uuid // $self->{_UUID()});
+        my $rec = $self->meta($uuid // $self->{+UUID});
         require App::Yath2::Log;
         my $bytes = App::Yath2::Log->encode_archive_meta($rec);
         return $bytes unless $rel =~ /\.zst\z/;
@@ -818,7 +820,7 @@ sub artifact_read {
         return $self->_artifact_read_reconstructed($aid, $info);
     }
 
-    my $row = $self->{_BACKEND()}->artifact_row_for_scope(
+    my $row = $self->{+BACKEND}->artifact_row_for_scope(
         $aid, $info->{scope_kind}, $info->{scope_id},
         $info->{artifact_kind}, $info->{name},
     );
@@ -862,7 +864,7 @@ sub _artifact_read_reconstructed {
 sub artifact_iter_records {
     my ($self, $uuid, $base, $stem) = @_;
     return undef unless defined $stem && length $stem;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = $self->_resolve_archive_id($uuid // $self->{+UUID});
 
     my $rel = defined $base && length $base ? "$base/$stem" : $stem;
 
@@ -878,7 +880,7 @@ sub artifact_iter_records {
         return $records || [];
     }
 
-    my $row = $self->{_BACKEND()}->artifact_row_for_scope(
+    my $row = $self->{+BACKEND}->artifact_row_for_scope(
         $aid, $info->{scope_kind}, $info->{scope_id},
         $info->{artifact_kind}, $info->{name},
     );
@@ -911,7 +913,7 @@ sub artifact_iter_records {
 # _artifact_list_dir contract.
 sub artifact_list_dir {
     my ($self, $uuid, $rel) = @_;
-    my $aid = $self->_resolve_archive_id($uuid // $self->{_UUID()});
+    my $aid = $self->_resolve_archive_id($uuid // $self->{+UUID});
 
     my $info;
     my $kind;
@@ -927,7 +929,7 @@ sub artifact_list_dir {
     }
     return () unless $info;
 
-    my $rows = $self->{_BACKEND()}->artifact_rows_for_archive($aid);
+    my $rows = $self->{+BACKEND}->artifact_rows_for_archive($aid);
 
     my @names;
     for my $row (@$rows) {
@@ -1008,7 +1010,7 @@ sub event {
         if (defined $got) {
             if (my $start = $self->_facet($got, 'harness_collector_start')) {
                 my $cpid = $start->{collector_pid};
-                $self->{_SEEN_STARTS()}{$cpid} = $start if defined $cpid;
+                $self->{+_SEEN_STARTS}{$cpid} = $start if defined $cpid;
                 my $child_base = $self->_base_for_collector_start($start);
                 if (defined $child_base) {
                     my %args = (uuid => $uuid, base => $child_base, collector_pid => $cpid);
@@ -1032,7 +1034,7 @@ sub event {
 
             if (my $end = $self->_facet($got, 'harness_collector_end')) {
                 my $cpid = $end->{collector_pid};
-                $self->{_CLOSED_STARTS()}{$cpid} = 1 if defined $cpid;
+                $self->{+_CLOSED_STARTS}{$cpid} = 1 if defined $cpid;
                 return $self->_inject_identifiers($got, $owner->{ident});
             }
 
@@ -1085,9 +1087,9 @@ sub end_of_events {
 
 sub reset {
     my $self = shift;
-    delete $self->{_WALK()};
-    delete $self->{_SEEN_STARTS()};
-    delete $self->{_CLOSED_STARTS()};
+    delete $self->{+_WALK};
+    delete $self->{+_SEEN_STARTS};
+    delete $self->{+_CLOSED_STARTS};
     return;
 }
 
@@ -1096,7 +1098,7 @@ sub reset {
 # announce the next entity (Run / Job / Service) to descend into.
 sub _walk_state {
     my ($self, $uuid) = @_;
-    return $self->{_WALK()} //= {
+    return $self->{+_WALK} //= {
         stack => [
             $self->_open_artifact_walk(
                 uuid    => $uuid,
@@ -1114,7 +1116,7 @@ sub _walk_state {
 sub _open_artifact_walk {
     my ($self, %args) = @_;
     my $base = $args{base};
-    my $uuid = $args{uuid} // $self->{_UUID()};
+    my $uuid = $args{uuid} // $self->{+UUID};
     my $records = $self->artifact_iter_records($uuid, $base, 'events.jsonl') || [];
     return {
         records       => $records,
@@ -1318,43 +1320,43 @@ sub _artifacts_from_args {
 sub _artifact_exists {
     my ($self, $rel) = @_;
     croak "_artifact_exists requires a uuid-scoped App::Yath2::DB"
-        unless defined $self->{_UUID()};
-    return $self->artifact_exists($self->{_UUID()}, $rel);
+        unless defined $self->{+UUID};
+    return $self->artifact_exists($self->{+UUID}, $rel);
 }
 
 sub _artifact_read {
     my ($self, $rel) = @_;
     croak "_artifact_read requires a uuid-scoped App::Yath2::DB"
-        unless defined $self->{_UUID()};
-    return $self->artifact_read($self->{_UUID()}, $rel);
+        unless defined $self->{+UUID};
+    return $self->artifact_read($self->{+UUID}, $rel);
 }
 
 sub _artifact_iter_records {
     my ($self, $base, $stem) = @_;
     croak "_artifact_iter_records requires a uuid-scoped App::Yath2::DB"
-        unless defined $self->{_UUID()};
-    return $self->artifact_iter_records($self->{_UUID()}, $base, $stem);
+        unless defined $self->{+UUID};
+    return $self->artifact_iter_records($self->{+UUID}, $base, $stem);
 }
 
 sub _artifact_list_dir {
     my ($self, $rel) = @_;
     croak "_artifact_list_dir requires a uuid-scoped App::Yath2::DB"
-        unless defined $self->{_UUID()};
-    return $self->artifact_list_dir($self->{_UUID()}, $rel);
+        unless defined $self->{+UUID};
+    return $self->artifact_list_dir($self->{+UUID}, $rel);
 }
 
 sub _artifact_open_fh {
     my ($self, $rel) = @_;
     croak "_artifact_open_fh requires a uuid-scoped App::Yath2::DB"
-        unless defined $self->{_UUID()};
-    return $self->artifact_open_fh($self->{_UUID()}, $rel);
+        unless defined $self->{+UUID};
+    return $self->artifact_open_fh($self->{+UUID}, $rel);
 }
 
 sub _artifact_save {
     my ($self, %p) = @_;
     croak "_artifact_save requires a uuid-scoped App::Yath2::DB"
-        unless defined $self->{_UUID()};
-    return $self->save_artifact($self->{_UUID()}, %p);
+        unless defined $self->{+UUID};
+    return $self->save_artifact($self->{+UUID}, %p);
 }
 
 # ---------------------------------------------------------------------------
@@ -1385,7 +1387,7 @@ sub save_artifact {
     my $info = $self->_parse_artifact_path($aid, $rel, create => 1)
         or croak "cannot parse artifact path: $rel";
 
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $existing = $b->artifact_row_for_scope(
         $aid, $info->{scope_kind}, $info->{scope_id},
         $info->{artifact_kind}, $info->{name},
@@ -1458,7 +1460,7 @@ sub extract {
     require App::Yath2::Log;
     require App::Yath2::Log::Directory;
 
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $rows = $b->artifact_rows_for_archive($aid, with_payload => 1);
 
     for my $row (@$rows) {
@@ -1591,7 +1593,7 @@ sub insert {
     croak "source log is required" unless defined $source;
 
     croak "Log is sealed; further inserts not permitted"
-        if $self->{_SEALED()};
+        if $self->{+SEALED};
 
     my ($runs, $exclude_runs) = $self->_normalize_run_filters(\%opts);
 
@@ -1627,8 +1629,8 @@ sub insert {
         my $rb_ok = eval { $dbh->rollback; 1 };
         my $rb_err = $@;
         warn "rollback failed after insert error: $rb_err" unless $rb_ok;
-        delete $self->{_INSERT_SOURCE()};
-        delete $self->{_PROJECT_ID()};
+        delete $self->{+_INSERT_SOURCE};
+        delete $self->{+_PROJECT_ID};
         die $err;
     }
 
@@ -1639,23 +1641,23 @@ sub insert {
     # Mirror Internal's return shape: $aid is the integer archive_id row
     # in the destination DB. Callers wanting the archive uuid should
     # read it from $self->{_LAST_INSERT_UUID} or the source meta.
-    $self->{_LAST_INSERT_UUID()} = $meta->{archive_uuid};
+    $self->{+_LAST_INSERT_UUID} = $meta->{archive_uuid};
     return $aid;
 }
 
 # Body of insert(), wrapped by the transactional shell above.
 sub _insert_body {
     my ($self, $source, $meta, $compress, $runs, $exclude_runs) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
 
     # Find or create projects row.
     my $project_name = $meta->{project} // 'unknown';
     my $project_id   = $b->ensure_project_row($project_name);
-    $self->{_PROJECT_ID()} = $project_id;
+    $self->{+_PROJECT_ID} = $project_id;
 
     # Make $source visible to _ensure_job_try_id so it can resolve
     # test_file_id from spec.jsonl when minting jobs rows (NOT NULL).
-    $self->{_INSERT_SOURCE()} = $source;
+    $self->{+_INSERT_SOURCE} = $source;
 
     # Build archive row.
     my %meta_extras;
@@ -1760,7 +1762,7 @@ sub _insert_body {
         });
     }
 
-    delete $self->{_INSERT_SOURCE()};
+    delete $self->{+_INSERT_SOURCE};
 
     # Populate summary rows from the source's spec.jsonl / report.jsonl
     # walks. Without these the DB is unusable for everything but raw
@@ -1919,11 +1921,11 @@ sub _payload_compressed_default {
 # active insert flow because the runs row is already there.
 sub _ensure_run_id {
     my ($self, $aid, $run_ord) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     if ($b->run_exists($aid, $run_ord)) {
         return $b->run_id_for_ord($aid, $run_ord);
     }
-    my $project_id = $self->{_PROJECT_ID()}
+    my $project_id = $self->{+_PROJECT_ID}
         // croak "project_id not set on App::Yath2::DB before _ensure_run_id (call insert() to set it)";
     return $b->ensure_run_row($aid, $run_ord, $project_id);
 }
@@ -1933,7 +1935,7 @@ sub _ensure_run_id {
 # for the (run_ord, job_ord) pair.
 sub _ensure_job_try_id {
     my ($self, $aid, $run_ord, $job_ord, $try_ord) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $rid = $self->_ensure_run_id($aid, $run_ord);
 
     # Existing jobs row?
@@ -1959,10 +1961,10 @@ sub _ensure_job_try_id {
 sub _resolve_test_file_for_job {
     my ($self, $run_ord, $job_ord) = @_;
 
-    my $source = $self->{_INSERT_SOURCE()};
+    my $source = $self->{+_INSERT_SOURCE};
     return undef unless defined $source;
 
-    my $project_id = $self->{_PROJECT_ID()};
+    my $project_id = $self->{+_PROJECT_ID};
     return undef unless defined $project_id;
 
     my @tries = $source->can('tries')
@@ -1977,7 +1979,7 @@ sub _resolve_test_file_for_job {
             or next;
         my $relative = $spec->{relative};
         next unless defined $relative && length $relative;
-        return $self->{_BACKEND()}->ensure_test_file_row($project_id, $relative);
+        return $self->{+BACKEND}->ensure_test_file_row($project_id, $relative);
     }
 
     return undef;
@@ -2018,7 +2020,7 @@ sub _read_all_jsonl_rows {
 # for non-file backends so seal => 1 can refuse them cleanly.
 sub _db_file_path {
     my $self = shift;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     if ($b->can('file')) {
         my $f = $b->file;
         return $f if defined $f;
@@ -2051,7 +2053,7 @@ sub _seal_with_footer {
     # reconnect cleanly. Both backends store the handle in {dbh} (SQL
     # via HashBase, DBIC via storage); for sealing we never expect the
     # caller to use the DB again, but keep state consistent anyway.
-    delete $self->{_BACKEND()}{dbh};
+    delete $self->{+BACKEND}{dbh};
 
     my $body_size = -s $path;
     croak "_seal_with_footer: cannot stat '$path': $!" unless defined $body_size;
@@ -2072,7 +2074,7 @@ sub _seal_with_footer {
         body_size  => $body_size,
     );
 
-    $self->{_SEALED()} = 1;
+    $self->{+SEALED} = 1;
     return;
 }
 
@@ -2150,7 +2152,7 @@ sub _populate_summary_rows {
 
 sub _populate_run_row {
     my ($self, $source, $aid, $run_ord, $project_id) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $dbh = $self->dbh;
 
     my $artifact = eval { $source->artifacts($run_ord) } or return;
@@ -2229,7 +2231,7 @@ sub _populate_run_row {
 
 sub _populate_service_lifetimes {
     my ($self, $source, $aid, $name, $run_ord) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
 
     my $artifact;
     if (defined $run_ord) {
@@ -2320,7 +2322,7 @@ sub _populate_service_lifetimes {
 
 sub _populate_job_rows {
     my ($self, $source, $aid, $run_ord, $job_ord) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $dbh = $self->dbh;
 
     my @tries = $source->can('tries') ? $source->tries($run_ord, $job_ord) : ();
@@ -2433,9 +2435,9 @@ sub _populate_job_rows {
 
     my $test_file_id;
     if (ref($latest_spec) eq 'HASH' && defined $latest_spec->{relative}) {
-        my $project_id = $self->{_PROJECT_ID()};
+        my $project_id = $self->{+_PROJECT_ID};
         if (defined $project_id) {
-            $test_file_id = $self->{_BACKEND()}->ensure_test_file_row(
+            $test_file_id = $self->{+BACKEND}->ensure_test_file_row(
                 $project_id, $latest_spec->{relative},
             );
         }
@@ -2460,7 +2462,7 @@ sub _populate_job_spec {
     return unless ref($spec) eq 'HASH';
     return unless defined $test_file_id;
 
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $dbh = $self->dbh;
 
     # Idempotent: skip if a row already exists for this job_id.
@@ -2585,7 +2587,7 @@ sub _reconstruct_report_records {
 # Find the runs row for $run_id within $aid. Returns the row hashref.
 sub _run_row_by_id {
     my ($self, $aid, $run_id) = @_;
-    for my $r (@{ $self->{_BACKEND()}->run_rows($aid) }) {
+    for my $r (@{ $self->{+BACKEND}->run_rows($aid) }) {
         return $r if $r->{run_id} == $run_id;
     }
     return undef;
@@ -2593,7 +2595,7 @@ sub _run_row_by_id {
 
 sub _reconstruct_run_spec {
     my ($self, $aid, $run_id) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
 
     my $row = $self->_run_row_full($run_id);
     return [] unless $row;
@@ -2615,7 +2617,7 @@ sub _reconstruct_run_spec {
 
 sub _reconstruct_run_report {
     my ($self, $aid, $run_id) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
 
     my $row = $self->_run_row_full($run_id);
     return [] unless $row;
@@ -2685,7 +2687,7 @@ sub _reconstruct_run_report {
 # the same dbh, so this is a single SQL path.
 sub _run_row_full {
     my ($self, $run_id) = @_;
-    my $dbh = $self->{_BACKEND()}->dbh;
+    my $dbh = $self->{+BACKEND}->dbh;
     my $row = $dbh->selectrow_hashref(
         q{SELECT * FROM runs WHERE run_id = ?},
         undef, $run_id,
@@ -2696,13 +2698,13 @@ sub _run_row_full {
     # delegates to its Internal helper, whose Sqlite override is
     # identity -- so we use _flavor_uuid_from_db on DBIC to get the
     # lowercase form.
-    if ($self->{_BACKEND()}->can('_flavor_uuid_from_db')) {
+    if ($self->{+BACKEND}->can('_flavor_uuid_from_db')) {
         $row->{run_uuid_canonical}
-            = $self->{_BACKEND()}->_flavor_uuid_from_db($row->{run_uuid});
+            = $self->{+BACKEND}->_flavor_uuid_from_db($row->{run_uuid});
     }
-    elsif ($self->{_BACKEND()}->can('_uuid_from_db')) {
+    elsif ($self->{+BACKEND}->can('_uuid_from_db')) {
         $row->{run_uuid_canonical}
-            = $self->{_BACKEND()}->_uuid_from_db($row->{run_uuid});
+            = $self->{+BACKEND}->_uuid_from_db($row->{run_uuid});
     }
     else {
         $row->{run_uuid_canonical} = lc("$row->{run_uuid}");
@@ -2712,7 +2714,7 @@ sub _run_row_full {
 
 sub _job_row_full {
     my ($self, $aid, $run_id, $job_ord) = @_;
-    my $dbh = $self->{_BACKEND()}->dbh;
+    my $dbh = $self->{+BACKEND}->dbh;
     return $dbh->selectrow_hashref(
         q{SELECT * FROM jobs WHERE archive_id = ? AND run_id = ? AND job_ord = ?},
         undef, $aid, $run_id, $job_ord,
@@ -2721,7 +2723,7 @@ sub _job_row_full {
 
 sub _reconstruct_service_specs {
     my ($self, $aid, $service_id) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
     my $dbh = $b->dbh;
 
     my ($svc_role) = $dbh->selectrow_array(
@@ -2756,7 +2758,7 @@ sub _reconstruct_service_specs {
 
 sub _reconstruct_service_reports {
     my ($self, $aid, $service_id) = @_;
-    my $b = $self->{_BACKEND()};
+    my $b = $self->{+BACKEND};
 
     my $rows = $b->service_lifetime_rows($service_id);
     return [] unless $rows && @$rows;
@@ -2783,7 +2785,7 @@ sub _reconstruct_service_reports {
 
 sub _reconstruct_job_try_spec {
     my ($self, $aid, $job_try_id) = @_;
-    my $dbh = $self->{_BACKEND()}->dbh;
+    my $dbh = $self->{+BACKEND}->dbh;
 
     my $jt = $dbh->selectrow_hashref(
         q{SELECT * FROM job_tries WHERE job_try_id = ?},
@@ -2840,7 +2842,7 @@ sub _reconstruct_job_try_spec {
 
 sub _reconstruct_job_try_report {
     my ($self, $aid, $job_try_id) = @_;
-    my $dbh = $self->{_BACKEND()}->dbh;
+    my $dbh = $self->{+BACKEND}->dbh;
 
     my $jt = $dbh->selectrow_hashref(
         q{SELECT * FROM job_tries WHERE job_try_id = ?},
@@ -2866,7 +2868,7 @@ sub _reconstruct_job_try_report {
         ],
     );
 
-    my $subtests = $self->{_BACKEND()}->subtest_rows($job_try_id);
+    my $subtests = $self->{+BACKEND}->subtest_rows($job_try_id);
     if ($subtests && @$subtests) {
         my @out;
         for my $s (@$subtests) {
@@ -2893,28 +2895,59 @@ __END__
 
 =head1 NAME
 
-App::Yath2::DB - top-level entry point for yath DB-archive backends.
+App::Yath2::DB - Backend-agnostic data layer for yath DB-archive storage.
+
+=head1 DESCRIPTION
+
+C<App::Yath2::DB> is the data access + transformation layer for yath
+log archives stored in a database. An instance owns the codecs (UUID
+canonicalization, JSON encode/decode, zstd framing, ISO-8601 datetime
+formatting), the path-to-scope translator, the depth-first event
+walker, the spec/report record reconstructor, and the archive-shaped
+read/write API. The actual SQL touches happen on a backend living
+behind C<-E<gt>backend>: either L<App::Yath2::DB::SQL> (raw DBI,
+flavor-aware) or L<App::Yath2::DB::DBIC> (DBIx::Class). Both backends
+implement L<App::Yath2::Role::DB::Backend> and expose only row-level
+primitives; everything higher-level lives here.
+
+A single C<App::Yath2::DB> instance can hold many archives (multi-
+archive sqlite files, server-shaped DBs). Methods that act on an
+archive take C<$uuid> as the first argument, or operate on the
+"scoped uuid" set by C<-E<gt>scoped>. The N=1 case (a single
+archive in the DB) accepts the legacy positional shape without a
+leading uuid.
 
 =head1 SYNOPSIS
 
     use App::Yath2::DB;
 
+    # Connect (sqlite file, by default):
     my $db = App::Yath2::DB->new(file => '/tmp/runs.yath');
 
+    # Server-shaped:
     my $db = App::Yath2::DB->new(
         dsn     => 'dbi:Pg:dbname=yath',
         user    => 'yath',
         pass    => 'yath',
-        backend => 'dbic',
+        backend => 'dbic',          # default 'sql'
     );
 
+    # Multi-archive iteration:
     for my $uuid ($db->archives) {
         my $scoped = $db->scoped($uuid);
         my @runs   = $scoped->runs;
     }
 
-C<App::Yath2::DB-E<gt>open(...)> is preserved as a back-compat alias
-for C<-E<gt>new(...)>; new code should call C<-E<gt>new>.
+    # Single-archive shorthand (when this DB holds exactly one):
+    my @runs = $db->runs;
+    my $meta = $db->meta($uuid);
+
+    # Insert another Log into this DB as a new archive:
+    $db->insert($source_log, seal => 1);
+
+    # Materialize an archive elsewhere:
+    $db->extract($uuid, '/tmp/extracted');
+    $db->archive_to($uuid, '/tmp/run.yath');
 
 =head1 BACKENDS
 
@@ -2924,17 +2957,344 @@ Two implementations of L<App::Yath2::Role::DB::Backend>:
 
 =item C<backend =E<gt> 'sql'> (default)
 
-L<App::Yath2::DB::SQL>. Single class, raw-DBI, flavor-aware.
+L<App::Yath2::DB::SQL>. Raw DBI; flavor differences (UUID bind shape,
+payload binding, MariaDB trigger skip) live inside individual methods.
 
 =item C<backend =E<gt> 'dbic'>
 
-L<App::Yath2::DB::DBIC>. Single class wrapping a
-L<DBIx::Class::Schema>; flavor handled by storage detection.
+L<App::Yath2::DB::DBIC>. Wraps an L<App::Yath2::DB::DBIC::Schema>;
+flavor handled by storage detection.
 
 =back
 
-Both consume L<App::Yath2::Role::DB::Backend>. Bootstrap is always
-driven by C<share/schema/$flavor.sql>; DBIC's C<deploy()> is never
-called.
+Schema bootstrap is always driven by F<share/schema/$flavor.sql> via
+the role; DBIC's C<deploy()> is never called.
+
+=head1 CONSTRUCTORS
+
+=over 4
+
+=item $db = App::Yath2::DB->new(%args)
+
+Pick a backend, instantiate it, and return an C<App::Yath2::DB>
+wrapper around it. Required: exactly one of C<file>, C<dsn>, C<dbh>,
+or C<schema>.
+
+Recognized arguments:
+
+=over 4
+
+=item C<file =E<gt> $path>
+
+SQLite file path. Implies the SQL backend unless overridden.
+
+=item C<dsn =E<gt> $dsn>
+
+DBI DSN. Used together with C<user>, C<pass>, and C<attrs>.
+
+=item C<dbh =E<gt> $handle>
+
+A pre-connected DBI handle.
+
+=item C<schema =E<gt> $dbic_schema>
+
+A pre-connected L<DBIx::Class::Schema>. Implies C<backend =E<gt>
+'dbic'>.
+
+=item C<backend =E<gt> 'sql'> | C<'dbic'>
+
+Pick the backend implementation. Defaults to C<'sql'>.
+
+=item C<uuid =E<gt> $uuid>
+
+Optional. Pre-scope the wrapper to a single archive uuid; equivalent
+to calling C<-E<gt>scoped($uuid)> on a freshly constructed instance.
+
+=back
+
+=item $db = App::Yath2::DB->open(%args)
+
+Back-compat alias for C<-E<gt>new>. New code should call C<-E<gt>new>
+directly.
+
+=item $clone = $db->scoped($uuid)
+
+Return a new C<App::Yath2::DB> sharing this object's backend but
+scoped to C<$uuid>. The clone owns its own walker state, so
+multi-archive walks do not contaminate one another.
+
+=back
+
+=head1 ATTRIBUTES
+
+=over 4
+
+=item $backend = $db->backend
+
+The backend instance (a doer of L<App::Yath2::Role::DB::Backend>).
+
+=item $dbh = $db->dbh
+
+Pass-through to the backend's DBI handle.
+
+=item $flavor = $db->flavor
+
+Pass-through to the backend's flavor (C<sqlite>, C<postgres>,
+C<mysql>, C<mariadb>).
+
+=item $uuid = $db->uuid
+
+The scoped uuid (set by C<scoped> or C<new(uuid =E<gt> ...)>),
+falling back to the most recently inserted archive uuid when set.
+
+=item $aid = $db->archive_id
+
+Lazily resolve and cache the integer C<archive_id> for the scoped
+uuid. Returns C<undef> when no uuid is scoped.
+
+=item $bool = $db->sealed
+
+True after C<insert(seal =E<gt> 1)> appended the YATHFOOT trailer to
+a sqlite-backed DB.
+
+=back
+
+=head1 ARCHIVE LISTING
+
+=over 4
+
+=item @uuids = $db->archives
+
+Return every C<archive_uuid> in this DB.
+
+=item $count = $db->archive_count
+
+Number of archives in this DB.
+
+=item $bool = $db->has_archive($uuid)
+
+Existence check.
+
+=item $meta = $db->meta($uuid)
+
+Reconstruct the C<meta.json> hashref for an archive: typed columns
+from the C<archives> row plus the decoded C<meta_extras> blob.
+
+=item $db->bootstrap_schema
+
+Pass-through to the backend; create the archive schema if absent.
+
+=back
+
+=head1 PER-ARCHIVE LISTING
+
+Each method takes C<$uuid> as its leading argument; for the legacy
+single-archive shape (no leading uuid), the first argument falls
+through to the next positional slot and the wrapper resolves the
+implicit uuid.
+
+=over 4
+
+=item @ords = $db->runs($uuid?)
+
+Run ordinals for an archive.
+
+=item @names = $db->services($uuid?, $run_ord?)
+
+Global services (no run_ord) or run-scoped services.
+
+=item @ords = $db->jobs($uuid?, $run_ord)
+
+Job ordinals under a run.
+
+=item @ords = $db->tries($uuid?, $run_ord, $job_ord)
+
+Try ordinals under a job.
+
+=item $ord = $db->last_try($uuid?, $run_ord, $job_ord)
+
+Highest try ordinal under a job, or C<undef>.
+
+=item $bool = $db->has_run($uuid?, $run_ord)
+=item $bool = $db->has_job($uuid?, $run_ord, $job_ord)
+=item $bool = $db->has_try($uuid?, $run_ord, $job_ord, $try_ord)
+=item $bool = $db->has_service($uuid?, $name, $run_ord?)
+
+Existence checks. Tolerant of malformed input (return 0 rather than
+croak).
+
+=item @paths = $db->list_files($uuid?)
+
+Enumerate every artifact in the archive as on-disk-relative paths.
+
+=back
+
+=head1 ARTIFACTS
+
+=over 4
+
+=item ($exists, $is_zst) = $db->artifact_exists($uuid, $rel)
+
+Probe for an artifact. Returns existence flag and whether the on-disk
+form is C<.zst>-suffixed. Reconstructed standard streams (C<spec.jsonl>
+and C<report.jsonl> on run/service/job_try scopes) advertise both
+suffixed and unsuffixed forms.
+
+=item $bytes = $db->artifact_read($uuid, $rel)
+
+Read the artifact and return bytes in whichever shape the suffix
+implies (compressed when C<.zst>; plaintext otherwise). Reconstructs
+spec/report records from typed columns + extras when the artifact is
+a reconstruct target.
+
+=item $records = $db->artifact_iter_records($uuid, $base, $stem)
+
+Read a JSONL artifact and return an arrayref of decoded records (or
+C<undef> when absent). Reconstructs spec/report on the fly when
+applicable.
+
+=item @names = $db->artifact_list_dir($uuid, $rel)
+
+Basenames at C<$rel>; matches the on-disk Directory backend.
+
+=item $fh = $db->artifact_open_fh($uuid, $rel)
+
+In-memory scalar filehandle around the bytes read by
+C<artifact_read>.
+
+=item $id = $db->save_artifact($uuid, %opts)
+
+Persist (or update) one artifact. Required keys: C<rel>, C<bytes>;
+C<compress =E<gt> 1> requests client-side zstd on flavors that store
+artifacts uncompressed at the server level. C<force_no_overwrite>
+croaks instead of updating an existing row. Returns the canonical
+identifier C<"db:archive=$aid:artifact=$artifact_id">.
+
+=item $id = $db->artifact_save($uuid, %opts)
+
+Alias for C<save_artifact>.
+
+=item $artifact = $db->artifacts($uuid?, ...)
+
+Construct an L<App::Yath2::Log::Artifact> handle bound to a uuid-
+scoped clone of this DB. Accepted positional / hashref shapes match
+the L<App::Yath2::Role::Log/artifacts> contract.
+
+=back
+
+=head1 EVENT WALKER
+
+=over 4
+
+=item $event = $db->event($uuid?, $timeout?)
+
+Next event from the depth-first walk over the archive's collector
+trees.
+
+=item @events = $db->events($uuid?, $timeout?)
+
+Drain every currently-available event.
+
+=item $bool = $db->end_of_events($uuid?)
+
+True when no further events will appear.
+
+=item $bool = $db->EOE($uuid?)
+
+Alias for C<end_of_events>.
+
+=item $db->reset
+
+Reset walker state (stack + collector seen/closed maps).
+
+=back
+
+=head1 CONVERSION / IMPORT
+
+=over 4
+
+=item $log_dir = $db->extract($uuid, $dir, %opts)
+
+Materialize an archive into a directory tree. Options: C<compressed
+=E<gt> 1> preserves C<.zst> suffixes, C<runs =E<gt> [...]> /
+C<exclude_runs =E<gt> [...]> filter the run set. Returns an
+L<App::Yath2::Log::Directory> handle.
+
+=item $dest = $db->archive_to($uuid, $out_path, %opts)
+
+Materialize a sealed archive at C<$out_path>. Recognized formats:
+
+=over 4
+
+=item C<format =E<gt> 'tar.zidx'> (or C<'tar'>)
+
+Default. Extracts to a temp dir then repacks via Log::Directory.
+
+=item C<format =E<gt> 'sqlite'>
+
+Creates a fresh sqlite DB at C<$out_path> and inserts this archive
+into it with C<seal =E<gt> 1>.
+
+=item C<format =E<gt> 'postgres'> | C<'mariadb'> | C<'mysql'>
+
+Not yet supported; croaks. Server-shaped destinations require a
+C<dsn>-based path that has not landed yet.
+
+=back
+
+=item $aid = $db->insert($source_log, %opts)
+
+Insert another Log object's contents (any backend) as a new archive
+in this DB. Recognized options: C<archive_uuid =E<gt> $u> overrides
+the carried meta uuid, C<compress =E<gt> 0> forces every payload to
+plaintext, C<runs =E<gt> [...]> / C<exclude_runs =E<gt> [...]>
+filters the run set, and C<seal =E<gt> 1> appends the YATHFOOT
+trailer (sqlite only). Returns the integer C<archive_id> of the new
+row; the new archive's uuid is exposed via C<-E<gt>uuid> after the
+insert.
+
+=back
+
+=head1 PATH HANDLING
+
+=over 4
+
+=item $abs = $db->absolute_path($rel)
+
+Croaks. DB-backed Logs do not have a per-artifact filesystem path;
+callers wanting on-disk bytes must C<extract> first or read through
+the Artifact API.
+
+=back
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<http://dev.perl.org/licenses/>
 
 =cut

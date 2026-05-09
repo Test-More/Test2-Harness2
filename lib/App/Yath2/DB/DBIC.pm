@@ -1195,7 +1195,20 @@ __END__
 
 =head1 NAME
 
-App::Yath2::DB::DBIC - DBIx::Class backend for yath DB-archive storage.
+App::Yath2::DB::DBIC - DBIx::Class backend for L<App::Yath2::DB>.
+
+=head1 DESCRIPTION
+
+Single-class implementation of L<App::Yath2::Role::DB::Backend>.
+Wraps an L<App::Yath2::DB::DBIC::Schema> instance and exposes the
+role's reader / writer surface. The corresponding raw-DBI sibling is
+L<App::Yath2::DB::SQL>; both are interchangeable behind L<App::Yath2::DB>.
+
+Schema bootstrap is driven by F<share/schema/$flavor.sql> via
+L<App::Yath2::Role::DB::Backend>; C<DBIC-E<gt>deploy> is never called.
+
+End users construct via L<App::Yath2::DB> with C<backend =E<gt>
+'dbic'>; this class is rarely instantiated directly except by tests.
 
 =head1 SYNOPSIS
 
@@ -1206,17 +1219,216 @@ App::Yath2::DB::DBIC - DBIx::Class backend for yath DB-archive storage.
         backend => 'dbic',
     );
 
+    # Same surface as the SQL backend:
     my $scoped = $db->scoped($uuid);
     my @runs   = $scoped->runs;
 
-=head1 DESCRIPTION
+    # Caller-supplied schema:
+    my $schema = App::Yath2::DB::DBIC::Schema->connect(...);
+    my $db = App::Yath2::DB->new(schema => $schema);
 
-Single-class implementation of L<App::Yath2::Role::DB::Backend>.
-Wraps an L<App::Yath2::DB::DBIC::Schema> instance and exposes the
-role's reader / writer surface.
+=head1 ATTRIBUTES
 
-Schema bootstrap is driven by F<share/schema/$flavor.sql> via
-L<App::Yath2::Role::DB::Backend>; C<deploy()> is never called.
+=over 4
+
+=item $val = $self->file
+=item $val = $self->dsn
+=item $val = $self->user
+=item $val = $self->pass
+=item $val = $self->attrs
+=item $val = $self->dbh
+
+DBI-style connection attributes; the DBIC schema is built from these
+when one was not supplied directly.
+
+=item $schema = $self->schema
+
+The wrapped L<DBIx::Class::Schema>.
+
+=item $val = $self->uuid
+
+Scoped archive uuid (when one was set at construction time).
+
+=item $val = $self->archive_id
+
+Resolved integer C<archive_id> for the scoped uuid.
+
+=item $bool = $self->sealed
+
+True when the archive has had its YATHFOOT trailer appended.
+
+=item $val = $self->flavor_override
+
+Optional flavor override; when set, takes precedence over storage
+detection.
+
+=back
+
+=head1 METHODS
+
+The reader, writer, and bootstrap surface required by
+L<App::Yath2::Role::DB::Backend>. Where the role spec covers the
+contract, only DBIC-specific notes appear below.
+
+=head2 Lifecycle
+
+=over 4
+
+=item $self->init
+
+Object construction hook. Connects the schema (if not supplied
+directly), runs C<bootstrap_schema>, and resolves a single-archive
+shortcut when one is appropriate.
+
+=item $flavor = $self->flavor
+
+Detect flavor from the C<schema>'s storage driver class, the DSN, or
+the explicit C<flavor_override>.
+
+=item $sql = $self->preprocess_schema_sql($sql)
+
+Per-flavor schema massaging (matches L<App::Yath2::DB::SQL>:
+C<COMPRESSION lz4> stripping for Postgres, MariaDB-trigger pruning,
+etc.).
+
+=back
+
+=head2 Multi-archive surface
+
+=over 4
+
+=item @uuids = $self->archives
+=item $count = $self->archive_count
+=item $bool = $self->has_archive($uuid)
+=item $clone = $self->scoped($uuid)
+
+=back
+
+=head2 Per-archive listing surface
+
+=over 4
+
+=item @names = $self->services(...)
+=item @ords = $self->runs
+=item @ords = $self->jobs($run_ord)
+=item @ords = $self->tries($run_ord, $job_ord)
+=item $ord = $self->last_try($run_ord, $job_ord)
+=item $bool = $self->has_service($name, $rid?)
+=item $bool = $self->has_run($run_ord)
+=item $bool = $self->has_job($run_ord, $job_ord)
+=item $bool = $self->has_try($run_ord, $job_ord, $try_ord)
+
+=back
+
+=head2 Row primitives (multi-archive)
+
+=over 4
+
+=item $rows = $self->archive_rows
+=item $row = $self->archive_for_uuid($uuid)
+
+=back
+
+=head2 Row primitives (per-archive)
+
+=over 4
+
+=item $rows = $self->run_rows($aid)
+=item $rows = $self->service_rows($aid, %opts)
+=item $rows = $self->job_rows($aid, $run_id)
+=item $rows = $self->try_rows($job_id)
+=item $rows = $self->job_spec_rows($aid, $run_id, $job_ord)
+=item $rows = $self->service_lifetime_rows($service_id)
+=item $rows = $self->subtest_rows($job_try_id)
+
+=back
+
+=head2 Existence checks
+
+=over 4
+
+=item $bool = $self->run_exists($aid, $run_ord)
+=item $bool = $self->job_exists($aid, $rid, $job_ord)
+=item $bool = $self->try_exists($jid, $try_ord)
+=item $bool = $self->service_exists($aid, $name, $rid_or_undef)
+
+=back
+
+=head2 Id resolution
+
+=over 4
+
+=item $id = $self->run_id_for_ord($aid, $run_ord)
+=item $id = $self->job_id_for_ord($aid, $rid, $job_ord)
+=item $id = $self->try_id_for_ord($jid, $try_ord)
+=item $id = $self->service_id_for_name($aid, $name, $rid_or_run_ord)
+
+=back
+
+=head2 Artifact rows
+
+=over 4
+
+=item $rows = $self->artifact_rows_for_archive($aid, %opts)
+=item $row = $self->artifact_row_for_scope($aid, $scope_kind, $scope_id, $artifact_kind, $name)
+=item $bytes = $self->artifact_payload($artifact_id)
+
+=back
+
+=head2 Walker pass-through
+
+The walker lives on L<App::Yath2::DB>; these methods route through a
+self-referential C<App::Yath2::DB> instance so direct calls produce
+the correct walker behavior.
+
+=over 4
+
+=item $event = $self->event(...)
+=item @events = $self->events(...)
+=item $bool = $self->end_of_events(...)
+=item $bool = $self->EOE(...)
+=item $self->reset
+
+=back
+
+=head2 Conversion / import pass-through
+
+=over 4
+
+=item $aid = $self->insert(...)
+=item $log_dir = $self->extract($dir, %opts)
+=item $self->archive($out_path, %opts)
+
+=back
+
+=head2 Write primitives
+
+The data layer in L<App::Yath2::DB> drives these during inserts and
+artifact saves.
+
+=over 4
+
+=item $aid = $self->archive_create($fields)
+=item $self->mark_sealed($aid)
+
+=item $id = $self->ensure_project_row($name)
+=item $id = $self->ensure_test_file_row($project_id, $relative)
+=item $id = $self->ensure_run_row($aid, $run_ord, $project_id)
+=item $id = $self->ensure_service_row($aid, $name, $rid_or_undef)
+=item $id = $self->ensure_job_row($aid, $rid, $job_ord, $test_file_id)
+=item $id = $self->ensure_job_try_row($jid, $try_ord)
+
+Create-or-find primitives. Idempotent.
+
+=item $id = $self->artifact_create($fields)
+=item $self->artifact_update($artifact_id, $fields)
+=item $self->job_spec_create($job_id, $fields)
+=item $self->service_lifetime_create($service_id, $fields)
+=item $self->subtest_create($job_try_id, $fields)
+
+Pure inserts / updates. Field shaping is the data layer's job.
+
+=back
 
 =head1 SOURCE
 

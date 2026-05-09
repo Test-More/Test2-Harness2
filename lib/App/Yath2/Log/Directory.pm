@@ -35,10 +35,13 @@ use Object::HashBase qw{
     +closed_starts
 };
 
-# Role::Log is applied at the bottom of this file (after every sub
-# is defined) so role defaults yield to our existing implementations
-# without triggering "Subroutine X redefined" warnings.
+# `with` is safe at the top because every method here is a regular
+# `sub name { ... }` declaration -- those BEGIN-elevate, so they exist
+# at compile time when the role's `requires` check runs. (The late-with
+# workaround is only needed for `*name = sub { ... }` assignments,
+# which never BEGIN-elevate.)
 use Role::Tiny::With;
+with 'App::Yath2::Role::Log';
 
 # Directory-backed Log reader. Implements the full reader API for a
 # yath log laid out as a normal filesystem tree. Sealed (post-extract,
@@ -1019,8 +1022,6 @@ sub _dir_non_empty {
     closedir($dh);
     return 0;
 }
-
-with 'App::Yath2::Role::Log';
 
 1;
 

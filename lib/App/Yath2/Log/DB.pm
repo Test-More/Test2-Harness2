@@ -11,6 +11,14 @@ use Object::HashBase qw{
     <uuid
 };
 
+# `with` is safe at the top because every method here is a regular
+# `sub name { ... }` declaration -- those BEGIN-elevate, so they exist
+# at compile time when the role's `requires` check runs. (The late-with
+# workaround is only needed for `*name = sub { ... }` assignments,
+# which never BEGIN-elevate.)
+use Role::Tiny::With;
+with 'App::Yath2::Role::Log';
+
 # Thin wrapper around an App::Yath2::DB instance plus an archive UUID.
 # Every Role::Log method is a one-liner delegating to $self->db with
 # our cached uuid prepended.
@@ -85,12 +93,6 @@ sub _artifact_save  { my $s = shift; $s->{+DB}->save_artifact ($s->{+UUID}, @_) 
 # layer produces.
 sub artifacts       { my $s = shift; $s->{+DB}->artifacts      ($s->{+UUID}, @_) }
 
-# Apply the Log role after our own methods are installed so role
-# defaults (which would otherwise be installed first and then
-# clobbered, generating redefine warnings) yield to our definitions.
-use Role::Tiny::With;
-with 'App::Yath2::Role::Log';
-
 1;
 
 __END__
@@ -101,7 +103,25 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Log::DB - thin wrapper for DB-backed yath log archives.
+App::Yath2::Log::DB - Thin Log proxy in front of an L<App::Yath2::DB> archive.
+
+=head1 DESCRIPTION
+
+A consumer of L<App::Yath2::Role::Log>: a single C<App::Yath2::Log::DB>
+instance binds an L<App::Yath2::DB> handle to a single archive uuid
+and exposes the same archive-shaped surface every other Log backend
+(L<App::Yath2::Log::Directory>, L<App::Yath2::Log::TarZIdx>,
+L<App::Yath2::Log::Live>) does.
+
+Every method here is a one-liner forwarder: read methods delegate to
+the wrapped C<App::Yath2::DB> instance with this object's cached
+C<uuid> prepended; the walker entry points use a uuid-scoped clone of
+the underlying DB so walker state lives per-instance rather than on
+the multi-archive parent. Construction is the only nontrivial step
+in this class.
+
+The C<uuid> is fixed for the object's lifetime; switch archives by
+constructing a new C<App::Yath2::Log::DB> against the same C<App::Yath2::DB>.
 
 =head1 SYNOPSIS
 
@@ -111,16 +131,108 @@ App::Yath2::Log::DB - thin wrapper for DB-backed yath log archives.
     my $db = App::Yath2::DB->new(file => '/tmp/runs.yath');
     for my $uuid ($db->archives) {
         my $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
+        my @runs = $log->runs;
         ...;
     }
 
-=head1 DESCRIPTION
+L<App::Yath2::Log/new> already constructs one of these for you when
+you hand it a C<file =E<gt> $path>, C<dbh =E<gt> $h>, or C<dsn =E<gt>
+$d> argument; direct construction is mostly for callers who already
+have an C<App::Yath2::DB> in hand.
 
-Archive-shaped wrapper: same public surface as
-L<App::Yath2::Log::Directory> and L<App::Yath2::Log::TarZIdx>. Read
-methods delegate to L<App::Yath2::DB> with the cached C<uuid>.
+=head1 ATTRIBUTES
 
-The C<uuid> is fixed for this object's lifetime.
+=over 4
+
+=item $db = $log->db
+
+The wrapped L<App::Yath2::DB> instance.
+
+=item $uuid = $log->uuid
+
+The archive uuid this Log proxies. Fixed for the object's lifetime.
+
+=back
+
+=head1 METHODS
+
+This class consumes L<App::Yath2::Role::Log>; see that role for the
+contract every method below satisfies. All methods are pass-throughs
+to the wrapped C<App::Yath2::DB>.
+
+=head2 Construction
+
+=over 4
+
+=item $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid)
+
+Both C<db> and C<uuid> are required. C<db> must be an
+L<App::Yath2::DB> instance.
+
+=back
+
+=head2 Listing pass-throughs
+
+=over 4
+
+=item @names = $log->services($run_ord?)
+=item @ords = $log->runs
+=item @ords = $log->jobs($run_ord)
+=item @ords = $log->tries($run_ord, $job_ord)
+=item $ord = $log->last_try($run_ord, $job_ord)
+=item $bool = $log->has_service($name, $run_ord?)
+=item $bool = $log->has_run($run_ord)
+=item $bool = $log->has_job($run_ord, $job_ord)
+=item $bool = $log->has_try($run_ord, $job_ord, $try_ord)
+=item @paths = $log->list_files
+
+=back
+
+=head2 Path / artifact handle
+
+=over 4
+
+=item $abs = $log->absolute_path($rel)
+
+Croaks; DB-backed Logs do not have a per-artifact filesystem path.
+
+=item $artifact = $log->artifacts(...)
+
+L<App::Yath2::Log::Artifact> handle. The returned handle binds to a
+uuid-scoped clone of the underlying L<App::Yath2::DB>, so its private
+C<_artifact_*> calls land on C<App::Yath2::DB> directly without a
+second hop through this class.
+
+=back
+
+=head2 Walker
+
+Walker entry points use a uuid-scoped clone of the underlying DB so
+state lives per-Log-instance.
+
+=over 4
+
+=item $event = $log->event($timeout?)
+=item @events = $log->events($timeout?)
+=item $bool = $log->end_of_events
+=item $bool = $log->EOE
+=item $log->reset
+
+=back
+
+=head2 Conversion / import
+
+=over 4
+
+=item $log_dir = $log->extract($dir, %opts)
+=item $log->archive($out_path, %opts)
+=item $aid = $log->insert($source_log, %opts)
+
+C<insert> reverses the data flow: it calls back into the underlying
+L<App::Yath2::DB> to copy a source Log's contents into this DB as a
+new archive.
+
+=back
 
 =head1 SOURCE
 

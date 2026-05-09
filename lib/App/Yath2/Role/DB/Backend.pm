@@ -390,57 +390,225 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Role::DB::Backend - the role yath DB-archive backends consume.
-
-=head1 SYNOPSIS
-
-    package MyBackend;
-    use Role::Tiny::With;
-    # ... define every required method ...
-    with 'App::Yath2::Role::DB::Backend';
+App::Yath2::Role::DB::Backend - Contract every yath DB-archive backend consumes.
 
 =head1 DESCRIPTION
 
-The role L<App::Yath2::Log::DB> depends on. Two implementations satisfy
-it: L<App::Yath2::DB::SQL> (raw SQL) and L<App::Yath2::DB::DBIC>
-(DBIx::Class).
-
-=head1 REQUIRED METHODS
-
-=head2 Group A -- per-archive (require resolved uuid)
-
-C<services>, C<runs>, C<jobs>, C<tries>, C<last_try>,
-C<has_service>, C<has_run>, C<has_job>, C<has_try>,
-C<artifacts>, C<event>, C<events>, C<end_of_events>, C<reset>,
-C<list_files>, C<extract>, C<archive>, C<insert>.
-
-=head2 Group B -- multi-archive
-
-C<archives>, C<archive_count>, C<has_archive>, C<scoped>, C<flavor>,
-C<dbh>.
-
-=head1 PROVIDED METHODS
+The L<Role::Tiny> role L<App::Yath2::DB> hands control to. Two
+implementations satisfy it:
 
 =over 4
 
-=item bootstrap_schema()
+=item L<App::Yath2::DB::SQL>
 
-Reads C<share/schema/$flavor.sql>, runs C<preprocess_schema_sql>,
-splits, executes. Idempotent. DBIC's C<deploy()> is never called.
+Single-class raw-DBI backend. Flavor differences (UUID bind shape,
+payload binding, MariaDB trigger skip) live inside individual methods
+rather than per-flavor subclasses.
 
-=item preprocess_schema_sql($sql)
+=item L<App::Yath2::DB::DBIC>
 
-Default identity. Consumers override for flavor quirks.
-
-=item schema_file()
-
-Locates C<share/schema/$flavor.sql> in the dev tree first, then the
-installed share dir.
-
-=item _is_bootstrapped()
-
-Probes for the C<archives> table.
+Single-class L<DBIx::Class>-backed implementation that wraps an
+L<App::Yath2::DB::DBIC::Schema>.
 
 =back
+
+The role splits responsibilities into two layers: high-level
+archive-shaped methods provided by the role (flavor-agnostic
+orchestration on top of the consumer's primitives), and low-level
+DB-touching primitives that each consumer implements directly.
+Schema bootstrap is uniform: the role reads
+F<share/schema/$flavor.sql>, runs C<preprocess_schema_sql>, splits
+on statement boundaries, and executes. C<DBIC-E<gt>deploy> is never
+called.
+
+=head1 SYNOPSIS
+
+    package My::Yath::Backend;
+    use strict;
+    use warnings;
+
+    use Role::Tiny::With;
+    with 'App::Yath2::Role::DB::Backend';
+
+    # ... define every required method (see REQUIRED METHODS) ...
+
+    1;
+
+=head1 REQUIRED METHODS
+
+Each consumer must implement every method below.
+
+=head2 Connection / introspection
+
+=over 4
+
+=item $dbh = $backend->dbh
+
+Return a live DBI handle. The role's bootstrap path uses this
+directly.
+
+=item $flavor = $backend->flavor
+
+One of C<sqlite>, C<postgres>, C<mysql>, or C<mariadb>. Drives
+schema selection and per-flavor SQL fragments.
+
+=item $aid = $backend->_archive_id_or_die
+
+Resolve the integer C<archive_id> for the backend's currently scoped
+archive uuid, croaking when no scope has been resolved.
+
+=back
+
+=head2 Multi-archive surface
+
+=over 4
+
+=item @uuids = $backend->archives
+
+Return every C<archive_uuid> in this DB.
+
+=item $count = $backend->archive_count
+
+Number of archive rows in this DB.
+
+=item $bool = $backend->has_archive($uuid)
+
+Existence check for a given archive uuid.
+
+=item $scoped = $backend->scoped($uuid)
+
+Return a clone of this backend scoped to the named archive.
+
+=back
+
+=head2 Per-archive listing surface
+
+The same surface L<App::Yath2::Role::Log> describes, plus an
+C<insert> sink. Implementers must provide:
+
+=over 4
+
+=item *
+
+C<services>, C<runs>, C<jobs>, C<tries>, C<last_try>
+
+=item *
+
+C<has_service>, C<has_run>, C<has_job>, C<has_try>
+
+=item *
+
+C<event>, C<events>, C<end_of_events>, C<reset>
+
+=item *
+
+C<extract>, C<archive>, C<insert>
+
+=back
+
+See L<App::Yath2::Role::Log> for per-method semantics.
+
+=head2 Artifact row primitive
+
+=over 4
+
+=item $rows = $backend->_artifact_rows_for_archive($archive_id)
+
+Return an arrayref of row hashes for every artifact in the archive.
+Each row carries C<artifact_kind>, C<format>, C<name>, C<compressed>,
+the three nullable scope FK columns (C<run_id>, C<service_id>,
+C<job_try_id>), and the joined ord/name columns the helpers below
+consume (C<run_ord>, C<service_name>, C<j_run_ord>, etc.).
+
+=back
+
+=head1 PROVIDED METHODS
+
+Defaults installed by this role. Consumers may override for flavor
+quirks.
+
+=head2 Schema bootstrap
+
+=over 4
+
+=item $backend->bootstrap_schema
+
+Read C<share/schema/$flavor.sql>, preprocess, split, execute.
+Idempotent (no-op when the C<archives> table already exists).
+
+=item $sql = $backend->preprocess_schema_sql($sql)
+
+Identity by default. Consumers override to massage the schema text
+for live-server quirks (e.g. stripping C<COMPRESSION lz4> when the
+Postgres build lacks LZ4).
+
+=item $path = $backend->schema_file
+
+Locate C<share/schema/$flavor.sql> in the dev tree first, then the
+installed share directory.
+
+=back
+
+=head2 Archive-shaped helpers
+
+=over 4
+
+=item $abs = $backend->absolute_path($rel)
+
+Croaks. DB-backed Logs do not have a per-artifact filesystem path;
+callers wanting on-disk bytes must C<extract> into a directory or
+read through the Artifact API.
+
+=item $artifact = $backend->artifacts(...)
+
+Factory for L<App::Yath2::Log::Artifact> handles. Pure arg-parsing
+and base-path construction; the per-row DB lookups happen later when
+the Artifact is queried. Accepted shapes:
+
+    ()                              # archive root
+    ({key => val, ...})             # hashref form
+    ($run_ord)                      # run by ord
+    ($service_name)                 # global service
+    ($run_ord, $service_name)       # run-scoped service
+    ($run_ord, $job_ord)            # job at last_try
+    ($run_ord, $job_ord, $try_ord)  # specific job try
+
+=item @paths = $backend->list_files
+
+Enumerate every artifact in the currently scoped archive as an
+on-disk-relative path. Drives extract / archive serialization and
+the C<inspect> CLI.
+
+=back
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<http://dev.perl.org/licenses/>
 
 =cut

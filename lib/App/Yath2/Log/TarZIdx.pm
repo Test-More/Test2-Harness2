@@ -37,10 +37,13 @@ use App::Yath2::Log::Iterator::JSONL;
 
 use Object::HashBase qw/path +_index +_seen_starts +_closed_starts +_walk/;
 
-# Role::Log is applied at the bottom of this file (after every sub
-# is defined) so role defaults yield to our existing implementations
-# without triggering "Subroutine X redefined" warnings.
+# `with` is safe at the top because every method here is a regular
+# `sub name { ... }` declaration -- those BEGIN-elevate, so they exist
+# at compile time when the role's `requires` check runs. (The late-with
+# workaround is only needed for `*name = sub { ... }` assignments,
+# which never BEGIN-elevate.)
 use Role::Tiny::With;
+with 'App::Yath2::Role::Log';
 
 # tar.zidx is the single archive format yath produces. Layout:
 # a USTAR-format tar with per-entry payloads (each individually
@@ -1413,8 +1416,6 @@ sub _decompress_multi_frame {
 }
 
 # }}}
-
-with 'App::Yath2::Role::Log';
 
 1;
 

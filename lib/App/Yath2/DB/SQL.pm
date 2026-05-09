@@ -1389,17 +1389,283 @@ __END__
 
 =head1 NAME
 
-App::Yath2::DB::SQL - raw-DBI backend for App::Yath2::DB.
+App::Yath2::DB::SQL - Raw-DBI backend for L<App::Yath2::DB>.
 
 =head1 DESCRIPTION
 
-Single-class backend implementing L<App::Yath2::Role::DB::Backend> via
-direct DBI calls. Flavor differences (UUID bind shape, payload binding,
-MariaDB trigger skip) are handled inside individual methods.
+Single-class backend implementing L<App::Yath2::Role::DB::Backend>
+through direct DBI calls. One class handles every supported flavor
+(C<sqlite>, C<postgres>, C<mysql>, C<mariadb>); flavor-specific
+differences (UUID bind shape, payload binding, MariaDB trigger skip,
+ANSI_QUOTES session toggle) live inside individual methods rather
+than in per-flavor subclasses.
+
+End users construct via L<App::Yath2::DB>; this class is rarely
+instantiated directly except by tests and the wrapper code paths in
+L<App::Yath2::DB>.
+
+=head1 SYNOPSIS
+
+    use App::Yath2::DB;
+
+    # The usual entry point: App::Yath2::DB picks this backend by
+    # default and wraps it.
+    my $db = App::Yath2::DB->new(file => '/tmp/run.yath');
+
+    # Direct construction (rare; tests / internals):
+    use App::Yath2::DB::SQL;
+    my $backend = App::Yath2::DB::SQL->new(file => '/tmp/run.yath');
+    my @uuids   = $backend->archives;
+
+=head1 ATTRIBUTES
+
+=over 4
+
+=item $val = $self->dsn
+
+Connection DSN.
+
+=item $val = $self->user
+
+DBI user.
+
+=item $val = $self->pass
+
+DBI password.
+
+=item $val = $self->attrs
+
+DBI connection attributes (hashref).
+
+=item $val = $self->file
+
+SQLite file path (for the C<file =E<gt>> entry point).
+
+=item $dbh = $self->dbh
+
+Live DBI handle. Connects on demand when only one of C<file>/C<dsn>
+was supplied.
+
+=back
+
+=head1 METHODS
+
+The reader, writer, and bootstrap surface required by
+L<App::Yath2::Role::DB::Backend>. Where the role spec covers the
+contract, only backend-specific notes appear below.
+
+=head2 Connection / introspection
+
+=over 4
+
+=item $self->init
+
+Object construction hook. Validates that one of C<file>, C<dbh>, or
+C<dsn> was supplied, connects, applies per-flavor session state
+(C<ANSI_QUOTES> for MySQL / MariaDB), and runs C<bootstrap_schema>.
+
+=item $flavor = $self->flavor
+
+Detect flavor from the DSN, the DBI driver name, or the file
+extension; cached on first read.
+
+=item $sql = $self->preprocess_schema_sql($sql)
+
+Per-flavor schema massaging: strips C<COMPRESSION lz4> when the
+Postgres server build lacks LZ4, drops MariaDB-incompatible
+fragments, etc.
+
+=back
+
+=head2 Row primitives (multi-archive surface)
+
+=over 4
+
+=item $rows = $self->archive_rows
+
+Every C<archives> row, each as a hashref with the typed columns
+plus a decoded C<meta_extras>.
+
+=item $row = $self->archive_for_uuid($uuid)
+
+Lookup by archive uuid; C<undef> when absent.
+
+=item $count = $self->archive_count
+
+Number of archives in this DB.
+
+=back
+
+=head2 Row primitives (per-archive)
+
+These methods take an C<$archive_id> (resolved by L<App::Yath2::DB>
+from a uuid). Each returns an arrayref of row hashes.
+
+=over 4
+
+=item $rows = $self->run_rows($aid)
+=item $rows = $self->service_rows($aid, %opts)
+=item $rows = $self->job_rows($aid, $run_id)
+=item $rows = $self->try_rows($job_id)
+=item $rows = $self->job_spec_rows($aid, $run_id, $job_ord)
+=item $rows = $self->service_lifetime_rows($service_id)
+=item $rows = $self->subtest_rows($job_try_id)
+
+=back
+
+=head2 Existence checks
+
+=over 4
+
+=item $bool = $self->run_exists($aid, $run_ord)
+=item $bool = $self->job_exists($aid, $rid, $job_ord)
+=item $bool = $self->try_exists($jid, $try_ord)
+=item $bool = $self->service_exists($aid, $name, $rid_or_undef)
+
+=back
+
+=head2 Id resolution
+
+=over 4
+
+=item $id = $self->run_id_for_ord($aid, $run_ord)
+=item $id = $self->job_id_for_ord($aid, $rid, $job_ord)
+=item $id = $self->try_id_for_ord($jid, $try_ord)
+=item $id = $self->service_id_for_name($aid, $name, $rid_or_run_ord)
+
+=back
+
+=head2 Artifact rows
+
+=over 4
+
+=item $rows = $self->artifact_rows_for_archive($aid, %opts)
+
+Every artifact row for the archive, joined to the scope tables so
+the row-to-path helpers in L<App::Yath2::Role::DB::Backend> can
+build on-disk-relative paths. C<with_payload =E<gt> 1> includes the
+C<payload> blob.
+
+=item $row = $self->artifact_row_for_scope($aid, $scope_kind, $scope_id, $artifact_kind, $name)
+
+Lookup a single artifact row by its scope tuple.
+
+=item $bytes = $self->artifact_payload($artifact_id)
+
+Read just the payload bytes for one artifact.
+
+=back
+
+=head2 Walker pass-through
+
+The walker lives on L<App::Yath2::DB>; these methods wrap a
+self-referential C<App::Yath2::DB> instance so direct calls to a
+C<App::Yath2::DB::SQL> handle still produce the correct walker
+behavior.
+
+=over 4
+
+=item $event = $self->event(...)
+=item @events = $self->events(...)
+=item $bool = $self->end_of_events(...)
+=item $bool = $self->EOE(...)
+=item $self->reset
+
+=back
+
+=head2 Listing pass-through (legacy single-archive shape)
+
+These methods route through C<-E<gt>_implicit_uuid_for_op> and the
+self-wrapped L<App::Yath2::DB>, preserving the bare-backend single-
+archive contract callers depended on before the rebuild.
+
+=over 4
+
+=item @uuids = $self->archives
+=item $bool = $self->has_archive($uuid)
+=item @names = $self->services(...)
+=item @ords = $self->runs
+=item @ords = $self->jobs($run_ord)
+=item @ords = $self->tries($run_ord, $job_ord)
+=item $ord = $self->last_try($run_ord, $job_ord)
+=item $bool = $self->has_run($run_ord)
+=item $bool = $self->has_job($run_ord, $job_ord)
+=item $bool = $self->has_try($run_ord, $job_ord, $try_ord)
+=item $bool = $self->has_service($name, $run_ord?)
+=item $clone = $self->scoped($uuid)
+=item $aid = $self->insert(...)
+=item $uuid = $self->uuid
+=item $bool = $self->sealed
+=item $log_dir = $self->extract($dir, %opts)
+=item $self->archive($out_path, %opts)
+
+=back
+
+=head2 Write primitives
+
+The data layer in L<App::Yath2::DB> calls these to mint rows during
+C<insert> and C<save_artifact>. Each returns the new row's primary key
+(or, for the C<ensure_*> helpers, the existing row's id when one was
+already present).
+
+=over 4
+
+=item $aid = $self->archive_create($fields)
+
+Insert a new C<archives> row.
+
+=item $self->mark_sealed($aid)
+
+Update C<sealed_at> on an archive row to mark it sealed.
+
+=item $id = $self->ensure_project_row($name)
+=item $id = $self->ensure_test_file_row($project_id, $relative)
+=item $id = $self->ensure_run_row($aid, $run_ord, $project_id)
+=item $id = $self->ensure_service_row($aid, $name, $rid_or_undef)
+=item $id = $self->ensure_job_row($aid, $rid, $job_ord, $test_file_id)
+=item $id = $self->ensure_job_try_row($jid, $try_ord)
+
+Create-or-find primitives. Idempotent.
+
+=item $id = $self->artifact_create($fields)
+=item $self->artifact_update($artifact_id, $fields)
+=item $self->job_spec_create($job_id, $fields)
+=item $self->service_lifetime_create($service_id, $fields)
+=item $self->subtest_create($job_try_id, $fields)
+
+Pure inserts / updates. The data layer is responsible for shaping
+C<$fields> appropriately for each table.
+
+=back
 
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
 L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<http://dev.perl.org/licenses/>
 
 =cut
