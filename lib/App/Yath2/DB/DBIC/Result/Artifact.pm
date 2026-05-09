@@ -55,6 +55,10 @@ __PACKAGE__->add_columns(
         data_type   => 'integer',
         is_nullable => 0,
     },
+    row_count => {
+        data_type   => 'integer',
+        is_nullable => 1,
+    },
     payload => {
         data_type   => 'blob',
         is_nullable => 0,

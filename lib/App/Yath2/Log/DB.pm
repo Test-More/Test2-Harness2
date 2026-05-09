@@ -58,22 +58,19 @@ sub _artifact_iter_records { my $s = shift; $s->{+DB}->artifact_iter_records ($s
 sub _artifact_list_dir     { my $s = shift; $s->{+DB}->artifact_list_dir     ($s->{+UUID}, @_) }
 sub _artifact_open_fh      { my $s = shift; $s->{+DB}->artifact_open_fh      ($s->{+UUID}, @_) }
 
-# Walker: App::Yath2::DB owns the depth-first event walker now. Each
-# Log::DB instance carries its own scoped DB so walker state stays
-# per-uuid (matches the role contract: each Log handle owns its own
-# walker state).
-sub event           { my $s = shift; $s->_scoped_db->event        ($s->{+UUID}, @_) }
-sub events          { my $s = shift; $s->_scoped_db->events       ($s->{+UUID}, @_) }
-sub end_of_events   { my $s = shift; $s->_scoped_db->end_of_events($s->{+UUID}) }
-sub EOE             { my $s = shift; $s->_scoped_db->EOE          ($s->{+UUID}) }
-sub reset           { my $s = shift; $s->_scoped_db->reset        ($s->{+UUID}) }
+# Walker: App::Yath2::DB::Iterator owns the depth-first event walker
+# now. Each Log::DB instance lazily builds (and caches) one iterator
+# bound to (db, uuid); ->reset rewinds the cached iterator instead of
+# allocating a new one so callers see consistent walker state.
+sub event           { my $s = shift; $s->_iter->next }
+sub events          { my $s = shift; $s->_iter->all  }
+sub end_of_events   { my $s = shift; $s->_iter->EOE  }
+sub EOE             { my $s = shift; $s->_iter->EOE  }
+sub reset           { my $s = shift; $s->_iter->reset }
 
-# Use a uuid-scoped clone of the underlying App::Yath2::DB so walker
-# state lives in this Log::DB instance (rather than on the shared
-# multi-archive DB). Lazy + cached.
-sub _scoped_db {
+sub _iter {
     my $self = shift;
-    return $self->{_scoped_db} //= $self->{+DB}->scoped($self->{+UUID});
+    return $self->{_iter} //= $self->{+DB}->iterator($self->{+UUID});
 }
 
 # Write paths flow through App::Yath2::DB directly.
@@ -207,15 +204,21 @@ second hop through this class.
 
 =head2 Walker
 
-Walker entry points use a uuid-scoped clone of the underlying DB so
-state lives per-Log-instance.
+Walker entry points are thin wrappers around a cached
+L<App::Yath2::DB::Iterator>. The iterator is built lazily on first
+use; C<reset> rewinds the cached iterator rather than allocating a new
+one so callers see consistent walker state across calls.
 
 =over 4
 
-=item $event = $log->event($timeout?)
-=item @events = $log->events($timeout?)
+=item $event = $log->event
+
+=item @events = $log->events
+
 =item $bool = $log->end_of_events
+
 =item $bool = $log->EOE
+
 =item $log->reset
 
 =back

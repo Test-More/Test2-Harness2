@@ -237,6 +237,7 @@ CREATE TABLE artifacts (
     format               VARCHAR(64)  NOT NULL,
     name                 VARCHAR(255),
     compressed           TINYINT(1)   NOT NULL,
+    row_count            INTEGER,
     payload              LONGBLOB     NOT NULL,
     created_at           DATETIME(6)  NOT NULL,
     sealed               TINYINT(1)   NOT NULL DEFAULT 0,

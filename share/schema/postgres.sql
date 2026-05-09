@@ -218,6 +218,7 @@ CREATE TABLE artifacts (
     format          TEXT            NOT NULL,
     name            TEXT,
     compressed      BOOLEAN         NOT NULL,
+    row_count       INTEGER,
     payload         BYTEA           COMPRESSION zstd NOT NULL,
     created_at      TIMESTAMPTZ     NOT NULL,
     sealed          BOOLEAN         NOT NULL DEFAULT FALSE,

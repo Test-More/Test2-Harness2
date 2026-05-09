@@ -84,9 +84,11 @@ for_each_db_version([qw/postgresql/], sub {
 
     App::Yath2::DB->open(dsn => $dsn, backend => $backend)->insert(App::Yath2::Log->new(dir => $src));
 
-    my $log = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
+    my ($u) = $db->archives;
+    my $log = $db->iterator($u);
     my @collected;
-    while (my $e = $log->event(0)) {
+    while (my $e = $log->next) {
     push @collected => $e;
     last if @collected > 100;
     }
@@ -120,16 +122,18 @@ for_each_db_version([qw/postgresql/], sub {
     }
 
     $log->reset;
-    my $first = $log->event(0);
+    my $first = $log->next;
     is($first->{facet_data}{harness}{note}, 'harness up', 'reset rewinds');
 
     {
-    my $log2 = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
-    my @first = $log2->events(0);
+    my $db2 = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
+    my ($u2) = $db2->archives;
+    my $iter2 = $db2->iterator($u2);
+    my @first = $iter2->all;
     is(scalar(@first), scalar(@collected),
-        'events() first call returns full record set');
-    my @second = $log2->events(0);
-    is(\@second, [undef], 'events() returns (undef) once drained');
+        'all() first call returns full record set');
+    my @second = $iter2->all;
+    is(\@second, [], 'all() returns () once drained');
     }
 
     });

@@ -17,22 +17,22 @@ use Object::HashBase qw{
 use Role::Tiny::With;
 
 # Walker / write methods route through the data-layer wrapper
-# (App::Yath2::DB), which carries every transformation, codec, and
-# walker-state slot. The role's `requires` list is checked at compile
-# time when `with` runs, so each method must be defined before that
-# point.
-sub event         { my $s = shift; my $db = $s->_walker_db; $db->event($db->uuid, @_) }
-sub events        { my $s = shift; my $db = $s->_walker_db; $db->events($db->uuid, @_) }
-sub end_of_events { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
-sub EOE           { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
-sub reset         { my $s = shift; my $db = $s->_walker_db; $db->reset($db->uuid) }
+# (App::Yath2::DB), which carries every transformation and codec. The
+# walker is now an App::Yath2::DB::Iterator owned by this backend's
+# wrapper; cache it so successive event() calls share the same stack.
+# The role's `requires` list is checked at compile time when `with`
+# runs, so each method must be defined before that point.
+sub event         { my $s = shift; $s->_walker_iter->next }
+sub events        { my $s = shift; $s->_walker_iter->all  }
+sub end_of_events { my $s = shift; $s->_walker_iter->EOE  }
+sub EOE           { my $s = shift; $s->_walker_iter->EOE  }
+sub reset         { my $s = shift; $s->_walker_iter->reset }
 
-sub _walker_db {
+sub _walker_iter {
     my $self = shift;
-    return $self->{__walker_db} //= do {
-        require App::Yath2::DB;
+    return $self->{__walker_iter} //= do {
         my $u = $self->_implicit_uuid_for_op('event');
-        App::Yath2::DB->_wrap_backend($self, uuid => $u);
+        $self->_wrap_self_in_db->iterator($u);
     };
 }
 
@@ -787,6 +787,7 @@ sub artifact_rows_for_archive {
             format        => $a->format,
             name          => $a->name,
             compressed    => $a->compressed ? 1 : 0,
+            row_count     => $a->row_count,
         );
         if (my $svc = $a->service) {
             $r{service_name} = $svc->name;
@@ -846,6 +847,7 @@ sub artifact_row_for_scope {
     return {
         artifact_id => $row->artifact_id,
         compressed  => $row->compressed ? 1 : 0,
+        row_count   => $row->row_count,
         payload     => $row->payload,
         format      => $row->format,
     };
@@ -857,6 +859,25 @@ sub artifact_payload {
     my $row = $self->{+SCHEMA}->resultset('Artifact')->find($artifact_id);
     return undef unless $row;
     return $row->payload;
+}
+
+# Sum row_count across every events artifact in this archive. Returns
+# undef when no events rows exist. Croaks if any matching row has a
+# NULL row_count -- that is a data-layer bug (insert side must always
+# populate row_count for events artifacts).
+sub artifact_event_count_for_archive {
+    my ($self, $aid) = @_;
+    croak "archive_id required" unless defined $aid;
+
+    my $rs = $self->{+SCHEMA}->resultset('Artifact')->search(
+        { archive_id => $aid, artifact_kind => 'events' },
+    );
+
+    my $null_rows = $rs->search({ row_count => undef })->count;
+    croak "events artifact rows with NULL row_count in archive $aid (data-layer bug)"
+        if $null_rows;
+
+    return $rs->get_column('row_count')->sum;
 }
 
 # -- spec / report data layer ----------------------------------------------

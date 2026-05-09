@@ -21,6 +21,9 @@ use Object::HashBase qw{
     +read_all
 };
 
+use Role::Tiny::With;
+with 'App::Yath2::Role::EventIterator';
+
 # Iterator over a single .jsonl(.zst) file or an in-memory record list.
 # Used by the per-artifact events / spec / report iterators returned by
 # Artifact->events_iter, spec_iter, report_iter. Decoupled from the
@@ -265,6 +268,14 @@ L<App::Yath2::Log::Artifact/report_iter>. Wraps a
 L<Test2::Harness2::Util::JSONL::Reader> with the convenience methods
 the reader API requires (C<next>, C<first>, C<last>, C<count>,
 C<EOE>, C<reset>).
+
+Consumes L<App::Yath2::Role::EventIterator>; the role's required
+methods (C<next>, C<EOE>, C<reset>, C<count>) are all native here, and
+C<all> / C<first> are usable through the role contract too. The
+local C<first> / C<last> implementations on this class are kept
+because they internally cache the full record list (fast for spec /
+report files) -- functionally equivalent to the role default for
+C<first>, plus an extra C<last> not on the role.
 
 Two construction forms are supported:
 

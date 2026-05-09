@@ -222,6 +222,7 @@ CREATE TABLE artifacts (
     format          TEXT    NOT NULL,
     name            TEXT,
     compressed      INTEGER NOT NULL,
+    row_count       INTEGER,
     payload         BLOB    NOT NULL,
     created_at      TEXT    NOT NULL,
     sealed          INTEGER NOT NULL DEFAULT 0,

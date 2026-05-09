@@ -3,14 +3,24 @@ use Test2::Util::UUID qw/gen_uuid/;
 
 use App::Yath2::Log::DB;
 
-# Mock App::Yath2::DB recording every method call. Phase 7 ditched the
-# legacy backend chain: walker, write, and artifacts traffic now all
-# land on $self->db with our cached uuid prepended.
+# Mock App::Yath2::DB recording every method call. Walker traffic now
+# routes through an App::Yath2::DB::Iterator built by ->iterator($u);
+# everything else lands on $self->db with our cached uuid prepended.
+{
+    package Test::IterStub;
+    sub new { bless { calls => [], parent => $_[1] }, $_[0] }
+    sub next  { push @{$_[0]{parent}{calls}}, ['event'];        'rv' }
+    sub all   { push @{$_[0]{parent}{calls}}, ['events'];       ('rv') }
+    sub EOE   { push @{$_[0]{parent}{calls}}, ['end_of_events']; 1 }
+    sub reset { push @{$_[0]{parent}{calls}}, ['reset'];        'rv' }
+    sub count { 0 }
+}
+
 {
     package Test::ProxyDB;
     use App::Yath2::DB;
     our @ISA = ('App::Yath2::DB');
-    sub new { bless { calls => [], scoped_count => 0 }, shift }
+    sub new { bless { calls => [], iterator_count => 0 }, shift }
     sub _record {
         my ($self, @a) = @_;
         push @{$self->{calls}}, [@a];
@@ -29,24 +39,11 @@ use App::Yath2::Log::DB;
         no strict 'refs';
         *{$m} = sub { my $self = shift; $self->_record($m => @_); 'rv' };
     }
-    # scoped() returns a uuid-bound sibling that records walker calls
-    # back into the parent so the test can assert on them.
-    sub scoped {
+    sub iterator {
         my ($self, $uuid) = @_;
-        $self->{scoped_count}++;
-        my $sib = bless { parent => $self, uuid => $uuid }, ref($self);
-        return $sib;
-    }
-    # Walker delegates: record on the parent (so the test's $db->{calls}
-    # captures everything from one place).
-    for my $m (qw{event events end_of_events EOE reset}) {
-        no strict 'refs';
-        *{$m} = sub {
-            my $self = shift;
-            my $target = $self->{parent} // $self;
-            $target->_record($m => @_);
-            return 'rv';
-        };
+        $self->{iterator_count}++;
+        $self->{last_iter_uuid} = $uuid;
+        return Test::IterStub->new($self);
     }
 }
 
@@ -77,15 +74,16 @@ my $calls = $db->{calls};
 is($calls->[0], [services => $u, 2], 'services delegated with uuid');
 is($calls->[1], [runs     => $u],    'runs delegated with uuid');
 
-# Walker methods (event/events/EOE/reset) route through a uuid-scoped
-# clone of the App::Yath2::DB. The clone is cached, so repeated walker
-# calls only trigger one ->scoped() call.
+# Walker methods (event/events/EOE/reset) route through an
+# App::Yath2::DB::Iterator built lazily by ->iterator($u). The
+# iterator is cached, so repeated walker calls only trigger one
+# ->iterator($u) call.
 $log->event;
 $log->event;
-is($db->{scoped_count}, 1, 'scoped() called exactly once for walker chain');
+is($db->{iterator_count}, 1, 'iterator() called exactly once for walker chain');
+is($db->{last_iter_uuid}, $u, 'iterator built with our uuid');
 my @walker_calls = grep { $_->[0] eq 'event' } @{$db->{calls}};
-is(scalar(@walker_calls), 2, 'two event() delegations recorded');
-is($walker_calls[0], [event => $u], 'event delegated with uuid');
+is(scalar(@walker_calls), 2, 'two event() delegations recorded on iterator stub');
 
 # insert routes through App::Yath2::DB->insert (no uuid -- insert
 # discovers / creates the archive).

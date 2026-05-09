@@ -26,9 +26,6 @@ use Object::HashBase qw{
     +_insert_source
     +_project_id
     +_last_insert_uuid
-    +_walk
-    +_seen_starts
-    +_closed_starts
 };
 
 # App::Yath2::DB is the backend-agnostic data access + transformation
@@ -224,6 +221,22 @@ sub _compress_blob {
     my ($self, $bytes) = @_;
     require Test2::Harness2::Util::Zstd;
     return Test2::Harness2::Util::Zstd::compress_blob($bytes);
+}
+
+# Count newline-terminated records in an events.jsonl payload. Returns
+# the integer count. When $compressed is true the payload is multi-frame
+# zstd and gets decompressed first. Used by the insert path to populate
+# artifacts.row_count for events artifacts so $iter->count() can answer
+# without re-decoding the payload.
+sub _events_row_count_for_payload {
+    my ($self, $bytes, $compressed) = @_;
+    return 0 unless defined $bytes && length $bytes;
+    my $plain = $compressed ? $self->_decompress_jsonl_bytes($bytes) : $bytes;
+    my $count = 0;
+    $count++ while $plain =~ /\n/g;
+    # Final line without trailing newline still counts as a record.
+    $count++ if length($plain) && substr($plain, -1) ne "\n";
+    return $count;
 }
 
 sub _decode_json {
@@ -980,210 +993,18 @@ sub artifact_save {
 }
 
 # ---------------------------------------------------------------------------
-# Event walker (depth-first walk over collector trees)
+# Event iteration
 # ---------------------------------------------------------------------------
 
-# Each public entry point takes a $uuid first; walker state lives on
-# this instance keyed implicitly by uuid (callers either work on a
-# scoped instance via $db->scoped($uuid) or wrap in App::Yath2::Log::DB
-# which delegates with its cached uuid). Calling ->event($uuid) on a
-# multi-archive App::Yath2::DB stores walker state scoped to whichever
-# uuid was first invoked; ->reset clears it.
-
-sub event {
-    my $self = shift;
-    my ($uuid, $timeout) = $self->_shape_uuid_args(@_);
-    $uuid //= eval { $self->_implicit_uuid };
-
-    my $walk = $self->_walk_state($uuid);
-    my $stack = $walk->{stack};
-
-    while (1) {
-        last unless @$stack;
-
-        my $got;
-        my $owner;
-        for (my $i = $#$stack; $i >= 0; $i--) {
-            my $entry = $stack->[$i];
-            if ($entry->{idx} < scalar @{$entry->{records}}) {
-                $got = $entry->{records}[$entry->{idx}++];
-                $owner = $entry;
-                last;
-            }
-        }
-
-        if (defined $got) {
-            if (my $start = $self->_facet($got, 'harness_collector_start')) {
-                my $cpid = $start->{collector_pid};
-                $self->{+_SEEN_STARTS}{$cpid} = $start if defined $cpid;
-                my $child_base = $self->_base_for_collector_start($start);
-                if (defined $child_base) {
-                    my %args = (uuid => $uuid, base => $child_base, collector_pid => $cpid);
-                    my $type = $start->{type};
-                    if ($type eq 'Job') {
-                        $args{run_id}  = $start->{run_id};
-                        $args{job_id}  = $start->{id};
-                        $args{job_try} = $start->{job_try} // 0;
-                    }
-                    elsif ($type eq 'Run') {
-                        $args{run_id} = $start->{id};
-                    }
-                    elsif ($type eq 'Service') {
-                        $args{service} = $start->{service_name} // $start->{id};
-                        $args{run_id}  = $start->{run_id} if defined $start->{run_id};
-                    }
-                    push @$stack => $self->_open_artifact_walk(%args);
-                }
-                return $self->_inject_identifiers($got, $owner->{ident});
-            }
-
-            if (my $end = $self->_facet($got, 'harness_collector_end')) {
-                my $cpid = $end->{collector_pid};
-                $self->{+_CLOSED_STARTS}{$cpid} = 1 if defined $cpid;
-                return $self->_inject_identifiers($got, $owner->{ident});
-            }
-
-            return $self->_inject_identifiers($got, $owner->{ident});
-        }
-
-        while (@$stack && $stack->[-1]{idx} >= scalar @{$stack->[-1]{records}}) {
-            pop @$stack;
-        }
-        last if !@$stack;
-    }
-
-    return undef;
-}
-
-sub events {
-    my $self = shift;
-    my ($uuid, $timeout) = $self->_shape_uuid_args(@_);
-    $uuid //= eval { $self->_implicit_uuid };
-    my @out;
-    while (1) {
-        my $e = $self->event($uuid, 0);
-        last unless defined $e;
-        push @out => $e;
-    }
-    if (!@out && $self->end_of_events($uuid)) {
-        return (undef);
-    }
-    return @out;
-}
-
-sub EOE { my $self = shift; $self->end_of_events(@_) }
-
-sub end_of_events {
-    my $self = shift;
-    my ($uuid) = $self->_shape_uuid_args(@_);
-    $uuid //= eval { $self->_implicit_uuid };
-    my $walk = $self->_walk_state($uuid);
-    my $stack = $walk->{stack};
-
-    while (@$stack) {
-        my $top = $stack->[-1];
-        if ($top->{idx} < scalar @{$top->{records}}) {
-            return 0;
-        }
-        pop @$stack;
-    }
-    return 1;
-}
-
-sub reset {
-    my $self = shift;
-    delete $self->{+_WALK};
-    delete $self->{+_SEEN_STARTS};
-    delete $self->{+_CLOSED_STARTS};
-    return;
-}
-
-# Walker bootstrap: seed the stack with the harness root's events.jsonl.
-# The walker self-expands via harness_collector_start facets that
-# announce the next entity (Run / Job / Service) to descend into.
-sub _walk_state {
+# Build a fresh App::Yath2::DB::Iterator for $uuid. Each call returns a
+# new iterator with independent walker state. The archive_id is
+# resolved eagerly inside the iterator constructor; bad uuids and
+# archive_version mismatches surface there.
+sub iterator {
     my ($self, $uuid) = @_;
-    return $self->{+_WALK} //= {
-        stack => [
-            $self->_open_artifact_walk(
-                uuid    => $uuid,
-                base    => 'services/harness',
-                run_id  => undef,
-                job_id  => undef,
-                job_try => undef,
-                service => 'harness',
-                collector_pid => undef,
-            ),
-        ],
-    };
-}
-
-sub _open_artifact_walk {
-    my ($self, %args) = @_;
-    my $base = $args{base};
-    my $uuid = $args{uuid} // $self->{+UUID};
-    my $records = $self->artifact_iter_records($uuid, $base, 'events.jsonl') || [];
-    return {
-        records       => $records,
-        idx           => 0,
-        base          => $base,
-        ident         => {
-            (defined $args{run_id}  ? (run_id  => $args{run_id})  : ()),
-            (defined $args{job_id}  ? (job_id  => $args{job_id})  : ()),
-            (defined $args{job_try} ? (job_try => $args{job_try}) : ()),
-            (defined $args{service} ? (service_name => $args{service}) : ()),
-        },
-        collector_pid => $args{collector_pid},
-    };
-}
-
-sub _facet {
-    my ($self, $event, $name) = @_;
-    return undef unless ref($event) eq 'HASH';
-    my $fd = $event->{facet_data};
-    return undef unless ref($fd) eq 'HASH';
-    return $fd->{$name};
-}
-
-sub _base_for_collector_start {
-    my ($self, $content) = @_;
-    return undef unless ref($content) eq 'HASH';
-    my $type = $content->{type};
-    return undef unless defined $type;
-
-    if ($type eq 'Job') {
-        my $rid = $content->{run_id};
-        my $jid = $content->{id};
-        my $try = $content->{job_try} // 0;
-        return undef unless defined $rid && defined $jid;
-        return "runs/$rid/jobs/$jid/$try";
-    }
-    if ($type eq 'Run') {
-        my $rid = $content->{id};
-        return undef unless defined $rid;
-        return "runs/$rid";
-    }
-    if ($type eq 'Service') {
-        my $name = $content->{service_name} // $content->{id};
-        return undef unless defined $name && length $name;
-        my $rid = $content->{run_id};
-        return defined $rid ? "runs/$rid/services/$name" : "services/$name";
-    }
-    return undef;
-}
-
-sub _inject_identifiers {
-    my ($self, $event, $ident) = @_;
-    return $event unless ref($event) eq 'HASH';
-
-    my $fd = $event->{facet_data} // do { $event->{facet_data} = {}; $event->{facet_data} };
-    my $h = $fd->{harness} // do { $fd->{harness} = {}; $fd->{harness} };
-
-    for my $k (qw/run_id job_id job_try service_name/) {
-        next unless exists $ident->{$k};
-        $h->{$k} //= $ident->{$k};
-    }
-    return $event;
+    croak "iterator() requires a uuid" unless defined $uuid;
+    require App::Yath2::DB::Iterator;
+    return App::Yath2::DB::Iterator->new(db => $self, uuid => $uuid);
 }
 
 # ---------------------------------------------------------------------------
@@ -1414,10 +1235,15 @@ sub save_artifact {
     }
 
     my $now = $self->_now_iso;
+    my $row_count;
+    if ($info->{artifact_kind} eq 'events') {
+        $row_count = $self->_events_row_count_for_payload($stored_bytes, $stored_compressed);
+    }
 
     if ($existing) {
         $b->artifact_update($existing->{artifact_id}, {
             compressed => $stored_compressed,
+            row_count  => $row_count,
             payload    => $stored_bytes,
             format     => $info->{format},
             created_at => $now,
@@ -1435,6 +1261,7 @@ sub save_artifact {
         format        => $info->{format},
         name          => $info->{name},
         compressed    => $stored_compressed,
+        row_count     => $row_count,
         payload       => $stored_bytes,
         created_at    => $now,
         sealed        => 1,
@@ -1752,6 +1579,10 @@ sub _insert_body {
         }
 
         my $fk = $b->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
+        my $row_count;
+        if ($info->{artifact_kind} eq 'events') {
+            $row_count = $self->_events_row_count_for_payload($stored_bytes, $stored_compressed);
+        }
         $b->artifact_create({
             archive_id    => $aid,
             run_id        => $fk->{run_id},
@@ -1761,6 +1592,7 @@ sub _insert_body {
             format        => $info->{format},
             name          => $info->{name},
             compressed    => $stored_compressed,
+            row_count     => $row_count,
             payload       => $stored_bytes,
             created_at    => $self->_now_iso,
             sealed        => 1,
@@ -3187,30 +3019,16 @@ the L<App::Yath2::Role::Log/artifacts> contract.
 
 =back
 
-=head1 EVENT WALKER
+=head1 EVENT ITERATION
 
 =over 4
 
-=item $event = $db->event($uuid?, $timeout?)
+=item $iter = $db->iterator($uuid)
 
-Next event from the depth-first walk over the archive's collector
-trees.
-
-=item @events = $db->events($uuid?, $timeout?)
-
-Drain every currently-available event.
-
-=item $bool = $db->end_of_events($uuid?)
-
-True when no further events will appear.
-
-=item $bool = $db->EOE($uuid?)
-
-Alias for C<end_of_events>.
-
-=item $db->reset
-
-Reset walker state (stack + collector seen/closed maps).
+Construct an L<App::Yath2::DB::Iterator> for the given archive uuid.
+Each call returns a fresh iterator with independent walker state. The
+iterator consumes L<App::Yath2::Role::EventIterator> and exposes
+C<next>, C<EOE>, C<reset>, C<count>, C<all>, C<first>.
 
 =back
 

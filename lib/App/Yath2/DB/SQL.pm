@@ -647,6 +647,7 @@ sub artifact_rows_for_archive {
         SELECT a.artifact_id,
                a.run_id, a.service_id, a.job_try_id,
                a.artifact_kind, a.format, a.name, a.compressed,
+               a.row_count,
                s.name  AS service_name,
                sr.run_ord AS s_run_ord,
                r.run_ord  AS run_ord,
@@ -693,7 +694,7 @@ sub artifact_row_for_scope {
     my @bind;
     if (defined $name) {
         $sql = qq{
-            SELECT artifact_id, compressed, payload, format
+            SELECT artifact_id, compressed, row_count, payload, format
               FROM artifacts
              WHERE archive_id = ? AND $scope_clause
                AND artifact_kind = ? AND name = ?
@@ -702,7 +703,7 @@ sub artifact_row_for_scope {
     }
     else {
         $sql = qq{
-            SELECT artifact_id, compressed, payload, format
+            SELECT artifact_id, compressed, row_count, payload, format
               FROM artifacts
              WHERE archive_id = ? AND $scope_clause
                AND artifact_kind = ? AND name IS NULL
@@ -717,6 +718,7 @@ sub artifact_row_for_scope {
     return {
         artifact_id => $row->{artifact_id},
         compressed  => $row->{compressed} ? 1 : 0,
+        row_count   => $row->{row_count},
         payload     => $self->_payload_to_bytes($row->{payload}),
         format      => $row->{format},
     };
@@ -731,6 +733,31 @@ sub artifact_payload {
         undef, $artifact_id,
     );
     return $self->_payload_to_bytes($bytes);
+}
+
+# Sum row_count across every events artifact in this archive. Returns
+# undef when no events rows exist. Croaks if any matching row has a
+# NULL row_count -- that is a data-layer bug (insert side must always
+# populate row_count for events artifacts).
+sub artifact_event_count_for_archive {
+    my ($self, $aid) = @_;
+    croak "archive_id required" unless defined $aid;
+    my $dbh = $self->dbh;
+
+    my ($null_rows) = $dbh->selectrow_array(
+        q{SELECT COUNT(*) FROM artifacts
+           WHERE archive_id = ? AND artifact_kind = 'events' AND row_count IS NULL},
+        undef, $aid,
+    );
+    croak "events artifact rows with NULL row_count in archive $aid (data-layer bug)"
+        if $null_rows;
+
+    my ($sum) = $dbh->selectrow_array(
+        q{SELECT SUM(row_count) FROM artifacts
+           WHERE archive_id = ? AND artifact_kind = 'events'},
+        undef, $aid,
+    );
+    return $sum;
 }
 
 # -- spec / report data layer ----------------------------------------------
@@ -801,23 +828,22 @@ sub subtest_rows {
 
 sub _archive_id_or_die { croak 'NYI: _archive_id_or_die (Phase 4)' }
 
-# Walker methods route through the data-layer wrapper, which carries
-# its own per-uuid walker state. Cache a uuid-scoped wrapper on first
-# call so successive event() calls share the same walker stack.
-sub _walker_db {
+# Walker methods route through a cached App::Yath2::DB::Iterator bound
+# to (this backend wrapped as a DB, the implicit single-archive uuid).
+# Successive event() calls share the iterator's walker stack.
+sub _walker_iter {
     my $self = shift;
-    return $self->{__walker_db} //= do {
-        require App::Yath2::DB;
+    return $self->{__walker_iter} //= do {
         my $u = $self->_implicit_uuid_for_op('event');
-        App::Yath2::DB->_wrap_backend($self, uuid => $u);
+        $self->_wrap_self_in_db->iterator($u);
     };
 }
 
-sub event         { my $s = shift; my $db = $s->_walker_db; $db->event($db->uuid, @_) }
-sub events        { my $s = shift; my $db = $s->_walker_db; $db->events($db->uuid, @_) }
-sub end_of_events { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
-sub EOE           { my $s = shift; my $db = $s->_walker_db; $db->end_of_events($db->uuid) }
-sub reset         { my $s = shift; my $db = $s->_walker_db; $db->reset($db->uuid) }
+sub event         { my $s = shift; $s->_walker_iter->next }
+sub events        { my $s = shift; $s->_walker_iter->all  }
+sub end_of_events { my $s = shift; $s->_walker_iter->EOE  }
+sub EOE           { my $s = shift; $s->_walker_iter->EOE  }
+sub reset         { my $s = shift; $s->_walker_iter->reset }
 
 # Group-A read methods: route through the data-layer wrapper. Wrapper
 # resolves an implicit single-archive uuid for the no-arg form so legacy
@@ -1218,8 +1244,9 @@ sub artifact_create {
     my $sth = $dbh->prepare(q{
         INSERT INTO artifacts
             (archive_id, artifact_uuid, run_id, service_id, job_try_id,
-             artifact_kind, format, name, compressed, payload, created_at, sealed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             artifact_kind, format, name, compressed, row_count,
+             payload, created_at, sealed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     });
     $sth->bind_param(1, $fields->{archive_id});
     if ($flavor eq 'mysql') {
@@ -1228,16 +1255,17 @@ sub artifact_create {
     else {
         $sth->bind_param(2, $self->_uuid_to_db($artifact_uuid));
     }
-    $sth->bind_param(3, $fields->{run_id});
-    $sth->bind_param(4, $fields->{service_id});
-    $sth->bind_param(5, $fields->{job_try_id});
-    $sth->bind_param(6, $fields->{artifact_kind});
-    $sth->bind_param(7, $fields->{format});
-    $sth->bind_param(8, $fields->{name});
-    $sth->bind_param(9, $compressed);
-    $self->_bind_payload($sth, 10, $payload);
-    $sth->bind_param(11, $fields->{created_at});
-    $sth->bind_param(12, $sealed);
+    $sth->bind_param(3,  $fields->{run_id});
+    $sth->bind_param(4,  $fields->{service_id});
+    $sth->bind_param(5,  $fields->{job_try_id});
+    $sth->bind_param(6,  $fields->{artifact_kind});
+    $sth->bind_param(7,  $fields->{format});
+    $sth->bind_param(8,  $fields->{name});
+    $sth->bind_param(9,  $compressed);
+    $sth->bind_param(10, $fields->{row_count});
+    $self->_bind_payload($sth, 11, $payload);
+    $sth->bind_param(12, $fields->{created_at});
+    $sth->bind_param(13, $sealed);
     $sth->execute;
 
     return $self->_last_insert_id('artifacts', 'artifact_id');
@@ -1250,7 +1278,7 @@ sub artifact_update {
 
     my @cols;
     my @binders;
-    for my $k (qw/compressed format created_at/) {
+    for my $k (qw/compressed row_count format created_at/) {
         next unless exists $fields->{$k};
         push @cols, "$k = ?";
         my $v = $fields->{$k};

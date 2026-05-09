@@ -144,7 +144,7 @@ for_each_log_db_backend(sub {
         is(scalar(@first), scalar(@collected),
             'events() first call returns full record set');
         my @second = $log2->events(0);
-        is(\@second, [undef], 'events() returns (undef) once drained');
+        is(\@second, [], 'events() returns () once drained');
     }
 });
 
