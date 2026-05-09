@@ -7,30 +7,33 @@ our $VERSION = '2.000012';
 use Carp qw/croak/;
 use File::Basename ();
 use File::Spec ();
-use Test2::Harness2::LogLayout qw/
-    run_dir
-    job_dir
-    service_global_dir
-    service_run_dir
-/;
 
 use Role::Tiny;
 
 # Required methods. Implementers must provide every one.
 #
-# Two layers split: high-level archive-shaped methods that the role
-# itself provides as flavor-agnostic orchestration, and low-level
-# DB-touching primitives that each consumer (raw SQL on
-# App::Yath2::DB::SQL, ResultSet on App::Yath2::DB::DBIC) implements
-# directly.
+# This is the row-level primitive contract App::Yath2::DB consumes.
+# Backends are skinny: connection / introspection plus typed-row CRUD.
+# The Log-shape archive surface (event walker, list_files, artifacts
+# factory, extract / archive / insert / save_artifact) lives entirely
+# on App::Yath2::DB, which orchestrates over the primitives below.
 requires qw{
-    dbh flavor _archive_id_or_die
-    services runs jobs tries last_try
-    has_service has_run has_job has_try
-    event events end_of_events reset
-    extract archive insert
-    archives archive_count has_archive scoped
-    _artifact_rows_for_archive
+    dbh flavor
+
+    archive_rows archive_for_uuid archive_count archive_create mark_sealed
+
+    run_rows service_rows job_rows try_rows
+    run_exists job_exists try_exists service_exists
+    run_id_for_ord job_id_for_ord try_id_for_ord service_id_for_name
+
+    ensure_project_row ensure_test_file_row ensure_run_row
+    ensure_service_row ensure_job_row ensure_job_try_row
+
+    artifact_rows_for_archive artifact_row_for_scope artifact_payload
+    artifact_create artifact_update artifact_event_count_for_archive
+
+    job_spec_rows service_lifetime_rows subtest_rows
+    job_spec_create service_lifetime_create subtest_create
 };
 
 # Default identity preprocessor. Consumers override for flavor quirks
@@ -114,13 +117,7 @@ sub bootstrap_schema {
     return;
 }
 
-# ----- flavor-agnostic helpers -----
-#
-# Both backends populate _artifact_rows_for_archive with the same row
-# shape, so the row -> on-disk-path computation is shared here. Keep
-# helpers private (leading underscore) to make the layering explicit:
-# the role consumes consumer-supplied DB primitives and exposes the
-# archive-shaped surface.
+# ----- helpers consumed by backend primitives -----
 
 # Compute the on-disk-relative "directory" for an artifact row. The
 # row carries the three nullable scope FKs; we infer scope kind by
@@ -160,23 +157,10 @@ sub _stem_for_artifact_row {
     return undef;
 }
 
-# Light heuristics matching what the schema's `format` column expects.
-# Used by _parse_artifact_path during INSERT-side path tagging and by
-# any reader that wants to classify a name on the fly.
-sub _format_for_name {
-    my $name = ref($_[0]) ? $_[1] : $_[0];
-    return 'json'  if $name =~ /\.json\z/i;
-    return 'jsonl' if $name =~ /\.jsonl\z/i;
-    return 'csv'   if $name =~ /\.csv\z/i;
-    return 'html'  if $name =~ /\.html?\z/i;
-    return 'txt'   if $name =~ /\.txt\z/i;
-    return 'bin';
-}
-
 # Translate a logical (scope_kind, scope_id) pair into a SQL WHERE
 # fragment over the three nullable FK columns + bind values. The
 # fragment never includes "archive_id = ?" -- callers prepend that.
-# Used by the row-fetch primitives both backends layer on top of.
+# Used by the row-fetch primitives in the SQL backend.
 sub _scope_where_clause {
     my ($self, $scope_kind, $scope_id) = @_;
     if ($scope_kind eq 'run') {
@@ -194,192 +178,6 @@ sub _scope_where_clause {
     croak "unknown scope_kind: $scope_kind";
 }
 
-# For INSERT: returns a hashref { run_id => ..., service_id => ...,
-# job_try_id => ... }, with exactly zero or one set based on the
-# scope_kind / scope_id pair. Used to pick FK column values.
-sub _scope_fk_values {
-    my ($self, $scope_kind, $scope_id) = @_;
-    my %v = (run_id => undef, service_id => undef, job_try_id => undef);
-    if    ($scope_kind eq 'run')     { $v{run_id}     = $scope_id }
-    elsif ($scope_kind eq 'service') { $v{service_id} = $scope_id }
-    elsif ($scope_kind eq 'job_try') { $v{job_try_id} = $scope_id }
-    elsif ($scope_kind eq 'archive') { }
-    else { croak "unknown scope_kind: $scope_kind" }
-    return \%v;
-}
-
-# Streaming zstd decompress: events files are multi-frame, whole-file
-# snapshots are single-frame. Concat-decoded payloads are correct
-# either way. Pure zstd plumbing; no DB or flavor coupling.
-sub _decompress_jsonl_bytes {
-    my ($self, $bytes) = @_;
-    require Test2::Harness2::Util::Zstd;
-    require Compress::Zstd;
-
-    my $out = '';
-    my $offset = 0;
-    while ($offset < length $bytes) {
-        my $size = Test2::Harness2::Util::Zstd::zstd_frame_size(substr($bytes, $offset));
-        croak "incomplete zstd frame in jsonl bytes" unless defined $size;
-        my $frame = substr($bytes, $offset, $size);
-        $offset += $size;
-        my $plain = Compress::Zstd::decompress($frame);
-        croak "zstd decompress failed in jsonl bytes" unless defined $plain;
-        $out .= $plain;
-    }
-    return $out;
-}
-
-# DB-backed Logs do not have a per-artifact filesystem path. Callers
-# wanting on-disk bytes must extract() into a directory first, or use
-# the Artifact handle's API to read bytes through the backend.
-sub absolute_path {
-    my ($self, $rel) = @_;
-    croak "absolute_path is unavailable for the DB backend; "
-        . "extract first or read via the Log API ($rel)";
-}
-
-# ----- role-provided archive-shaped methods -----
-
-# artifacts(...) -- factory for App::Yath2::Log::Artifact handles.
-# Pure arg-parsing + base-path construction; the per-row DB lookups
-# happen later when the Artifact is queried. Both backends supply the
-# same has_run / has_job / has_try / has_service / last_try natively
-# so this orchestration runs unchanged on either.
-#
-# Accepted shapes:
-#   ()                         archive-root handle
-#   ({key => val, ...})        hashref -- accepts service / run_id /
-#                              job_id / job_try
-#   ($run_id)                  positional shorthand
-#   ($service_name)            positional shorthand (when has_service)
-#   ($run_id, $service_name)   run-scoped service
-#   ($run_id, $job_id)         job at last_try
-#   ($run_id, $job_id, $try)   specific job try
-sub artifacts {
-    my $self = shift;
-
-    return $self->_artifacts_from_args($_[0]) if @_ == 1 && ref($_[0]) eq 'HASH';
-    return $self->_artifacts_root             unless @_;
-
-    my @args = @_;
-    if (@args == 1) {
-        my $arg = $args[0];
-        if (defined $arg && $arg =~ /^\d+\z/) {
-            return $self->_artifacts_from_args({run_id => $arg});
-        }
-        if (defined $arg && $self->has_service($arg)) {
-            return $self->_artifacts_from_args({service => $arg});
-        }
-        return $self->_artifacts_from_args({run_id => $arg});
-    }
-    if (@args == 2) {
-        my ($run_id, $second) = @args;
-        if (defined $second && $second =~ /^\d+\z/) {
-            return $self->_artifacts_from_args({run_id => $run_id, job_id => $second});
-        }
-        return $self->_artifacts_from_args({run_id => $run_id, service => $second});
-    }
-    if (@args == 3) {
-        my ($run_id, $job_id, $job_try) = @args;
-        return $self->_artifacts_from_args({
-            run_id  => $run_id,
-            job_id  => $job_id,
-            job_try => $job_try,
-        });
-    }
-    croak "artifacts() got too many positional arguments";
-}
-
-sub _artifacts_root {
-    my $self = shift;
-    require App::Yath2::Log::Artifact;
-    return App::Yath2::Log::Artifact->new(
-        log  => $self,
-        root => undef,
-        base => undef,
-        live => 0,
-    );
-}
-
-sub _make_artifact {
-    my ($self, $base) = @_;
-    require App::Yath2::Log::Artifact;
-    return App::Yath2::Log::Artifact->new(
-        log  => $self,
-        root => undef,
-        base => $base,
-        live => 0,
-    );
-}
-
-sub _artifacts_from_args {
-    my ($self, $args) = @_;
-    my $service = $args->{service};
-    my $run_id  = $args->{run_id};
-    my $job_id  = $args->{job_id};
-    my $job_try = $args->{job_try};
-
-    croak "service name cannot start with a digit"
-        if defined $service && $service =~ /^\d/;
-
-    if (defined $service) {
-        if (defined $run_id) {
-            croak "no such run: $run_id" unless $self->has_run($run_id);
-            croak "no such service: $service in run $run_id"
-                unless $self->has_service($service, $run_id);
-            return $self->_make_artifact(service_run_dir($run_id, $service));
-        }
-        croak "no such service: $service"
-            unless $self->has_service($service);
-        return $self->_make_artifact(service_global_dir($service));
-    }
-
-    if (defined $job_id) {
-        croak "run_id is required when job_id is given"
-            unless defined $run_id;
-        croak "no such run: $run_id"          unless $self->has_run($run_id);
-        croak "no such job: $run_id/$job_id"  unless $self->has_job($run_id, $job_id);
-
-        if (!defined $job_try) {
-            my $lt = $self->last_try($run_id, $job_id);
-            croak "no tries for job $run_id/$job_id"
-                unless defined $lt;
-            $job_try = $lt;
-        }
-        croak "no such try: $run_id/$job_id/$job_try"
-            unless $self->has_try($run_id, $job_id, $job_try);
-
-        return $self->_make_artifact(job_dir($run_id, $job_id, $job_try));
-    }
-
-    if (defined $run_id) {
-        croak "no such run: $run_id" unless $self->has_run($run_id);
-        return $self->_make_artifact(run_dir($run_id));
-    }
-
-    return $self->_artifacts_root;
-}
-
-# list_files() -- enumerate every artifact in this archive as an
-# on-disk-relative path. Drives extract/archive serialization and the
-# `inspect` CLI. Pure orchestration on top of _artifact_rows_for_archive.
-sub list_files {
-    my $self = shift;
-    my $aid = $self->_archive_id_or_die;
-    my @paths;
-    for my $row (@{ $self->_artifact_rows_for_archive($aid) }) {
-        my $base = $self->_base_for_artifact_row($row);
-        next unless defined $base;
-        my $stem = $self->_stem_for_artifact_row($row);
-        next unless defined $stem;
-        my $rel = length $base ? "$base/$stem" : $stem;
-        $rel .= '.zst' if $row->{compressed};
-        push @paths => $rel;
-    }
-    return @paths;
-}
-
 1;
 
 __END__
@@ -390,7 +188,7 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Role::DB::Backend - Contract every yath DB-archive backend consumes.
+App::Yath2::Role::DB::Backend - Row-primitive contract every yath DB-archive backend implements.
 
 =head1 DESCRIPTION
 
@@ -412,14 +210,14 @@ L<App::Yath2::DB::DBIC::Schema>.
 
 =back
 
-The role splits responsibilities into two layers: high-level
-archive-shaped methods provided by the role (flavor-agnostic
-orchestration on top of the consumer's primitives), and low-level
-DB-touching primitives that each consumer implements directly.
-Schema bootstrap is uniform: the role reads
-F<share/schema/$flavor.sql>, runs C<preprocess_schema_sql>, splits
-on statement boundaries, and executes. C<DBIC-E<gt>deploy> is never
-called.
+Backends are skinny: connection / introspection plus typed-row CRUD.
+The Log-shape archive surface (event walker, C<list_files>, the
+C<artifacts> factory, C<extract> / C<archive> / C<insert> /
+C<save_artifact>) lives entirely on L<App::Yath2::DB>, which
+orchestrates over the primitives below. Schema bootstrap is uniform:
+the role reads F<share/schema/$flavor.sql>, runs
+C<preprocess_schema_sql>, splits on statement boundaries, and
+executes. C<DBIC-E<gt>deploy> is never called.
 
 =head1 SYNOPSIS
 
@@ -444,81 +242,140 @@ Each consumer must implement every method below.
 
 =item $dbh = $backend->dbh
 
-Return a live DBI handle. The role's bootstrap path uses this
-directly.
+Return a live DBI handle. The role's bootstrap path uses this directly.
 
 =item $flavor = $backend->flavor
 
-One of C<sqlite>, C<postgres>, C<mysql>, or C<mariadb>. Drives
-schema selection and per-flavor SQL fragments.
-
-=item $aid = $backend->_archive_id_or_die
-
-Resolve the integer C<archive_id> for the backend's currently scoped
-archive uuid, croaking when no scope has been resolved.
+One of C<sqlite>, C<postgres>, C<mysql>, or C<mariadb>. Drives schema
+selection and per-flavor SQL fragments.
 
 =back
 
-=head2 Multi-archive surface
+=head2 Archive rows
 
 =over 4
 
-=item @uuids = $backend->archives
+=item $rows = $backend->archive_rows
 
-Return every C<archive_uuid> in this DB.
+Every C<archives> row, each as a hashref with the typed columns plus a
+decoded C<meta_extras>.
+
+=item $row = $backend->archive_for_uuid($canon)
+
+Lookup by canonical-hex archive uuid; C<undef> when absent.
 
 =item $count = $backend->archive_count
 
 Number of archive rows in this DB.
 
-=item $bool = $backend->has_archive($uuid)
+=item $aid = $backend->archive_create(\%fields)
 
-Existence check for a given archive uuid.
+Insert a new C<archives> row; return its primary key.
 
-=item $scoped = $backend->scoped($uuid)
+=item $backend->mark_sealed($archive_id, $when)
 
-Return a clone of this backend scoped to the named archive.
-
-=back
-
-=head2 Per-archive listing surface
-
-The same surface L<App::Yath2::Role::Log> describes, plus an
-C<insert> sink. Implementers must provide:
-
-=over 4
-
-=item *
-
-C<services>, C<runs>, C<jobs>, C<tries>, C<last_try>
-
-=item *
-
-C<has_service>, C<has_run>, C<has_job>, C<has_try>
-
-=item *
-
-C<event>, C<events>, C<end_of_events>, C<reset>
-
-=item *
-
-C<extract>, C<archive>, C<insert>
+Update C<sealed_at> on an archive row to mark it sealed.
 
 =back
 
-See L<App::Yath2::Role::Log> for per-method semantics.
+=head2 Per-archive row primitives
 
-=head2 Artifact row primitive
+Each takes the integer C<$archive_id> resolved by L<App::Yath2::DB> and
+returns an arrayref of row hashes (or, for the existence checks, a
+boolean).
 
 =over 4
 
-=item $rows = $backend->_artifact_rows_for_archive($archive_id)
+=item $rows = $backend->run_rows($aid)
 
-Return an arrayref of row hashes for every artifact in the archive.
-Each row carries C<artifact_kind>, C<format>, C<name>, C<compressed>,
-the three nullable scope FK columns (C<run_id>, C<service_id>,
-C<job_try_id>), and the joined ord/name columns the helpers below
-consume (C<run_ord>, C<service_name>, C<j_run_ord>, etc.).
+=item $rows = $backend->service_rows($aid, %filter)
+
+=item $rows = $backend->job_rows($aid, $run_id)
+
+=item $rows = $backend->try_rows($job_id)
+
+=item $bool = $backend->run_exists($aid, $run_ord)
+
+=item $bool = $backend->job_exists($aid, $rid, $job_ord)
+
+=item $bool = $backend->try_exists($jid, $try_ord)
+
+=item $bool = $backend->service_exists($aid, $name, $rid_or_undef)
+
+=item $id = $backend->run_id_for_ord($aid, $run_ord)
+
+=item $id = $backend->job_id_for_ord($aid, $rid, $job_ord)
+
+=item $id = $backend->try_id_for_ord($jid, $try_ord)
+
+=item $id = $backend->service_id_for_name($aid, $name, $rid_or_undef)
+
+=back
+
+=head2 Find-or-create primitives
+
+Idempotent; return the existing row id when present, otherwise insert
+and return the new id.
+
+=over 4
+
+=item $id = $backend->ensure_project_row($name)
+
+=item $id = $backend->ensure_test_file_row($project_id, $relative)
+
+=item $id = $backend->ensure_run_row($aid, $run_ord, $project_id)
+
+=item $id = $backend->ensure_service_row($aid, $name, $rid_or_undef)
+
+=item $id = $backend->ensure_job_row($aid, $rid, $job_ord, $test_file_id)
+
+=item $id = $backend->ensure_job_try_row($jid, $try_ord)
+
+=back
+
+=head2 Artifact rows
+
+=over 4
+
+=item $rows = $backend->artifact_rows_for_archive($aid, %opts)
+
+Every artifact row for the archive, joined to the scope tables so the
+row-to-path helpers in this role can build on-disk-relative paths.
+C<with_payload =E<gt> 1> includes the C<payload> blob.
+
+=item $row = $backend->artifact_row_for_scope($aid, $scope_kind, $scope_id, $artifact_kind, $name)
+
+Lookup a single artifact row by its scope tuple.
+
+=item $bytes = $backend->artifact_payload($artifact_id)
+
+Read just the payload bytes for one artifact.
+
+=item $id = $backend->artifact_create(\%fields)
+
+=item $backend->artifact_update($artifact_id, \%fields)
+
+=item $sum = $backend->artifact_event_count_for_archive($aid)
+
+Sum C<row_count> across every events artifact in the archive.
+
+=back
+
+=head2 Spec / report data layer
+
+=over 4
+
+=item $rows = $backend->job_spec_rows($jid, $try_ord_or_undef)
+
+=item $rows = $backend->service_lifetime_rows($service_id)
+
+=item $rows = $backend->subtest_rows($job_try_id)
+
+=item $id = $backend->job_spec_create($job_id, \%fields)
+
+=item $id = $backend->service_lifetime_create($service_id, \%fields)
+
+=item $id = $backend->subtest_create($job_try_id, \%fields)
 
 =back
 
@@ -538,9 +395,15 @@ Idempotent (no-op when the C<archives> table already exists).
 
 =item $sql = $backend->preprocess_schema_sql($sql)
 
-Identity by default. Consumers override to massage the schema text
-for live-server quirks (e.g. stripping C<COMPRESSION lz4> when the
-Postgres build lacks LZ4).
+Identity by default. Consumers override to massage the schema text for
+live-server quirks (e.g. stripping C<COMPRESSION lz4> when the Postgres
+build lacks LZ4).
+
+=item $bool = $backend->_should_skip_schema_statement($stmt)
+
+False by default. Consumers override to elide individual schema
+statements at bootstrap time (e.g. C<CREATE TRIGGER> bodies that use
+MySQL-only builtins on a MariaDB target).
 
 =item $path = $backend->schema_file
 
@@ -549,35 +412,25 @@ installed share directory.
 
 =back
 
-=head2 Archive-shaped helpers
+=head2 Artifact-row helpers
+
+Used by C<App::Yath2::DB::list_files> and the SQL backend's row-fetch
+primitives.
 
 =over 4
 
-=item $abs = $backend->absolute_path($rel)
+=item $base = $backend->_base_for_artifact_row($row)
 
-Croaks. DB-backed Logs do not have a per-artifact filesystem path;
-callers wanting on-disk bytes must C<extract> into a directory or
-read through the Artifact API.
+On-disk-relative directory for an artifact row.
 
-=item $artifact = $backend->artifacts(...)
+=item $stem = $backend->_stem_for_artifact_row($row)
 
-Factory for L<App::Yath2::Log::Artifact> handles. Pure arg-parsing
-and base-path construction; the per-row DB lookups happen later when
-the Artifact is queried. Accepted shapes:
+On-disk-relative filename stem for an artifact row.
 
-    ()                              # archive root
-    ({key => val, ...})             # hashref form
-    ($run_ord)                      # run by ord
-    ($service_name)                 # global service
-    ($run_ord, $service_name)       # run-scoped service
-    ($run_ord, $job_ord)            # job at last_try
-    ($run_ord, $job_ord, $try_ord)  # specific job try
+=item ($where, @bind) = $backend->_scope_where_clause($scope_kind, $scope_id)
 
-=item @paths = $backend->list_files
-
-Enumerate every artifact in the currently scoped archive as an
-on-disk-relative path. Drives extract / archive serialization and
-the C<inspect> CLI.
+SQL WHERE fragment + bind values for a logical scope tuple. Used by the
+SQL backend's C<artifact_row_for_scope>.
 
 =back
 

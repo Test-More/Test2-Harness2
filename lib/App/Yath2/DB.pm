@@ -47,27 +47,6 @@ sub open { my $class = shift; $class->new(@_) }
 # ->new returns an App::Yath2::DB instance wrapping a backend
 # ---------------------------------------------------------------------------
 
-# Internal-only constructor: wrap an already-built backend instance (a
-# doer of App::Yath2::Role::DB::Backend) in a new App::Yath2::DB. Used
-# by App::Yath2::DB::SQL / App::Yath2::DB::DBIC's _wrap_self_in_db so
-# their legacy single-archive entry points can route writes / walker /
-# artifacts through the data-layer methods on this class without
-# re-running backend selection.
-sub _wrap_backend {
-    my ($class, $backend, %args) = @_;
-    croak "_wrap_backend requires a backend that does App::Yath2::Role::DB::Backend"
-        unless eval { $backend->DOES('App::Yath2::Role::DB::Backend') };
-
-    my $self = bless { BACKEND() => $backend }, $class;
-    if (defined (my $u = $args{uuid})) {
-        $self->{+UUID} = _canon_uuid($u);
-    }
-    elsif ($backend->can('uuid') && defined (my $bu = $backend->uuid)) {
-        $self->{+UUID} = _canon_uuid($bu);
-    }
-    return $self;
-}
-
 # Our constructor dispatches on backend selection rather than blessing
 # directly the way Object::HashBase's auto-new() would. Forward-declared
 # above the `use Object::HashBase` line so HashBase skips installing its
@@ -82,6 +61,14 @@ sub new {
         || defined $args{schema};
 
     my $backend_name = delete $args{backend} // 'sql';
+
+    # File / dsn entry points expect eager single-archive validation:
+    # opening a single-archive DB whose archive_version is below the
+    # floor must die at construction, not on first read. Passing
+    # dbh / schema directly is treated as a sub-component context
+    # (test scaffolding, internal handles) where the archive_version
+    # check happens later on demand.
+    my $eager_resolve_single = (defined $args{file} || defined $args{dsn}) ? 1 : 0;
 
     my $backend;
     if (my $schema = delete $args{schema}) {
@@ -111,6 +98,15 @@ sub new {
 
     if (defined (my $u = $args{uuid})) {
         $self->{+UUID} = _canon_uuid($u);
+    }
+
+    if ($eager_resolve_single && !defined $self->{+UUID}) {
+        my @uuids = $self->archives;
+        if (@uuids == 1) {
+            # _resolve_archive_id validates the archive_version floor;
+            # let any croak propagate so the new() call dies.
+            $self->_resolve_archive_id($uuids[0]);
+        }
     }
 
     return $self;
@@ -574,8 +570,8 @@ sub list_files {
 # try_ord/service}, artifact_kind, format, name, is_zst. Returns undef
 # if the path is not parseable as a known artifact in this archive.
 #
-# The 'create' flag enables INSERT-side autovivification. Phase 3 only
-# supports read mode; create mode is stubbed pending Phase 6.
+# The 'create' flag enables INSERT-side autovivification (mints
+# missing scope rows on the way down to the leaf scope_id).
 sub _parse_artifact_path {
     my ($self, $aid, $rel, %opts) = @_;
     my $create = $opts{create} ? 1 : 0;
@@ -734,6 +730,21 @@ sub _format_for_name {
     return 'html'  if $name =~ /\.html?\z/i;
     return 'txt'   if $name =~ /\.txt\z/i;
     return 'bin';
+}
+
+# For INSERT: returns a hashref { run_id => ..., service_id => ...,
+# job_try_id => ... }, with exactly zero or one set based on the
+# scope_kind / scope_id pair. Used to pick FK column values when
+# minting an artifacts row.
+sub _scope_fk_values {
+    my ($scope_kind, $scope_id) = @_;
+    my %v = (run_id => undef, service_id => undef, job_try_id => undef);
+    if    ($scope_kind eq 'run')     { $v{run_id}     = $scope_id }
+    elsif ($scope_kind eq 'service') { $v{service_id} = $scope_id }
+    elsif ($scope_kind eq 'job_try') { $v{job_try_id} = $scope_id }
+    elsif ($scope_kind eq 'archive') { }
+    else { croak "unknown scope_kind: $scope_kind" }
+    return \%v;
 }
 
 # True when the parsed path is a spec.jsonl or report.jsonl on a
@@ -1186,7 +1197,7 @@ sub _artifact_save {
 }
 
 # ---------------------------------------------------------------------------
-# Write paths (Phase 6)
+# Write paths
 # ---------------------------------------------------------------------------
 
 # save_artifact($uuid, %opts)
@@ -1251,7 +1262,7 @@ sub save_artifact {
         return "db:archive=$aid:artifact=$existing->{artifact_id}";
     }
 
-    my $fk = $b->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
+    my $fk = _scope_fk_values($info->{scope_kind}, $info->{scope_id});
     my $id = $b->artifact_create({
         archive_id    => $aid,
         run_id        => $fk->{run_id},
@@ -1578,7 +1589,7 @@ sub _insert_body {
                 : $raw;
         }
 
-        my $fk = $b->_scope_fk_values($info->{scope_kind}, $info->{scope_id});
+        my $fk = _scope_fk_values($info->{scope_kind}, $info->{scope_id});
         my $row_count;
         if ($info->{artifact_kind} eq 'events') {
             $row_count = $self->_events_row_count_for_payload($stored_bytes, $stored_compressed);

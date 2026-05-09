@@ -9,12 +9,16 @@ use App::Yath2::Role::DB::Backend;
     package Test::Boot::Fake;
     use Role::Tiny::With;
     for my $m (qw{
-        services runs jobs tries last_try
-        has_service has_run has_job has_try
-        event events end_of_events reset
-        extract archive insert
-        archives archive_count has_archive scoped
-        _archive_id_or_die _artifact_rows_for_archive
+        archive_rows archive_for_uuid archive_count archive_create mark_sealed
+        run_rows service_rows job_rows try_rows
+        run_exists job_exists try_exists service_exists
+        run_id_for_ord job_id_for_ord try_id_for_ord service_id_for_name
+        ensure_project_row ensure_test_file_row ensure_run_row
+        ensure_service_row ensure_job_row ensure_job_try_row
+        artifact_rows_for_archive artifact_row_for_scope artifact_payload
+        artifact_create artifact_update artifact_event_count_for_archive
+        job_spec_rows service_lifetime_rows subtest_rows
+        job_spec_create service_lifetime_create subtest_create
     }) {
         no strict 'refs';
         *{$m} = sub { die "$m unimplemented" };

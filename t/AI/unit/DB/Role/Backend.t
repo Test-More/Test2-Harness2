@@ -7,25 +7,34 @@ ok( lives { require App::Yath2::Role::DB::Backend }, 'loads App::Yath2::Role::DB
 ok( Role::Tiny->is_role('App::Yath2::Role::DB::Backend'),
     'is a Role::Tiny role' );
 
-# Required methods declared. _archive_id_or_die +
-# _artifact_rows_for_archive are role-level primitives consumers
-# implement so the role can supply orchestration like list_files
-# without poking at flavor-specific SQL or ResultSets.
+# Required methods are the row-level primitive contract App::Yath2::DB
+# consumes. The Log-shape archive surface (event walker, list_files,
+# artifacts factory, extract / archive / insert / save_artifact) lives
+# entirely on App::Yath2::DB; backends never carry it.
 my @required = sort qw{
-    dbh flavor _archive_id_or_die
-    services runs jobs tries last_try
-    has_service has_run has_job has_try
-    event events end_of_events reset
-    extract archive insert
-    archives archive_count has_archive scoped
-    _artifact_rows_for_archive
+    dbh flavor
+
+    archive_rows archive_for_uuid archive_count archive_create mark_sealed
+
+    run_rows service_rows job_rows try_rows
+    run_exists job_exists try_exists service_exists
+    run_id_for_ord job_id_for_ord try_id_for_ord service_id_for_name
+
+    ensure_project_row ensure_test_file_row ensure_run_row
+    ensure_service_row ensure_job_row ensure_job_try_row
+
+    artifact_rows_for_archive artifact_row_for_scope artifact_payload
+    artifact_create artifact_update artifact_event_count_for_archive
+
+    job_spec_rows service_lifetime_rows subtest_rows
+    job_spec_create service_lifetime_create subtest_create
 };
+
 # Concrete methods provided by the role:
 my @provided = sort qw{
     bootstrap_schema preprocess_schema_sql schema_file _is_bootstrapped
-    list_files artifacts
-    _base_for_artifact_row _stem_for_artifact_row
-    _artifacts_root _make_artifact _artifacts_from_args
+    _should_skip_schema_statement
+    _base_for_artifact_row _stem_for_artifact_row _scope_where_clause
 };
 
 # requires() introspection.
@@ -33,7 +42,7 @@ my $info = $Role::Tiny::INFO{'App::Yath2::Role::DB::Backend'} || {};
 my %req = map { $_ => 1 } @{ $info->{requires} || [] };
 is(\%req, { map { $_ => 1 } @required }, 'required method list matches');
 
-# Provided method list contains the bootstrap helpers.
+# Provided method list contains the bootstrap + helper methods.
 for my $m (@provided) {
     ok(App::Yath2::Role::DB::Backend->can($m), "role provides $m");
 }
@@ -42,15 +51,7 @@ for my $m (@provided) {
 {
     package Test::FakeBackend;
     use Role::Tiny::With;
-    for my $m (qw{
-        dbh flavor _archive_id_or_die
-        services runs jobs tries last_try
-        has_service has_run has_job has_try
-        event events end_of_events reset
-        extract archive insert
-        archives archive_count has_archive scoped
-        _artifact_rows_for_archive
-    }) {
+    for my $m (@required) {
         no strict 'refs';
         *{$m} = sub { die "$m unimplemented" };
     }

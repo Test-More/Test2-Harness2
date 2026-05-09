@@ -9,33 +9,10 @@ use Carp qw/croak/;
 use Object::HashBase qw{
     <file <dsn <user <pass <attrs <dbh
     <schema
-    <uuid <archive_id
-    <sealed
     <flavor_override
 };
 
 use Role::Tiny::With;
-
-# Walker / write methods route through the data-layer wrapper
-# (App::Yath2::DB), which carries every transformation and codec. The
-# walker is now an App::Yath2::DB::Iterator owned by this backend's
-# wrapper; cache it so successive event() calls share the same stack.
-# The role's `requires` list is checked at compile time when `with`
-# runs, so each method must be defined before that point.
-sub event         { my $s = shift; $s->_walker_iter->next }
-sub events        { my $s = shift; $s->_walker_iter->all  }
-sub end_of_events { my $s = shift; $s->_walker_iter->EOE  }
-sub EOE           { my $s = shift; $s->_walker_iter->EOE  }
-sub reset         { my $s = shift; $s->_walker_iter->reset }
-
-sub _walker_iter {
-    my $self = shift;
-    return $self->{__walker_iter} //= do {
-        my $u = $self->_implicit_uuid_for_op('event');
-        $self->_wrap_self_in_db->iterator($u);
-    };
-}
-
 with 'App::Yath2::Role::DB::Backend';
 
 # Single-class DBIx::Class backend for yath log archives.
@@ -80,8 +57,7 @@ sub init {
                 sqlite_unicode => 1,
             },
         );
-        # Apply the SQLite pragmas defined in
-        # share/schema/SCHEMA.md §8.
+        # SQLite open-time PRAGMAs.
         my $dbh = $self->{+SCHEMA}->storage->dbh;
         $dbh->do('PRAGMA journal_mode = WAL');
         $dbh->do('PRAGMA synchronous = NORMAL');
@@ -98,26 +74,6 @@ sub init {
     # populated DBs via _is_bootstrapped.
     $self->bootstrap_schema;
 
-    # Single-archive shortcut + archive_version validation. Only run
-    # for top-level callers (file / dsn entry points) so a sub-component
-    # (caller passing a raw dbh / schema) doesn't get surprised by an
-    # archive lookup at construction time.
-    if ($self->{+FILE} || $self->{+DSN}) {
-        $self->_eager_resolve_single_archive;
-    }
-
-    return;
-}
-
-sub _eager_resolve_single_archive {
-    my $self = shift;
-    my @rows = $self->{+SCHEMA}->resultset('Archive')->all;
-    return unless @rows == 1;
-    # _check_archive_version croaks on out-of-range; let it propagate.
-    my $canon = $self->_uuid_from_db($rows[0]->archive_uuid);
-    $self->_check_archive_version($canon, $rows[0]->archive_version);
-    $self->{+ARCHIVE_ID} = $rows[0]->archive_id;
-    $self->{+UUID}       = $canon;
     return;
 }
 
@@ -224,292 +180,6 @@ sub _should_skip_schema_statement {
     return $stmt =~ /^CREATE\s+TRIGGER\b/i ? 1 : 0;
 }
 
-# Resolve archive_id lazily from uuid via the Archive ResultSet.
-# Group-A methods that operate per-archive call this first.
-sub _archive_id_or_die {
-    my $self = shift;
-    return $self->{+ARCHIVE_ID} if defined $self->{+ARCHIVE_ID};
-
-    my $u = $self->{+UUID};
-    if (defined $u) {
-        # Caller-supplied uuid is canonical hex; convert to the DB-native
-        # form before binding (BINARY(16) on MySQL, uppercase on
-        # Postgres / MariaDB, identity on SQLite).
-        my $row = $self->{+SCHEMA}->resultset('Archive')
-            ->find({ archive_uuid => $self->_uuid_to_db($u) });
-        croak "no archive '$u' in this DB" unless $row;
-        $self->_check_archive_version($u, $row->archive_version);
-        $self->{+ARCHIVE_ID} = $row->archive_id;
-        return $self->{+ARCHIVE_ID};
-    }
-
-    # Single-archive convenience: if exactly one archive exists, use it.
-    my @rows = $self->{+SCHEMA}->resultset('Archive')->all;
-    if (@rows == 1) {
-        # archive_uuid coming back from DBIC is in DB-native form; stash
-        # the canonical (decoded) form in $self->{+UUID} so external
-        # callers see a normal hex uuid rather than packed bytes /
-        # uppercase strings.
-        my $canon = $self->_uuid_from_db($rows[0]->archive_uuid);
-        $self->_check_archive_version($canon, $rows[0]->archive_version);
-        $self->{+ARCHIVE_ID} = $rows[0]->archive_id;
-        $self->{+UUID}       = $canon;
-        return $self->{+ARCHIVE_ID};
-    }
-
-    croak "no archives in this DB" unless @rows;
-    croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@rows) . " archives)";
-}
-
-# Enforce the archive_version floor (refuses archives older than
-# App::Yath2::Log->last_breaking_version). Mirrors App::Yath2::DB's
-# _check_archive_version body (kept here so the resolver above can
-# operate without bouncing back through the data-layer wrapper).
-sub _check_archive_version {
-    my ($self, $uuid, $archive_version) = @_;
-    require App::Yath2::Log;
-    my $floor = App::Yath2::Log->last_breaking_version;
-    croak "archive '$uuid' has no archive_version stamp; refusing to read"
-        unless defined $archive_version && length $archive_version;
-    require version;
-    return if version->parse($archive_version) >= version->parse($floor);
-    croak "archive '$uuid' was written by yath $archive_version; "
-        . "this dist requires >= $floor; refusing to read";
-}
-
-# ----- Group B: multi-archive surface -----
-
-sub archives {
-    my $self = shift;
-    # archive_uuid columns come back in DB-native form (BINARY(16) on
-    # MySQL, uppercase strings on Postgres / MariaDB). Round-trip every
-    # row through _flavor_uuid_from_db so callers always see canonical
-    # lowercase hex (matches App::Yath2::DB::SQL's archive_rows shape).
-    return map { $self->_flavor_uuid_from_db($_->archive_uuid) }
-           $self->{+SCHEMA}->resultset('Archive')
-                ->search(undef, { order_by => 'archive_id' })->all;
-}
-
-sub archive_count {
-    my $self = shift;
-    return scalar $self->{+SCHEMA}->resultset('Archive')->count;
-}
-
-sub has_archive {
-    my ($self, $uuid) = @_;
-    return 0 unless defined $uuid;
-    for my $u ($self->archives) {
-        return 1 if lc($u) eq lc($uuid);
-    }
-    return 0;
-}
-
-sub scoped {
-    my ($self, $uuid) = @_;
-    croak "scoped() requires a uuid" unless defined $uuid;
-    # Propagate flavor_override to the new instance. The DBD::MariaDB
-    # driver speaks both MySQL and MariaDB, so flavor() cannot reliably
-    # distinguish them from the driver name alone — the caller-supplied
-    # override is the only source of truth, and dropping it here would
-    # cause the new instance to silently misclassify (e.g. pick the
-    # MariaDB text-uuid codec for a MySQL BINARY(16) column, breaking
-    # the archive_uuid bind in _archive_id_or_die).
-    return ref($self)->new(
-        schema => $self->{+SCHEMA},
-        uuid   => $uuid,
-        (defined $self->{+FLAVOR_OVERRIDE}
-            ? (flavor_override => $self->{+FLAVOR_OVERRIDE})
-            : ()),
-    );
-}
-
-# ----- Group A: native DBIC translations -----
-
-sub services {
-    my ($self, $run_id) = @_;
-    my $aid = $self->_archive_id_or_die;
-    my $rs  = $self->{+SCHEMA}->resultset('Service');
-
-    if (defined $run_id) {
-        croak "no such run: $run_id" unless $self->has_run($run_id);
-        my $rid = $self->_run_db_id($run_id);
-        return map { $_->name } $rs->search(
-            { archive_id => $aid, run_id => $rid },
-            { order_by   => 'name' },
-        )->all;
-    }
-    return map { $_->name } $rs->search(
-        { archive_id => $aid, run_id => undef },
-        { order_by   => 'name' },
-    )->all;
-}
-
-sub runs {
-    my $self = shift;
-    my $aid = $self->_archive_id_or_die;
-    return map { $_->run_ord }
-        $self->{+SCHEMA}->resultset('Run')->search(
-            { archive_id => $aid },
-            { order_by   => 'run_ord' },
-        )->all;
-}
-
-sub jobs {
-    my ($self, $run_id) = @_;
-    croak "run_id is required" unless defined $run_id;
-    croak "no such run: $run_id" unless $self->has_run($run_id);
-    my $aid = $self->_archive_id_or_die;
-    my $rid = $self->_run_db_id($run_id);
-    return map { $_->job_ord }
-        $self->{+SCHEMA}->resultset('Job')->search(
-            { archive_id => $aid, run_id => $rid },
-            { order_by   => 'job_ord' },
-        )->all;
-}
-
-sub tries {
-    my ($self, $run_id, $job_id) = @_;
-    croak "run_id is required" unless defined $run_id;
-    croak "job_id is required" unless defined $job_id;
-    croak "no such run: $run_id"             unless $self->has_run($run_id);
-    croak "no such job: $run_id/$job_id"     unless $self->has_job($run_id, $job_id);
-    my $jid = $self->_job_db_id($run_id, $job_id);
-    return map { $_->try_ord }
-        $self->{+SCHEMA}->resultset('JobTry')->search(
-            { job_id => $jid },
-            { order_by => 'try_ord' },
-        )->all;
-}
-
-sub last_try {
-    my ($self, $run_id, $job_id) = @_;
-    my @t = $self->tries($run_id, $job_id);
-    return undef unless @t;
-    return $t[-1];
-}
-
-sub has_service {
-    my ($self, $name, $run_id) = @_;
-    croak "service name is required" unless defined $name && length $name;
-    my $aid = $self->_archive_id_or_die;
-    my $rs  = $self->{+SCHEMA}->resultset('Service');
-
-    if (defined $run_id) {
-        return 0 unless $self->has_run($run_id);
-        my $rid = $self->_run_db_id($run_id);
-        return $rs->search(
-            { archive_id => $aid, run_id => $rid, name => $name }
-        )->count ? 1 : 0;
-    }
-    return $rs->search(
-        { archive_id => $aid, run_id => undef, name => $name }
-    )->count ? 1 : 0;
-}
-
-sub has_run {
-    my ($self, $run_id) = @_;
-    return 0 unless defined $run_id && length $run_id;
-    return 0 unless $run_id =~ /^\d+\z/;
-    my $aid = $self->_archive_id_or_die;
-    return $self->{+SCHEMA}->resultset('Run')->search(
-        { archive_id => $aid, run_ord => $run_id }
-    )->count ? 1 : 0;
-}
-
-sub has_job {
-    my ($self, $run_id, $job_id) = @_;
-    return 0 unless $self->has_run($run_id);
-    return 0 unless defined $job_id && length $job_id;
-    return 0 unless $job_id =~ /^\d+\z/;
-    my $rid = $self->_run_db_id($run_id);
-    my $aid = $self->_archive_id_or_die;
-    return $self->{+SCHEMA}->resultset('Job')->search(
-        { archive_id => $aid, run_id => $rid, job_ord => $job_id }
-    )->count ? 1 : 0;
-}
-
-sub has_try {
-    my ($self, $run_id, $job_id, $job_try) = @_;
-    return 0 unless $self->has_job($run_id, $job_id);
-    return 0 unless defined $job_try && length $job_try;
-    return 0 unless $job_try =~ /^\d+\z/;
-    my $jid = $self->_job_db_id($run_id, $job_id);
-    return $self->{+SCHEMA}->resultset('JobTry')->search(
-        { job_id => $jid, try_ord => $job_try }
-    )->count ? 1 : 0;
-}
-
-# DB-id translators (run/job/try ord -> primary key id) via DBIC.
-sub _run_db_id {
-    my ($self, $run_ord) = @_;
-    my $aid = $self->_archive_id_or_die;
-    my $row = $self->{+SCHEMA}->resultset('Run')->find(
-        { archive_id => $aid, run_ord => $run_ord }
-    );
-    croak "no run with ord $run_ord" unless $row;
-    return $row->run_id;
-}
-
-sub _job_db_id {
-    my ($self, $run_ord, $job_ord) = @_;
-    my $aid = $self->_archive_id_or_die;
-    my $rid = $self->_run_db_id($run_ord);
-    my $row = $self->{+SCHEMA}->resultset('Job')->find(
-        { archive_id => $aid, run_id => $rid, job_ord => $job_ord }
-    );
-    croak "no job with ord $job_ord in run $run_ord" unless $row;
-    return $row->job_id;
-}
-
-# ----- Group A: native DBIC primitives feeding role helpers -----
-
-# DB primitive consumed by App::Yath2::Role::DB::Backend::list_files.
-# Returns an arrayref of hashrefs, one per artifacts row in the given
-# archive_id, with the scope FKs and joined ord/name fields the role
-# helpers need to compute on-disk paths. Shape parity with the
-# Internal raw-SQL implementation.
-sub _artifact_rows_for_archive {
-    my ($self, $aid) = @_;
-    my $rs = $self->{+SCHEMA}->resultset('Artifact')->search(
-        { 'me.archive_id' => $aid },
-        { prefetch => [
-            'run',
-            { service => 'run' },
-            { job_try => { job => 'run' } },
-        ] },
-    );
-
-    my @rows;
-    while (my $a = $rs->next) {
-        my %r = (
-            artifact_id   => $a->artifact_id,
-            run_id        => $a->run_id,
-            service_id    => $a->service_id,
-            job_try_id    => $a->job_try_id,
-            artifact_kind => $a->artifact_kind,
-            format        => $a->format,
-            name          => $a->name,
-            compressed    => $a->compressed,
-        );
-        if (my $svc = $a->service) {
-            $r{service_name} = $svc->name;
-            if (my $sr = $svc->run) { $r{s_run_ord} = $sr->run_ord }
-        }
-        if (my $rn = $a->run) {
-            $r{run_ord} = $rn->run_ord;
-        }
-        if (my $jt = $a->job_try) {
-            $r{try_ord} = $jt->try_ord;
-            if (my $j = $jt->job) {
-                $r{job_ord} = $j->job_ord;
-                if (my $jr = $j->run) { $r{j_run_ord} = $jr->run_ord }
-            }
-        }
-        push @rows, \%r;
-    }
-    return \@rows;
-}
-
 # ----- Native read primitives + local codecs -----
 #
 # Codec helpers (UUID per-flavor encode/decode, JSON inflate) live
@@ -589,7 +259,10 @@ sub archive_for_uuid {
     return undef;
 }
 
-# archive_count is already provided above via ResultSet->count.
+sub archive_count {
+    my $self = shift;
+    return scalar $self->{+SCHEMA}->resultset('Archive')->count;
+}
 
 # -- run / job / try / service rows ----------------------------------------
 
@@ -935,7 +608,7 @@ sub subtest_rows {
     return \@out;
 }
 
-# -- write primitives (Phase 5) ---------------------------------------------
+# -- write primitives -------------------------------------------------------
 #
 # Mirrors App::Yath2::DB::SQL's write API on the DBIC layer. All input
 # args are canonical Perl values (UUIDs as 36-char lowercase hex; JSON
@@ -1116,96 +789,6 @@ sub subtest_create {
     return $obj->subtest_id;
 }
 
-# ----- Write methods routed through App::Yath2::DB -----
-#
-# insert / extract / archive / _artifact_save all route through the
-# data-layer wrapper, which orchestrates over the DBIC backend's own
-# write primitives (defined further up).
-
-sub _wrap_self_in_db {
-    my $self = shift;
-    require App::Yath2::DB;
-    return $self->{__db_wrapper} //= App::Yath2::DB->_wrap_backend($self);
-}
-
-sub insert {
-    my ($self, $source, %opts) = @_;
-    my $rv = $self->_wrap_self_in_db->insert($source, %opts);
-    if (my $u = $self->{__db_wrapper}{_last_insert_uuid}) {
-        # Mirror onto the DBIC backend's HashBase UUID slot so
-        # post-insert $backend->uuid returns the new archive's uuid.
-        $self->{+UUID} = $u;
-    }
-    return $rv;
-}
-
-sub extract {
-    my ($self, $dir, %opts) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('extract');
-    return $self->_wrap_self_in_db->extract($uuid, $dir, %opts);
-}
-
-sub archive {
-    my ($self, $out, %opts) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('archive');
-    return $self->_wrap_self_in_db->archive_to($uuid, $out, %opts);
-}
-
-sub _artifact_save {
-    my ($self, %p) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('_artifact_save');
-    return $self->_wrap_self_in_db->save_artifact($uuid, %p);
-}
-
-# Artifact-handle private methods. The role's artifacts() factory binds
-# Log::Artifact handles with log => $self (the backend itself); those
-# handles dispatch the underscore-prefixed family back. Route through
-# the data-layer wrapper so the canonical bytes paths are exercised.
-sub _artifact_exists {
-    my ($self, $rel) = @_;
-    my $uuid = eval { $self->_implicit_uuid_for_op('_artifact_exists') };
-    return (0, 0) if $@;
-    return $self->_wrap_self_in_db->artifact_exists($uuid, $rel);
-}
-
-sub _artifact_read {
-    my ($self, $rel) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('_artifact_read');
-    return $self->_wrap_self_in_db->artifact_read($uuid, $rel);
-}
-
-sub _artifact_iter_records {
-    my ($self, $base, $stem) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('_artifact_iter_records');
-    return $self->_wrap_self_in_db->artifact_iter_records($uuid, $base, $stem);
-}
-
-sub _artifact_list_dir {
-    my ($self, $rel) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('_artifact_list_dir');
-    return $self->_wrap_self_in_db->artifact_list_dir($uuid, $rel);
-}
-
-sub _artifact_open_fh {
-    my ($self, $rel) = @_;
-    my $uuid = $self->_implicit_uuid_for_op('_artifact_open_fh');
-    return $self->_wrap_self_in_db->artifact_open_fh($uuid, $rel);
-}
-
-# Single-archive shortcut: when DBIC was scoped to a uuid via ->scoped,
-# use that; otherwise fall back to the only archive. UUID slot is the
-# HashBase-declared accessor.
-sub _implicit_uuid_for_op {
-    my ($self, $op) = @_;
-    return $self->{+UUID} if defined $self->{+UUID};
-    my $db = $self->_wrap_self_in_db;
-    my @uuids = $db->archives;
-    croak "no archives in this DB" unless @uuids;
-    croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
-        if @uuids > 1;
-    return $uuids[0];
-}
-
 1;
 
 __END__
@@ -1240,10 +823,6 @@ End users construct via L<App::Yath2::DB> with C<backend =E<gt>
         backend => 'dbic',
     );
 
-    # Same surface as the SQL backend:
-    my $scoped = $db->scoped($uuid);
-    my @runs   = $scoped->runs;
-
     # Caller-supplied schema:
     my $schema = App::Yath2::DB::DBIC::Schema->connect(...);
     my $db = App::Yath2::DB->new(schema => $schema);
@@ -1266,28 +845,18 @@ when one was not supplied directly.
 
 The wrapped L<DBIx::Class::Schema>.
 
-=item $val = $self->uuid
-
-Scoped archive uuid (when one was set at construction time).
-
-=item $val = $self->archive_id
-
-Resolved integer C<archive_id> for the scoped uuid.
-
-=item $bool = $self->sealed
-
-True when the archive has had its YATHFOOT trailer appended.
-
 =item $val = $self->flavor_override
 
 Optional flavor override; when set, takes precedence over storage
-detection.
+detection. The DBD::MariaDB driver speaks both MySQL and MariaDB, so
+flavor() cannot reliably distinguish them from the driver name alone --
+the caller-supplied override is the only source of truth in that case.
 
 =back
 
 =head1 METHODS
 
-The reader, writer, and bootstrap surface required by
+The row-level primitive surface required by
 L<App::Yath2::Role::DB::Backend>. Where the role spec covers the
 contract, only DBIC-specific notes appear below.
 
@@ -1298,8 +867,7 @@ contract, only DBIC-specific notes appear below.
 =item $self->init
 
 Object construction hook. Connects the schema (if not supplied
-directly), runs C<bootstrap_schema>, and resolves a single-archive
-shortcut when one is appropriate.
+directly) and runs C<bootstrap_schema>.
 
 =item $flavor = $self->flavor
 
@@ -1314,43 +882,17 @@ etc.).
 
 =back
 
-=head2 Multi-archive surface
-
-=over 4
-
-=item @uuids = $self->archives
-=item $count = $self->archive_count
-=item $bool = $self->has_archive($uuid)
-=item $clone = $self->scoped($uuid)
-
-=back
-
-=head2 Per-archive listing surface
-
-=over 4
-
-=item @names = $self->services(...)
-=item @ords = $self->runs
-=item @ords = $self->jobs($run_ord)
-=item @ords = $self->tries($run_ord, $job_ord)
-=item $ord = $self->last_try($run_ord, $job_ord)
-=item $bool = $self->has_service($name, $rid?)
-=item $bool = $self->has_run($run_ord)
-=item $bool = $self->has_job($run_ord, $job_ord)
-=item $bool = $self->has_try($run_ord, $job_ord, $try_ord)
-
-=back
-
-=head2 Row primitives (multi-archive)
+=head2 Archive rows
 
 =over 4
 
 =item $rows = $self->archive_rows
-=item $row = $self->archive_for_uuid($uuid)
+=item $row = $self->archive_for_uuid($canon)
+=item $count = $self->archive_count
 
 =back
 
-=head2 Row primitives (per-archive)
+=head2 Per-archive row primitives
 
 =over 4
 
@@ -1382,7 +924,7 @@ etc.).
 =item $id = $self->run_id_for_ord($aid, $run_ord)
 =item $id = $self->job_id_for_ord($aid, $rid, $job_ord)
 =item $id = $self->try_id_for_ord($jid, $try_ord)
-=item $id = $self->service_id_for_name($aid, $name, $rid_or_run_ord)
+=item $id = $self->service_id_for_name($aid, $name, $rid_or_undef)
 
 =back
 
@@ -1393,32 +935,7 @@ etc.).
 =item $rows = $self->artifact_rows_for_archive($aid, %opts)
 =item $row = $self->artifact_row_for_scope($aid, $scope_kind, $scope_id, $artifact_kind, $name)
 =item $bytes = $self->artifact_payload($artifact_id)
-
-=back
-
-=head2 Walker pass-through
-
-The walker lives on L<App::Yath2::DB>; these methods route through a
-self-referential C<App::Yath2::DB> instance so direct calls produce
-the correct walker behavior.
-
-=over 4
-
-=item $event = $self->event(...)
-=item @events = $self->events(...)
-=item $bool = $self->end_of_events(...)
-=item $bool = $self->EOE(...)
-=item $self->reset
-
-=back
-
-=head2 Conversion / import pass-through
-
-=over 4
-
-=item $aid = $self->insert(...)
-=item $log_dir = $self->extract($dir, %opts)
-=item $self->archive($out_path, %opts)
+=item $sum = $self->artifact_event_count_for_archive($aid)
 
 =back
 
@@ -1430,7 +947,7 @@ artifact saves.
 =over 4
 
 =item $aid = $self->archive_create($fields)
-=item $self->mark_sealed($aid)
+=item $self->mark_sealed($archive_id, $when)
 
 =item $id = $self->ensure_project_row($name)
 =item $id = $self->ensure_test_file_row($project_id, $relative)
