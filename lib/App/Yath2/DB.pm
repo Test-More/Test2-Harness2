@@ -13,6 +13,11 @@ use Time::HiRes ();
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Util::UUID qw/gen_uuid/;
 
+# Forward-declare ->new so Object::HashBase sees it already exists and
+# does not auto-install its own new(). Our dispatcher (defined further
+# down) does the actual work.
+sub new;
+
 use Object::HashBase qw{
     <backend
     +uuid
@@ -67,9 +72,9 @@ sub _wrap_backend {
 }
 
 # Our constructor dispatches on backend selection rather than blessing
-# directly the way Object::HashBase's auto-new() would; suppress the
-# HashBase-generated new() so this dispatcher takes over cleanly.
-no warnings 'redefine';
+# directly the way Object::HashBase's auto-new() would. Forward-declared
+# above the `use Object::HashBase` line so HashBase skips installing its
+# own new().
 sub new {
     my ($class, %args) = @_;
 
