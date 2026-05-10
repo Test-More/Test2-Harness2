@@ -1281,11 +1281,12 @@ subtest 'run_on_start warns when set_child_subreaper fails' => sub {
     );
 };
 
-subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
+subtest 'collector pid exit without test_job_completed is grace-armed and synthesized by the watchdog' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(
-        workdir   => $dir,
-        resources => [Test2::Harness2::Resource::JobCount->new(slots => 1)],
+        workdir              => $dir,
+        resources            => [Test2::Harness2::Resource::JobCount->new(slots => 1)],
+        collector_grace_secs => 0,
     );
 
     my $run    = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/orphan.t'));
@@ -1309,18 +1310,39 @@ subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
         assigned_resources => [$res],
     };
 
+    # Pid exit before any test_job_completed: arms a synth entry,
+    # leaves running_jobs alone for the watchdog to claim.
+    $h->run_on_pid(77777, 0);
+    ok(exists $h->{running_jobs}{$job_id}, 'running_jobs not yet cleared (watchdog owns it)');
+    is($res->used, 1, 'resource slot still committed during grace window');
+    ok(
+        exists $h->{pending_synth_completions}{$job_id},
+        'pending synth-completion entry armed',
+    );
+
+    # Watchdog tick with grace=0 elapsed: synthesize test_job_completed
+    # and run the orphan release path.
     my @warnings;
     {
         local $SIG{__WARN__} = sub { push @warnings => @_ };
-        $h->run_on_pid(77777, 0);
+        $h->run_on_interval;
     }
 
-    ok(!exists $h->{running_jobs}{$job_id}, 'running_jobs cleared by orphan fallback');
+    ok(!exists $h->{running_jobs}{$job_id}, 'running_jobs cleared by watchdog');
     is($res->used, 0, 'resource slot released');
     ok(
-        (grep { /orphaned test pid/ } @warnings),
-        'warned about orphan path',
+        !exists $h->{pending_synth_completions}{$job_id},
+        'pending synth-completion entry cleared',
     );
+    ok(
+        (grep { /synthesizing test_job_completed/ } @warnings),
+        'warned about synth path',
+    );
+
+    my $result = $rstate->results->{$job_id};
+    ok($result, 'result entry recorded for orphan job');
+    is($result->{pass}, 0, 'orphan job marked failed');
+    is($result->{exit}, 0, 'orphan job exit captured (raw)');
 };
 
 subtest 'perform_hard_stop TERMs reparented descendants on Linux' => sub {

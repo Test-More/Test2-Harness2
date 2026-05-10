@@ -47,6 +47,8 @@ use Object::HashBase qw{
     +run_services
     <run_pids
     +run_flags
+    <collector_grace_secs
+    +pending_synth_completions
     +completed_runs
     +finish_after_initial_run
     +emitter
@@ -78,6 +80,13 @@ use constant RUN_PIDS_GLOBAL_KEY => '__global__';
 #           frees slots; the run closes out once they all complete.
 use constant BROKEN_BEHAVIORS      => {map { $_ => 1 } qw/skip fail abort/};
 use constant SUBSCRIBER_RETRY_CAP  => 1024;
+
+# Grace window applied when a collector pid exits without a prior
+# test_job_completed. The IPC::Manager loop drives run_on_interval
+# every ~0.2s so the resolution is sub-second; the window itself is
+# seconds-scale so a slow auditor finishing its emit gets a fair
+# chance to land before the harness synthesizes a fail.
+use constant DEFAULT_COLLECTOR_GRACE_SECS => 10;
 
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Service', 'Test2::Harness2::Role::ResourceServiceHost';
@@ -135,8 +144,10 @@ sub init {
     $self->{+RUNNING_JOBS}      //= {};
     $self->{+RESOURCE_SERVICES} //= {};
     $self->{+RUN_SERVICES}      //= {};
-    $self->{+RUN_PIDS}          //= {};
-    $self->{+RUN_FLAGS}         //= {};
+    $self->{+RUN_PIDS}                 //= {};
+    $self->{+RUN_FLAGS}                //= {};
+    $self->{+PENDING_SYNTH_COMPLETIONS} //= {};
+    $self->{+COLLECTOR_GRACE_SECS}     //= DEFAULT_COLLECTOR_GRACE_SECS;
     $self->{+COMPLETED_RUNS}    //= {};
     $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
@@ -1541,48 +1552,44 @@ sub run_on_pid {
         return;
     }
 
-    # Orphan test-collector exit: a test whose run service died mid-run
-    # may reparent to us (via subreaper or by init). Normally the run
-    # service's watchdog would synthesize completion for us and emit
-    # run_state_update + job_release; only reach this branch if its
-    # whole process went away without unwinding. Release resources
-    # and mark the job done on the mirror Run so the scheduler doesn't
-    # wait forever.
+    # Test-collector exit. The harness owns the collector now (Stage 5
+    # of the RunService flatten), so this is the normal reap site.
+    # The auditor's test_job_completed message may have already
+    # arrived before the pid was reaped, in which case nothing more
+    # is needed beyond clearing the per-run pid index. If it has
+    # not, arm a grace timer so the watchdog in run_on_interval can
+    # synthesize completion if the auditor never gets a chance to
+    # speak (collector crash, signal during emit, etc.).
     for my $job_id (keys %{$self->{+RUNNING_JOBS} // {}}) {
         my $cur = $self->{+RUNNING_JOBS}->{$job_id};
         next unless $cur->{pid} && $cur->{pid} == $pid;
 
-        warn "Test2::Harness2: orphaned test pid $pid exited with $exit (job $job_id); " . "its run service died before reporting\n";
+        my $run    = $cur->{run};
+        my $run_id = $run->run_id;
+        my $flags  = $self->{+RUN_FLAGS}->{$run_id};
 
-        my $run = $cur->{run};
-        delete $self->{+RUNNING_JOBS}->{$job_id};
-        $self->_forget_run_pid($run->run_id, $pid);
-        $self->_release_job_resources($cur);
-        $self->_scheduler_mark_done($run->run_id, $job_id);
-
-        # Stamp a synth completion onto the mirror Run::State so
-        # _snapshot_run_results counts the orphan as a fail rather
-        # than skipping it for missing completed_at. Aggregate pass
-        # math depends on every started job having a recorded result.
-        my $rstate = $self->{+RUN_STATES}->{$run->run_id};
-        if ($rstate) {
-            my $entry = $rstate->{results}{$job_id} //= {};
-            my $job   = $cur->{job};
-            $entry->{job_try}      //= $job ? $job->job_try : undef;
-            if ($job && $job->can('test_file_abs')) {
-                $entry->{abs_file} //= $job->test_file_abs;
-                $entry->{rel_file} //= $job->test_file_rel;
-            }
-            $entry->{exit}          = $exit;
-            $entry->{pass}          = 0;
-            $entry->{pass_count}  //= 0;
-            $entry->{fail_count}  //= 0;
-            $entry->{completed_at}  = time;
-            $entry->{stamp}        //= $entry->{completed_at};
-            $entry->{orphaned}      = 1;
+        # Already completed (test_job_completed landed before the
+        # reap): forget the per-run pid index entry; let job_release
+        # handle the RUNNING_JOBS / resource-release cleanup as
+        # usual.
+        if ($flags && $flags->{completed_job_ids}{$job_id}) {
+            $self->_forget_run_pid($run_id, $pid);
+            return;
         }
 
-        $self->_finalize_run_if_complete($run);
+        # Not completed yet: arm a synth-completion grace entry.
+        # KEEP RUNNING_JOBS in place; a real test_job_completed
+        # arriving inside the grace window cancels the synth, and
+        # the watchdog reuses the existing RUNNING_JOBS entry to
+        # synthesize a completion + cleanup if the window expires.
+        $self->{+PENDING_SYNTH_COMPLETIONS}->{$job_id} = {
+            run_id           => $run_id,
+            job_id           => $job_id,
+            job_try          => $cur->{job} ? $cur->{job}->job_try : undef,
+            pid              => $pid,
+            pid_gone_at      => time,
+            raw_exit_on_reap => $exit,
+        };
 
         return;
     }
@@ -1593,6 +1600,87 @@ sub run_on_pid {
     # silently fall through.
     $self->handle_resource_service_exit($pid, $exit);
 
+    return;
+}
+
+# Collector-side watchdog: if a collector pid disappeared without
+# test_job_completed being received, synthesize completion once the
+# grace window expires. IPC::Manager drives run_on_interval roughly
+# every 0.2s so the resolution is sub-second even though the grace
+# window is seconds-scale.
+sub run_on_interval {
+    my $self = shift;
+
+    my $pending = $self->{+PENDING_SYNTH_COMPLETIONS};
+    return unless $pending && keys %$pending;
+
+    my $now   = time;
+    my $grace = $self->{+COLLECTOR_GRACE_SECS} // DEFAULT_COLLECTOR_GRACE_SECS;
+
+    for my $job_id (keys %$pending) {
+        my $entry  = $pending->{$job_id};
+        my $run_id = $entry->{run_id};
+
+        # A real test_job_completed arrived inside the grace window
+        # -- drop the pending synth.
+        my $flags = $self->{+RUN_FLAGS}->{$run_id};
+        if ($flags && $flags->{completed_job_ids}{$job_id}) {
+            delete $pending->{$job_id};
+            next;
+        }
+
+        next if ($now - $entry->{pid_gone_at}) < $grace;
+
+        warn sprintf(
+            "Test2::Harness2: synthesizing test_job_completed for job %s (collector pid %d): no test_job_completed in %ds after pid exit\n",
+            $job_id, $entry->{pid} // 0, $grace,
+        );
+
+        delete $pending->{$job_id};
+
+        my $raw = $entry->{raw_exit_on_reap};
+
+        # Reuse the normal completion handler so Run::State,
+        # RUN_FLAGS, run_failing latching, and the
+        # collector_report aggregate all see the synthesized
+        # entry. pass=0 + zero counts so the renderer surface can
+        # distinguish "synthesized fail" from "real fail with
+        # known counts".
+        $self->_handle_test_job_completed({
+            run_id     => $run_id,
+            job_id     => $job_id,
+            job_try    => $entry->{job_try},
+            exit       => $raw,
+            pass       => 0,
+            pass_count => 0,
+            fail_count => 0,
+            stamp      => time,
+            synth      => 1,
+        });
+
+        # The collector died without sending job_release, so the
+        # release / scheduler cleanup that _handle_job_release
+        # normally does has to fire here too.
+        $self->_synth_release_orphan_job($run_id, $job_id, $entry->{pid});
+    }
+
+    return;
+}
+
+# Counterpart to _handle_job_release for the watchdog path: when
+# the auditor never got a chance to send job_release, the harness
+# has to release the resources, drop the RUNNING_JOBS entry, mark
+# the scheduler done, and trigger run-finalization itself.
+sub _synth_release_orphan_job {
+    my ($self, $run_id, $job_id, $pid) = @_;
+
+    my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
+    return unless $cur;
+
+    $self->_forget_run_pid($run_id, $pid) if $pid;
+    $self->_release_job_resources($cur);
+    $self->_scheduler_mark_done($run_id, $job_id);
+    $self->_finalize_run_if_complete($cur->{run}) if $cur->{run};
     return;
 }
 
