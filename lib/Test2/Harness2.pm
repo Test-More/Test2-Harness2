@@ -2162,6 +2162,13 @@ sub _ensure_run_service_started {
     my $run_id = $run->run_id;
     my $bus    = "run-$run_id";
 
+    # NOTE: RunService is still spawned here. Its post-Stage-7
+    # responsibilities are minimal -- it interposes a Run-type
+    # collector to write runs/<run_id>/{spec,events,report}.jsonl
+    # which downstream tooling (DB, archive, replay) reads. The
+    # full removal happens in Stage 9 of the flatten, where the
+    # spec.jsonl writer moves into the harness directly and the
+    # rest goes away.
     my $pid = Test2::Harness2::RunService->spawn(
         workdir      => $self->{+WORKDIR},
         logdir       => $self->{+LOGDIR},

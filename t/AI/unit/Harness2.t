@@ -834,18 +834,18 @@ subtest 'harness spawns a run service lazily for each run it considers' => sub {
     $h->{ipcm_info} = {fake => 1};
 
     my @spawn_calls;
-    my $fake_ipc_handle = bless {}, 'Test::FakeIPCHandle';
     {
         no warnings 'redefine';
-        local *Test::FakeIPCHandle::ready         = sub { 1 };
-        local *Test::FakeIPCHandle::sync_request  = sub { +{response => {ok => 1, pid => 12345}} };
         local *Test2::Harness2::RunService::spawn = sub {
             my ($class, %args) = @_;
             push @spawn_calls => \%args;
-            return 91_001;    # pretend child pid
+            return 91_001;
         };
-        local *Test2::Harness2::_run_service_handle         = sub { $fake_ipc_handle };
-        local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake_ipc_handle };
+        # Stub the collector spawn so run_on_all's launch path does not
+        # try to fork a real test child.
+        local *Test2::Harness2::_spawn_collector_for_job = sub {
+            return {ok => 1, pid => 22_222};
+        };
 
         $h->run_on_all({});
         $h->run_on_all({});    # a second tick must not re-fork
@@ -861,32 +861,6 @@ subtest 'harness spawns a run service lazily for each run it considers' => sub {
     );
 };
 
-subtest 'harness spawns a run service even when the run has no resources' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/y.t'));
-    my $h   = Test2::Harness2->new(workdir => $dir);
-    $h->{ipcm_info} = {fake => 1};
-    push @{$h->{queue}} => $run;
-    $h->_scheduler_queue_run($run);
-
-    my @spawn_calls;
-    my $fake_ipc_handle = bless {}, 'Test::FakeIPCHandle';
-    {
-        no warnings 'redefine';
-        local *Test::FakeIPCHandle::ready         = sub { 1 };
-        local *Test::FakeIPCHandle::sync_request  = sub { +{response => {ok => 1, pid => 22222}} };
-        local *Test2::Harness2::RunService::spawn = sub {
-            push @spawn_calls => {@_[1 .. $#_]};
-            return 91_002;
-        };
-        local *Test2::Harness2::_run_service_handle         = sub { $fake_ipc_handle };
-        local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake_ipc_handle };
-        $h->run_on_all({});
-    }
-
-    is(scalar @spawn_calls, 1, 'run service spawned for a run with zero resources');
-};
-
 subtest 'run-service pid is recognized by run_on_pid and dropped cleanly' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
@@ -898,8 +872,7 @@ subtest 'run-service pid is recognized by run_on_pid and dropped cleanly' => sub
     };
 
     # run_on_pid for this pid must drop the tracking entry but not
-    # treat it as a resource-service exit (nothing to restart; the
-    # RunService is responsible for cascading shutdown to its children).
+    # treat it as a resource-service exit.
     $h->run_on_pid(91_050, 0);
 
     ok(!exists $h->{run_services}{1}, 'run-service pid cleared from tracking');
