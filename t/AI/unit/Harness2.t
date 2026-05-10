@@ -320,7 +320,7 @@ subtest 'Detach removes a pid from watch_pids' => sub {
     is($h->watch_pids, [1002]);
 };
 
-subtest 'run_on_all delegates job launch to the run service via IPC' => sub {
+subtest 'run_on_all spawns the Collector directly (no run-service IPC)' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(
         workdir   => $dir,
@@ -329,48 +329,47 @@ subtest 'run_on_all delegates job launch to the run service via IPC' => sub {
 
     $h->request_handler_queue_test_run({files => _tfs('/abs/path/does-not-matter.t')});
 
-    # Mock the run-service spawn + IPC handle. Capture the sync_request
-    # payload so we can assert the harness handed launch_job the right
-    # fields (env, run_id, job_id, test_file, assignments, etc.).
-    my @sync_calls;
-    my $fake_ipc_handle = bless {
-        ready => 1,
-        sync  => sub {
-            push @sync_calls => [@_];
-            return {response => {ok => 1, pid => 98765}};
-        }
-        },
-        'Test::FakeIPCHandle';
+    # The harness now calls _spawn_collector_for_job directly instead of
+    # round-tripping through RunService via IPC. Stub the spawn at that
+    # method boundary and capture the call args so we can assert the
+    # right fields (env, run_id, job_id, test_file, etc.) reach the
+    # collector.
+    my @spawn_calls;
     {
         no warnings 'redefine';
-        local *Test::FakeIPCHandle::ready        = sub { 1 };
-        local *Test::FakeIPCHandle::sync_request = sub { my $self = shift; $self->{sync}->(@_); };
-
-        local *Test2::Harness2::RunService::spawn           = sub { 90_000 };
-        local *Test2::Harness2::_run_service_handle         = sub { $fake_ipc_handle };
-        local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake_ipc_handle };
+        local *Test2::Harness2::RunService::spawn = sub { 90_000 };
+        local *Test2::Harness2::_spawn_collector_for_job = sub {
+            my ($self, $run, $job, %opts) = @_;
+            push @spawn_calls => {
+                run_id   => $run->run_id,
+                job_id   => $job->job_id,
+                job_try  => $job->job_try,
+                test_file => $job->test_file_abs,
+                env       => {%{$opts{env} // {}}},
+                launch    => $opts{launch},
+            };
+            return {ok => 1, pid => 98765};
+        };
 
         $h->{ipcm_info} = {fake => 1};    # enables _ensure_run_service_started fork path
 
         $h->run_on_all({});
     }
 
-    is(scalar @sync_calls, 1, 'exactly one launch_job IPC call issued');
-    my ($peer, $payload) = @{$sync_calls[0]};
-    like($peer, qr/^run-/, 'peer is the run-service bus name');
-    is($payload->{request},   'launch_job',                  'launch_job request type');
-    is($payload->{test_file}, '/abs/path/does-not-matter.t', 'test_file is absolute');
+    is(scalar @spawn_calls, 1, 'exactly one collector spawn issued');
+    my $call = $spawn_calls[0];
+    is($call->{test_file}, '/abs/path/does-not-matter.t', 'test_file is absolute');
     is(
-        $payload->{env}{T2_HARNESS_MY_JOB_CONCURRENCY}, 1,
-        'JobCount concurrency env var propagated via the payload',
+        $call->{env}{T2_HARNESS_MY_JOB_CONCURRENCY}, 1,
+        'JobCount concurrency env var propagated via env',
     );
-    is($payload->{run_id}, 1, 'run_id in payload');
-    is($payload->{job_id}, 1, 'job_id in payload');
-    is($payload->{job_try}, 1, 'job_try 1 in payload');
+    is($call->{run_id}, 1, 'run_id passed through');
+    is($call->{job_id}, 1, 'job_id passed through');
+    is($call->{job_try}, 1, 'job_try 1 passed through');
 
     my @running = values %{$h->{running_jobs}};
     is(scalar @running,    1,     'one running job tracked');
-    is($running[0]->{pid}, 98765, 'running job pid comes from run-service launch response');
+    is($running[0]->{pid}, 98765, 'running job pid comes from spawn response');
 };
 
 subtest 'run_on_all commits no resource when any is unavailable' => sub {
@@ -991,26 +990,33 @@ subtest 'run_on_cleanup signals run services for uncompleted runs' => sub {
     ok(!exists $h->{run_services}{$run->run_id}, 'run-service tracking cleared');
 };
 
-# Mocks the run-service IPC flow for the broken-resource subtests:
-# captures every launch_job sync_request so tests can assert the
-# unavailable-action perl -e command. Returns the subroutine that
-# drives run_on_all inside the override, plus a hashref that collects
-# the calls.
+# Mocks Collector spawning for the broken-resource subtests: captures
+# every _spawn_collector_for_job call so tests can assert the
+# unavailable-action perl -e command. The recorded shape mirrors the
+# old launch_job payload (peer/payload) so the existing assertions
+# keep working with minimal churn.
 sub _mock_run_launches {
     my ($h, $code) = @_;
 
     my @calls;
-    my $fake = bless {}, 'Test::FakeIPCHandle';
     no warnings 'redefine';
-    local *Test::FakeIPCHandle::ready        = sub { 1 };
-    local *Test::FakeIPCHandle::sync_request = sub {
-        my (undef, $peer, $payload) = @_;
-        push @calls => {peer => $peer, payload => {%$payload}};
-        return {response => {ok => 1, pid => 70_000 + scalar @calls}};
+    local *Test2::Harness2::RunService::spawn = sub { 90_000 };
+    local *Test2::Harness2::_spawn_collector_for_job = sub {
+        my ($self, $run, $job, %opts) = @_;
+        push @calls => {
+            peer    => "run-" . $run->run_id,
+            payload => {
+                request   => 'launch_job',
+                run_id    => $run->run_id,
+                job_id    => $job->job_id,
+                job_try   => $job->job_try,
+                test_file => $job->test_file_abs,
+                env       => {%{$opts{env} // {}}},
+                (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+            },
+        };
+        return {ok => 1, pid => 70_000 + scalar @calls};
     };
-    local *Test2::Harness2::RunService::spawn           = sub { 90_000 };
-    local *Test2::Harness2::_run_service_handle         = sub { $fake };
-    local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake };
 
     $h->{ipcm_info} //= {fake => 1};
     $code->();

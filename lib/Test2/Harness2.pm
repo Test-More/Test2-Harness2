@@ -2248,32 +2248,18 @@ sub _launch_job {
         $res->assign(id => $assign_id, job => $job, env => \%env, %assign_args);
     }
 
-    # Delegate the actual Collector fork to the per-run supervisor so
-    # the test process runs under the run's subtree. The harness owns
-    # scheduling (resources assigned above) and the run service owns
-    # launch + reap + stdio logging.
+    # Spawn the Collector directly. Stage 5 of the RunService flatten:
+    # the harness owns the collector fork, the test process is its
+    # grandchild, and the run service is no longer in the test-launch
+    # path. Reap lands at run_on_pid; auditor sends straight back here.
     my $launch_ok = eval {
-        my $handle = $self->_wait_for_run_service_ready($run_id);
-
-        my $envelope = $handle->sync_request(
-            "run-$run_id",
-            {
-                request   => 'launch_job',
-                run_id    => $run_id,
-                job_id    => $job_id,
-                job_try   => 1,
-                test_file => $job->test_file_abs,
-                env       => \%env,
-                auditor   => $self->{+TEST_AUDITOR},
-                (defined $opts{launch} ? (launch => $opts{launch}) : ()),
-            },
+        my $resp = $self->_spawn_collector_for_job(
+            $run, $job,
+            env     => \%env,
+            (defined $opts{launch} ? (launch => $opts{launch}) : ()),
         );
-
-        # IPC::Manager wraps request bodies in {response => ...}; our
-        # actual handler return value lives inside that slot.
-        my $resp = ref($envelope) eq 'HASH' ? $envelope->{response} : undef;
-        die "launch_job rejected: " . (ref($resp) eq 'HASH' ? ($resp->{error} // '(no error given)') : '(no response)')
-            unless ref($resp) eq 'HASH' && $resp->{ok};
+        die "collector spawn returned no pid"
+            unless ref($resp) eq 'HASH' && $resp->{ok} && $resp->{pid};
 
         $self->_scheduler_mark_running($run_id, $job_id);
 
@@ -2313,6 +2299,83 @@ sub _launch_job {
     }
 
     return $job_id;
+}
+
+# Build the Collector spawn args + invoke Collector->spawn directly,
+# without going through the RunService IPC. Inlined from the body of
+# RunService::request_handler_launch_job. Returns the same shape:
+# {ok => 1, pid => $collector_pid, log_file => undef} or
+# {ok => 0, error => "..."}.
+sub _spawn_collector_for_job {
+    my ($self, $run, $job, %opts) = @_;
+
+    my $run_id  = $run->run_id;
+    my $job_id  = $job->job_id;
+    my $job_try = $job->job_try // 1;
+
+    my $env     = $opts{env} // {};
+    my $launch  = $opts{launch};
+    my $auditor = $opts{auditor} // $self->{+TEST_AUDITOR};
+
+    my $test_file_abs = $job->test_file_abs;
+    return {ok => 0, error => "'test_file' must be absolute"}
+        unless File::Spec->file_name_is_absolute($test_file_abs);
+
+    # The unavailable-action skip / fail paths hand us an explicit
+    # launch command (perl -e '...'). Default to running the real
+    # test file when no override is present. Forward T2_HARNESS_INCLUDES
+    # as -I flags so the child interpreter actually picks the paths up.
+    if (!defined $launch) {
+        my @extra_inc;
+        if (my $inc = $env->{T2_HARNESS_INCLUDES}) {
+            @extra_inc = grep { length && $_ ne '.' } split /;/, $inc;
+        }
+        $launch = [$^X, (map { "-I$_" } @extra_inc), '-Ilib', $test_file_abs];
+    }
+
+    my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
+
+    # queued_at on the per-job spec.jsonl artifact: pull from
+    # Run::State so the renderer sees the queue-time stamp.
+    my $queued_at;
+    if (my $rs = $self->{+RUN_STATES}->{$run_id}) {
+        my $r = $rs->results->{$job_id};
+        $queued_at = $r->{queued_at} if $r && defined $r->{queued_at};
+    }
+
+    my $handle;
+    my $spawn_ok = eval {
+        $handle = Test2::Harness2::Collector->spawn(
+            type         => 'Job',
+            id           => $job_id,
+            run_id       => $run_id,
+            job_try      => $job_try,
+            launch       => $launch,
+            new_pgroup   => 1,
+            parent_pids  => [$$],
+            env_vars     => {T2_FORMATTER => 'Stream2', %$env},
+            logdir       => $self->{+LOGDIR},
+            ipcm_info    => $self->ipcm_info,
+            ipc_parent   => $self->{+NAME},
+            ipc_run      => $self->{+NAME},
+            ipc_harness  => $self->{+NAME},
+            kill_timeout => $self->{+KILL_TIMEOUT},
+            spec         => {
+                %{ $test_file_spec->TO_JSON },
+                run_id    => $run_id,
+                job_id    => $job_id,
+                job_try   => $job_try,
+                (defined $queued_at ? (queued_at => $queued_at) : ()),
+            },
+            (defined $auditor ? (auditor => $auditor) : ()),
+        );
+        1;
+    };
+    return {ok => 0, error => "collector spawn failed: $@"}
+        unless $spawn_ok;
+
+    my $pid = $handle->pid;
+    return {ok => 1, pid => $pid, log_file => undef};
 }
 
 1;
