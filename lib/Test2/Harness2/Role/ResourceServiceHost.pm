@@ -414,8 +414,29 @@ sub track_resource_service {
         (defined $run ? (run => $run) : ()),
     };
 
+    $self->_resource_service_tracked(
+        pid      => $pid,
+        scope    => $scope,
+        run      => $run,
+        name     => $name,
+        resource => $res,
+    );
+
     return $pid;
 }
+
+# Notification hook fired after a resource-service tracking entry has
+# been recorded. Default no-op; consumers (e.g. the harness, which
+# also maintains a per-run pid index) override to mirror the
+# registration into their own bookkeeping. Always called in scalar
+# context; return value ignored.
+sub _resource_service_tracked { }
+
+# Companion to _resource_service_tracked: fired right before a
+# resource-service tracking entry is dropped from
+# resource_services. Consumers that mirrored the registration use
+# this to clear their mirror.
+sub _resource_service_forgotten { }
 
 # Called from the consumer's run_on_pid when a pid that isn't
 # something else (test collector, worker, ...) has exited. Returns 1
@@ -440,6 +461,14 @@ sub handle_resource_service_exit {
     my $scope       = $svc->{scope} // 'global';
     my $run         = $svc->{run};
     my $restartable = $svc->{restartable} ? 1 : 0;
+
+    $self->_resource_service_forgotten(
+        pid      => $pid,
+        scope    => $scope,
+        run      => $run,
+        name     => $name,
+        resource => $res,
+    );
 
     # Non-restartable service: the resource is effectively gone for
     # the rest of this host's lifetime.

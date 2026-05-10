@@ -45,6 +45,7 @@ use Object::HashBase qw{
     +running_jobs
     <resource_services
     +run_services
+    <run_pids
     +completed_runs
     +finish_after_initial_run
     +emitter
@@ -54,6 +55,11 @@ use Object::HashBase qw{
     watch_pids
     own_pgroup
 };
+
+# Sentinel run_id key used by RUN_PIDS for processes that aren't bound
+# to a particular run -- e.g. global resource services. Picked so it
+# can never collide with a real run_id (which are uuids).
+use constant RUN_PIDS_GLOBAL_KEY => '__global__';
 
 # Valid values for broken_resource_behavior: what the scheduler does
 # when a job needs a resource that has been flipped to
@@ -128,6 +134,7 @@ sub init {
     $self->{+RUNNING_JOBS}      //= {};
     $self->{+RESOURCE_SERVICES} //= {};
     $self->{+RUN_SERVICES}      //= {};
+    $self->{+RUN_PIDS}          //= {};
     $self->{+COMPLETED_RUNS}    //= {};
     $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
@@ -174,6 +181,131 @@ sub _init_resources {
     # callers that construct a harness directly remain in full control
     # of which limiters (if any) participate.
     $self->{+RESOURCES} //= [];
+}
+
+#-------------------------------------------------------------------
+# Per-run pid bookkeeping. RUN_PIDS keys every harness-spawned
+# subprocess (run service, test collector, resource service) by the
+# run_id it serves -- with a sentinel key for processes that aren't
+# bound to a run (currently: global resource services). The maps are
+# the single source of truth for per-run signal/kill/wait operations
+# (helpers below). They are populated alongside the existing per-kind
+# tracking hashes (RUN_SERVICES, RUNNING_JOBS, RESOURCE_SERVICES) and
+# do not replace them in this stage; callers can keep using the
+# kind-specific maps where they already do.
+#
+# Entry shape:
+#   $self->{+RUN_PIDS}->{$run_id}->{$pid} = {
+#       kind         => 'collector' | 'run_service' | 'resource_service',
+#       started_at   => $epoch,
+#       # per-kind metadata:
+#       job_id       => $job_id,        # collector
+#       job_try      => $job_try,       # collector
+#       res_name     => $resource_name, # resource_service
+#       res_svc      => $service_name,  # resource_service
+#   };
+#-------------------------------------------------------------------
+
+sub _register_run_pid {
+    my ($self, $run_key, $pid, %meta) = @_;
+    return unless defined $run_key && length $run_key;
+    return unless defined $pid && $pid > 0;
+    $meta{started_at} //= time;
+    $self->{+RUN_PIDS}->{$run_key}->{$pid} = \%meta;
+    return $pid;
+}
+
+# Drop the (run_key, pid) entry. Returns the meta hash if it existed,
+# or undef. Removes the per-run sub-hash entirely once it goes empty
+# so iteration over active runs stays cheap.
+sub _forget_run_pid {
+    my ($self, $run_key, $pid) = @_;
+    return unless defined $run_key && length $run_key;
+    my $bucket = $self->{+RUN_PIDS}->{$run_key} or return;
+    my $meta = delete $bucket->{$pid};
+    delete $self->{+RUN_PIDS}->{$run_key} unless keys %$bucket;
+    return $meta;
+}
+
+# Reverse-lookup: given a pid, return ($run_key, \%meta). The map is
+# small (active runs * active pids), so a linear scan is fine. Returns
+# (undef, undef) when not found.
+sub _run_for_pid {
+    my ($self, $pid) = @_;
+    my $rp = $self->{+RUN_PIDS} // {};
+    for my $run_key (keys %$rp) {
+        my $meta = $rp->{$run_key}->{$pid};
+        return ($run_key, $meta) if $meta;
+    }
+    return (undef, undef);
+}
+
+sub _pids_for_run {
+    my ($self, $run_key) = @_;
+    return () unless defined $run_key && length $run_key;
+    my $bucket = $self->{+RUN_PIDS}->{$run_key} or return ();
+    return keys %$bucket;
+}
+
+# Send $signal to every pid bound to $run_key. Skips pids that no
+# longer exist. Returns the count of signals successfully delivered.
+sub _kill_run {
+    my ($self, $run_key, $signal) = @_;
+    $signal //= 'TERM';
+    my @pids = $self->_pids_for_run($run_key) or return 0;
+    my $sent = 0;
+    for my $pid (@pids) {
+        next unless kill 0 => $pid;
+        $sent++ if kill $signal => $pid;
+    }
+    return $sent;
+}
+
+# Block (with periodic 20ms naps) until every tracked pid for $run_key
+# has exited the RUN_PIDS map, or until $deadline (epoch seconds).
+# Returns 1 if the run drained, 0 on timeout. Note: this method only
+# *waits* -- it does not reap. The reap path (run_on_pid) is what
+# actually removes entries from RUN_PIDS, which only fires when the
+# IPC::Manager loop services SIGCHLD.
+sub _await_run_exit {
+    my ($self, $run_key, $deadline) = @_;
+    $deadline //= time + ($self->{+KILL_TIMEOUT} // 15);
+    while ($self->_pids_for_run($run_key)) {
+        return 0 if time >= $deadline;
+        tinysleep(0.02);
+    }
+    return 1;
+}
+
+# ResourceServiceHost notification hooks: mirror every resource
+# service registration into RUN_PIDS keyed by run_id, or by
+# RUN_PIDS_GLOBAL_KEY for global services.
+sub _resource_service_tracked {
+    my ($self, %p) = @_;
+    my $scope   = $p{scope} // 'global';
+    my $run_key = ($scope eq 'run' && ref $p{run})
+        ? $p{run}->run_id
+        : RUN_PIDS_GLOBAL_KEY;
+    my $svc = $self->{+RESOURCE_SERVICES}->{$p{pid}} || {};
+    $self->_register_run_pid(
+        $run_key, $p{pid},
+        kind     => 'resource_service',
+        res_name => $p{resource} ? $p{resource}->resource_name : undef,
+        res_svc  => $p{name},
+        scope    => $scope,
+        ($svc->{started_at} ? (started_at => $svc->{started_at}) : ()),
+    );
+    return;
+}
+
+sub _resource_service_forgotten {
+    my ($self, %p) = @_;
+    my $scope   = $p{scope} // 'global';
+    my $run_key = ($scope eq 'run' && ref $p{run})
+        ? $p{run}->run_id
+        : RUN_PIDS_GLOBAL_KEY;
+    $self->_forget_run_pid($run_key, $p{pid});
+    return;
 }
 
 sub start {
@@ -971,6 +1103,7 @@ sub _handle_job_release {
     return unless $cur;
 
     my $run_id = $cur->{run}->run_id;
+    $self->_forget_run_pid($run_id, $cur->{pid}) if $cur->{pid};
     $self->_scheduler_mark_done($run_id, $job_id);
     $self->_release_job_resources($cur);
 
@@ -1046,6 +1179,7 @@ sub service_post_hard_stop {
     }
     $self->{+RUNNING_JOBS}      = {};
     $self->{+RESOURCE_SERVICES} = {};
+    $self->{+RUN_PIDS}          = {};
     return;
 }
 
@@ -1073,6 +1207,7 @@ sub run_on_pid {
         my $info = $self->{+RUN_SERVICES}->{$rid};
         next unless $info->{pid} && $info->{pid} == $pid;
         delete $self->{+RUN_SERVICES}->{$rid};
+        $self->_forget_run_pid($rid, $pid);
         return;
     }
 
@@ -1091,6 +1226,7 @@ sub run_on_pid {
 
         my $run = $cur->{run};
         delete $self->{+RUNNING_JOBS}->{$job_id};
+        $self->_forget_run_pid($run->run_id, $pid);
         $self->_release_job_resources($cur);
         $self->_scheduler_mark_done($run->run_id, $job_id);
 
@@ -1610,12 +1746,19 @@ sub _ensure_run_service_started {
         kill_timeout => $self->{+KILL_TIMEOUT},
     );
 
+    my $started_at = time;
     $self->{+RUN_SERVICES}->{$run_id} = {
         pid        => $pid,
         run        => $run,
         bus_name   => $bus,
-        started_at => time,
+        started_at => $started_at,
     };
+    $self->_register_run_pid(
+        $run_id, $pid,
+        kind       => 'run_service',
+        bus_name   => $bus,
+        started_at => $started_at,
+    );
 
     return;
 }
@@ -1756,15 +1899,23 @@ sub _launch_job {
 
         $self->_scheduler_mark_running($run_id, $job_id);
 
+        my $started_at = time;
         $self->{+RUNNING_JOBS}->{$job_id} = {
             run                => $run,
             job                => $job,
             pid                => $resp->{pid},
-            started_at         => time,
+            started_at         => $started_at,
             assign_id          => $assign_id,
             assigned_resources => $resources,
             log_file           => $resp->{log_file},
         };
+        $self->_register_run_pid(
+            $run_id, $resp->{pid},
+            kind       => 'collector',
+            job_id     => $job_id,
+            job_try    => $job->job_try,
+            started_at => $started_at,
+        );
 
         1;
     };
