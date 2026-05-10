@@ -2,7 +2,7 @@ package App::Yath2::DB::DBIC;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
@@ -120,65 +120,10 @@ sub _uuid_from_db { my ($self, $val) = @_; $self->_flavor_uuid_from_db($val) }
     *dbh = sub { $_[0]->{+SCHEMA}->storage->dbh };
 }
 
-# Postgres-only schema preprocessing: rewrite COMPRESSION zstd clause
-# to whatever the live server actually supports (zstd / lz4 / drop).
-# Same logic as App::Yath2::DB::SQL::preprocess_schema_sql.
-sub preprocess_schema_sql {
-    my ($self, $sql) = @_;
-    my $flavor = $self->flavor;
-    return $sql unless $flavor eq 'postgres';
-
-    my $algo = $self->_pg_server_compression;
-    if (!defined $algo) {
-        $sql =~ s/\s+COMPRESSION\s+zstd\b//gi;
-    }
-    elsif ($algo ne 'zstd') {
-        $sql =~ s/(\bCOMPRESSION\s+)zstd\b/$1$algo/gi;
-    }
-    return $sql;
-}
-
-sub _pg_server_compression {
-    my $self = shift;
-    return $self->{_pg_server_compression} //= do {
-        my $dbh = $self->dbh;
-        my $probe = sub {
-            my ($algo) = @_;
-            return eval {
-                local $dbh->{RaiseError} = 1;
-                local $dbh->{PrintError} = 0;
-                $dbh->do(qq{SET default_toast_compression = '$algo'});
-                $dbh->do(q{RESET default_toast_compression});
-                1;
-            };
-        };
-        $probe->('zstd') ? 'zstd' : $probe->('lz4') ? 'lz4' : undef;
-    };
-}
-
-# DBD::MariaDB reports the same sqlt_type as MySQL, but MariaDB lacks
-# BIN_TO_UUID() (used in mysql.sql CREATE TRIGGER bodies). Detect via
-# SELECT VERSION() and skip CREATE TRIGGER statements when targeting
-# MariaDB.
-sub _server_is_mariadb {
-    my $self = shift;
-    return $self->{_is_mariadb} //= do {
-        my $flavor = $self->flavor;
-        if    ($flavor eq 'mariadb') { 1 }
-        elsif ($flavor eq 'mysql') {
-            my ($v) = $self->dbh->selectrow_array('SELECT VERSION()');
-            (defined $v && $v =~ /MariaDB/i) ? 1 : 0;
-        }
-        else { 0 }
-    };
-}
-
-sub _should_skip_schema_statement {
-    my ($self, $stmt) = @_;
-    return 0 unless $self->flavor eq 'mysql';
-    return 0 unless $self->_server_is_mariadb;
-    return $stmt =~ /^CREATE\s+TRIGGER\b/i ? 1 : 0;
-}
+# Schema-bootstrap hooks (preprocess_schema_sql, _pg_server_compression,
+# _server_is_mariadb, _should_skip_schema_statement) come from
+# App::Yath2::Role::DB::Backend; both the SQL and DBIC backends share
+# them.
 
 # ----- Native read primitives + local codecs -----
 #
@@ -874,13 +819,12 @@ directly) and runs C<bootstrap_schema>.
 Detect flavor from the C<schema>'s storage driver class, the DSN, or
 the explicit C<flavor_override>.
 
-=item $sql = $self->preprocess_schema_sql($sql)
-
-Per-flavor schema massaging (matches L<App::Yath2::DB::SQL>:
-C<COMPRESSION lz4> stripping for Postgres, MariaDB-trigger pruning,
-etc.).
-
 =back
+
+Schema-bootstrap hooks (C<preprocess_schema_sql>,
+C<_pg_server_compression>, C<_server_is_mariadb>,
+C<_should_skip_schema_statement>) come from
+L<App::Yath2::Role::DB::Backend>; consult that role for the contract.
 
 =head2 Archive rows
 

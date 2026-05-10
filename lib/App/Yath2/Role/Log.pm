@@ -2,7 +2,7 @@ package App::Yath2::Role::Log;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
@@ -292,10 +292,32 @@ Read the artifact at C<$rel>, returning bytes in whichever shape
 matches the requested suffix (plaintext when called without
 C<.zst>, compressed when called with).
 
-=item $records = $log->_artifact_iter_records($base, $stem)
+=item $iter = $log->_artifact_iter_records($base, $stem)
 
-Read a JSONL artifact at C<$base/$stem> and return an arrayref of
-decoded records (or C<undef> when the artifact is absent).
+Read a JSONL artifact at C<$base/$stem>. Returns one of:
+
+=over 4
+
+=item *
+
+A L<Test2::Harness2::Util::JSONL::Reader> bound to the artifact's
+plaintext bytes (used by the DB backend so callers do not pay the cost
+of decoding the entire artifact upfront).
+
+=item *
+
+An arrayref of decoded records (used by backends that already hold
+the records in memory, e.g. C<App::Yath2::Log::TarZIdx>).
+
+=item *
+
+C<undef> when the artifact is absent.
+
+=back
+
+Callers consume the result through whichever shape is returned: an
+arrayref is iterated directly, a Reader exposes
+C<read_lines> / C<readline>.
 
 =item @names = $log->_artifact_list_dir($rel)
 

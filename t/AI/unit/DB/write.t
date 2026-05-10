@@ -47,17 +47,17 @@ sub build_source {
 
     write_jsonl_zst("$src/runs/0/events.jsonl.zst", {ping => 1});
     write_jsonl_zst("$src/runs/0/spec.jsonl.zst",
-        {started_at => '2026-05-07T00:00:00Z'});
+        {started_at => 1778112000});
     write_jsonl_zst("$src/runs/0/report.jsonl.zst",
-        {ended_at => '2026-05-07T00:01:00Z', exit => 0, pass => 1});
+        {ended_at => 1778112060, exit => 0, pass => 1});
 
     write_jsonl_zst("$src/runs/0/jobs/0/0/events.jsonl.zst", {ping => 1});
     write_jsonl_zst("$src/runs/0/jobs/0/0/spec.jsonl.zst",
-        {relative => 't/job0.t', queued_at => '2026-05-07T00:00:00Z'});
+        {relative => 't/job0.t', queued_at => 1778112000});
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at => '2026-05-07T00:00:02Z',
+            ended_at => 1778112002,
             exit     => 0,
             pass     => 1,
             subtests => [
@@ -122,9 +122,9 @@ for_each_log_db_backend(sub {
     delete $xf{'meta.json'};
 
     # spec.jsonl / report.jsonl / state.jsonl are reconstructed from
-    # typed columns at read time -- they are NEVER persisted as artifact
-    # rows, so they don't appear in the extracted directory tree
-    # either. Verify only the artifact-backed paths.
+    # typed columns and materialized at extract time. We only verify
+    # artifact-backed paths here; reconstruction parity is checked in
+    # t/AI/unit/DB/read.t.
     for my $f (sort keys %src_files) {
         next if $f eq 'LIVE';
         next if $f =~ m{(?:^|/)(?:spec|report|state)\.jsonl(?:\.zst)?\z};
@@ -132,6 +132,15 @@ for_each_log_db_backend(sub {
         ok(exists $xf{$stem} || exists $xf{"$stem.zst"},
             "extracted has $stem (or .zst variant)");
     }
+
+    # Virtual files exist in the extract output too.
+    ok(exists $xf{'runs/0/spec.jsonl'} || exists $xf{'runs/0/spec.jsonl.zst'},
+        'extracted has run-scope spec.jsonl');
+    ok(exists $xf{'runs/0/report.jsonl'} || exists $xf{'runs/0/report.jsonl.zst'},
+        'extracted has run-scope report.jsonl');
+    ok(exists $xf{'runs/0/jobs/0/0/state.jsonl'}
+            || exists $xf{'runs/0/jobs/0/0/state.jsonl.zst'},
+        'extracted has job_try state.jsonl (virtual)');
 
     # ----- save_artifact via Log::DB --------------------------------------
     my $log = App::Yath2::Log::DB->new(db => $db, uuid => $u);

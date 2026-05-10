@@ -52,7 +52,7 @@ for_each_db_version([qw/postgresql/], sub {
     write_jsonl_zst(
         "$src/runs/0/spec.jsonl.zst",
         {
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             times      => [1, 2, 3, 4],
             harness    => 'yath',
             name       => 'fancy run',
@@ -62,7 +62,7 @@ for_each_db_version([qw/postgresql/], sub {
     write_jsonl_zst(
         "$src/runs/0/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:01:00Z',
+            ended_at     => 1778112060,
             exit         => 0,
             pass         => 1,
             total_jobs   => 2,
@@ -85,8 +85,8 @@ for_each_db_version([qw/postgresql/], sub {
         "$src/runs/0/jobs/0/0/spec.jsonl.zst",
         {
             relative   => 't/dummy.t',
-            queued_at  => '2026-05-07T00:00:00.500Z',
-            started_at => '2026-05-07T00:00:01Z',
+            queued_at  => 1778112000.5,
+            started_at => 1778112001,
             times      => [1, 2, 3, 4],
             comment    => 'a per-try note',
         },
@@ -94,7 +94,7 @@ for_each_db_version([qw/postgresql/], sub {
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at        => '2026-05-07T00:00:02Z',
+            ended_at        => 1778112002,
             exit            => 0,
             pass            => 1,
             pass_count      => 5,

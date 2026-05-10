@@ -40,7 +40,7 @@ sub build_log {
     write_jsonl_zst(
         "$src/runs/0/spec.jsonl.zst",
         {
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             times      => [1, 2, 3, 4],
             harness    => 'yath',
             name       => 'fancy run',
@@ -50,7 +50,7 @@ sub build_log {
     write_jsonl_zst(
         "$src/runs/0/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:01:00Z',
+            ended_at     => 1778112060,
             exit         => 0,
             pass         => 1,
             total_jobs   => 2,
@@ -74,8 +74,8 @@ sub build_log {
         "$src/runs/0/jobs/0/0/spec.jsonl.zst",
         {
             relative   => 't/dummy.t',
-            queued_at  => '2026-05-07T00:00:00.500Z',
-            started_at => '2026-05-07T00:00:01Z',
+            queued_at  => 1778112000.5,
+            started_at => 1778112001,
             times      => [1, 2, 3, 4],
             comment    => 'a per-try note',
         },
@@ -84,7 +84,7 @@ sub build_log {
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at        => '2026-05-07T00:00:02Z',
+            ended_at        => 1778112002,
             exit            => 0,
             pass            => 1,
             pass_count      => 5,
@@ -114,9 +114,8 @@ sub build_log {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Codecs (_db_datetime_to_iso etc.) live on the App::Yath2::DB
-    # wrapper itself, which is what App::Yath2::DB->new returns; calls
-    # below land directly on $db.
+    # Datetime columns are returned to consumers as hi-res unix epoch
+    # floats; per-flavor parsing lives on $db->backend->db_parse_datetime.
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
     unlink $db_path;
@@ -136,9 +135,9 @@ for_each_log_db_backend(sub {
     );
     ok(defined $run, 'runs row exists');
 
-    is($db->_db_datetime_to_iso($run->{started_at}), '2026-05-07T00:00:00Z', 'runs.started_at from spec');
+    is($db->backend->db_parse_datetime($run->{started_at}), 1778112000, 'runs.started_at from spec');
 
-    is($db->_db_datetime_to_iso($run->{ended_at}), '2026-05-07T00:01:00Z', 'runs.ended_at from report');
+    is($db->backend->db_parse_datetime($run->{ended_at}), 1778112060, 'runs.ended_at from report');
     is($run->{exit},         0,                       'runs.exit from report');
     is($run->{pass},         1,                       'runs.pass from report');
     is($run->{total_jobs},   2,                       'runs.total_jobs from report');
@@ -197,10 +196,10 @@ for_each_log_db_backend(sub {
     }, undef, $aid);
     ok(defined $jt, 'job_tries row exists');
 
-    is($db->_db_datetime_to_iso($jt->{queued_at}),  '2026-05-07T00:00:00.500Z', 'job_tries.queued_at from spec');
-    is($db->_db_datetime_to_iso($jt->{started_at}), '2026-05-07T00:00:01Z',     'job_tries.started_at from spec');
+    is($db->backend->db_parse_datetime($jt->{queued_at}),  1778112000.5, 'job_tries.queued_at from spec');
+    is($db->backend->db_parse_datetime($jt->{started_at}), 1778112001,   'job_tries.started_at from spec');
 
-    is($db->_db_datetime_to_iso($jt->{ended_at}), '2026-05-07T00:00:02Z', 'job_tries.ended_at from report');
+    is($db->backend->db_parse_datetime($jt->{ended_at}), 1778112002, 'job_tries.ended_at from report');
     is($jt->{exit},            0,                       'job_tries.exit from report');
     is($jt->{pass},            1,                       'job_tries.pass from report');
     is($jt->{pass_count},      5,                       'job_tries.pass_count from report');

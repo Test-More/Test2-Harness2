@@ -2,11 +2,12 @@ package App::Yath2::Role::DB::Backend;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use File::Basename ();
 use File::Spec ();
+use Time::HiRes ();
 
 use Role::Tiny;
 
@@ -36,17 +37,72 @@ requires qw{
     job_spec_create service_lifetime_create subtest_create
 };
 
-# Default identity preprocessor. Consumers override for flavor quirks
-# (e.g., App::Yath2::DB::SQL strips COMPRESSION lz4 from the Postgres
-# schema when the server build lacks it).
-sub preprocess_schema_sql { $_[1] }
+# share/schema/postgres.sql defaults to `COMPRESSION zstd`. Probe what
+# the live server supports and rewrite (or strip) the clause to match.
+# Backends inherit the same logic via this role; consumers can still
+# override for flavor quirks beyond Postgres compression.
+sub preprocess_schema_sql {
+    my ($self, $sql) = @_;
+    return $sql unless $self->flavor eq 'postgres';
 
-# Per-statement skip hook. Default: never skip. Consumers override for
-# flavor quirks where individual schema statements must be elided at
-# bootstrap time (e.g., App::Yath2::DB::SQL on MySQL skips CREATE
-# TRIGGER when the live server is MariaDB, whose dialect rejects the
-# MySQL-only BIN_TO_UUID() builtin used in the trigger bodies).
-sub _should_skip_schema_statement { 0 }
+    my $algo = $self->_pg_server_compression;
+    if (!defined $algo) {
+        $sql =~ s/\s+COMPRESSION\s+zstd\b//gi;
+    }
+    elsif ($algo ne 'zstd') {
+        $sql =~ s/(\bCOMPRESSION\s+)zstd\b/$1$algo/gi;
+    }
+    return $sql;
+}
+
+# Probe Postgres for a working TOAST compression algorithm. Tries zstd
+# first, then lz4, returns undef when neither works (the schema's
+# COMPRESSION clause is then dropped entirely).
+sub _pg_server_compression {
+    my $self = shift;
+    return $self->{_pg_server_compression} //= do {
+        my $dbh = $self->dbh;
+        my $probe = sub {
+            my ($algo) = @_;
+            return eval {
+                local $dbh->{RaiseError} = 1;
+                local $dbh->{PrintError} = 0;
+                $dbh->do(qq{SET default_toast_compression = '$algo'});
+                $dbh->do(q{RESET default_toast_compression});
+                1;
+            };
+        };
+        $probe->('zstd') ? 'zstd' : $probe->('lz4') ? 'lz4' : undef;
+    };
+}
+
+# DBD::MariaDB and DBD::mysql both report sqlt_type 'MySQL', and
+# DBD::MariaDB can talk to either real server. Distinguish the two via
+# SELECT VERSION() once and cache the answer; needed because mysql.sql
+# CREATE TRIGGER bodies call BIN_TO_UUID() which only exists on real
+# MySQL (MariaDB rejects the dialect).
+sub _server_is_mariadb {
+    my $self = shift;
+    return $self->{_is_mariadb} //= do {
+        my $flavor = $self->flavor;
+        if    ($flavor eq 'mariadb') { 1 }
+        elsif ($flavor eq 'mysql') {
+            my ($v) = $self->dbh->selectrow_array('SELECT VERSION()');
+            (defined $v && $v =~ /MariaDB/i) ? 1 : 0;
+        }
+        else { 0 }
+    };
+}
+
+# Per-statement skip hook used during bootstrap. Default: skip MySQL
+# CREATE TRIGGER statements when the live server is MariaDB. Consumers
+# can override for additional quirks.
+sub _should_skip_schema_statement {
+    my ($self, $stmt) = @_;
+    return 0 unless $self->flavor eq 'mysql';
+    return 0 unless $self->_server_is_mariadb;
+    return $stmt =~ /^CREATE\s+TRIGGER\b/i ? 1 : 0;
+}
 
 # Locate share/schema/$flavor.sql. Resolution order:
 #   1. dev tree: walk up from __FILE__ looking for a sibling
@@ -115,6 +171,125 @@ sub bootstrap_schema {
         $self->dbh->do($stmt) or croak "schema bootstrap failed: " . $self->dbh->errstr;
     }
     return;
+}
+
+# ----- datetime helpers (per-flavor via DateTime::Format::*) -----
+#
+# Bind shape on writes: db_format_datetime turns a hi-res unix epoch
+# (Time::HiRes-style float) -- or a DateTime, or a flavor-shaped string
+# we can recognize -- into the bind string each driver expects.
+#
+# Read shape on reads: db_parse_datetime turns whatever the driver
+# returns (string, DateTime) into a hi-res unix epoch float so callers
+# never see a DateTime object across the App::Yath2::DB boundary.
+#
+# Per flavor:
+#   sqlite    DateTime::Format::SQLite (TEXT column)
+#   postgres  DateTime::Format::Pg     (TIMESTAMPTZ column)
+#   mysql     DateTime::Format::MySQL  (DATETIME(6) column)
+#   mariadb   DateTime::Format::MySQL  (DATETIME(6) column)
+
+sub db_format_datetime {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+
+    my $dt = $self->_dt_from_value($val);
+    # Already a flavor-bind string we cannot turn into a DateTime: pass
+    # through so any DB error message points at the bad value.
+    return $val unless $dt;
+
+    my $flavor = $self->flavor;
+
+    if ($flavor eq 'postgres') {
+        require DateTime::Format::Pg;
+        return DateTime::Format::Pg->format_timestamptz($dt);
+    }
+
+    if ($flavor eq 'mysql' || $flavor eq 'mariadb') {
+        require DateTime::Format::MySQL;
+        return DateTime::Format::MySQL->format_datetime($dt);
+    }
+
+    # sqlite: DateTime::Format::SQLite drops fractional seconds; append
+    # microseconds manually to keep the column round-trippable.
+    require DateTime::Format::SQLite;
+    my $base = DateTime::Format::SQLite->format_datetime($dt);
+    my $ns = $dt->nanosecond;
+    return $base unless $ns;
+    return sprintf('%s.%06d', $base, int($ns / 1000));
+}
+
+sub db_parse_datetime {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+
+    if (ref $val) {
+        return $val->hires_epoch if eval { $val->isa('DateTime') };
+        return undef;
+    }
+
+    # Numeric input is already a hi-res epoch.
+    return $val + 0 if $val =~ /\A-?\d+(?:\.\d+)?\z/;
+
+    my $flavor = $self->flavor;
+    my $dt;
+    my $ok = eval {
+        if ($flavor eq 'postgres') {
+            require DateTime::Format::Pg;
+            $dt = DateTime::Format::Pg->parse_datetime($val);
+        }
+        elsif ($flavor eq 'mysql' || $flavor eq 'mariadb') {
+            require DateTime::Format::MySQL;
+            $dt = DateTime::Format::MySQL->parse_datetime($val);
+        }
+        else {
+            # sqlite TEXT: 'YYYY-MM-DD HH:MM:SS[.frac][Z]' or ISO 'T'.
+            require DateTime::Format::SQLite;
+            my $tweaked = $val;
+            $tweaked =~ s/Z\z//;
+            $dt = DateTime::Format::SQLite->parse_datetime($tweaked);
+        }
+        1;
+    };
+    return undef unless $ok && $dt;
+
+    # MySQL / SQLite parsers leave the DT in 'floating' time zone; the
+    # column is UTC by convention. Relabel without shifting wall clock.
+    $dt->set_time_zone('UTC') if $dt->time_zone->is_floating;
+
+    return $dt->hires_epoch;
+}
+
+sub db_now {
+    my $self = shift;
+    return $self->db_format_datetime(Time::HiRes::time());
+}
+
+sub _dt_from_value {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    if (ref $val) {
+        return $val if eval { $val->isa('DateTime') };
+        return undef;
+    }
+    require DateTime;
+    if ($val =~ /\A-?\d+(?:\.\d+)?\z/) {
+        return DateTime->from_epoch(epoch => $val + 0, time_zone => 'UTC');
+    }
+    # Fall back through the flavor parser so a re-bound DB value still
+    # round-trips correctly.
+    my $epoch = eval { $self->db_parse_datetime($val) };
+    return DateTime->from_epoch(epoch => $epoch, time_zone => 'UTC')
+        if defined $epoch;
+    # ISO-8601 'T'-form fallback (e.g. '2025-02-01T00:00:00Z') for inputs
+    # that did not match the active flavor's parser.
+    require DateTime::Format::ISO8601;
+    my $tweaked = $val;
+    $tweaked =~ s/Z\z//;
+    my $dt = eval { DateTime::Format::ISO8601->parse_datetime($tweaked) };
+    return undef unless $dt;
+    $dt->set_time_zone('UTC') if $dt->time_zone->is_floating;
+    return $dt;
 }
 
 # ----- helpers consumed by backend primitives -----

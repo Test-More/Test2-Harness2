@@ -2,7 +2,7 @@ package App::Yath2::DB::SQL;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use File::Basename qw/dirname/;
@@ -14,7 +14,6 @@ use Test2::Util::UUID qw/gen_uuid/;
 use Object::HashBase qw{
     <dsn <user <pass <attrs <dbh <file
     +flavor
-    +_is_mariadb
 };
 
 use Role::Tiny::With;
@@ -175,66 +174,10 @@ sub _apply_session_state {
     return;
 }
 
-# Schema-bootstrap hooks (consumed by Role::DB::Backend::bootstrap_schema).
-
-sub preprocess_schema_sql {
-    my ($self, $sql) = @_;
-    my $flavor = $self->flavor;
-    return $sql unless $flavor eq 'postgres';
-
-    # share/schema/postgres.sql defaults to `COMPRESSION zstd`. Probe
-    # for what the live server supports and rewrite (or strip) to match.
-    my $algo = $self->_pg_server_compression;
-    if (!defined $algo) {
-        $sql =~ s/\s+COMPRESSION\s+zstd\b//gi;
-    }
-    elsif ($algo ne 'zstd') {
-        $sql =~ s/(\bCOMPRESSION\s+)zstd\b/$1$algo/gi;
-    }
-    return $sql;
-}
-
-sub _pg_server_compression {
-    my $self = shift;
-    return $self->{_pg_server_compression} //= do {
-        my $dbh = $self->dbh;
-        my $probe = sub {
-            my ($algo) = @_;
-            return eval {
-                local $dbh->{RaiseError} = 1;
-                local $dbh->{PrintError} = 0;
-                $dbh->do(qq{SET default_toast_compression = '$algo'});
-                $dbh->do(q{RESET default_toast_compression});
-                1;
-            };
-        };
-        $probe->('zstd') ? 'zstd' : $probe->('lz4') ? 'lz4' : undef;
-    };
-}
-
-# MySQL/MariaDB drivers both report "MySQL" sqlt_type and DBD::MariaDB
-# can talk to either server, so distinguish via SELECT VERSION() once.
-# CREATE TRIGGER bodies in mysql.sql call BIN_TO_UUID() which only
-# exists on real MySQL; skip them when we are pointed at MariaDB.
-sub _server_is_mariadb {
-    my $self = shift;
-    return $self->{+_IS_MARIADB} //= do {
-        my $flavor = $self->flavor;
-        if ($flavor eq 'mariadb') { 1 }
-        elsif ($flavor eq 'mysql') {
-            my ($v) = $self->dbh->selectrow_array('SELECT VERSION()');
-            (defined $v && $v =~ /MariaDB/i) ? 1 : 0;
-        }
-        else { 0 }
-    };
-}
-
-sub _should_skip_schema_statement {
-    my ($self, $stmt) = @_;
-    return 0 unless $self->flavor eq 'mysql';
-    return 0 unless $self->_server_is_mariadb;
-    return $stmt =~ /^CREATE\s+TRIGGER\b/i ? 1 : 0;
-}
+# Schema-bootstrap hooks (preprocess_schema_sql, _pg_server_compression,
+# _server_is_mariadb, _should_skip_schema_statement) live on
+# App::Yath2::Role::DB::Backend so the SQL and DBIC backends share the
+# same flavor-detection / Postgres-compression-probe logic.
 
 # -- codec primitives --------------------------------------------------------
 #
@@ -1299,13 +1242,12 @@ C<dsn> was supplied, connects, applies per-flavor session state
 Detect flavor from the DSN, the DBI driver name, or the file
 extension; cached on first read.
 
-=item $sql = $self->preprocess_schema_sql($sql)
-
-Per-flavor schema massaging: strips C<COMPRESSION lz4> when the
-Postgres server build lacks LZ4, drops MariaDB-incompatible
-fragments, etc.
-
 =back
+
+Schema-bootstrap hooks (C<preprocess_schema_sql>,
+C<_pg_server_compression>, C<_server_is_mariadb>,
+C<_should_skip_schema_statement>) come from
+L<App::Yath2::Role::DB::Backend>; consult that role for the contract.
 
 =head2 Row primitives (multi-archive surface)
 

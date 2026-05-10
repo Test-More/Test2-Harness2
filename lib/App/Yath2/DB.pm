@@ -2,13 +2,12 @@ package App::Yath2::DB;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use File::Basename qw/dirname/;
 use File::Path qw/make_path/;
 use File::Spec ();
-use Time::HiRes ();
 
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Util::UUID qw/gen_uuid/;
@@ -250,33 +249,12 @@ sub _encode_json {
     return encode_json($val);
 }
 
-# Reverse of _to_datetime: column value -> ISO-8601 for meta.json
-# reconstruction. Tolerates pre-formatted ISO strings and drivers that
-# hand back DateTime objects already.
-# Alias kept for tests that previously called the Internal-named
-# helper. Both names format a column value (string / DateTime) as
-# ISO-8601 with optional millisecond precision.
-sub _db_datetime_to_iso { goto &_format_iso8601 }
-
-sub _format_iso8601 {
+# DB datetime columns surface as hi-res unix epoch floats on read.
+# Delegates to the backend's flavor-specific parser
+# (App::Yath2::Role::DB::Backend::db_parse_datetime).
+sub _epoch_from_db {
     my ($self, $val) = @_;
-    return undef unless defined $val;
-    if (ref($val)) {
-        return $val->iso8601 . 'Z' if eval { $val->isa('DateTime') };
-        return undef;
-    }
-    if ($val =~ /\A\d{4}-\d{2}-\d{2}/) {
-        require DateTime::Format::ISO8601;
-        my $tweaked = $val;
-        $tweaked =~ s/ /T/;
-        my $dt = eval { DateTime::Format::ISO8601->parse_datetime($tweaked) };
-        if ($dt) {
-            my $ns = $dt->nanosecond;
-            return $dt->strftime('%Y-%m-%dT%H:%M:%SZ') if $ns == 0;
-            return $dt->strftime('%Y-%m-%dT%H:%M:%S.%3NZ');
-        }
-    }
-    return $val;
+    return $self->{+BACKEND}->db_parse_datetime($val);
 }
 
 # ---------------------------------------------------------------------------
@@ -397,7 +375,7 @@ sub meta {
         %meta = %{ $row->{meta_extras} };
     }
     $meta{archive_uuid} = $row->{archive_uuid};
-    $meta{created_at}   = $self->_format_iso8601($row->{sealed_at})
+    $meta{created_at}   = $self->_epoch_from_db($row->{sealed_at})
         if defined $row->{sealed_at};
     $meta{host}         = $row->{host}         if defined $row->{host};
     $meta{user}         = $row->{user}         if defined $row->{user};
@@ -547,17 +525,52 @@ sub list_files {
     my $self = shift;
     my ($uuid) = $self->_shape_uuid_args(@_);
     my $aid = $self->_resolve_archive_id($uuid);
-    my $rows = $self->{+BACKEND}->artifact_rows_for_archive($aid);
+    my $b   = $self->{+BACKEND};
+
+    my $rows = $b->artifact_rows_for_archive($aid);
     my @paths;
     for my $row (@$rows) {
-        my $base = $self->{+BACKEND}->_base_for_artifact_row($row);
+        my $base = $b->_base_for_artifact_row($row);
         next unless defined $base;
-        my $stem = $self->{+BACKEND}->_stem_for_artifact_row($row);
+        my $stem = $b->_stem_for_artifact_row($row);
         next unless defined $stem;
         my $rel = length $base ? "$base/$stem" : $stem;
         $rel .= '.zst' if $row->{compressed};
         push @paths, $rel;
     }
+
+    # Virtual files reconstructed at read time from typed columns: not
+    # backed by artifact rows, but logically present at every scope that
+    # carries the matching entity.
+    require Test2::Harness2::LogLayout;
+
+    for my $s (@{ $b->service_rows($aid, run_id => undef) }) {
+        my $sdir = Test2::Harness2::LogLayout::service_global_dir($s->{name});
+        push @paths, "$sdir/spec.jsonl", "$sdir/report.jsonl";
+    }
+
+    for my $r (@{ $b->run_rows($aid) }) {
+        my $rord = $r->{run_ord};
+        my $rdir = Test2::Harness2::LogLayout::run_dir($rord);
+        push @paths, "$rdir/spec.jsonl", "$rdir/report.jsonl";
+
+        for my $s (@{ $b->service_rows($aid, run_id => $r->{run_id}) }) {
+            my $sdir = Test2::Harness2::LogLayout::service_run_dir($rord, $s->{name});
+            push @paths, "$sdir/spec.jsonl", "$sdir/report.jsonl";
+        }
+
+        for my $j (@{ $b->job_rows($aid, $r->{run_id}) }) {
+            for my $t (@{ $b->try_rows($j->{job_id}) }) {
+                my $jdir = Test2::Harness2::LogLayout::job_dir(
+                    $rord, $j->{job_ord}, $t->{try_ord},
+                );
+                push @paths, "$jdir/spec.jsonl",
+                             "$jdir/report.jsonl",
+                             "$jdir/state.jsonl";
+            }
+        }
+    }
+
     return @paths;
 }
 
@@ -747,17 +760,20 @@ sub _scope_fk_values {
     return \%v;
 }
 
-# True when the parsed path is a spec.jsonl or report.jsonl on a
-# run/service/job_try scope -- the cases reconstructed from typed
-# columns + extras at read time.
+# True when the parsed path is a spec.jsonl / report.jsonl / state.jsonl
+# on a run/service/job_try scope -- the cases reconstructed from typed
+# columns + extras at read time. state.jsonl currently only exists on
+# job_try and reconstructs to an empty list (no source data is captured
+# during insert today).
 sub _is_reconstruct_target {
     my ($self, $info) = @_;
     return 0 unless ref($info) eq 'HASH';
-    my $kind = $info->{artifact_kind} // '';
-    return 0 unless $kind eq 'spec' || $kind eq 'report';
+    my $kind  = $info->{artifact_kind} // '';
     my $scope = $info->{scope_kind} // '';
     return 0 if $scope eq 'archive';
-    return 1;
+    return 1 if $kind eq 'spec' || $kind eq 'report';
+    return 1 if $kind eq 'state' && $scope eq 'job_try';
+    return 0;
 }
 
 sub _entity_exists_for_scope {
@@ -872,9 +888,12 @@ sub artifact_read {
 # $info->{is_zst} is set (then zstd-compressed bytes).
 sub _artifact_read_reconstructed {
     my ($self, $aid, $info) = @_;
-    my $records = $info->{artifact_kind} eq 'spec'
-        ? $self->_reconstruct_spec_records($aid, $info->{scope_kind}, $info->{scope_id})
-        : $self->_reconstruct_report_records($aid, $info->{scope_kind}, $info->{scope_id});
+    my $kind = $info->{artifact_kind};
+    my $records
+        = $kind eq 'spec'   ? $self->_reconstruct_spec_records($aid, $info->{scope_kind}, $info->{scope_id})
+        : $kind eq 'report' ? $self->_reconstruct_report_records($aid, $info->{scope_kind}, $info->{scope_id})
+        : $kind eq 'state'  ? $self->_reconstruct_state_records($aid, $info->{scope_kind}, $info->{scope_id})
+        : undef;
     $records ||= [];
 
     my $plain = '';
@@ -886,10 +905,14 @@ sub _artifact_read_reconstructed {
     return $self->_compress_blob($plain);
 }
 
-# Records-backed iterator: returns an arrayref of decoded JSON objects,
-# or undef when the artifact does not exist or the path is not
-# parseable. Matches the contract Internal exposes through
-# _artifact_iter_records.
+# Streaming JSONL accessor. Returns a Test2::Harness2::Util::JSONL::Reader
+# bound to a scalar filehandle holding the artifact's plaintext JSONL
+# bytes (or the reconstructed bytes for spec/report/state on a non-
+# archive scope). Returns undef when the artifact path is unparseable
+# or the underlying row / entity is missing. Callers consume records
+# one at a time via $r->readline (or drain via $r->read_lines), so
+# large events files no longer materialize a full arrayref of decoded
+# hashes.
 sub artifact_iter_records {
     my ($self, $uuid, $base, $stem) = @_;
     return undef unless defined $stem && length $stem;
@@ -899,43 +922,43 @@ sub artifact_iter_records {
 
     my $info = $self->_parse_artifact_path($aid, $rel) or return undef;
 
+    my $plain;
     if ($self->_is_reconstruct_target($info)) {
         return undef
             unless $self->_entity_exists_for_scope(
                 $aid, $info->{scope_kind}, $info->{scope_id});
-        my $records = $info->{artifact_kind} eq 'spec'
-            ? $self->_reconstruct_spec_records($aid, $info->{scope_kind}, $info->{scope_id})
-            : $self->_reconstruct_report_records($aid, $info->{scope_kind}, $info->{scope_id});
-        return $records || [];
-    }
+        my $kind = $info->{artifact_kind};
+        my $records
+            = $kind eq 'spec'   ? $self->_reconstruct_spec_records($aid, $info->{scope_kind}, $info->{scope_id})
+            : $kind eq 'report' ? $self->_reconstruct_report_records($aid, $info->{scope_kind}, $info->{scope_id})
+            : $kind eq 'state'  ? $self->_reconstruct_state_records($aid, $info->{scope_kind}, $info->{scope_id})
+            : undef;
+        $records ||= [];
 
-    my $row = $self->{+BACKEND}->artifact_row_for_scope(
-        $aid, $info->{scope_kind}, $info->{scope_id},
-        $info->{artifact_kind}, $info->{name},
-    );
-    return undef unless $row;
-
-    my $payload = $row->{payload};
-    my $stored_compressed = $row->{compressed} ? 1 : 0;
-
-    my $plain = $stored_compressed
-        ? $self->_decompress_jsonl_bytes($payload)
-        : $payload;
-
-    my @records;
-    for my $line (split /\n/, $plain) {
-        next unless length $line;
-        my $decoded;
-        my $ok = eval { $decoded = decode_json($line); 1 };
-        my $err = $@;
-        unless ($ok) {
-            chomp $err;
-            warn "Skipping JSONL line that failed to decode in DB artifact '$rel': $err\n";
-            next;
+        $plain = '';
+        for my $rec (@$records) {
+            $plain .= encode_json($rec) . "\n";
         }
-        push @records, $decoded;
     }
-    return \@records;
+    else {
+        my $row = $self->{+BACKEND}->artifact_row_for_scope(
+            $aid, $info->{scope_kind}, $info->{scope_id},
+            $info->{artifact_kind}, $info->{name},
+        );
+        return undef unless $row;
+
+        my $payload = $row->{payload};
+        my $stored_compressed = $row->{compressed} ? 1 : 0;
+        $plain = $stored_compressed
+            ? $self->_decompress_jsonl_bytes($payload)
+            : $payload;
+    }
+
+    require Test2::Harness2::Util::JSONL::Reader;
+    return Test2::Harness2::Util::JSONL::Reader->new(
+        bytes => $plain,
+        name  => $rel,
+    );
 }
 
 # List basenames (not paths) of files at $reldir. Matches Internal's
@@ -1245,7 +1268,7 @@ sub save_artifact {
         $stored_bytes      = $opts{bytes};
     }
 
-    my $now = $self->_now_iso;
+    my $now = $self->{+BACKEND}->db_now;
     my $row_count;
     if ($info->{artifact_kind} eq 'events') {
         $row_count = $self->_events_row_count_for_payload($stored_bytes, $stored_compressed);
@@ -1355,6 +1378,77 @@ sub extract {
             my $out_bytes = $compressed ? $self->_compress_blob($bytes) : $bytes;
             $self->_write_extract_file($dir, $out_rel, $out_bytes);
         }
+    }
+
+    # Materialize the virtual spec/report (and per-job-try state) files
+    # that list_files advertises. Reconstructed from typed columns at
+    # write time so the extracted directory matches a standard yath log
+    # tree.
+    require Test2::Harness2::LogLayout;
+
+    my @virtuals;
+
+    for my $s (@{ $b->service_rows($aid, run_id => undef) }) {
+        my $sdir = Test2::Harness2::LogLayout::service_global_dir($s->{name});
+        push @virtuals, [$sdir, 'spec',   'service', $s->{service_id}];
+        push @virtuals, [$sdir, 'report', 'service', $s->{service_id}];
+    }
+
+    for my $r (@{ $b->run_rows($aid) }) {
+        my $rord = $r->{run_ord};
+        if (defined $runs) {
+            next unless grep { $_ eq $rord } @$runs;
+        }
+        elsif (defined $exclude_runs) {
+            next if grep { $_ eq $rord } @$exclude_runs;
+        }
+
+        my $rdir = Test2::Harness2::LogLayout::run_dir($rord);
+        push @virtuals, [$rdir, 'spec',   'run', $r->{run_id}];
+        push @virtuals, [$rdir, 'report', 'run', $r->{run_id}];
+
+        for my $s (@{ $b->service_rows($aid, run_id => $r->{run_id}) }) {
+            my $sdir = Test2::Harness2::LogLayout::service_run_dir($rord, $s->{name});
+            push @virtuals, [$sdir, 'spec',   'service', $s->{service_id}];
+            push @virtuals, [$sdir, 'report', 'service', $s->{service_id}];
+        }
+
+        for my $j (@{ $b->job_rows($aid, $r->{run_id}) }) {
+            for my $t (@{ $b->try_rows($j->{job_id}) }) {
+                my $jdir = Test2::Harness2::LogLayout::job_dir(
+                    $rord, $j->{job_ord}, $t->{try_ord},
+                );
+                push @virtuals, [$jdir, 'spec',   'job_try', $t->{job_try_id}];
+                push @virtuals, [$jdir, 'report', 'job_try', $t->{job_try_id}];
+                push @virtuals, [$jdir, 'state',  'job_try', $t->{job_try_id}];
+            }
+        }
+    }
+
+    for my $v (@virtuals) {
+        my ($dir_rel, $kind, $scope, $sid) = @$v;
+        my $records
+            = $kind eq 'spec'   ? $self->_reconstruct_spec_records($aid, $scope, $sid)
+            : $kind eq 'report' ? $self->_reconstruct_report_records($aid, $scope, $sid)
+            : $kind eq 'state'  ? $self->_reconstruct_state_records($aid, $scope, $sid)
+            : undef;
+        $records ||= [];
+
+        my $plain = '';
+        for my $rec (@$records) {
+            $plain .= encode_json($rec) . "\n";
+        }
+
+        my $out_rel = "$dir_rel/$kind.jsonl";
+        my $out_bytes;
+        if ($compressed) {
+            $out_rel .= '.zst';
+            $out_bytes = $self->_compress_blob($plain);
+        }
+        else {
+            $out_bytes = $plain;
+        }
+        $self->_write_extract_file($dir, $out_rel, $out_bytes);
     }
 
     return App::Yath2::Log::Directory->new(path => $dir, live => 0);
@@ -1516,7 +1610,7 @@ sub _insert_body {
     my $aid = $b->archive_create({
         archive_uuid    => $meta->{archive_uuid},
         archive_version => $App::Yath2::Log::VERSION,
-        sealed_at       => $self->_format_db_datetime($meta->{created_at}),
+        sealed_at       => $b->db_format_datetime($meta->{created_at}),
         host            => $meta->{host},
         user            => $meta->{user},
         git_sha         => $meta->{git_sha},
@@ -1605,7 +1699,7 @@ sub _insert_body {
             compressed    => $stored_compressed,
             row_count     => $row_count,
             payload       => $stored_bytes,
-            created_at    => $self->_now_iso,
+            created_at    => $b->db_now,
             sealed        => 1,
         });
     }
@@ -1683,73 +1777,6 @@ sub _dir_non_empty {
     }
     closedir($dh);
     return 0;
-}
-
-# Backend-flavored "now" for created_at columns. Format mirrors what
-# the backends parse on read; SQLite/Postgres accept ISO with T+Z;
-# MySQL/MariaDB want "YYYY-MM-DD HH:MM:SS.fff" via DateTime::Format::MySQL.
-sub _now_iso {
-    my $self = shift;
-    my $t = Time::HiRes::time();
-    my @lt = gmtime(int $t);
-    my $frac = $t - int $t;
-    my $flavor = $self->flavor;
-    if ($flavor eq 'mysql' || $flavor eq 'mariadb') {
-        return sprintf('%04d-%02d-%02d %02d:%02d:%02d.%03d',
-            $lt[5] + 1900, $lt[4] + 1, $lt[3], $lt[2], $lt[1], $lt[0],
-            int($frac * 1000));
-    }
-    return sprintf('%04d-%02d-%02dT%02d:%02d:%02d.%03dZ',
-        $lt[5] + 1900, $lt[4] + 1, $lt[3], $lt[2], $lt[1], $lt[0],
-        int($frac * 1000));
-}
-
-# Convert an ISO-8601-ish (or epoch-numeric, or DateTime) value into
-# the active flavor's accepted DATETIME shape. Pass-through for shapes
-# we cannot parse so the DB error message points at the bad value.
-sub _format_db_datetime {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    my $dt = $self->_to_datetime($val);
-    return $val unless defined $dt;
-    my $flavor = $self->flavor;
-    if ($flavor eq 'mysql' || $flavor eq 'mariadb') {
-        require DateTime::Format::MySQL;
-        return DateTime::Format::MySQL->format_datetime($dt);
-    }
-    if ($flavor eq 'postgres') {
-        require DateTime::Format::Pg;
-        return DateTime::Format::Pg->format_datetime($dt);
-    }
-    # SQLite default: ISO with millisecond precision.
-    my $ns = $dt->nanosecond;
-    return $dt->iso8601 . 'Z' if $ns == 0;
-    return $dt->strftime('%Y-%m-%dT%H:%M:%S.%3NZ');
-}
-
-sub _to_datetime {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    if (ref $val) {
-        return $val if eval { $val->isa('DateTime') };
-        return undef;
-    }
-    require DateTime;
-    if ($val =~ /\A-?\d+(?:\.\d+)?\z/) {
-        return DateTime->from_epoch(epoch => $val + 0, time_zone => 'UTC');
-    }
-    if ($val =~ /\A\d{4}-\d{2}-\d{2}/) {
-        require DateTime::Format::ISO8601;
-        my $tweaked = $val;
-        $tweaked =~ s/ /T/;
-        return eval { DateTime::Format::ISO8601->parse_datetime($tweaked) };
-    }
-    return undef;
-}
-
-sub _normalize_db_datetime {
-    my ($self, $val) = @_;
-    return $self->_format_db_datetime($val);
 }
 
 # Whether the active flavor wants client-side zstd compression for
@@ -2046,8 +2073,8 @@ sub _populate_run_row {
     my $state_extras_json = %state_extras ? $self->_encode_json(\%state_extras) : undef;
 
     my %set;
-    $set{started_at}   = $self->_normalize_db_datetime($spec_typed{started_at}) if defined $spec_typed{started_at};
-    $set{ended_at}     = $self->_normalize_db_datetime($report_typed{ended_at}) if defined $report_typed{ended_at};
+    $set{started_at}   = $self->{+BACKEND}->db_format_datetime($spec_typed{started_at}) if defined $spec_typed{started_at};
+    $set{ended_at}     = $self->{+BACKEND}->db_format_datetime($report_typed{ended_at}) if defined $report_typed{ended_at};
     $set{exit}         = $report_typed{exit}                           if defined $report_typed{exit};
     $set{exit_decoded} = $self->_encode_json($report_typed{exit_decoded})
         if defined $report_typed{exit_decoded};
@@ -2151,8 +2178,8 @@ sub _populate_service_lifetimes {
             id           => $spec_typed{id},
             service_name => $spec_typed{service_name},
             stage_name   => $spec_typed{stage_name},
-            started_at   => $self->_normalize_db_datetime($spec_typed{started_at}),
-            ended_at     => $self->_normalize_db_datetime($report_typed{ended_at}),
+            started_at   => $self->{+BACKEND}->db_format_datetime($spec_typed{started_at}),
+            ended_at     => $self->{+BACKEND}->db_format_datetime($report_typed{ended_at}),
             exit         => $report_typed{exit},
             child_wall   => $child_wall,
         );
@@ -2234,9 +2261,9 @@ sub _populate_job_rows {
         my $state_extras_json = %state_extras ? $self->_encode_json(\%state_extras) : undef;
 
         my %set;
-        $set{queued_at}       = $self->_normalize_db_datetime($spec_typed{queued_at})  if defined $spec_typed{queued_at};
-        $set{started_at}      = $self->_normalize_db_datetime($spec_typed{started_at}) if defined $spec_typed{started_at};
-        $set{ended_at}        = $self->_normalize_db_datetime($report_typed{ended_at}) if defined $report_typed{ended_at};
+        $set{queued_at}       = $self->{+BACKEND}->db_format_datetime($spec_typed{queued_at})  if defined $spec_typed{queued_at};
+        $set{started_at}      = $self->{+BACKEND}->db_format_datetime($spec_typed{started_at}) if defined $spec_typed{started_at};
+        $set{ended_at}        = $self->{+BACKEND}->db_format_datetime($report_typed{ended_at}) if defined $report_typed{ended_at};
         $set{exit}            = $report_typed{exit}                        if defined $report_typed{exit};
         $set{exit_decoded}    = $self->_encode_json($report_typed{exit_decoded})
             if defined $report_typed{exit_decoded};
@@ -2410,6 +2437,14 @@ sub _merge_extras_and_typed {
     return \%record;
 }
 
+# state.jsonl is enumerated for job_try scopes but no source data is
+# captured at insert time today; reconstruction yields an empty record
+# list.
+sub _reconstruct_state_records {
+    my ($self, $aid, $scope_kind, $scope_id) = @_;
+    return [];
+}
+
 sub _reconstruct_spec_records {
     my ($self, $aid, $scope_kind, $scope_id) = @_;
     return undef if $scope_kind eq 'archive';
@@ -2452,7 +2487,7 @@ sub _reconstruct_run_spec {
         $self->_decode_json($row->{spec_extras}),
         [
             run_uuid    => $row->{run_uuid_canonical},
-            started_at  => $self->_format_iso8601($row->{started_at}),
+            started_at  => $self->_epoch_from_db($row->{started_at}),
             times       => $self->_decode_json($row->{times}),
             child_times => $self->_decode_json($row->{child_times}),
             child_wall  => $row->{child_wall},
@@ -2473,7 +2508,7 @@ sub _reconstruct_run_report {
     my $rec = $self->_merge_extras_and_typed(
         $self->_decode_json($row->{state_extras}),
         [
-            ended_at     => $self->_format_iso8601($row->{ended_at}),
+            ended_at     => $self->_epoch_from_db($row->{ended_at}),
             exit         => $row->{exit},
             exit_decoded => $self->_decode_json($row->{exit_decoded}),
             pass         => defined $row->{pass} ? ($row->{pass} ? 1 : 0) : undef,
@@ -2500,7 +2535,7 @@ sub _reconstruct_run_report {
                     try_ord         => $t->{try_ord},
                     (defined $t->{status}          ? (status          => $t->{status})                : ()),
                     (defined $t->{pass}            ? (pass            => $t->{pass} ? 1 : 0)          : ()),
-                    (defined $t->{ended_at}        ? (ended_at        => $self->_format_iso8601($t->{ended_at})) : ()),
+                    (defined $t->{ended_at}        ? (ended_at        => $self->_epoch_from_db($t->{ended_at})) : ()),
                     (defined $t->{pass_count}      ? (pass_count      => $t->{pass_count})            : ()),
                     (defined $t->{fail_count}      ? (fail_count      => $t->{fail_count})            : ()),
                     (defined $t->{assertion_count} ? (assertion_count => $t->{assertion_count})       : ()),
@@ -2592,7 +2627,7 @@ sub _reconstruct_service_specs {
                 id           => $row->{id},
                 service_name => $row->{service_name},
                 stage_name   => $row->{stage_name},
-                started_at   => $self->_format_iso8601($row->{started_at}),
+                started_at   => $self->_epoch_from_db($row->{started_at}),
                 times        => ref($row->{times})       ? $row->{times}       : $self->_decode_json($row->{times}),
                 child_times  => ref($row->{child_times}) ? $row->{child_times} : $self->_decode_json($row->{child_times}),
                 child_wall   => $row->{child_wall},
@@ -2617,7 +2652,7 @@ sub _reconstruct_service_reports {
             ref($row->{state_extras}) ? $row->{state_extras}
                                       : $self->_decode_json($row->{state_extras}),
             [
-                ended_at     => $self->_format_iso8601($row->{ended_at}),
+                ended_at     => $self->_epoch_from_db($row->{ended_at}),
                 exit         => $row->{exit},
                 exit_decoded => ref($row->{exit_decoded}) ? $row->{exit_decoded}
                                                           : $self->_decode_json($row->{exit_decoded}),
@@ -2644,8 +2679,8 @@ sub _reconstruct_job_try_spec {
     my $rec = $self->_merge_extras_and_typed(
         $self->_decode_json($jt->{spec_extras}),
         [
-            queued_at   => $self->_format_iso8601($jt->{queued_at}),
-            started_at  => $self->_format_iso8601($jt->{started_at}),
+            queued_at   => $self->_epoch_from_db($jt->{queued_at}),
+            started_at  => $self->_epoch_from_db($jt->{started_at}),
             times       => $self->_decode_json($jt->{times}),
             child_times => $self->_decode_json($jt->{child_times}),
             child_wall  => $jt->{child_wall},
@@ -2701,7 +2736,7 @@ sub _reconstruct_job_try_report {
     my $rec = $self->_merge_extras_and_typed(
         $self->_decode_json($jt->{state_extras}),
         [
-            ended_at        => $self->_format_iso8601($jt->{ended_at}),
+            ended_at        => $self->_epoch_from_db($jt->{ended_at}),
             exit            => $jt->{exit},
             exit_decoded    => $self->_decode_json($jt->{exit_decoded}),
             pass            => defined $jt->{pass} ? ($jt->{pass} ? 1 : 0) : undef,

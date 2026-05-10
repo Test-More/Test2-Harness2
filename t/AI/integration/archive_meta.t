@@ -60,7 +60,7 @@ build_dir($src);
     my $meta = decode_json($bytes);
     is($meta->{format_version}, 1, 'tar.zidx meta: format_version 1');
     like($meta->{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'tar.zidx meta: archive_uuid shape');
-    like($meta->{created_at},   qr/^\d{4}-\d{2}-\d{2}T/, 'tar.zidx meta: ISO timestamp');
+    like($meta->{created_at},   qr/^[0-9]+(?:\.[0-9]+)?$/, 'tar.zidx meta: hi-res unix epoch');
     ok(defined $meta->{host},        'tar.zidx meta: host set');
     ok(defined $meta->{user},        'tar.zidx meta: user set');
     ok(defined $meta->{yath_version},'tar.zidx meta: yath_version set');

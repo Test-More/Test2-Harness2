@@ -90,7 +90,7 @@ yath(
         ok(ref($rep->{meta}) eq 'HASH', 'json meta is a hashref');
         is($rep->{meta}{format_version}, 1, 'json meta format_version');
         like($rep->{meta}{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'json meta archive_uuid');
-        like($rep->{meta}{created_at},   qr/^\d{4}-\d{2}-\d{2}T/, 'json meta created_at');
+        like($rep->{meta}{created_at},   qr/^[0-9]+(?:\.[0-9]+)?$/, 'json meta created_at hi-res epoch');
     },
 );
 # }}}

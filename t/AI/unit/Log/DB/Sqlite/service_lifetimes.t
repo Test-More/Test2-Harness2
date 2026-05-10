@@ -35,7 +35,7 @@ sub build_log_with_restarts {
             id           => 'harness',
             service_name => 'harness',
             role         => 'harness',
-            started_at   => '2026-05-07T00:00:00Z',
+            started_at   => 1778112000,
             pid          => 12345,
             workdir      => '/tmp/some_workdir',
         },
@@ -46,21 +46,21 @@ sub build_log_with_restarts {
         {
             type     => 'Service',
             id       => 'harness',
-            ended_at => '2026-05-07T00:01:00Z',
+            ended_at => 1778112060,
             exit     => 1,
             times    => [1.0, 0.5, 0.1, 0.4],
         },
         {
             type     => 'Service',
             id       => 'harness',
-            ended_at => '2026-05-07T00:02:00Z',
+            ended_at => 1778112120,
             exit     => 2,
             times    => [2.0, 1.0, 0.2, 0.8],
         },
         {
             type     => 'Service',
             id       => 'harness',
-            ended_at => '2026-05-07T00:03:00Z',
+            ended_at => 1778112180,
             exit     => 0,
             times    => [3.0, 1.5, 0.3, 1.2],
         },
@@ -77,8 +77,8 @@ sub build_log_with_restarts {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Codec helpers (_db_datetime_to_iso) live on the App::Yath2::DB
-    # wrapper itself, which is what App::Yath2::DB->new returns.
+    # Datetime columns are returned to consumers as hi-res unix epoch
+    # floats; per-flavor parsing lives on $db->backend->db_parse_datetime.
 
     my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
     unlink $db_path;
@@ -109,15 +109,15 @@ for_each_log_db_backend(sub {
     is($rows->[1]{lifetime_ord}, 2, 'lifetime_ord 2 second');
     is($rows->[2]{lifetime_ord}, 3, 'lifetime_ord 3 third');
 
-    is($db->_db_datetime_to_iso($rows->[0]{ended_at}), '2026-05-07T00:01:00Z', 'row 1 ended_at');
-    is($db->_db_datetime_to_iso($rows->[1]{ended_at}), '2026-05-07T00:02:00Z', 'row 2 ended_at');
-    is($db->_db_datetime_to_iso($rows->[2]{ended_at}), '2026-05-07T00:03:00Z', 'row 3 ended_at');
+    is($db->backend->db_parse_datetime($rows->[0]{ended_at}), 1778112060, 'row 1 ended_at');
+    is($db->backend->db_parse_datetime($rows->[1]{ended_at}), 1778112120, 'row 2 ended_at');
+    is($db->backend->db_parse_datetime($rows->[2]{ended_at}), 1778112180, 'row 3 ended_at');
 
     is($rows->[0]{exit}, 1, 'row 1 exit');
     is($rows->[1]{exit}, 2, 'row 2 exit');
     is($rows->[2]{exit}, 0, 'row 3 exit');
 
-    is($db->_db_datetime_to_iso($rows->[0]{started_at}), '2026-05-07T00:00:00Z',
+    is($db->backend->db_parse_datetime($rows->[0]{started_at}), 1778112000,
         'row 1 started_at from spec');
     is($rows->[1]{started_at}, undef, 'row 2 started_at NULL (no spec)');
     is($rows->[2]{started_at}, undef, 'row 3 started_at NULL (no spec)');

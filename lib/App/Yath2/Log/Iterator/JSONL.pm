@@ -2,7 +2,7 @@ package App::Yath2::Log::Iterator::JSONL;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Time::HiRes qw/time/;
@@ -15,7 +15,7 @@ use Object::HashBase qw{
     <path
     <live
     <records
-    +reader
+    <reader
     +buffer
     +eof
     +read_all
@@ -44,17 +44,23 @@ with 'App::Yath2::Role::EventIterator';
 
 sub init {
     my $self = shift;
+    my $have = grep { defined $self->{$_} } (RECORDS, PATH, READER);
+    croak "'records' / 'path' / 'reader' are mutually exclusive"
+        if $have > 1;
+
     if (defined $self->{+RECORDS}) {
-        croak "'records' and 'path' are mutually exclusive"
-            if defined $self->{+PATH};
         croak "'records' must be an arrayref"
             unless ref($self->{+RECORDS}) eq 'ARRAY';
-        # Records-backed iterators are always sealed: EOE is purely
-        # a function of how many records remain.
+        # Records-backed iterators are always sealed.
+        $self->{+LIVE} = 0;
+    }
+    elsif (defined $self->{+READER}) {
+        # Reader-backed iterators are always sealed (the underlying
+        # storage is a fixed in-memory blob from a DB read).
         $self->{+LIVE} = 0;
     }
     else {
-        croak "'path' or 'records' is a required attribute"
+        croak "'path', 'records', or 'reader' is a required attribute"
             unless defined $self->{+PATH} && length $self->{+PATH};
         $self->{+LIVE} //= 0;
     }
@@ -217,6 +223,20 @@ sub end_of_events {
 # Reset back to the beginning of the file / record list.
 sub reset {
     my $self = shift;
+
+    # Reader-supplied at construction: the underlying scalar handle is
+    # one-shot. Drain whatever is left and convert to records-mode so
+    # repeated reset / next cycles work over a snapshot.
+    if (defined $self->{+READER} && !defined $self->{+PATH}) {
+        $self->_read_all unless $self->{+READ_ALL};
+        $self->{+RECORDS} = [@{$self->{_all} // []}];
+        eval { $self->{+READER}->close; 1 };
+        delete $self->{+READER};
+        $self->{+BUFFER}   = [];
+        $self->{+EOF}      = 0;
+        return;
+    }
+
     if (defined $self->{+RECORDS}) {
         # Records-backed iterators retain a private snapshot of the
         # original record list ('_all' is populated lazily by _read_all).

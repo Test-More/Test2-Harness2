@@ -54,7 +54,7 @@ sub build_source {
             service_name => 'runner',
             stage_name   => 'main',
             role         => 'preload',
-            started_at   => '2026-05-07T00:00:00Z',
+            started_at   => 1778112000,
             pid          => 11111,        # unpromoted -> spec_extras
             times        => [0.1, 0.2, 0.3, 0.4],
         },
@@ -63,7 +63,7 @@ sub build_source {
             id           => 'runner',
             service_name => 'runner',
             stage_name   => 'main',
-            started_at   => '2026-05-07T00:00:10Z',
+            started_at   => 1778112010,
             pid          => 22222,        # unpromoted -> spec_extras
             times        => [1.1, 1.2, 1.3, 1.4],
         },
@@ -71,7 +71,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/services/runner/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:00:05Z',
+            ended_at     => 1778112005,
             exit         => 0,
             exit_decoded => {signal => 0, status => 0},
             why          => 'restart',     # unpromoted -> state_extras
@@ -79,7 +79,7 @@ sub build_source {
             child_wall   => 0.42,
         },
         {
-            ended_at     => '2026-05-07T00:00:15Z',
+            ended_at     => 1778112015,
             exit         => 1,
             exit_decoded => {signal => 0, status => 1},
             why          => 'shutdown',    # unpromoted -> state_extras
@@ -93,7 +93,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/runs/0/spec.jsonl.zst",
         {
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             times      => [1, 2, 3, 4],
             harness    => 'yath',
             name       => 'fancy run',
@@ -102,7 +102,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/runs/0/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:01:00Z',
+            ended_at     => 1778112060,
             exit         => 0,
             pass         => 1,
             total_jobs   => 1,
@@ -124,8 +124,8 @@ sub build_source {
         {
             relative   => 't/dummy.t',
             absolute   => '/abs/t/dummy.t',
-            queued_at  => '2026-05-07T00:00:00.500Z',
-            started_at => '2026-05-07T00:00:01Z',
+            queued_at  => 1778112000.5,
+            started_at => 1778112001,
             stage      => 'default',
             features   => {fork => 1},
             times      => [1, 2, 3, 4],
@@ -135,7 +135,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at        => '2026-05-07T00:00:02Z',
+            ended_at        => 1778112002,
             exit            => 0,
             pass            => 1,
             pass_count      => 5,
@@ -184,7 +184,7 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run spec_iter: 1 record');
-    is($recs[0]{started_at}, '2026-05-07T00:00:00Z', 'run spec.started_at typed');
+    is($recs[0]{started_at}, 1778112000, 'run spec.started_at typed');
     # times: shared between spec/report and report wins on collision in
     # the typed column; spec reconstruction sees the post-collision value.
     is($recs[0]{times}, [9, 8, 7, 6], 'run spec.times decoded JSON column (report wins on shared key)');
@@ -202,7 +202,7 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my $it = $arts->report_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run report_iter: 1 record');
-    is($recs[0]{ended_at},     '2026-05-07T00:01:00Z', 'run report.ended_at typed');
+    is($recs[0]{ended_at},     1778112060, 'run report.ended_at typed');
     is($recs[0]{exit},          0, 'run report.exit typed');
     is($recs[0]{pass},          1, 'run report.pass typed');
     is($recs[0]{total_jobs},    1, 'run report.total_jobs typed');
@@ -228,8 +228,8 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @specs => $r }
     is(scalar @specs, 2, 'multi-lifetime service spec_iter: 2 records');
-    is($specs[0]{started_at}, '2026-05-07T00:00:00Z', 'lifetime 1 started_at');
-    is($specs[1]{started_at}, '2026-05-07T00:00:10Z', 'lifetime 2 started_at');
+    is($specs[0]{started_at}, 1778112000, 'lifetime 1 started_at');
+    is($specs[1]{started_at}, 1778112010, 'lifetime 2 started_at');
     is($specs[0]{type},         'Service', 'lifetime 1 type');
     is($specs[0]{service_name}, 'runner',  'lifetime 1 service_name');
     is($specs[0]{stage_name},   'main',    'lifetime 1 stage_name');
@@ -248,8 +248,8 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my $rit = $arts->report_iter;
     while (my $r = $rit->next) { push @reports => $r }
     is(scalar @reports, 2, 'multi-lifetime service report_iter: 2 records');
-    is($reports[0]{ended_at}, '2026-05-07T00:00:05Z', 'lifetime 1 ended_at');
-    is($reports[1]{ended_at}, '2026-05-07T00:00:15Z', 'lifetime 2 ended_at');
+    is($reports[0]{ended_at}, 1778112005, 'lifetime 1 ended_at');
+    is($reports[1]{ended_at}, 1778112015, 'lifetime 2 ended_at');
     is($reports[0]{exit}, 0, 'lifetime 1 exit');
     is($reports[1]{exit}, 1, 'lifetime 2 exit');
     is($reports[0]{exit_decoded}, {signal => 0, status => 0}, 'lifetime 1 exit_decoded');
@@ -265,8 +265,8 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @specs => $r }
     is(scalar @specs, 1, 'job_try spec_iter: 1 record');
-    is($specs[0]{queued_at},  '2026-05-07T00:00:00.500Z', 'job_try spec.queued_at typed');
-    is($specs[0]{started_at}, '2026-05-07T00:00:01Z',     'job_try spec.started_at typed');
+    is($specs[0]{queued_at},  1778112000.5, 'job_try spec.queued_at typed');
+    is($specs[0]{started_at}, 1778112001,     'job_try spec.started_at typed');
     # times: report wins on collision in the typed column.
     is($specs[0]{times},      [9, 8, 7, 6],               'job_try spec.times decoded (report wins on shared key)');
     # job_specs typed columns merged.
@@ -280,7 +280,7 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my $rit = $arts->report_iter;
     while (my $r = $rit->next) { push @reports => $r }
     is(scalar @reports, 1, 'job_try report_iter: 1 record');
-    is($reports[0]{ended_at},        '2026-05-07T00:00:02Z', 'job_try report.ended_at');
+    is($reports[0]{ended_at},        1778112002, 'job_try report.ended_at');
     is($reports[0]{exit},             0, 'job_try report.exit');
     is($reports[0]{pass},             1, 'job_try report.pass');
     is($reports[0]{pass_count},       5, 'job_try report.pass_count');
@@ -308,7 +308,7 @@ my $log = App::Yath2::Log->new(file => $db_path, backend => $backend);
     my @lines = split /\n/, $bytes;
     is(scalar @lines, 1, 'run spec bytes is one JSONL line');
     my $rec = decode_json($lines[0]);
-    is($rec->{started_at}, '2026-05-07T00:00:00Z', 'spec bytes decode round-trips');
+    is($rec->{started_at}, 1778112000, 'spec bytes decode round-trips');
 }
 
 });

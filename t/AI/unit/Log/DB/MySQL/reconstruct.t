@@ -155,7 +155,7 @@ for_each_db_version([qw/mysql percona/], sub {
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run spec_iter: 1 record');
-    like($recs[0]{started_at}, qr/2026-05-07.*00:00:00/, 'run spec.started_at typed');
+    is($recs[0]{started_at}, 1778112000, 'run spec.started_at typed');
     is($recs[0]{times}, [9, 8, 7, 6], 'run spec.times decoded (report wins)');
     is($recs[0]{harness}, 'yath',     'run spec.harness from extras');
     is($recs[0]{name},    'fancy run', 'run spec.name from extras');
@@ -169,7 +169,7 @@ for_each_db_version([qw/mysql percona/], sub {
     my $it = $arts->report_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run report_iter: 1 record');
-    like($recs[0]{ended_at}, qr/2026-05-07.*00:01:00/, 'run report.ended_at typed');
+    is($recs[0]{ended_at}, 1778112060, 'run report.ended_at typed');
     is($recs[0]{exit}, 0, 'run report.exit typed');
     ok($recs[0]{pass}, 'run report.pass truthy');
     is($recs[0]{times},       [9, 8, 7, 6], 'run report.times decoded');

@@ -2,7 +2,7 @@ package App::Yath2::Command::inspect;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Fcntl qw/SEEK_SET/;
@@ -365,7 +365,7 @@ sub _format_human {
 
     if (my $m = $r->{meta}) {
         $out .= sprintf("Archive UUID: %s\n", $m->{archive_uuid}) if defined $m->{archive_uuid};
-        $out .= sprintf("Created at:   %s\n", $m->{created_at})   if defined $m->{created_at};
+        $out .= sprintf("Created at:   %s\n", _format_epoch_iso($m->{created_at})) if defined $m->{created_at};
         $out .= sprintf("Host:         %s\n", $m->{host})         if defined $m->{host};
         $out .= sprintf("User:         %s\n", $m->{user})         if defined $m->{user};
         $out .= sprintf("Git SHA:      %s\n", $m->{git_sha})      if defined $m->{git_sha};
@@ -427,6 +427,21 @@ sub _format_human {
     }
 
     return $out;
+}
+
+# Render a hi-res unix epoch as ISO-8601 UTC for human display. Pass-
+# through for any value that does not parse as a number so old archive
+# data with stray strings still prints something useful.
+sub _format_epoch_iso {
+    my ($val) = @_;
+    return $val unless defined $val;
+    return $val unless $val =~ /\A-?\d+(?:\.\d+)?\z/;
+    my @gm = gmtime(int $val);
+    my $frac = $val - int $val;
+    my $base = sprintf('%04d-%02d-%02dT%02d:%02d:%02d',
+        $gm[5] + 1900, $gm[4] + 1, $gm[3], $gm[2], $gm[1], $gm[0]);
+    return $base . 'Z' unless $frac;
+    return sprintf('%s.%03dZ', $base, int($frac * 1000));
 }
 
 1;

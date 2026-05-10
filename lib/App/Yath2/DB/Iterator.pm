@@ -2,7 +2,7 @@ package App::Yath2::DB::Iterator;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
@@ -67,11 +67,14 @@ sub next {
         my $owner;
         for (my $i = $#$stack; $i >= 0; $i--) {
             my $entry = $stack->[$i];
-            if ($entry->{idx} < scalar @{$entry->{records}}) {
-                $got = $entry->{records}[$entry->{idx}++];
+            next if $entry->{exhausted};
+            my $rec = $entry->{reader} ? $entry->{reader}->readline : undef;
+            if (defined $rec) {
+                $got   = $rec;
                 $owner = $entry;
                 last;
             }
+            $entry->{exhausted} = 1;
         }
 
         if (defined $got) {
@@ -108,7 +111,7 @@ sub next {
             return $self->_inject_identifiers($got, $owner->{ident});
         }
 
-        while (@$stack && $stack->[-1]{idx} >= scalar @{$stack->[-1]{records}}) {
+        while (@$stack && $stack->[-1]{exhausted}) {
             pop @$stack;
         }
         last if !@$stack;
@@ -122,7 +125,8 @@ sub EOE {
     my $stack = $self->{+_STACK} //= $self->_seed_stack;
 
     while (@$stack) {
-        return 0 if $stack->[-1]{idx} < scalar @{$stack->[-1]{records}};
+        my $entry = $stack->[-1];
+        return 0 unless $entry->{exhausted};
         pop @$stack;
     }
     return 1;
@@ -155,12 +159,14 @@ sub count {
 sub _open_walk {
     my ($self, %args) = @_;
     my $base = $args{base};
-    my $records = $self->{+DB}->artifact_iter_records($self->{+UUID}, $base, 'events.jsonl') || [];
+    my $reader = $self->{+DB}->artifact_iter_records(
+        $self->{+UUID}, $base, 'events.jsonl',
+    );
     return {
-        records => $records,
-        idx     => 0,
-        base    => $base,
-        ident   => {
+        reader    => $reader,
+        exhausted => $reader ? 0 : 1,
+        base      => $base,
+        ident     => {
             (defined $args{run_id}  ? (run_id  => $args{run_id})  : ()),
             (defined $args{job_id}  ? (job_id  => $args{job_id})  : ()),
             (defined $args{job_try} ? (job_try => $args{job_try}) : ()),

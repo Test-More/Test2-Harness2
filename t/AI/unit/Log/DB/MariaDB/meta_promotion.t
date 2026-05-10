@@ -80,7 +80,7 @@ for_each_db_version([qw/mariadb/], sub {
     ok(defined $meta->{user},         'user present');
     ok(defined $meta->{yath_version}, 'yath_version present');
     is($meta->{format_version}, 1,    'format_version via meta_extras');
-    like($meta->{created_at}, qr/^\d{4}-\d{2}-\d{2}T/, 'created_at ISO shape');
+    like($meta->{created_at}, qr/^[0-9]+(?:\.[0-9]+)?$/, 'created_at hi-res unix epoch');
 
     my $row = $dbh->selectrow_hashref(q{
     SELECT host, "user" AS user_, git_sha, project, yath_version,

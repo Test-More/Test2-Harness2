@@ -2,7 +2,7 @@ package App::Yath2::Log;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Cwd ();
@@ -155,7 +155,7 @@ sub META_PROMOTED_KEYS {
 # archives whose archive_version is lower than this. There is no
 # auto-migration: an older archive must be re-archived (or read with an
 # older yath) to be consumed.
-sub last_breaking_version { '2.000012' }
+sub last_breaking_version { '2.000013' }
 
 sub build_archive_meta {
     my ($class, %p) = @_;
@@ -163,10 +163,7 @@ sub build_archive_meta {
     my $uuid = $p{archive_uuid} // gen_uuid();
     my $cwd  = $p{cwd} // Cwd::getcwd();
 
-    my $now = Time::HiRes::time();
-    my @gm  = gmtime(int $now);
-    my $stamp = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
-        $gm[5] + 1900, $gm[4] + 1, $gm[3], $gm[2], $gm[1], $gm[0]);
+    my $stamp = Time::HiRes::time();
 
     my $host;
     my $host_ok = eval { $host = Sys::Hostname::hostname(); 1 };
@@ -622,7 +619,7 @@ A fresh UUID, or the caller-supplied one.
 
 =item C<created_at>
 
-ISO-8601 UTC timestamp.
+Hi-res unix timestamp (C<Time::HiRes::time> float, seconds since epoch).
 
 =item C<host>
 

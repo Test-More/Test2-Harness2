@@ -42,9 +42,8 @@ sub build_minimal_log {
 for_each_log_db_backend(sub {
     my ($backend) = @_;
 
-    # Codec helpers (_db_datetime_to_iso) live on the App::Yath2::DB
-    # wrapper itself, which is what App::Yath2::DB->new returns; calls
-    # below land directly on $db.
+    # Datetime columns are returned to consumers as hi-res unix epoch
+    # floats; per-flavor parsing lives on $db->backend->db_parse_datetime.
 
     # {{{ Round-trip: insert a fresh source, reconstruct meta.json, assert
     # typed columns populated and content matches.
@@ -88,7 +87,7 @@ for_each_log_db_backend(sub {
         ok(defined $meta->{user}, 'user present in reconstructed meta');
         ok(defined $meta->{yath_version}, 'yath_version present');
         is($meta->{format_version}, 1, 'format_version round-trips via meta_extras');
-        like($meta->{created_at}, qr/^\d{4}-\d{2}-\d{2}T/, 'created_at ISO shape');
+        like($meta->{created_at}, qr/^[0-9]+(?:\.[0-9]+)?$/, 'created_at hi-res unix epoch');
 
         # Raw column inspection: every promoted field is in its own column.
         my $row = $dbh->selectrow_hashref(q{
@@ -100,7 +99,7 @@ for_each_log_db_backend(sub {
         ok(defined $row->{user_},        'archives."user" populated');
         ok(defined $row->{yath_version}, 'archives.yath_version populated');
         ok(defined $row->{sealed_at},    'archives.sealed_at non-null');
-        is($db->_db_datetime_to_iso($row->{sealed_at}), $meta->{created_at},
+        is($db->backend->db_parse_datetime($row->{sealed_at}), $meta->{created_at},
             'sealed_at equals meta.created_at (D5)');
 
         ok(defined $row->{meta_extras},
@@ -125,7 +124,7 @@ for_each_log_db_backend(sub {
 
         # Drop a hand-crafted meta.json into the source root so the
         # insert path picks it up via _resolve_insert_meta.
-        my $fixed_created_at = '2025-01-15T00:00:00Z';
+        my $fixed_created_at = 1736899200;  # 2025-01-15T00:00:00Z
         my $source_uuid      = '019D2B1A-8000-7000-8000-CAFEBABE0001';
         my $source_meta = {
             format_version => 1,
@@ -159,7 +158,7 @@ for_each_log_db_backend(sub {
               FROM archives WHERE archive_id = ?
         }, undef, $aid);
 
-        is($db->_db_datetime_to_iso($row->{sealed_at}), $fixed_created_at,
+        is($db->backend->db_parse_datetime($row->{sealed_at}), $fixed_created_at,
             'sealed_at carried over from source meta.created_at (D5)');
         is($row->{host},    'test-host.example',     'host carried over');
         is($row->{user_},   'tester',                'user carried over');

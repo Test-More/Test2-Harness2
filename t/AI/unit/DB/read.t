@@ -49,7 +49,7 @@ sub build_source {
             id           => 'runner',
             service_name => 'runner',
             stage_name   => 'main',
-            started_at   => '2026-05-07T00:00:00Z',
+            started_at   => 1778112000,
             pid          => 11111,
             times        => [0.1, 0.2, 0.3, 0.4],
         },
@@ -57,7 +57,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/services/runner/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:00:05Z',
+            ended_at     => 1778112005,
             exit         => 0,
             exit_decoded => {signal => 0, status => 0},
             why          => 'shutdown',
@@ -75,7 +75,7 @@ sub build_source {
             id           => 'run',
             service_name => 'run',
             stage_name   => 'main',
-            started_at   => '2026-05-07T00:00:00Z',
+            started_at   => 1778112000,
         },
     );
 
@@ -84,7 +84,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/runs/0/spec.jsonl.zst",
         {
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             times      => [1, 2, 3, 4],
             harness    => 'yath',
             name       => 'fancy run',
@@ -93,7 +93,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/runs/0/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:01:00Z',
+            ended_at     => 1778112060,
             exit         => 0,
             pass         => 1,
             total_jobs   => 2,
@@ -115,8 +115,8 @@ sub build_source {
         {
             relative   => 't/dummy.t',
             absolute   => '/abs/t/dummy.t',
-            queued_at  => '2026-05-07T00:00:00.500Z',
-            started_at => '2026-05-07T00:00:01Z',
+            queued_at  => 1778112000.5,
+            started_at => 1778112001,
             stage      => 'default',
             features   => {fork => 1},
             times      => [1, 2, 3, 4],
@@ -126,7 +126,7 @@ sub build_source {
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at        => '2026-05-07T00:00:02Z',
+            ended_at        => 1778112002,
             exit            => 0,
             pass            => 1,
             pass_count      => 5,
@@ -153,7 +153,7 @@ sub build_source {
     );
     write_jsonl_zst(
         "$src/runs/0/jobs/1/0/report.jsonl.zst",
-        {ended_at => '2026-05-07T00:00:03Z', pass => 1},
+        {ended_at => 1778112003, pass => 1},
     );
 
     return $src;
@@ -268,9 +268,12 @@ for my $backend (@backends) {
         is($meta_decoded->{archive_uuid}, $uuid, 'meta.json bytes round-trip');
 
         # spec/report reconstruction: decode the bytes and compare to
-        # the source's records (sort independent).
-        my $records = $db->artifact_iter_records($uuid, 'runs/0/jobs/0/0', 'spec.jsonl');
-        is(ref($records), 'ARRAY', 'job_try spec records arrayref');
+        # the source's records (sort independent). artifact_iter_records
+        # returns a streaming JSONL reader; drain via read_lines.
+        my $records = [
+            $db->artifact_iter_records($uuid, 'runs/0/jobs/0/0', 'spec.jsonl')
+                ->read_lines
+        ];
         is(scalar(@$records), 1, 'one job_try spec record');
         is($records->[0]{relative}, 't/dummy.t', 'job_try spec.relative preserved');
         is($records->[0]{absolute}, '/abs/t/dummy.t', 'job_try spec.absolute preserved');
@@ -278,7 +281,10 @@ for my $backend (@backends) {
         is($records->[0]{features}, {fork => 1}, 'job_try spec.features preserved');
         is($records->[0]{comment}, 'a per-try note', 'job_try spec extras preserved');
 
-        my $report_records = $db->artifact_iter_records($uuid, 'runs/0/jobs/0/0', 'report.jsonl');
+        my $report_records = [
+            $db->artifact_iter_records($uuid, 'runs/0/jobs/0/0', 'report.jsonl')
+                ->read_lines
+        ];
         is(scalar(@$report_records), 1, 'one job_try report record');
         is($report_records->[0]{exit}, 0, 'job_try report.exit');
         is($report_records->[0]{pass}, 1, 'job_try report.pass');
@@ -288,13 +294,17 @@ for my $backend (@backends) {
         is(scalar(@{$report_records->[0]{subtests}}), 2, 'two subtests');
 
         # Run-scope spec.
-        my $run_specs = $db->artifact_iter_records($uuid, 'runs/0', 'spec.jsonl');
+        my $run_specs = [
+            $db->artifact_iter_records($uuid, 'runs/0', 'spec.jsonl')->read_lines
+        ];
         is(scalar(@$run_specs), 1, 'one run spec record');
-        is($run_specs->[0]{started_at}, '2026-05-07T00:00:00Z', 'run spec.started_at');
+        is($run_specs->[0]{started_at}, 1778112000, 'run spec.started_at');
         is($run_specs->[0]{harness}, 'yath', 'run spec extras');
 
         # Run-scope report (with rebuilt jobs[]).
-        my $run_reports = $db->artifact_iter_records($uuid, 'runs/0', 'report.jsonl');
+        my $run_reports = [
+            $db->artifact_iter_records($uuid, 'runs/0', 'report.jsonl')->read_lines
+        ];
         is(scalar(@$run_reports), 1, 'one run report record');
         is($run_reports->[0]{exit}, 0, 'run report.exit');
         is($run_reports->[0]{pass}, 1, 'run report.pass');
@@ -302,12 +312,18 @@ for my $backend (@backends) {
         is(scalar(@{$run_reports->[0]{jobs}}), 2, 'run report.jobs has 2 entries');
 
         # Service-scope spec/report.
-        my $svc_specs = $db->artifact_iter_records($uuid, 'services/runner', 'spec.jsonl');
+        my $svc_specs = [
+            $db->artifact_iter_records($uuid, 'services/runner', 'spec.jsonl')
+                ->read_lines
+        ];
         is(scalar(@$svc_specs), 1, 'service runner: one spec record');
         is($svc_specs->[0]{type}, 'Service', 'svc spec.type');
         is($svc_specs->[0]{stage_name}, 'main', 'svc spec.stage_name');
 
-        my $svc_reports = $db->artifact_iter_records($uuid, 'services/runner', 'report.jsonl');
+        my $svc_reports = [
+            $db->artifact_iter_records($uuid, 'services/runner', 'report.jsonl')
+                ->read_lines
+        ];
         is(scalar(@$svc_reports), 1, 'service runner: one report record');
         is($svc_reports->[0]{exit}, 0, 'svc report.exit');
 
@@ -405,7 +421,8 @@ subtest reconstruction_data_preservation => sub {
     ) {
         my ($base, $stem, $dir_arts) = @$args;
 
-        my $db_recs = $db->artifact_iter_records($uuid, $base, $stem) // [];
+        my $db_iter = $db->artifact_iter_records($uuid, $base, $stem);
+        my $db_recs = $db_iter ? [$db_iter->read_lines] : [];
 
         my @dir_recs;
         my $iter_method = $stem eq 'spec.jsonl' ? 'spec_iter' : 'report_iter';
