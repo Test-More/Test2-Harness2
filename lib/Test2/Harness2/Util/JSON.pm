@@ -9,7 +9,7 @@ use Importer Importer => 'import';
 
 use Test2::Harness2::Util qw/write_file_atomic/;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 our @EXPORT_OK = qw{
     decode_json

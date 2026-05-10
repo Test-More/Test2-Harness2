@@ -4,7 +4,7 @@ use warnings;
 
 use Test2::Harness2::Util qw/fqmod/;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Getopt::Yath;
 include_options(

@@ -4,7 +4,7 @@ use warnings;
 
 use feature 'state';
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Object::HashBase qw{
     <config

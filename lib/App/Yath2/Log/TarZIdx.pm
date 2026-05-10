@@ -11,7 +11,7 @@ BEGIN {
         if $Config::Config{ivsize} < 8;
 }
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Compress::Zstd ();

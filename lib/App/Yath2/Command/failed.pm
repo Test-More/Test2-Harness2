@@ -2,7 +2,7 @@ package App::Yath2::Command::failed;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 

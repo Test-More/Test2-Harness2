@@ -2,7 +2,7 @@ package Test2::Harness2::Run::State;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Time::HiRes qw/time/;

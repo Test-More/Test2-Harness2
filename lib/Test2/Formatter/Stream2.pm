@@ -2,7 +2,7 @@ package Test2::Formatter::Stream2;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use IO::Handle;
 

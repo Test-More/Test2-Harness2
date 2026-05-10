@@ -2,7 +2,7 @@ package App::Yath2::DB::DBIC::Result::Service;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use parent 'DBIx::Class::Core';
 

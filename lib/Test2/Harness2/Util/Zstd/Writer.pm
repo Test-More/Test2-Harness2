@@ -2,7 +2,7 @@ package Test2::Harness2::Util::Zstd::Writer;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Fcntl qw/O_WRONLY O_APPEND O_CREAT/;

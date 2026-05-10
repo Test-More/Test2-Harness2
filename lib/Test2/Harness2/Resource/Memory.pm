@@ -17,7 +17,7 @@ use warnings;
 # resource must continue to work (using only the live sample) when
 # neither is in active use.
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 

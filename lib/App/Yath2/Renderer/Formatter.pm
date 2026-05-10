@@ -2,7 +2,7 @@ package App::Yath2::Renderer::Formatter;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Test2::Harness2::Util::JSON qw/encode_pretty_json/;
 use Test2::Harness2::Util qw/mod2file fqmod/;

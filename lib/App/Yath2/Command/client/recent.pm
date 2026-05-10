@@ -2,7 +2,7 @@ package App::Yath2::Command::client::recent;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use parent 'App::Yath2::Command::recent';
 use Object::HashBase;

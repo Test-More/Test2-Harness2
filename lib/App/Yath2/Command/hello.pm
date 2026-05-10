@@ -2,7 +2,7 @@ package App::Yath2::Command::hello;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
