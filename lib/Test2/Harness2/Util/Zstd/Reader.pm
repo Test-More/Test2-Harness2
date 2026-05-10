@@ -42,6 +42,27 @@ sub _open {
     return $self;
 }
 
+# Open on a pre-existing seekable file handle. Used to stream a zstd-
+# framed payload the caller already holds (e.g. a database BLOB wrapped
+# in a scalar fh) without first materializing the decompressed plain
+# text. The caller owns the fh's backing storage and must keep it alive
+# for the reader's lifetime.
+sub _open_fh {
+    my ($class, $fh) = @_;
+
+    croak "fh is required" unless defined $fh;
+    binmode $fh;
+
+    my $self = bless {
+        path    => '<fh>',
+        fh      => $fh,
+        records => [],
+        raw_buf => '',
+    } => $class;
+
+    return $self;
+}
+
 # Try to read more bytes from the underlying file handle. Returns the
 # number of bytes appended to raw_buf -- 0 means "nothing right now"
 # (which can be transient: a writer may append more bytes between

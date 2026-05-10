@@ -17,6 +17,7 @@ our @EXPORT_OK = qw{
     decompress_blob
     open_zstd_writer
     open_zstd_reader
+    open_zstd_reader_fh
     compress_file_atomic
     decompress_file
     zstd_frame_size
@@ -99,6 +100,12 @@ sub open_zstd_reader {
     my ($path) = @_;
     require Test2::Harness2::Util::Zstd::Reader;
     return Test2::Harness2::Util::Zstd::Reader->_open($path);
+}
+
+sub open_zstd_reader_fh {
+    my ($fh) = @_;
+    require Test2::Harness2::Util::Zstd::Reader;
+    return Test2::Harness2::Util::Zstd::Reader->_open_fh($fh);
 }
 
 # zstd_frame_size($bytes) -- return the on-disk byte length of the
@@ -269,6 +276,13 @@ C<-E<gt>readline> yields one decoded line at a time. The reader uses
 a long-lived streaming L<Compress::Zstd::Decompressor>; framing is
 recovered via the RFC-8878 frame-header parser in this module's
 L</zstd_frame_size>.
+
+=item open_zstd_reader_fh($fh) :Object
+
+Same as C<open_zstd_reader> but takes a pre-opened, seekable file
+handle (including a scalar-fh opened against an in-memory zstd-framed
+byte string). Lets callers stream a multi-frame zstd payload they
+already hold without first materializing the decompressed plaintext.
 
 =back
 

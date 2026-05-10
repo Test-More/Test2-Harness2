@@ -922,7 +922,8 @@ sub artifact_iter_records {
 
     my $info = $self->_parse_artifact_path($aid, $rel) or return undef;
 
-    my $plain;
+    require Test2::Harness2::Util::JSONL::Reader;
+
     if ($self->_is_reconstruct_target($info)) {
         return undef
             unless $self->_entity_exists_for_scope(
@@ -935,28 +936,38 @@ sub artifact_iter_records {
             : undef;
         $records ||= [];
 
-        $plain = '';
+        # Reconstructed record sets are bounded by the number of typed
+        # rows in DB (one record per spec/report row), so the encoded
+        # JSONL stays small enough to keep in memory; no streaming win
+        # here.
+        my $plain = '';
         for my $rec (@$records) {
             $plain .= encode_json($rec) . "\n";
         }
-    }
-    else {
-        my $row = $self->{+BACKEND}->artifact_row_for_scope(
-            $aid, $info->{scope_kind}, $info->{scope_id},
-            $info->{artifact_kind}, $info->{name},
+        return Test2::Harness2::Util::JSONL::Reader->new(
+            bytes => $plain,
+            name  => $rel,
         );
-        return undef unless $row;
-
-        my $payload = $row->{payload};
-        my $stored_compressed = $row->{compressed} ? 1 : 0;
-        $plain = $stored_compressed
-            ? $self->_decompress_jsonl_bytes($payload)
-            : $payload;
     }
 
-    require Test2::Harness2::Util::JSONL::Reader;
+    my $row = $self->{+BACKEND}->artifact_row_for_scope(
+        $aid, $info->{scope_kind}, $info->{scope_id},
+        $info->{artifact_kind}, $info->{name},
+    );
+    return undef unless $row;
+
+    # Hand the on-disk shape directly to JSONL::Reader: bytes_zstd
+    # streams frame-by-frame off a scalar fh wrapped around the BLOB,
+    # avoiding the whole-payload decompression copy that we'd otherwise
+    # take for multi-GB events.jsonl artifacts.
+    if ($row->{compressed}) {
+        return Test2::Harness2::Util::JSONL::Reader->new(
+            bytes_zstd => $row->{payload},
+            name       => $rel,
+        );
+    }
     return Test2::Harness2::Util::JSONL::Reader->new(
-        bytes => $plain,
+        bytes => $row->{payload},
         name  => $rel,
     );
 }
