@@ -1760,6 +1760,25 @@ sub _ensure_run_service_started {
         started_at => $started_at,
     );
 
+    # Bring up the run's resource services. They run as direct
+    # children of the harness (not the run service), so signal/kill
+    # propagation is uniform with the global resources hosted here
+    # already, and the per-run pid bookkeeping in RUN_PIDS captures
+    # them via the host-role tracking hooks. The harness has already
+    # validated the resource set (needed + non-permanent) before
+    # taking this branch -- we just start whatever is configured.
+    my $resources = $run->resources // [];
+    if (@$resources) {
+        my $rs_ok = eval {
+            $self->start_resource_services($resources, scope => 'run', run => $run);
+            1;
+        };
+        unless ($rs_ok) {
+            my $err = $@;
+            warn "Test2::Harness2: per-run resource services for '$run_id' failed to start: $err\n";
+        }
+    }
+
     return;
 }
 
@@ -1818,14 +1837,32 @@ sub _teardown_run_service {
     return                            if $rstate && $rstate->resources_torn_down_flag;
     $rstate->mark_resources_torn_down if $rstate;
     my $svc = delete $self->{+RUN_SERVICES}->{$rid};
+    # Tear down the run's resource services -- they live under the
+    # harness now (Stage 3 of the RunService flatten), so we own the
+    # signal cascade. _kill_run targets only this run's RUN_PIDS
+    # entries; resource services flagged kind='resource_service' under
+    # this run_id get TERM, the role's restart-spiral counter is
+    # reset implicitly because the service is no longer tracked once
+    # it exits via run_on_pid, and per-resource teardown methods run
+    # on the resource objects themselves so any in-process cleanup
+    # (counters, files, etc.) still fires here.
+    for my $res (@{$run->resources // []}) {
+        my $tok  = eval { $res->teardown; 1 };
+        my $terr = $@;
+        warn "resource '" . $res->resource_name . "' teardown died: $terr"
+            unless $tok;
+    }
+    $self->_kill_run($rid, 'TERM');
+
     return unless $svc;
     return unless $svc->{pid};
 
     # SIGTERM the run service. Its SIG{TERM} handler flips the service
     # state to 'terminating' and run_on_cleanup inside the child will
-    # cascade TERMs to the run's resource services before exiting. The
-    # reap lands on our side via IPC::Manager's waitpid tick and falls
-    # through run_on_pid -- see the run-services guard there.
+    # cascade TERMs to its remaining tracked children (collectors)
+    # before exiting. The reap lands on our side via IPC::Manager's
+    # waitpid tick and falls through run_on_pid -- see the
+    # run-services guard there.
     kill TERM => $svc->{pid} if kill 0 => $svc->{pid};
 
     return;

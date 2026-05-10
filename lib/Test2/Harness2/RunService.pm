@@ -372,12 +372,13 @@ sub service_on_start {
     # nothing on disk.
     $self->_send_run_state_to_harness;
 
-    # Bring up the run's resource services. The harness has already
-    # validated the resource set (needed + non-permanent) before
-    # spawning us; we just start whatever is configured.
-    my $resources = $self->{+RUN}->resources // [];
-    $self->start_resource_services($resources, scope => 'run', run => $self->{+RUN})
-        if @$resources;
+    # Per-run resource services are hosted by the harness now (not by
+    # us). The harness brings them up in _ensure_run_service_started
+    # before/around our own spawn, owns their process tree, and tears
+    # them down in _teardown_run_service. RunService remains a
+    # ResourceServiceHost role consumer for now (it's harmless when no
+    # services are tracked here); the consumption goes away with the
+    # rest of RunService in the final stage.
 
     return;
 }
