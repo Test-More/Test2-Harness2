@@ -27,7 +27,12 @@ use constant HAS_CHILD_SUBREAPER => eval {
 # service_started event carries, and the consumer's own startup work.
 # Everything else lives here.
 
-with 'IPC::Manager::Role::Service';
+# Layered on top of Role::ResourceService so a service class composing
+# this role also satisfies Role::Tiny::does_role($class, 'Role::ResourceService')
+# without re-composing IPC::Manager::Role::Service through two paths
+# (which Role::Tiny treats as a conflict). Role::ResourceService brings
+# IPC::Manager::Role::Service in transitively.
+with 'Test2::Harness2::Role::ResourceService';
 
 # Consumer contract. Everything else is either provided with a default
 # or covered by the IPC::Manager::Role::Service contract below.

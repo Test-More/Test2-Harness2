@@ -24,6 +24,7 @@ use Object::HashBase qw{
     +event_timeout +post_exit_timeout
     +min_slots +max_slots
     +meta
+    +preload_preferences
     <ch_dir
     <comment
 
@@ -221,6 +222,14 @@ sub is_binary         { $_[0]->scan; $_[0]->{+IS_BINARY} }
 sub category          { $_[0]->scan; $_[0]->{+CATEGORY} }
 sub duration          { $_[0]->scan; $_[0]->{+DURATION} }
 sub stage             { $_[0]->scan; $_[0]->{+STAGE} }
+sub preload_preferences {
+    my $self = shift;
+    $self->scan;
+    return $self->{+PRELOAD_PREFERENCES} //= do {
+        require Test2::Harness2::Util::PreloadDirective;
+        Test2::Harness2::Util::PreloadDirective::parse_preload_directive(undef);
+    };
+}
 sub min_slots         { $_[0]->scan; $_[0]->{+MIN_SLOTS} }
 sub max_slots         { $_[0]->scan; $_[0]->{+MAX_SLOTS} }
 
@@ -284,7 +293,21 @@ sub _scan {
         next if $line =~ m/^\s*(?:use|require|BEGIN|package)\b/;
         last unless $line =~ m/^\s*\Q$comment\E\s*HARNESS-(.+)$/;
 
-        my ($dir, $rest) = split /[-\s]+/, $1, 2;
+        # HARNESS-PRELOAD has its own value grammar (ordered preference
+        # list with <default> / <no> tokens) that does not survive the
+        # generic [-\s]+ tokenization below. Branch out before the
+        # split so the rest-of-line text reaches the dedicated parser
+        # intact. Accept both 'PRELOAD: ...' (preferred) and bare
+        # 'PRELOAD ...'.
+        my $rest_of_line = $1;
+        if ($rest_of_line =~ /\APRELOAD\s*:?\s*(.*)\z/i) {
+            require Test2::Harness2::Util::PreloadDirective;
+            $self->{+PRELOAD_PREFERENCES}
+                = Test2::Harness2::Util::PreloadDirective::parse_preload_directive($1);
+            next;
+        }
+
+        my ($dir, $rest) = split /[-\s]+/, $rest_of_line, 2;
         $dir = lc($dir);
         my @args;
         if ($dir eq 'meta') {

@@ -17,6 +17,13 @@ use Role::Tiny;
 requires 'absolute';
 requires 'relative';
 
+# Preload preference list, normalized to the form the resolver
+# expects. Default is ['<default>'] -- "use the scope's default
+# preload, fall through to no preload". Producers (notably
+# App::Yath2::TestFile) override this to return the parsed
+# HARNESS-PRELOAD: directive value.
+sub preload_preferences { ['<default>'] }
+
 # Per-feature defaults consulted by check_feature when the caller
 # supplies no explicit default and the consumer's data has no entry
 # for the feature. Mirrors reference/legacy/.../TestFile.pm:89-98.
