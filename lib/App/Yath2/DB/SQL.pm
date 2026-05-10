@@ -8,7 +8,6 @@ use Carp qw/croak/;
 use File::Basename qw/dirname/;
 use File::Path qw/make_path/;
 
-use Test2::Harness2::Util::JSON qw/decode_json encode_json/;
 use Test2::Util::UUID qw/gen_uuid/;
 
 use Object::HashBase qw{
@@ -189,35 +188,8 @@ sub _apply_session_state {
 # Canonical JSON form is decoded Perl hashref / arrayref.
 # Canonical payload form is raw bytes (zstd-encoded if compressed=1).
 
-sub _uuid_to_db {
-    my ($self, $u) = @_;
-    return undef unless defined $u;
-    my $flavor = $self->flavor;
-    return $u                 if $flavor eq 'sqlite';
-    return uc($u)             if $flavor eq 'postgres' || $flavor eq 'mariadb';
-    if ($flavor eq 'mysql') {
-        (my $h = $u) =~ tr/-//d;
-        return pack('H*', $h);
-    }
-    return $u;
-}
-
-sub _uuid_from_db {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    my $flavor = $self->flavor;
-    if ($flavor eq 'mysql') {
-        return undef unless length($val) == 16;
-        my $hex = lc unpack('H*', $val);
-        return join '-',
-            substr($hex,  0, 8),
-            substr($hex,  8, 4),
-            substr($hex, 12, 4),
-            substr($hex, 16, 4),
-            substr($hex, 20);
-    }
-    return lc("$val");
-}
+# UUID codec (_uuid_to_db / _uuid_from_db) lives on
+# App::Yath2::Role::DB::Backend; both backends share it.
 
 # Bind a canonical UUID value at $idx with the right driver-side type
 # hint (BINARY for mysql; otherwise plain bind).
@@ -265,12 +237,8 @@ sub _payload_to_bytes {
     return $val;
 }
 
-sub _maybe_decode_json {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    return $val if ref $val;
-    return decode_json($val);
-}
+# JSON helpers (_maybe_decode_json / _maybe_encode_json /
+# _inflate_json_rows) live on App::Yath2::Role::DB::Backend.
 
 # UUID bind hint for selectrow lookups. MySQL needs SQL_BINARY; others
 # bind the canonical-form result of _uuid_to_db verbatim.
@@ -415,140 +383,77 @@ sub job_rows {
 sub try_rows {
     my ($self, $jid) = @_;
     croak "job_id required" unless defined $jid;
-    my $dbh = $self->dbh;
-    my $rows = $dbh->selectall_arrayref(q{
+    my $rows = $self->dbh->selectall_arrayref(q{
         SELECT *
           FROM job_tries
          WHERE job_id = ?
          ORDER BY try_ord
     }, { Slice => {} }, $jid);
 
-    # Decode JSON columns inline so callers see canonical Perl values.
-    my @json_cols = qw/exit_decoded plan halt times child_times
-                       spec_extras state_extras/;
-    for my $r (@$rows) {
-        for my $c (@json_cols) {
-            $r->{$c} = $self->_maybe_decode_json($r->{$c}) if exists $r->{$c};
-        }
+    return $self->_inflate_json_rows($rows, [qw/exit_decoded plan halt
+                                                times child_times
+                                                spec_extras state_extras/]);
+}
+
+# -- generic count / find / ensure primitives -------------------------------
+#
+# Public *_exists, *_id_for_*, and ensure_*_row wrappers live on
+# App::Yath2::Role::DB::Backend; they delegate to these primitives.
+
+# Build a "WHERE k = ? AND ..." fragment from a hash. undef values
+# become "k IS NULL" (with no bind). Returns ($where_sql, @bind).
+sub _build_where_sql {
+    my ($self, $where) = @_;
+    my @cols;
+    my @bind;
+    for my $k (sort keys %$where) {
+        my $v = $where->{$k};
+        if (defined $v) { push @cols, "$k = ?"; push @bind, $v; }
+        else            { push @cols, "$k IS NULL"; }
     }
-    return $rows;
+    my $sql = @cols ? join(' AND ', @cols) : '1=1';
+    return ($sql, @bind);
 }
 
-# -- existence checks -------------------------------------------------------
-
-sub run_exists {
-    my ($self, $aid, $run_ord) = @_;
-    return 0 unless defined $aid && defined $run_ord;
-    return 0 unless $run_ord =~ /^\d+\z/;
+sub _count_rows {
+    my ($self, $table, %where) = @_;
+    my ($where_sql, @bind) = $self->_build_where_sql(\%where);
     my ($n) = $self->dbh->selectrow_array(
-        q{SELECT count(*) FROM runs WHERE archive_id = ? AND run_ord = ?},
-        undef, $aid, $run_ord,
+        "SELECT count(*) FROM $table WHERE $where_sql",
+        undef, @bind,
     );
-    return $n ? 1 : 0;
+    return $n // 0;
 }
 
-sub job_exists {
-    my ($self, $aid, $rid, $job_ord) = @_;
-    return 0 unless defined $aid && defined $rid && defined $job_ord;
-    return 0 unless $job_ord =~ /^\d+\z/;
-    my ($n) = $self->dbh->selectrow_array(
-        q{SELECT count(*) FROM jobs
-           WHERE archive_id = ? AND run_id = ? AND job_ord = ?},
-        undef, $aid, $rid, $job_ord,
+sub _find_one_col {
+    my ($self, $table, $col, %where) = @_;
+    my ($where_sql, @bind) = $self->_build_where_sql(\%where);
+    my ($val) = $self->dbh->selectrow_array(
+        "SELECT $col FROM $table WHERE $where_sql",
+        undef, @bind,
     );
-    return $n ? 1 : 0;
+    return $val;
 }
 
-sub try_exists {
-    my ($self, $jid, $try_ord) = @_;
-    return 0 unless defined $jid && defined $try_ord;
-    return 0 unless $try_ord =~ /^\d+\z/;
-    my ($n) = $self->dbh->selectrow_array(
-        q{SELECT count(*) FROM job_tries WHERE job_id = ? AND try_ord = ?},
-        undef, $jid, $try_ord,
-    );
-    return $n ? 1 : 0;
-}
+# Find-or-insert. Returns the existing row's id_col when one matches
+# %{$args{where}}, otherwise inserts %{$args{fields}} and returns the
+# new id (via _last_insert_id).
+sub _ensure_row {
+    my ($self, $table, %args) = @_;
+    my $where  = $args{where}  or croak "where required";
+    my $fields = $args{fields} or croak "fields required";
+    my $id_col = $args{id_col} or croak "id_col required";
 
-sub service_exists {
-    my ($self, $aid, $name, $rid) = @_;
-    return 0 unless defined $aid && defined $name;
-    my $dbh = $self->dbh;
-    if (defined $rid) {
-        my ($n) = $dbh->selectrow_array(
-            q{SELECT count(*) FROM services
-               WHERE archive_id = ? AND run_id = ? AND name = ?},
-            undef, $aid, $rid, $name,
-        );
-        return $n ? 1 : 0;
-    }
-    my ($n) = $dbh->selectrow_array(
-        q{SELECT count(*) FROM services
-           WHERE archive_id = ? AND run_id IS NULL AND name = ?},
-        undef, $aid, $name,
-    );
-    return $n ? 1 : 0;
-}
-
-# -- id-for-ord lookups -----------------------------------------------------
-
-sub run_id_for_ord {
-    my ($self, $aid, $run_ord) = @_;
-    croak "archive_id required" unless defined $aid;
-    croak "run_ord required"    unless defined $run_ord;
-    my ($id) = $self->dbh->selectrow_array(
-        q{SELECT run_id FROM runs WHERE archive_id = ? AND run_ord = ?},
-        undef, $aid, $run_ord,
-    );
-    croak "no run with ord $run_ord" unless defined $id;
-    return $id;
-}
-
-sub job_id_for_ord {
-    my ($self, $aid, $rid, $job_ord) = @_;
-    croak "archive_id required" unless defined $aid;
-    croak "run_id required"     unless defined $rid;
-    croak "job_ord required"    unless defined $job_ord;
-    my ($id) = $self->dbh->selectrow_array(
-        q{SELECT job_id FROM jobs
-           WHERE archive_id = ? AND run_id = ? AND job_ord = ?},
-        undef, $aid, $rid, $job_ord,
-    );
-    croak "no job with ord $job_ord in run_id $rid" unless defined $id;
-    return $id;
-}
-
-sub try_id_for_ord {
-    my ($self, $jid, $try_ord) = @_;
-    croak "job_id required"  unless defined $jid;
-    croak "try_ord required" unless defined $try_ord;
-    my ($id) = $self->dbh->selectrow_array(
-        q{SELECT job_try_id FROM job_tries WHERE job_id = ? AND try_ord = ?},
-        undef, $jid, $try_ord,
-    );
-    croak "no try with ord $try_ord in job_id $jid" unless defined $id;
-    return $id;
-}
-
-sub service_id_for_name {
-    my ($self, $aid, $name, $rid) = @_;
-    croak "archive_id required"  unless defined $aid;
-    croak "service name required" unless defined $name;
-    my $dbh = $self->dbh;
-    if (defined $rid) {
-        my ($id) = $dbh->selectrow_array(
-            q{SELECT service_id FROM services
-               WHERE archive_id = ? AND run_id = ? AND name = ?},
-            undef, $aid, $rid, $name,
-        );
+    if (defined (my $id = $self->_find_one_col($table, $id_col, %$where))) {
         return $id;
     }
-    my ($id) = $dbh->selectrow_array(
-        q{SELECT service_id FROM services
-           WHERE archive_id = ? AND run_id IS NULL AND name = ?},
-        undef, $aid, $name,
-    );
-    return $id;
+
+    my @keys = sort keys %$fields;
+    my $placeholders = join(', ', ('?') x scalar(@keys));
+    my $cols = join(', ', @keys);
+    my $sql = "INSERT INTO $table ($cols) VALUES ($placeholders)";
+    $self->dbh->do($sql, undef, map { $fields->{$_} } @keys);
+    return $self->_last_insert_id($table, $id_col);
 }
 
 # -- artifact rows ----------------------------------------------------------
@@ -685,44 +590,32 @@ sub artifact_event_count_for_archive {
 sub job_spec_rows {
     my ($self, $jid, $try_ord) = @_;
     croak "job_id required" unless defined $jid;
-    my $dbh = $self->dbh;
 
     # job_specs has a UNIQUE(job_id) constraint -- one row per job, not
     # per try. The $try_ord arg exists for symmetry with future
     # primitives that want to filter by try; here it is accepted but
     # has no effect on which rows match (job_specs is the per-job
     # spec; per-try spec lives elsewhere).
-    my $rows = $dbh->selectall_arrayref(
+    my $rows = $self->dbh->selectall_arrayref(
         q{SELECT * FROM job_specs WHERE job_id = ? ORDER BY job_spec_id},
         { Slice => {} }, $jid,
     );
 
-    my @json_cols = qw/features switches extras/;
-    for my $r (@$rows) {
-        for my $c (@json_cols) {
-            $r->{$c} = $self->_maybe_decode_json($r->{$c}) if exists $r->{$c};
-        }
-    }
-    return $rows;
+    return $self->_inflate_json_rows($rows, [qw/features switches extras/]);
 }
 
 sub service_lifetime_rows {
     my ($self, $sid) = @_;
     croak "service_id required" unless defined $sid;
-    my $dbh = $self->dbh;
-    my $rows = $dbh->selectall_arrayref(q{
+    my $rows = $self->dbh->selectall_arrayref(q{
         SELECT * FROM service_lifetimes
          WHERE service_id = ?
          ORDER BY lifetime_ord
     }, { Slice => {} }, $sid);
 
-    my @json_cols = qw/exit_decoded times child_times spec_extras state_extras/;
-    for my $r (@$rows) {
-        for my $c (@json_cols) {
-            $r->{$c} = $self->_maybe_decode_json($r->{$c}) if exists $r->{$c};
-        }
-    }
-    return $rows;
+    return $self->_inflate_json_rows($rows, [qw/exit_decoded times
+                                                child_times spec_extras
+                                                state_extras/]);
 }
 
 sub subtest_rows {
@@ -763,13 +656,6 @@ sub _bind_uuid_param {
     my ($self, $sth, $idx, $canon) = @_;
     $self->_bind_uuid($sth, $idx, $canon);
     return;
-}
-
-sub _maybe_encode_json {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    return $val unless ref $val;
-    return encode_json($val);
 }
 
 # -- archive layer ----------------------------------------------------------
@@ -826,43 +712,11 @@ sub mark_sealed {
 }
 
 # -- find-or-create rows ----------------------------------------------------
-
-sub ensure_project_row {
-    my ($self, $name) = @_;
-    croak "project name required" unless defined $name && length $name;
-
-    my $dbh = $self->dbh;
-    my ($id) = $dbh->selectrow_array(
-        q{SELECT project_id FROM projects WHERE name = ?},
-        undef, $name,
-    );
-    return $id if defined $id;
-
-    $dbh->do(
-        q{INSERT INTO projects (name) VALUES (?)},
-        undef, $name,
-    );
-    return $self->_last_insert_id('projects', 'project_id');
-}
-
-sub ensure_test_file_row {
-    my ($self, $project_id, $relative) = @_;
-    croak "project_id required"     unless defined $project_id;
-    croak "relative path required"  unless defined $relative && length $relative;
-
-    my $dbh = $self->dbh;
-    my ($id) = $dbh->selectrow_array(
-        q{SELECT test_file_id FROM test_files WHERE project_id = ? AND relative = ?},
-        undef, $project_id, $relative,
-    );
-    return $id if defined $id;
-
-    $dbh->do(
-        q{INSERT INTO test_files (project_id, relative) VALUES (?, ?)},
-        undef, $project_id, $relative,
-    );
-    return $self->_last_insert_id('test_files', 'test_file_id');
-}
+#
+# ensure_project_row, ensure_test_file_row, ensure_service_row,
+# ensure_job_row, and ensure_job_try_row live on
+# App::Yath2::Role::DB::Backend (driven by _ensure_row above).
+# ensure_run_row stays here because it generates and binds a UUID.
 
 sub ensure_run_row {
     my ($self, $aid, $run_ord, $project_id) = @_;
@@ -901,71 +755,6 @@ sub ensure_run_row {
     $sth->execute;
 
     return $self->_last_insert_id('runs', 'run_id');
-}
-
-sub ensure_service_row {
-    my ($self, $aid, $name, $run_id) = @_;
-    croak "archive_id required"   unless defined $aid;
-    croak "service name required" unless defined $name && length $name;
-
-    my $dbh = $self->dbh;
-    my ($id) = defined $run_id
-        ? $dbh->selectrow_array(
-            q{SELECT service_id FROM services
-               WHERE archive_id = ? AND run_id = ? AND name = ?},
-            undef, $aid, $run_id, $name)
-        : $dbh->selectrow_array(
-            q{SELECT service_id FROM services
-               WHERE archive_id = ? AND run_id IS NULL AND name = ?},
-            undef, $aid, $name);
-    return $id if defined $id;
-
-    $dbh->do(
-        q{INSERT INTO services (archive_id, run_id, name) VALUES (?, ?, ?)},
-        undef, $aid, $run_id, $name,
-    );
-    return $self->_last_insert_id('services', 'service_id');
-}
-
-sub ensure_job_row {
-    my ($self, $aid, $run_id, $job_ord, $test_file_id) = @_;
-    croak "archive_id required"   unless defined $aid;
-    croak "run_id required"       unless defined $run_id;
-    croak "job_ord required"      unless defined $job_ord;
-    croak "test_file_id required" unless defined $test_file_id;
-
-    my $dbh = $self->dbh;
-    my ($id) = $dbh->selectrow_array(
-        q{SELECT job_id FROM jobs WHERE archive_id = ? AND run_id = ? AND job_ord = ?},
-        undef, $aid, $run_id, $job_ord,
-    );
-    return $id if defined $id;
-
-    $dbh->do(
-        q{INSERT INTO jobs (archive_id, run_id, job_ord, test_file_id)
-            VALUES (?, ?, ?, ?)},
-        undef, $aid, $run_id, $job_ord, $test_file_id,
-    );
-    return $self->_last_insert_id('jobs', 'job_id');
-}
-
-sub ensure_job_try_row {
-    my ($self, $job_id, $try_ord) = @_;
-    croak "job_id required"  unless defined $job_id;
-    croak "try_ord required" unless defined $try_ord;
-
-    my $dbh = $self->dbh;
-    my ($id) = $dbh->selectrow_array(
-        q{SELECT job_try_id FROM job_tries WHERE job_id = ? AND try_ord = ?},
-        undef, $job_id, $try_ord,
-    );
-    return $id if defined $id;
-
-    $dbh->do(
-        q{INSERT INTO job_tries (job_id, try_ord) VALUES (?, ?)},
-        undef, $job_id, $try_ord,
-    );
-    return $self->_last_insert_id('job_tries', 'job_try_id');
 }
 
 # -- artifact rows ----------------------------------------------------------

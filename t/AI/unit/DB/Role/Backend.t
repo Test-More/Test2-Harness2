@@ -17,17 +17,16 @@ my @required = sort qw{
     archive_rows archive_for_uuid archive_count archive_create mark_sealed
 
     run_rows service_rows job_rows try_rows
-    run_exists job_exists try_exists service_exists
-    run_id_for_ord job_id_for_ord try_id_for_ord service_id_for_name
 
-    ensure_project_row ensure_test_file_row ensure_run_row
-    ensure_service_row ensure_job_row ensure_job_try_row
+    ensure_run_row
 
     artifact_rows_for_archive artifact_row_for_scope artifact_payload
     artifact_create artifact_update artifact_event_count_for_archive
 
     job_spec_rows service_lifetime_rows subtest_rows
     job_spec_create service_lifetime_create subtest_create
+
+    _count_rows _find_one_col _ensure_row
 };
 
 # Concrete methods provided by the role:
@@ -35,6 +34,14 @@ my @provided = sort qw{
     bootstrap_schema preprocess_schema_sql schema_file _is_bootstrapped
     _should_skip_schema_statement
     _base_for_artifact_row _stem_for_artifact_row _scope_where_clause
+
+    _uuid_to_db _uuid_from_db
+    _maybe_decode_json _maybe_encode_json _inflate_json_rows
+
+    run_exists job_exists try_exists service_exists
+    run_id_for_ord job_id_for_ord try_id_for_ord service_id_for_name
+    ensure_project_row ensure_test_file_row
+    ensure_service_row ensure_job_row ensure_job_try_row
 };
 
 # requires() introspection.

@@ -24,17 +24,16 @@ requires qw{
     archive_rows archive_for_uuid archive_count archive_create mark_sealed
 
     run_rows service_rows job_rows try_rows
-    run_exists job_exists try_exists service_exists
-    run_id_for_ord job_id_for_ord try_id_for_ord service_id_for_name
 
-    ensure_project_row ensure_test_file_row ensure_run_row
-    ensure_service_row ensure_job_row ensure_job_try_row
+    ensure_run_row
 
     artifact_rows_for_archive artifact_row_for_scope artifact_payload
     artifact_create artifact_update artifact_event_count_for_archive
 
     job_spec_rows service_lifetime_rows subtest_rows
     job_spec_create service_lifetime_create subtest_create
+
+    _count_rows _find_one_col _ensure_row
 };
 
 # share/schema/postgres.sql defaults to `COMPRESSION zstd`. Probe what
@@ -290,6 +289,222 @@ sub _dt_from_value {
     return undef unless $dt;
     $dt->set_time_zone('UTC') if $dt->time_zone->is_floating;
     return $dt;
+}
+
+# ----- codec helpers (shared by both backends) -----
+#
+# Canonical UUID form is 36-char lowercase hex. Per-flavor on-disk
+# shape: sqlite stores the canonical text; postgres / mariadb store
+# upper-case text; mysql stores 16 raw bytes.
+
+sub _uuid_to_db {
+    my ($self, $u) = @_;
+    return undef unless defined $u;
+    my $f = $self->flavor;
+    return $u                 if $f eq 'sqlite';
+    return uc($u)             if $f eq 'postgres' || $f eq 'mariadb';
+    if ($f eq 'mysql') {
+        (my $h = $u) =~ tr/-//d;
+        return pack('H*', $h);
+    }
+    return $u;
+}
+
+sub _uuid_from_db {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    my $f = $self->flavor;
+    if ($f eq 'mysql') {
+        return undef unless length($val) == 16;
+        my $hex = lc unpack('H*', $val);
+        return join '-',
+            substr($hex,  0, 8),
+            substr($hex,  8, 4),
+            substr($hex, 12, 4),
+            substr($hex, 16, 4),
+            substr($hex, 20);
+    }
+    return lc("$val");
+}
+
+# Canonical JSON form is a decoded Perl ref. _maybe_decode_json passes
+# through refs and undef; bare strings get decoded. _maybe_encode_json
+# is the symmetric write-side helper.
+
+sub _maybe_decode_json {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    return $val if ref $val;
+    require Test2::Harness2::Util::JSON;
+    return Test2::Harness2::Util::JSON::decode_json($val);
+}
+
+sub _maybe_encode_json {
+    my ($self, $val) = @_;
+    return undef unless defined $val;
+    return $val unless ref $val;
+    require Test2::Harness2::Util::JSON;
+    return Test2::Harness2::Util::JSON::encode_json($val);
+}
+
+# Inflate every column listed in @cols in-place across @$rows by routing
+# its value through _maybe_decode_json. Used by row-fetch primitives
+# that return wide hashrefs with embedded JSON columns.
+sub _inflate_json_rows {
+    my ($self, $rows, $cols) = @_;
+    for my $r (@$rows) {
+        for my $c (@$cols) {
+            $r->{$c} = $self->_maybe_decode_json($r->{$c}) if exists $r->{$c};
+        }
+    }
+    return $rows;
+}
+
+# ----- existence checks (shared) -----
+#
+# Implementations of _count_rows live on each backend. The wrappers
+# below validate inputs identically and delegate to it.
+
+sub run_exists {
+    my ($self, $aid, $run_ord) = @_;
+    return 0 unless defined $aid && defined $run_ord;
+    return 0 unless $run_ord =~ /^\d+\z/;
+    return $self->_count_rows(runs => archive_id => $aid, run_ord => $run_ord)
+        ? 1 : 0;
+}
+
+sub job_exists {
+    my ($self, $aid, $rid, $job_ord) = @_;
+    return 0 unless defined $aid && defined $rid && defined $job_ord;
+    return 0 unless $job_ord =~ /^\d+\z/;
+    return $self->_count_rows(jobs =>
+        archive_id => $aid, run_id => $rid, job_ord => $job_ord,
+    ) ? 1 : 0;
+}
+
+sub try_exists {
+    my ($self, $jid, $try_ord) = @_;
+    return 0 unless defined $jid && defined $try_ord;
+    return 0 unless $try_ord =~ /^\d+\z/;
+    return $self->_count_rows(job_tries => job_id => $jid, try_ord => $try_ord)
+        ? 1 : 0;
+}
+
+sub service_exists {
+    my ($self, $aid, $name, $rid) = @_;
+    return 0 unless defined $aid && defined $name;
+    return $self->_count_rows(services =>
+        archive_id => $aid, run_id => $rid, name => $name,
+    ) ? 1 : 0;
+}
+
+# ----- id resolution (shared) -----
+#
+# Implementations of _find_one_col live on each backend. Each public
+# wrapper validates required args and croaks on missing rows.
+
+sub run_id_for_ord {
+    my ($self, $aid, $run_ord) = @_;
+    croak "archive_id required" unless defined $aid;
+    croak "run_ord required"    unless defined $run_ord;
+    my $id = $self->_find_one_col(runs => 'run_id',
+        archive_id => $aid, run_ord => $run_ord);
+    croak "no run with ord $run_ord" unless defined $id;
+    return $id;
+}
+
+sub job_id_for_ord {
+    my ($self, $aid, $rid, $job_ord) = @_;
+    croak "archive_id required" unless defined $aid;
+    croak "run_id required"     unless defined $rid;
+    croak "job_ord required"    unless defined $job_ord;
+    my $id = $self->_find_one_col(jobs => 'job_id',
+        archive_id => $aid, run_id => $rid, job_ord => $job_ord);
+    croak "no job with ord $job_ord in run_id $rid" unless defined $id;
+    return $id;
+}
+
+sub try_id_for_ord {
+    my ($self, $jid, $try_ord) = @_;
+    croak "job_id required"  unless defined $jid;
+    croak "try_ord required" unless defined $try_ord;
+    my $id = $self->_find_one_col(job_tries => 'job_try_id',
+        job_id => $jid, try_ord => $try_ord);
+    croak "no try with ord $try_ord in job_id $jid" unless defined $id;
+    return $id;
+}
+
+sub service_id_for_name {
+    my ($self, $aid, $name, $rid) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "service name required" unless defined $name;
+    return $self->_find_one_col(services => 'service_id',
+        archive_id => $aid, run_id => $rid, name => $name);
+}
+
+# ----- find-or-create wrappers (shared) -----
+#
+# Implementations of _ensure_row live on each backend; this role
+# provides validation and the public ensure_*_row contract.
+#
+# ensure_run_row stays on the SQL backend: that path has flavor-specific
+# UUID bind handling and the DBIC backend already routes through SQL.
+
+sub ensure_project_row {
+    my ($self, $name) = @_;
+    croak "project name required" unless defined $name && length $name;
+    return $self->_ensure_row(projects =>
+        where  => { name => $name },
+        fields => { name => $name },
+        id_col => 'project_id',
+    );
+}
+
+sub ensure_test_file_row {
+    my ($self, $project_id, $relative) = @_;
+    croak "project_id required"    unless defined $project_id;
+    croak "relative path required" unless defined $relative && length $relative;
+    return $self->_ensure_row(test_files =>
+        where  => { project_id => $project_id, relative => $relative },
+        fields => { project_id => $project_id, relative => $relative },
+        id_col => 'test_file_id',
+    );
+}
+
+sub ensure_service_row {
+    my ($self, $aid, $name, $run_id) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "service name required" unless defined $name && length $name;
+    return $self->_ensure_row(services =>
+        where  => { archive_id => $aid, run_id => $run_id, name => $name },
+        fields => { archive_id => $aid, run_id => $run_id, name => $name },
+        id_col => 'service_id',
+    );
+}
+
+sub ensure_job_row {
+    my ($self, $aid, $run_id, $job_ord, $test_file_id) = @_;
+    croak "archive_id required"   unless defined $aid;
+    croak "run_id required"       unless defined $run_id;
+    croak "job_ord required"      unless defined $job_ord;
+    croak "test_file_id required" unless defined $test_file_id;
+    return $self->_ensure_row(jobs =>
+        where  => { archive_id => $aid, run_id => $run_id, job_ord => $job_ord },
+        fields => { archive_id => $aid, run_id => $run_id, job_ord => $job_ord,
+                    test_file_id => $test_file_id },
+        id_col => 'job_id',
+    );
+}
+
+sub ensure_job_try_row {
+    my ($self, $job_id, $try_ord) = @_;
+    croak "job_id required"  unless defined $job_id;
+    croak "try_ord required" unless defined $try_ord;
+    return $self->_ensure_row(job_tries =>
+        where  => { job_id => $job_id, try_ord => $try_ord },
+        fields => { job_id => $job_id, try_ord => $try_ord },
+        id_col => 'job_try_id',
+    );
 }
 
 # ----- helpers consumed by backend primitives -----

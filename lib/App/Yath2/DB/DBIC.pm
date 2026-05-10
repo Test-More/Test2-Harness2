@@ -105,13 +105,6 @@ sub flavor {
     return $f;
 }
 
-# UUID codec aliases: callers (including the legacy archive_id
-# resolver below) refer to these names. _flavor_uuid_to_db /
-# _flavor_uuid_from_db are the canonical native bodies defined further
-# down.
-sub _uuid_to_db   { my ($self, $u)   = @_; $self->_flavor_uuid_to_db($u)   }
-sub _uuid_from_db { my ($self, $val) = @_; $self->_flavor_uuid_from_db($val) }
-
 # Always return a live handle (DBIC's storage reconnects as needed).
 # Override the slot accessor HashBase generated for `<dbh` so callers
 # never hit a stale handle if storage reconnected under us.
@@ -125,50 +118,11 @@ sub _uuid_from_db { my ($self, $val) = @_; $self->_flavor_uuid_from_db($val) }
 # App::Yath2::Role::DB::Backend; both the SQL and DBIC backends share
 # them.
 
-# ----- Native read primitives + local codecs -----
+# ----- Native read primitives -----
 #
-# Codec helpers (UUID per-flavor encode/decode, JSON inflate) live
-# here so DBIC speaks the Role::DB::Backend canonical-Perl-values
-# contract. Walker / write methods route through the data-layer
-# wrapper App::Yath2::DB (see _walker_db / _wrap_self_in_db above).
-
-sub _flavor_uuid_to_db {
-    my ($self, $u) = @_;
-    return undef unless defined $u;
-    my $f = $self->flavor;
-    return $u                 if $f eq 'sqlite';
-    return uc($u)             if $f eq 'postgres' || $f eq 'mariadb';
-    if ($f eq 'mysql') {
-        (my $h = $u) =~ tr/-//d;
-        return pack('H*', $h);
-    }
-    return $u;
-}
-
-sub _flavor_uuid_from_db {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    my $f = $self->flavor;
-    if ($f eq 'mysql') {
-        return undef unless length($val) == 16;
-        my $hex = lc unpack('H*', $val);
-        return join '-',
-            substr($hex,  0, 8),
-            substr($hex,  8, 4),
-            substr($hex, 12, 4),
-            substr($hex, 16, 4),
-            substr($hex, 20);
-    }
-    return lc("$val");
-}
-
-sub _maybe_decode_json {
-    my ($self, $val) = @_;
-    return undef unless defined $val;
-    return $val if ref $val;
-    require Test2::Harness2::Util::JSON;
-    return Test2::Harness2::Util::JSON::decode_json($val);
-}
+# UUID codec (_uuid_to_db / _uuid_from_db) and JSON helpers
+# (_maybe_decode_json, _inflate_json_rows) live on
+# App::Yath2::Role::DB::Backend; both backends share them.
 
 # -- archive layer ----------------------------------------------------------
 
@@ -181,7 +135,7 @@ sub archive_rows {
     {
         push @out, {
             archive_id      => $row->archive_id,
-            archive_uuid    => $self->_flavor_uuid_from_db($row->archive_uuid),
+            archive_uuid    => $self->_uuid_from_db($row->archive_uuid),
             archive_version => $row->archive_version,
             sealed_at       => $row->sealed_at,
             host            => $row->host,
@@ -223,7 +177,7 @@ sub run_rows {
         push @out, {
             run_id     => $r->run_id,
             run_ord    => $r->run_ord,
-            run_uuid   => $self->_flavor_uuid_from_db($r->run_uuid),
+            run_uuid   => $self->_uuid_from_db($r->run_uuid),
             status     => $r->status,
             aborted    => $r->aborted   ? 1 : 0,
             timed_out  => $r->timed_out ? 1 : 0,
@@ -276,104 +230,72 @@ sub job_rows {
 sub try_rows {
     my ($self, $jid) = @_;
     croak "job_id required" unless defined $jid;
-    my @json_cols = qw/exit_decoded plan halt times child_times
-                       spec_extras state_extras/;
-    my @out;
+    my @rows;
     for my $r ($self->{+SCHEMA}->resultset('JobTry')->search(
         { job_id => $jid },
         { order_by => 'try_ord' },
     )->all)
     {
-        my %h = $r->get_columns;
-        for my $c (@json_cols) {
-            $h{$c} = $self->_maybe_decode_json($h{$c}) if exists $h{$c};
-        }
-        push @out, \%h;
+        push @rows, { $r->get_columns };
     }
-    return \@out;
+    return $self->_inflate_json_rows(\@rows, [qw/exit_decoded plan halt
+                                                 times child_times
+                                                 spec_extras state_extras/]);
 }
 
-# -- existence checks -------------------------------------------------------
+# -- generic count / find / ensure primitives -------------------------------
+#
+# Public *_exists, *_id_for_*, and ensure_*_row wrappers live on
+# App::Yath2::Role::DB::Backend; they delegate to these primitives.
 
-sub run_exists {
-    my ($self, $aid, $run_ord) = @_;
-    return 0 unless defined $aid && defined $run_ord;
-    return 0 unless $run_ord =~ /^\d+\z/;
-    return $self->{+SCHEMA}->resultset('Run')->search(
-        { archive_id => $aid, run_ord => $run_ord }
-    )->count ? 1 : 0;
+# table → DBIC ResultSource name. Both backends share the same logical
+# tables; the role uses table names because DBIC's resultset names are
+# not exposed elsewhere.
+my %_RS_FOR_TABLE = (
+    archives          => 'Archive',
+    runs              => 'Run',
+    jobs              => 'Job',
+    job_tries         => 'JobTry',
+    services          => 'Service',
+    artifacts         => 'Artifact',
+    job_specs         => 'JobSpec',
+    service_lifetimes => 'ServiceLifetime',
+    subtests          => 'Subtest',
+    projects          => 'Project',
+    test_files        => 'TestFile',
+);
+
+sub _rs_for_table {
+    my ($self, $table) = @_;
+    my $name = $_RS_FOR_TABLE{$table}
+        or croak "no DBIC resultset mapping for table '$table'";
+    return $self->{+SCHEMA}->resultset($name);
 }
 
-sub job_exists {
-    my ($self, $aid, $rid, $job_ord) = @_;
-    return 0 unless defined $aid && defined $rid && defined $job_ord;
-    return 0 unless $job_ord =~ /^\d+\z/;
-    return $self->{+SCHEMA}->resultset('Job')->search(
-        { archive_id => $aid, run_id => $rid, job_ord => $job_ord }
-    )->count ? 1 : 0;
+sub _count_rows {
+    my ($self, $table, %where) = @_;
+    return scalar $self->_rs_for_table($table)->search(\%where)->count;
 }
 
-sub try_exists {
-    my ($self, $jid, $try_ord) = @_;
-    return 0 unless defined $jid && defined $try_ord;
-    return 0 unless $try_ord =~ /^\d+\z/;
-    return $self->{+SCHEMA}->resultset('JobTry')->search(
-        { job_id => $jid, try_ord => $try_ord }
-    )->count ? 1 : 0;
+sub _find_one_col {
+    my ($self, $table, $col, %where) = @_;
+    my $row = $self->_rs_for_table($table)->search(\%where)->first;
+    return undef unless $row;
+    return $row->$col;
 }
 
-sub service_exists {
-    my ($self, $aid, $name, $rid) = @_;
-    return 0 unless defined $aid && defined $name;
-    my %where = (archive_id => $aid, name => $name);
-    $where{run_id} = $rid; # undef binds to NULL in DBIC SQL::Abstract
-    return $self->{+SCHEMA}->resultset('Service')->search(\%where)->count ? 1 : 0;
-}
+sub _ensure_row {
+    my ($self, $table, %args) = @_;
+    my $where  = $args{where}  or croak "where required";
+    my $fields = $args{fields} or croak "fields required";
+    my $id_col = $args{id_col} or croak "id_col required";
 
-# -- id-for-ord lookups -----------------------------------------------------
+    my $rs = $self->_rs_for_table($table);
+    my $existing = $rs->search($where)->first;
+    return $existing->$id_col if $existing;
 
-sub run_id_for_ord {
-    my ($self, $aid, $run_ord) = @_;
-    croak "archive_id required" unless defined $aid;
-    croak "run_ord required"    unless defined $run_ord;
-    my $row = $self->{+SCHEMA}->resultset('Run')->find(
-        { archive_id => $aid, run_ord => $run_ord }
-    );
-    croak "no run with ord $run_ord" unless $row;
-    return $row->run_id;
-}
-
-sub job_id_for_ord {
-    my ($self, $aid, $rid, $job_ord) = @_;
-    croak "archive_id required" unless defined $aid;
-    croak "run_id required"     unless defined $rid;
-    croak "job_ord required"    unless defined $job_ord;
-    my $row = $self->{+SCHEMA}->resultset('Job')->find(
-        { archive_id => $aid, run_id => $rid, job_ord => $job_ord }
-    );
-    croak "no job with ord $job_ord in run_id $rid" unless $row;
-    return $row->job_id;
-}
-
-sub try_id_for_ord {
-    my ($self, $jid, $try_ord) = @_;
-    croak "job_id required"  unless defined $jid;
-    croak "try_ord required" unless defined $try_ord;
-    my $row = $self->{+SCHEMA}->resultset('JobTry')->find(
-        { job_id => $jid, try_ord => $try_ord }
-    );
-    croak "no try with ord $try_ord in job_id $jid" unless $row;
-    return $row->job_try_id;
-}
-
-sub service_id_for_name {
-    my ($self, $aid, $name, $rid) = @_;
-    croak "archive_id required"   unless defined $aid;
-    croak "service name required" unless defined $name;
-    my %where = (archive_id => $aid, name => $name);
-    $where{run_id} = $rid;
-    my $row = $self->{+SCHEMA}->resultset('Service')->search(\%where)->first;
-    return $row ? $row->service_id : undef;
+    my $row = $rs->create($fields);
+    return $row->$id_col;
 }
 
 # -- artifact rows ----------------------------------------------------------
@@ -503,39 +425,31 @@ sub artifact_event_count_for_archive {
 sub job_spec_rows {
     my ($self, $jid, $try_ord) = @_;
     croak "job_id required" unless defined $jid;
-    my @json_cols = qw/features switches extras/;
-    my @out;
+    my @rows;
     for my $r ($self->{+SCHEMA}->resultset('JobSpec')->search(
         { job_id => $jid },
         { order_by => 'job_spec_id' },
     )->all)
     {
-        my %h = $r->get_columns;
-        for my $c (@json_cols) {
-            $h{$c} = $self->_maybe_decode_json($h{$c}) if exists $h{$c};
-        }
-        push @out, \%h;
+        push @rows, { $r->get_columns };
     }
-    return \@out;
+    return $self->_inflate_json_rows(\@rows, [qw/features switches extras/]);
 }
 
 sub service_lifetime_rows {
     my ($self, $sid) = @_;
     croak "service_id required" unless defined $sid;
-    my @json_cols = qw/exit_decoded times child_times spec_extras state_extras/;
-    my @out;
+    my @rows;
     for my $r ($self->{+SCHEMA}->resultset('ServiceLifetime')->search(
         { service_id => $sid },
         { order_by => 'lifetime_ord' },
     )->all)
     {
-        my %h = $r->get_columns;
-        for my $c (@json_cols) {
-            $h{$c} = $self->_maybe_decode_json($h{$c}) if exists $h{$c};
-        }
-        push @out, \%h;
+        push @rows, { $r->get_columns };
     }
-    return \@out;
+    return $self->_inflate_json_rows(\@rows, [qw/exit_decoded times
+                                                 child_times spec_extras
+                                                 state_extras/]);
 }
 
 sub subtest_rows {
@@ -559,7 +473,7 @@ sub subtest_rows {
 # args are canonical Perl values (UUIDs as 36-char lowercase hex; JSON
 # columns as decoded refs; datetimes as ISO-8601 strings; payloads as
 # raw bytes). Per-flavor bind concerns: UUID columns route through
-# _flavor_uuid_to_db; payload (BYTEA on Postgres / LONGBLOB on MySQL /
+# _uuid_to_db; payload (BYTEA on Postgres / LONGBLOB on MySQL /
 # BLOB on SQLite) is bound via $schema->storage->dbh_do for the row
 # UPDATE / INSERT to ensure DBD::Pg / DBD::MariaDB get the correct type
 # hints (DBIC's create()/update() does not always set the right bind
@@ -597,91 +511,14 @@ sub mark_sealed {
     return;
 }
 
-sub ensure_project_row {
-    my ($self, $name) = @_;
-    croak "project name required" unless defined $name && length $name;
-    my $row = $self->{+SCHEMA}->resultset('Project')->find_or_create(
-        { name => $name },
-        { key => 'projects_name_uk' },
-    );
-    return $row->project_id;
-}
-
-sub ensure_test_file_row {
-    my ($self, $project_id, $relative) = @_;
-    croak "project_id required"    unless defined $project_id;
-    croak "relative path required" unless defined $relative && length $relative;
-    my $row = $self->{+SCHEMA}->resultset('TestFile')->find_or_create(
-        { project_id => $project_id, relative => $relative },
-        { key => 'test_files_project_relative_uk' },
-    );
-    return $row->test_file_id;
-}
+# Public ensure_*_row methods (project, test_file, service, job,
+# job_try) live on App::Yath2::Role::DB::Backend, which calls
+# _ensure_row above. ensure_run_row routes through the shared SQL
+# backend because the row needs a per-flavor UUID bind.
 
 sub ensure_run_row {
     my ($self, $aid, $run_ord, $project_id) = @_;
-    # Routed through the shared SQL backend so the per-flavor UUID bind
-    # stays in one place. Once routed, the row is visible to subsequent
-    # DBIC reads through the same dbh.
     return $self->_shared_sql_backend->ensure_run_row($aid, $run_ord, $project_id);
-}
-
-sub ensure_service_row {
-    my ($self, $aid, $name, $run_id) = @_;
-    croak "archive_id required"   unless defined $aid;
-    croak "service name required" unless defined $name && length $name;
-
-    my %where = (archive_id => $aid, name => $name);
-    $where{run_id} = $run_id; # undef binds to NULL in SQL::Abstract
-
-    my $rs = $self->{+SCHEMA}->resultset('Service');
-    my $existing = $rs->search(\%where)->first;
-    return $existing->service_id if $existing;
-
-    my $row = $rs->create({
-        archive_id => $aid,
-        run_id     => $run_id,
-        name       => $name,
-    });
-    return $row->service_id;
-}
-
-sub ensure_job_row {
-    my ($self, $aid, $run_id, $job_ord, $test_file_id) = @_;
-    croak "archive_id required"   unless defined $aid;
-    croak "run_id required"       unless defined $run_id;
-    croak "job_ord required"      unless defined $job_ord;
-    croak "test_file_id required" unless defined $test_file_id;
-
-    my $rs = $self->{+SCHEMA}->resultset('Job');
-    my $existing = $rs->search({
-        archive_id => $aid, run_id => $run_id, job_ord => $job_ord,
-    })->first;
-    return $existing->job_id if $existing;
-
-    my $row = $rs->create({
-        archive_id   => $aid,
-        run_id       => $run_id,
-        job_ord      => $job_ord,
-        test_file_id => $test_file_id,
-    });
-    return $row->job_id;
-}
-
-sub ensure_job_try_row {
-    my ($self, $job_id, $try_ord) = @_;
-    croak "job_id required"  unless defined $job_id;
-    croak "try_ord required" unless defined $try_ord;
-
-    my $rs = $self->{+SCHEMA}->resultset('JobTry');
-    my $existing = $rs->search({ job_id => $job_id, try_ord => $try_ord })->first;
-    return $existing->job_try_id if $existing;
-
-    my $row = $rs->create({
-        job_id  => $job_id,
-        try_ord => $try_ord,
-    });
-    return $row->job_try_id;
 }
 
 sub artifact_create {
