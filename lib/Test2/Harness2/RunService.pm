@@ -244,7 +244,12 @@ sub request_handler_launch_job {
             logdir       => $self->{+LOGDIR},
             ipcm_info    => $self->ipcm_info,
             ipc_parent   => $self->{+NAME},
-            ipc_run      => $self->{+NAME},
+            # Stage 4 of the RunService flatten: per-job auditor
+            # events (test_job_started/diagnosing/failing/completed)
+            # and the collector lifecycle pair go to the harness
+            # bus, where Run::State now lives. The run service no
+            # longer aggregates per-job state from collector IPC.
+            ipc_run      => $self->{+HARNESS_NAME},
             ipc_harness  => $self->{+HARNESS_NAME},
             kill_timeout => $self->{+KILL_TIMEOUT},
             spec         => {
@@ -810,15 +815,15 @@ sub run_on_cleanup {
     $self->{+RUN_STATE}->mark_finished;
     $self->{+ENDED_AT} //= time;
 
-    # Final run_state_update IPC so the harness mirror sees the
-    # terminal state before run_completed lands.
+    # Final run_state_update IPC kept around as a no-op until Stage 9
+    # deletes RunService entirely; the harness no longer consumes it
+    # because Run::State lives there now.
     $self->_send_run_state_to_harness;
 
-    # Emit the terminal run_completed + collector_report event. The
-    # run collector picks up the collector_report facet via its
-    # write_phase and merges it into runs/<id>/report.jsonl.zst at
-    # exit (single event, two facets).
-    $self->emit_run_completed;
+    # The terminal run_completed + collector_report event is emitted
+    # by the harness in _finalize_run_if_complete now (Stage 4 of the
+    # RunService flatten). RunService no longer accumulates per-job
+    # state, so emitting from here would produce all-zero counts.
 
     $self->emit_service_event(kind => 'service_stopped');
 }

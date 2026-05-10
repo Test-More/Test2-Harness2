@@ -46,6 +46,7 @@ use Object::HashBase qw{
     <resource_services
     +run_services
     <run_pids
+    +run_flags
     +completed_runs
     +finish_after_initial_run
     +emitter
@@ -135,6 +136,7 @@ sub init {
     $self->{+RESOURCE_SERVICES} //= {};
     $self->{+RUN_SERVICES}      //= {};
     $self->{+RUN_PIDS}          //= {};
+    $self->{+RUN_FLAGS}         //= {};
     $self->{+COMPLETED_RUNS}    //= {};
     $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
     $self->{+OWN_PGROUP}        //= 0;
@@ -670,6 +672,23 @@ sub run_on_general_message {
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
+    # Per-job lifecycle. After Stage 4 of the RunService flatten the
+    # auditor sends test_job_* events to the harness directly (the
+    # collector's ipc_run was repointed). The harness owns Run::State
+    # mutation and the run-level event emission that used to live in
+    # RunService.
+    return $self->_handle_test_job_started($content)
+        if defined $kind && $kind eq 'test_job_started';
+
+    return $self->_handle_test_job_diagnosing($content)
+        if defined $kind && $kind eq 'test_job_diagnosing';
+
+    return $self->_handle_test_job_failing($content)
+        if defined $kind && $kind eq 'test_job_failing';
+
+    return $self->_handle_test_job_completed($content)
+        if defined $kind && $kind eq 'test_job_completed';
+
     # Lifecycle reflection from child collectors that route their
     # collector_start/_end up to the harness: run-service collectors
     # and global services. The harness collector itself has no parent
@@ -720,6 +739,316 @@ sub _handle_collector_end {
         },
     });
 
+    return;
+}
+
+#-------------------------------------------------------------------
+# Per-job lifecycle handlers. These mutate RUN_STATES->{$run_id}
+# in-process, emit a run-level lifecycle event onto the harness's
+# own service event stream, and broadcast the new state snapshot to
+# subscribed peers. They moved here from RunService when the auditor
+# was redirected to talk to the harness directly.
+#
+# Per-run side state (first-fail latch, completed-job idempotency
+# guard, per-job result snapshots that feed the eventual aggregate
+# verdict) lives on RUN_FLAGS->{$run_id} so it stays scoped to the
+# right run when multiple runs are active.
+#-------------------------------------------------------------------
+
+# Initialize / fetch the side-state hash for this run. Idempotent.
+sub _run_flags {
+    my ($self, $run_id) = @_;
+    return $self->{+RUN_FLAGS}->{$run_id} //= {
+        completed_job_ids    => {},
+        completed_job_states => {},
+        failing_emitted      => 0,
+        pass                 => 1,
+    };
+}
+
+sub _handle_test_job_started {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $run_id = $content->{run_id} // return;
+    my $job_id = $content->{job_id} // return;
+
+    my $rstate = $self->{+RUN_STATES}->{$run_id} //=
+        Test2::Harness2::Run::State->new(run_id => $run_id);
+
+    my $started_at = $content->{stamp} // time;
+
+    # pending -> running. Out-of-order or duplicate started messages
+    # are tolerated; mark_running is idempotent against running/done.
+    my $ok  = eval { $rstate->mark_running($job_id); 1 };
+    my $err = $@;
+    warn "Test2::Harness2: could not mark job '$job_id' running for run '$run_id': $err"
+        unless $ok;
+
+    $rstate->seed_job_result($job_id, started_at => $started_at);
+
+    $self->emit_service_event(
+        kind     => 'job_started',
+        stamp    => $started_at,
+        run_id   => $run_id,
+        job_info => {
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $content->{job_try},
+        },
+    );
+
+    $self->_broadcast_run_state($run_id);
+    return;
+}
+
+sub _handle_test_job_diagnosing {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $run_id = $content->{run_id} // return;
+    $self->emit_service_event(
+        kind     => 'job_diagnosing',
+        stamp    => time,
+        run_id   => $run_id,
+        job_info => {
+            run_id  => $run_id,
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+        },
+    );
+    return;
+}
+
+sub _handle_test_job_failing {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $run_id = $content->{run_id} // return;
+    $self->emit_service_event(
+        kind     => 'job_failing',
+        stamp    => time,
+        run_id   => $run_id,
+        job_info => {
+            run_id  => $run_id,
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+        },
+    );
+
+    my $flags = $self->_run_flags($run_id);
+    unless ($flags->{failing_emitted}) {
+        $flags->{failing_emitted} = 1;
+        $flags->{pass}            = 0;
+        $self->emit_service_event(
+            kind    => 'run_failing',
+            run_id  => $run_id,
+            job_id  => $content->{job_id},
+            job_try => $content->{job_try},
+            stamp   => time,
+        );
+    }
+
+    return;
+}
+
+sub _handle_test_job_completed {
+    my ($self, $content) = @_;
+    return unless ref($content) eq 'HASH';
+
+    my $run_id = $content->{run_id} // return;
+    my $job_id = $content->{job_id} // return;
+
+    my $flags = $self->_run_flags($run_id);
+
+    # Idempotent against the auditor + watchdog race: first wins.
+    return if $flags->{completed_job_ids}{$job_id};
+    $flags->{completed_job_ids}{$job_id} = 1;
+
+    # Snapshot the full payload so the run-aggregate path can build
+    # without disk reads.
+    $flags->{completed_job_states}{$job_id} = {%$content};
+
+    if (!$content->{pass} && !$flags->{failing_emitted}) {
+        $flags->{failing_emitted} = 1;
+        $flags->{pass}            = 0;
+        $self->emit_service_event(
+            kind    => 'run_failing',
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $content->{job_try},
+            stamp   => time,
+        );
+    }
+
+    my $rstate = $self->{+RUN_STATES}->{$run_id} //=
+        Test2::Harness2::Run::State->new(run_id => $run_id);
+
+    my $completed_at = $content->{stamp} // time;
+    $rstate->record_job_result(
+        $job_id,
+        pass       => $content->{pass} ? 1 : 0,
+        exit       => $content->{exit},
+        codes      => $content->{codes},
+        pass_count => $content->{pass_count},
+        fail_count => $content->{fail_count},
+        ($content->{times}              ? (times       => $content->{times})       : ()),
+        ($content->{child_times}        ? (child_times => $content->{child_times}) : ()),
+        (defined $content->{child_wall} ? (child_wall  => $content->{child_wall})  : ()),
+        stamp        => $completed_at,
+        completed_at => $completed_at,
+    );
+
+    my $ok  = eval { $rstate->mark_done($job_id); 1 };
+    my $err = $@;
+    warn "Test2::Harness2: could not mark job '$job_id' done for run '$run_id': $err"
+        unless $ok;
+
+    $self->emit_service_event(
+        kind     => 'job_completed',
+        stamp    => $content->{completed_at} // time,
+        run_id   => $run_id,
+        job_info => {
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $content->{job_try},
+        },
+        pass => $content->{pass},
+    );
+
+    $self->_broadcast_run_state($run_id);
+    return;
+}
+
+# Emit the terminal run_completed + collector_report two-facet
+# event from the harness's own emitter. Built from per-job state
+# accumulated in RUN_FLAGS as test_job_completed messages came in.
+# The renderer's harness_run_end synthesizer reads pass/fail counts
+# off the collector_report facet (see Renderer::Driver line 295+).
+sub _emit_run_completed {
+    my ($self, $run) = @_;
+    my $run_id = $run->run_id;
+
+    my $flags = $self->{+RUN_FLAGS}->{$run_id} or return;
+    return if $flags->{run_completed_emitted}++;
+
+    my $em = $self->{+EMITTER} or return;
+
+    my $now    = time;
+    my $report = $self->_build_collector_report($run, $now);
+
+    # Two-facet event: harness.run_completed (state-flip announcement)
+    # + top-level collector_report (data the renderer consumes for
+    # the aggregate verdict). emit_raw -- not emit_event -- so
+    # collector_report lands at the top of facet_data, not nested
+    # under harness.
+    $em->emit_raw({
+        facet_data => {
+            harness => {
+                run_id        => $run_id,
+                run_completed => {
+                    run_id => $run_id,
+                    stamp  => $now,
+                },
+            },
+            collector_report => $report,
+        },
+    });
+
+    return;
+}
+
+# Walk RUN_FLAGS->{$run_id}{completed_job_states} (per-job state
+# hashes captured at test_job_completed time) and assemble the
+# run-level aggregate the renderer summarizes. Mirrors the
+# previous RunService._build_collector_report.
+sub _build_collector_report {
+    my ($self, $run, $now) = @_;
+    $now //= time;
+
+    my $run_id = $run->run_id;
+    my $flags  = $self->{+RUN_FLAGS}->{$run_id} //= {};
+    my $states = $flags->{completed_job_states} // {};
+
+    my $passed  = 0;
+    my $failed  = 0;
+    my $aborted = 0;
+
+    my %jobs_by_id;
+    for my $jid (keys %$states) {
+        my $st       = $states->{$jid} // {};
+        my $job_pass = $st->{pass} ? 1 : 0;
+        if ($job_pass) {
+            $passed++;
+        }
+        else {
+            $failed++;
+            $aborted++ if $st->{synth};
+        }
+
+        # Resolve test file from the Run's queue-time job spec.
+        my $file = $st->{file};
+        if (!defined $file) {
+            for my $job (@{$run->jobs}) {
+                next unless $job->job_id eq $jid;
+                my $tf = $job->test_file;
+                $file = $tf->absolute if $tf;
+                last;
+            }
+        }
+
+        my $tries = defined($st->{job_try}) ? $st->{job_try} : 1;
+        $jobs_by_id{$jid} = {
+            job_id   => $jid,
+            file     => $file,
+            pass     => $job_pass,
+            tries    => $tries,
+            subtests => [@{$st->{subtests} // []}],
+        };
+    }
+
+    # Stable ordering: order from the Run's job spec; remaining ids
+    # appended sorted so the array stays deterministic.
+    my @ordered;
+    my %placed;
+    for my $job (@{$run->jobs}) {
+        my $jid = $job->job_id;
+        next unless exists $jobs_by_id{$jid};
+        push @ordered, $jobs_by_id{$jid};
+        $placed{$jid} = 1;
+    }
+    for my $jid (sort keys %jobs_by_id) {
+        next if $placed{$jid};
+        push @ordered, $jobs_by_id{$jid};
+    }
+
+    my $total = scalar @ordered;
+
+    return {
+        pass         => $flags->{pass}       ? 1 : 0,
+        started_at   => $flags->{started_at},
+        ended_at     => $flags->{ended_at}  // $now,
+        total_jobs   => $total,
+        passed_jobs  => $passed,
+        failed_jobs  => $failed,
+        aborted_jobs => $aborted,
+        jobs         => \@ordered,
+    };
+}
+
+# Push a snapshot of the named run's State out to subscribers AND
+# trigger run-finalization if the run is now complete. This
+# replaces the round-trip via run_state_update IPC that RunService
+# used to drive: subscribers still see one snapshot per state
+# change, just sourced locally instead of over the bus.
+sub _broadcast_run_state {
+    my ($self, $run_id) = @_;
+    my $rstate = $self->{+RUN_STATES}->{$run_id} or return;
+    my $data   = $rstate->TO_JSON;
+    $self->_notify_state_subscribers($run_id, $data);
+
+    my ($run) = grep { $_->run_id eq $run_id } @{$self->{+QUEUE} // []};
+    $self->_finalize_run_if_complete($run) if $run;
     return;
 }
 
@@ -1180,6 +1509,7 @@ sub service_post_hard_stop {
     $self->{+RUNNING_JOBS}      = {};
     $self->{+RESOURCE_SERVICES} = {};
     $self->{+RUN_PIDS}          = {};
+    $self->{+RUN_FLAGS}         = {};
     return;
 }
 
@@ -1537,8 +1867,16 @@ sub _finalize_run_if_complete {
     return if $self->{+COMPLETED_RUNS}->{$run_id};
 
     $self->{+COMPLETED_RUNS}->{$run_id} = $self->_snapshot_run_results($run);
+
+    # Emit the terminal run_completed + collector_report event from
+    # the harness BEFORE the per-run state is dropped. This used to
+    # live in RunService.emit_run_completed; the harness owns Run
+    # state now so it owns the aggregate.
+    $self->_emit_run_completed($run);
+
     $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
     delete $self->{+RUN_STATES}->{$run_id};
+    delete $self->{+RUN_FLAGS}->{$run_id};
     $self->_scheduler_drop_run($run_id);
     $self->_teardown_run_service($run);
     $self->emit_service_event(
@@ -1874,14 +2212,17 @@ sub _launch_job {
     my $run_id = $run->run_id;
     my $job_id = $job->job_id;
 
-    # First job of this run -- announce run_started. The per-job
-    # job_started event is emitted by the run service now (fired
-    # from its TestObserver aggregation path), so the harness log
-    # only carries the run-level lifecycle bracket.
-    $self->emit_service_event(
-        kind     => 'run_started',
-        run_data => {run_id => $run_id},
-    ) unless $self->_scheduler_started($run_id);
+    # First job of this run -- announce run_started and stamp the
+    # per-run started_at slot so the eventual run_completed +
+    # collector_report event can carry wall-time bracketing.
+    unless ($self->_scheduler_started($run_id)) {
+        $self->emit_service_event(
+            kind     => 'run_started',
+            run_data => {run_id => $run_id},
+        );
+        my $flags = $self->_run_flags($run_id);
+        $flags->{started_at} //= time;
+    }
 
     my $assign_id = gen_uuid();
     my %env;
