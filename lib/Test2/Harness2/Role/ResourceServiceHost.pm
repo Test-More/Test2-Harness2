@@ -48,8 +48,9 @@ requires 'service_host_logdir';
 # The name the host uses for its own log file (and which a resource
 # service cannot take in the host's scope). Defaults to the bus-level
 # name; consumers whose bus name differs from their log file name
-# (e.g. RunService, where the bus name has to be unique per run but
-# the log file is just "run.jsonl") override this.
+# (e.g. a host whose bus name is per-run but whose log file is shared
+# the log file is named differently from the bus name) override
+# this.
 sub service_host_log_name { $_[0]->name }
 
 # Basic restart-spiral protection for resource services. A service
@@ -526,7 +527,8 @@ __END__
 =head1 NAME
 
 Test2::Harness2::Role::ResourceServiceHost - Shared resource-service
-hosting logic for L<Test2::Harness2> and L<Test2::Harness2::RunService>.
+hosting logic for L<Test2::Harness2> across both global and
+per-run scopes.
 
 =head1 DESCRIPTION
 

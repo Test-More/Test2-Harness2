@@ -18,8 +18,8 @@ use constant HAS_CHILD_SUBREAPER => eval {
     Test2::Harness2::ChildSubReaper::have_subreaper_support() ? 1 : 0;
 } || 0;
 
-# Any harness-side long-lived service (Test2::Harness2, RunService, a
-# future preloader, ...) shares the same skeletal shape: an IPC::Manager
+# Any harness-side long-lived service (Test2::Harness2, a future
+# preloader, ...) shares the same skeletal shape: an IPC::Manager
 # service, a JSONL/event-bus event stream, a pgroup + optional subreaper
 # setup at start, a request_handler_* dispatcher driven by IPC, and a
 # uniform TERM-then-KILL escalator at hard-stop. The variable parts are
@@ -81,9 +81,9 @@ sub request_handler_terminate {
 # them unconditionally.
 
 # Whether this service should register as a subreaper in run_on_start.
-# The two in-tree services (Test2::Harness2 and
-# Test2::Harness2::RunService) override to 1; roles consumed by
-# services that don't need subreaper semantics can leave it off.
+# Test2::Harness2 overrides to 1 so reparented test grandchildren still
+# land inside its hard-stop reach; roles consumed by services that
+# don't need subreaper semantics can leave it off.
 sub become_sub_reaper { 0 }
 
 # Extra fields merged into the service_started event. Default: none.

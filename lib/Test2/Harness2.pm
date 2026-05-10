@@ -12,6 +12,7 @@ use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util qw/parse_exit tinysleep/;
 use Test2::Harness2::Util::IPC qw/ipc_default_spawn_args/;
+use Test2::Harness2::Util::JSON qw/encode_json/;
 use POSIX qw/WNOHANG/;
 
 use Atomic::Pipe;
@@ -22,7 +23,7 @@ use Test2::Harness2::Role::ResourceServiceHost;
 use Test2::Harness2::Role::Service;
 use Test2::Harness2::Run;
 use Test2::Harness2::Run::State;
-use Test2::Harness2::RunService;
+use Test2::Harness2::TestFile;
 use Test2::Harness2::Util::EventEmitter;
 
 use Object::HashBase qw{
@@ -44,7 +45,6 @@ use Object::HashBase qw{
     +scheduler
     +running_jobs
     <resource_services
-    +run_services
     <run_pids
     +run_flags
     <collector_grace_secs
@@ -143,7 +143,6 @@ sub init {
     $self->{+SCHEDULER}         //= {};
     $self->{+RUNNING_JOBS}      //= {};
     $self->{+RESOURCE_SERVICES} //= {};
-    $self->{+RUN_SERVICES}      //= {};
     $self->{+RUN_PIDS}                 //= {};
     $self->{+RUN_FLAGS}                //= {};
     $self->{+PENDING_SYNTH_COMPLETIONS} //= {};
@@ -616,7 +615,11 @@ sub request_handler_has_pending_messages {
     # return 0 without walking anything.
     my $pending = $client->pending_sends_to($peer);
 
-    my $running = scalar keys %{$self->{+RUN_SERVICES} // {}};
+    # "running" used to count live RunService processes; with
+    # them gone, count active jobs instead. The semantic the
+    # caller relies on is "is the harness still doing work for
+    # the queue", which RUNNING_JOBS captures.
+    my $running = scalar keys %{$self->{+RUNNING_JOBS} // {}};
     my $queued  = scalar @{$self->{+QUEUE}             // []};
 
     return {
@@ -670,8 +673,10 @@ sub run_on_general_message {
     # Run state and sends us a full-snapshot mutation on every change.
     # We mirror it into the Run we're tracking so the scheduler sees
     # the same pending / running / done the run service sees.
-    return $self->_handle_run_state_update($content)
-        if defined $kind && $kind eq 'run_state_update';
+    # run_state_update used to come in from RunService over IPC and
+    # populated RUN_STATES + drove subscriber fan-out. Both
+    # responsibilities live in-process now (Stage 9 of the
+    # RunService flatten); the dispatch is gone.
 
     # Run-service aggregation: per-job release signal. The scheduler
     # needs resource release and a wake-up; the final verdict already
@@ -1351,54 +1356,6 @@ sub request_handler_detach {
 # emit run_ended.
 #
 # run_data is the full Run::State->TO_JSON payload; the harness's
-# shadow State picks up the lifecycle slots while the immutable Run
-# spec stays untouched.
-sub _handle_run_state_update {
-    my ($self, $content) = @_;
-    return unless ref($content) eq 'HASH';
-
-    my $run_id = $content->{run_id};
-    my $data   = $content->{run_data};
-    return unless defined $run_id && ref($data) eq 'HASH';
-
-    my ($run) = grep { $_->run_id eq $run_id } @{$self->{+QUEUE} // []};
-    return unless $run;
-
-    my $rstate = $self->{+RUN_STATES}->{$run_id} //= Test2::Harness2::Run::State->new(run_id => $run_id);
-
-    for my $slot (qw/pending running done/) {
-        my $list = $data->{$slot};
-        next unless ref($list) eq 'ARRAY';
-        $rstate->{$slot} = [@$list];
-    }
-
-    if (ref($data->{results}) eq 'HASH') {
-        $rstate->{results} = {%{$data->{results}}};
-    }
-
-    for my $field (
-        qw/created_at start_time finish_time completed exit_summary aborted_reason
-        running_harness_uuid collector_uuid bus_address running_session_uuid/
-        )
-    {
-        $rstate->{$field} = $data->{$field} if exists $data->{$field};
-    }
-
-    # Notify state subscribers with the full authoritative snapshot
-    # we just received. Fan-out happens before finalization so a
-    # subscriber that just came online sees the terminal state via
-    # the update path, and also via any retained COMPLETED_RUNS entry
-    # after finalize runs.
-    $self->_notify_state_subscribers($run_id, $data);
-
-    # Finalization is scheduler-driven: only consider the run done
-    # when the scheduler has both no pending jobs and no running
-    # jobs of its own. The State mirror's is_complete is informational.
-    $self->_finalize_run_if_complete($run);
-
-    return;
-}
-
 # Build the "final" snapshot stashed into COMPLETED_RUNS so that
 # callers can query pass/fail via IPC after a run ends but before
 # the harness itself exits. Aggregate pass is true when every job
@@ -1501,13 +1458,6 @@ sub hard_stop_pids {
         $pids{$info->{pid}} //= {} if $info->{pid};
     }
 
-    # Run services cascade their own TERM handlers down to per-run
-    # resource services and test collectors, so signalling the run
-    # service is enough to take its whole subtree down.
-    for my $info (values %{$self->{+RUN_SERVICES} // {}}) {
-        $pids{$info->{pid}} //= {} if $info->{pid};
-    }
-
     return %pids;
 }
 
@@ -1538,19 +1488,6 @@ sub service_post_hard_stop {
 # path that could also execute inside a single tick.
 sub run_on_pid {
     my ($self, $pid, $exit) = @_;
-
-    # Run-service exit. The per-run supervisor finished on its own
-    # (either because _teardown_run_service sent it TERM, or because
-    # its parent-pid watch tripped and it exited voluntarily). Drop
-    # its tracking entry and move on; any resource-service state
-    # reported via IPC has already been applied.
-    for my $rid (keys %{$self->{+RUN_SERVICES} // {}}) {
-        my $info = $self->{+RUN_SERVICES}->{$rid};
-        next unless $info->{pid} && $info->{pid} == $pid;
-        delete $self->{+RUN_SERVICES}->{$rid};
-        $self->_forget_run_pid($rid, $pid);
-        return;
-    }
 
     # Test-collector exit. The harness owns the collector now (Stage 5
     # of the RunService flatten), so this is the normal reap site.
@@ -1961,6 +1898,7 @@ sub _finalize_run_if_complete {
     # live in RunService.emit_run_completed; the harness owns Run
     # state now so it owns the aggregate.
     $self->_emit_run_completed($run);
+    $self->_write_run_report($run);
 
     $self->{+QUEUE} = [grep { $_->run_id ne $run_id } @{$self->{+QUEUE}}];
     delete $self->{+RUN_STATES}->{$run_id};
@@ -2145,61 +2083,35 @@ sub _evaluate_resources_for {
 sub _ensure_run_service_started {
     my ($self, $run) = @_;
 
-    # The resources_started / resources_torn_down idempotency flags
-    # live on the paired Run::State (post-queue mutable state, not on
-    # the immutable spec).
+    # Method name is historical: the run service no longer exists
+    # (Stage 9 of the RunService flatten). The hook still owns the
+    # one-time per-run bring-up: writing the run's spec.jsonl and
+    # spawning per-run resource services. The resources_started /
+    # resources_torn_down flags on Run::State guard idempotency.
     my $rstate = $self->{+RUN_STATES}->{$run->run_id} //=
         Test2::Harness2::Run::State->new(run_id => $run->run_id);
     return if $rstate->resources_started_flag;
     $rstate->mark_resources_started;
 
-    # In unit tests that exercise scheduler logic without building a
-    # real IPC bus, ipcm_info is undef; skip the fork then so the
-    # rest of the scheduler still works. Production code paths
-    # (start/spawn) always set ipcm_info before this method runs.
+    # Always write the run-level spec.jsonl, even when ipcm_info is
+    # undef (unit-test path) -- downstream tooling reads it from
+    # disk regardless of whether the harness has an IPC bus.
+    $self->_write_run_spec($run);
+
+    # In unit tests that exercise scheduler logic without building
+    # a real IPC bus, ipcm_info is undef; skip the resource spawn
+    # then so the rest of the scheduler still works.
     return unless defined $self->ipcm_info;
 
     my $run_id = $run->run_id;
-    my $bus    = "run-$run_id";
-
-    # NOTE: RunService is still spawned here. Its post-Stage-7
-    # responsibilities are minimal -- it interposes a Run-type
-    # collector to write runs/<run_id>/{spec,events,report}.jsonl
-    # which downstream tooling (DB, archive, replay) reads. The
-    # full removal happens in Stage 9 of the flatten, where the
-    # spec.jsonl writer moves into the harness directly and the
-    # rest goes away.
-    my $pid = Test2::Harness2::RunService->spawn(
-        workdir      => $self->{+WORKDIR},
-        logdir       => $self->{+LOGDIR},
-        run          => $run,
-        ipcm_info    => $self->ipcm_info,
-        parent_pids  => [$$],
-        harness_name => $self->{+NAME},
-        kill_timeout => $self->{+KILL_TIMEOUT},
-    );
-
-    my $started_at = time;
-    $self->{+RUN_SERVICES}->{$run_id} = {
-        pid        => $pid,
-        run        => $run,
-        bus_name   => $bus,
-        started_at => $started_at,
-    };
-    $self->_register_run_pid(
-        $run_id, $pid,
-        kind       => 'run_service',
-        bus_name   => $bus,
-        started_at => $started_at,
-    );
 
     # Bring up the run's resource services. They run as direct
-    # children of the harness (not the run service), so signal/kill
-    # propagation is uniform with the global resources hosted here
-    # already, and the per-run pid bookkeeping in RUN_PIDS captures
-    # them via the host-role tracking hooks. The harness has already
-    # validated the resource set (needed + non-permanent) before
-    # taking this branch -- we just start whatever is configured.
+    # children of the harness, so signal/kill propagation is
+    # uniform with the global resources hosted here, and the
+    # per-run pid bookkeeping in RUN_PIDS captures them via the
+    # host-role tracking hooks. The harness has already validated
+    # the resource set (needed + non-permanent) before taking this
+    # branch.
     my $resources = $run->resources // [];
     if (@$resources) {
         my $rs_ok = eval {
@@ -2215,70 +2127,81 @@ sub _ensure_run_service_started {
     return;
 }
 
-# Lazy-build an IPC handle to the run service, once we need to make a
-# sync_request into it. Cached on the run-services entry so repeated
-# launches reuse one handle.
-sub _run_service_handle {
-    my ($self, $run_id) = @_;
+# Run-level artifact trio written at run start. spec.jsonl is the
+# single-row JSON document downstream tooling (App::Yath2 Log
+# readers, archive layout, DB importer) anchors on; events.jsonl
+# and report.jsonl exist as empty placeholders so the per-run
+# directory shape matches what the Run-type collector used to
+# produce. Renderers no longer descend into the per-run events
+# stream (no harness_collector_start of type=Run is emitted), but
+# tooling that lists artifacts still expects all three to exist.
+sub _write_run_spec {
+    my ($self, $run) = @_;
 
-    my $entry = $self->{+RUN_SERVICES}->{$run_id}
-        or croak "no run service tracked for run '$run_id'";
+    my $run_id = $run->run_id;
+    my $dir    = "$self->{+LOGDIR}/runs/$run_id";
+    File::Path::make_path($dir) unless -d $dir;
 
-    return $entry->{_handle} //= IPC::Manager::Service::Handle->new(
-        service_name => $entry->{bus_name},
-        ipcm_info    => $self->ipcm_info,
-    );
+    my $spec_path = "$dir/spec.jsonl";
+    unless (-e $spec_path) {
+        my %spec = (
+            run_id   => $run_id,
+            run_uuid => $run->run_uuid,
+            name     => 'run',
+            harness  => $self->{+NAME},
+        );
+        open my $fh, '>', $spec_path or croak "open '$spec_path': $!";
+        print $fh encode_json(\%spec), "\n";
+        close $fh;
+    }
+
+    for my $base (qw/events.jsonl report.jsonl/) {
+        my $path = "$dir/$base";
+        next if -e $path;
+        open my $fh, '>>', $path or croak "open '$path': $!";
+        close $fh;
+    }
+
+    return;
 }
 
-# Block briefly waiting for a newly-spawned run service to be ready
-# to accept IPC requests. sync_request itself queues messages that
-# arrive before the service is up, but the timeout behaviour is
-# clearer if we wait explicitly.
-#
-# The original hardcoded 10s cap assumed Linux-container scheduling
-# where IPC sockets bind essentially instantly. That assumption
-# breaks on macOS and intermittently on slower CI containers -- see
-# issue #392. Default raised to 60s and made env-overridable via
-# YATH_RUN_SERVICE_READY_TIMEOUT so contributors on slower hosts
-# can tune without a source patch.
-sub _wait_for_run_service_ready {
-    my ($self, $run_id) = @_;
+# Write the per-run report.jsonl with the collector_report
+# aggregate built from RUN_FLAGS at finalize time. Mirrors the
+# RunService write_phase that the deleted Run-type collector used
+# to do. Single-row JSON document, same shape as the harness-side
+# emit_run_completed payload's collector_report facet.
+sub _write_run_report {
+    my ($self, $run) = @_;
 
-    my $handle   = $self->_run_service_handle($run_id);
-    my $cap      = $ENV{YATH_RUN_SERVICE_READY_TIMEOUT} // 60;
-    my $deadline = time + $cap;
-    until ($handle->ready) {
-        croak "timeout waiting for run service '$run_id' to come up after ${cap}s"
-            if time > $deadline;
-        tinysleep(0.02);
-    }
-    return $handle;
+    my $run_id = $run->run_id;
+    my $dir    = "$self->{+LOGDIR}/runs/$run_id";
+    File::Path::make_path($dir) unless -d $dir;
+
+    my $path   = "$dir/report.jsonl";
+    my $report = $self->_build_collector_report($run, time);
+
+    open my $fh, '>', $path or croak "open '$path': $!";
+    print $fh encode_json($report), "\n";
+    close $fh;
+    return;
 }
 
 sub _teardown_run_service {
     my ($self, $run) = @_;
 
-    # Called from three sites: _handle_run_state_update (normal run
-    # completion observed via the run service's aggregated snapshot),
-    # _try_launch_next_pending (all-skipped completion), and
-    # run_on_cleanup (runs left in the queue at shutdown). The
-    # resources_torn_down flag below makes each call idempotent. The
-    # flag lives on the paired Run::State because it reflects runtime
-    # state, not the queue-time spec.
+    # Method name is historical: there is no run service to
+    # signal anymore (Stage 9 of the RunService flatten). What
+    # this hook now does is run the per-run resource teardown
+    # cascade: invoke each resource's teardown method so
+    # in-process cleanup runs, then TERM every pid still
+    # registered to this run via RUN_PIDS so resource services
+    # exit. The Run::State idempotency flag prevents double
+    # teardown for the same run.
     my $rid    = $run->run_id;
     my $rstate = $self->{+RUN_STATES}->{$rid};
     return                            if $rstate && $rstate->resources_torn_down_flag;
     $rstate->mark_resources_torn_down if $rstate;
-    my $svc = delete $self->{+RUN_SERVICES}->{$rid};
-    # Tear down the run's resource services -- they live under the
-    # harness now (Stage 3 of the RunService flatten), so we own the
-    # signal cascade. _kill_run targets only this run's RUN_PIDS
-    # entries; resource services flagged kind='resource_service' under
-    # this run_id get TERM, the role's restart-spiral counter is
-    # reset implicitly because the service is no longer tracked once
-    # it exits via run_on_pid, and per-resource teardown methods run
-    # on the resource objects themselves so any in-process cleanup
-    # (counters, files, etc.) still fires here.
+
     for my $res (@{$run->resources // []}) {
         my $tok  = eval { $res->teardown; 1 };
         my $terr = $@;
@@ -2286,17 +2209,6 @@ sub _teardown_run_service {
             unless $tok;
     }
     $self->_kill_run($rid, 'TERM');
-
-    return unless $svc;
-    return unless $svc->{pid};
-
-    # SIGTERM the run service. Its SIG{TERM} handler flips the service
-    # state to 'terminating' and run_on_cleanup inside the child will
-    # cascade TERMs to its remaining tracked children (collectors)
-    # before exiting. The reap lands on our side via IPC::Manager's
-    # waitpid tick and falls through run_on_pid -- see the
-    # run-services guard there.
-    kill TERM => $svc->{pid} if kill 0 => $svc->{pid};
 
     return;
 }
