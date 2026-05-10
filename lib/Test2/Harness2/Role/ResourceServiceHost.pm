@@ -48,8 +48,9 @@ requires 'service_host_logdir';
 # The name the host uses for its own log file (and which a resource
 # service cannot take in the host's scope). Defaults to the bus-level
 # name; consumers whose bus name differs from their log file name
-# (e.g. RunService, where the bus name has to be unique per run but
-# the log file is just "run.jsonl") override this.
+# (e.g. a host whose bus name is per-run but whose log file is shared
+# the log file is named differently from the bus name) override
+# this.
 sub service_host_log_name { $_[0]->name }
 
 # Basic restart-spiral protection for resource services. A service
@@ -414,8 +415,29 @@ sub track_resource_service {
         (defined $run ? (run => $run) : ()),
     };
 
+    $self->_resource_service_tracked(
+        pid      => $pid,
+        scope    => $scope,
+        run      => $run,
+        name     => $name,
+        resource => $res,
+    );
+
     return $pid;
 }
+
+# Notification hook fired after a resource-service tracking entry has
+# been recorded. Default no-op; consumers (e.g. the harness, which
+# also maintains a per-run pid index) override to mirror the
+# registration into their own bookkeeping. Always called in scalar
+# context; return value ignored.
+sub _resource_service_tracked { }
+
+# Companion to _resource_service_tracked: fired right before a
+# resource-service tracking entry is dropped from
+# resource_services. Consumers that mirrored the registration use
+# this to clear their mirror.
+sub _resource_service_forgotten { }
 
 # Called from the consumer's run_on_pid when a pid that isn't
 # something else (test collector, worker, ...) has exited. Returns 1
@@ -440,6 +462,14 @@ sub handle_resource_service_exit {
     my $scope       = $svc->{scope} // 'global';
     my $run         = $svc->{run};
     my $restartable = $svc->{restartable} ? 1 : 0;
+
+    $self->_resource_service_forgotten(
+        pid      => $pid,
+        scope    => $scope,
+        run      => $run,
+        name     => $name,
+        resource => $res,
+    );
 
     # Non-restartable service: the resource is effectively gone for
     # the rest of this host's lifetime.
@@ -497,7 +527,8 @@ __END__
 =head1 NAME
 
 Test2::Harness2::Role::ResourceServiceHost - Shared resource-service
-hosting logic for L<Test2::Harness2> and L<Test2::Harness2::RunService>.
+hosting logic for L<Test2::Harness2> across both global and
+per-run scopes.
 
 =head1 DESCRIPTION
 

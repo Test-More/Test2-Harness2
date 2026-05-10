@@ -320,7 +320,7 @@ subtest 'Detach removes a pid from watch_pids' => sub {
     is($h->watch_pids, [1002]);
 };
 
-subtest 'run_on_all delegates job launch to the run service via IPC' => sub {
+subtest 'run_on_all spawns the Collector directly (no run-service IPC)' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(
         workdir   => $dir,
@@ -329,48 +329,47 @@ subtest 'run_on_all delegates job launch to the run service via IPC' => sub {
 
     $h->request_handler_queue_test_run({files => _tfs('/abs/path/does-not-matter.t')});
 
-    # Mock the run-service spawn + IPC handle. Capture the sync_request
-    # payload so we can assert the harness handed launch_job the right
-    # fields (env, run_id, job_id, test_file, assignments, etc.).
-    my @sync_calls;
-    my $fake_ipc_handle = bless {
-        ready => 1,
-        sync  => sub {
-            push @sync_calls => [@_];
-            return {response => {ok => 1, pid => 98765}};
-        }
-        },
-        'Test::FakeIPCHandle';
+    # The harness now calls _spawn_collector_for_job directly instead of
+    # round-tripping through RunService via IPC. Stub the spawn at that
+    # method boundary and capture the call args so we can assert the
+    # right fields (env, run_id, job_id, test_file, etc.) reach the
+    # collector.
+    my @spawn_calls;
     {
         no warnings 'redefine';
-        local *Test::FakeIPCHandle::ready        = sub { 1 };
-        local *Test::FakeIPCHandle::sync_request = sub { my $self = shift; $self->{sync}->(@_); };
-
-        local *Test2::Harness2::RunService::spawn           = sub { 90_000 };
-        local *Test2::Harness2::_run_service_handle         = sub { $fake_ipc_handle };
-        local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake_ipc_handle };
+        local *Test2::Harness2::RunService::spawn = sub { 90_000 };
+        local *Test2::Harness2::_spawn_collector_for_job = sub {
+            my ($self, $run, $job, %opts) = @_;
+            push @spawn_calls => {
+                run_id   => $run->run_id,
+                job_id   => $job->job_id,
+                job_try  => $job->job_try,
+                test_file => $job->test_file_abs,
+                env       => {%{$opts{env} // {}}},
+                launch    => $opts{launch},
+            };
+            return {ok => 1, pid => 98765};
+        };
 
         $h->{ipcm_info} = {fake => 1};    # enables _ensure_run_service_started fork path
 
         $h->run_on_all({});
     }
 
-    is(scalar @sync_calls, 1, 'exactly one launch_job IPC call issued');
-    my ($peer, $payload) = @{$sync_calls[0]};
-    like($peer, qr/^run-/, 'peer is the run-service bus name');
-    is($payload->{request},   'launch_job',                  'launch_job request type');
-    is($payload->{test_file}, '/abs/path/does-not-matter.t', 'test_file is absolute');
+    is(scalar @spawn_calls, 1, 'exactly one collector spawn issued');
+    my $call = $spawn_calls[0];
+    is($call->{test_file}, '/abs/path/does-not-matter.t', 'test_file is absolute');
     is(
-        $payload->{env}{T2_HARNESS_MY_JOB_CONCURRENCY}, 1,
-        'JobCount concurrency env var propagated via the payload',
+        $call->{env}{T2_HARNESS_MY_JOB_CONCURRENCY}, 1,
+        'JobCount concurrency env var propagated via env',
     );
-    is($payload->{run_id}, 1, 'run_id in payload');
-    is($payload->{job_id}, 1, 'job_id in payload');
-    is($payload->{job_try}, 1, 'job_try 1 in payload');
+    is($call->{run_id}, 1, 'run_id passed through');
+    is($call->{job_id}, 1, 'job_id passed through');
+    is($call->{job_try}, 1, 'job_try 1 passed through');
 
     my @running = values %{$h->{running_jobs}};
     is(scalar @running,    1,     'one running job tracked');
-    is($running[0]->{pid}, 98765, 'running job pid comes from run-service launch response');
+    is($running[0]->{pid}, 98765, 'running job pid comes from spawn response');
 };
 
 subtest 'run_on_all commits no resource when any is unavailable' => sub {
@@ -403,7 +402,7 @@ subtest 'run_on_all commits no resource when any is unavailable' => sub {
     is(scalar @{$h->{queue}},             1, 'run still queued, job still pending');
 };
 
-subtest 'job_release + run_state_update advance the harness scheduler' => sub {
+subtest 'test_job_completed + job_release advance the harness scheduler' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(
         workdir   => $dir,
@@ -431,8 +430,25 @@ subtest 'job_release + run_state_update advance the harness scheduler' => sub {
         assigned_resources => [$res],
     };
 
-    # job_release alone only releases resources and drops the tracking
-    # entry -- the done-ness transition is driven by run_state_update.
+    # test_job_completed mutates Run::State directly (Stage 4 of the
+    # flatten): pending/running/done transitions land here.
+    $h->run_on_general_message(
+        Test::FakeIpcMsg->new({
+            kind       => 'test_job_completed',
+            run_id     => $run->run_id,
+            job_id     => $job_id,
+            pass       => 1,
+            pass_count => 1,
+            fail_count => 0,
+            stamp      => time,
+        }),
+    );
+
+    is(scalar @{$rstate->done},    1, 'Run::State marks job done after test_job_completed');
+    is(scalar @{$rstate->running}, 0, 'Run::State clears running after test_job_completed');
+
+    # job_release does the resource + RUNNING_JOBS cleanup. The
+    # auditor sends both messages.
     $h->run_on_general_message(
         Test::FakeIpcMsg->new({
             kind   => 'job_release',
@@ -443,19 +459,6 @@ subtest 'job_release + run_state_update advance the harness scheduler' => sub {
 
     ok(!keys %{$h->{running_jobs}}, 'running_jobs cleared after job_release');
     is($res->used, 0, 'JobCount slot released');
-
-    # run_state_update replaces the mirror Run::State's pending / running /
-    # done lists with the run service's authoritative snapshot.
-    $h->run_on_general_message(
-        Test::FakeIpcMsg->new({
-            kind     => 'run_state_update',
-            run_id   => $run->run_id,
-            run_data => {pending => [], running => [], done => [$job_id]},
-        }),
-    );
-
-    is(scalar @{$rstate->done},    1, 'mirror Run::State marks job done');
-    is(scalar @{$rstate->running}, 0, 'mirror Run::State clears running');
 };
 
 subtest 'run_on_all emits run_started for the first job; no job_started' => sub {
@@ -496,7 +499,7 @@ subtest 'run_on_all emits run_started for the first job; no job_started' => sub 
     is($rs->{run_data}, {run_id => $h->{queue}[0]->run_id}, 'run_started carries only run_id');
 };
 
-subtest 'run_state_update to the last-done state emits run_ended' => sub {
+subtest 'test_job_completed for the last running job triggers run_ended' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(workdir => $dir);
 
@@ -508,6 +511,8 @@ subtest 'run_state_update to the last-done state emits run_ended' => sub {
         pending => [map { $_->job_id } @{$run->jobs}],
     );
     $rstate->mark_running($job->job_id);
+    $h->_scheduler_queue_run($run);
+    $h->_scheduler_mark_running($run->run_id, $job->job_id);
 
     $h->{running_jobs}{$job->job_id} = {
         run        => $run,
@@ -523,17 +528,27 @@ subtest 'run_state_update to the last-done state emits run_ended' => sub {
 
     $h->run_on_general_message(
         Test::FakeIpcMsg->new({
-            kind     => 'run_state_update',
-            run_id   => $run->run_id,
-            run_data => {pending => [], running => [], done => [$job->job_id]},
+            kind       => 'test_job_completed',
+            run_id     => $run->run_id,
+            job_id     => $job->job_id,
+            pass       => 1,
+            pass_count => 1,
+            fail_count => 0,
+            stamp      => time,
+        }),
+    );
+    # job_release closes out RUNNING_JOBS so the scheduler also says done.
+    $h->run_on_general_message(
+        Test::FakeIpcMsg->new({
+            kind   => 'job_release',
+            run_id => $run->run_id,
+            job_id => $job->job_id,
         }),
     );
 
     my @kinds = map { $_->{kind} } @emitted;
-    is(\@kinds, ['run_ended'], 'only run_ended is emitted; job_completed moved to run service');
-
-    my ($re) = @emitted;
-    is($re->{run_data}, {run_id => $run->run_id}, 'run_ended carries only run_id');
+    ok((grep { $_ eq 'job_completed' } @kinds), 'job_completed emitted by harness');
+    ok((grep { $_ eq 'run_ended'     } @kinds), 'run_ended emitted on finalize');
 };
 
 subtest 'perform_hard_stop TERMs tracked pids and reaps them' => sub {
@@ -821,7 +836,7 @@ subtest 'restart: healthy runtime resets the attempts counter' => sub {
     ok(!$res->is_permanent_broken, 'not permanently broken');
 };
 
-subtest 'harness spawns a run service lazily for each run it considers' => sub {
+subtest 'no run service is spawned (Stage 9 of the flatten); harness writes the run spec directly' => sub {
     my $dir = tempdir(CLEANUP => 1);
 
     my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('x.t'));
@@ -829,81 +844,21 @@ subtest 'harness spawns a run service lazily for each run it considers' => sub {
     push @{$h->{queue}} => $run;
     $h->_scheduler_queue_run($run);
 
-    # Spoof ipcm_info so _ensure_run_service_started actually tries to
-    # fork. Mock RunService->spawn so we don't really fork from the
-    # test; capture what the harness handed it.
     $h->{ipcm_info} = {fake => 1};
 
-    my @spawn_calls;
-    my $fake_ipc_handle = bless {}, 'Test::FakeIPCHandle';
     {
         no warnings 'redefine';
-        local *Test::FakeIPCHandle::ready         = sub { 1 };
-        local *Test::FakeIPCHandle::sync_request  = sub { +{response => {ok => 1, pid => 12345}} };
-        local *Test2::Harness2::RunService::spawn = sub {
-            my ($class, %args) = @_;
-            push @spawn_calls => \%args;
-            return 91_001;    # pretend child pid
+        local *Test2::Harness2::_spawn_collector_for_job = sub {
+            return {ok => 1, pid => 22_222};
         };
-        local *Test2::Harness2::_run_service_handle         = sub { $fake_ipc_handle };
-        local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake_ipc_handle };
 
         $h->run_on_all({});
-        $h->run_on_all({});    # a second tick must not re-fork
-    }
-
-    is(scalar @spawn_calls,      1,    'RunService->spawn called exactly once for the run');
-    is($spawn_calls[0]{workdir}, $dir, 'workdir forwarded to run service');
-    ref_is($spawn_calls[0]{run}, $run, 'Run object forwarded to run service');
-    is(
-        $h->{run_services}{$run->run_id}{pid},
-        91_001,
-        'harness tracked the run-service pid',
-    );
-};
-
-subtest 'harness spawns a run service even when the run has no resources' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/y.t'));
-    my $h   = Test2::Harness2->new(workdir => $dir);
-    $h->{ipcm_info} = {fake => 1};
-    push @{$h->{queue}} => $run;
-    $h->_scheduler_queue_run($run);
-
-    my @spawn_calls;
-    my $fake_ipc_handle = bless {}, 'Test::FakeIPCHandle';
-    {
-        no warnings 'redefine';
-        local *Test::FakeIPCHandle::ready         = sub { 1 };
-        local *Test::FakeIPCHandle::sync_request  = sub { +{response => {ok => 1, pid => 22222}} };
-        local *Test2::Harness2::RunService::spawn = sub {
-            push @spawn_calls => {@_[1 .. $#_]};
-            return 91_002;
-        };
-        local *Test2::Harness2::_run_service_handle         = sub { $fake_ipc_handle };
-        local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake_ipc_handle };
         $h->run_on_all({});
     }
 
-    is(scalar @spawn_calls, 1, 'run service spawned for a run with zero resources');
-};
-
-subtest 'run-service pid is recognized by run_on_pid and dropped cleanly' => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $h   = Test2::Harness2->new(workdir => $dir);
-
-    $h->{run_services}{1} = {
-        pid        => 91_050,
-        run        => Test2::Harness2::Run->new(run_id => 1),
-        started_at => time,
-    };
-
-    # run_on_pid for this pid must drop the tracking entry but not
-    # treat it as a resource-service exit (nothing to restart; the
-    # RunService is responsible for cascading shutdown to its children).
-    $h->run_on_pid(91_050, 0);
-
-    ok(!exists $h->{run_services}{1}, 'run-service pid cleared from tracking');
+    ok(!keys %{$h->{run_services} // {}}, 'no RUN_SERVICES entry tracked');
+    ok(-e "$dir/logs/runs/" . $run->run_id . "/spec.jsonl",
+        'harness wrote runs/<id>/spec.jsonl directly');
 };
 
 subtest 'per-run resources participate in _evaluate_resources_for' => sub {
@@ -933,22 +888,18 @@ subtest 'per-run resources participate in _evaluate_resources_for' => sub {
     is(scalar keys %{$h->{running_jobs}}, 0, 'no running jobs');
 };
 
-subtest 'run_on_cleanup signals run services for uncompleted runs' => sub {
+subtest 'run_on_cleanup tears down per-run resource pids via _kill_run' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $run = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('never-runs.t'));
 
     my $h = Test2::Harness2->new(workdir => $dir);
     push @{$h->{queue}} => $run;
 
-    # Fork a short-lived child as the pretend run-service pid. The
-    # child just waits for a signal; run_on_cleanup should TERM it,
-    # which we reap in the parent.
+    # Fork a short-lived child as a pretend per-run resource service
+    # pid. run_on_cleanup -> _teardown_run_service -> _kill_run
+    # should TERM it.
     my $child_pid = fork // die "fork: $!";
     if (!$child_pid) {
-        # Time::HiRes::sleep (imported at the top) silently retries on
-        # EINTR, so it would swallow the SIGTERM we are waiting for.
-        # Poll a flag with short CORE::sleep naps so TERM is always
-        # visible to the safe-signal handler between naps.
         my $done = 0;
         $SIG{TERM} = sub { $done = 1 };
         my $deadline = time + 30;
@@ -960,22 +911,21 @@ subtest 'run_on_cleanup signals run services for uncompleted runs' => sub {
     }
 
     $run->{resources_started} = 1;
-    $h->{run_services}{$run->run_id} = {
-        pid        => $child_pid,
-        run        => $run,
-        started_at => time,
-    };
+    $h->_register_run_pid(
+        $run->run_id, $child_pid,
+        kind     => 'resource_service',
+        res_name => 'fake',
+        res_svc  => 'fake',
+        scope    => 'run',
+    );
 
-    my @emits;
     {
         no warnings 'redefine';
         local *Test2::Harness2::perform_hard_stop  = sub { $_[0]->{queue} = []; $_[0]->{running_jobs} = {} };
-        local *Test2::Harness2::emit_service_event = sub { push @emits => {@_[1 .. $#_]} };
+        local *Test2::Harness2::emit_service_event = sub { };
         $h->run_on_cleanup;
     }
 
-    # Wait for the child to exit (it should respond to the TERM we just sent).
-    # Ample slack because the full parallel suite can be CPU-bound.
     my $deadline = time + 15;
     my $reaped;
     until ($reaped) {
@@ -984,33 +934,39 @@ subtest 'run_on_cleanup signals run services for uncompleted runs' => sub {
         last if time > $deadline;
         sleep(0.05);
     }
-    kill 'KILL', $child_pid unless $reaped;    # belt-and-braces cleanup
+    kill 'KILL', $child_pid unless $reaped;
     waitpid($child_pid, 0) unless $reaped;
 
-    ok($reaped,                                  'run-service pid exited after run_on_cleanup signalled it');
-    ok(!exists $h->{run_services}{$run->run_id}, 'run-service tracking cleared');
+    ok($reaped, 'per-run pid exited after run_on_cleanup TERM cascade');
 };
 
-# Mocks the run-service IPC flow for the broken-resource subtests:
-# captures every launch_job sync_request so tests can assert the
-# unavailable-action perl -e command. Returns the subroutine that
-# drives run_on_all inside the override, plus a hashref that collects
-# the calls.
+# Mocks Collector spawning for the broken-resource subtests: captures
+# every _spawn_collector_for_job call so tests can assert the
+# unavailable-action perl -e command. The recorded shape mirrors the
+# old launch_job payload (peer/payload) so the existing assertions
+# keep working with minimal churn.
 sub _mock_run_launches {
     my ($h, $code) = @_;
 
     my @calls;
-    my $fake = bless {}, 'Test::FakeIPCHandle';
     no warnings 'redefine';
-    local *Test::FakeIPCHandle::ready        = sub { 1 };
-    local *Test::FakeIPCHandle::sync_request = sub {
-        my (undef, $peer, $payload) = @_;
-        push @calls => {peer => $peer, payload => {%$payload}};
-        return {response => {ok => 1, pid => 70_000 + scalar @calls}};
+    local *Test2::Harness2::RunService::spawn = sub { 90_000 };
+    local *Test2::Harness2::_spawn_collector_for_job = sub {
+        my ($self, $run, $job, %opts) = @_;
+        push @calls => {
+            peer    => "run-" . $run->run_id,
+            payload => {
+                request   => 'launch_job',
+                run_id    => $run->run_id,
+                job_id    => $job->job_id,
+                job_try   => $job->job_try,
+                test_file => $job->test_file_abs,
+                env       => {%{$opts{env} // {}}},
+                (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+            },
+        };
+        return {ok => 1, pid => 70_000 + scalar @calls};
     };
-    local *Test2::Harness2::RunService::spawn           = sub { 90_000 };
-    local *Test2::Harness2::_run_service_handle         = sub { $fake };
-    local *Test2::Harness2::_wait_for_run_service_ready = sub { $fake };
 
     $h->{ipcm_info} //= {fake => 1};
     $code->();
@@ -1088,10 +1044,11 @@ subtest 'broken_resource_behavior=abort fails every remaining job in the run' =>
     my $calls = _mock_run_launches(
         $h,
         sub {
-            # One call per scheduler tick; the single-slot limiter
+            # One launch per scheduler tick; the single-slot limiter
             # only lets one unavailable-action fail run at a time, so
-            # drain them by feeding the harness the IPC pair it now
-            # expects (job_release + run_state_update) between ticks.
+            # drain them by feeding the harness the IPC pair the
+            # auditor now sends directly (test_job_completed +
+            # job_release).
             while (keys %{$h->{running_jobs}} || @{$h->{queue}}) {
                 $h->run_on_all({});
                 last unless keys %{$h->{running_jobs}};
@@ -1099,28 +1056,20 @@ subtest 'broken_resource_behavior=abort fails every remaining job in the run' =>
                 for my $jid (keys %{$h->{running_jobs}}) {
                     my $entry = $h->{running_jobs}{$jid};
                     my $run   = $entry->{run};
-                    my $rs    = $h->{run_states}{$run->run_id};
 
+                    $h->run_on_general_message(Test::FakeIpcMsg->new({
+                        kind       => 'test_job_completed',
+                        run_id     => $run->run_id,
+                        job_id     => $entry->{job}->job_id,
+                        pass       => 0,
+                        pass_count => 0,
+                        fail_count => 1,
+                        stamp      => time,
+                    }));
                     $h->run_on_general_message(Test::FakeIpcMsg->new({
                         kind   => 'job_release',
                         run_id => $run->run_id,
                         job_id => $entry->{job}->job_id,
-                    }));
-
-                    # Run service's view: this job now in done, others
-                    # still pending until the scheduler launches them.
-                    # Mirror the running transition then the done
-                    # transition on the harness's Run::State shadow.
-                    $rs->mark_running($entry->{job}->job_id);
-                    $rs->mark_done($entry->{job}->job_id);
-                    $h->run_on_general_message(Test::FakeIpcMsg->new({
-                        kind     => 'run_state_update',
-                        run_id   => $run->run_id,
-                        run_data => {
-                            pending => [@{$rs->pending}],
-                            running => [@{$rs->running}],
-                            done    => [@{$rs->done}],
-                        },
                     }));
                 }
             }
@@ -1275,11 +1224,12 @@ subtest 'run_on_start warns when set_child_subreaper fails' => sub {
     );
 };
 
-subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
+subtest 'collector pid exit without test_job_completed is grace-armed and synthesized by the watchdog' => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $h   = Test2::Harness2->new(
-        workdir   => $dir,
-        resources => [Test2::Harness2::Resource::JobCount->new(slots => 1)],
+        workdir              => $dir,
+        resources            => [Test2::Harness2::Resource::JobCount->new(slots => 1)],
+        collector_grace_secs => 0,
     );
 
     my $run    = Test2::Harness2::Run->from_files(run_id => 1, files => _tfs('/abs/orphan.t'));
@@ -1303,18 +1253,39 @@ subtest 'orphan test pid on harness triggers job_complete fallback' => sub {
         assigned_resources => [$res],
     };
 
+    # Pid exit before any test_job_completed: arms a synth entry,
+    # leaves running_jobs alone for the watchdog to claim.
+    $h->run_on_pid(77777, 0);
+    ok(exists $h->{running_jobs}{$job_id}, 'running_jobs not yet cleared (watchdog owns it)');
+    is($res->used, 1, 'resource slot still committed during grace window');
+    ok(
+        exists $h->{pending_synth_completions}{$job_id},
+        'pending synth-completion entry armed',
+    );
+
+    # Watchdog tick with grace=0 elapsed: synthesize test_job_completed
+    # and run the orphan release path.
     my @warnings;
     {
         local $SIG{__WARN__} = sub { push @warnings => @_ };
-        $h->run_on_pid(77777, 0);
+        $h->run_on_interval;
     }
 
-    ok(!exists $h->{running_jobs}{$job_id}, 'running_jobs cleared by orphan fallback');
+    ok(!exists $h->{running_jobs}{$job_id}, 'running_jobs cleared by watchdog');
     is($res->used, 0, 'resource slot released');
     ok(
-        (grep { /orphaned test pid/ } @warnings),
-        'warned about orphan path',
+        !exists $h->{pending_synth_completions}{$job_id},
+        'pending synth-completion entry cleared',
     );
+    ok(
+        (grep { /synthesizing test_job_completed/ } @warnings),
+        'warned about synth path',
+    );
+
+    my $result = $rstate->results->{$job_id};
+    ok($result, 'result entry recorded for orphan job');
+    is($result->{pass}, 0, 'orphan job marked failed');
+    is($result->{exit}, 0, 'orphan job exit captured (raw)');
 };
 
 subtest 'perform_hard_stop TERMs reparented descendants on Linux' => sub {

@@ -3199,3 +3199,81 @@ The earlier namespace-split design doc
 (`AI_DOCS/2026-05-08-yath-db-namespace.md`) is superseded by the
 rebuild doc; the architecture it described was replaced rather
 than extended.
+
+# Addendum — RunService removed (2026-05-10)
+
+Spec sections describing `Test2::Harness2::RunService` (the
+per-run supervisor process, `run-$run_id` IPC bus, `launch_job`
+sync request, `run_state_update` mirror channel, the per-run
+event stream at `runs/<id>/services/run.jsonl`) are obsolete as
+of the `flatten-run-service` branch. The full reasoning lives in
+`AI_DOCS/2026-05-10-flatten-run-service.md`; this is the binding
+deviation note required by CLAUDE.md.
+
+What changed:
+
+- One service process per harness invocation. The harness is the
+  single subreaper for everything spawned for the run (collectors
+  + per-run resource services). Test processes are grandchildren
+  of the harness (Harness → Collector → test).
+- The `run-$run_id` IPC bus is gone. The `launch_job` sync request
+  is gone — the harness's `_launch_job` calls
+  `_spawn_collector_for_job` directly.
+- Run::State lives only on the harness, mutated in-process by the
+  test_job_started / diagnosing / failing / completed handlers
+  that moved off RunService. The `run_state_update` IPC channel
+  no longer exists; subscribers receive snapshot broadcasts in
+  `_broadcast_run_state` after every state mutation.
+- The auditor's `_send_to_run` (auditor → ipc_run) targets the
+  harness bus now. Job-collector lifecycle (collector_start /
+  collector_end) is reflected into the harness's services log
+  via `_handle_collector_start` / `_handle_collector_end`.
+- Per-run resource services (the host-role's `scope=run` path)
+  are spawned by the harness and tracked in the new RUN_PIDS
+  map keyed by run_id. Per-run teardown is `_kill_run($rid,
+  'TERM')` then `_await_run_exit`. The role gained
+  `_resource_service_tracked` / `_forgotten` notification hooks
+  so the harness mirrors role-managed registrations into
+  RUN_PIDS without duplicating the role's tracking.
+- The Run-type collector that wrote `runs/<id>/{spec,events,
+  report}.jsonl` is gone. The harness writes those files
+  directly (`_write_run_spec` at run start;
+  `_write_run_report` at finalize). `events.jsonl` is an empty
+  placeholder; nothing emits a `harness_collector_start` of
+  `type=Run` anymore so the log walker does not try to descend
+  into it.
+- The collector watchdog (synth completion when a test pid exits
+  before `test_job_completed` arrives) lives on the harness in
+  `run_on_interval`, reading the per-run flags map (RUN_FLAGS).
+  Grace window is configurable via the new
+  `collector_grace_secs` constructor arg (default 10s).
+
+Multi-run support: each run still gets its own `Run::State`
+entry in `RUN_STATES` and its own pid bucket in `RUN_PIDS`.
+Concurrent runs require only lifting the queue-head-only
+restriction in `_try_launch_next_pending`; resources are
+already evaluated globally + per-run on every dispatch.
+
+Net delta: ~1500 lines removed across `lib/Test2/Harness2/RunService.pm`,
+`t/AI/unit/Harness2/RunService.t`, the `t/AI/unit/Harness2/RunService/`
+subtree, and the harness's run-service plumbing. The full t/AI
+suite runs ~28% faster end-to-end on a `-j16` warm box, almost
+entirely from removing the per-job `launch_job` IPC roundtrip.
+
+This addendum supersedes any spec text in this document that
+describes:
+
+- `Test2::Harness2::RunService` as a separate process
+- The `run-$run_id` IPC bus or any `ipc_run` value pointing at it
+- The `launch_job` request/response IPC pair
+- The `run_state_update` IPC mirror channel
+- The per-run `runs/<id>/services/run.jsonl` event stream
+- Sections of the lifecycle/topology pages that draw a separate
+  per-run service subtree (specifically Part I §2, §6.4, §7's
+  run-service rows, and the lifecycle table in §10's preload-as-
+  resource discussion where it cross-references run-service
+  ownership)
+
+Those sections will be rewritten in place when the next round of
+spec maintenance touches them; until then, treat this addendum as
+authoritative where it conflicts.
