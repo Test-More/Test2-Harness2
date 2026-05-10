@@ -2,9 +2,14 @@ package App::Yath2::Log::Live;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use parent 'App::Yath2::Log::Directory';
+
+# Role::Log is applied at the bottom of this file (after every sub
+# is defined) so role defaults yield to our existing implementations
+# without triggering "Subroutine X redefined" warnings.
+use Role::Tiny::With;
 
 # Live workdir variant of the Directory backend. Forces live=1 on the
 # underlying directory backend so the iterator polls (rather than
@@ -19,6 +24,8 @@ sub init {
 
 sub is_live { 1 }
 sub static  { 0 }
+
+with 'App::Yath2::Role::Log';
 
 1;
 

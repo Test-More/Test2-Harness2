@@ -2,7 +2,7 @@ package App::Yath2::Log::Artifact;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
@@ -147,9 +147,15 @@ sub _jsonl_iter {
     my $log = $self->{+LOG};
 
     # Backend may want to short-circuit with a records-backed iterator
-    # (e.g. TarZIdx already has the bytes in memory).
-    if (my $records = $log->_artifact_iter_records($self->{+BASE}, $stem)) {
-        return App::Yath2::Log::Iterator::JSONL->new(records => $records);
+    # (e.g. TarZIdx already has the bytes in memory) or with a streaming
+    # JSONL reader (the DB backend hands back a JSONL::Reader bound to a
+    # scalar filehandle so callers do not pay the cost of decoding the
+    # entire artifact upfront).
+    if (my $thing = $log->_artifact_iter_records($self->{+BASE}, $stem)) {
+        if (ref($thing) eq 'ARRAY') {
+            return App::Yath2::Log::Iterator::JSONL->new(records => $thing);
+        }
+        return App::Yath2::Log::Iterator::JSONL->new(reader => $thing);
     }
 
     my ($rel, $is_zst) = $self->_resolve_jsonl($stem);

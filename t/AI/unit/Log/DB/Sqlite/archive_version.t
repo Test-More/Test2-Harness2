@@ -7,7 +7,10 @@ use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
-use App::Yath2::Log::DB::Sqlite;
+use App::Yath2::DB;
+
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
 
 # Build a minimal synthetic log directory: one global service and one run
 # with one job/try. Enough for a complete archive round-trip.
@@ -30,66 +33,70 @@ sub build_minimal_log {
     return $src;
 }
 
-# --- Build an archive and confirm a current archive_version was stamped.
-my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
-unlink $db_path;
+for_each_log_db_backend(sub {
+    my ($backend) = @_;
 
-my $writer = App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path");
-$writer->bootstrap_schema;
+    # --- Build an archive and confirm a current archive_version was stamped.
+    my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
+    unlink $db_path;
 
-my $src = build_minimal_log();
-my $aid = $writer->insert(App::Yath2::Log->new(dir => $src));
-ok(defined $aid, 'insert returned an archive_id');
+    my $writer = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend);
+    $writer->bootstrap_schema;
 
-my $stamped_version = $writer->dbh->selectrow_array(
-    'SELECT archive_version FROM archives WHERE archive_id = ?',
-    undef, $aid,
-);
-is($stamped_version, $App::Yath2::Log::VERSION,
-    'archive_version stamped to $App::Yath2::Log::VERSION on insert');
+    my $src = build_minimal_log();
+    my $aid = $writer->insert(App::Yath2::Log->new(dir => $src));
+    ok(defined $aid, 'insert returned an archive_id');
 
-# A fresh reader on the same DB resolves the archive at construction.
-{
-    my $reader;
-    ok(
-        lives { $reader = App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path") },
-        'reader opens at current version',
+    my $stamped_version = $writer->dbh->selectrow_array(
+        'SELECT archive_version FROM archives WHERE archive_id = ?',
+        undef, $aid,
     );
-    is([$reader->runs], [0], 'reader sees the run');
-}
+    is($stamped_version, $App::Yath2::Log::VERSION,
+        'archive_version stamped to $App::Yath2::Log::VERSION on insert');
 
-# --- Stamp an old archive_version and confirm read-side refusal.
-$writer->dbh->do(
-    'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
-    undef, '2.000010', $aid,
-);
+    # A fresh reader on the same DB resolves the archive at construction.
+    {
+        my $reader;
+        ok(
+            lives { $reader = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend) },
+            'reader opens at current version',
+        );
+        is([$reader->runs], [0], 'reader sees the run');
+    }
 
-like(
-    dies { App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path") },
-    qr/refusing to read/,
-    'reader refuses archive whose archive_version < last_breaking_version',
-);
+    # --- Stamp an old archive_version and confirm read-side refusal.
+    $writer->dbh->do(
+        'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
+        undef, '2.000010', $aid,
+    );
 
-# --- Reset the version to current; reader works again.
-$writer->dbh->do(
-    'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
-    undef, $App::Yath2::Log::VERSION, $aid,
-);
+    like(
+        dies { App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend)->runs },
+        qr/refusing to read/,
+        'reader refuses archive whose archive_version < last_breaking_version',
+    );
 
-ok(
-    lives { App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path") },
-    'reader works once archive_version is back at current',
-);
+    # --- Reset the version to current; reader works again.
+    $writer->dbh->do(
+        'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
+        undef, $App::Yath2::Log::VERSION, $aid,
+    );
 
-# --- An archive at exactly last_breaking_version is accepted.
-$writer->dbh->do(
-    'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
-    undef, App::Yath2::Log->last_breaking_version, $aid,
-);
+    ok(
+        lives { App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend) },
+        'reader works once archive_version is back at current',
+    );
 
-ok(
-    lives { App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path") },
-    'reader accepts archive_version == last_breaking_version',
-);
+    # --- An archive at exactly last_breaking_version is accepted.
+    $writer->dbh->do(
+        'UPDATE archives SET archive_version = ? WHERE archive_id = ?',
+        undef, App::Yath2::Log->last_breaking_version, $aid,
+    );
+
+    ok(
+        lives { App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend) },
+        'reader accepts archive_version == last_breaking_version',
+    );
+});
 
 done_testing;

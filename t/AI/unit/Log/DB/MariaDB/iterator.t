@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
     {
     my $admin = DBI->connect(
@@ -81,13 +82,13 @@ for_each_db_version([qw/mariadb/], sub {
     {relative => 't/dummy.t'},
     );
 
-    App::Yath2::Log::DB::MariaDB->new(dsn => $dsn)->insert(App::Yath2::Log->new(dir => $src));
+    App::Yath2::DB->open(dsn => $dsn, backend => $backend)->insert(App::Yath2::Log->new(dir => $src));
 
-    my $log = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
-    isa_ok($log, ['App::Yath2::Log::DB::MariaDB']);
-
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
+    my ($u) = $db->archives;
+    my $log = $db->iterator($u);
     my @collected;
-    while (my $e = $log->event(0)) {
+    while (my $e = $log->next) {
     push @collected => $e;
     last if @collected > 100;
     }
@@ -121,18 +122,21 @@ for_each_db_version([qw/mariadb/], sub {
     }
 
     $log->reset;
-    my $first = $log->event(0);
+    my $first = $log->next;
     is($first->{facet_data}{harness}{note}, 'harness up', 'reset rewinds');
 
     {
-    my $log2 = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
-    my @first = $log2->events(0);
+    my $db2 = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
+    my ($u2) = $db2->archives;
+    my $iter2 = $db2->iterator($u2);
+    my @first = $iter2->all;
     is(scalar(@first), scalar(@collected),
-        'events() first call returns full record set');
-    my @second = $log2->events(0);
-    is(\@second, [undef], 'events() returns (undef) once drained');
+        'all() first call returns full record set');
+    my @second = $iter2->all;
+    is(\@second, [], 'all() returns () once drained');
     }
 
+    });
 });
 
 done_testing;

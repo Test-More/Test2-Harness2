@@ -8,7 +8,7 @@ use Test2::Harness2::Util::JSON qw/json_true json_false/;
 
 use List::Util qw/max/;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use parent 'App::Yath2::Renderer';
 use Object::HashBase qw{

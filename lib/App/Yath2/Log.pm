@@ -2,7 +2,7 @@ package App::Yath2::Log;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Cwd ();
@@ -92,10 +92,24 @@ sub new {
         croak "file '$path' is a directory; use dir => or live => instead"
             if -d $path;
 
-        my $kind = $class->_detect_file_kind($path);
+        my $kind = $class->detect_file_kind($path);
         if ($kind eq 'sqlite') {
-            require App::Yath2::Log::DB::Sqlite;
-            return App::Yath2::Log::DB::Sqlite->new(file => $path, %args);
+            require App::Yath2::DB;
+            require App::Yath2::Log::DB;
+            my $backend = delete $args{backend} // 'sql';
+            my $db = App::Yath2::DB->new(file => $path, backend => $backend);
+
+            # Single-archive sqlite shorthand: pick the singleton archive
+            # when uuid not given; throw on multi-archive ambiguity.
+            my $uuid = delete $args{uuid};
+            unless (defined $uuid) {
+                my @uuids = $db->archives;
+                croak "no archives in this sqlite log" if @uuids == 0;
+                croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+                    if @uuids > 1;
+                $uuid = $uuids[0];
+            }
+            return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
         }
         if ($kind eq 'tar.zidx') {
             require App::Yath2::Log::TarZIdx;
@@ -107,8 +121,18 @@ sub new {
 
     # Database connection forms.
     if (defined $args{dbh} || defined $args{dsn}) {
-        require App::Yath2::Log::DB::Sqlite;
-        return App::Yath2::Log::DB::Sqlite->new(%args);
+        require App::Yath2::DB;
+        require App::Yath2::Log::DB;
+        my $uuid = delete $args{uuid};
+        my $db = App::Yath2::DB->new(%args);
+        unless (defined $uuid) {
+            my @uuids = $db->archives;
+            croak "no archives in this DB" if @uuids == 0;
+            croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+                if @uuids > 1;
+            $uuid = $uuids[0];
+        }
+        return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
     }
 
     croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
@@ -131,37 +155,20 @@ sub META_PROMOTED_KEYS {
 # archives whose archive_version is lower than this. There is no
 # auto-migration: an older archive must be re-archived (or read with an
 # older yath) to be consumed.
-sub last_breaking_version { '2.000012' }
+sub last_breaking_version { '2.000013' }
 
-# Build the meta.json content for a sealed archive. Returns a hashref
-# with the canonical fields. Fields:
-#
-#   format_version  -- META_FORMAT_VERSION (currently 1)
-#   archive_uuid    -- a fresh UUID (or the caller-supplied one)
-#   created_at      -- ISO-8601 UTC timestamp
-#   host            -- hostname
-#   user            -- $ENV{USER} or getpwuid($<)
-#   git_sha         -- `git rev-parse HEAD` if cwd is in a git repo,
-#                      else undef
-#   project         -- basename of cwd, or undef
-#   yath_version    -- $App::Yath2::Log::VERSION (per the canonical
-#                      version set across the dist)
-#
-# Live dirs do NOT get meta.json -- only sealed forms do. Callers
-# (Directory->archive, DB->insert, etc.) plumb this in explicitly at
-# seal time.
 sub build_archive_meta {
     my ($class, %p) = @_;
 
     my $uuid = $p{archive_uuid} // gen_uuid();
     my $cwd  = $p{cwd} // Cwd::getcwd();
 
-    my $now = Time::HiRes::time();
-    my @gm  = gmtime(int $now);
-    my $stamp = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
-        $gm[5] + 1900, $gm[4] + 1, $gm[3], $gm[2], $gm[1], $gm[0]);
+    my $stamp = Time::HiRes::time();
 
-    my $host = eval { Sys::Hostname::hostname() } // 'unknown';
+    my $host;
+    my $host_ok = eval { $host = Sys::Hostname::hostname(); 1 };
+    my $host_err = $@;
+    $host //= 'unknown';
     my $user = $ENV{USER}
         // $ENV{USERNAME}
         // (eval { (getpwuid($<))[0] } || undef);
@@ -242,7 +249,7 @@ sub encode_archive_meta {
 # 16-byte 'SQLite format 3\0' header; sealed yath archives (tar.zidx
 # and SQL-sealed) end with the 64-byte YATHFOOT trailer carrying a
 # 4-byte format_id. We sniff both.
-sub _detect_file_kind {
+sub detect_file_kind {
     my ($class, $path) = @_;
 
     require App::Yath2::Log::Footer;
@@ -412,6 +419,10 @@ App::Yath2::Log - Dispatcher for the yath log reader API.
     my $log = App::Yath2::Log->new(live => $logs_dir);     # live workdir
     my $log = App::Yath2::Log->new(dir  => $logs_dir);     # sealed dir
     my $log = App::Yath2::Log->new(file => $yath_file);    # *.yath (auto-detect)
+    my $log = App::Yath2::Log->new(                        # pick DB backend
+        file    => $yath_file,
+        backend => 'dbic',                                 # default 'sql'
+    );
     my $log = App::Yath2::Log->new(dbh  => $dbh, uuid => $u);
     my $log = App::Yath2::Log->new(
         dsn   => $dsn,
@@ -500,13 +511,15 @@ A tar.zidx archive (USTAR + per-file zstd + a trailing index for
 random-access reads). Read-only; archive() and insert() construct
 new archives.
 
-=item L<App::Yath2::Log::DB::Sqlite> / Postgres / MariaDB / MySQL
+=item L<App::Yath2::Log::DB>
 
-The four SQL-backed flavors. Share L<App::Yath2::Log::DB> as
-abstract base; per-flavor classes only provide DSN construction,
-schema bootstrap, UUID + JSON codecs, and payload bind hooks. All
-DB shapes are multi-archive: a "single sqlite .yath file" is just
-the N=1 case in the same C<archives> table.
+A thin proxy that wraps any backend doing
+L<App::Yath2::Role::DB::Backend>. Construct backends via
+L<App::Yath2::DB>; the proxy delegates the archive-shaped surface
+to the chosen backend (raw SQL via L<App::Yath2::DB::SQL>, or
+DBIx::Class via L<App::Yath2::DB::DBIC>). All DB shapes are
+multi-archive: a "single sqlite .yath file" is just the N=1 case
+in the same C<archives> table.
 
 =back
 
@@ -565,6 +578,123 @@ non-symlink at the target path.
 
 =back
 
+=head1 ARCHIVE META
+
+These class methods own the canonical C<meta.json> shape that every
+sealed archive carries. Live workdirs do not have a meta.json --
+only sealed forms (Directory after C<archive()>, DB after
+C<insert(seal =E<gt> 1)>, etc.) do.
+
+=over 4
+
+=item $meta = App::Yath2::Log->build_archive_meta(%opts)
+
+Construct the canonical C<meta.json> hashref for a sealed archive.
+Recognized options:
+
+=over 4
+
+=item C<archive_uuid =E<gt> $uuid>
+
+Use this uuid instead of minting a fresh one.
+
+=item C<cwd =E<gt> $dir>
+
+Override the working directory used to derive C<project> and
+C<git_sha>. Defaults to L<Cwd/getcwd>.
+
+=back
+
+Returns a hashref with the following fields:
+
+=over 4
+
+=item C<format_version>
+
+Currently C<1> (see C<META_FORMAT_VERSION>).
+
+=item C<archive_uuid>
+
+A fresh UUID, or the caller-supplied one.
+
+=item C<created_at>
+
+Hi-res unix timestamp (C<Time::HiRes::time> float, seconds since epoch).
+
+=item C<host>
+
+Hostname (from L<Sys::Hostname>; falls back to C<unknown>).
+
+=item C<user>
+
+C<$ENV{USER}>, C<$ENV{USERNAME}>, or C<getpwuid($E<lt>)> -- whichever
+resolves first.
+
+=item C<git_sha>
+
+C<git rev-parse HEAD> when C<cwd> sits inside a git repo, otherwise
+C<undef>. Best effort: silently C<undef> on any failure.
+
+=item C<project>
+
+Basename of C<cwd>, or C<undef>.
+
+=item C<yath_version>
+
+C<$App::Yath2::Log::VERSION> (the canonical version stamp the dist
+shares).
+
+=back
+
+Callers (Directory's C<archive>, DB's C<insert>, etc.) plumb the
+returned hashref into their own seal paths.
+
+=item $bytes = App::Yath2::Log->encode_archive_meta($meta)
+
+Encode a meta hashref to UTF-8 JSON bytes. Pure
+L<Test2::Harness2::Util::JSON> wrapper.
+
+=item $kind = App::Yath2::Log->detect_file_kind($path)
+
+Sniff a file's on-disk kind. Returns C<sqlite>, C<tar.zidx>, or
+C<unknown>. SQLite databases match the 16-byte
+C<'SQLite format 3\0'> header at offset 0; sealed yath archives
+(both formats) carry the 64-byte YATHFOOT trailer with a 4-byte
+C<format_id> distinguishing them. Used by C<-E<gt>new(file =E<gt>
+$path)> to dispatch to the right backend.
+
+=back
+
+=head2 Constants
+
+=over 4
+
+=item App::Yath2::Log::META_FORMAT_VERSION
+
+Current value: C<1>.
+
+=item App::Yath2::Log::META_FILENAME
+
+Current value: C<'meta.json'>.
+
+=item @keys = App::Yath2::Log->META_PROMOTED_KEYS
+
+The canonical meta.json keys promoted to typed C<archives> table
+columns. Anything else lands in C<archives.meta_extras> as JSON.
+
+=item $ver = App::Yath2::Log->last_breaking_version
+
+Earliest C<archive_version> this dist can read. The DB read path
+refuses any archive whose stamp is lower; there is no auto-migration.
+
+=item App::Yath2::Log::LAST_LOG_SYMLINK
+
+Filename of the in-cwd symlink that always points at the most recent
+archive a C<yath test> run produced from this working directory.
+Currently C<'last_log.yath'>.
+
+=back
+
 =head1 MULTI-ARCHIVE DBs
 
 C<< App::Yath2::Log->new(file => $path) >> targets a single archive:
@@ -572,26 +702,31 @@ when a SQLite C<.yath> file holds more than one archive, the
 constructor throws "ambiguous; specify uuid => ..." so the caller
 must pick one explicitly.
 
+The C<file => ...> form also accepts a C<< backend => 'sql' | 'dbic' >>
+selector, defaulting to C<'sql'>. This is the same backend selector
+L<App::Yath2::DB/new> takes; it picks which DB-access implementation
+services the read path. Production callers that do not care can omit
+it.
+
 For workflows that explicitly want to enumerate archives in a
 multi-archive DB (server-shaped DBs, multi-archive sqlite files),
-use L<App::Yath2::LogDB>:
+use L<App::Yath2::DB>:
 
-    my $ldb = App::Yath2::LogDB->new(file => $multi_yath);
-    for my $uuid ($ldb->archives) {
-        my $log = $ldb->log($uuid);
+    my $db = App::Yath2::DB->new(file => $multi_yath);
+    for my $uuid ($db->archives) {
+        my $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
         ...;
     }
 
-C<LogDB> shares its DBI handle across the per-archive Log objects it
-hands out, so opening many archives does not reconnect.
+The backend shares its DBI handle across the per-archive proxy
+objects so opening many archives does not reconnect.
 
 =head1 SEE ALSO
 
 L<App::Yath2::Log::Live>, L<App::Yath2::Log::Directory>,
-L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::DB::Sqlite>,
-L<App::Yath2::Log::DB::Postgres>, L<App::Yath2::Log::DB::MariaDB>,
-L<App::Yath2::Log::DB::MySQL>, L<App::Yath2::Log::Artifact>,
-L<App::Yath2::Log::Iterator::JSONL>, L<App::Yath2::LogDB>,
+L<App::Yath2::Log::TarZIdx>, L<App::Yath2::Log::DB>,
+L<App::Yath2::DB>, L<App::Yath2::Log::Artifact>,
+L<App::Yath2::Log::Iterator::JSONL>,
 L<Test2::Harness2::LogLayout>, L<App::Yath2::Command::inspect>.
 
 =head1 SOURCE

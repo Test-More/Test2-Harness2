@@ -11,7 +11,7 @@ BEGIN {
         if $Config::Config{ivsize} < 8;
 }
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Compress::Zstd ();
@@ -36,6 +36,14 @@ use App::Yath2::Log::Artifact;
 use App::Yath2::Log::Iterator::JSONL;
 
 use Object::HashBase qw/path +_index +_seen_starts +_closed_starts +_walk/;
+
+# `with` is safe at the top because every method here is a regular
+# `sub name { ... }` declaration -- those BEGIN-elevate, so they exist
+# at compile time when the role's `requires` check runs. (The late-with
+# workaround is only needed for `*name = sub { ... }` assignments,
+# which never BEGIN-elevate.)
+use Role::Tiny::With;
+with 'App::Yath2::Role::Log';
 
 # tar.zidx is the single archive format yath produces. Layout:
 # a USTAR-format tar with per-entry payloads (each individually
@@ -736,6 +744,16 @@ sub _artifact_list_dir {
     return sort keys %names;
 }
 
+# tar.zidx archives are sealed: every entry's offset/size lives in the
+# zstd-compressed index that pins the trailer. Mutating a single entry
+# in place would invalidate the index. Callers that want to amend an
+# archive must extract -> mutate the directory -> re-archive.
+sub _artifact_save {
+    my ($self, %p) = @_;
+    croak "tar.zidx archives are read-only; "
+        . "extract first, modify the directory, then re-archive";
+}
+
 # }}}
 
 # {{{ Iterator (depth-first walk)
@@ -1086,9 +1104,9 @@ sub archive {
         if defined $runs && defined $exclude_runs;
 
     if ($format eq 'sqlite') {
-        require App::Yath2::Log::DB::Sqlite;
+        require App::Yath2::DB;
         croak "destination '$out' already exists" if -e $out;
-        my $dest = App::Yath2::Log::DB::Sqlite->new(file => $out);
+        my $dest = App::Yath2::DB->new(file => $out);
         # seal => 1: single-archive sealed file; append YATHFOOT
         # trailer + zstd-compressed meta.json past the body.
         $dest->insert(

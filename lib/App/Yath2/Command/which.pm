@@ -2,7 +2,7 @@ package App::Yath2::Command::which;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 # XXX TODO: App::Yath2::IPC removed (PR #390) — this command is non-functional
 

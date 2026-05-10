@@ -2,7 +2,7 @@ package Test2::Harness2::Util::File::Value;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use parent 'Test2::Harness2::Util::File';
 use Object::HashBase;

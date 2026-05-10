@@ -2,7 +2,7 @@ package App::Yath2::Command::db::importer;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 sub summary     { "Start an importer process that will wait for uploaded logs to import" }
 sub description { "Start an importer process that will wait for uploaded logs to import" }

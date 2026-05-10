@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     # B8 (D6): atomic insert + duplicate-archive rejection.
 
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
@@ -77,7 +78,7 @@ for_each_db_version([qw/mariadb/], sub {
 
     # {{{ Test 1: duplicate-uuid rejection.
     {
-    my $db = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     clean_db($dbh);
@@ -101,7 +102,7 @@ for_each_db_version([qw/mariadb/], sub {
 
     # {{{ Test 2: atomic rollback.
     {
-    my $db = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     clean_db($dbh);
@@ -109,8 +110,8 @@ for_each_db_version([qw/mariadb/], sub {
     my $src = build_source();
 
     no warnings 'redefine';
-    my $orig = \&App::Yath2::Log::DB::_populate_summary_rows;
-    local *App::Yath2::Log::DB::_populate_summary_rows = sub {
+    my $orig = \&App::Yath2::DB::_populate_summary_rows;
+    local *App::Yath2::DB::_populate_summary_rows = sub {
         die "synthetic mid-insert failure\n";
     };
 
@@ -127,7 +128,7 @@ for_each_db_version([qw/mariadb/], sub {
         is($n, 0, "$table empty after rollback");
     }
 
-    local *App::Yath2::Log::DB::_populate_summary_rows = $orig;
+    local *App::Yath2::DB::_populate_summary_rows = $orig;
     my $aid = eval { $db->insert(App::Yath2::Log->new(dir => $src)) };
     ok(defined $aid, 'retry after rollback succeeds');
     my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
@@ -137,7 +138,7 @@ for_each_db_version([qw/mariadb/], sub {
 
     # {{{ Test 3: explicit archive_uuid override.
     {
-    my $db = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     clean_db($dbh);
@@ -163,6 +164,7 @@ for_each_db_version([qw/mariadb/], sub {
     }
     # }}}
 
+    });
 });
 
 done_testing;

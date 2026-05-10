@@ -80,8 +80,8 @@ See `STYLE_GUIDE.md` for code style conventions.
 ## Dependency Rules
 
 - `Test2::Harness2` must not load `App::Yath2` modules directly. Dynamic loading is acceptable only when driven by user-provided options that explicitly request `App::Yath2` functionality.
-- `App::Yath2DB` and `App::Yath2UI` are entirely optional. All dependencies exclusive to them must also be optional.
-- When a user attempts to use `App::Yath2DB` or `App::Yath2UI` features without the required dependencies installed, throw a clear exception stating which dependencies are needed.
+- `App::Yath2::DB` ships in this dist but is only loaded by code that explicitly opens a DB-backed log. `App::Yath2::UI` is a separate optional dist. Dependencies exclusive to them must be optional.
+- When a user attempts to use `App::Yath2::DB` features (specifically the DBIC backend) or `App::Yath2::UI` features without the required dependencies installed, throw a clear exception stating which dependencies are needed.
 - Normal use of yath (without requesting DB/UI features) must never trigger exceptions about missing optional dependencies.
 
 ## Commits

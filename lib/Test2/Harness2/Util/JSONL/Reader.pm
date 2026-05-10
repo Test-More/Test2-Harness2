@@ -2,7 +2,7 @@ package Test2::Harness2::Util::JSONL::Reader;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Errno qw/ESPIPE/;
@@ -21,15 +21,55 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 
 sub new {
     my ($class, %opts) = @_;
-    my $path = delete $opts{path} // delete $opts{name};
-    croak "path is required" unless defined $path;
+    my $fh         = delete $opts{fh};
+    my $bytes      = delete $opts{bytes};
+    my $bytes_zstd = delete $opts{bytes_zstd};
+    my $path       = delete $opts{path} // delete $opts{name};
+
+    croak "path, fh, bytes, or bytes_zstd is required"
+        unless defined $fh
+            || defined $bytes
+            || defined $bytes_zstd
+            || defined $path;
 
     my $self = bless {
         path   => $path,
         buffer => [],
     } => $class;
 
-    if ($path =~ /\.zst\z/) {
+    if (defined $bytes_zstd) {
+        # In-memory zstd-framed bytes. Stash the scalar on $self so the
+        # backing storage stays alive for the scalar fh we hand to the
+        # zstd reader, and let the reader walk frames lazily instead of
+        # decompressing the whole payload up front.
+        $self->{_bytes} = $bytes_zstd;
+        open(my $sfh, '<', \$self->{_bytes})
+            or croak "open scalar fh: $!";
+        require Test2::Harness2::Util::Zstd;
+        $self->{reader}  = Test2::Harness2::Util::Zstd::open_zstd_reader_fh($sfh);
+        $self->{zstd}    = 1;
+        $self->{fh_mode} = 1;
+    }
+    elsif (defined $bytes) {
+        # In-memory plain JSONL bytes. Stash the scalar on $self so the
+        # backing storage stays alive for as long as the reader does.
+        $self->{_bytes} = $bytes;
+        open(my $sfh, '<', \$self->{_bytes})
+            or croak "open scalar fh: $!";
+        $self->{fh}      = $sfh;
+        $self->{zstd}    = 0;
+        $self->{pos}     = 0;
+        $self->{fh_mode} = 1;
+    }
+    elsif (defined $fh) {
+        # Pre-opened filehandle. Treat it as a sealed plain JSONL
+        # source: no zstd framing, byte-position seekable.
+        $self->{fh}      = $fh;
+        $self->{zstd}    = 0;
+        $self->{pos}     = 0;
+        $self->{fh_mode} = 1;
+    }
+    elsif ($path =~ /\.zst\z/) {
         require Test2::Harness2::Util::Zstd;
         $self->{zstd} = 1;
     }
@@ -131,7 +171,11 @@ sub readline {
     return shift @{$self->{buffer}};
 }
 
-sub exists { -e $_[0]->{path} }
+sub exists {
+    my $self = shift;
+    return 1 if $self->{fh_mode};
+    return -e $self->{path} ? 1 : 0;
+}
 
 sub close {
     my $self = shift;

@@ -2,7 +2,7 @@ package App::Yath2::Renderer::Logger;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use File::Spec;
 

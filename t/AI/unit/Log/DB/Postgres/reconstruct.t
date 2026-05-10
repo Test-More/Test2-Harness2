@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/postgresql/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'PostgreSQL');
 
     use File::Temp qw/tempdir/;
@@ -16,15 +18,14 @@ for_each_db_version([qw/postgresql/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::Postgres;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'PostgreSQL' });
     {
     my $admin = DBI->connect(
         $qdb->connect_string('postgres'), undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1, pg_enable_utf8 => 1 },
     ) or die "connect: $DBI::errstr";
-    $admin->do('CREATE DATABASE yath_log_test_reconstruct');
+    eval { $admin->do('CREATE DATABASE yath_log_test_reconstruct'); };
     $admin->disconnect;
     }
     my $dsn = $qdb->connect_string('yath_log_test_reconstruct');
@@ -54,22 +55,22 @@ for_each_db_version([qw/postgresql/], sub {
             type => 'Service', id => 'runner',
             service_name => 'runner', stage_name => 'main',
             role => 'preload',
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             pid => 11111, times => [0.1, 0.2, 0.3, 0.4],
         },
         {
             type => 'Service', id => 'runner',
             service_name => 'runner', stage_name => 'main',
-            started_at => '2026-05-07T00:00:10Z',
+            started_at => 1778112010,
             pid => 22222, times => [1.1, 1.2, 1.3, 1.4],
         },
     );
     write_jsonl_zst(
         "$src/services/runner/report.jsonl.zst",
-        {ended_at => '2026-05-07T00:00:05Z', exit => 0,
+        {ended_at => 1778112005, exit => 0,
          exit_decoded => {signal => 0, status => 0},
          why => 'restart',  times => [0.6, 0.7, 0.8, 0.9], child_wall => 0.42},
-        {ended_at => '2026-05-07T00:00:15Z', exit => 1,
+        {ended_at => 1778112015, exit => 1,
          exit_decoded => {signal => 0, status => 1},
          why => 'shutdown', times => [1.6, 1.7, 1.8, 1.9], child_wall => 1.42},
     );
@@ -78,7 +79,7 @@ for_each_db_version([qw/postgresql/], sub {
     write_jsonl_zst(
         "$src/runs/0/spec.jsonl.zst",
         {
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             times => [1, 2, 3, 4],
             harness => 'yath',
             name => 'fancy run',
@@ -87,7 +88,7 @@ for_each_db_version([qw/postgresql/], sub {
     write_jsonl_zst(
         "$src/runs/0/report.jsonl.zst",
         {
-            ended_at => '2026-05-07T00:01:00Z',
+            ended_at => 1778112060,
             exit => 0, pass => 1,
             total_jobs => 1, passed_jobs => 1, failed_jobs => 0, aborted_jobs => 0,
             times => [9, 8, 7, 6],
@@ -104,8 +105,8 @@ for_each_db_version([qw/postgresql/], sub {
         {
             relative => 't/dummy.t',
             absolute => '/abs/t/dummy.t',
-            queued_at => '2026-05-07T00:00:00.500Z',
-            started_at => '2026-05-07T00:00:01Z',
+            queued_at => 1778112000.5,
+            started_at => 1778112001,
             stage => 'default',
             features => {fork => 1},
             times => [1, 2, 3, 4],
@@ -115,7 +116,7 @@ for_each_db_version([qw/postgresql/], sub {
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at => '2026-05-07T00:00:02Z',
+            ended_at => 1778112002,
             exit => 0, pass => 1,
             pass_count => 5, fail_count => 0, assertion_count => 5,
             plan => {count => 5},
@@ -134,7 +135,7 @@ for_each_db_version([qw/postgresql/], sub {
     return $src;
     }
 
-    my $pg = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $pg = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     my $aid = $pg->insert(App::Yath2::Log->new(dir => build_source()));
     ok(defined $aid, 'insert succeeded');
 
@@ -144,7 +145,7 @@ for_each_db_version([qw/postgresql/], sub {
     # even if we tried to insert them.
 
     # Reopen via the Postgres class directly (no public auto-detect for Pg DSN).
-    my $log = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $log = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
 
     # --- run-scope spec ---
     {
@@ -153,7 +154,7 @@ for_each_db_version([qw/postgresql/], sub {
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run spec_iter: 1 record');
-    like($recs[0]{started_at}, qr/2026-05-07.*00:00:00/, 'run spec.started_at typed');
+    is($recs[0]{started_at}, 1778112000, 'run spec.started_at typed');
     is($recs[0]{times}, [9, 8, 7, 6], 'run spec.times decoded (report wins on shared key)');
     is($recs[0]{harness}, 'yath',     'run spec.harness from extras');
     is($recs[0]{name},    'fancy run', 'run spec.name from extras');
@@ -169,7 +170,7 @@ for_each_db_version([qw/postgresql/], sub {
     my $it = $arts->report_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run report_iter: 1 record');
-    like($recs[0]{ended_at}, qr/2026-05-07.*00:01:00/, 'run report.ended_at typed');
+    is($recs[0]{ended_at}, 1778112060, 'run report.ended_at typed');
     is($recs[0]{exit}, 0, 'run report.exit typed');
     ok($recs[0]{pass}, 'run report.pass truthy');
     is($recs[0]{total_jobs}, 1, 'run report.total_jobs typed');
@@ -193,8 +194,8 @@ for_each_db_version([qw/postgresql/], sub {
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @specs => $r }
     is(scalar @specs, 2, 'multi-lifetime service spec_iter: 2 records');
-    like($specs[0]{started_at}, qr/2026-05-07.*00:00:00/, 'lifetime 1 started_at');
-    like($specs[1]{started_at}, qr/2026-05-07.*00:00:10/, 'lifetime 2 started_at');
+    is($specs[0]{started_at}, 1778112000, 'lifetime 1 started_at');
+    is($specs[1]{started_at}, 1778112010, 'lifetime 2 started_at');
     is($specs[0]{type},         'Service', 'lifetime 1 type');
     is($specs[0]{service_name}, 'runner',  'lifetime 1 service_name');
     is($specs[0]{stage_name},   'main',    'lifetime 1 stage_name');
@@ -224,8 +225,8 @@ for_each_db_version([qw/postgresql/], sub {
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @specs => $r }
     is(scalar @specs, 1, 'job_try spec_iter: 1 record');
-    like($specs[0]{queued_at},  qr/2026-05-07.*00:00:00/, 'job_try spec.queued_at typed');
-    like($specs[0]{started_at}, qr/2026-05-07.*00:00:01/, 'job_try spec.started_at typed');
+    is($specs[0]{queued_at}, 1778112000.5, 'job_try spec.queued_at typed');
+    is($specs[0]{started_at}, 1778112001, 'job_try spec.started_at typed');
     is($specs[0]{times}, [9, 8, 7, 6], 'job_try spec.times (report wins)');
     is($specs[0]{relative}, 't/dummy.t', 'job_try spec.relative from test_files');
     is($specs[0]{absolute}, '/abs/t/dummy.t', 'job_try spec.absolute from job_specs');
@@ -237,7 +238,7 @@ for_each_db_version([qw/postgresql/], sub {
     my $rit = $arts->report_iter;
     while (my $r = $rit->next) { push @reports => $r }
     is(scalar @reports, 1, 'job_try report_iter: 1 record');
-    like($reports[0]{ended_at}, qr/2026-05-07.*00:00:02/, 'job_try report.ended_at');
+    is($reports[0]{ended_at}, 1778112002, 'job_try report.ended_at');
     is($reports[0]{exit}, 0, 'job_try report.exit');
     ok($reports[0]{pass},    'job_try report.pass truthy');
     is($reports[0]{plan},  {count => 5},      'job_try report.plan decoded');
@@ -250,6 +251,7 @@ for_each_db_version([qw/postgresql/], sub {
     is($reports[0]{subtests}[1]{name}, 'sub_b', 'subtest 1 name');
     }
 
+    });
 });
 
 done_testing;

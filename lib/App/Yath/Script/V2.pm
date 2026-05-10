@@ -2,7 +2,7 @@ package App::Yath::Script::V2;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Cwd();
 use File::Spec();

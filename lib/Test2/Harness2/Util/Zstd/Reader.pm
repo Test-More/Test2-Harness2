@@ -2,7 +2,7 @@ package Test2::Harness2::Util::Zstd::Reader;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
@@ -34,6 +34,27 @@ sub _open {
 
     my $self = bless {
         path    => $path,
+        fh      => $fh,
+        records => [],
+        raw_buf => '',
+    } => $class;
+
+    return $self;
+}
+
+# Open on a pre-existing seekable file handle. Used to stream a zstd-
+# framed payload the caller already holds (e.g. a database BLOB wrapped
+# in a scalar fh) without first materializing the decompressed plain
+# text. The caller owns the fh's backing storage and must keep it alive
+# for the reader's lifetime.
+sub _open_fh {
+    my ($class, $fh) = @_;
+
+    croak "fh is required" unless defined $fh;
+    binmode $fh;
+
+    my $self = bless {
+        path    => '<fh>',
         fh      => $fh,
         records => [],
         raw_buf => '',

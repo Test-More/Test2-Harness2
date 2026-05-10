@@ -8,8 +8,10 @@ use File::Path qw/make_path/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 use App::Yath2::Log;
-use App::Yath2::Log::DB::Sqlite;
-use App::Yath2::Log::DB;
+use App::Yath2::DB;
+
+use lib 't/lib';
+use Test2::Harness2::Test::DBVersions qw/for_each_log_db_backend/;
 
 # B4: assert spec/report content is split into typed columns and a
 # *_extras catch-all on `runs` and `job_tries`. Aggregated keys
@@ -33,16 +35,13 @@ sub build_log {
     write_jsonl_zst("$src/services/harness/spec.jsonl.zst",
         {type => 'Service', id => 'harness'});
 
-    # Run-level events; spec carries promoted + unpromoted keys; report
-    # carries promoted + unpromoted + aggregated keys.
     write_jsonl_zst("$src/runs/0/events.jsonl.zst", {ping => 1});
 
     write_jsonl_zst(
         "$src/runs/0/spec.jsonl.zst",
         {
-            started_at => '2026-05-07T00:00:00Z',
+            started_at => 1778112000,
             times      => [1, 2, 3, 4],
-            # Unpromoted (catch-all candidates).
             harness    => 'yath',
             name       => 'fancy run',
         },
@@ -51,41 +50,33 @@ sub build_log {
     write_jsonl_zst(
         "$src/runs/0/report.jsonl.zst",
         {
-            ended_at     => '2026-05-07T00:01:00Z',
+            ended_at     => 1778112060,
             exit         => 0,
             pass         => 1,
             total_jobs   => 2,
             passed_jobs  => 2,
             failed_jobs  => 0,
             aborted_jobs => 0,
-            times        => [9, 8, 7, 6],   # report wins on collision
+            times        => [9, 8, 7, 6],
             child_times  => [0.5, 0.6, 0.7, 0.8],
             child_wall   => 1.234,
-            # Unpromoted (catch-all candidates).
             git_status   => 'clean',
             host         => 'box.example',
-            # Aggregated -- must NOT land in state_extras.
             jobs         => [{job_id => 'x'}, {job_id => 'y'}],
             subtests     => [{name => 'sub1', pass => 1}],
             services     => [{name => 'harness'}],
         },
     );
 
-    # Job try with promoted + unpromoted + aggregated keys.
     write_jsonl_zst("$src/runs/0/jobs/0/0/events.jsonl.zst", {ping => 1});
 
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/spec.jsonl.zst",
         {
             relative   => 't/dummy.t',
-            queued_at  => '2026-05-07T00:00:00.500Z',
-            started_at => '2026-05-07T00:00:01Z',
+            queued_at  => 1778112000.5,
+            started_at => 1778112001,
             times      => [1, 2, 3, 4],
-            # Unpromoted -> spec_extras catch-all (after job_specs split,
-            # the per-job_try _populate_job_rows split puts everything
-            # not in JOB_TRIES_SPEC_PROMOTED_KEYS into spec_extras --
-            # including 'relative' which is consumed elsewhere by
-            # job_specs but is NOT in JOB_TRIES_SPEC_PROMOTED_KEYS).
             comment    => 'a per-try note',
         },
     );
@@ -93,7 +84,7 @@ sub build_log {
     write_jsonl_zst(
         "$src/runs/0/jobs/0/0/report.jsonl.zst",
         {
-            ended_at        => '2026-05-07T00:00:02Z',
+            ended_at        => 1778112002,
             exit            => 0,
             pass            => 1,
             pass_count      => 5,
@@ -104,9 +95,7 @@ sub build_log {
             times           => [9, 8, 7, 6],
             child_times     => [0.1, 0.2, 0.3, 0.4],
             child_wall      => 0.5,
-            # Unpromoted -> state_extras catch-all.
             note            => 'all good',
-            # Aggregated -- must NOT land in state_extras.
             subtests        => [
                 {name => 'sub_a', pass => 1, count_pass => 3, count_fail => 0},
                 {name => 'sub_b', pass => 1, count_pass => 2, count_fail => 0},
@@ -117,187 +106,157 @@ sub build_log {
     return $src;
 }
 
-my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
-unlink $db_path;
-my $db = App::Yath2::Log::DB::Sqlite->new(dsn => "dbi:SQLite:$db_path");
-$db->bootstrap_schema;
-my $dbh = $db->dbh;
+# The promoted-key sets used to be exposed as package globals; they
+# are now private to App::Yath2::DB. The behavioural assertions below
+# (per backend) cover the same contract: inserting a spec/report
+# round-trips into typed columns + a *_extras catch-all.
 
-my $src = build_log();
-my $aid = $db->insert(App::Yath2::Log->new(dir => $src));
-ok(defined $aid, 'insert() succeeded');
+for_each_log_db_backend(sub {
+    my ($backend) = @_;
 
-# --- runs row ---
+    # Datetime columns are returned to consumers as hi-res unix epoch
+    # floats; per-flavor parsing lives on $db->backend->db_parse_datetime.
 
-my $run = $dbh->selectrow_hashref(
-    q{SELECT * FROM runs WHERE archive_id = ? AND run_ord = 0},
-    undef, $aid,
-);
-ok(defined $run, 'runs row exists');
+    my (undef, $db_path) = tempfile(OPEN => 0, SUFFIX => '.yath', UNLINK => 1);
+    unlink $db_path;
+    my $db = App::Yath2::DB->open(dsn => "dbi:SQLite:$db_path", backend => $backend);
+    $db->bootstrap_schema;
+    my $dbh = $db->dbh;
 
-# Promoted typed columns from spec. Raw column is flavor-canonical
-# (sqlite stores DateTime::Format::SQLite shape); compare via
-# _db_datetime_to_iso to match the producer's ISO 'T'/'Z' shape.
-is($db->_db_datetime_to_iso($run->{started_at}), '2026-05-07T00:00:00Z', 'runs.started_at from spec');
+    my $src = build_log();
+    my $aid = $db->insert(App::Yath2::Log->new(dir => $src));
+    ok(defined $aid, 'insert() succeeded');
 
-# Promoted typed columns from report.
-is($db->_db_datetime_to_iso($run->{ended_at}), '2026-05-07T00:01:00Z', 'runs.ended_at from report');
-is($run->{exit},         0,                       'runs.exit from report');
-is($run->{pass},         1,                       'runs.pass from report');
-is($run->{total_jobs},   2,                       'runs.total_jobs from report');
-is($run->{passed_jobs},  2,                       'runs.passed_jobs from report');
-is($run->{failed_jobs},  0,                       'runs.failed_jobs from report');
-is($run->{aborted_jobs}, 0,                       'runs.aborted_jobs from report');
+    # --- runs row ---
 
-# times: report wins on collision.
-ok(defined $run->{times}, 'runs.times populated');
-is(decode_json($run->{times}), [9, 8, 7, 6], 'runs.times: report wins on collision');
+    my $run = $dbh->selectrow_hashref(
+        q{SELECT * FROM runs WHERE archive_id = ? AND run_ord = 0},
+        undef, $aid,
+    );
+    ok(defined $run, 'runs row exists');
 
-# child_times / child_wall from report.
-ok(defined $run->{child_times}, 'runs.child_times populated');
-is(decode_json($run->{child_times}), [0.5, 0.6, 0.7, 0.8], 'runs.child_times');
-is($run->{child_wall} + 0, 1.234, 'runs.child_wall numeric pass-through');
+    is($db->backend->db_parse_datetime($run->{started_at}), 1778112000, 'runs.started_at from spec');
 
-# spec_extras: contains unpromoted spec keys; excludes promoted; excludes aggregated.
-ok(defined $run->{spec_extras}, 'runs.spec_extras populated');
-my $spec_x = decode_json($run->{spec_extras});
-is($spec_x->{harness}, 'yath',     'runs.spec_extras.harness present');
-is($spec_x->{name},    'fancy run', 'runs.spec_extras.name present');
-ok(!exists $spec_x->{started_at}, 'started_at promoted (not in spec_extras)');
-ok(!exists $spec_x->{times},      'times promoted (not in spec_extras)');
-ok(!exists $spec_x->{run_uuid},   'run_uuid identity (not in spec_extras)');
-ok(!exists $spec_x->{jobs},       'jobs aggregated (not in spec_extras)');
-ok(!exists $spec_x->{subtests},   'subtests aggregated (not in spec_extras)');
-ok(!exists $spec_x->{services},   'services aggregated (not in spec_extras)');
+    is($db->backend->db_parse_datetime($run->{ended_at}), 1778112060, 'runs.ended_at from report');
+    is($run->{exit},         0,                       'runs.exit from report');
+    is($run->{pass},         1,                       'runs.pass from report');
+    is($run->{total_jobs},   2,                       'runs.total_jobs from report');
+    is($run->{passed_jobs},  2,                       'runs.passed_jobs from report');
+    is($run->{failed_jobs},  0,                       'runs.failed_jobs from report');
+    is($run->{aborted_jobs}, 0,                       'runs.aborted_jobs from report');
 
-# state_extras: contains unpromoted report keys; excludes promoted; excludes aggregated.
-ok(defined $run->{state_extras}, 'runs.state_extras populated');
-my $state_x = decode_json($run->{state_extras});
-is($state_x->{git_status}, 'clean',       'runs.state_extras.git_status present');
-is($state_x->{host},       'box.example', 'runs.state_extras.host present');
-ok(!exists $state_x->{ended_at},     'ended_at promoted (not in state_extras)');
-ok(!exists $state_x->{exit},         'exit promoted (not in state_extras)');
-ok(!exists $state_x->{times},        'times promoted (not in state_extras)');
-ok(!exists $state_x->{child_times},  'child_times promoted (not in state_extras)');
-ok(!exists $state_x->{child_wall},   'child_wall promoted (not in state_extras)');
-ok(!exists $state_x->{jobs},         'jobs aggregated (not in state_extras)');
-ok(!exists $state_x->{subtests},     'subtests aggregated (not in state_extras)');
-ok(!exists $state_x->{services},     'services aggregated (not in state_extras)');
+    ok(defined $run->{times}, 'runs.times populated');
+    is(decode_json($run->{times}), [9, 8, 7, 6], 'runs.times: report wins on collision');
 
-# Old BLOB columns are gone.
-my $cols = $dbh->selectall_arrayref(q{PRAGMA table_info(runs)}, { Slice => {} });
-my %col_names = map { $_->{name} => 1 } @$cols;
-ok(!exists $col_names{spec},  'runs.spec column dropped');
-ok(!exists $col_names{state}, 'runs.state column dropped');
-ok( exists $col_names{times},        'runs.times column present');
-ok( exists $col_names{child_times},  'runs.child_times column present');
-ok( exists $col_names{child_wall},   'runs.child_wall column present');
-ok( exists $col_names{spec_extras},  'runs.spec_extras column present');
-ok( exists $col_names{state_extras}, 'runs.state_extras column present');
+    ok(defined $run->{child_times}, 'runs.child_times populated');
+    is(decode_json($run->{child_times}), [0.5, 0.6, 0.7, 0.8], 'runs.child_times');
+    is($run->{child_wall} + 0, 1.234, 'runs.child_wall numeric pass-through');
 
-# --- job_tries row ---
+    ok(defined $run->{spec_extras}, 'runs.spec_extras populated');
+    my $spec_x = decode_json($run->{spec_extras});
+    is($spec_x->{harness}, 'yath',     'runs.spec_extras.harness present');
+    is($spec_x->{name},    'fancy run', 'runs.spec_extras.name present');
+    ok(!exists $spec_x->{started_at}, 'started_at promoted (not in spec_extras)');
+    ok(!exists $spec_x->{times},      'times promoted (not in spec_extras)');
+    ok(!exists $spec_x->{run_uuid},   'run_uuid identity (not in spec_extras)');
+    ok(!exists $spec_x->{jobs},       'jobs aggregated (not in spec_extras)');
+    ok(!exists $spec_x->{subtests},   'subtests aggregated (not in spec_extras)');
+    ok(!exists $spec_x->{services},   'services aggregated (not in spec_extras)');
 
-my $jt = $dbh->selectrow_hashref(q{
-    SELECT jt.*
-      FROM job_tries jt
-      JOIN jobs      j ON j.job_id = jt.job_id
-     WHERE j.archive_id = ?
-}, undef, $aid);
-ok(defined $jt, 'job_tries row exists');
+    ok(defined $run->{state_extras}, 'runs.state_extras populated');
+    my $state_x = decode_json($run->{state_extras});
+    is($state_x->{git_status}, 'clean',       'runs.state_extras.git_status present');
+    is($state_x->{host},       'box.example', 'runs.state_extras.host present');
+    ok(!exists $state_x->{ended_at},     'ended_at promoted (not in state_extras)');
+    ok(!exists $state_x->{exit},         'exit promoted (not in state_extras)');
+    ok(!exists $state_x->{times},        'times promoted (not in state_extras)');
+    ok(!exists $state_x->{child_times},  'child_times promoted (not in state_extras)');
+    ok(!exists $state_x->{child_wall},   'child_wall promoted (not in state_extras)');
+    ok(!exists $state_x->{jobs},         'jobs aggregated (not in state_extras)');
+    ok(!exists $state_x->{subtests},     'subtests aggregated (not in state_extras)');
+    ok(!exists $state_x->{services},     'services aggregated (not in state_extras)');
 
-# Promoted typed columns from spec.
-is($db->_db_datetime_to_iso($jt->{queued_at}),  '2026-05-07T00:00:00.500Z', 'job_tries.queued_at from spec');
-is($db->_db_datetime_to_iso($jt->{started_at}), '2026-05-07T00:00:01Z',     'job_tries.started_at from spec');
+    my $cols = $dbh->selectall_arrayref(q{PRAGMA table_info(runs)}, { Slice => {} });
+    my %col_names = map { $_->{name} => 1 } @$cols;
+    ok(!exists $col_names{spec},  'runs.spec column dropped');
+    ok(!exists $col_names{state}, 'runs.state column dropped');
+    ok( exists $col_names{times},        'runs.times column present');
+    ok( exists $col_names{child_times},  'runs.child_times column present');
+    ok( exists $col_names{child_wall},   'runs.child_wall column present');
+    ok( exists $col_names{spec_extras},  'runs.spec_extras column present');
+    ok( exists $col_names{state_extras}, 'runs.state_extras column present');
 
-# Promoted typed columns from report.
-is($db->_db_datetime_to_iso($jt->{ended_at}), '2026-05-07T00:00:02Z', 'job_tries.ended_at from report');
-is($jt->{exit},            0,                       'job_tries.exit from report');
-is($jt->{pass},            1,                       'job_tries.pass from report');
-is($jt->{pass_count},      5,                       'job_tries.pass_count from report');
-is($jt->{fail_count},      0,                       'job_tries.fail_count from report');
-is($jt->{assertion_count}, 5,                       'job_tries.assertion_count from report');
+    # --- job_tries row ---
 
-ok(defined $jt->{plan}, 'job_tries.plan populated');
-is(decode_json($jt->{plan}), {count => 5}, 'job_tries.plan JSON');
-ok(defined $jt->{halt}, 'job_tries.halt populated');
-is(decode_json($jt->{halt}), {reason => 'normal'}, 'job_tries.halt JSON');
+    my $jt = $dbh->selectrow_hashref(q{
+        SELECT jt.*
+          FROM job_tries jt
+          JOIN jobs      j ON j.job_id = jt.job_id
+         WHERE j.archive_id = ?
+    }, undef, $aid);
+    ok(defined $jt, 'job_tries row exists');
 
-# times: report wins.
-ok(defined $jt->{times}, 'job_tries.times populated');
-is(decode_json($jt->{times}), [9, 8, 7, 6], 'job_tries.times: report wins on collision');
-ok(defined $jt->{child_times}, 'job_tries.child_times populated');
-is(decode_json($jt->{child_times}), [0.1, 0.2, 0.3, 0.4], 'job_tries.child_times');
-is($jt->{child_wall} + 0, 0.5, 'job_tries.child_wall numeric pass-through');
+    is($db->backend->db_parse_datetime($jt->{queued_at}),  1778112000.5, 'job_tries.queued_at from spec');
+    is($db->backend->db_parse_datetime($jt->{started_at}), 1778112001,   'job_tries.started_at from spec');
 
-# spec_extras: unpromoted spec keys land here. 'relative' is not in
-# JOB_TRIES_SPEC_PROMOTED_KEYS, so it falls into spec_extras. (It is
-# separately consumed by job_specs/test_files via _populate_job_spec.)
-ok(defined $jt->{spec_extras}, 'job_tries.spec_extras populated');
-my $jt_spec_x = decode_json($jt->{spec_extras});
-is($jt_spec_x->{comment}, 'a per-try note', 'job_tries.spec_extras.comment present');
-ok(!exists $jt_spec_x->{queued_at},  'queued_at promoted (not in spec_extras)');
-ok(!exists $jt_spec_x->{started_at}, 'started_at promoted (not in spec_extras)');
-ok(!exists $jt_spec_x->{times},      'times promoted (not in spec_extras)');
+    is($db->backend->db_parse_datetime($jt->{ended_at}), 1778112002, 'job_tries.ended_at from report');
+    is($jt->{exit},            0,                       'job_tries.exit from report');
+    is($jt->{pass},            1,                       'job_tries.pass from report');
+    is($jt->{pass_count},      5,                       'job_tries.pass_count from report');
+    is($jt->{fail_count},      0,                       'job_tries.fail_count from report');
+    is($jt->{assertion_count}, 5,                       'job_tries.assertion_count from report');
 
-# state_extras: unpromoted report keys; aggregated subtests dropped.
-ok(defined $jt->{state_extras}, 'job_tries.state_extras populated');
-my $jt_state_x = decode_json($jt->{state_extras});
-is($jt_state_x->{note}, 'all good', 'job_tries.state_extras.note present');
-ok(!exists $jt_state_x->{ended_at},        'ended_at promoted (not in state_extras)');
-ok(!exists $jt_state_x->{pass_count},      'pass_count promoted (not in state_extras)');
-ok(!exists $jt_state_x->{plan},            'plan promoted (not in state_extras)');
-ok(!exists $jt_state_x->{halt},            'halt promoted (not in state_extras)');
-ok(!exists $jt_state_x->{times},           'times promoted (not in state_extras)');
-ok(!exists $jt_state_x->{subtests},        'subtests aggregated (not in state_extras)');
+    ok(defined $jt->{plan}, 'job_tries.plan populated');
+    is(decode_json($jt->{plan}), {count => 5}, 'job_tries.plan JSON');
+    ok(defined $jt->{halt}, 'job_tries.halt populated');
+    is(decode_json($jt->{halt}), {reason => 'normal'}, 'job_tries.halt JSON');
 
-# Subtests still get exploded into the subtests table (sanity check).
-my $subtests = $dbh->selectall_arrayref(
-    q{SELECT name FROM subtests WHERE job_try_id = ? ORDER BY ord},
-    { Slice => {} }, $jt->{job_try_id},
-);
-is(scalar @$subtests, 2,       '2 subtests rows for the job_try');
-is($subtests->[0]{name}, 'sub_a', 'subtest 0 name');
-is($subtests->[1]{name}, 'sub_b', 'subtest 1 name');
+    ok(defined $jt->{times}, 'job_tries.times populated');
+    is(decode_json($jt->{times}), [9, 8, 7, 6], 'job_tries.times: report wins on collision');
+    ok(defined $jt->{child_times}, 'job_tries.child_times populated');
+    is(decode_json($jt->{child_times}), [0.1, 0.2, 0.3, 0.4], 'job_tries.child_times');
+    is($jt->{child_wall} + 0, 0.5, 'job_tries.child_wall numeric pass-through');
 
-# Old job_tries BLOB columns are gone.
-my $jt_cols = $dbh->selectall_arrayref(q{PRAGMA table_info(job_tries)}, { Slice => {} });
-my %jt_col_names = map { $_->{name} => 1 } @$jt_cols;
-ok(!exists $jt_col_names{spec},  'job_tries.spec column dropped');
-ok(!exists $jt_col_names{state}, 'job_tries.state column dropped');
-ok( exists $jt_col_names{queued_at},       'job_tries.queued_at column present');
-ok( exists $jt_col_names{pass_count},      'job_tries.pass_count column present');
-ok( exists $jt_col_names{fail_count},      'job_tries.fail_count column present');
-ok( exists $jt_col_names{assertion_count}, 'job_tries.assertion_count column present');
-ok( exists $jt_col_names{plan},            'job_tries.plan column present');
-ok( exists $jt_col_names{halt},            'job_tries.halt column present');
-ok( exists $jt_col_names{times},           'job_tries.times column present');
-ok( exists $jt_col_names{child_times},     'job_tries.child_times column present');
-ok( exists $jt_col_names{child_wall},      'job_tries.child_wall column present');
-ok( exists $jt_col_names{spec_extras},     'job_tries.spec_extras column present');
-ok( exists $jt_col_names{state_extras},    'job_tries.state_extras column present');
+    ok(defined $jt->{spec_extras}, 'job_tries.spec_extras populated');
+    my $jt_spec_x = decode_json($jt->{spec_extras});
+    is($jt_spec_x->{comment}, 'a per-try note', 'job_tries.spec_extras.comment present');
+    ok(!exists $jt_spec_x->{queued_at},  'queued_at promoted (not in spec_extras)');
+    ok(!exists $jt_spec_x->{started_at}, 'started_at promoted (not in spec_extras)');
+    ok(!exists $jt_spec_x->{times},      'times promoted (not in spec_extras)');
 
-# --- Promoted-key constants exposed for downstream ---
+    ok(defined $jt->{state_extras}, 'job_tries.state_extras populated');
+    my $jt_state_x = decode_json($jt->{state_extras});
+    is($jt_state_x->{note}, 'all good', 'job_tries.state_extras.note present');
+    ok(!exists $jt_state_x->{ended_at},        'ended_at promoted (not in state_extras)');
+    ok(!exists $jt_state_x->{pass_count},      'pass_count promoted (not in state_extras)');
+    ok(!exists $jt_state_x->{plan},            'plan promoted (not in state_extras)');
+    ok(!exists $jt_state_x->{halt},            'halt promoted (not in state_extras)');
+    ok(!exists $jt_state_x->{times},           'times promoted (not in state_extras)');
+    ok(!exists $jt_state_x->{subtests},        'subtests aggregated (not in state_extras)');
 
-ok(scalar(@App::Yath2::Log::DB::RUNS_SPEC_PROMOTED_KEYS) > 0,
-    '@RUNS_SPEC_PROMOTED_KEYS non-empty');
-ok((grep { $_ eq 'started_at' } @App::Yath2::Log::DB::RUNS_SPEC_PROMOTED_KEYS),
-    'started_at in @RUNS_SPEC_PROMOTED_KEYS');
-ok((grep { $_ eq 'ended_at'   } @App::Yath2::Log::DB::RUNS_REPORT_PROMOTED_KEYS),
-    'ended_at in @RUNS_REPORT_PROMOTED_KEYS');
-ok((grep { $_ eq 'jobs' } @App::Yath2::Log::DB::RUNS_AGGREGATED_KEYS),
-    'jobs in @RUNS_AGGREGATED_KEYS');
-ok((grep { $_ eq 'subtests' } @App::Yath2::Log::DB::RUNS_AGGREGATED_KEYS),
-    'subtests in @RUNS_AGGREGATED_KEYS');
-ok((grep { $_ eq 'services' } @App::Yath2::Log::DB::RUNS_AGGREGATED_KEYS),
-    'services in @RUNS_AGGREGATED_KEYS');
+    my $subtests = $dbh->selectall_arrayref(
+        q{SELECT name FROM subtests WHERE job_try_id = ? ORDER BY ord},
+        { Slice => {} }, $jt->{job_try_id},
+    );
+    is(scalar @$subtests, 2,       '2 subtests rows for the job_try');
+    is($subtests->[0]{name}, 'sub_a', 'subtest 0 name');
+    is($subtests->[1]{name}, 'sub_b', 'subtest 1 name');
 
-ok(scalar(@App::Yath2::Log::DB::JOB_TRIES_SPEC_PROMOTED_KEYS) > 0,
-    '@JOB_TRIES_SPEC_PROMOTED_KEYS non-empty');
-ok((grep { $_ eq 'queued_at' } @App::Yath2::Log::DB::JOB_TRIES_SPEC_PROMOTED_KEYS),
-    'queued_at in @JOB_TRIES_SPEC_PROMOTED_KEYS');
-ok((grep { $_ eq 'plan' } @App::Yath2::Log::DB::JOB_TRIES_REPORT_PROMOTED_KEYS),
-    'plan in @JOB_TRIES_REPORT_PROMOTED_KEYS');
-ok((grep { $_ eq 'subtests' } @App::Yath2::Log::DB::JOB_TRIES_AGGREGATED_KEYS),
-    'subtests in @JOB_TRIES_AGGREGATED_KEYS');
+    my $jt_cols = $dbh->selectall_arrayref(q{PRAGMA table_info(job_tries)}, { Slice => {} });
+    my %jt_col_names = map { $_->{name} => 1 } @$jt_cols;
+    ok(!exists $jt_col_names{spec},  'job_tries.spec column dropped');
+    ok(!exists $jt_col_names{state}, 'job_tries.state column dropped');
+    ok( exists $jt_col_names{queued_at},       'job_tries.queued_at column present');
+    ok( exists $jt_col_names{pass_count},      'job_tries.pass_count column present');
+    ok( exists $jt_col_names{fail_count},      'job_tries.fail_count column present');
+    ok( exists $jt_col_names{assertion_count}, 'job_tries.assertion_count column present');
+    ok( exists $jt_col_names{plan},            'job_tries.plan column present');
+    ok( exists $jt_col_names{halt},            'job_tries.halt column present');
+    ok( exists $jt_col_names{times},           'job_tries.times column present');
+    ok( exists $jt_col_names{child_times},     'job_tries.child_times column present');
+    ok( exists $jt_col_names{child_wall},      'job_tries.child_wall column present');
+    ok( exists $jt_col_names{spec_extras},     'job_tries.spec_extras column present');
+    ok( exists $jt_col_names{state_extras},    'job_tries.state_extras column present');
+});
 
 done_testing;

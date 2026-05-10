@@ -1,3 +1,12 @@
+**Superseded by `AI_DOCS/2026-05-08-yath-db-rebuild.md`.** Decisions in
+this document are historical; the architecture they describe was
+replaced by the DB rebuild (App::Yath2::DB::Internal* deleted in favor
+of App::Yath2::DB + App::Yath2::DB::SQL + App::Yath2::DB::DBIC). See
+the rebuild plan for current state.
+
+----
+(original content below)
+
 # Yath DB Namespace — Design Spec
 
 **Status:** approved 2026-05-08

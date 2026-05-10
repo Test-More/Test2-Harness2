@@ -90,7 +90,7 @@ yath(
         ok(ref($rep->{meta}) eq 'HASH', 'json meta is a hashref');
         is($rep->{meta}{format_version}, 1, 'json meta format_version');
         like($rep->{meta}{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'json meta archive_uuid');
-        like($rep->{meta}{created_at},   qr/^\d{4}-\d{2}-\d{2}T/, 'json meta created_at');
+        like($rep->{meta}{created_at},   qr/^[0-9]+(?:\.[0-9]+)?$/, 'json meta created_at hi-res epoch');
     },
 );
 # }}}
@@ -140,10 +140,10 @@ yath(
 # uuids to land three distinct archive rows.)
 my $sqlite_multi = "$tmp/multi.yath";
 {
-    require App::Yath2::Log::DB::Sqlite;
+    require App::Yath2::DB;
     require Test2::Util::UUID;
     Test2::Util::UUID->import('gen_uuid');
-    my $dest = App::Yath2::Log::DB::Sqlite->new(file => $sqlite_multi);
+    my $dest = App::Yath2::DB->open(file => $sqlite_multi);
     my $src  = App::Yath2::Log->new(dir => $logs_dir);
     $dest->insert($src, archive_uuid => gen_uuid());
     $dest->insert($src, archive_uuid => gen_uuid());

@@ -60,7 +60,7 @@ build_dir($src);
     my $meta = decode_json($bytes);
     is($meta->{format_version}, 1, 'tar.zidx meta: format_version 1');
     like($meta->{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'tar.zidx meta: archive_uuid shape');
-    like($meta->{created_at},   qr/^\d{4}-\d{2}-\d{2}T/, 'tar.zidx meta: ISO timestamp');
+    like($meta->{created_at},   qr/^[0-9]+(?:\.[0-9]+)?$/, 'tar.zidx meta: hi-res unix epoch');
     ok(defined $meta->{host},        'tar.zidx meta: host set');
     ok(defined $meta->{user},        'tar.zidx meta: user set');
     ok(defined $meta->{yath_version},'tar.zidx meta: yath_version set');
@@ -86,7 +86,11 @@ build_dir($src);
     my $meta = decode_json($a->get('meta.json'));
     is($meta->{format_version}, 1, 'sqlite meta: format_version 1');
     like($meta->{archive_uuid}, qr/^[0-9A-Fa-f-]{36}$/, 'sqlite meta: archive_uuid shape');
-    is($meta->{archive_uuid}, $log->uuid, 'sqlite meta archive_uuid matches archives row');
+    # archive_uuid round-trips through canonical lowercase hex in
+    # App::Yath2::DB; legacy gen_uuid output is uppercase. Compare
+    # case-insensitively.
+    is(lc($meta->{archive_uuid}), lc($log->uuid),
+        'sqlite meta archive_uuid matches archives row');
 
     # Extract sqlite to dir and verify meta lands too.
     my $extract = "$tmp/sql-extracted";
@@ -98,9 +102,10 @@ build_dir($src);
 
 # {{{ insert() into multi-archive DB drops a fresh meta.json per archive
 {
-    require App::Yath2::Log::DB::Sqlite;
+    require App::Yath2::DB;
+    require App::Yath2::Log::DB;
     my $db_path = "$tmp/multi.yath";
-    my $writer = App::Yath2::Log::DB::Sqlite->new(file => $db_path);
+    my $writer = App::Yath2::DB->open(file => $db_path);
 
     my @uuids;
     for (1 .. 3) {
@@ -112,16 +117,16 @@ build_dir($src);
     is(scalar @uuids, 3, 'three archives inserted');
     is(scalar(do { my %s; @s{@uuids} = (); keys %s }), 3, 'each archive has a unique uuid');
 
-    require App::Yath2::LogDB;
-    my $ldb = App::Yath2::LogDB->new(file => $db_path);
-    is($ldb->archive_count, 3, 'LogDB: 3 archives');
+    my $db = App::Yath2::DB->new(file => $db_path);
+    is($db->archive_count, 3, 'DB: 3 archives');
 
     for my $u (@uuids) {
-        my $log = $ldb->log($u);
+        my $log = App::Yath2::Log::DB->new(db => $db, uuid => $u);
         my $a = $log->artifacts;
         ok($a->exists('meta.json'), "archive $u has meta.json");
         my $meta = decode_json($a->get('meta.json'));
-        is($meta->{archive_uuid}, $u, "archive $u meta.json archive_uuid matches");
+        is(lc($meta->{archive_uuid}), lc($u),
+            "archive $u meta.json archive_uuid matches");
     }
 }
 # }}}

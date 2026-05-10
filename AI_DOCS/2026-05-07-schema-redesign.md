@@ -522,9 +522,13 @@ Reproduced from `SCHEMA_REDESIGN_DECISIONS.md`:
 - **`events.jsonl.zst` still stored as artifact bytes.** No `events`
   table; events stay in `artifacts.payload` as zstd-compressed
   JSONL. Out of scope for this redesign.
-- **App::Yath2DB DBIC sync** — the dist isn't written yet; when it
-  is, it'll consume this schema directly. No external-dist coupling
-  in this redesign.
+- **App::Yath2::DB DBIC consumption** — `App::Yath2::DB::DBIC` ships
+  in this dist (see `AI_DOCS/2026-05-08-yath-db-namespace.md`) and
+  consumes this schema via hand-written Result classes under
+  `App::Yath2::DB::DBIC::Result::*`. Bootstrap is still
+  `share/schema/$flavor.sql`-driven; DBIC's `deploy()` is never
+  called. External `App::Yath2::UI` would consume the same DBIC
+  schema if/when it is written.
 
 ## Pre-existing follow-up surfaced
 

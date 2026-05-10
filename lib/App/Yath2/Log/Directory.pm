@@ -2,7 +2,7 @@ package App::Yath2::Log::Directory;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Compress::Zstd ();
@@ -34,6 +34,14 @@ use Object::HashBase qw{
     +seen_starts
     +closed_starts
 };
+
+# `with` is safe at the top because every method here is a regular
+# `sub name { ... }` declaration -- those BEGIN-elevate, so they exist
+# at compile time when the role's `requires` check runs. (The late-with
+# workaround is only needed for `*name = sub { ... }` assignments,
+# which never BEGIN-elevate.)
+use Role::Tiny::With;
+with 'App::Yath2::Role::Log';
 
 # Directory-backed Log reader. Implements the full reader API for a
 # yath log laid out as a normal filesystem tree. Sealed (post-extract,
@@ -736,10 +744,10 @@ sub archive {
     my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
 
     if ($format eq 'sqlite') {
-        require App::Yath2::Log::DB::Sqlite;
+        require App::Yath2::DB;
         # Refuse to clobber an existing destination -- fresh file only.
         croak "destination '$out' already exists" if -e $out;
-        my $dest = App::Yath2::Log::DB::Sqlite->new(file => $out);
+        my $dest = App::Yath2::DB->new(file => $out);
         # DB::insert builds the archive metadata and drops a fresh
         # meta.json into the archive root itself. seal => 1 appends
         # the YATHFOOT trailer (and a zstd-compressed copy of

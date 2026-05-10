@@ -2,7 +2,7 @@ package Test2::Harness2::Role::Service;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use POSIX qw/:sys_wait_h getpgrp/;

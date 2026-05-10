@@ -12,7 +12,7 @@ use App::Yath2UI::Schema::ImportModes qw/is_mode/;
 
 use Test2::Harness2::Util qw/clean_path/;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';

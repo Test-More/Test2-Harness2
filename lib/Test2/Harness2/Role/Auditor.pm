@@ -2,7 +2,7 @@ package Test2::Harness2::Role::Auditor;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Role::Tiny;
 

@@ -2,7 +2,7 @@ package App::Yath2::Log::Iterator::JSONL;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use Time::HiRes qw/time/;
@@ -15,11 +15,14 @@ use Object::HashBase qw{
     <path
     <live
     <records
-    +reader
+    <reader
     +buffer
     +eof
     +read_all
 };
+
+use Role::Tiny::With;
+with 'App::Yath2::Role::EventIterator';
 
 # Iterator over a single .jsonl(.zst) file or an in-memory record list.
 # Used by the per-artifact events / spec / report iterators returned by
@@ -41,17 +44,23 @@ use Object::HashBase qw{
 
 sub init {
     my $self = shift;
+    my $have = grep { defined $self->{$_} } (RECORDS, PATH, READER);
+    croak "'records' / 'path' / 'reader' are mutually exclusive"
+        if $have > 1;
+
     if (defined $self->{+RECORDS}) {
-        croak "'records' and 'path' are mutually exclusive"
-            if defined $self->{+PATH};
         croak "'records' must be an arrayref"
             unless ref($self->{+RECORDS}) eq 'ARRAY';
-        # Records-backed iterators are always sealed: EOE is purely
-        # a function of how many records remain.
+        # Records-backed iterators are always sealed.
+        $self->{+LIVE} = 0;
+    }
+    elsif (defined $self->{+READER}) {
+        # Reader-backed iterators are always sealed (the underlying
+        # storage is a fixed in-memory blob from a DB read).
         $self->{+LIVE} = 0;
     }
     else {
-        croak "'path' or 'records' is a required attribute"
+        croak "'path', 'records', or 'reader' is a required attribute"
             unless defined $self->{+PATH} && length $self->{+PATH};
         $self->{+LIVE} //= 0;
     }
@@ -214,6 +223,20 @@ sub end_of_events {
 # Reset back to the beginning of the file / record list.
 sub reset {
     my $self = shift;
+
+    # Reader-supplied at construction: the underlying scalar handle is
+    # one-shot. Drain whatever is left and convert to records-mode so
+    # repeated reset / next cycles work over a snapshot.
+    if (defined $self->{+READER} && !defined $self->{+PATH}) {
+        $self->_read_all unless $self->{+READ_ALL};
+        $self->{+RECORDS} = [@{$self->{_all} // []}];
+        eval { $self->{+READER}->close; 1 };
+        delete $self->{+READER};
+        $self->{+BUFFER}   = [];
+        $self->{+EOF}      = 0;
+        return;
+    }
+
     if (defined $self->{+RECORDS}) {
         # Records-backed iterators retain a private snapshot of the
         # original record list ('_all' is populated lazily by _read_all).
@@ -265,6 +288,14 @@ L<App::Yath2::Log::Artifact/report_iter>. Wraps a
 L<Test2::Harness2::Util::JSONL::Reader> with the convenience methods
 the reader API requires (C<next>, C<first>, C<last>, C<count>,
 C<EOE>, C<reset>).
+
+Consumes L<App::Yath2::Role::EventIterator>; the role's required
+methods (C<next>, C<EOE>, C<reset>, C<count>) are all native here, and
+C<all> / C<first> are usable through the role contract too. The
+local C<first> / C<last> implementations on this class are kept
+because they internally cache the full record list (fast for spec /
+report files) -- functionally equivalent to the role default for
+C<first>, plus an extra C<last> not on the role.
 
 Two construction forms are supported:
 

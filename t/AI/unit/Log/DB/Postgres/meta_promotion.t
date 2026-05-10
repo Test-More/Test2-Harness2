@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/postgresql/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'PostgreSQL');
 
     use File::Temp qw/tempdir/;
@@ -16,15 +18,14 @@ for_each_db_version([qw/postgresql/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::Postgres;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'PostgreSQL' });
     {
     my $admin = DBI->connect(
         $qdb->connect_string('postgres'), undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1, pg_enable_utf8 => 1 },
     ) or die "connect: $DBI::errstr";
-    $admin->do('CREATE DATABASE yath_log_test_metapromotion');
+    eval { $admin->do('CREATE DATABASE yath_log_test_metapromotion'); };
     $admin->disconnect;
     }
     my $dsn = $qdb->connect_string('yath_log_test_metapromotion');
@@ -48,7 +49,7 @@ for_each_db_version([qw/postgresql/], sub {
     return $src;
     }
 
-    my $db = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
 
     my $src = build_minimal_log();
@@ -70,7 +71,7 @@ for_each_db_version([qw/postgresql/], sub {
      WHERE archive_id = ? AND artifact_kind = 'arbitrary' AND name = 'meta.json'
     }, undef, $aid);
 
-    my $log  = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $log  = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     my $root = $log->artifacts;
     ok($root->exists('meta.json'), 'meta.json visible at archive root');
 
@@ -81,7 +82,7 @@ for_each_db_version([qw/postgresql/], sub {
     ok(defined $meta->{user},         'user present');
     ok(defined $meta->{yath_version}, 'yath_version present');
     is($meta->{format_version}, 1,    'format_version via meta_extras');
-    like($meta->{created_at}, qr/^\d{4}-\d{2}-\d{2}T/, 'created_at ISO shape');
+    like($meta->{created_at}, qr/^[0-9]+(?:\.[0-9]+)?$/, 'created_at hi-res unix epoch');
 
     my $row = $dbh->selectrow_hashref(q{
     SELECT host, "user" AS user_, git_sha, project, yath_version,
@@ -103,6 +104,7 @@ for_each_db_version([qw/postgresql/], sub {
     ok(!exists $extras->{archive_uuid},  'archive_uuid not duplicated');
     ok(!exists $extras->{host},          'host not duplicated');
 
+    });
 });
 
 done_testing;

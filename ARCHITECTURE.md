@@ -2024,6 +2024,31 @@ The single event class everything emits. `Object::HashBase` attributes:
 caches the encoded form; `TO_JSON` deep-copies `facet_data` to avoid
 serialisation surprises.
 
+### `App::Yath2::Role::Log`
+
+The Log API contract. Every log backend (`Log::Live`,
+`Log::Directory`, `Log::TarZIdx`, `Log::DB`) consumes this role,
+which makes the Log surface uniform across backends:
+listing (`services` / `runs` / `jobs` / `tries` / `has_*`),
+file enumeration (`list_files`, `artifacts`),
+the depth-first event walker (`event` / `events` / `EOE` / `reset`),
+format / IO (`extract` / `archive` / `insert`, `absolute_path`),
+and status (`is_live` / `static`). `App::Yath2::Log::Artifact`
+calls back into its log only through Role::Log methods — there is
+no private per-backend artifact API.
+
+### `App::Yath2::DB`
+
+The data layer that owns codecs (UUID 36-char-hex round-trip,
+JSON column shape, datetime parse / format, payload zstd handling)
+and every transformation above the row layer (spec.jsonl bytes from
+typed columns, report.jsonl bytes, meta.json record from
+`archives` row plus `meta_extras`, depth-first event walking).
+Backends (`App::Yath2::DB::SQL`, `App::Yath2::DB::DBIC`) supply
+row-level primitives only and exchange canonical Perl values with
+this layer; flavor encoding lives at the bind site, not at the
+data layer.
+
 ## 23. On-disk wire formats
 
 ### Atomic-pipe message format (formatter / EventEmitter → collector)
@@ -2168,17 +2193,50 @@ Optional dependencies, gated by `HAS_*` constants and loaded lazily:
 | `Test2::Harness2::ChildSubReaper` | Linux      | `PR_SET_CHILD_SUBREAPER` for orphan reparenting       |
 | `Win32::Job` (or `Win32::Process`) | Windows   | Job-object isolation when collector wants `new_pgroup` |
 
+DB / UI optional deps:
+
+| Module          | Required by                  | Notes                                       |
+|-----------------|------------------------------|---------------------------------------------|
+| `DBI`           | `App::Yath2::DB::SQL`        | Required when any DB backend is opened.     |
+| `DBD::SQLite`   | sqlite-flavor `DB::SQL`      | Per-flavor; lazy-loaded on demand.          |
+| `DBD::Pg`       | postgres-flavor `DB::SQL`    | Per-flavor; lazy-loaded on demand.          |
+| `DBD::mysql`    | mysql-flavor `DB::SQL`       | Per-flavor; lazy-loaded on demand.          |
+| `DBD::MariaDB`  | mariadb-flavor `DB::SQL`     | Per-flavor; lazy-loaded on demand.          |
+| `DBIx::Class`   | `App::Yath2::DB::DBIC`       | Optional. Lazy-loaded only when a caller    |
+|                 |                              | constructs the DBIC backend.                |
+| `Compress::Zstd`| `App::Yath2::Log::*`         | Required (compressed JSONL artifacts).      |
+
 The **`cpanfile`** in the repo is generated from `dist.ini` and
 includes some leftovers from `yath` 1.0 as well as deps used only by
 the `App::Yath2::DB` / `App::Yath2::UI` namespaces (DBI, DBIx::Class::*,
 Plack, Email, XML, etc.). The DB / UI deps must be marked optional
 per the namespace dependency contract in §17; deps used by
 `Test2::Harness2`, `Test2::Formatter::Stream2`, or `App::Yath2` may
-remain hard requirements.
+remain hard requirements. `App::Yath2::DB::SQL` requires `DBI`
+(plus the appropriate `DBD::*` for the flavor in use);
+`App::Yath2::DB::DBIC` additionally requires `DBIx::Class`, lazy-loaded
+only when its constructor runs.
 
 ## 25. Coding Conventions
 
 See `STYLE_GUIDE.md` for code style conventions.
+
+### DB layer: codecs at the data layer, canonical values across the role
+
+`App::Yath2::DB` owns every codec and transformation:
+UUID 36-char-lowercase-hex round-trip, JSON column shape (decoded
+Perl refs), datetime parse / format (ISO-8601 strings), payload
+zstd handling, spec / report / meta.json reconstruction. Backends
+(`App::Yath2::DB::SQL`, `App::Yath2::DB::DBIC`) speak only canonical
+Perl values: UUIDs as 36-char lowercase hex strings, JSON columns
+as decoded refs, datetimes as ISO-8601 strings, payloads as raw
+bytes (zstd-encoded if `compressed=1`), booleans as 0/1. Per-flavor
+encode/decode happens at the bind site inside the backend; the data
+layer never sees flavor-native shapes.
+
+Adding a new backend means implementing the `Role::DB::Backend`
+primitive contract end-to-end; no transformation logic is needed
+because every transformation already lives on `App::Yath2::DB`.
 
 ## 26. Test Suite
 
@@ -2698,12 +2756,21 @@ argument shape:
 | ------------------- | ---------------------------------- |
 | `live => $dir`      | `App::Yath2::Log::Live`            |
 | `dir  => $dir`      | `App::Yath2::Log::Directory`       |
-| `file => $f`        | `Log::TarZIdx` or `Log::Sqlite`    |
-|                     | (auto-detected by magic bytes)     |
-| `dbh  => ...`       | `App::Yath2::Log::DB::Sqlite`          |
-| `dsn  => ...`       | `App::Yath2::Log::DB::Sqlite` /        |
-|                     | `Log::Postgres` / `Log::MariaDB` / |
-|                     | `Log::MySQL`                       |
+| `file => $f`        | `Log::TarZIdx` or `App::Yath2::`   |
+|                     | `Log::DB` (auto-detected by magic  |
+|                     | bytes; the latter wraps a sqlite-  |
+|                     | flavor `Role::DB::Backend` doer)   |
+| `dbh  => ...`       | `App::Yath2::Log::DB`              |
+| `dsn  => ...`       | `App::Yath2::Log::DB`              |
+
+`App::Yath2::Log::DB` is a thin Role::Log consumer: it pins itself
+to one `(db, archive_uuid)` pair and delegates every Role::Log
+method to the backend-agnostic data class `App::Yath2::DB`.
+`App::Yath2::DB` in turn talks to a `Role::DB::Backend` doer
+(`App::Yath2::DB::SQL` by default, `App::Yath2::DB::DBIC` when
+`backend => 'dbic'`). The DB flavor is derived from the DSN / dbh;
+the `backend =>` selector picks SQL vs DBIC. See "DB backend
+selection" below.
 
 Magic-byte detection: SQLite magic (`'SQLite format 3\\0'`,
 header) wins first, then the tar.zidx footer marker
@@ -2737,12 +2804,70 @@ Every backend exposes the same surface:
   from. This is the read-side replacement for the old writer-side
   identifier mirroring.
 
-The DB backends share `App::Yath2::Log::DB` as their abstract
-base. Per-flavor classes provide DSN construction, schema
-bootstrap from `share/schema/<flavor>.sql`, UUID + JSON codecs,
-and payload bind hooks. The `archives` table makes multi-archive
-the universal model: a "single sqlite .yath" is just N=1 in the
-same table.
+DB-backed access is split into two layers: a backend-agnostic
+data class (`App::Yath2::DB`) that owns every codec, transformation,
+and reconstruction, and a `Role::DB::Backend` doer that supplies
+row-level primitives only. Two backends consume the role:
+
+- `App::Yath2::DB::SQL` — single class, raw DBI. Flavor branches
+  live inside individual methods (UUID bind, bytea, MariaDB-vs-MySQL
+  detection, etc.) rather than in per-flavor subclasses.
+- `App::Yath2::DB::DBIC` — single class wrapping a
+  `DBIx::Class::Schema` subclass with hand-written Result classes.
+  Flavor handled by DBIC storage detection plus a small
+  `flavor_override` slot for DBD::MariaDB-vs-MySQL disambiguation.
+
+Both backends use the SAME schema files: bootstrap is always
+SQL-file-driven via the role's `bootstrap_schema`, which reads
+`share/schema/<flavor>.sql`. DBIC's `deploy()` is never called.
+Backends speak canonical Perl values only — UUIDs as 36-char
+lowercase hex, JSON columns as decoded refs, datetimes as
+ISO-8601 strings, payloads as raw bytes. Per-flavor encode/decode
+on bind/fetch is the backend's job; codec logic and reconstruction
+live entirely on `App::Yath2::DB`.
+
+`App::Yath2::Log::DB` is a thin Role::Log consumer pinned to one
+`(db, archive_uuid)` pair; every Role::Log method one-lines
+through `$self->db->$method($self->{uuid}, ...)`. The `archives`
+table makes multi-archive the universal model: a "single sqlite
+.yath" is just N=1 in the same table.
+
+#### DB backend selection
+
+Two implementations of `App::Yath2::Role::DB::Backend` are
+available:
+
+- **`backend => 'sql'`** (default): `App::Yath2::DB::SQL`. Emits
+  SQL directly via DBI. This is what yath itself uses for
+  read/write traffic.
+
+- **`backend => 'dbic'`**: `App::Yath2::DB::DBIC`, a single class
+  wrapping a `DBIx::Class::Schema` subclass with hand-written
+  Result classes. Targeted at downstream consumers (e.g.
+  `App::Yath2::UI`) that want ResultSet-shaped access.
+
+Both consume the same role; functional behavior is identical and
+both produce/consume canonical row hashrefs. Bootstrap is always
+driven by `share/schema/$flavor.sql` -- DBIC's `deploy()` is never
+called. The Log::DB proxy delegates blindly to `App::Yath2::DB`,
+which in turn calls whichever backend was selected; backend
+selection is invisible above the DB layer.
+
+Pick a backend at construction:
+
+    my $db  = App::Yath2::DB->open(file => $path);                  # sql
+    my $db  = App::Yath2::DB->open(file => $path, backend => 'dbic');
+    my $log = App::Yath2::Log::DB->new(db => $db, uuid => $u);
+
+The `*_uuid_string` shadow columns are MySQL-only schema furniture
+populated by `BEFORE INSERT` / `BEFORE UPDATE` triggers
+(`SET NEW.<col>_uuid_string = BIN_TO_UUID(NEW.<col>_uuid)`). DBIC
+Result classes do NOT model these columns; both the Internal and
+DBIC backends read/write only the binary UUID column, and the
+trigger keeps the human-readable shadow in sync. The schema parity
+test (`t/AI/unit/DB/DBIC/schema_parity.t`) anchors on
+`share/schema/sqlite.sql`, so the shadow doesn't appear there at
+all.
 
 #### LIVE sentinel — disambiguating live vs sealed
 
@@ -2788,20 +2913,65 @@ per-entry `inner` field: `'plain'` (versus `'zstd'` and
 Plaintext archives are bigger but trivially greppable. CLI:
 `yath test --no-log-compress` and `yath archive --no-log-compress`.
 
-#### Module map (post-rev-2)
+#### Module map (current)
 
+    App::Yath2::Role::Log                Log API role; consumed by
+                                         every Log backend. Required
+                                         methods: services / runs /
+                                         jobs / tries / has_*,
+                                         list_files, artifacts,
+                                         event/events/EOE/reset,
+                                         extract / archive / insert,
+                                         absolute_path, is_live /
+                                         static.
     App::Yath2::Log                      dispatcher
-    App::Yath2::Log::Live                live workdir backend
-    App::Yath2::Log::Directory           sealed dir backend
-    App::Yath2::Log::TarZIdx             tar.zidx archive backend
-    App::Yath2::Log::DB                  abstract DB backend
-    App::Yath2::Log::DB::Sqlite              sqlite-on-DB
-    App::Yath2::Log::DB::Postgres            postgres-on-DB
-    App::Yath2::Log::DB::MariaDB             mariadb-on-DB
-    App::Yath2::Log::DB::MySQL               mysql-on-DB
-    App::Yath2::Log::Artifact            per-collector handle
+    App::Yath2::Log::Live                live workdir backend;
+                                         consumes Role::Log
+    App::Yath2::Log::Directory           sealed dir backend; consumes
+                                         Role::Log
+    App::Yath2::Log::TarZIdx             tar.zidx archive backend;
+                                         consumes Role::Log
+    App::Yath2::Log::DB                  thin Role::Log consumer
+                                         pinned to (db, archive_uuid);
+                                         every method delegates to
+                                         App::Yath2::DB.
+    App::Yath2::DB                       backend-agnostic data class;
+                                         owns codecs (UUID/JSON/
+                                         datetime/payload), all
+                                         transformations, archive-
+                                         shaped read/write API,
+                                         spec/report/meta.json
+                                         reconstruction, depth-first
+                                         event walker, and the
+                                         insert / extract / archive_to
+                                         orchestrators.
+    App::Yath2::Role::DB::Backend        backend primitive contract:
+                                         row-level archive_*, run_*,
+                                         service_*, job_*, try_*,
+                                         artifact_*, ensure_* writes,
+                                         job_spec / service_lifetime /
+                                         subtest readers + writers,
+                                         mark_sealed. Provides a
+                                         concrete bootstrap_schema
+                                         that reads
+                                         share/schema/$flavor.sql.
+                                         Backends speak canonical
+                                         Perl values only.
+    App::Yath2::DB::SQL                  raw-DBI backend (single class,
+                                         flavor-aware methods).
+                                         Replaces the retired
+                                         App::Yath2::DB::Internal*
+                                         tree.
+    App::Yath2::DB::DBIC                 DBIx::Class backend (single
+                                         class). Optional: requires
+                                         DBIx::Class, lazy loaded.
+    App::Yath2::DB::DBIC::Schema         DBIx::Class::Schema subclass.
+    App::Yath2::DB::DBIC::Result::*      hand-written Result classes;
+                                         UUID columns only -- no
+                                         *_uuid_string.
+    App::Yath2::Log::Artifact            per-collector handle (file-
+                                         shaped public surface).
     App::Yath2::Log::Iterator::JSONL     per-file iterator
-    App::Yath2::LogDB                    multi-archive DB container
     App::Yath2::Command::inspect         `yath inspect <path>`
 
     Test2::Harness2::Collector           single collector class
@@ -2817,6 +2987,17 @@ Removed (rev-2): `Test2::Harness2::Collector::Test`,
 `Test2::Harness2::Role::Collector::Observer`,
 `Test2::Harness2::Collector::Observer::TestObserver`,
 `App::Yath2::LogArchive` (renamed `App::Yath2::Log`).
+
+Removed (DB rebuild 2026-05): the entire
+`App::Yath2::DB::Internal*` tree (`Internal.pm`, `Internal::Sqlite`,
+`Internal::Postgres`, `Internal::MariaDB`, `Internal::MySQL`).
+Codec / transformation logic and the per-flavor subclass split are
+both gone; the SQL backend is one class with flavor branches inside
+individual methods, and codecs live on `App::Yath2::DB`. See
+`AI_DOCS/2026-05-08-yath-db-rebuild.md` for the full rationale.
+
+The previously-planned `App::Yath2DB` namespace was renamed to
+`App::Yath2::DB` before either was implemented.
 
 ## Addendum: schema redesign — spec/report promoted, projects/test_files breakout (2026-05-07)
 
@@ -2956,3 +3137,65 @@ Key changes:
   `tar` / `sqlite3` CLIs can recover meta and enumerate the
   archive past the trailer. Each test skips its CLI block cleanly
   when the corresponding tool is not on PATH.
+
+## Architecture revision: DB rebuild (2026-05)
+
+This addendum records the structural rebuild of the DB-backed log
+layer. Full rationale, phase plan, salvage / discard decisions,
+risk register, and acceptance criteria are in
+`AI_DOCS/2026-05-08-yath-db-rebuild.md`.
+
+One-line summary: codec and transformation logic moved out of
+per-flavor SQL subclasses into a single backend-agnostic data class
+(`App::Yath2::DB`); backends are now skinny row-level primitives
+(`App::Yath2::DB::SQL`, `App::Yath2::DB::DBIC`) that exchange
+canonical Perl values with the data layer.
+
+What changed in shape:
+
+- **Deleted:** the entire `App::Yath2::DB::Internal*` tree
+  (`Internal.pm` + `Internal::Sqlite` / `Internal::Postgres` /
+  `Internal::MariaDB` / `Internal::MySQL`). Per-flavor codecs +
+  raw SQL + insert orchestration no longer live in four parallel
+  subclasses. The DBIC backend's BEGIN-block delegation forwarder
+  into `Internal` is gone with it.
+- **Added:** `App::Yath2::Role::Log` — a formal Log API contract
+  consumed by `Log::Live`, `Log::Directory`, `Log::TarZIdx`, and
+  `Log::DB`. `App::Yath2::Log::Artifact` no longer calls private
+  `_artifact_*` methods on a per-backend log; everything flows
+  through Role::Log.
+- **Added:** `App::Yath2::DB` (data layer) — codecs, all
+  transformations (spec/report/meta.json reconstruction), the
+  archive-shaped read/write surface, the depth-first event walker,
+  and the `insert` / `extract` / `archive_to` orchestrators.
+- **Added:** `App::Yath2::DB::SQL` — single class, raw DBI,
+  flavor branches inside individual methods (UUID bind, bytea,
+  MariaDB-vs-MySQL detection). Replaces the four `Internal::*`
+  flavor subclasses.
+- **Reshaped:** `App::Yath2::DB::DBIC` is still a single class but
+  now consumes the same `Role::DB::Backend` primitive contract as
+  `DB::SQL` and never delegates back to a `Internal::*` helper.
+- **Reshaped:** `App::Yath2::Log::DB` is ~80 LoC of Role::Log
+  delegation: every method one-lines through
+  `$self->db->$method($self->{uuid}, ...)`.
+
+Backend selection: `backend => 'sql'` (default) or
+`backend => 'dbic'`. The previous `backend => 'internal'` value is
+gone; callers must use `'sql'`.
+
+The schema (`share/schema/*.sql` + `App::Yath2::DB::DBIC::Schema` +
+Result classes) is unchanged. The on-disk layout is unchanged.
+The reader API on `App::Yath2::Log` is unchanged. Everything
+above the data layer (IPC, collector, harness, renderer) is
+untouched — the DB rebuild is below the IPC waterline.
+
+Done-criteria from the rebuild plan (`AI_DOCS/2026-05-08-yath-db-rebuild.md`
+§11) all hold at merge: full t/ suite passes, no
+`App::Yath2::DB::Internal` references in `lib/`, `t/`, or `share/`,
+both new roles consumed by their backends, `yath` CLI smoke runs
+end-to-end against fixture archives.
+
+The earlier namespace-split design doc
+(`AI_DOCS/2026-05-08-yath-db-namespace.md`) is superseded by the
+rebuild doc; the architecture it described was replaced rather
+than extended.

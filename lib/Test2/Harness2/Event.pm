@@ -2,7 +2,7 @@ package Test2::Harness2::Event;
 use strict;
 use warnings;
 
-our $VERSION = '2.000012';
+our $VERSION = '2.000013';
 
 use Test2::Harness2::Util::JSON qw/encode_json/;
 

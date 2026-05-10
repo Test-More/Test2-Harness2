@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/postgresql/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'PostgreSQL');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/postgresql/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::Postgres;
-
+    use App::Yath2::DB;
     # B8 (D6): atomic insert + duplicate-archive rejection.
 
     my $qdb = get_quiet_db({ driver => 'PostgreSQL' });
@@ -26,7 +27,7 @@ for_each_db_version([qw/postgresql/], sub {
         $qdb->connect_string('postgres'), undef, undef,
         { RaiseError => 1, PrintError => 0, AutoCommit => 1, pg_enable_utf8 => 1 },
     ) or die "connect: $DBI::errstr";
-    $admin->do('CREATE DATABASE yath_log_test_insertatomic');
+    eval { $admin->do('CREATE DATABASE yath_log_test_insertatomic'); };
     $admin->disconnect;
     }
     my $dsn = $qdb->connect_string('yath_log_test_insertatomic');
@@ -67,7 +68,7 @@ for_each_db_version([qw/postgresql/], sub {
 
     # {{{ Test 1: duplicate-uuid rejection (uses its own DB scope).
     {
-    my $db = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     # Clean slate.
@@ -97,7 +98,7 @@ for_each_db_version([qw/postgresql/], sub {
 
     # {{{ Test 2: atomic rollback.
     {
-    my $db = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     for my $t (qw/
@@ -110,8 +111,8 @@ for_each_db_version([qw/postgresql/], sub {
     my $src = build_source();    # live-dir, fresh uuid
 
     no warnings 'redefine';
-    my $orig = \&App::Yath2::Log::DB::_populate_summary_rows;
-    local *App::Yath2::Log::DB::_populate_summary_rows = sub {
+    my $orig = \&App::Yath2::DB::_populate_summary_rows;
+    local *App::Yath2::DB::_populate_summary_rows = sub {
         die "synthetic mid-insert failure\n";
     };
 
@@ -128,7 +129,7 @@ for_each_db_version([qw/postgresql/], sub {
         is($n, 0, "$table empty after rollback");
     }
 
-    local *App::Yath2::Log::DB::_populate_summary_rows = $orig;
+    local *App::Yath2::DB::_populate_summary_rows = $orig;
     my $aid = eval { $db->insert(App::Yath2::Log->new(dir => $src)) };
     ok(defined $aid, 'retry after rollback succeeds');
     my ($n) = $dbh->selectrow_array(q{SELECT count(*) FROM archives});
@@ -138,7 +139,7 @@ for_each_db_version([qw/postgresql/], sub {
 
     # {{{ Test 3: explicit archive_uuid override.
     {
-    my $db = App::Yath2::Log::DB::Postgres->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     $db->bootstrap_schema;
     my $dbh = $db->dbh;
     for my $t (qw/
@@ -167,6 +168,7 @@ for_each_db_version([qw/postgresql/], sub {
     }
     # }}}
 
+    });
 });
 
 done_testing;

@@ -5,8 +5,10 @@ use Test2::Require::Module 'Test2::Tools::QuickDB';
 
 use Test2::Tools::QuickDB;
 use lib 't/lib';
-use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db/;
+use Test2::Harness2::Test::DBVersions qw/for_each_db_version get_quiet_db for_each_log_db_backend/;
 for_each_db_version([qw/mariadb/], sub {
+    for_each_log_db_backend(sub {
+        my ($backend) = @_;
     skipall_unless_can_db(driver => 'MariaDB');
 
     use File::Temp qw/tempdir/;
@@ -16,8 +18,7 @@ for_each_db_version([qw/mariadb/], sub {
     use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
     use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
     use App::Yath2::Log;
-    use App::Yath2::Log::DB::MariaDB;
-
+    use App::Yath2::DB;
     my $qdb = get_quiet_db({ driver => 'MariaDB' });
     {
     my $admin = DBI->connect(
@@ -134,7 +135,7 @@ for_each_db_version([qw/mariadb/], sub {
     return $src;
     }
 
-    my $db = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $db = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
     my $aid = $db->insert(App::Yath2::Log->new(dir => build_source()));
     ok(defined $aid, 'insert succeeded');
 
@@ -143,7 +144,7 @@ for_each_db_version([qw/mariadb/], sub {
     # only read path. The narrowed ENUM would reject 'spec'/'report' values
     # even if we tried to insert them.
 
-    my $log = App::Yath2::Log::DB::MariaDB->new(dsn => $dsn);
+    my $log = App::Yath2::DB->open(dsn => $dsn, backend => $backend);
 
     # --- run-scope spec ---
     {
@@ -152,7 +153,7 @@ for_each_db_version([qw/mariadb/], sub {
     my $it = $arts->spec_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run spec_iter: 1 record');
-    like($recs[0]{started_at}, qr/2026-05-07.*00:00:00/, 'run spec.started_at typed');
+    is($recs[0]{started_at}, 1778112000, 'run spec.started_at typed');
     is($recs[0]{times}, [9, 8, 7, 6], 'run spec.times decoded (report wins)');
     is($recs[0]{harness}, 'yath',     'run spec.harness from extras');
     is($recs[0]{name},    'fancy run', 'run spec.name from extras');
@@ -166,7 +167,7 @@ for_each_db_version([qw/mariadb/], sub {
     my $it = $arts->report_iter;
     while (my $r = $it->next) { push @recs => $r }
     is(scalar @recs, 1, 'run report_iter: 1 record');
-    like($recs[0]{ended_at}, qr/2026-05-07.*00:01:00/, 'run report.ended_at typed');
+    is($recs[0]{ended_at}, 1778112060, 'run report.ended_at typed');
     is($recs[0]{exit}, 0, 'run report.exit typed');
     ok($recs[0]{pass}, 'run report.pass truthy');
     is($recs[0]{times},       [9, 8, 7, 6], 'run report.times decoded');
@@ -226,6 +227,7 @@ for_each_db_version([qw/mariadb/], sub {
     is(scalar @{$reports[0]{subtests}}, 2, '2 subtest entries');
     }
 
+    });
 });
 
 done_testing;
