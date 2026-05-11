@@ -1,6 +1,6 @@
 use Test2::V0;
 
-use Test2::Harness2::Util::Units qw/parse_quantity parse_byte_size parse_duration/;
+use Test2::Harness2::Util::Units qw/parse_quantity parse_byte_size parse_duration parse_count_or_pct parse_size_or_pct/;
 
 subtest 'parse_quantity: explicit unit' => sub {
     is(
@@ -113,6 +113,36 @@ subtest 'parse_duration' => sub {
     like(dies { parse_duration('0s') },  qr/must be > 0/,     'zero rejected');
     like(dies { parse_duration('') },    qr/required/,        'empty');
     like(dies { parse_duration('abc') }, qr/expected NUMBER/, 'non-numeric');
+};
+
+subtest 'parse_count_or_pct' => sub {
+    is(parse_count_or_pct('64'),   {kind => 'count', value => 64},  'bare integer = count');
+    is(parse_count_or_pct('1'),    {kind => 'count', value => 1},   'count=1');
+    is(parse_count_or_pct('10%'),  {kind => 'pct',   value => 10},  '10%');
+    is(parse_count_or_pct('99%'),  {kind => 'pct',   value => 99},  '99%');
+    is(parse_count_or_pct('0.5%'), {kind => 'pct',   value => 0.5}, 'fractional %');
+
+    like(dies { parse_count_or_pct('0') },    qr/count/,           'count=0 rejected');
+    like(dies { parse_count_or_pct('-5') },   qr/expected NUMBER/, 'negative');
+    like(dies { parse_count_or_pct('1.5') },  qr/count/,           'fractional count rejected');
+    like(dies { parse_count_or_pct('0%') },   qr/pct/,             '0% rejected');
+    like(dies { parse_count_or_pct('100%') }, qr/pct/,             '100% rejected');
+    like(dies { parse_count_or_pct('5mb') },  qr/expected NUMBER/, 'byte unit rejected');
+    like(dies { parse_count_or_pct('') },     qr/required/,        'empty');
+};
+
+subtest 'parse_size_or_pct' => sub {
+    is(parse_size_or_pct('1kb'),   {kind => 'bytes', value => 1024},          'kb');
+    is(parse_size_or_pct('512mb'), {kind => 'bytes', value => 512 * 1024**2}, 'mb');
+    is(parse_size_or_pct('1gb'),   {kind => 'bytes', value => 1024**3},       'gb');
+    is(parse_size_or_pct('15%'),   {kind => 'pct',   value => 15},            '15%');
+    is(parse_size_or_pct('0.5%'),  {kind => 'pct',   value => 0.5},           'fractional %');
+
+    like(dies { parse_size_or_pct('512') },  qr/expected NUMBER/, 'bare number rejected (require unit)');
+    like(dies { parse_size_or_pct('0kb') },  qr/must be > 0/,     'zero size');
+    like(dies { parse_size_or_pct('0%') },   qr/pct/,             '0% rejected');
+    like(dies { parse_size_or_pct('100%') }, qr/pct/,             '100% rejected');
+    like(dies { parse_size_or_pct('abc') },  qr/expected NUMBER/, 'non-numeric');
 };
 
 done_testing;

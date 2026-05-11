@@ -8,7 +8,7 @@ use Carp qw/croak/;
 
 use Importer Importer => 'import';
 
-our @EXPORT_OK = qw/parse_quantity parse_byte_size parse_duration/;
+our @EXPORT_OK = qw/parse_quantity parse_byte_size parse_duration parse_count_or_pct parse_size_or_pct/;
 
 sub parse_quantity {
     my ($raw, %opts) = @_;
@@ -84,6 +84,74 @@ sub parse_duration {
     return $num * $mult{$unit};
 }
 
+sub parse_count_or_pct {
+    my ($raw, %opts) = @_;
+    my $name = $opts{name} // 'count';
+
+    croak "$name is required" unless defined $raw && length $raw;
+
+    # Bare non-negative integer = count (no fractional, no unit suffix).
+    my $s = $raw;
+    $s =~ s/\s+//g;
+    if ($s =~ m/^[0-9]+\z/) {
+        croak "invalid $name '$raw' (count must be > 0)" unless $s > 0;
+        return {kind => 'count', value => $s + 0};
+    }
+
+    # Otherwise must be NUMBER%.
+    my ($num, $unit) = parse_quantity(
+        $raw,
+        units        => [qw/%/],
+        default_unit => undef,
+        name         => $name,
+    );
+
+    croak "invalid $name '$raw' (expected NUMBER or NUMBER%)"
+        unless defined $unit && $unit eq '%';
+
+    croak "invalid $name '$raw' (pct must be > 0 and < 100)"
+        unless $num > 0 && $num < 100;
+
+    return {kind => 'pct', value => $num};
+}
+
+sub parse_size_or_pct {
+    my ($raw, %opts) = @_;
+    my $name = $opts{name} // 'size';
+
+    croak "$name is required" unless defined $raw && length $raw;
+
+    # Reject bare numbers (no unit, no % suffix) with a clear message.
+    my $s = $raw;
+    $s =~ s/\s+//g;
+    croak "invalid $name '$raw' (expected NUMBER[kb|mb|gb|tb|%])"
+        if $s =~ m/^[0-9]+(?:\.[0-9]+)?\z/;
+
+    my ($num, $unit) = parse_quantity(
+        $raw,
+        units        => [qw/kb mb gb tb %/],
+        default_unit => undef,
+        name         => $name,
+    );
+
+    if ($unit eq '%') {
+        croak "invalid $name '$raw' (pct must be > 0 and < 100)"
+            unless $num > 0 && $num < 100;
+        return {kind => 'pct', value => $num};
+    }
+
+    croak "invalid $name '$raw' (must be > 0)" unless $num > 0;
+
+    my %mult = (
+        kb => 1024,
+        mb => 1024**2,
+        gb => 1024**3,
+        tb => 1024**4,
+    );
+
+    return {kind => 'bytes', value => int($num * $mult{$unit})};
+}
+
 1;
 
 __END__
@@ -98,7 +166,7 @@ Test2::Harness2::Util::Units - Parse number-with-unit strings used by yath optio
 
 =head1 SYNOPSIS
 
-    use Test2::Harness2::Util::Units qw/parse_quantity parse_byte_size parse_duration/;
+    use Test2::Harness2::Util::Units qw/parse_quantity parse_byte_size parse_duration parse_count_or_pct parse_size_or_pct/;
 
     my ($n, $u) = parse_quantity('512mb', units => [qw/kb mb gb tb/]);
     # ($n, $u) = (512, 'mb')
@@ -151,6 +219,22 @@ C<'size'>.
 Domain helper. Accepts C<ms>/C<s>/C<m> suffixes (case-insensitive).
 Returns float seconds. Optional C<default_unit> defaults to C<'s'>.
 Optional C<name> defaults to C<'duration'>.
+
+=item $result = parse_count_or_pct($raw, %opts)
+
+Domain helper. Accepts either a bare positive integer (count) or a
+C<NUMBER%> string (percent, exclusive of 0 and 100). Returns a hashref
+with keys C<kind> (C<'count'> or C<'pct'>) and C<value> (numeric).
+Fractional counts are rejected. Optional C<name> defaults to C<'count'>.
+
+=item $result = parse_size_or_pct($raw, %opts)
+
+Domain helper. Accepts either a byte-size string with a
+C<kb>/C<mb>/C<gb>/C<tb> suffix or a C<NUMBER%> string (percent,
+exclusive of 0 and 100). Bare numbers without a unit croak. Returns a
+hashref with keys C<kind> (C<'bytes'> or C<'pct'>) and C<value>
+(integer bytes, or numeric percent). Optional C<name> defaults to
+C<'size'>.
 
 =back
 
