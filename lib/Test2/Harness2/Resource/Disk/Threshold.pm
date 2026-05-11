@@ -5,44 +5,39 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
+use Test2::Harness2::Util::Units qw/parse_quantity/;
 
 use Importer Importer => 'import';
 
 our @EXPORT_OK = qw/parse_threshold evaluate_threshold/;
 
-my %UNIT_MULT = (
-    kb => 1024,
-    mb => 1024**2,
-    gb => 1024**3,
-    tb => 1024**4,
-);
-
 sub parse_threshold {
     my ($raw) = @_;
 
-    croak "threshold is required" unless defined $raw && length $raw;
-
-    my $s = $raw;
-    $s =~ s/\s+//g;
-
-    my ($num, $unit) = $s =~ m/^([0-9]+(?:\.[0-9]+)?)(kb|mb|gb|tb|%)?\z/i
-        or croak "invalid threshold '$raw' (expected NUMBER[kb|mb|gb|tb|%])";
-
-    $unit = defined($unit) ? lc($unit) : '%';
+    my ($num, $unit) = parse_quantity(
+        $raw,
+        units        => [qw/kb mb gb tb %/],
+        default_unit => '%',
+        name         => 'threshold',
+    );
 
     if ($unit eq '%') {
         croak "invalid threshold '$raw' (percent must be > 0 and < 100)"
             unless $num > 0 && $num < 100;
-        return {kind => 'pct', value => $num + 0};
+        return {kind => 'pct', value => $num};
     }
-
-    my $mult = $UNIT_MULT{$unit}
-        or croak "invalid threshold '$raw' (unknown unit '$unit')";
 
     croak "invalid threshold '$raw' (byte threshold must be > 0)"
         unless $num > 0;
 
-    return {kind => 'bytes', value => int($num * $mult)};
+    my %mult = (
+        kb => 1024,
+        mb => 1024**2,
+        gb => 1024**3,
+        tb => 1024**4,
+    );
+
+    return {kind => 'bytes', value => int($num * $mult{$unit})};
 }
 
 sub evaluate_threshold {
