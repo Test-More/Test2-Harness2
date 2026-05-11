@@ -132,6 +132,23 @@ sub mark_resumed { }
 # under the appropriate scope/run.
 sub services {
     my $self = shift;
+
+    # Re-exec the preload service via a fresh perl with the boot module
+    # loaded. stay_in_begin=1 makes IPC::Manager::Service::State::import
+    # run the service loop synchronously at BEGIN time of the spawned
+    # perl's -e snippet. That keeps the entry-script parser paused
+    # while the service is running, which is the only state in which
+    # goto::file can usefully install a source filter -- specifically
+    # the filter PreloadService::run installs in the test grandchild
+    # after a longjump out of the service loop.
+    #
+    # @INC is propagated as -I flags on the exec command so the freshly
+    # exec'd perl can find the harness modules + every CPAN dep the
+    # parent has already located. PERL5LIB would work too but -I avoids
+    # interaction with whatever the user's shell has set.
+    my @inc = grep { defined && length } @INC;
+    my @cmd = map  { "-I$_" } @inc;
+
     my @args = (
         name             => $self->{+NAME},
         modules          => [@{$self->{+MODULES}}],
@@ -140,6 +157,10 @@ sub services {
         ($self->{+SCOPE} eq 'run' && ref($self->{+RUN})
             ? (run_id => $self->{+RUN}->run_id)
             : ()),
+        exec => {
+            cmd           => \@cmd,
+            stay_in_begin => 1,
+        },
     );
     return (['Test2::Harness2::PreloadService', @args]);
 }

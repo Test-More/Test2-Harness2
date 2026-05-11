@@ -6,6 +6,13 @@ our $VERSION = '2.000013';
 
 use Role::Tiny;
 
+# Make sure the role module is fully compiled before is_role() runs
+# from `with`. Role::Tiny will auto-require a missing role, but a
+# freshly-exec'd preload service that loads PreloadService before
+# anything else has touched IPC::Manager hits a load-order race where
+# is_role() fires while the role package is still partially populated.
+require IPC::Manager::Role::Service;
+
 with 'IPC::Manager::Role::Service';
 
 # Whether a resource service wants to be auto-restarted when it exits

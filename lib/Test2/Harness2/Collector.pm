@@ -42,6 +42,15 @@ use Test2::Harness2::Util::IPC qw/pid_is_running set_procname swap_io ipc_defaul
 # four identity slots above; the trio
 # (spec.jsonl.zst, events.jsonl.zst, report.jsonl.zst) is appended
 # directly to that base dir.
+# `launch_callback` is the authoritative spawn hook for preloaded
+# tests. When set (in lieu of `launch`), the collector's post-fork
+# child invokes the callback in-process -- no exec -- so a
+# Long::Jump out of the callback can unwind back to a setjump
+# anchor in an outer preload service and hand off to goto::file.
+# Tests routed this way retain the parent's preloaded %INC and end
+# up parsed in main with a shallow stack as if perl had been
+# started with the test file directly. Mutually exclusive with
+# `launch`.
 use Object::HashBase qw{
     <type
     <id
@@ -1126,16 +1135,21 @@ sub _launch_child_unix {
         }
 
         my %env = $self->_child_env_overrides;
-        # Callback path: child runs the callback in-process (no exec)
-        # so caller-preloaded state survives. The callback owns
-        # process-exit semantics; if it ever returns we treat that as
-        # a contract violation and exit non-zero loudly.
+        # Jump-out point for preloaded tests. The callback owns
+        # everything that happens next: it inherits the parent
+        # service's preloaded %INC, completes whatever process
+        # reset it needs, and then either Long::Jumps out to a
+        # setjump anchor in the surrounding preload service (the
+        # normal goto::file pathway) or exits directly. If it
+        # returns to us we treat that as a contract violation and
+        # exit non-zero loudly so the failure surfaces in the
+        # collector's log instead of going silent.
         #
-        # Dismiss the _spawn_collector Scope::Guard inherited into
-        # this grandchild process so that the callback's eventual
-        # exit() does not fire its POSIX::_exit(255) destructor.
-        # Test2's END block needs to run cleanly through normal exit
-        # for the plan + assertion counts to flow through Stream2.
+        # Dismiss the _spawn_collector Scope::Guard before invoking
+        # the callback. The guard's POSIX::_exit(255) destructor
+        # would otherwise fire when the callback eventually exits
+        # via Test2's END finalizer, pre-empting Stream2's plan +
+        # assertion-count flush.
         if ($cb) {
             @ENV{keys %env} = values %env;
             if (my $g = delete $self->{_collector_guard}) { $g->dismiss }

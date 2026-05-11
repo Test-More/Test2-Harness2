@@ -672,6 +672,15 @@ sub request_handler_queue_test_run {
 
     my $run = $self->{+QUEUE}->[-1];
 
+    # Flat run_id / queued_at / job_ids alongside the nested
+    # run_data: App::Yath2::Renderer::Driver's lifecycle synthesizer
+    # reads these directly off the harness facet to build the
+    # per-job harness_job_queued events that the progress bar's T
+    # (todo) counter increments on. Without the flat keys the
+    # synthesizer's `return unless defined $rid` guard fires and the
+    # T counter stays at 0 for the whole run. run_data is kept for
+    # any downstream consumer that still wants the full Run TO_JSON
+    # dump.
     $self->emit_service_event(
         kind      => 'run_queued',
         run_id    => $run->run_id,
@@ -2494,6 +2503,10 @@ sub _launch_job {
     # collector_report event can carry wall-time bracketing.
     unless ($self->_scheduler_started($run_id)) {
         my $started_at = time;
+        # Flat run_id / started_at: the Renderer::Driver lifecycle
+        # synthesizer reads these directly off the harness facet to
+        # stamp run_states->{$rid}{started_at}. Match the same
+        # flat-key contract used by run_queued above.
         $self->emit_service_event(
             kind       => 'run_started',
             run_id     => $run_id,

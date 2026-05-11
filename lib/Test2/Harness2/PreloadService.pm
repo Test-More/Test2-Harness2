@@ -186,6 +186,18 @@ sub service_on_start {
 # preload as gone rather than silently respawning into the same failure.
 sub restartable { 0 }
 
+# Tells IPC::Manager::Service::State::_ipcm_service to return rather
+# than exit after run() returns. The test grandchild's longjump
+# unwinds back to the setjump frame in run() (below), at which point
+# we call goto::file->import to install a source filter and then
+# return. _ipcm_service returns up to State::import, which is running
+# at BEGIN time of the boot perl's -e snippet, and import returns;
+# perl then resumes parsing -e -- but the source filter intercepts
+# and feeds the test file's source into the parser instead. Test
+# compiles in main with a shallow stack as if perl had been invoked
+# with the test file directly.
+sub run_returns_to_caller { 1 }
+
 # Role::Service's request_handler_terminate runs perform_hard_stop
 # (which flips state to 'terminating') but does not itself exit the
 # IPC loop -- the loop's per-tick run_should_end is the signal. The
@@ -197,11 +209,55 @@ sub run_should_end {
     return 0;
 }
 
-# No setjump wrapper -- the test grandchild runs the test file via
-# `do FILE` from inside its Collector launch_callback (see
-# request_handler_spawn_test below). That keeps the test inside the
-# preloaded process WITHOUT an exec while leaving Collector's
-# Scope::Guard intact in the surrounding stack frame.
+# Override the role's run() to install a setjump 'preload_spawn'
+# anchor around the IPC loop. fork() copies the C + Perl stack, so
+# the grandchild test process inherits this setjump frame. When the
+# grandchild's spawn_test callback finishes its Test2 reset it
+# longjumps 'preload_spawn' with the test path as payload, unwinding
+# back here. We then arrange for the surviving perl process to
+# continue as if it had been invoked with the test file directly:
+# goto::file installs a source filter that feeds the test's source
+# into the parser on the way out through BEGIN.
+sub run {
+    my $self = shift;
+
+    require Long::Jump;
+    require goto::file;
+
+    my $jumped = Long::Jump::setjump('preload_spawn', sub {
+        # IPC::Manager::Role::Service provides the run loop;
+        # Test2::Harness2::Role::Service composes it without
+        # overriding. Call it directly so this override doesn't
+        # recurse into itself via the composed copy on $self.
+        IPC::Manager::Role::Service::run($self);
+    });
+
+    # Parent / clean-shutdown path: setjump body returned without a
+    # longjump. Propagate role's intended exit code (0).
+    return 0 unless defined $jumped;
+
+    # Test-grandchild path: longjump fired from
+    # request_handler_spawn_test's launch_callback. setjump returns
+    # an arrayref of the args longjump was given (after the tag) --
+    # the callback passes the absolute test path as a single scalar
+    # so $jumped is [$test_file_abs].
+    my ($test_file_abs) = @$jumped;
+
+    croak "preload longjump payload missing test_file_abs"
+        unless defined $test_file_abs && length $test_file_abs;
+
+    # The post-jump grandchild process is at runtime, but it was
+    # spawned under State::import's BEGIN-time call to _ipcm_service
+    # -- so the parser is still mid-parse of the boot perl's -e
+    # snippet. goto::file's filter_add hooks into that snippet's
+    # compilation; once run() returns, _ipcm_service + import + BEGIN
+    # all unwind and perl resumes parsing -e -- where the filter
+    # intercepts and feeds the test file's source.
+    $0 = $test_file_abs;
+    goto::file->import($test_file_abs);
+
+    return 0;
+}
 
 # Async dispatch from harness. The harness calls $client->send_message
 # (not send_request) so the message lands in run_on_general_message
@@ -217,24 +273,47 @@ sub run_on_general_message {
 }
 
 # IPC handler for spawn_test from the harness. Async: no response.
-# The handler runs inside the IPC loop in the service process; it
-# calls Test2::Harness2::Collector->spawn with a launch_callback so
-# the resulting interposed Collector forks the test grandchild
-# WITHOUT exec'ing -- the grandchild inherits the preloaded %INC,
-# then longjumps back to PreloadService::run's setjump anchor which
-# goto::file's into the test.
+# Drives the full launch sequence:
+#
+#   1. Harness sends spawn_test (this method's $payload).
+#   2. PreloadService calls Collector->spawn with a launch_callback
+#      so the Collector's post-fork grandchild is in-process (no
+#      exec) and still owns the preloaded %INC.
+#   3. Collector forks twice: child = test-collector, grandchild =
+#      test-process. The launch_callback runs in the grandchild.
+#   4. The callback applies env, resets process-global state
+#      (Test2 hub/formatter/exit-callbacks, $0, @ARGV, srand,
+#      FindBin, Getopt::Long, empty-pattern //).
+#   5. The callback calls Long::Jump::longjump 'preload_spawn'
+#      with the test path as payload and never returns.
+#   6. Control unwinds through Collector::_launch_child_unix,
+#      Collector->spawn, request_handler_spawn_test,
+#      run_on_general_message, and the role's run loop, landing
+#      at the setjump 'preload_spawn' anchor in
+#      PreloadService::run.
+#   7. run() pulls the test path out of the setjump payload and
+#      calls goto::file->import($test). The source filter is now
+#      attached to the boot perl's still-being-parsed -e snippet.
+#   8. run() returns 0. Because PreloadService sets
+#      run_returns_to_caller true, _ipcm_service returns to
+#      State::import; import returns; BEGIN ends.
+#   9. Perl resumes parsing -e and the goto::file filter feeds
+#      the test file's source instead. Test compiles in main
+#      with a shallow stack, runs to completion, and exit() fires
+#      Test2's END for the plan / assertion-count flush.
+#
+# The collector emits the standard test_job_started auditor event
+# to the harness via its ipc_run wiring (pointing at the harness's
+# bus name); the harness's _handle_test_job_started picks it up
+# and populates the placeholder RUNNING_JOBS entry.
 #
 # Process tree after this returns to the IPC loop:
 #
 #   preload service (this process)
 #    └── collector (fork of preload service via Collector->spawn)
-#         └── test grandchild (fork of collector; runs the test via
-#                              longjump 'preload_spawn' + goto::file)
-#
-# The collector emits the standard test_job_started auditor event to
-# the harness via its ipc_run wiring (pointing at the harness's bus
-# name); the harness's _handle_test_job_started picks it up and
-# populates the placeholder RUNNING_JOBS entry.
+#         └── test grandchild (fork of collector; runs the test
+#                              via longjump 'preload_spawn' +
+#                              goto::file)
 sub request_handler_spawn_test {
     my ($self, $payload, $msg) = @_;
 
@@ -246,13 +325,16 @@ sub request_handler_spawn_test {
         unless defined $payload->{job_id};
 
     require Test2::Harness2::Collector;
+    require Long::Jump;
 
     # Callback runs in the Collector's post-fork child (the test
     # grandchild) with STDOUT/STDERR already swapped to the
-    # collector's pipes. Apply env, reset $0 + Test2's
-    # process-global state, then `do FILE` the test script. `do`
-    # compiles and runs the file in the current process so the
-    # preloaded %INC survives -- exactly what `exec` cannot give us.
+    # collector's pipes. Apply env, reset $0 + Test2's process-global
+    # state, then longjump out to PreloadService::run's setjump
+    # anchor. The post-jump branch in run() calls goto::file with the
+    # test path; State::import + BEGIN unwind cleanly and perl
+    # resumes parsing the boot -e snippet under the source filter
+    # goto::file installed.
     my $cb = sub {
         if (ref($payload->{env}) eq 'HASH') {
             for my $k (keys %{$payload->{env}}) {
@@ -261,7 +343,6 @@ sub request_handler_spawn_test {
         }
 
         my $test = $payload->{test_file_abs};
-        $0 = $test;
 
         # Process-level reset (port from
         # reference/old2/lib/Test2/Harness2/Collector/Preloaded.pm
@@ -320,49 +401,21 @@ sub request_handler_spawn_test {
         # scoped, so it cannot be hoisted into a sub.
         "" =~ /^/;
 
-        # Clear $@ before `do` so a post-`do` $@ check distinguishes
-        # a real compile failure from a stale error left over by the
-        # preload service. $! is NOT cleared because we cannot
-        # reliably distinguish do's own read failure from $! changes
-        # made by code inside $test (Test2's pipe writes, IO, etc.)
-        # -- a -e file check is the right "did do find the file"
-        # signal.
-        # `do FILE` compiles the file in whatever package is currently
-        # in effect at the call site, so calling it directly from this
-        # closure makes the test compile in the PreloadService
-        # package. Tests almost universally `use Test::More` (or
-        # Test2::V0) and then call exported subs as barewords --
-        # `done_testing;`, `ok(...)`, `is(...)` -- which under
-        # `use strict 'subs'` only work if the import landed in the
-        # package the test is being compiled into. Force `main` so the
-        # test sees the same package it would have seen if it had been
-        # run as `perl path/to/test.t`.
-        $@ = '';
-        my $r;
-        {
-            package main;
-            $r = do $test;
-        }
-        my $err = $@;
+        # Hand off to run()'s setjump anchor. longjump unwinds all
+        # the way through Collector::_launch_child_unix's eval ->
+        # Collector->spawn -> request_handler_spawn_test ->
+        # run_on_general_message -> role's run loop -> our setjump,
+        # leaving the post-jump code in run() to call goto::file and
+        # let the parser take over from there. This must be the last
+        # statement in the callback; longjump never returns.
+        Long::Jump::longjump('preload_spawn', $test);
 
-        if (!defined $r) {
-            if (length $err) {
-                print STDERR "preload-spawn: error compiling '$test': $err\n";
-                exit(255);
-            }
-            unless (-r $test) {
-                print STDERR "preload-spawn: cannot read '$test'\n";
-                exit(255);
-            }
-            # otherwise: file ran fine, its last expression just
-            # happened to be undef (Test2's done_testing returns one
-            # of these). Fall through to exit(0).
-        }
-
-        # exit (not _exit) so Test2's END finalizer fires and the
-        # test's plan + assertion counts flow out through the
-        # collector's STDOUT pipe before the process is torn down.
-        exit(0);
+        # Defensive fallback: longjump should always succeed because
+        # run() installs the anchor before forks start happening. If
+        # it ever does come back, treat as a contract bug and bail
+        # the grandchild.
+        print STDERR "preload-spawn: longjump 'preload_spawn' returned (anchor missing?)\n";
+        exit(255);
     };
 
     my $auditor = $payload->{auditor};
