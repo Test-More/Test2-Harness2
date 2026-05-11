@@ -1,6 +1,6 @@
 use Test2::V0;
 
-use Test2::Harness2::Util::Units qw/parse_quantity/;
+use Test2::Harness2::Util::Units qw/parse_quantity parse_byte_size parse_duration/;
 
 subtest 'parse_quantity: explicit unit' => sub {
     is(
@@ -75,6 +75,44 @@ subtest 'parse_quantity: name in error message' => sub {
         dies { parse_quantity('abc', units => [qw/s/], name => 'threshold') },
         qr/threshold/, 'name is threshold'
     );
+};
+
+subtest 'parse_byte_size' => sub {
+    is(parse_byte_size('1kb'),   1024,               'kb');
+    is(parse_byte_size('1mb'),   1024**2,            'mb');
+    is(parse_byte_size('1gb'),   1024**3,            'gb');
+    is(parse_byte_size('1tb'),   1024**4,            'tb');
+    is(parse_byte_size('1.5gb'), int(1.5 * 1024**3), 'fractional gb');
+    is(parse_byte_size('1MB'),   1024**2,            'case insensitive');
+
+    is(
+        parse_byte_size('5', default_unit => 'mb'), 5 * 1024**2,
+        'default_unit=mb on bare number'
+    );
+
+    like(dies { parse_byte_size('5') },   qr/unit required/,   'unit required by default');
+    like(dies { parse_byte_size('0kb') }, qr/must be > 0/,     'zero rejected');
+    like(dies { parse_byte_size('abc') }, qr/expected NUMBER/, 'non-numeric');
+};
+
+subtest 'parse_duration' => sub {
+    is(parse_duration('1ms'),   0.001, 'ms');
+    is(parse_duration('1s'),    1,     's');
+    is(parse_duration('2s'),    2,     '2s');
+    is(parse_duration('1m'),    60,    'm');
+    is(parse_duration('1.5m'),  90,    'fractional m');
+    is(parse_duration('500MS'), 0.5,   'case insensitive');
+
+    is(parse_duration('2'), 2, 'bare number = seconds (default)');
+
+    is(
+        parse_duration('5', default_unit => 'ms'), 0.005,
+        'default_unit override'
+    );
+
+    like(dies { parse_duration('0s') },  qr/must be > 0/,     'zero rejected');
+    like(dies { parse_duration('') },    qr/required/,        'empty');
+    like(dies { parse_duration('abc') }, qr/expected NUMBER/, 'non-numeric');
 };
 
 done_testing;
