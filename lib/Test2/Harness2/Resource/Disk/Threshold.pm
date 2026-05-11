@@ -11,6 +11,8 @@ use Importer Importer => 'import';
 
 our @EXPORT_OK = qw/parse_threshold evaluate_threshold/;
 
+# Can this mostly be moved to Test2::Harness2::Util::Units? Looks like a lot of overlap
+
 sub parse_threshold {
     my ($raw) = @_;
 

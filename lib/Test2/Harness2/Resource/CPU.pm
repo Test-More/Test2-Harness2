@@ -22,16 +22,19 @@ use Role::Tiny::With;
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
+# Duplicate the comment from other resources indicating this is a hook so that tests can override _now
 our $CLOCK = \&Time::HiRes::time;
 sub _now { $CLOCK->() }
 
 sub resource_name { $_[0]->{+NAME} // 'cpu' }
 
+# What does CTOR_KEYS stand for? Pick a better variable name
 my %CTOR_KEYS = map { $_ => 1 } qw/utilize_percent name/;
 
 sub parse_options {
     my ($class, @args) = @_;
 
+    # Again $ctor is not meaningful to a human, better name?
     my %ctor;
     my %file_vals;
     my $inline_util;
@@ -41,6 +44,14 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
+        # Multi-line conditionals in parens like this are not good.
+        # Do it like this:
+        # my $arg_works = defined($arg);
+        # $arg_works &&= !ref($arg);
+        # $arg_works &&= $arg !~ m{^[0-9]};
+        # ...
+        # if ($arg_works) {
+        # Add a note to the STYLE_GUIDE document about multi-line conditionals being undesirable. Apart from the pattern above an alternative ids writing a check_arg($arg) function that return true or false based on all these checks.
         if (   defined $arg
             && !ref($arg)
             && $arg !~ m{^[0-9]}
@@ -104,6 +115,8 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
+    # This violates the STYLE_GUIDE rule on evals, check it, and correct this and any other evals in this branch that biolate the eval rules.
+    # Why was STYLE_GUIDE ignored? Whatever caused it to be ignored needs ot be fixed
     my $data = eval { decode_json($body) };
     croak "Resource::CPU: cannot parse JSON in '$path': $@" if $@;
     croak "Resource::CPU: top-level must be a JSON object"

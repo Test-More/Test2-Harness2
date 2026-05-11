@@ -24,16 +24,19 @@ use Role::Tiny::With;
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
+# Comment needed
 our $CLOCK = \&Time::HiRes::time;
 sub _now { $CLOCK->() }
 
 sub resource_name { $_[0]->{+NAME} // 'unixlimits' }
 
+# Bad name
 my %CTOR_KEYS = map { $_ => 1 } qw/nproc nofile as name utilize_percent/;
 
 sub parse_options {
     my ($class, @args) = @_;
 
+    # Bad name
     my %ctor;
     my %file_vals;
     my (%inline, $inline_name);
@@ -42,6 +45,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
+        # multi-line cond in paren is bad
         if (   defined $arg
             && !ref($arg)
             && $arg !~ m{^[0-9]}
@@ -119,6 +123,7 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
+    # Bad eval
     my $data = eval { decode_json($body) };
     croak "Resource::UnixLimits: cannot parse JSON in '$path': $@" if $@;
     croak "Resource::UnixLimits: top-level must be a JSON object"
@@ -132,12 +137,14 @@ sub _load_config_file {
     my %out;
     for my $dim (qw/nproc nofile/) {
         if (defined $data->{$dim}) {
+            # Bad eval
             my $parsed = eval { parse_count_or_pct($data->{$dim}, name => $dim) };
             croak "Resource::UnixLimits: bad $dim in '$path': $@" if $@;
             $out{$dim} = $parsed;
         }
     }
     if (defined $data->{as}) {
+        # Bad eval
         my $parsed = eval { parse_size_or_pct($data->{as}, name => 'as') };
         croak "Resource::UnixLimits: bad as in '$path': $@" if $@;
         $out{as} = $parsed;
@@ -151,6 +158,7 @@ sub _load_config_file {
     return \%out;
 }
 
+# Init should be closer to the top of the file since the constructor is often reviewed. Fix this for others as well, should be below 1-liners, but above most other subs
 sub init {
     my $self = shift;
 
@@ -220,6 +228,7 @@ sub _count_self_fd {
     return $n;
 }
 
+# Name this better, I do not know what this does from its name.
 sub _eval_dim {
     my ($self, $dim, $soft_cap, $current) = @_;
 
@@ -253,6 +262,7 @@ sub _eval_dim {
     );
 }
 
+# What does dim mean, better name
 sub _dim_results {
     my $self = shift;
 
@@ -304,6 +314,7 @@ sub release {
     return 1;
 }
 
+# 1 line subs higher, below hashbase and other imports, but above multi-line subs
 sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
 sub mark_paused  { $_[0]->{+PAUSED} = 1 }
 sub mark_resumed { $_[0]->{+PAUSED} = 0 }

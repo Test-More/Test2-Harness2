@@ -45,6 +45,7 @@ sub _detect_core_count {
     # returns false even though the call works. Just try it.
     my $loaded = eval { require System::Info; 1 };
     if ($loaded) {
+        # Bad eval
         my $n = eval { System::Info->new->ncore };
         return $n if $n && $n > 0;
     }
@@ -86,11 +87,13 @@ sub _read_meminfo_available {
 
 sub resource_name { $_[0]->{+NAME} // 'throttle' }
 
+# Bad name
 # Class method called by App::Yath2::Command::test::_build_resources
 # and App::Yath2::Command::start::resources via the parse_options
 # dispatch added in the Disk plan.
 my %CTOR_KEYS = map { $_ => 1 } qw/cap window name bases core_count/;
 
+# This sub is too long
 sub parse_options {
     my ($class, @args) = @_;
 
@@ -103,6 +106,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
+        # Bad multi-line cond in parens
         # Drop unknown k=>v pairs from the resource-group settings.
         if (
                defined $arg
@@ -233,6 +237,7 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
+    # Bad eval
     my $data = eval { decode_json($body) };
     croak "Resource::Throttle: cannot parse JSON in '$path': $@" if $@;
     croak "Resource::Throttle: top-level of '$path' must be a JSON object"

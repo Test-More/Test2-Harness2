@@ -22,16 +22,19 @@ use Role::Tiny::With;
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
+# Comment that this is needed for tests
 our $CLOCK = \&Time::HiRes::time;
 sub _now { $CLOCK->() }
 
 sub resource_name { $_[0]->{+NAME} // 'memory' }
 
+# Bad variable name again
 my %CTOR_KEYS = map { $_ => 1 } qw/min_free name utilize_percent/;
 
 sub parse_options {
     my ($class, @args) = @_;
 
+    # Bad var name again
     my %ctor;
     my %file_vals;
     my $inline_threshold;
@@ -41,6 +44,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
+        # Bad multi-line conditional in parents, see CPU comment
         # Drop unknown k=>v pairs from the resource-group settings.
         if (
                defined $arg
@@ -107,6 +111,7 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
+    # Bad use fo eval, see STYLE_GUIDE and other review comments
     my $data = eval { decode_json($body) };
     croak "Resource::Memory: cannot parse JSON in '$path': $@" if $@;
     croak "Resource::Memory: top-level of '$path' must be a JSON object"
@@ -119,6 +124,7 @@ sub _load_config_file {
 
     my %out;
     if (defined $data->{min_free}) {
+        # Bad eval again
         my $parsed = eval { parse_size_or_pct($data->{min_free}, name => 'min_free') };
         croak "Resource::Memory: bad min_free in '$path': $@" if $@;
         $out{min_free} = $parsed;
@@ -236,6 +242,7 @@ sub release {
     return 1;
 }
 
+# 1 line subs should be at top of file, or top of a fold section
 sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
 sub mark_paused  { $_[0]->{+PAUSED} = 1 }
 sub mark_resumed { $_[0]->{+PAUSED} = 0 }

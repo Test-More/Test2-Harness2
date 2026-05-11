@@ -27,16 +27,19 @@ use Role::Tiny::With;
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
+# Comment needed
 our $CLOCK = \&Time::HiRes::time;
 sub _now { $CLOCK->() }
 
 sub resource_name { $_[0]->{+NAME} // 'pipelimits' }
 
+# Bad var name
 my %CTOR_KEYS = map { $_ => 1 } qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom name utilize_percent/;
 
 sub parse_options {
     my ($class, @args) = @_;
 
+    # Bad var name
     my %ctor;
     my %file_vals;
     my %inline;
@@ -46,6 +49,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
+        # Bad multi-line conditional
         if (   defined $arg
             && !ref($arg)
             && $arg !~ m{^[0-9]}
@@ -121,6 +125,7 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
+    # Bad eval
     my $data = eval { decode_json($body) };
     croak "Resource::PipeLimits: cannot parse JSON in '$path': $@" if $@;
     croak "Resource::PipeLimits: top-level must be a JSON object"
@@ -156,6 +161,7 @@ sub _load_config_file {
 # Test seam: override to inject /proc/sys/fs/pipe-user-pages-soft value.
 sub _read_cap_pages {
     my $path = '/proc/sys/fs/pipe-user-pages-soft';
+    # Magic number, should be a constant
     return 16384 unless -r $path;    # fallback to kernel default
     open my $fh, '<', $path or return 16384;
     my $line = <$fh>;
@@ -166,6 +172,7 @@ sub _read_cap_pages {
 # Test seam: override to inject /proc/sys/fs/pipe-max-size value.
 sub _read_pages_per_pipe {
     my $path = '/proc/sys/fs/pipe-max-size';
+    # Again should be a constant
     return 16 unless -r $path;       # fallback: 64KB / 4KB = 16 pages
     open my $fh, '<', $path or return 16;
     my $line = <$fh>;
@@ -268,6 +275,7 @@ sub release {
     return 1;
 }
 
+# 1-line sub rule, move to top or in a fold
 sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
 sub mark_paused  { $_[0]->{+PAUSED} = 1 }
 sub mark_resumed { $_[0]->{+PAUSED} = 0 }

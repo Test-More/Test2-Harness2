@@ -30,6 +30,7 @@ sub _now { $CLOCK->() }
 
 sub resource_name { 'disk' }
 
+# CTOR is a bad name, see comments from CPU, fix this and all other resource classes with the bad variable names.
 # Keys this resource accepts at construction time. Anything else
 # (slots, job_slots, classes, utilize, no_resource, ...) is noise
 # from the resource group settings hash being passed through verbatim
@@ -51,6 +52,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
+        # Same as CPU, multi-line conditional in parens is not good.
         # Known k=>v pair: consume both.
         if (   defined $arg
             && !ref($arg)
@@ -62,6 +64,7 @@ sub parse_options {
             next;
         }
 
+        # Again, bad multi-line condition in parens
         # Drop unknown k=>v pairs from the resource-group settings.
         # Heuristic: a defined non-ref scalar that does not look like a
         # positional entry (no leading / or @) and has a following value
@@ -125,6 +128,7 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
+    # eval rules in style guide broken again
     my $data = eval { decode_json($body) };
     croak "Resource::Disk: cannot parse JSON in '$path': $@" if $@;
     croak "Resource::Disk: top-level of '$path' must be a JSON object"
@@ -171,6 +175,7 @@ sub init {
     croak "Resource::Disk: 'mounts' is required and must be non-empty"
         unless ref($self->{+MOUNTS}) eq 'HASH' && keys %{$self->{+MOUNTS}};
 
+    # This is an ok use of eval, only change would be to warn $@ if it is anything other than the not found/not installed message.
     # Defer Filesys::Df load until init so the option-loader (which
     # require()s every Resource class to discover its options) does
     # not blow up when this optional dep is missing.
@@ -255,6 +260,7 @@ sub _take_sample {
     return $self->{+SAMPLES}->{$mp};
 }
 
+# As style guide indicates, short 1-line subs like this should be at the top of the file, or at the top of a fold section, Fix this in all resources
 # Disk supports all four transitions because the failure-counter
 # inside available() flips permanent_broken from inside the resource.
 sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
