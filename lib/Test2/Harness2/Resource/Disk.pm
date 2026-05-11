@@ -325,8 +325,47 @@ sub release {
     return 1;
 }
 
-# Stub filled in by Task 7.
-sub status { croak "Resource::Disk::status not yet implemented (Task 7)" }
+sub status {
+    my $self = shift;
+
+    my $now = _now();
+
+    my %mounts;
+    for my $mp (sort keys %{$self->{+MOUNTS}}) {
+        my $threshold = $self->{+MOUNTS}->{$mp}->{min_free};
+        my $cache     = $self->{+SAMPLES}->{$mp} // {};
+        $mounts{$mp} = {
+            free_bytes           => $cache->{free_bytes},
+            total_bytes          => $cache->{total_bytes},
+            used_pct             => $cache->{used_pct},
+            threshold            => $threshold,
+            state                => $cache->{state} // 'unknown',
+            sample_age           => defined($cache->{ts}) ? ($now - $cache->{ts}) : undef,
+            consecutive_failures => $cache->{consecutive_failures} // 0,
+        };
+    }
+
+    my @assignments;
+    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
+        my $a  = $self->{+ASSIGNMENTS}->{$id};
+        my $tf = $a->{job}->test_file;
+        push @assignments => {
+            id    => $id,
+            test  => $tf->relative,
+            stamp => $a->{stamp},
+            age   => $now - $a->{stamp},
+        };
+    }
+
+    return {
+        resource    => $self->resource_name,
+        broken      => $self->is_broken,
+        permanent   => $self->is_permanent_broken,
+        paused      => $self->is_paused,
+        mounts      => \%mounts,
+        assignments => \@assignments,
+    };
+}
 
 1;
 

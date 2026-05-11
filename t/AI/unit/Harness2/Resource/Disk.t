@@ -248,4 +248,64 @@ subtest 'assign records id, release drops it' => sub {
     );
 };
 
+subtest 'status snapshot shape' => sub {
+    my $r   = _make_resource();
+    my $tmp = (keys %{$r->mounts})[0];
+
+    no warnings 'redefine';
+    local *Filesys::Df::df = sub { {bavail => 10_000, blocks => 10_000} };
+
+    my $now = 2000;
+    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
+
+    $r->available(job => _fake_job);
+
+    my $tf = TFakeTestFile->new('t/foo.t');
+    my $j  = TFakeJobWithFile->new($tf);
+    $r->assign(id => 'X1', job => $j, env => {});
+
+    my $st = $r->status;
+    is($st->{resource},  'disk', 'resource name');
+    is($st->{broken},    0,      'not broken');
+    is($st->{permanent}, 0,      'not permanent');
+    is($st->{paused},    0,      'not paused');
+
+    is($st->{mounts}->{$tmp}->{state}, 'ok', 'state ok');
+    ok(exists $st->{mounts}->{$tmp}->{free_bytes},  'free_bytes present');
+    ok(exists $st->{mounts}->{$tmp}->{total_bytes}, 'total_bytes present');
+    ok(exists $st->{mounts}->{$tmp}->{used_pct},    'used_pct present');
+    is(
+        $st->{mounts}->{$tmp}->{threshold},
+        {kind => 'pct', value => 25},
+        'threshold echoed'
+    );
+    is($st->{mounts}->{$tmp}->{sample_age},           0, 'fresh sample');
+    is($st->{mounts}->{$tmp}->{consecutive_failures}, 0, 'no failures');
+
+    is(scalar @{$st->{assignments}},    1,         'one assignment');
+    is($st->{assignments}->[0]->{id},   'X1',      'id');
+    is($st->{assignments}->[0]->{test}, 't/foo.t', 'test path');
+    ok(exists $st->{assignments}->[0]->{stamp}, 'stamp');
+    is($st->{assignments}->[0]->{age}, 0, 'age');
+};
+
+subtest 'status does not trigger statvfs' => sub {
+    my $r     = _make_resource();
+    my $calls = 0;
+    no warnings 'redefine';
+    local *Filesys::Df::df = sub { $calls++; {bavail => 10_000, blocks => 10_000} };
+
+    my $now = 3000;
+    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
+
+    $r->available(job => _fake_job);
+    is($calls, 1, 'available() sampled once');
+
+    # Advance well past the TTL.
+    $now += 1000;
+
+    $r->status for 1 .. 5;
+    is($calls, 1, 'status did not re-sample');
+};
+
 done_testing;
