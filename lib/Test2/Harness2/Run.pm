@@ -24,6 +24,7 @@ use Object::HashBase qw{
     <launch_job_timeout
     <requested_harness_uuid
     <hash_seed
+    <chdir
 };
 
 # Default retry interval the harness will use when a launch_job

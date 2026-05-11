@@ -29,6 +29,14 @@ option_group {group => 'tests', category => 'Test Options', maybe => 1} => sub {
         description => 'Set environment variables',
     );
 
+    option chdir => (
+        type        => 'Scalar',
+        alt         => ['cd'],
+        long_examples  => [' DIR'],
+        short_examples => [' DIR'],
+        description => 'chdir into DIR before launching each test. Useful when running another distribution\'s test suite (e.g. yath test -P Moose --chdir ~/projects/Moose-2.4000/ ~/projects/Moose-2.4000/t). Overrides any per-test ch_dir auto-discovered by the Finder.',
+    );
+
     option set_hash_seed => (
         type     => 'Auto',
         autofill => \&today_yyyymmdd,

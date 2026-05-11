@@ -48,6 +48,7 @@ use Object::HashBase qw{
     <launch
     <launch_callback
     <new_pgroup
+    <cwd
     <env_vars
     <out_fh
     <err_fh
@@ -1118,6 +1119,10 @@ sub _launch_child_unix {
 
         if ($self->{+NEW_PGROUP}) {
             POSIX::setpgid(0, 0) or warn "setpgid(0,0) failed: $!";
+        }
+
+        if (my $child_cwd = $self->{+CWD}) {
+            chdir($child_cwd) or die "Failed to chdir to '$child_cwd': $!";
         }
 
         my %env = $self->_child_env_overrides;

@@ -15,37 +15,18 @@ include_options(
 );
 
 option_group {group => 'runner', category => "Runner Options"} => sub {
-    option preload_early => (
-        type => 'Map',
-        description => 'Preload a module when spawning perl to launch the preload stages, before any other preload.',
-    );
-
-    option preloads => (
-        type  => 'List',
-        alt   => ['preload'],
-        short => 'P',
-
-        description => 'Preload a module before running tests',
-    );
-
-    option preload_retry_delay => (
-        type => 'Scalar',
-        default => 5,
-        description => "Time in seconds to wait before trying to load a preload/stage after a failed attempt",
-    );
+    # NOTE: the legacy --preload / -P / --preload-early / --preload-retry-delay
+    # options were removed when the staged-preload subsystem was
+    # replaced. The new -P / --preload entry point lives in
+    # App::Yath2::Options::Preload and feeds a Resource::Preload into
+    # the harness's resource list.
 
     option class => (
         name    => 'runner',
         field   => 'class',
         type    => 'Scalar',
 
-        default => sub {
-            my ($opt, $settings) = @_;
-
-            return 'Test2::Harness2::Runner' if IS_WIN32;
-            return 'Test2::Harness2::Runner::Preloading' if @{$settings->runner->preloads // []};
-            return 'Test2::Harness2::Runner';
-        },
+        default => sub { 'Test2::Harness2::Runner' },
 
         mod_adds_options => 1,
         long_examples    => [' MyRunner', ' +Test2::Harness2::Runner::MyRunner'],
@@ -90,18 +71,6 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
     );
 };
 
-option_post_process \&runner_post_process;
-
-sub runner_post_process {
-    my ($options, $state) = @_;
-
-    my $settings = $state->{settings};
-    my $runner   = $settings->runner;
-    my $tests    = $settings->tests;
-
-    warn "WARNING: Combining preload and switches will render preloads useless...\n"
-        if @{$runner->preloads // []} && @{$tests->switches // []};
-};
 
 __END__
 

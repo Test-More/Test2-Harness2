@@ -327,8 +327,22 @@ sub request_handler_spawn_test {
         # made by code inside $test (Test2's pipe writes, IO, etc.)
         # -- a -e file check is the right "did do find the file"
         # signal.
+        # `do FILE` compiles the file in whatever package is currently
+        # in effect at the call site, so calling it directly from this
+        # closure makes the test compile in the PreloadService
+        # package. Tests almost universally `use Test::More` (or
+        # Test2::V0) and then call exported subs as barewords --
+        # `done_testing;`, `ok(...)`, `is(...)` -- which under
+        # `use strict 'subs'` only work if the import landed in the
+        # package the test is being compiled into. Force `main` so the
+        # test sees the same package it would have seen if it had been
+        # run as `perl path/to/test.t`.
         $@ = '';
-        my $r = do $test;
+        my $r;
+        {
+            package main;
+            $r = do $test;
+        }
         my $err = $@;
 
         if (!defined $r) {
@@ -373,6 +387,7 @@ sub request_handler_spawn_test {
             kill_timeout    => $payload->{kill_timeout},
             spec            => $payload->{spec} // {},
             (defined $auditor ? (auditor => $auditor) : ()),
+            (defined $payload->{ch_dir} && length $payload->{ch_dir} ? (cwd => $payload->{ch_dir}) : ()),
         );
         1;
     };

@@ -654,6 +654,7 @@ sub request_handler_queue_test_run {
             files  => $files,
             run_id => $run_id,
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
+            (defined $payload->{chdir}     ? (chdir     => $payload->{chdir})     : ()),
             %run_logger_opts,
         );
         push @{$self->{+QUEUE}} => $run;
@@ -672,8 +673,11 @@ sub request_handler_queue_test_run {
     my $run = $self->{+QUEUE}->[-1];
 
     $self->emit_service_event(
-        kind     => 'run_queued',
-        run_data => $run->TO_JSON,
+        kind      => 'run_queued',
+        run_id    => $run->run_id,
+        queued_at => $run->created_at,
+        job_ids   => [map { $_->job_id } @{$run->jobs}],
+        run_data  => $run->TO_JSON,
     );
 
     # job_queued events are emitted by the run service once it has
@@ -2489,12 +2493,14 @@ sub _launch_job {
     # per-run started_at slot so the eventual run_completed +
     # collector_report event can carry wall-time bracketing.
     unless ($self->_scheduler_started($run_id)) {
+        my $started_at = time;
         $self->emit_service_event(
-            kind     => 'run_started',
-            run_data => {run_id => $run_id},
+            kind       => 'run_started',
+            run_id     => $run_id,
+            started_at => $started_at,
         );
         my $flags = $self->_run_flags($run_id);
-        $flags->{started_at} //= time;
+        $flags->{started_at} //= $started_at;
     }
 
     my $assign_id = gen_uuid();
@@ -2521,6 +2527,15 @@ sub _launch_job {
         $res->assign(id => $assign_id, job => $job, env => \%env, %assign_args);
     }
 
+    # Working-directory selection for the test child. Priority:
+    #   1. Run-level chdir set by the user (--chdir on yath test) -- wins
+    #      for every job in the run, overriding any per-test path the
+    #      Finder discovered.
+    #   2. Per-test ch_dir auto-discovered by App::Yath2::Finder when it
+    #      walked a directory tree of tests.
+    #   3. Otherwise, the harness's own cwd (no chdir).
+    my $ch_dir = $run->chdir // $job->test_file->ch_dir;
+
     # Preload-routed jobs take the IPC path: send a spawn_test request
     # to the preload service, record a placeholder RUNNING_JOBS entry,
     # and return. The placeholder's pid stays undef until the
@@ -2539,6 +2554,7 @@ sub _launch_job {
                 assign_id          => $assign_id,
                 assigned_resources => $resources,
                 (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+                (defined $ch_dir    ? (ch_dir => $ch_dir)        : ()),
             );
             $self->_scheduler_mark_running($run_id, $job_id);
             return 1;
@@ -2548,6 +2564,7 @@ sub _launch_job {
             $run, $job,
             env => \%env,
             (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+            (defined $ch_dir       ? (ch_dir => $ch_dir)       : ()),
         );
         die "collector spawn returned no pid"
             unless ref($resp) eq 'HASH' && $resp->{ok} && $resp->{pid};
@@ -2607,6 +2624,7 @@ sub _spawn_collector_for_job {
 
     my $env     = $opts{env} // {};
     my $launch  = $opts{launch};
+    my $ch_dir  = $opts{ch_dir};
     my $auditor = $opts{auditor} // $self->{+TEST_AUDITOR};
 
     my $test_file_abs = $job->test_file_abs;
@@ -2646,6 +2664,7 @@ sub _spawn_collector_for_job {
             new_pgroup   => 1,
             parent_pids  => [$$],
             env_vars     => {T2_FORMATTER => 'Stream2', %$env},
+            (defined $ch_dir && length $ch_dir ? (cwd => $ch_dir) : ()),
             logdir       => $self->{+LOGDIR},
             ipcm_info    => $self->ipcm_info,
             ipc_parent   => $self->{+NAME},
@@ -2689,6 +2708,7 @@ sub _spawn_via_preload {
     my $job_try = $job->job_try // 1;
     my $env     = $opts{env} // {};
     my $launch  = $opts{launch};
+    my $ch_dir  = $opts{ch_dir};
 
     my $test_file_abs = $job->test_file_abs;
     croak "'test_file' must be absolute"
@@ -2747,6 +2767,7 @@ sub _spawn_via_preload {
             (defined $queued_at ? (queued_at => $queued_at) : ()),
         },
         (defined $launch ? (launch => $launch) : ()),
+        (defined $ch_dir && length $ch_dir ? (ch_dir => $ch_dir) : ()),
     );
 
     my $client   = $self->client;
