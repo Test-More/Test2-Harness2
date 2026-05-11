@@ -198,6 +198,8 @@ sub available {
 }
 
 # Walk assignments and count entries with (now - assigned_at) < window.
+# A slot is occupied while age is strictly less than window seconds;
+# at exactly age == window the slot has aged out (boundary-exclusive).
 # O(in-flight) -- caps are typically small (<50) so this is cheap.
 sub _in_window_count {
     my $self  = shift;
@@ -247,7 +249,36 @@ sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
 sub mark_paused  { $_[0]->{+PAUSED} = 1 }
 sub mark_resumed { $_[0]->{+PAUSED} = 0 }
 
-sub status { croak "Resource::Throttle::status not yet implemented (Task 6)" }
+sub status {
+    my $self = shift;
+
+    my $now = _now();
+    my $win = $self->{+WINDOW};
+
+    my @assignments;
+    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
+        my $a   = $self->{+ASSIGNMENTS}->{$id};
+        my $age = $now - $a->{assigned_at};
+        my $tf  = $a->{job}->test_file;
+        push @assignments => {
+            id          => $id,
+            test        => $tf->relative,
+            assigned_at => $a->{assigned_at},
+            age         => $age,
+            in_window   => ($age < $win) ? 1 : 0,
+        };
+    }
+
+    return {
+        resource          => $self->resource_name,
+        cap               => $self->{+CAP},
+        window            => $self->{+WINDOW},
+        paused            => $self->is_paused,
+        total_assignments => scalar(keys %{$self->{+ASSIGNMENTS}}),
+        in_window_count   => $self->_in_window_count,
+        assignments       => \@assignments,
+    };
+}
 
 1;
 

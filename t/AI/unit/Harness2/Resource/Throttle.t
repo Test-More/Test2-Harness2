@@ -161,4 +161,57 @@ subtest 'resource_name reflects custom name' => sub {
     is($d->resource_name, 'throttle', 'default name');
 };
 
+subtest 'status snapshot shape' => sub {
+    my $r   = _make_throttle(cap => 3, window => 2, name => 'db_throttle');
+    my $now = 5000;
+    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+
+    $r->assign(id => 'A', job => _job, env => {});    # t=5000
+    $now += 1;
+    $r->assign(id => 'B', job => _job, env => {});    # t=5001
+    $now = 5003;                                      # A aged out, B in window
+    $r->assign(id => 'C', job => _job, env => {});    # t=5003
+
+    my $st = $r->status;
+    is($st->{resource},          'db_throttle', 'resource name');
+    is($st->{cap},               3,             'cap');
+    is($st->{window},            2,             'window');
+    is($st->{paused},            0,             'not paused');
+    is($st->{total_assignments}, 3,             'three tracked');
+    is($st->{in_window_count},   1,             'only C still in window (B at exact boundary is aged out)');
+
+    is(scalar @{$st->{assignments}}, 3, 'three assignments listed');
+
+    my %by_id = map { $_->{id} => $_ } @{$st->{assignments}};
+    is($by_id{A}->{in_window}, 0, 'A aged out');
+    is($by_id{B}->{in_window}, 0, 'B aged out at exactly age == window');
+    is($by_id{C}->{in_window}, 1, 'C in window');
+
+    is($by_id{A}->{age},  3,         'A age');
+    is($by_id{B}->{age},  2,         'B age');
+    is($by_id{C}->{age},  0,         'C age');
+    is($by_id{A}->{test}, 't/foo.t', 'test path');
+};
+
+subtest 'slot ages out at exactly age == window' => sub {
+    my $r   = _make_throttle(cap => 1, window => 2);
+    my $now = 100;
+    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+
+    $r->assign(id => 'A', job => _job, env => {});
+    is($r->available(job => _job), 0, 'cap reached');
+
+    # Just before the boundary: still in window.
+    $now = 100 + 2 - 0.001;
+    is($r->available(job => _job), 0, 'just before boundary: still held');
+
+    # At exactly the boundary: slot aged out.
+    $now = 100 + 2;
+    is($r->available(job => _job), 1, 'at exact boundary: aged out');
+
+    # Past the boundary: definitely aged out.
+    $now = 100 + 5;
+    is($r->available(job => _job), 1, 'past boundary: aged out');
+};
+
 done_testing;
