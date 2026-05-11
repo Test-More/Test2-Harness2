@@ -188,11 +188,66 @@ sub init {
         && $self->{+NAME} !~ /\s/;
 }
 
-# Stubs filled in by Tasks 5 + 6.
-sub available { croak "Resource::Throttle::available not yet implemented (Task 5)" }
-sub assign    { croak "Resource::Throttle::assign not yet implemented (Task 5)" }
-sub release   { croak "Resource::Throttle::release not yet implemented (Task 5)" }
-sub status    { croak "Resource::Throttle::status not yet implemented (Task 6)" }
+sub available {
+    my ($self, %p) = @_;
+
+    croak "'job' is required" unless defined $p{job};
+
+    my $count = $self->_in_window_count;
+    return $count < $self->{+CAP} ? 1 : 0;
+}
+
+# Walk assignments and count entries with (now - assigned_at) < window.
+# O(in-flight) -- caps are typically small (<50) so this is cheap.
+sub _in_window_count {
+    my $self  = shift;
+    my $now   = _now();
+    my $win   = $self->{+WINDOW};
+    my $count = 0;
+    for my $entry (values %{$self->{+ASSIGNMENTS}}) {
+        $count++ if ($now - $entry->{assigned_at}) < $win;
+    }
+    return $count;
+}
+
+sub assign {
+    my ($self, %p) = @_;
+
+    my $id  = $p{id}  or croak "'id' is required";
+    my $job = $p{job} or croak "'job' is required";
+    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
+
+    croak "Resource::Throttle: duplicate assign for id '$id'"
+        if exists $self->{+ASSIGNMENTS}->{$id};
+
+    $self->{+ASSIGNMENTS}->{$id} = {
+        job         => $job,
+        assigned_at => _now(),
+    };
+
+    return 1;
+}
+
+sub release {
+    my ($self, %p) = @_;
+
+    my $id = $p{id} or croak "'id' is required";
+
+    delete $self->{+ASSIGNMENTS}->{$id}
+        or croak "Resource::Throttle: invalid release id '$id'";
+
+    return 1;
+}
+
+# State-transition methods. Throttle never enters a broken state at
+# runtime, so only paused/resumed are supported. The role default
+# implementations of mark_broken / mark_permanent_broken croak, which
+# is correct for this resource (callers should never try to break it).
+sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
+sub mark_paused  { $_[0]->{+PAUSED} = 1 }
+sub mark_resumed { $_[0]->{+PAUSED} = 0 }
+
+sub status { croak "Resource::Throttle::status not yet implemented (Task 6)" }
 
 1;
 
