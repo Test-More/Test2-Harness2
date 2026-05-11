@@ -78,8 +78,8 @@ use constant RUN_PIDS_GLOBAL_KEY => '__global__';
 #   abort - same as fail for THIS job plus every remaining pending
 #           job in the same run, one at a time as the job limiter
 #           frees slots; the run closes out once they all complete.
-use constant BROKEN_BEHAVIORS      => {map { $_ => 1 } qw/skip fail abort/};
-use constant SUBSCRIBER_RETRY_CAP  => 1024;
+use constant BROKEN_BEHAVIORS     => {map { $_ => 1 } qw/skip fail abort/};
+use constant SUBSCRIBER_RETRY_CAP => 1024;
 
 # Grace window applied when a collector pid exits without a prior
 # test_job_completed. The IPC::Manager loop drives run_on_interval
@@ -133,32 +133,32 @@ sub init {
 
     make_path("$logdir/services");
 
-    $self->{+NAME}              //= 'harness';
-    $self->{+JOB_ID}            //= gen_uuid();
-    $self->{+KILL_TIMEOUT}      //= 15;
-    $self->{+PARENT_PIDS}       //= [];
-    $self->{+STATE}             //= 'running';
-    $self->{+QUEUE}             //= [];
-    $self->{+RUN_STATES}        //= {};
-    $self->{+SCHEDULER}         //= {};
-    $self->{+RUNNING_JOBS}      //= {};
-    $self->{+RESOURCE_SERVICES} //= {};
-    $self->{+RUN_PIDS}                 //= {};
-    $self->{+RUN_FLAGS}                //= {};
+    $self->{+NAME}                      //= 'harness';
+    $self->{+JOB_ID}                    //= gen_uuid();
+    $self->{+KILL_TIMEOUT}              //= 15;
+    $self->{+PARENT_PIDS}               //= [];
+    $self->{+STATE}                     //= 'running';
+    $self->{+QUEUE}                     //= [];
+    $self->{+RUN_STATES}                //= {};
+    $self->{+SCHEDULER}                 //= {};
+    $self->{+RUNNING_JOBS}              //= {};
+    $self->{+RESOURCE_SERVICES}         //= {};
+    $self->{+RUN_PIDS}                  //= {};
+    $self->{+RUN_FLAGS}                 //= {};
     $self->{+PENDING_SYNTH_COMPLETIONS} //= {};
-    $self->{+COLLECTOR_GRACE_SECS}     //= DEFAULT_COLLECTOR_GRACE_SECS;
-    $self->{+COMPLETED_RUNS}    //= {};
-    $self->{+WATCH_PIDS}        //= [@{$self->{+PARENT_PIDS}}];
-    $self->{+OWN_PGROUP}        //= 0;
-    $self->{+SUBSCRIBERS}       //= {};
-    $self->{+SUBSCRIBER_RETRY}  //= {};
+    $self->{+COLLECTOR_GRACE_SECS}      //= DEFAULT_COLLECTOR_GRACE_SECS;
+    $self->{+COMPLETED_RUNS}            //= {};
+    $self->{+WATCH_PIDS}                //= [@{$self->{+PARENT_PIDS}}];
+    $self->{+OWN_PGROUP}                //= 0;
+    $self->{+SUBSCRIBERS}               //= {};
+    $self->{+SUBSCRIBER_RETRY}          //= {};
 
     # Sequential run-ord allocator: every accepted run gets the next
     # ordinal integer starting at 0. The counter is per harness-process;
     # persistent runners reuse the same harness so ords climb
     # monotonically across runs in a session, with gaps possible
     # (e.g. accepted-then-purged runs).
-    $self->{+RUN_ORD_COUNTER}   //= 1;
+    $self->{+RUN_ORD_COUNTER} //= 1;
 
     $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
     croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
@@ -221,7 +221,7 @@ sub _init_resources {
 sub _register_run_pid {
     my ($self, $run_key, $pid, %meta) = @_;
     return unless defined $run_key && length $run_key;
-    return unless defined $pid && $pid > 0;
+    return unless defined $pid     && $pid > 0;
     $meta{started_at} //= time;
     $self->{+RUN_PIDS}->{$run_key}->{$pid} = \%meta;
     return $pid;
@@ -234,7 +234,7 @@ sub _forget_run_pid {
     my ($self, $run_key, $pid) = @_;
     return unless defined $run_key && length $run_key;
     my $bucket = $self->{+RUN_PIDS}->{$run_key} or return;
-    my $meta = delete $bucket->{$pid};
+    my $meta   = delete $bucket->{$pid};
     delete $self->{+RUN_PIDS}->{$run_key} unless keys %$bucket;
     return $meta;
 }
@@ -294,8 +294,9 @@ sub _await_run_exit {
 # RUN_PIDS_GLOBAL_KEY for global services.
 sub _resource_service_tracked {
     my ($self, %p) = @_;
-    my $scope   = $p{scope} // 'global';
-    my $run_key = ($scope eq 'run' && ref $p{run})
+    my $scope = $p{scope} // 'global';
+    my $run_key =
+        ($scope eq 'run' && ref $p{run})
         ? $p{run}->run_id
         : RUN_PIDS_GLOBAL_KEY;
     my $svc = $self->{+RESOURCE_SERVICES}->{$p{pid}} || {};
@@ -312,8 +313,9 @@ sub _resource_service_tracked {
 
 sub _resource_service_forgotten {
     my ($self, %p) = @_;
-    my $scope   = $p{scope} // 'global';
-    my $run_key = ($scope eq 'run' && ref $p{run})
+    my $scope = $p{scope} // 'global';
+    my $run_key =
+        ($scope eq 'run' && ref $p{run})
         ? $p{run}->run_id
         : RUN_PIDS_GLOBAL_KEY;
     $self->_forget_run_pid($run_key, $p{pid});
@@ -507,8 +509,8 @@ sub request_handler_queue_test_run {
 
     my $ok = eval {
         my $run = Test2::Harness2::Run->from_files(
-            files     => $files,
-            run_id    => $run_id,
+            files  => $files,
+            run_id => $run_id,
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
             %run_logger_opts,
         );
@@ -1041,9 +1043,9 @@ sub _build_collector_report {
     my $total = scalar @ordered;
 
     return {
-        pass         => $flags->{pass}       ? 1 : 0,
+        pass         => $flags->{pass} ? 1 : 0,
         started_at   => $flags->{started_at},
-        ended_at     => $flags->{ended_at}  // $now,
+        ended_at     => $flags->{ended_at} // $now,
         total_jobs   => $total,
         passed_jobs  => $passed,
         failed_jobs  => $failed,
@@ -1153,8 +1155,8 @@ sub request_handler_subscribe {
         runs   => {},
         state  => 0,
     };
-    $entry->{global}     ||= $global;
-    $entry->{state}      ||= $state;
+    $entry->{global} ||= $global;
+    $entry->{state}  ||= $state;
     $entry->{runs}->{$_} = 1 for @run_ids;
 
     # Send an initial state snapshot for each freshly-added run so the
@@ -1282,8 +1284,7 @@ sub _send_to_subscriber {
         my $excess = @{$retry->{pending}} - $cap;
         splice @{$retry->{pending}}, 0, $excess;
         unless ($retry->{capped_warned}++) {
-            warn "Test2::Harness2: subscriber '$peer' retry queue exceeded "
-               . "$cap; dropping oldest payloads.\n";
+            warn "Test2::Harness2: subscriber '$peer' retry queue exceeded " . "$cap; dropping oldest payloads.\n";
         }
     }
     return;
@@ -2070,6 +2071,14 @@ sub _evaluate_resources_for {
         # Transient brokenness / paused state: try again later.
         return ('defer') unless $res->is_usable;
 
+        # Utilizer-aware resources (Role::Resource::Utilizer) expose an
+        # is_temporarily_unavailable predicate that is checked here,
+        # between is_usable and available. When the subsystem (memory,
+        # CPU, etc.) is currently saturated the resource defers this tick.
+        return ('defer')
+            if $res->can('is_temporarily_unavailable')
+            && $res->is_temporarily_unavailable;
+
         my $av = $res->available(job => $job);
         return ('skip', $res->resource_name) if $av < 0;
         return ('defer')                     if !$av;
@@ -2262,7 +2271,7 @@ sub _launch_job {
     my $launch_ok = eval {
         my $resp = $self->_spawn_collector_for_job(
             $run, $job,
-            env     => \%env,
+            env => \%env,
             (defined $opts{launch} ? (launch => $opts{launch}) : ()),
         );
         die "collector spawn returned no pid"
@@ -2368,10 +2377,10 @@ sub _spawn_collector_for_job {
             ipc_harness  => $self->{+NAME},
             kill_timeout => $self->{+KILL_TIMEOUT},
             spec         => {
-                %{ $test_file_spec->TO_JSON },
-                run_id    => $run_id,
-                job_id    => $job_id,
-                job_try   => $job_try,
+                %{$test_file_spec->TO_JSON},
+                run_id  => $run_id,
+                job_id  => $job_id,
+                job_try => $job_try,
                 (defined $queued_at ? (queued_at => $queued_at) : ()),
             },
             (defined $auditor ? (auditor => $auditor) : ()),
