@@ -4,6 +4,12 @@ use Test2::V0;
 # -j (slots) and -x (job_slots) flags, including the combined -j N:M
 # syntax that the trigger splits, every long alias, and the env var
 # fallbacks documented on each option.
+#
+# Also verifies the default resource injection behaviour:
+#   - No -j, no -R: CPU + Memory + UnixLimits + PipeLimits + Throttle (no JobCount)
+#   - -j N: same five plus JobCount
+#   - -R ...: only the explicitly specified resources
+#   - --no-resource: empty classes hash
 
 package TestResource {
     use Getopt::Yath;
@@ -106,15 +112,81 @@ subtest 'job_slots > slots is rejected' => sub {
     );
 };
 
-subtest 'JobCount default resource registered' => sub {
+subtest '-j is undef when not supplied' => sub {
+    my $r = parse();
+    ok(!defined $r->slots, 'slots is undef when -j not given');
+};
+
+subtest 'default resource set (no -j, no -R): utilizers + throttle, no JobCount' => sub {
+    my $r = parse();
+    my $classes = $r->classes;
+
+    ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU auto-injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory auto-injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits auto-injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits auto-injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle auto-injected');
+    ok(!exists $classes->{'Test2::Harness2::Resource::JobCount'},  'JobCount NOT injected without -j');
+    is(scalar keys %$classes, 5, 'exactly five default resources');
+};
+
+subtest '-j N adds JobCount to default set' => sub {
     my $r = parse('-j', '4');
-    ok(
-        exists $r->classes->{'Test2::Harness2::Resource::JobCount'},
-        'JobCount auto-registered when no other resource is supplied',
+    my $classes = $r->classes;
+
+    ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU present with -j');
+    ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory present with -j');
+    ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits present with -j');
+    ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits present with -j');
+    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle present with -j');
+    ok(exists $classes->{'Test2::Harness2::Resource::JobCount'},   'JobCount auto-injected when -j given');
+    is(scalar keys %$classes, 6, 'six resources when -j is given');
+};
+
+subtest '--utilize defaults to 75' => sub {
+    my $r = parse();
+    is($r->utilize, 75, 'utilize defaults to 75');
+};
+
+subtest '--utilize value flows into utilizer args' => sub {
+    my $r = parse('-U', '60');
+    is($r->utilize, 60, '-U 60 stored');
+
+    my $classes = $r->classes;
+    is(
+        $classes->{'Test2::Harness2::Resource::CPU'},
+        [utilize_percent => 60],
+        'CPU args contain utilize_percent => 60',
+    );
+    is(
+        $classes->{'Test2::Harness2::Resource::Memory'},
+        [utilize_percent => 60],
+        'Memory args contain utilize_percent => 60',
     );
 };
 
-subtest '--no-resource disables JobCount auto-injection' => sub {
+subtest '--utilize default 75 flows into utilizer args' => sub {
+    my $r = parse();
+    my $classes = $r->classes;
+    is(
+        $classes->{'Test2::Harness2::Resource::CPU'},
+        [utilize_percent => 75],
+        'CPU args contain default utilize_percent => 75',
+    );
+};
+
+subtest 'explicit -R suppresses default injection' => sub {
+    my $r = parse('-R', '+Test2::Harness2::Resource::JobCount');
+    my $classes = $r->classes;
+
+    ok(exists  $classes->{'Test2::Harness2::Resource::JobCount'},   '-R resource present');
+    ok(!exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU NOT injected when -R supplied');
+    ok(!exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory NOT injected when -R supplied');
+    ok(!exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle NOT injected when -R supplied');
+    is(scalar keys %$classes, 1, 'only the explicitly specified resource');
+};
+
+subtest '--no-resource disables all auto-injection' => sub {
     my $r = parse('--no-resource');
     is(
         scalar keys %{$r->classes},

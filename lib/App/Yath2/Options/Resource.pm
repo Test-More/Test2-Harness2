@@ -42,29 +42,13 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         short          => 'j',
         alt            => ['jobs', 'job-count'],
         description    => 'Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.',
-        notes          => "If System::Info is installed, this will default to half the cpu core count, otherwise the default is 2.",
+        notes          => "If unset, no hard concurrency cap is applied; the default utilizer + throttle resources gate scheduling.",
         long_examples  => [' 4', ' 8:2'],
         short_examples => ['4',  '8:2'],
         from_env_vars  => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
         clear_env_vars => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
 
-        default => sub {
-            my $ncore = eval { require System::Info; System::Info->new->ncore } || 0;
-            if ($ncore) {
-                if ($ncore > 2) {
-                    $ncore /= 2;
-                    print "System::Info is installed, setting job count to $ncore (Half the cores on this system)\n";
-                    return $ncore;
-                }
-                else {
-                    print "System::Info is installed, setting job count to 2 (Because we have less than 3 cores)\n";
-                    return 2;
-                }
-            }
-
-            print "Setting job count to 2. Install a sufficient version of System::Info to have this default to half the total number of cores.\n";
-            return 2;
-        },
+        default => sub { undef },
 
         trigger => sub {
             my $opt    = shift;
@@ -109,6 +93,7 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         description    => 'Percentage of system utilization (0 < pct < 100) at which any utilization-aware resources should signal temporarily-unavailable. Each resource that consumes the Test2::Harness2::Role::Resource::Utilizer role is given this percentage; once its monitored subsystem (CPU, memory, /tmp space, etc.) crosses the threshold the resource starts deferring new assignments. Pairs with a per-class spawn-throttle window (see POD).',
         long_examples  => [' 80', ' 50'],
         short_examples => [' 80', ' 50'],
+        default        => sub { 75 },
 
         # The role implementations are not wired up yet; this option is
         # a stub that validates the input and propagates it through
@@ -139,26 +124,20 @@ sub jobs_post_process {
 
     my $settings = $state->{settings};
     my $resource = $settings->resource;
-    $resource->option(slots     => 1) unless $resource->slots;
-    $resource->option(job_slots => 1) unless $resource->job_slots;
 
-    my $slots     = $resource->slots;
+    $resource->option(job_slots => 1) unless $resource->job_slots;
+    $resource->option(classes   => {}) unless $resource->classes;
+
+    my $slots     = $resource->slots;      # may be undef (user did not pass -j)
     my $job_slots = $resource->job_slots;
 
-    die "The slots per job (set to $job_slots) must not be larger than the total number of slots (set to $slots).\n" if $job_slots > $slots;
+    if (defined $slots) {
+        die "The slots per job (set to $job_slots) must not be larger than the total number of slots (set to $slots).\n"
+            if $job_slots > $slots;
+    }
 
-    $resource->option(classes => {}) unless $resource->classes;
-
-    # New rule (Phase 6.2): the harness no longer mandates a job
-    # limiter; yath-test is the layer that injects the default.
-    #
     # 1. If the user supplied any --resource / -R, do nothing -- the
     #    supplied set is authoritative.
-    # 2. Otherwise, if --no-resource / --no-resources was set, also do
-    #    nothing -- the user explicitly asked for a no-limiter harness.
-    # 3. Otherwise inject Test2::Harness2::Resource::JobCount; the slot
-    #    count comes from --slots (-j), which already has a
-    #    System::Info-backed default that falls back to 2.
     return if keys %{$resource->classes};
 
     # `no_resource` is only present in the group hash when the
@@ -167,8 +146,24 @@ sub jobs_post_process {
     # not croak.
     return if $resource->check_option('no_resource') && $resource->no_resource;
 
-    require Test2::Harness2::Resource::JobCount;
-    $resource->classes->{'Test2::Harness2::Resource::JobCount'} //= [];
+    # 2. Otherwise inject the default resource set:
+    #    - CPU + Memory + UnixLimits + PipeLimits with --utilize value
+    #    - Throttle=5/1s
+    #    - Plus JobCount(slots => N) if user explicitly passed -j N
+    my $utilize    = $resource->utilize;       # defaulted to 75 above
+    my @util_args  = (utilize_percent => $utilize);
+
+    $resource->classes->{'Test2::Harness2::Resource::CPU'}        //= [@util_args];
+    $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
+    $resource->classes->{'Test2::Harness2::Resource::UnixLimits'} //= [@util_args];
+    $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
+    $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['5/1s'];
+
+    if (defined $slots) {
+        # User explicitly passed -j N: inject JobCount as a hard cap
+        # alongside the utilizer + throttle stack.
+        $resource->classes->{'Test2::Harness2::Resource::JobCount'} //= [];
+    }
 }
 
 1;
