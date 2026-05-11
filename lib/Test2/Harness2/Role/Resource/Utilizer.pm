@@ -66,9 +66,9 @@ Test2::Harness2::Role::Resource::Utilizer - Utilization-aware resource role.
 =head1 STATUS
 
 The role contract is defined. Per-resource implementations are stubs;
-each utilization-aware resource (Memory, PipeLimits, UnixLimits,
-TempSpace, CPU) consumes the role and croaks from its required
-methods until the platform-specific sampler is wired up.
+each utilization-aware resource (Memory, PipeLimits, UnixLimits, CPU)
+consumes the role and croaks from its required methods until the
+platform-specific sampler is wired up.
 
 =head1 DESCRIPTION
 
