@@ -117,20 +117,27 @@ sub parse_count_or_pct {
 
 sub parse_size_or_pct {
     my ($raw, %opts) = @_;
-    my $name = $opts{name} // 'size';
+    my $name    = $opts{name}         // 'size';
+    my $default = $opts{default_unit};
 
     croak "$name is required" unless defined $raw && length $raw;
 
-    # Reject bare numbers (no unit, no % suffix) with a clear message.
-    my $s = $raw;
-    $s =~ s/\s+//g;
-    croak "invalid $name '$raw' (expected NUMBER[kb|mb|gb|tb|%])"
-        if $s =~ m/^[0-9]+(?:\.[0-9]+)?\z/;
+    # With no default_unit, bare numbers (no kb/mb/gb/tb/% suffix) are
+    # ambiguous; reject them with a clear message. With a default_unit
+    # supplied the bare number is interpreted as that unit -- this is
+    # the path used by callers like Resource::Disk where "25" means
+    # "25%" and a leading-digit threshold is intentional shorthand.
+    unless (defined $default) {
+        my $s = $raw;
+        $s =~ s/\s+//g;
+        croak "invalid $name '$raw' (expected NUMBER[kb|mb|gb|tb|%])"
+            if $s =~ m/^[0-9]+(?:\.[0-9]+)?\z/;
+    }
 
     my ($num, $unit) = parse_quantity(
         $raw,
         units        => [qw/kb mb gb tb %/],
-        default_unit => undef,
+        default_unit => $default,
         name         => $name,
     );
 
@@ -231,10 +238,15 @@ Fractional counts are rejected. Optional C<name> defaults to C<'count'>.
 
 Domain helper. Accepts either a byte-size string with a
 C<kb>/C<mb>/C<gb>/C<tb> suffix or a C<NUMBER%> string (percent,
-exclusive of 0 and 100). Bare numbers without a unit croak. Returns a
-hashref with keys C<kind> (C<'bytes'> or C<'pct'>) and C<value>
-(integer bytes, or numeric percent). Optional C<name> defaults to
-C<'size'>.
+exclusive of 0 and 100). Returns a hashref with keys C<kind>
+(C<'bytes'> or C<'pct'>) and C<value> (integer bytes, or numeric
+percent). Optional C<name> defaults to C<'size'>.
+
+Bare numbers without a unit are rejected unless an explicit
+C<default_unit> option is supplied; when present, a bare number is
+interpreted as that unit. Example: a disk-free threshold that
+defaults to percent passes C<< default_unit =E<gt> '%' >> so
+C<parse_size_or_pct('25')> returns C<< { kind => 'pct', value => 25 } >>.
 
 =back
 

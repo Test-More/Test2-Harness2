@@ -5,10 +5,10 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
-use Time::HiRes ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
-use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
+use Test2::Harness2::Util::JSON      qw/decode_json/;
+use Test2::Harness2::Util::Units     qw/parse_size_or_pct/;
+use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <min_free
@@ -19,125 +19,13 @@ use Object::HashBase qw{
 };
 
 use Role::Tiny::With;
+with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
-# Comment that this is needed for tests
-our $CLOCK = \&Time::HiRes::time;
-sub _now { $CLOCK->() }
-
 sub resource_name { $_[0]->{+NAME} // 'memory' }
 
-# Bad variable name again
-my %CTOR_KEYS = map { $_ => 1 } qw/min_free name utilize_percent/;
-
-sub parse_options {
-    my ($class, @args) = @_;
-
-    # Bad var name again
-    my %ctor;
-    my %file_vals;
-    my $inline_threshold;
-    my $inline_name;
-
-    my $i = 0;
-    while ($i < @args) {
-        my $arg = $args[$i];
-
-        # Bad multi-line conditional in parents, see CPU comment
-        # Drop unknown k=>v pairs from the resource-group settings.
-        if (
-               defined $arg
-            && !ref($arg)
-            && $arg !~ m{^[0-9]}        # not a bare threshold
-            && $arg !~ m{^@}            # not a file
-            && $arg !~ m{^name=}        # not name=
-            && $arg !~ m{^min_free=}    # not min_free=
-            && $i + 1 < @args
-            )
-        {
-            $ctor{$arg} = $args[$i + 1] if exists $CTOR_KEYS{$arg};
-            $i += 2;
-            next;
-        }
-
-        croak "Resource::Memory: undef positional entry" unless defined $arg;
-        croak "Resource::Memory: ref positional entry" if ref $arg;
-
-        if ($arg =~ m{^\@(.+)\z}) {
-            %file_vals = %{$class->_load_config_file($1)};
-        }
-        elsif ($arg =~ m{^name=(.*)\z}) {
-            my $n = $1;
-            croak "Resource::Memory: empty name=" unless defined $n && length $n;
-            croak "Resource::Memory: name='$n' must be whitespace-free" if $n =~ /\s/;
-            $inline_name = $n;
-        }
-        elsif ($arg =~ m{^min_free=(.+)\z}) {
-            my $parsed = eval { parse_size_or_pct($1, name => 'min_free') };
-            croak "Resource::Memory: bad min_free in '$arg': $@" if $@;
-            $inline_threshold = $parsed;
-        }
-        elsif ($arg =~ m{^[0-9]}) {
-            # Bare-threshold shorthand: <pct%> or <size>.
-            my $parsed = eval { parse_size_or_pct($arg, name => 'min_free') };
-            croak "Resource::Memory: bad threshold '$arg': $@" if $@;
-            $inline_threshold = $parsed;
-        }
-        else {
-            croak "Resource::Memory: unrecognised entry '$arg'";
-        }
-
-        $i += 1;
-    }
-
-    # Precedence: file then inline.
-    $ctor{min_free} = $file_vals{min_free} if exists $file_vals{min_free};
-    $ctor{name}     = $file_vals{name}     if exists $file_vals{name};
-    $ctor{min_free} = $inline_threshold    if defined $inline_threshold;
-    $ctor{name}     = $inline_name         if defined $inline_name;
-
-    $ctor{min_free} //= {kind => 'pct', value => 5};
-    $ctor{name}     //= 'memory';
-
-    return %ctor;
-}
-
-sub _load_config_file {
-    my ($class, $path) = @_;
-
-    croak "Resource::Memory config file '$path' does not exist" unless -e $path;
-    open my $fh, '<:raw', $path or croak "Resource::Memory: cannot open '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    # Bad use fo eval, see STYLE_GUIDE and other review comments
-    my $data = eval { decode_json($body) };
-    croak "Resource::Memory: cannot parse JSON in '$path': $@" if $@;
-    croak "Resource::Memory: top-level of '$path' must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/min_free name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::Memory: unknown key '$k' in '$path'" unless $allowed{$k};
-    }
-
-    my %out;
-    if (defined $data->{min_free}) {
-        # Bad eval again
-        my $parsed = eval { parse_size_or_pct($data->{min_free}, name => 'min_free') };
-        croak "Resource::Memory: bad min_free in '$path': $@" if $@;
-        $out{min_free} = $parsed;
-    }
-    if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::Memory: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
-    }
-
-    return \%out;
-}
+my %OPTION_KEYS = map { $_ => 1 } qw/min_free name utilize_percent/;
 
 sub init {
     my $self = shift;
@@ -164,6 +52,117 @@ sub set_utilize_percent {
     my ($self, $pct) = @_;
     $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
     return;
+}
+
+sub _is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if $arg =~ m{^[0-9]};
+    return 0 if $arg =~ m{^@};
+    return 0 if $arg =~ m{^name=};
+    return 0 if $arg =~ m{^min_free=};
+    return 1;
+}
+
+sub parse_options {
+    my ($class, @args) = @_;
+
+    my %out;
+    my %file_vals;
+    my $inline_threshold;
+    my $inline_name;
+
+    my $i = 0;
+    while ($i < @args) {
+        my $arg = $args[$i];
+
+        # Drop unknown k=>v pairs from the resource-group settings.
+        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
+            $i += 2;
+            next;
+        }
+
+        croak "Resource::Memory: undef positional entry" unless defined $arg;
+        croak "Resource::Memory: ref positional entry" if ref $arg;
+
+        if ($arg =~ m{^\@(.+)\z}) {
+            %file_vals = %{$class->_load_config_file($1)};
+        }
+        elsif ($arg =~ m{^name=(.*)\z}) {
+            my $n = $1;
+            croak "Resource::Memory: empty name=" unless defined $n && length $n;
+            croak "Resource::Memory: name='$n' must be whitespace-free" if $n =~ /\s/;
+            $inline_name = $n;
+        }
+        elsif ($arg =~ m{^min_free=(.+)\z}) {
+            my $parsed;
+            eval { $parsed = parse_size_or_pct($1, name => 'min_free'); 1 }
+                or croak "Resource::Memory: bad min_free in '$arg': $@";
+            $inline_threshold = $parsed;
+        }
+        elsif ($arg =~ m{^[0-9]}) {
+            # Bare-threshold shorthand: <pct%> or <size>.
+            my $parsed;
+            eval { $parsed = parse_size_or_pct($arg, name => 'min_free'); 1 }
+                or croak "Resource::Memory: bad threshold '$arg': $@";
+            $inline_threshold = $parsed;
+        }
+        else {
+            croak "Resource::Memory: unrecognised entry '$arg'";
+        }
+
+        $i += 1;
+    }
+
+    # Precedence: file then inline.
+    $out{min_free} = $file_vals{min_free} if exists $file_vals{min_free};
+    $out{name}     = $file_vals{name}     if exists $file_vals{name};
+    $out{min_free} = $inline_threshold    if defined $inline_threshold;
+    $out{name}     = $inline_name         if defined $inline_name;
+
+    $out{min_free} //= {kind => 'pct', value => 5};
+    $out{name}     //= 'memory';
+
+    return %out;
+}
+
+sub _load_config_file {
+    my ($class, $path) = @_;
+
+    croak "Resource::Memory config file '$path' does not exist" unless -e $path;
+    open my $fh, '<:raw', $path or croak "Resource::Memory: cannot open '$path': $!";
+    my $body = do { local $/; <$fh> };
+    close $fh;
+
+    my $data;
+    eval { $data = decode_json($body); 1 }
+        or croak "Resource::Memory: cannot parse JSON in '$path': $@";
+    croak "Resource::Memory: top-level of '$path' must be a JSON object"
+        unless ref($data) eq 'HASH';
+
+    my %allowed = map { $_ => 1 } qw/min_free name/;
+    for my $k (sort keys %$data) {
+        croak "Resource::Memory: unknown key '$k' in '$path'" unless $allowed{$k};
+    }
+
+    my %out;
+    if (defined $data->{min_free}) {
+        my $parsed;
+        eval { $parsed = parse_size_or_pct($data->{min_free}, name => 'min_free'); 1 }
+            or croak "Resource::Memory: bad min_free in '$path': $@";
+        $out{min_free} = $parsed;
+    }
+    if (defined $data->{name}) {
+        my $n = $data->{name};
+        croak "Resource::Memory: name in '$path' must be a non-empty whitespace-free string"
+            unless !ref($n) && length($n) && $n !~ /\s/;
+        $out{name} = $n;
+    }
+
+    return \%out;
 }
 
 # Test seam: tests override this. Production reads /proc/meminfo.
@@ -223,30 +222,6 @@ sub available {
     return 1;
 }
 
-sub assign {
-    my ($self, %p) = @_;
-    my $id  = $p{id}  or croak "'id' is required";
-    my $job = $p{job} or croak "'job' is required";
-    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
-    croak "Resource::Memory: duplicate assign for id '$id'"
-        if exists $self->{+ASSIGNMENTS}->{$id};
-    $self->{+ASSIGNMENTS}->{$id} = {job => $job, assigned_at => _now()};
-    return 1;
-}
-
-sub release {
-    my ($self, %p) = @_;
-    my $id = $p{id} or croak "'id' is required";
-    delete $self->{+ASSIGNMENTS}->{$id}
-        or croak "Resource::Memory: invalid release id '$id'";
-    return 1;
-}
-
-# 1 line subs should be at top of file, or top of a fold section
-sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
-sub mark_paused  { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed { $_[0]->{+PAUSED} = 0 }
-
 sub status {
     my $self = shift;
     my ($total, $available) = $self->_sample;
@@ -260,7 +235,7 @@ sub status {
             id          => $id,
             test        => $tf->relative,
             assigned_at => $a->{assigned_at},
-            age         => _now() - $a->{assigned_at},
+            age         => hi_res_time() - $a->{assigned_at},
         };
     }
 

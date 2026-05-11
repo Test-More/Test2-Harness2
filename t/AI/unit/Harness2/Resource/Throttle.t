@@ -64,7 +64,7 @@ subtest 'available() before any assignment is 1' => sub {
 subtest 'available() returns 0 once cap is reached' => sub {
     my $r   = _make_throttle(cap => 3, window => 2);
     my $now = 1000;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     $r->assign(id => 'A', job => _job, env => {});
     $r->assign(id => 'B', job => _job, env => {});
@@ -80,7 +80,7 @@ subtest 'available() returns 0 once cap is reached' => sub {
 subtest 'aged-out slots free up regardless of release' => sub {
     my $r   = _make_throttle(cap => 2, window => 2);
     my $now = 1000;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     $r->assign(id => 'A', job => _job, env => {});
     $r->assign(id => 'B', job => _job, env => {});
@@ -100,7 +100,7 @@ subtest 'aged-out slots free up regardless of release' => sub {
 subtest 'mixed: some still in window, some aged out' => sub {
     my $r   = _make_throttle(cap => 3, window => 2);
     my $now = 1000;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     $r->assign(id => 'A', job => _job, env => {});    # t=1000
     $now += 1;
@@ -166,7 +166,7 @@ subtest 'resource_name reflects custom name' => sub {
 subtest 'status snapshot shape' => sub {
     my $r   = _make_throttle(cap => 3, window => 2, name => 'db_throttle');
     my $now = 5000;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     $r->assign(id => 'A', job => _job, env => {});    # t=5000
     $now += 1;
@@ -198,7 +198,7 @@ subtest 'status snapshot shape' => sub {
 subtest 'slot ages out at exactly age == window' => sub {
     my $r   = _make_throttle(cap => 1, window => 2);
     my $now = 100;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     $r->assign(id => 'A', job => _job, env => {});
     is($r->available(job => _job), 0, 'cap reached');
@@ -242,7 +242,7 @@ subtest 'multi-basis: 8-core, 4GB free, 1/core,1gb/1s => 4 tokens' => sub {
 
     # 4 assignments fit, 5th defers.
     my $now = 1000;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
     $r->assign(id => "s$_", job => _job, env => {}) for 1 .. 4;
     is($r->available(job => _job), 0, 'at 4 tokens: deferred');
 };
@@ -421,7 +421,7 @@ subtest 'retroactive window: slots assigned under 1s count against 4s effective 
     );
 
     my $now = 1000;
-    local $Test2::Harness2::Resource::Throttle::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     # Assign a slot at t=1000 under zero tokens (10MB/25MB=0, so available
     # returns 0, but we test _in_window_count directly to verify retroactive

@@ -5,10 +5,10 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
-use Time::HiRes ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
-use Test2::Harness2::Util::Units qw/parse_count_or_pct parse_size_or_pct/;
+use Test2::Harness2::Util::JSON      qw/decode_json/;
+use Test2::Harness2::Util::Units     qw/parse_count_or_pct parse_size_or_pct/;
+use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <nproc
@@ -21,144 +21,14 @@ use Object::HashBase qw{
 };
 
 use Role::Tiny::With;
+with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
-# Comment needed
-our $CLOCK = \&Time::HiRes::time;
-sub _now { $CLOCK->() }
-
 sub resource_name { $_[0]->{+NAME} // 'unixlimits' }
 
-# Bad name
-my %CTOR_KEYS = map { $_ => 1 } qw/nproc nofile as name utilize_percent/;
+my %OPTION_KEYS = map { $_ => 1 } qw/nproc nofile as name utilize_percent/;
 
-sub parse_options {
-    my ($class, @args) = @_;
-
-    # Bad name
-    my %ctor;
-    my %file_vals;
-    my (%inline, $inline_name);
-
-    my $i = 0;
-    while ($i < @args) {
-        my $arg = $args[$i];
-
-        # multi-line cond in paren is bad
-        if (   defined $arg
-            && !ref($arg)
-            && $arg !~ m{^[0-9]}
-            && $arg !~ m{^@}
-            && $arg !~ m{^name=}
-            && $arg !~ m{^nproc=}
-            && $arg !~ m{^nofile=}
-            && $arg !~ m{^as=}
-            && $i + 1 < @args)
-        {
-            $ctor{$arg} = $args[$i + 1] if exists $CTOR_KEYS{$arg};
-            $i += 2;
-            next;
-        }
-
-        croak "Resource::UnixLimits: undef positional entry" unless defined $arg;
-        croak "Resource::UnixLimits: ref positional entry" if ref $arg;
-
-        if ($arg =~ m{^\@(.+)\z}) {
-            %file_vals = %{$class->_load_config_file($1)};
-        }
-        elsif ($arg =~ m{^name=(.*)\z}) {
-            my $n = $1;
-            croak "Resource::UnixLimits: empty name=" unless defined $n && length $n;
-            croak "Resource::UnixLimits: name='$n' must be whitespace-free" if $n =~ /\s/;
-            $inline_name = $n;
-        }
-        elsif ($arg =~ m{^(nproc|nofile)=(.+)\z}) {
-            my ($dim, $raw) = ($1, $2);
-            my $parsed = eval { parse_count_or_pct($raw, name => $dim) };
-            croak "Resource::UnixLimits: bad $dim in '$arg': $@" if $@;
-            $inline{$dim} = $parsed;
-        }
-        elsif ($arg =~ m{^as=(.+)\z}) {
-            my $parsed = eval { parse_size_or_pct($1, name => 'as') };
-            croak "Resource::UnixLimits: bad as in '$arg': $@" if $@;
-            $inline{as} = $parsed;
-        }
-        elsif ($arg =~ m{^([0-9]+(?:\.[0-9]+)?)%\z}) {
-            # Bare-pct shorthand applies to nproc + nofile (not as).
-            my $pct = $1;
-            croak "Resource::UnixLimits: pct must be > 0 and < 100 (got '$pct')"
-                unless $pct > 0 && $pct < 100;
-            $inline{nproc}  = {kind => 'pct', value => $pct + 0};
-            $inline{nofile} = {kind => 'pct', value => $pct + 0};
-        }
-        else {
-            croak "Resource::UnixLimits: unrecognised entry '$arg'";
-        }
-
-        $i += 1;
-    }
-
-    # File then inline.
-    for my $dim (qw/nproc nofile as name/) {
-        $ctor{$dim} = $file_vals{$dim} if exists $file_vals{$dim};
-    }
-    for my $dim (qw/nproc nofile as/) {
-        $ctor{$dim} = $inline{$dim} if exists $inline{$dim};
-    }
-    $ctor{name} = $inline_name if defined $inline_name;
-
-    $ctor{nproc}  //= {kind => 'pct', value => 10};
-    $ctor{nofile} //= {kind => 'pct', value => 10};
-    $ctor{name}   //= 'unixlimits';
-
-    return %ctor;
-}
-
-sub _load_config_file {
-    my ($class, $path) = @_;
-
-    croak "Resource::UnixLimits config file '$path' does not exist" unless -e $path;
-    open my $fh, '<:raw', $path or croak "Resource::UnixLimits: cannot open '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    # Bad eval
-    my $data = eval { decode_json($body) };
-    croak "Resource::UnixLimits: cannot parse JSON in '$path': $@" if $@;
-    croak "Resource::UnixLimits: top-level must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/nproc nofile as name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::UnixLimits: unknown key '$k' in '$path'" unless $allowed{$k};
-    }
-
-    my %out;
-    for my $dim (qw/nproc nofile/) {
-        if (defined $data->{$dim}) {
-            # Bad eval
-            my $parsed = eval { parse_count_or_pct($data->{$dim}, name => $dim) };
-            croak "Resource::UnixLimits: bad $dim in '$path': $@" if $@;
-            $out{$dim} = $parsed;
-        }
-    }
-    if (defined $data->{as}) {
-        # Bad eval
-        my $parsed = eval { parse_size_or_pct($data->{as}, name => 'as') };
-        croak "Resource::UnixLimits: bad as in '$path': $@" if $@;
-        $out{as} = $parsed;
-    }
-    if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::UnixLimits: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
-    }
-    return \%out;
-}
-
-# Init should be closer to the top of the file since the constructor is often reviewed. Fix this for others as well, should be below 1-liners, but above most other subs
 sub init {
     my $self = shift;
 
@@ -187,7 +57,137 @@ sub set_utilize_percent {
     return;
 }
 
-# Test seams.
+sub _is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if $arg =~ m{^[0-9]};
+    return 0 if $arg =~ m{^@};
+    return 0 if $arg =~ m{^name=};
+    return 0 if $arg =~ m{^nproc=};
+    return 0 if $arg =~ m{^nofile=};
+    return 0 if $arg =~ m{^as=};
+    return 1;
+}
+
+sub parse_options {
+    my ($class, @args) = @_;
+
+    my %out;
+    my %file_vals;
+    my (%inline, $inline_name);
+
+    my $i = 0;
+    while ($i < @args) {
+        my $arg = $args[$i];
+
+        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
+            $i += 2;
+            next;
+        }
+
+        croak "Resource::UnixLimits: undef positional entry" unless defined $arg;
+        croak "Resource::UnixLimits: ref positional entry" if ref $arg;
+
+        if ($arg =~ m{^\@(.+)\z}) {
+            %file_vals = %{$class->_load_config_file($1)};
+        }
+        elsif ($arg =~ m{^name=(.*)\z}) {
+            my $n = $1;
+            croak "Resource::UnixLimits: empty name=" unless defined $n && length $n;
+            croak "Resource::UnixLimits: name='$n' must be whitespace-free" if $n =~ /\s/;
+            $inline_name = $n;
+        }
+        elsif ($arg =~ m{^(nproc|nofile)=(.+)\z}) {
+            my ($dim, $raw) = ($1, $2);
+            my $parsed;
+            eval { $parsed = parse_count_or_pct($raw, name => $dim); 1 }
+                or croak "Resource::UnixLimits: bad $dim in '$arg': $@";
+            $inline{$dim} = $parsed;
+        }
+        elsif ($arg =~ m{^as=(.+)\z}) {
+            my $parsed;
+            eval { $parsed = parse_size_or_pct($1, name => 'as'); 1 }
+                or croak "Resource::UnixLimits: bad as in '$arg': $@";
+            $inline{as} = $parsed;
+        }
+        elsif ($arg =~ m{^([0-9]+(?:\.[0-9]+)?)%\z}) {
+            # Bare-pct shorthand applies to nproc + nofile (not as).
+            my $pct = $1;
+            croak "Resource::UnixLimits: pct must be > 0 and < 100 (got '$pct')"
+                unless $pct > 0 && $pct < 100;
+            $inline{nproc}  = {kind => 'pct', value => $pct + 0};
+            $inline{nofile} = {kind => 'pct', value => $pct + 0};
+        }
+        else {
+            croak "Resource::UnixLimits: unrecognised entry '$arg'";
+        }
+
+        $i += 1;
+    }
+
+    # File then inline.
+    for my $dim (qw/nproc nofile as name/) {
+        $out{$dim} = $file_vals{$dim} if exists $file_vals{$dim};
+    }
+    for my $dim (qw/nproc nofile as/) {
+        $out{$dim} = $inline{$dim} if exists $inline{$dim};
+    }
+    $out{name} = $inline_name if defined $inline_name;
+
+    $out{nproc}  //= {kind => 'pct', value => 10};
+    $out{nofile} //= {kind => 'pct', value => 10};
+    $out{name}   //= 'unixlimits';
+
+    return %out;
+}
+
+sub _load_config_file {
+    my ($class, $path) = @_;
+
+    croak "Resource::UnixLimits config file '$path' does not exist" unless -e $path;
+    open my $fh, '<:raw', $path or croak "Resource::UnixLimits: cannot open '$path': $!";
+    my $body = do { local $/; <$fh> };
+    close $fh;
+
+    my $data;
+    eval { $data = decode_json($body); 1 }
+        or croak "Resource::UnixLimits: cannot parse JSON in '$path': $@";
+    croak "Resource::UnixLimits: top-level must be a JSON object"
+        unless ref($data) eq 'HASH';
+
+    my %allowed = map { $_ => 1 } qw/nproc nofile as name/;
+    for my $k (sort keys %$data) {
+        croak "Resource::UnixLimits: unknown key '$k' in '$path'" unless $allowed{$k};
+    }
+
+    my %out;
+    for my $dim (qw/nproc nofile/) {
+        if (defined $data->{$dim}) {
+            my $parsed;
+            eval { $parsed = parse_count_or_pct($data->{$dim}, name => $dim); 1 }
+                or croak "Resource::UnixLimits: bad $dim in '$path': $@";
+            $out{$dim} = $parsed;
+        }
+    }
+    if (defined $data->{as}) {
+        my $parsed;
+        eval { $parsed = parse_size_or_pct($data->{as}, name => 'as'); 1 }
+            or croak "Resource::UnixLimits: bad as in '$path': $@";
+        $out{as} = $parsed;
+    }
+    if (defined $data->{name}) {
+        my $n = $data->{name};
+        croak "Resource::UnixLimits: name in '$path' must be a non-empty whitespace-free string"
+            unless !ref($n) && length($n) && $n !~ /\s/;
+        $out{name} = $n;
+    }
+    return \%out;
+}
+
+# Test seam: tests override these to inject deterministic samples.
 sub _read_self_limits {
     open my $fh, '<', '/proc/self/limits' or die "open /proc/self/limits: $!";
     my %out;
@@ -228,8 +228,13 @@ sub _count_self_fd {
     return $n;
 }
 
-# Name this better, I do not know what this does from its name.
-sub _eval_dim {
+# Compute the {state, soft_cap, current, free, effective_min_free, headroom}
+# status for one dimension (nproc / nofile / as). Returns a key/value
+# list suitable for splatting into a hash slot. "Dimension" is the
+# per-rlimit axis being checked -- the resource gates three of them
+# independently and returns a 'low' state if any goes below its
+# headroom.
+sub _assess_dimension {
     my ($self, $dim, $soft_cap, $current) = @_;
 
     return (
@@ -262,8 +267,12 @@ sub _eval_dim {
     );
 }
 
-# What does dim mean, better name
-sub _dim_results {
+# Sample the kernel state for every configured dimension and run
+# _assess_dimension on each. Returns
+# { nproc => {state=>..., ...}, nofile => {...}, as => {...} }
+# (the 'as' key is absent unless the resource was configured with an
+# AS threshold).
+sub _dimension_states {
     my $self = shift;
 
     my $limits  = $self->_read_self_limits;
@@ -271,18 +280,18 @@ sub _dim_results {
     my $fdcount = $self->_count_self_fd;
 
     my %dims;
-    $dims{nproc}  = {$self->_eval_dim('nproc',  $limits->{nproc},  $status->{Threads} // 0)};
-    $dims{nofile} = {$self->_eval_dim('nofile', $limits->{nofile}, $fdcount)};
+    $dims{nproc}  = {$self->_assess_dimension('nproc',  $limits->{nproc},  $status->{Threads} // 0)};
+    $dims{nofile} = {$self->_assess_dimension('nofile', $limits->{nofile}, $fdcount)};
     if ($self->{+AS}) {
         my $vmsize_bytes = ($status->{VmSize} // 0) * 1024;
-        $dims{as} = {$self->_eval_dim('as', $limits->{as}, $vmsize_bytes)};
+        $dims{as} = {$self->_assess_dimension('as', $limits->{as}, $vmsize_bytes)};
     }
     return \%dims;
 }
 
 sub is_temporarily_unavailable {
     my $self = shift;
-    my $dims = $self->_dim_results;
+    my $dims = $self->_dimension_states;
     for my $d (values %$dims) {
         return 1 if $d->{state} eq 'low';
     }
@@ -295,34 +304,10 @@ sub available {
     return 1;
 }
 
-sub assign {
-    my ($self, %p) = @_;
-    my $id  = $p{id}  or croak "'id' is required";
-    my $job = $p{job} or croak "'job' is required";
-    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
-    croak "Resource::UnixLimits: duplicate assign for id '$id'"
-        if exists $self->{+ASSIGNMENTS}->{$id};
-    $self->{+ASSIGNMENTS}->{$id} = {job => $job, assigned_at => _now()};
-    return 1;
-}
-
-sub release {
-    my ($self, %p) = @_;
-    my $id = $p{id} or croak "'id' is required";
-    delete $self->{+ASSIGNMENTS}->{$id}
-        or croak "Resource::UnixLimits: invalid release id '$id'";
-    return 1;
-}
-
-# 1 line subs higher, below hashbase and other imports, but above multi-line subs
-sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
-sub mark_paused  { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed { $_[0]->{+PAUSED} = 0 }
-
 sub status {
     my $self = shift;
 
-    my $dims = $self->_dim_results;
+    my $dims = $self->_dimension_states;
 
     my @assignments;
     for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
@@ -332,7 +317,7 @@ sub status {
             id          => $id,
             test        => $tf->relative,
             assigned_at => $a->{assigned_at},
-            age         => _now() - $a->{assigned_at},
+            age         => hi_res_time() - $a->{assigned_at},
         };
     }
 

@@ -10,6 +10,25 @@ use Test2::Harness2::Resource::Disk;
 my $have_df = eval { require Filesys::Df; 1 };
 skip_all "Filesys::Df not installed" unless $have_df;
 
+subtest '_evaluate_threshold boundary semantics' => sub {
+    # _evaluate_threshold is a private function in Disk.pm. Exercise the
+    # boundary cases directly (free >= threshold is 'ok', strictly less
+    # is 'low'); the integration subtests below cover the path through
+    # available()/_take_sample.
+    my $eval = \&Test2::Harness2::Resource::Disk::_evaluate_threshold;
+
+    is($eval->({kind => 'pct', value => 25}, 250, 1000), 'ok',  'pct: exactly at threshold');
+    is($eval->({kind => 'pct', value => 25}, 251, 1000), 'ok',  'pct: just above threshold');
+    is($eval->({kind => 'pct', value => 25}, 249, 1000), 'low', 'pct: just below threshold');
+    is($eval->({kind => 'pct', value => 25}, 0,   1000), 'low', 'pct: zero free');
+
+    my $cap = 512 * 1024;
+    is($eval->({kind => 'bytes', value => $cap},     $cap,     'ignored'), 'ok',  'bytes: at threshold');
+    is($eval->({kind => 'bytes', value => $cap},     $cap + 1, 'ignored'), 'ok',  'bytes: above threshold');
+    is($eval->({kind => 'bytes', value => $cap},     $cap - 1, 'ignored'), 'low', 'bytes: below threshold');
+    is($eval->({kind => 'bytes', value => $cap},     0,        'ignored'), 'low', 'bytes: zero free');
+};
+
 subtest 'init requires non-empty mounts' => sub {
     like(
         dies { Test2::Harness2::Resource::Disk->new() },
@@ -197,7 +216,7 @@ subtest 'status snapshot shape' => sub {
     local *Filesys::Df::df = sub { {bavail => 10_000, blocks => 10_000} };
 
     my $now = 2000;
-    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
+    local $Test2::Harness2::Util::HiResTime::CLOCK = sub { $now };
 
     $r->available(job => _fake_job);
 
@@ -226,7 +245,7 @@ subtest 'status snapshot shape' => sub {
     is(scalar @{$st->{assignments}},    1,         'one assignment');
     is($st->{assignments}->[0]->{id},   'X1',      'id');
     is($st->{assignments}->[0]->{test}, 't/foo.t', 'test path');
-    ok(exists $st->{assignments}->[0]->{stamp}, 'stamp');
+    ok(exists $st->{assignments}->[0]->{assigned_at}, 'assigned_at');
     is($st->{assignments}->[0]->{age}, 0, 'age');
 };
 

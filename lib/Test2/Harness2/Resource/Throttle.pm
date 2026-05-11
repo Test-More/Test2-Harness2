@@ -6,10 +6,10 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 use POSIX qw/floor/;
-use Time::HiRes ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
-use Test2::Harness2::Util::Units qw/parse_duration parse_byte_size/;
+use Test2::Harness2::Util::JSON      qw/decode_json/;
+use Test2::Harness2::Util::Units     qw/parse_duration parse_byte_size/;
+use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <cap
@@ -24,253 +24,28 @@ use Object::HashBase qw{
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Resource';
 
-# Test seam matching Resource::Disk's pattern. Tests local-bind
-# $CLOCK to drive deterministic timelines; production code never
-# touches it.
-our $CLOCK = \&Time::HiRes::time;
-
-sub _now { $CLOCK->() }
-
 # Test seams for system detection. Tests override these package-level
 # subs to inject deterministic values without touching /proc.
 our $DETECT_CORE_COUNT  = undef;    # coderef override; undef = use real detection
 our $READ_MEMINFO_AVAIL = undef;    # coderef override; undef = read /proc/meminfo
 
-sub _detect_core_count {
-    return $DETECT_CORE_COUNT->() if defined $DETECT_CORE_COUNT;
-
-    # Try System::Info first (cross-platform, optional dep). Don't
-    # gate on ->can('ncore') -- System::Info dispatches via a
-    # platform-specific subclass and AUTOLOAD/delegation, so can()
-    # returns false even though the call works. Just try it.
-    my $loaded = eval { require System::Info; 1 };
-    if ($loaded) {
-        # Bad eval
-        my $n = eval { System::Info->new->ncore };
-        return $n if $n && $n > 0;
-    }
-
-    # Fall back to counting "processor" lines in /proc/cpuinfo (Linux).
-    # The naive idiom `$count++ while <$fh> =~ /^processor/;` is wrong:
-    # `while` exits the first time the regex fails to match, so the
-    # very next non-processor line (vendor_id, cpu family, ...) ends
-    # the loop with count=1 regardless of CPU count. Read every line
-    # explicitly.
-    if (-r '/proc/cpuinfo') {
-        if (open my $fh, '<', '/proc/cpuinfo') {
-            my $count = 0;
-            while (my $line = <$fh>) {
-                $count++ if $line =~ /^processor\s*:/;
-            }
-            close $fh;
-            return $count if $count > 0;
-        }
-    }
-
-    return 1;    # final fallback: assume 1 core
-}
-
-sub _read_meminfo_available {
-    return $READ_MEMINFO_AVAIL->() if defined $READ_MEMINFO_AVAIL;
-
-    open my $fh, '<', '/proc/meminfo'
-        or croak "Resource::Throttle: cannot open /proc/meminfo: $!";
-    while (<$fh>) {
-        if (/^MemAvailable:\s+(\d+)\s+kB/) {
-            close $fh;
-            return $1 * 1024;    # convert kB to bytes
-        }
-    }
-    close $fh;
-    croak "Resource::Throttle: MemAvailable not found in /proc/meminfo";
-}
+# Throttle keeps assign / release / paused bookkeeping bespoke rather
+# than consuming Test2::Harness2::Role::Resource::Assignable. State-
+# transition methods (is_paused / mark_paused / mark_resumed) follow
+# the assignable shape so the role would fit; assign + release also
+# follow the same shape today. The reason Throttle keeps its own
+# copies is that the rate-limit semantics are likely to grow custom
+# release behaviour (e.g. recording exit time alongside assigned_at
+# so the sliding-window math can credit early completions) and
+# inheriting from the role would have to be undone the moment that
+# happens.
 
 sub resource_name { $_[0]->{+NAME} // 'throttle' }
+sub is_paused     { $_[0]->{+PAUSED} ? 1 : 0 }
+sub mark_paused   { $_[0]->{+PAUSED} = 1 }
+sub mark_resumed  { $_[0]->{+PAUSED} = 0 }
 
-# Bad name
-# Class method called by App::Yath2::Command::test::_build_resources
-# and App::Yath2::Command::start::resources via the parse_options
-# dispatch added in the Disk plan.
-my %CTOR_KEYS = map { $_ => 1 } qw/cap window name bases core_count/;
-
-# This sub is too long
-sub parse_options {
-    my ($class, @args) = @_;
-
-    my %ctor;
-    my %file_vals;
-    my @inline_rules;
-    my $inline_name;
-
-    my $i = 0;
-    while ($i < @args) {
-        my $arg = $args[$i];
-
-        # Bad multi-line cond in parens
-        # Drop unknown k=>v pairs from the resource-group settings.
-        if (
-               defined $arg
-            && !ref($arg)
-            && $arg !~ m{^[0-9]+(?:/|$)}    # not a rule (explicit or bare-cap)
-            && $arg !~ m{^@}                # not a file
-            && $arg !~ m{^name=}            # not a name= entry
-            && $i + 1 < @args
-            )
-        {
-            # Known ctor keys (programmatic call) flow through.
-            $ctor{$arg} = $args[$i + 1] if exists $CTOR_KEYS{$arg};
-            $i += 2;
-            next;
-        }
-
-        croak "Resource::Throttle: undef positional entry" unless defined $arg;
-        croak "Resource::Throttle: ref positional entry" if ref $arg;
-
-        if ($arg =~ m{^\@(.+)\z}) {
-            my $path = $1;
-            %file_vals = %{$class->_load_config_file($path)};
-        }
-        elsif ($arg =~ m{^name=(.*)\z}) {
-            my $n = $1;
-            croak "Resource::Throttle: empty name= entry '$arg'"
-                unless defined $n && length $n;
-            croak "Resource::Throttle: name='$n' must be a non-empty whitespace-free string"
-                if $n =~ /\s/;
-            $inline_name = $n;
-        }
-        elsif ($arg =~ m{^([0-9]+)/([^/]+)/(.+)\z}) {
-            # Three-segment form: <cap>/<unit>[,<unit>...]/<window>
-            my ($cap, $basis_str, $duration) = ($1, $2, $3);
-            croak "Resource::Throttle: cap in '$arg' must be a positive integer"
-                unless $cap > 0;
-            my $bases = $class->_parse_bases($basis_str, $arg);
-            my $secs  = eval { parse_duration($duration, name => 'window') };
-            croak "Resource::Throttle: bad window in entry '$arg': $@" if $@;
-            push @inline_rules => {cap => $cap + 0, window => $secs, bases => $bases};
-        }
-        elsif ($arg =~ m{^([0-9]+)/(.+)\z}) {
-            my ($cap, $duration) = ($1, $2);
-            croak "Resource::Throttle: cap in '$arg' must be a positive integer"
-                unless $cap > 0;
-            my $secs = eval { parse_duration($duration, name => 'window') };
-            croak "Resource::Throttle: bad window in entry '$arg': $@" if $@;
-            push @inline_rules => {cap => $cap + 0, window => $secs};
-        }
-        elsif ($arg =~ m{^([0-9]+)\z}) {
-            # Bare-cap shorthand: <N> means <N>/1s (one-second window).
-            my $cap = $1;
-            croak "Resource::Throttle: cap in '$arg' must be a positive integer"
-                unless $cap > 0;
-            push @inline_rules => {cap => $cap + 0, window => 1};
-        }
-        else {
-            croak "Resource::Throttle: unrecognised entry '$arg' " . "(expected CAP, CAP/DURATION, CAP/BASIS[,BASIS...]/DURATION, name=NAME, or \@/path/to/config.json)";
-        }
-
-        $i += 1;
-    }
-
-    croak "Resource::Throttle: only a single rule per instance is supported " . "(saw " . scalar(@inline_rules) . " rules)"
-        if @inline_rules > 1;
-
-    # Precedence: file values applied first, then inline overrides.
-    if (%file_vals) {
-        $ctor{cap}    = $file_vals{cap}    if exists $file_vals{cap};
-        $ctor{window} = $file_vals{window} if exists $file_vals{window};
-        $ctor{name}   = $file_vals{name}   if exists $file_vals{name};
-    }
-    if (@inline_rules) {
-        my $r = $inline_rules[0];
-        $ctor{cap}    = $r->{cap};
-        $ctor{window} = $r->{window};
-        $ctor{bases}  = $r->{bases} if exists $r->{bases};
-    }
-    $ctor{name} = $inline_name if defined $inline_name;
-    $ctor{name} //= 'throttle';
-
-    return %ctor;
-}
-
-# Parse a basis string like "core" or "1gb,100mb" or "core,500mb,1gb".
-# Returns an arrayref of basis hashrefs.
-sub _parse_bases {
-    my ($class, $basis_str, $orig_entry) = @_;
-
-    croak "Resource::Throttle: empty basis in '$orig_entry'"
-        unless defined $basis_str && length $basis_str;
-
-    my @parts = split /,/, $basis_str;
-    my @bases;
-
-    for my $part (@parts) {
-        $part =~ s/^\s+|\s+$//g;
-        croak "Resource::Throttle: empty basis component in '$orig_entry'"
-            unless length $part;
-
-        if ($part =~ m{^cores?\z}i) {
-            push @bases => {type => 'core'};
-        }
-        elsif ($part =~ m{^[0-9]+(?:\.[0-9]+)?(?:kb|mb|gb|tb)\z}i) {
-            my $bytes = eval { parse_byte_size($part) };
-            croak "Resource::Throttle: invalid byte-size basis '$part' in '$orig_entry': $@" if $@;
-            push @bases => {type => 'ram', bytes => $bytes};
-        }
-        else {
-            croak "Resource::Throttle: unknown basis unit '$part' in '$orig_entry' " . "(expected 'core', 'cores', or a byte size like '100mb', '1gb')";
-        }
-    }
-
-    croak "Resource::Throttle: no bases parsed from '$basis_str' in '$orig_entry'"
-        unless @bases;
-
-    return \@bases;
-}
-
-sub _load_config_file {
-    my ($class, $path) = @_;
-
-    croak "Resource::Throttle config file '$path' does not exist"  unless -e $path;
-    croak "Resource::Throttle config file '$path' is not readable" unless -r _;
-
-    open my $fh, '<:raw', $path
-        or croak "Resource::Throttle: cannot open config file '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    # Bad eval
-    my $data = eval { decode_json($body) };
-    croak "Resource::Throttle: cannot parse JSON in '$path': $@" if $@;
-    croak "Resource::Throttle: top-level of '$path' must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/cap window name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::Throttle: unknown key '$k' in '$path'"
-            unless $allowed{$k};
-    }
-
-    croak "Resource::Throttle: 'cap' is required in '$path'"
-        unless defined $data->{cap};
-    croak "Resource::Throttle: 'window' is required in '$path'"
-        unless defined $data->{window};
-
-    my $cap = $data->{cap};
-    croak "Resource::Throttle: cap in '$path' must be a positive integer"
-        unless $cap =~ m/^[0-9]+\z/ && $cap > 0;
-
-    my $secs = eval { parse_duration($data->{window}, name => 'window') };
-    croak "Resource::Throttle: bad window in '$path': $@" if $@;
-
-    my %out = (cap => $cap + 0, window => $secs);
-    if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::Throttle: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
-    }
-
-    return \%out;
-}
+my %OPTION_KEYS = map { $_ => 1 } qw/cap window name bases core_count/;
 
 sub init {
     my $self = shift;
@@ -321,6 +96,258 @@ sub init {
 
     # Detect and cache the core count once.
     $self->{+CORE_COUNT} //= _detect_core_count();
+}
+
+sub _detect_core_count {
+    return $DETECT_CORE_COUNT->() if defined $DETECT_CORE_COUNT;
+
+    # Try System::Info first (cross-platform, optional dep). Don't
+    # gate on ->can('ncore') -- System::Info dispatches via a
+    # platform-specific subclass and AUTOLOAD/delegation, so can()
+    # returns false even though the call works. Just try it.
+    my $loaded = eval { require System::Info; 1 };
+    if ($loaded) {
+        my $n;
+        my $ok = eval { $n = System::Info->new->ncore; 1 };
+        return $n if $ok && $n && $n > 0;
+    }
+
+    # Fall back to counting "processor" lines in /proc/cpuinfo (Linux).
+    # The naive idiom `$count++ while <$fh> =~ /^processor/;` is wrong:
+    # `while` exits the first time the regex fails to match, so the
+    # very next non-processor line (vendor_id, cpu family, ...) ends
+    # the loop with count=1 regardless of CPU count. Read every line
+    # explicitly.
+    if (-r '/proc/cpuinfo') {
+        if (open my $fh, '<', '/proc/cpuinfo') {
+            my $count = 0;
+            while (my $line = <$fh>) {
+                $count++ if $line =~ /^processor\s*:/;
+            }
+            close $fh;
+            return $count if $count > 0;
+        }
+    }
+
+    return 1;    # final fallback: assume 1 core
+}
+
+sub _read_meminfo_available {
+    return $READ_MEMINFO_AVAIL->() if defined $READ_MEMINFO_AVAIL;
+
+    open my $fh, '<', '/proc/meminfo'
+        or croak "Resource::Throttle: cannot open /proc/meminfo: $!";
+    while (<$fh>) {
+        if (/^MemAvailable:\s+(\d+)\s+kB/) {
+            close $fh;
+            return $1 * 1024;    # convert kB to bytes
+        }
+    }
+    close $fh;
+    croak "Resource::Throttle: MemAvailable not found in /proc/meminfo";
+}
+
+sub _is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if $arg =~ m{^[0-9]+(?:/|$)};    # not a rule (explicit or bare-cap)
+    return 0 if $arg =~ m{^@};                # not a file
+    return 0 if $arg =~ m{^name=};            # not a name= entry
+    return 1;
+}
+
+# Class method called by App::Yath2::Command::test::_build_resources
+# and App::Yath2::Command::start::resources via the parse_options
+# dispatch added in the Disk plan.
+sub parse_options {
+    my ($class, @args) = @_;
+
+    my %out;
+    my %file_vals;
+    my @inline_rules;
+    my $inline_name;
+
+    my $i = 0;
+    while ($i < @args) {
+        my $arg = $args[$i];
+
+        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            # Known ctor keys (programmatic call) flow through.
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
+            $i += 2;
+            next;
+        }
+
+        croak "Resource::Throttle: undef positional entry" unless defined $arg;
+        croak "Resource::Throttle: ref positional entry" if ref $arg;
+
+        if ($arg =~ m{^\@(.+)\z}) {
+            %file_vals = %{$class->_load_config_file($1)};
+        }
+        elsif ($arg =~ m{^name=(.*)\z}) {
+            $inline_name = $class->_parse_name_arg($arg, $1);
+        }
+        elsif ($arg =~ m{^[0-9]}) {
+            push @inline_rules => $class->_parse_rule_entry($arg);
+        }
+        else {
+            croak "Resource::Throttle: unrecognised entry '$arg' " . "(expected CAP, CAP/DURATION, CAP/BASIS[,BASIS...]/DURATION, name=NAME, or \@/path/to/config.json)";
+        }
+
+        $i += 1;
+    }
+
+    croak "Resource::Throttle: only a single rule per instance is supported " . "(saw " . scalar(@inline_rules) . " rules)"
+        if @inline_rules > 1;
+
+    # Precedence: file values applied first, then inline overrides.
+    if (%file_vals) {
+        $out{cap}    = $file_vals{cap}    if exists $file_vals{cap};
+        $out{window} = $file_vals{window} if exists $file_vals{window};
+        $out{name}   = $file_vals{name}   if exists $file_vals{name};
+    }
+    if (@inline_rules) {
+        my $r = $inline_rules[0];
+        $out{cap}    = $r->{cap};
+        $out{window} = $r->{window};
+        $out{bases}  = $r->{bases} if exists $r->{bases};
+    }
+    $out{name} = $inline_name if defined $inline_name;
+    $out{name} //= 'throttle';
+
+    return %out;
+}
+
+sub _parse_name_arg {
+    my ($class, $orig, $name) = @_;
+    croak "Resource::Throttle: empty name= entry '$orig'"
+        unless defined $name && length $name;
+    croak "Resource::Throttle: name='$name' must be a non-empty whitespace-free string"
+        if $name =~ /\s/;
+    return $name;
+}
+
+# Parse one rule entry: <CAP>/<BASIS,...>/<DURATION>, <CAP>/<DURATION>,
+# or bare <CAP> (implicit 1-second window). Returns the rule hashref;
+# croaks on any malformed component.
+sub _parse_rule_entry {
+    my ($class, $arg) = @_;
+
+    if ($arg =~ m{^([0-9]+)/([^/]+)/(.+)\z}) {
+        my ($cap, $basis_str, $duration) = ($1, $2, $3);
+        croak "Resource::Throttle: cap in '$arg' must be a positive integer"
+            unless $cap > 0;
+        my $bases = $class->_parse_bases($basis_str, $arg);
+        my $secs;
+        eval { $secs = parse_duration($duration, name => 'window'); 1 }
+            or croak "Resource::Throttle: bad window in entry '$arg': $@";
+        return {cap => $cap + 0, window => $secs, bases => $bases};
+    }
+
+    if ($arg =~ m{^([0-9]+)/(.+)\z}) {
+        my ($cap, $duration) = ($1, $2);
+        croak "Resource::Throttle: cap in '$arg' must be a positive integer"
+            unless $cap > 0;
+        my $secs;
+        eval { $secs = parse_duration($duration, name => 'window'); 1 }
+            or croak "Resource::Throttle: bad window in entry '$arg': $@";
+        return {cap => $cap + 0, window => $secs};
+    }
+
+    if ($arg =~ m{^([0-9]+)\z}) {
+        # Bare-cap shorthand: <N> means <N>/1s (one-second window).
+        my $cap = $1;
+        croak "Resource::Throttle: cap in '$arg' must be a positive integer"
+            unless $cap > 0;
+        return {cap => $cap + 0, window => 1};
+    }
+
+    croak "Resource::Throttle: unrecognised rule entry '$arg' " . "(expected CAP, CAP/DURATION, or CAP/BASIS[,BASIS...]/DURATION)";
+}
+
+# Parse a basis string like "core" or "1gb,100mb" or "core,500mb,1gb".
+# Returns an arrayref of basis hashrefs.
+sub _parse_bases {
+    my ($class, $basis_str, $orig_entry) = @_;
+
+    croak "Resource::Throttle: empty basis in '$orig_entry'"
+        unless defined $basis_str && length $basis_str;
+
+    my @parts = split /,/, $basis_str;
+    my @bases;
+
+    for my $part (@parts) {
+        $part =~ s/^\s+|\s+$//g;
+        croak "Resource::Throttle: empty basis component in '$orig_entry'"
+            unless length $part;
+
+        if ($part =~ m{^cores?\z}i) {
+            push @bases => {type => 'core'};
+        }
+        elsif ($part =~ m{^[0-9]+(?:\.[0-9]+)?(?:kb|mb|gb|tb)\z}i) {
+            my $bytes;
+            eval { $bytes = parse_byte_size($part); 1 }
+                or croak "Resource::Throttle: invalid byte-size basis '$part' in '$orig_entry': $@";
+            push @bases => {type => 'ram', bytes => $bytes};
+        }
+        else {
+            croak "Resource::Throttle: unknown basis unit '$part' in '$orig_entry' " . "(expected 'core', 'cores', or a byte size like '100mb', '1gb')";
+        }
+    }
+
+    croak "Resource::Throttle: no bases parsed from '$basis_str' in '$orig_entry'"
+        unless @bases;
+
+    return \@bases;
+}
+
+sub _load_config_file {
+    my ($class, $path) = @_;
+
+    croak "Resource::Throttle config file '$path' does not exist"  unless -e $path;
+    croak "Resource::Throttle config file '$path' is not readable" unless -r _;
+
+    open my $fh, '<:raw', $path
+        or croak "Resource::Throttle: cannot open config file '$path': $!";
+    my $body = do { local $/; <$fh> };
+    close $fh;
+
+    my $data;
+    eval { $data = decode_json($body); 1 }
+        or croak "Resource::Throttle: cannot parse JSON in '$path': $@";
+    croak "Resource::Throttle: top-level of '$path' must be a JSON object"
+        unless ref($data) eq 'HASH';
+
+    my %allowed = map { $_ => 1 } qw/cap window name/;
+    for my $k (sort keys %$data) {
+        croak "Resource::Throttle: unknown key '$k' in '$path'"
+            unless $allowed{$k};
+    }
+
+    croak "Resource::Throttle: 'cap' is required in '$path'"
+        unless defined $data->{cap};
+    croak "Resource::Throttle: 'window' is required in '$path'"
+        unless defined $data->{window};
+
+    my $cap = $data->{cap};
+    croak "Resource::Throttle: cap in '$path' must be a positive integer"
+        unless $cap =~ m/^[0-9]+\z/ && $cap > 0;
+
+    my $secs;
+    eval { $secs = parse_duration($data->{window}, name => 'window'); 1 }
+        or croak "Resource::Throttle: bad window in '$path': $@";
+
+    my %out = (cap => $cap + 0, window => $secs);
+    if (defined $data->{name}) {
+        my $n = $data->{name};
+        croak "Resource::Throttle: name in '$path' must be a non-empty whitespace-free string"
+            unless !ref($n) && length($n) && $n !~ /\s/;
+        $out{name} = $n;
+    }
+
+    return \%out;
 }
 
 sub available {
@@ -419,7 +446,7 @@ sub _token_count {
 sub _in_window_count {
     my ($self, $win) = @_;
     $win //= $self->{+WINDOW};
-    my $now   = _now();
+    my $now   = hi_res_time();
     my $count = 0;
     for my $entry (values %{$self->{+ASSIGNMENTS}}) {
         $count++ if ($now - $entry->{assigned_at}) < $win;
@@ -439,7 +466,7 @@ sub assign {
 
     $self->{+ASSIGNMENTS}->{$id} = {
         job         => $job,
-        assigned_at => _now(),
+        assigned_at => hi_res_time(),
     };
 
     return 1;
@@ -456,18 +483,10 @@ sub release {
     return 1;
 }
 
-# State-transition methods. Throttle never enters a broken state at
-# runtime, so only paused/resumed are supported. The role default
-# implementations of mark_broken / mark_permanent_broken croak, which
-# is correct for this resource (callers should never try to break it).
-sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
-sub mark_paused  { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed { $_[0]->{+PAUSED} = 0 }
-
 sub status {
     my $self = shift;
 
-    my $now = _now();
+    my $now = hi_res_time();
     my ($tokens, $eff_window) = $self->_token_count();
 
     my @assignments;

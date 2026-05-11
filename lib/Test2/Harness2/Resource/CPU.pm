@@ -5,9 +5,9 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
-use Time::HiRes ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON      qw/decode_json/;
+use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <assignments
@@ -19,23 +19,57 @@ use Object::HashBase qw{
 };
 
 use Role::Tiny::With;
+with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
 
-# Duplicate the comment from other resources indicating this is a hook so that tests can override _now
-our $CLOCK = \&Time::HiRes::time;
-sub _now { $CLOCK->() }
-
 sub resource_name { $_[0]->{+NAME} // 'cpu' }
 
-# What does CTOR_KEYS stand for? Pick a better variable name
-my %CTOR_KEYS = map { $_ => 1 } qw/utilize_percent name/;
+# Keys this resource accepts at construction time. Anything else
+# coming through parse_options is noise from the resource group
+# settings hash and is dropped silently.
+my %OPTION_KEYS = map { $_ => 1 } qw/utilize_percent name/;
+
+sub init {
+    my $self = shift;
+
+    croak "Resource::CPU requires Linux (this is $^O)" unless $^O eq 'linux';
+
+    $self->{+ASSIGNMENTS}   //= {};
+    $self->{+NAME}          //= 'cpu';
+    $self->{+LAST_BUSY_PCT} //= 0;
+
+    my $u = $self->{+UTILIZE_PERCENT};
+    croak "Resource::CPU: utilize_percent must be > 0 and < 100"
+        unless defined $u && $u =~ m/^[0-9]+(?:\.[0-9]+)?\z/ && $u > 0 && $u < 100;
+}
+
+sub set_utilize_percent {
+    my ($self, $pct) = @_;
+    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
+    return;
+}
+
+# Predicate for the "drop unknown k=v pair from resource group
+# settings" guard at the top of parse_options. Keeping the regex
+# checks here lets parse_options stay free of multi-line conditionals
+# in the middle of its loop.
+sub _is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if $arg =~ m{^[0-9]};
+    return 0 if $arg =~ m{^@};
+    return 0 if $arg =~ m{^name=};
+    return 0 if $arg =~ m{^utilize=};
+    return 1;
+}
 
 sub parse_options {
     my ($class, @args) = @_;
 
-    # Again $ctor is not meaningful to a human, better name?
-    my %ctor;
+    my %out;
     my %file_vals;
     my $inline_util;
     my $inline_name;
@@ -44,23 +78,8 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
-        # Multi-line conditionals in parens like this are not good.
-        # Do it like this:
-        # my $arg_works = defined($arg);
-        # $arg_works &&= !ref($arg);
-        # $arg_works &&= $arg !~ m{^[0-9]};
-        # ...
-        # if ($arg_works) {
-        # Add a note to the STYLE_GUIDE document about multi-line conditionals being undesirable. Apart from the pattern above an alternative ids writing a check_arg($arg) function that return true or false based on all these checks.
-        if (   defined $arg
-            && !ref($arg)
-            && $arg !~ m{^[0-9]}
-            && $arg !~ m{^@}
-            && $arg !~ m{^name=}
-            && $arg !~ m{^utilize=}
-            && $i + 1 < @args)
-        {
-            $ctor{$arg} = $args[$i + 1] if exists $CTOR_KEYS{$arg};
+        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
             $i += 2;
             next;
         }
@@ -96,15 +115,15 @@ sub parse_options {
         $i += 1;
     }
 
-    $ctor{utilize_percent} = $file_vals{utilize_percent} if exists $file_vals{utilize_percent};
-    $ctor{name}            = $file_vals{name}            if exists $file_vals{name};
-    $ctor{utilize_percent} = $inline_util                if defined $inline_util;
-    $ctor{name}            = $inline_name                if defined $inline_name;
+    $out{utilize_percent} = $file_vals{utilize_percent} if exists $file_vals{utilize_percent};
+    $out{name}            = $file_vals{name}            if exists $file_vals{name};
+    $out{utilize_percent} = $inline_util                if defined $inline_util;
+    $out{name}            = $inline_name                if defined $inline_name;
 
-    $ctor{utilize_percent} //= 80;
-    $ctor{name}            //= 'cpu';
+    $out{utilize_percent} //= 80;
+    $out{name}            //= 'cpu';
 
-    return %ctor;
+    return %out;
 }
 
 sub _load_config_file {
@@ -115,10 +134,9 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
-    # This violates the STYLE_GUIDE rule on evals, check it, and correct this and any other evals in this branch that biolate the eval rules.
-    # Why was STYLE_GUIDE ignored? Whatever caused it to be ignored needs ot be fixed
-    my $data = eval { decode_json($body) };
-    croak "Resource::CPU: cannot parse JSON in '$path': $@" if $@;
+    my $data;
+    eval { $data = decode_json($body); 1 }
+        or croak "Resource::CPU: cannot parse JSON in '$path': $@";
     croak "Resource::CPU: top-level must be a JSON object"
         unless ref($data) eq 'HASH';
 
@@ -142,26 +160,6 @@ sub _load_config_file {
     }
 
     return \%out;
-}
-
-sub init {
-    my $self = shift;
-
-    croak "Resource::CPU requires Linux (this is $^O)" unless $^O eq 'linux';
-
-    $self->{+ASSIGNMENTS}   //= {};
-    $self->{+NAME}          //= 'cpu';
-    $self->{+LAST_BUSY_PCT} //= 0;
-
-    my $u = $self->{+UTILIZE_PERCENT};
-    croak "Resource::CPU: utilize_percent must be > 0 and < 100"
-        unless defined $u && $u =~ m/^[0-9]+(?:\.[0-9]+)?\z/ && $u > 0 && $u < 100;
-}
-
-sub set_utilize_percent {
-    my ($self, $pct) = @_;
-    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
-    return;
 }
 
 # Test seam: tests override to inject deterministic /proc/stat rows.
@@ -217,29 +215,6 @@ sub available {
     return 1;
 }
 
-sub assign {
-    my ($self, %p) = @_;
-    my $id  = $p{id}  or croak "'id' is required";
-    my $job = $p{job} or croak "'job' is required";
-    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
-    croak "Resource::CPU: duplicate assign for id '$id'"
-        if exists $self->{+ASSIGNMENTS}->{$id};
-    $self->{+ASSIGNMENTS}->{$id} = {job => $job, assigned_at => _now()};
-    return 1;
-}
-
-sub release {
-    my ($self, %p) = @_;
-    my $id = $p{id} or croak "'id' is required";
-    delete $self->{+ASSIGNMENTS}->{$id}
-        or croak "Resource::CPU: invalid release id '$id'";
-    return 1;
-}
-
-sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
-sub mark_paused  { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed { $_[0]->{+PAUSED} = 0 }
-
 sub status {
     my $self = shift;
 
@@ -251,7 +226,7 @@ sub status {
             id          => $id,
             test        => $tf->relative,
             assigned_at => $a->{assigned_at},
-            age         => _now() - $a->{assigned_at},
+            age         => hi_res_time() - $a->{assigned_at},
         };
     }
 

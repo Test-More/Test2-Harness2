@@ -5,10 +5,10 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
-use Time::HiRes ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
-use Test2::Harness2::Resource::Disk::Threshold qw/parse_threshold evaluate_threshold/;
+use Test2::Harness2::Util::JSON     qw/decode_json/;
+use Test2::Harness2::Util::Units    qw/parse_size_or_pct/;
+use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <mounts
@@ -20,22 +20,111 @@ use Object::HashBase qw{
 };
 
 use Role::Tiny::With;
+with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 
-# Test seam: tests assign \&Custom to override. Production callers
-# never touch this; the default is Time::HiRes::time.
-our $CLOCK = \&Time::HiRes::time;
-
-sub _now { $CLOCK->() }
-
-sub resource_name { 'disk' }
-
-# CTOR is a bad name, see comments from CPU, fix this and all other resource classes with the bad variable names.
 # Keys this resource accepts at construction time. Anything else
 # (slots, job_slots, classes, utilize, no_resource, ...) is noise
 # from the resource group settings hash being passed through verbatim
 # by App::Yath2::Command::start::resources -- silently dropped.
-my %CTOR_KEYS = map { $_ => 1 } qw/mounts/;
+my %OPTION_KEYS = map { $_ => 1 } qw/mounts/;
+
+sub resource_name       { 'disk' }
+sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
+sub is_permanent_broken { $_[0]->{+PERMANENT}                     ? 1 : 0 }
+sub mark_broken           { $_[0]->{+BROKEN} = 1 }
+sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT} = 1 }
+
+sub init {
+    my $self = shift;
+
+    $self->{+MOUNTS}      //= {};
+    $self->{+ASSIGNMENTS} //= {};
+    $self->{+SAMPLES}     //= {};
+
+    croak "Resource::Disk: 'mounts' is required and must be non-empty"
+        unless ref($self->{+MOUNTS}) eq 'HASH' && keys %{$self->{+MOUNTS}};
+
+    # Defer Filesys::Df load until init so the option-loader (which
+    # require()s every Resource class to discover its options) does
+    # not blow up when this optional dep is missing.
+    my $loaded = eval { require Filesys::Df; 1 };
+    my $err    = $@;
+    unless ($loaded) {
+        # "Module not installed" is the expected failure mode. Anything
+        # else (broken install, XS load error, syntax error in a local
+        # copy, ...) is worth warning about so it does not get masked
+        # by the friendly install-it message below.
+        warn $err if $err && $err !~ m{\bCan't locate Filesys/Df\.pm\b};
+        croak "Resource::Disk requires Filesys::Df; install it (cpanm Filesys::Df) and retry";
+    }
+
+    # Validate every configured mount: must exist and statvfs cleanly
+    # right now. A typo in the mount path is a configuration error,
+    # not a runtime defer.
+    for my $mp (sort keys %{$self->{+MOUNTS}}) {
+        croak "Resource::Disk: mount '$mp' does not exist" unless -e $mp;
+        my $sample;
+        eval { $sample = Filesys::Df::df($mp, 1); 1 }
+            or croak "Resource::Disk: mount '$mp' could not be sampled: $@";
+        croak "Resource::Disk: mount '$mp' returned no sample"
+            unless ref($sample) eq 'HASH' && defined $sample->{bavail};
+    }
+}
+
+# Clears transient broken/paused but leaves permanent_broken intact.
+# Overrides the role's mark_resumed because Disk's broken flag and
+# permanent flag are separate.
+sub mark_resumed {
+    my $self = shift;
+    $self->{+PAUSED} = 0;
+    $self->{+BROKEN} = 0 unless $self->{+PERMANENT};
+}
+
+# Compare a parsed threshold (kind => 'pct'|'bytes', value => N)
+# against a sample. Returns 'ok' when free space meets or exceeds the
+# threshold, 'low' otherwise.
+sub _evaluate_threshold {
+    my ($threshold, $free_bytes, $total_bytes) = @_;
+
+    croak "evaluate_threshold requires a parsed threshold hashref"
+        unless ref($threshold) eq 'HASH'
+        && defined $threshold->{kind}
+        && defined $threshold->{value};
+
+    croak "evaluate_threshold requires non-negative free_bytes"
+        unless defined $free_bytes && $free_bytes >= 0;
+
+    if ($threshold->{kind} eq 'pct') {
+        croak "evaluate_threshold requires positive total_bytes for pct threshold"
+            unless defined $total_bytes && $total_bytes > 0;
+        my $free_pct = ($free_bytes / $total_bytes) * 100;
+        return $free_pct >= $threshold->{value} ? 'ok' : 'low';
+    }
+
+    return $free_bytes >= $threshold->{value} ? 'ok' : 'low'
+        if $threshold->{kind} eq 'bytes';
+
+    croak "evaluate_threshold: unknown threshold kind '$threshold->{kind}'";
+}
+
+# Predicate for the "drop unknown k=v pair from resource group
+# settings" guard at the top of parse_options. Returns true when the
+# arg looks like an unknown key paired with a following value -- the
+# loop then advances past both. Anything else (positional /path:THR
+# entries, @file entries, refs) is left to the per-form branches
+# below. Extracting this lets parse_options stay free of multi-line
+# conditional expressions in the middle of its loop.
+sub _is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if exists $OPTION_KEYS{$arg};
+    return 0 if $arg =~ m{^/};
+    return 0 if $arg =~ m{^@};
+    return 1;
+}
 
 # Class method called by App::Yath2::Command::test::_build_resources
 # and App::Yath2::Command::start::resources. Translates the raw arg
@@ -44,7 +133,7 @@ my %CTOR_KEYS = map { $_ => 1 } qw/mounts/;
 sub parse_options {
     my ($class, @args) = @_;
 
-    my %ctor;
+    my %out;
     my %file_mounts;
     my %inline_mounts;
 
@@ -52,29 +141,15 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
-        # Same as CPU, multi-line conditional in parens is not good.
         # Known k=>v pair: consume both.
-        if (   defined $arg
-            && !ref($arg)
-            && exists $CTOR_KEYS{$arg}
-            && $i + 1 < @args)
-        {
-            $ctor{$arg} = $args[$i + 1];
+        if (defined $arg && !ref($arg) && exists $OPTION_KEYS{$arg} && $i + 1 < @args) {
+            $out{$arg} = $args[$i + 1];
             $i += 2;
             next;
         }
 
-        # Again, bad multi-line condition in parens
         # Drop unknown k=>v pairs from the resource-group settings.
-        # Heuristic: a defined non-ref scalar that does not look like a
-        # positional entry (no leading / or @) and has a following value
-        # gets dropped as a pair.
-        if (   defined $arg
-            && !ref($arg)
-            && $arg !~ m{^/}
-            && $arg !~ m{^\@}
-            && $i + 1 < @args)
-        {
+        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
             $i += 2;
             next;
         }
@@ -96,8 +171,9 @@ sub parse_options {
         }
         elsif ($arg =~ m{^(/.+?):(.+)\z}) {
             my ($path, $threshold) = ($1, $2);
-            my $parsed = eval { parse_threshold($threshold) };
-            croak "Resource::Disk: bad threshold in entry '$arg': $@" if $@;
+            my $parsed;
+            eval { $parsed = parse_size_or_pct($threshold, default_unit => '%', name => 'threshold'); 1 }
+                or croak "Resource::Disk: bad threshold in entry '$arg': $@";
             $inline_mounts{$path} = {min_free => $parsed};
         }
         else {
@@ -112,9 +188,9 @@ sub parse_options {
     $mounts{$_} = $file_mounts{$_}   for keys %file_mounts;
     $mounts{$_} = $inline_mounts{$_} for keys %inline_mounts;
 
-    $ctor{mounts} = \%mounts if %mounts;
+    $out{mounts} = \%mounts if %mounts;
 
-    return %ctor;
+    return %out;
 }
 
 sub _load_config_file {
@@ -128,9 +204,9 @@ sub _load_config_file {
     my $body = do { local $/; <$fh> };
     close $fh;
 
-    # eval rules in style guide broken again
-    my $data = eval { decode_json($body) };
-    croak "Resource::Disk: cannot parse JSON in '$path': $@" if $@;
+    my $data;
+    eval { $data = decode_json($body); 1 }
+        or croak "Resource::Disk: cannot parse JSON in '$path': $@";
     croak "Resource::Disk: top-level of '$path' must be a JSON object"
         unless ref($data) eq 'HASH';
 
@@ -156,43 +232,13 @@ sub _load_config_file {
         }
         croak "Resource::Disk: mount '$mp' in '$path' missing 'min_free'"
             unless defined $cfg->{min_free};
-        my $threshold = eval { parse_threshold($cfg->{min_free}) };
-        croak "Resource::Disk: bad threshold for mount '$mp' in '$path': $@"
-            if $@;
+        my $threshold;
+        eval { $threshold = parse_size_or_pct($cfg->{min_free}, default_unit => '%', name => 'threshold'); 1 }
+            or croak "Resource::Disk: bad threshold for mount '$mp' in '$path': $@";
         $mounts{$mp} = {min_free => $threshold};
     }
 
     return \%mounts;
-}
-
-sub init {
-    my $self = shift;
-
-    $self->{+MOUNTS}      //= {};
-    $self->{+ASSIGNMENTS} //= {};
-    $self->{+SAMPLES}     //= {};
-
-    croak "Resource::Disk: 'mounts' is required and must be non-empty"
-        unless ref($self->{+MOUNTS}) eq 'HASH' && keys %{$self->{+MOUNTS}};
-
-    # This is an ok use of eval, only change would be to warn $@ if it is anything other than the not found/not installed message.
-    # Defer Filesys::Df load until init so the option-loader (which
-    # require()s every Resource class to discover its options) does
-    # not blow up when this optional dep is missing.
-    my $loaded = eval { require Filesys::Df; 1 };
-    croak "Resource::Disk requires Filesys::Df; install it (cpanm Filesys::Df) and retry"
-        unless $loaded;
-
-    # Validate every configured mount: must exist and statvfs cleanly
-    # right now. A typo in the mount path is a configuration error,
-    # not a runtime defer.
-    for my $mp (sort keys %{$self->{+MOUNTS}}) {
-        croak "Resource::Disk: mount '$mp' does not exist" unless -e $mp;
-        my $sample = eval { Filesys::Df::df($mp, 1) };
-        croak "Resource::Disk: mount '$mp' could not be sampled: $@" if $@;
-        croak "Resource::Disk: mount '$mp' returned no sample"
-            unless ref($sample) eq 'HASH' && defined $sample->{bavail};
-    }
 }
 
 sub available {
@@ -217,16 +263,17 @@ sub available {
 sub _take_sample {
     my ($self, $mp) = @_;
 
-    my $now   = _now();
+    my $now   = hi_res_time();
     my $cache = $self->{+SAMPLES}->{$mp};
 
     # Pass block_size = 1 so Filesys::Df returns counts in bytes
     # directly. Avoids any ambiguity about whether bavail / blocks /
     # user_bavail / user_blocks are blocks or bytes.
-    my $sample = eval { Filesys::Df::df($mp, 1) };
-    my $err    = $@;
+    my $sample;
+    my $ok  = eval { $sample = Filesys::Df::df($mp, 1); 1 };
+    my $err = $@;
 
-    if (!$sample || ref($sample) ne 'HASH' || !defined $sample->{bavail}) {
+    if (!$ok || !$sample || ref($sample) ne 'HASH' || !defined $sample->{bavail}) {
         my $fails = ($cache->{consecutive_failures} // 0) + 1;
         $self->{+SAMPLES}->{$mp} = {
             ts                   => $now,
@@ -245,7 +292,7 @@ sub _take_sample {
     my $total = $sample->{blocks};
 
     my $threshold = $self->{+MOUNTS}->{$mp}->{min_free};
-    my $state     = evaluate_threshold($threshold, $free, $total);
+    my $state     = _evaluate_threshold($threshold, $free, $total);
 
     $self->{+SAMPLES}->{$mp} = {
         ts                   => $now,
@@ -260,57 +307,10 @@ sub _take_sample {
     return $self->{+SAMPLES}->{$mp};
 }
 
-# As style guide indicates, short 1-line subs like this should be at the top of the file, or at the top of a fold section, Fix this in all resources
-# Disk supports all four transitions because the failure-counter
-# inside available() flips permanent_broken from inside the resource.
-sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
-sub is_permanent_broken { $_[0]->{+PERMANENT}                     ? 1 : 0 }
-sub is_paused           { $_[0]->{+PAUSED}                        ? 1 : 0 }
-
-sub mark_broken           { $_[0]->{+BROKEN} = 1 }
-sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT} = 1 }
-sub mark_paused           { $_[0]->{+PAUSED} = 1 }
-
-# Clears transient broken/paused but leaves permanent_broken intact.
-sub mark_resumed {
-    my $self = shift;
-    $self->{+PAUSED} = 0;
-    $self->{+BROKEN} = 0 unless $self->{+PERMANENT};
-}
-
-sub assign {
-    my ($self, %p) = @_;
-
-    my $id  = $p{id}  or croak "'id' is required";
-    my $job = $p{job} or croak "'job' is required";
-    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
-
-    croak "Resource::Disk: duplicate assign for id '$id'"
-        if exists $self->{+ASSIGNMENTS}->{$id};
-
-    $self->{+ASSIGNMENTS}->{$id} = {
-        job   => $job,
-        stamp => _now(),
-    };
-
-    return 1;
-}
-
-sub release {
-    my ($self, %p) = @_;
-
-    my $id = $p{id} or croak "'id' is required";
-
-    delete $self->{+ASSIGNMENTS}->{$id}
-        or croak "Resource::Disk: invalid release id '$id'";
-
-    return 1;
-}
-
 sub status {
     my $self = shift;
 
-    my $now = _now();
+    my $now = hi_res_time();
 
     my %mounts;
     for my $mp (sort keys %{$self->{+MOUNTS}}) {
@@ -332,10 +332,10 @@ sub status {
         my $a  = $self->{+ASSIGNMENTS}->{$id};
         my $tf = $a->{job}->test_file;
         push @assignments => {
-            id    => $id,
-            test  => $tf->relative,
-            stamp => $a->{stamp},
-            age   => $now - $a->{stamp},
+            id          => $id,
+            test        => $tf->relative,
+            assigned_at => $a->{assigned_at},
+            age         => $now - $a->{assigned_at},
         };
     }
 
@@ -470,9 +470,10 @@ local cache or scratch volume and gate against that instead.
 =item mounts (required)
 
 Hashref of C<< { '/path' => { min_free => THRESHOLD } } >> where
-THRESHOLD is a parsed hashref from
-L<Test2::Harness2::Resource::Disk::Threshold/parse_threshold>.
-Must be non-empty.
+THRESHOLD is a parsed hashref of the form
+C<< { kind => 'pct'|'bytes', value => N } >> (as returned by
+L<Test2::Harness2::Util::Units/parse_size_or_pct> with
+C<< default_unit => '%' >>). Must be non-empty.
 
 =back
 
