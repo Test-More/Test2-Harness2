@@ -6,8 +6,8 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::JSON     qw/decode_json/;
-use Test2::Harness2::Util::Units    qw/parse_size_or_pct/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
@@ -29,9 +29,9 @@ with 'Test2::Harness2::Role::Resource';
 # by App::Yath2::Command::start::resources -- silently dropped.
 my %OPTION_KEYS = map { $_ => 1 } qw/mounts/;
 
-sub resource_name       { 'disk' }
-sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
-sub is_permanent_broken { $_[0]->{+PERMANENT}                     ? 1 : 0 }
+sub resource_name         { 'disk' }
+sub is_broken             { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
+sub is_permanent_broken   { $_[0]->{+PERMANENT}                     ? 1 : 0 }
 sub mark_broken           { $_[0]->{+BROKEN} = 1 }
 sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT} = 1 }
 

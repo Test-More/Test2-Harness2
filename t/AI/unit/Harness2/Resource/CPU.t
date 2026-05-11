@@ -15,7 +15,7 @@ use warnings;
 sub _push_stat {
     my ($u, $n, $s, $idle, $iowait) = @_;
     $iowait //= 0;
-    push @STAT_QUEUE, "cpu $u $n $s $idle $iowait 0 0 0 0 0\n";
+    push @STAT_QUEUE => "cpu $u $n $s $idle $iowait 0 0 0 0 0\n";
 }
 
 package TFakeTestFile {

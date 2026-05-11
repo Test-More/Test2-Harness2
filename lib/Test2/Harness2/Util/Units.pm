@@ -117,7 +117,7 @@ sub parse_count_or_pct {
 
 sub parse_size_or_pct {
     my ($raw, %opts) = @_;
-    my $name    = $opts{name}         // 'size';
+    my $name    = $opts{name} // 'size';
     my $default = $opts{default_unit};
 
     croak "$name is required" unless defined $raw && length $raw;

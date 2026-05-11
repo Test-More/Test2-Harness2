@@ -208,11 +208,11 @@ subtest 'multiple inline rules rejected' => sub {
 
 subtest 'new grammar: 1/core/1s' => sub {
     my $args = kvhash(Test2::Harness2::Resource::Throttle->parse_options('1/core/1s'));
-    is($args->{cap},    1,   'cap');
-    is($args->{window}, 1,   'window 1s');
+    is($args->{cap},    1, 'cap');
+    is($args->{window}, 1, 'window 1s');
     ok(exists $args->{bases}, 'bases present');
     my $bases = $args->{bases};
-    is(scalar @$bases, 1, 'one basis');
+    is(scalar @$bases,    1,      'one basis');
     is($bases->[0]{type}, 'core', 'basis type is core');
 };
 
@@ -223,33 +223,33 @@ subtest 'new grammar: 1/cores/1s (plural)' => sub {
 
 subtest 'new grammar: 1/1gb/1s (single RAM basis)' => sub {
     my $args = kvhash(Test2::Harness2::Resource::Throttle->parse_options('1/1gb/1s'));
-    is($args->{cap},    1,   'cap');
-    is($args->{window}, 1,   'window 1s');
+    is($args->{cap},    1, 'cap');
+    is($args->{window}, 1, 'window 1s');
     my $bases = $args->{bases};
-    is(scalar @$bases, 1, 'one basis');
-    is($bases->[0]{type},  'ram',          'basis type is ram');
+    is(scalar @$bases,     1,                  'one basis');
+    is($bases->[0]{type},  'ram',              'basis type is ram');
     is($bases->[0]{bytes}, 1024 * 1024 * 1024, '1gb in bytes');
 };
 
 subtest 'new grammar: 1/core,100mb/1s (two bases)' => sub {
-    my $args = kvhash(Test2::Harness2::Resource::Throttle->parse_options('1/core,100mb/1s'));
+    my $args  = kvhash(Test2::Harness2::Resource::Throttle->parse_options('1/core,100mb/1s'));
     my $bases = $args->{bases};
-    is(scalar @$bases, 2, 'two bases');
-    is($bases->[0]{type},  'core', 'first basis: core');
-    is($bases->[1]{type},  'ram',  'second basis: ram');
+    is(scalar @$bases,     2,                 'two bases');
+    is($bases->[0]{type},  'core',            'first basis: core');
+    is($bases->[1]{type},  'ram',             'second basis: ram');
     is($bases->[1]{bytes}, 100 * 1024 * 1024, '100mb in bytes');
 };
 
 subtest 'new grammar: 1/core,500mb,1gb/2s (three bases)' => sub {
-    my $args = kvhash(Test2::Harness2::Resource::Throttle->parse_options('1/core,500mb,1gb/2s'));
+    my $args  = kvhash(Test2::Harness2::Resource::Throttle->parse_options('1/core,500mb,1gb/2s'));
     my $bases = $args->{bases};
-    is(scalar @$bases,     3,                     'three bases');
-    is($bases->[0]{type},  'core',                'first: core');
-    is($bases->[1]{type},  'ram',                 'second: ram 500mb');
-    is($bases->[1]{bytes}, 500 * 1024 * 1024,     '500mb in bytes');
-    is($bases->[2]{type},  'ram',                 'third: ram 1gb');
-    is($bases->[2]{bytes}, 1024 * 1024 * 1024,    '1gb in bytes');
-    is($args->{window},    2,                      'window 2s');
+    is(scalar @$bases,     3,                  'three bases');
+    is($bases->[0]{type},  'core',             'first: core');
+    is($bases->[1]{type},  'ram',              'second: ram 500mb');
+    is($bases->[1]{bytes}, 500 * 1024 * 1024,  '500mb in bytes');
+    is($bases->[2]{type},  'ram',              'third: ram 1gb');
+    is($bases->[2]{bytes}, 1024 * 1024 * 1024, '1gb in bytes');
+    is($args->{window},    2,                  'window 2s');
 };
 
 subtest 'new grammar: backward-compat 5/2s still works' => sub {

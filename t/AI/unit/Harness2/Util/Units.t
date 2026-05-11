@@ -147,17 +147,17 @@ subtest 'parse_size_or_pct' => sub {
 
 subtest 'parse_size_or_pct: default_unit shorthand' => sub {
     # Resource::Disk uses default_unit => '%' so bare numbers parse as percent.
-    is(parse_size_or_pct('25',    default_unit => '%'), {kind => 'pct', value => 25},  'bare number = pct');
-    is(parse_size_or_pct('0.5',   default_unit => '%'), {kind => 'pct', value => 0.5}, 'fractional pct');
-    is(parse_size_or_pct(' 25 %', default_unit => '%'), {kind => 'pct', value => 25},  'whitespace tolerated');
+    is(parse_size_or_pct('25',    default_unit => '%'), {kind => 'pct',   value => 25},         'bare number = pct');
+    is(parse_size_or_pct('0.5',   default_unit => '%'), {kind => 'pct',   value => 0.5},        'fractional pct');
+    is(parse_size_or_pct(' 25 %', default_unit => '%'), {kind => 'pct',   value => 25},         'whitespace tolerated');
     is(parse_size_or_pct('512kb', default_unit => '%'), {kind => 'bytes', value => 512 * 1024}, 'unit still wins');
     is(parse_size_or_pct('1MB',   default_unit => '%'), {kind => 'bytes', value => 1024**2},    'case insensitive');
 
-    like(dies { parse_size_or_pct('150%', default_unit => '%') }, qr/pct/, '>100% rejected');
-    like(dies { parse_size_or_pct('0kb',  default_unit => '%') }, qr/must be > 0/, 'zero bytes');
+    like(dies { parse_size_or_pct('150%', default_unit => '%') }, qr/pct/,             '>100% rejected');
+    like(dies { parse_size_or_pct('0kb',  default_unit => '%') }, qr/must be > 0/,     'zero bytes');
     like(dies { parse_size_or_pct('5xb',  default_unit => '%') }, qr/expected NUMBER/, 'unknown unit');
-    like(dies { parse_size_or_pct('',     default_unit => '%') }, qr/required/, 'empty');
-    like(dies { parse_size_or_pct(undef,  default_unit => '%') }, qr/required/, 'undef');
+    like(dies { parse_size_or_pct('',     default_unit => '%') }, qr/required/,        'empty');
+    like(dies { parse_size_or_pct(undef,  default_unit => '%') }, qr/required/,        'undef');
 };
 
 done_testing;

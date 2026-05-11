@@ -7,8 +7,8 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 use POSIX qw/floor/;
 
-use Test2::Harness2::Util::JSON      qw/decode_json/;
-use Test2::Harness2::Util::Units     qw/parse_duration parse_byte_size/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::Units qw/parse_duration parse_byte_size/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{

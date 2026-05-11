@@ -221,8 +221,8 @@ subtest 'slot ages out at exactly age == window' => sub {
 # --------------------------------------------------------------------
 
 # Helper to build a bases arrayref.
-sub _core_basis  { {type => 'core'} }
-sub _ram_basis   { my ($mb) = @_; {type => 'ram', bytes => $mb * 1024 * 1024} }
+sub _core_basis { {type => 'core'} }
+sub _ram_basis  { my ($mb) = @_; {type => 'ram', bytes => $mb * 1024 * 1024} }
 
 subtest 'multi-basis: 8-core, 4GB free, 1/core,1gb/1s => 4 tokens' => sub {
     # cores = 8, free = 4GB, 1gb basis = 1073741824 bytes
@@ -264,8 +264,7 @@ subtest 'multi-basis: core-only, 8 cores, cap=2 => 16 tokens' => sub {
 subtest 'adaptive scaling: first level (80MB free, 100MB basis)' => sub {
     # free(80MB) < basis(100MB): halve -> basis=50MB, window=2x
     # floor(80MB / 50MB) = 1; cap=1; tokens=1; eff_window=2s
-    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-        = sub { 80 * 1024 * 1024 };
+    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { 80 * 1024 * 1024 };
 
     my $r = Test2::Harness2::Resource::Throttle->new(
         cap    => 1,
@@ -281,8 +280,7 @@ subtest 'adaptive scaling: first level (80MB free, 100MB basis)' => sub {
 subtest 'adaptive scaling: second level (30MB free, 100MB basis)' => sub {
     # free(30MB) < basis(100MB): halve -> 50MB, still < 30MB: halve -> 25MB, window=4x
     # floor(30MB / 25MB) = 1; tokens=1; eff_window=4s
-    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-        = sub { 30 * 1024 * 1024 };
+    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { 30 * 1024 * 1024 };
 
     my $r = Test2::Harness2::Resource::Throttle->new(
         cap    => 1,
@@ -298,8 +296,7 @@ subtest 'adaptive scaling: second level (30MB free, 100MB basis)' => sub {
 subtest 'adaptive scaling: floor at 2 halvings (10MB free, 100MB basis => 0 tokens => defer' => sub {
     # free(10MB) < basis(100MB): halve -> 50MB; still < 10MB: halve -> 25MB (capped)
     # basis(25MB) > free(10MB): tokens = 0 (defer all)
-    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-        = sub { 10 * 1024 * 1024 };
+    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { 10 * 1024 * 1024 };
 
     my $r = Test2::Harness2::Resource::Throttle->new(
         cap    => 1,
@@ -308,15 +305,14 @@ subtest 'adaptive scaling: floor at 2 halvings (10MB free, 100MB basis => 0 toke
     );
 
     my ($tokens, $eff_win) = $r->_token_count();
-    is($tokens,  0, 'tokens = 0 (25MB basis > 10MB free => defer)');
-    is($eff_win, 4, 'effective window = 4x (cap at 2 halvings)');
+    is($tokens,                    0, 'tokens = 0 (25MB basis > 10MB free => defer)');
+    is($eff_win,                   4, 'effective window = 4x (cap at 2 halvings)');
     is($r->available(job => _job), 0, 'available() returns 0 (deferred)');
 };
 
 subtest 'adaptive scaling: recovery (free RAM above original basis => no scaling)' => sub {
     # When free RAM >= original basis, window_mult stays 1.
-    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-        = sub { 200 * 1024 * 1024 };
+    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { 200 * 1024 * 1024 };
 
     my $r = Test2::Harness2::Resource::Throttle->new(
         cap    => 1,
@@ -341,8 +337,7 @@ subtest 'core-only basis on non-Linux is fine (no /proc/meminfo touched)' => sub
     );
 
     # Override to croak if called -- should never be reached for core-only.
-    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-        = sub { die "should not read meminfo for core-only basis" };
+    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { die "should not read meminfo for core-only basis" };
 
     my ($tokens, $eff_win) = $r->_token_count();
     is($tokens,  4, 'core-only: tokens = 4 (1*4 cores)');
@@ -377,8 +372,7 @@ subtest 'RAM basis init croaks on non-Linux (no /proc/meminfo)' => sub {
     if (-e '/proc/meminfo') {
         ok(
             lives {
-                local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-                    = sub { 500 * 1024 * 1024 };
+                local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { 500 * 1024 * 1024 };
                 Test2::Harness2::Resource::Throttle->new(
                     cap    => 1,
                     window => 1,
@@ -411,8 +405,7 @@ subtest 'multi-basis MIN math: 8 cores, 100MB basis, 4GB free => min(8,40)=8, to
 subtest 'retroactive window: slots assigned under 1s count against 4s effective window' => sub {
     # When scaling kicks in (e.g. free RAM drops mid-run), previously assigned
     # slots stay in the (now longer) effective window.
-    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL
-        = sub { 10 * 1024 * 1024 };    # triggers 2 halvings => window_mult=4
+    local $Test2::Harness2::Resource::Throttle::READ_MEMINFO_AVAIL = sub { 10 * 1024 * 1024 };    # triggers 2 halvings => window_mult=4
 
     my $r = Test2::Harness2::Resource::Throttle->new(
         cap    => 5,
@@ -435,7 +428,7 @@ subtest 'retroactive window: slots assigned under 1s count against 4s effective 
     # inside the 4x effective window (4s).
     $now += 1.5;
     my (undef, $eff_win) = $r->_token_count();
-    is($eff_win, 4, 'effective window is 4x original');
+    is($eff_win,                       4, 'effective window is 4x original');
     is($r->_in_window_count($eff_win), 1, 'slot counted against 4s effective window at t+1.5s');
 
     # At t=1000 + 3s, still inside 4s effective window.

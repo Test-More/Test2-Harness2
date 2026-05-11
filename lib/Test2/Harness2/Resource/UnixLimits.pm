@@ -6,8 +6,8 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::JSON      qw/decode_json/;
-use Test2::Harness2::Util::Units     qw/parse_count_or_pct parse_size_or_pct/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::Units qw/parse_count_or_pct parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
@@ -210,8 +210,8 @@ sub _read_self_status {
     open my $fh, '<', '/proc/self/status' or die "open /proc/self/status: $!";
     my %out;
     while (my $line = <$fh>) {
-        if ($line =~ m/^Threads:\s+([0-9]+)/)     { $out{Threads} = $1 + 0 }
-        if ($line =~ m/^VmSize:\s+([0-9]+)\s*kB/) { $out{VmSize}  = $1 + 0 }
+        $out{Threads} = $1 + 0 if $line =~ m/^Threads:\s+([0-9]+)/;
+        $out{VmSize}  = $1 + 0 if $line =~ m/^VmSize:\s+([0-9]+)\s*kB/;
     }
     close $fh;
     return \%out;

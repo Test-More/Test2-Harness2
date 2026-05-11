@@ -23,10 +23,10 @@ subtest '_evaluate_threshold boundary semantics' => sub {
     is($eval->({kind => 'pct', value => 25}, 0,   1000), 'low', 'pct: zero free');
 
     my $cap = 512 * 1024;
-    is($eval->({kind => 'bytes', value => $cap},     $cap,     'ignored'), 'ok',  'bytes: at threshold');
-    is($eval->({kind => 'bytes', value => $cap},     $cap + 1, 'ignored'), 'ok',  'bytes: above threshold');
-    is($eval->({kind => 'bytes', value => $cap},     $cap - 1, 'ignored'), 'low', 'bytes: below threshold');
-    is($eval->({kind => 'bytes', value => $cap},     0,        'ignored'), 'low', 'bytes: zero free');
+    is($eval->({kind => 'bytes', value => $cap}, $cap,     'ignored'), 'ok',  'bytes: at threshold');
+    is($eval->({kind => 'bytes', value => $cap}, $cap + 1, 'ignored'), 'ok',  'bytes: above threshold');
+    is($eval->({kind => 'bytes', value => $cap}, $cap - 1, 'ignored'), 'low', 'bytes: below threshold');
+    is($eval->({kind => 'bytes', value => $cap}, 0,        'ignored'), 'low', 'bytes: zero free');
 };
 
 subtest 'init requires non-empty mounts' => sub {

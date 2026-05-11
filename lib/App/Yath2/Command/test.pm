@@ -376,9 +376,8 @@ sub _drive_ipc_loop {
             next unless ref($content) eq 'HASH';
 
             # State broadcasts: { type=>'state', item=>'run', run_id=>$id, state=>$run_data }
-            if (   ($content->{type} // '') eq 'state'
-                && ($content->{item} // '') eq 'run')
-            {
+            my $is_run_state = ($content->{type} // '') eq 'state' && ($content->{item} // '') eq 'run';
+            if ($is_run_state) {
                 my $rd = $content->{state};
                 next unless ref($rd) eq 'HASH';
 

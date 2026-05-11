@@ -125,7 +125,7 @@ subtest '-j is undef when not supplied' => sub {
 };
 
 subtest 'default resource set (no -j, no -R): utilizers + throttle + Disk*, no JobCount' => sub {
-    my $r = parse();
+    my $r       = parse();
     my $classes = $r->classes;
 
     ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU auto-injected');
@@ -146,7 +146,7 @@ subtest 'default resource set (no -j, no -R): utilizers + throttle + Disk*, no J
 };
 
 subtest '-j N adds JobCount to default set' => sub {
-    my $r = parse('-j', '4');
+    my $r       = parse('-j', '4');
     my $classes = $r->classes;
 
     ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU present with -j');
@@ -189,7 +189,7 @@ subtest '--utilize value flows into utilizer args' => sub {
 };
 
 subtest '--utilize default 75 flows into utilizer args' => sub {
-    my $r = parse();
+    my $r       = parse();
     my $classes = $r->classes;
     is(
         $classes->{'Test2::Harness2::Resource::CPU'},
@@ -202,7 +202,7 @@ subtest 'explicit -R merges with defaults; user class wins' => sub {
     # -R JobCount alone: JobCount gets user's (empty) args; all four utilizers,
     # Throttle, and (when Filesys::Df is present) Disk are still injected via
     # //= since the user didn't supply them.
-    my $r = parse('-R', '+Test2::Harness2::Resource::JobCount');
+    my $r       = parse('-R', '+Test2::Harness2::Resource::JobCount');
     my $classes = $r->classes;
 
     ok(exists $classes->{'Test2::Harness2::Resource::JobCount'},   'explicit -R resource present');
@@ -223,10 +223,10 @@ subtest 'explicit -R merges with defaults; user class wins' => sub {
 };
 
 subtest '-R Throttle=10/2s: user Throttle args win, other defaults still present' => sub {
-    my $r = parse('-R', '+Test2::Harness2::Resource::Throttle=10/2s');
+    my $r       = parse('-R', '+Test2::Harness2::Resource::Throttle=10/2s');
     my $classes = $r->classes;
 
-    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle present');
+    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'}, 'Throttle present');
     is(
         $classes->{'Test2::Harness2::Resource::Throttle'},
         ['10/2s'],
@@ -254,10 +254,10 @@ subtest '-R Disk=/tmp:25%: user Disk args win over auto-injected default' => sub
     # auto-inject is a no-op; user args are preserved.  Whether or not
     # Filesys::Df is installed, the count is 6: user Disk + 5 auto-injected
     # defaults (CPU, Memory, UnixLimits, PipeLimits, Throttle).
-    my $r = parse('-R', '+Test2::Harness2::Resource::Disk=/tmp:25%');
+    my $r       = parse('-R', '+Test2::Harness2::Resource::Disk=/tmp:25%');
     my $classes = $r->classes;
 
-    ok(exists $classes->{'Test2::Harness2::Resource::Disk'},       'Disk present');
+    ok(exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk present');
     is(
         $classes->{'Test2::Harness2::Resource::Disk'},
         ['/tmp:25%'],
@@ -303,7 +303,7 @@ subtest '--no-resource followed by -R: explicit -R entries survive, but no defau
     # -R then adds its class back.
     # post-process sees no_resource=1 and returns early -- so no defaults
     # are injected. The result is only the explicitly -R-supplied class.
-    my $r = parse('--no-resource', '-R', '+Test2::Harness2::Resource::JobCount');
+    my $r       = parse('--no-resource', '-R', '+Test2::Harness2::Resource::JobCount');
     my $classes = $r->classes;
 
     ok(
@@ -399,8 +399,8 @@ subtest 'user -R Disk=/var:5gb replaces auto-inject entirely (no tmpdir added)' 
 
     # The user gets exactly one Disk entry (/var:5gb).  The tmpdir default
     # is NOT merged in — user's args are the whole Disk config.
-    my $r      = parse('-R', '+Test2::Harness2::Resource::Disk=/var:5gb');
-    my $disk   = $r->classes->{'Test2::Harness2::Resource::Disk'};
+    my $r    = parse('-R', '+Test2::Harness2::Resource::Disk=/var:5gb');
+    my $disk = $r->classes->{'Test2::Harness2::Resource::Disk'};
     is($disk, ['/var:5gb'], 'user Disk entry is /var:5gb only (no tmpdir merged in)');
 };
 
