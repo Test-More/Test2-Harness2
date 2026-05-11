@@ -198,7 +198,7 @@ subtest '-R Throttle=10/2s: user Throttle args win, other defaults still present
     is(
         $classes->{'Test2::Harness2::Resource::Throttle'},
         ['10/2s'],
-        'user Throttle args win over default 5/500ms',
+        'user Throttle args win over default 1/core,100mb/1s',
     );
     ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU still injected');
     ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory still injected');
@@ -229,12 +229,12 @@ subtest '-R Disk=/tmp:25%: six classes (5 defaults + Disk)' => sub {
     is(scalar keys %$classes, 6, 'six classes: 5 defaults + Disk');
 };
 
-subtest 'Throttle default arg is 5/500ms' => sub {
+subtest 'Throttle default arg is 1/core,100mb/1s' => sub {
     my $r = parse();
     is(
         $r->classes->{'Test2::Harness2::Resource::Throttle'},
-        ['5/500ms'],
-        'Throttle default arg is 5/500ms',
+        ['1/core,100mb/1s'],
+        'Throttle default arg is 1/core,100mb/1s',
     );
 };
 

@@ -156,7 +156,7 @@ sub jobs_post_process {
     $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::UnixLimits'} //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
-    $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['5/500ms'];
+    $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['1/core,100mb/1s'];
 
     if (defined $slots) {
         # User explicitly passed -j N: inject JobCount as a hard cap
