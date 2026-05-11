@@ -8,7 +8,7 @@ use Test2::V0;
 # Also verifies the default resource injection behaviour:
 #   - No -j, no -R: CPU + Memory + UnixLimits + PipeLimits + Throttle (no JobCount)
 #   - -j N: same five plus JobCount
-#   - -R ...: only the explicitly specified resources
+#   - -R ...: merges with defaults; user's per-class args win via //=
 #   - --no-resource: empty classes hash
 
 package TestResource {
@@ -175,15 +175,67 @@ subtest '--utilize default 75 flows into utilizer args' => sub {
     );
 };
 
-subtest 'explicit -R suppresses default injection' => sub {
+subtest 'explicit -R merges with defaults; user class wins' => sub {
+    # -R JobCount alone: JobCount gets user's (empty) args; all four utilizers
+    # and Throttle are still injected via //= since the user didn't supply them.
     my $r = parse('-R', '+Test2::Harness2::Resource::JobCount');
     my $classes = $r->classes;
 
-    ok(exists  $classes->{'Test2::Harness2::Resource::JobCount'},   '-R resource present');
-    ok(!exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU NOT injected when -R supplied');
-    ok(!exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory NOT injected when -R supplied');
-    ok(!exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle NOT injected when -R supplied');
-    is(scalar keys %$classes, 1, 'only the explicitly specified resource');
+    ok(exists $classes->{'Test2::Harness2::Resource::JobCount'},   'explicit -R resource present');
+    ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU still injected alongside -R');
+    ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory still injected alongside -R');
+    ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits still injected alongside -R');
+    ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits still injected alongside -R');
+    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle still injected alongside -R');
+    is(scalar keys %$classes, 6, 'six classes: five defaults plus user-supplied JobCount');
+};
+
+subtest '-R Throttle=10/2s: user Throttle args win, other defaults still present' => sub {
+    my $r = parse('-R', '+Test2::Harness2::Resource::Throttle=10/2s');
+    my $classes = $r->classes;
+
+    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle present');
+    is(
+        $classes->{'Test2::Harness2::Resource::Throttle'},
+        ['10/2s'],
+        'user Throttle args win over default 5/500ms',
+    );
+    ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits still injected');
+    ok(!exists $classes->{'Test2::Harness2::Resource::JobCount'},  'JobCount NOT injected without -j');
+    is(scalar keys %$classes, 5, 'five classes total (Throttle overridden, no JobCount)');
+};
+
+subtest '-R Disk=/tmp:25%: six classes (5 defaults + Disk)' => sub {
+    # Disk is a custom class not in the default set; it should appear alongside
+    # all five defaults (CPU, Memory, UnixLimits, PipeLimits, Throttle).
+    my $r = parse('-R', '+Test2::Harness2::Resource::Disk=/tmp:25%');
+    my $classes = $r->classes;
+
+    ok(exists $classes->{'Test2::Harness2::Resource::Disk'},       'Disk present');
+    is(
+        $classes->{'Test2::Harness2::Resource::Disk'},
+        ['/tmp:25%'],
+        'Disk args are user-supplied',
+    );
+    ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits still injected');
+    ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle still injected');
+    ok(!exists $classes->{'Test2::Harness2::Resource::JobCount'},  'JobCount NOT injected without -j');
+    is(scalar keys %$classes, 6, 'six classes: 5 defaults + Disk');
+};
+
+subtest 'Throttle default arg is 5/500ms' => sub {
+    my $r = parse();
+    is(
+        $r->classes->{'Test2::Harness2::Resource::Throttle'},
+        ['5/500ms'],
+        'Throttle default arg is 5/500ms',
+    );
 };
 
 subtest '--no-resource disables all auto-injection' => sub {
@@ -203,15 +255,21 @@ subtest '--no-resources (plural) also disables auto-injection' => sub {
     ok($r->check_option('no_resource'), 'plural form sets the same flag');
 };
 
-subtest '--no-resource followed by -R: -R wins' => sub {
-    # Order matters: --no-resource clears, then -R adds back. The
-    # post-process step checks the resulting classes hash; if it has
-    # entries we use them, regardless of an earlier clear.
+subtest '--no-resource followed by -R: explicit -R entries survive, but no defaults injected' => sub {
+    # --no-resource clears classes and sets no_resource=1.
+    # -R then adds its class back.
+    # post-process sees no_resource=1 and returns early -- so no defaults
+    # are injected. The result is only the explicitly -R-supplied class.
     my $r = parse('--no-resource', '-R', '+Test2::Harness2::Resource::JobCount');
+    my $classes = $r->classes;
+
     ok(
-        exists $r->classes->{'Test2::Harness2::Resource::JobCount'},
+        exists $classes->{'Test2::Harness2::Resource::JobCount'},
         '-R after --no-resource still wires the resource through',
     );
+    ok(!exists $classes->{'Test2::Harness2::Resource::CPU'},      'CPU NOT injected (no_resource early-return)');
+    ok(!exists $classes->{'Test2::Harness2::Resource::Throttle'}, 'Throttle NOT injected (no_resource early-return)');
+    is(scalar keys %$classes, 1, 'only the -R-supplied class, no defaults');
 };
 
 subtest '--utilize accepts valid percentages' => sub {

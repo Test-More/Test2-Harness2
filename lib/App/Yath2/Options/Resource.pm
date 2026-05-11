@@ -136,20 +136,19 @@ sub jobs_post_process {
             if $job_slots > $slots;
     }
 
-    # 1. If the user supplied any --resource / -R, do nothing -- the
-    #    supplied set is authoritative.
-    return if keys %{$resource->classes};
-
+    # 1. --no-resource / --no-resources: explicit opt-out, do nothing.
     # `no_resource` is only present in the group hash when the
-    # classes Map's clear-form trigger fired (--no-resource /
-    # --no-resources). Use check_option so reading the absent key does
-    # not croak.
+    # classes Map's clear-form trigger fired. Use check_option so
+    # reading the absent key does not croak.
     return if $resource->check_option('no_resource') && $resource->no_resource;
 
-    # 2. Otherwise inject the default resource set:
+    # 2. Inject the default resource set. Any class the user already
+    #    supplied via -R wins -- //= only writes when the key is absent.
+    #    So `-R Throttle=10/2s` ends up with the user's Throttle plus
+    #    the four utilizers and the remaining defaults.
     #    - CPU + Memory + UnixLimits + PipeLimits with --utilize value
-    #    - Throttle=5/1s
-    #    - Plus JobCount(slots => N) if user explicitly passed -j N
+    #    - Throttle=5/500ms
+    #    - Plus JobCount if user explicitly passed -j N
     my $utilize    = $resource->utilize;       # defaulted to 75 above
     my @util_args  = (utilize_percent => $utilize);
 
@@ -157,7 +156,7 @@ sub jobs_post_process {
     $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::UnixLimits'} //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
-    $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['5/1s'];
+    $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['5/500ms'];
 
     if (defined $slots) {
         # User explicitly passed -j N: inject JobCount as a hard cap
