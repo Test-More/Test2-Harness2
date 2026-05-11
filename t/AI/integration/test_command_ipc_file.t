@@ -81,6 +81,7 @@ sub job_slots { 1 }
 package Fake::TestsGroup;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
+sub chdir         { undef }
 
 package Fake::LogGroup;
 sub new    { bless {}, $_[0] }

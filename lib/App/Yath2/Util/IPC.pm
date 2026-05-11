@@ -22,6 +22,8 @@ our @EXPORT_OK = qw{
     write_ipc_file read_ipc_file unlink_ipc_file
     find_ipc_files
     publish_ipc_file
+    resolve_dir_order_paths
+    discover_daemons
 };
 
 # IPC info filename:
@@ -53,7 +55,17 @@ sub _dir_for_symbol {
     my ($sym, $settings) = @_;
 
     return $settings->yath->cwd if $sym eq 'cwd';
-    return File::Spec->tmpdir() if $sym eq 'tempdir';
+
+    # 'tempdir' means the *system* tempdir, captured by App::Yath::Script
+    # before yath swapped TMPDIR for a per-invocation workdir. Without
+    # orig_tmp, File::Spec->tmpdir() in-process returns that workdir-
+    # scoped tmp, so each invocation publishes/discovers in a different
+    # dir and `yath run` can never find a `yath start` daemon.
+    if ($sym eq 'tempdir') {
+        my $orig = eval { $settings->yath->orig_tmp };
+        return $orig if defined $orig && length $orig;
+        return File::Spec->tmpdir();
+    }
 
     if ($sym eq 'user_rc') {
         my $f = $settings->yath->user_config_file or return undef;
@@ -269,6 +281,119 @@ sub find_ipc_files {
 
     @records = sort { ($b->{created_at} // 0) <=> ($a->{created_at} // 0) } @records;
     return \@records;
+}
+
+# Translate the --ipc-dir-order symbol list into concrete directories.
+# Mirrors _dir_for_symbol but materialises the full ordered list for
+# scan-style consumers (auto-discovery).
+sub resolve_dir_order_paths {
+    my ($settings, $order) = @_;
+    my @dirs;
+    for my $sym (@$order) {
+        my $d = _dir_for_symbol($sym, $settings);
+        push @dirs => $d if defined $d && length $d;
+    }
+    return @dirs;
+}
+
+# discover_daemons: shared resolution for `yath run`, `yath stop`,
+# `yath kill`, `yath status`, `yath list`.
+#
+# Returns either an arrayref of IPC info records or a single record
+# (when count='one'), or dies with a user-readable message.
+#
+# Options:
+#   settings    (required) the parsed Getopt::Yath settings
+#   workdir     optional workdir to scan
+#   ipc_file    optional explicit IPC file
+#   command     optional 'start' (default) or 'any' or arrayref of names
+#   count       'one'  -> error on 0/many, return single record
+#               'all'  -> always return arrayref (may be empty)
+#               'any'  -> like 'one' but accepts --latest/--all in opts
+#   latest      when true, pick newest when count='any' and >1 match
+#   all         when true, return arrayref of every match (count='any')
+sub discover_daemons {
+    my %p = @_;
+
+    my $settings = $p{settings} or croak "'settings' is required";
+    my $count    = $p{count} // 'one';
+
+    # Explicit --ipc-file: short-circuit. Read the file directly.
+    if (my $f = $p{ipc_file} // eval { $settings->ipc->file }) {
+        my $rec = read_ipc_file($f);
+        $rec->{_path} = $f;
+        return $count eq 'all' ? [$rec] : $rec;
+    }
+
+    # Explicit --workdir: find the IPC info record whose `workdir`
+    # field matches. The file itself may live in workdir/tmp (older
+    # default) or in the system tempdir (post-discovery fix), so we
+    # scan both candidate dirs and filter by the workdir field.
+    if (my $wd = $p{workdir}) {
+        my @dirs;
+        push @dirs => "$wd/tmp"          if -d "$wd/tmp";
+        push @dirs => $wd                if -d $wd;
+        my ($sys_tmp) = resolve_ipc_dir($settings);
+        push @dirs => $sys_tmp           if defined $sys_tmp;
+        my $dir_order = $settings->ipc->dir_order || [];
+        push @dirs => resolve_dir_order_paths($settings, $dir_order);
+        my %seen;
+        @dirs = grep { defined && length && !$seen{$_}++ && -d } @dirs;
+
+        my $all_records = find_ipc_files(dirs => \@dirs);
+        my @matching = grep { ($_->{workdir} // '') eq $wd } @$all_records;
+
+        croak "no IPC info file matching workdir '$wd' (is the daemon running?)\n"
+            unless @matching;
+        croak "multiple IPC info files for workdir '$wd'; pass --ipc-file PATH to disambiguate\n"
+            if @matching > 1 && $count eq 'one';
+
+        return $count eq 'all' ? \@matching : $matching[0];
+    }
+
+    # Auto-discovery: scan dir_order + primary.
+    my ($primary_dir) = resolve_ipc_dir($settings);
+    my $dir_order    = $settings->ipc->dir_order || [];
+    my @dirs = ($primary_dir, resolve_dir_order_paths($settings, $dir_order));
+    my %seen;
+    @dirs = grep { defined && length && !$seen{$_}++ && -d } @dirs;
+
+    my $cmd_filter = $p{command} // 'start';
+    my $cmd_arg    = $cmd_filter eq 'any' ? undef : $cmd_filter;
+
+    my $records = find_ipc_files(
+        dirs => \@dirs,
+        (defined $cmd_arg ? (command => $cmd_arg) : ()),
+    );
+
+    # project/user override: pass an explicit value to filter on it,
+    # pass an empty string '' to skip the filter entirely. Default is
+    # to filter to this settings's project + user.
+    my $project = exists $p{project}
+        ? $p{project}
+        : ($settings->yath->project // '');
+    my $user = exists $p{user}
+        ? $p{user}
+        : ($settings->yath->user // $ENV{USER} // (getpwuid($<))[0] // '');
+
+    my @candidates = grep {
+        (!defined($project) || $project eq '' || ($_->{project} // '') eq $project)
+            && (!defined($user) || $user eq '' || ($_->{user} // '') eq $user)
+    } @$records;
+
+    if ($count eq 'all' || $p{all}) {
+        return \@candidates;
+    }
+
+    croak "No running yath daemon found. Run `yath start` or pass --workdir DIR / --ipc-file PATH.\n"
+        unless @candidates;
+
+    if (@candidates > 1 && !$p{latest}) {
+        my $list = join "", map { "  $_->{_path}  (pid $_->{pid})\n" } @candidates;
+        croak "Multiple running yath daemons matched; pass --latest, --workdir, or --ipc-file:\n$list";
+    }
+
+    return $candidates[0];
 }
 
 1;

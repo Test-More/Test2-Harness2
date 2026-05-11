@@ -4,306 +4,361 @@ use warnings;
 
 our $VERSION = '2.000013';
 
-use List::Util qw/first/;
-use Time::HiRes qw/sleep time/;
+use POSIX ();
+use Time::HiRes qw/time/;
 
-use Scope::Guard;
+use Test2::Harness2::Spawn;
+use Test2::Harness2::Util qw/mod2file tinysleep/;
 
-# XXX TODO: App::Yath2::Client removed (PR #390) — run command is non-functional until reimplemented
-# XXX TODO: Test2::Harness2::Collector::Auditor::Run removed (PR #390) — auditor needs a replacement
-# TODO: --set-hash-seed wiring once the global-preload path is fully implemented (Phase 7.2).
-# yath run hands a queue payload to a daemon harness; it must read
-# $settings->tests->set_hash_seed and forward it as hash_seed in the
-# queue_test_run request so the daemon's request_handler_queue_test_run
-# can validate it against the harness-wide HASH_SEED (which the daemon
-# stored at start time per the matching TODO in App::Yath2::Command::start).
-
-use Test2::Harness2::Event;
-use Test2::Harness2::Run;
-use Test2::Harness2::Run::Job;
-
-use Test2::Harness2::Util qw/mod2file write_file_atomic/;
-use Test2::Harness2::Util::JSON qw/encode_json encode_pretty_json/;
-use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util::IPC qw/set_procname/;
+use App::Yath2::TestFile;
+use App::Yath2::Util::IPC qw/discover_daemons/;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
+
 use Object::HashBase qw{
-    +find_tests
-    +auditor
-    +renderers
-    +annotate_plugins
     <args
     <settings
-    <option_state
 };
 
 use Getopt::Yath;
 include_options(
-    'App::Yath2::Options::IPC',
-    'App::Yath2::Options::Finder',
-    'App::Yath2::Options::Renderer',
-    'App::Yath2::Options::Run',
-    'App::Yath2::Options::Tests',
     'App::Yath2::Options::Yath',
-    'App::Yath2::Options::WebClient',
-    'App::Yath2::Options::DB',
+    'App::Yath2::Options::Harness',
+    'App::Yath2::Options::IPC',
+    'App::Yath2::Options::Log',
+    'App::Yath2::Options::Preload',
+    'App::Yath2::Options::Renderer',
+    'App::Yath2::Options::Resource',
+    'App::Yath2::Options::Runner',
+    'App::Yath2::Options::Tests',
 );
 
-use App::Yath2::Options::Tests qw/ set_dot_args /;
+option_group {group => 'run', category => "Run Options"} => sub {
+    option workdir => (
+        type           => 'Scalar',
+        long_examples  => [' DIR'],
+        short_examples => [' DIR'],
+        description    => 'Workdir of an existing yath daemon (where its IPC info file lives). Without --workdir / --ipc-file, `yath run` auto-discovers a running daemon.',
+    );
 
-sub accepts_dot_args   { 1 }
-sub args_include_tests { 1 }
+    option latest => (
+        type        => 'Bool',
+        default     => 0,
+        description => 'When auto-discovery finds multiple running daemons, pick the most recently started one instead of erroring.',
+    );
+};
 
 sub load_plugins   { 1 }
-sub load_resources { 0 }
-sub load_renderers { 1 }
+sub load_resources { 1 }
+sub load_renderers { 0 }
+
+sub accepts_dot_args   { 0 }
+sub args_include_tests { 1 }
 
 sub group { 'daemon' }
 
-sub summary { "Run tests on an existing daemon" }
+sub summary { "Run tests on a yath daemon started via `yath start`" }
 
 sub description {
     return <<"    EOT";
-Run a set of tests on an existing yath daemon.
+Hand a list of test files to a running yath daemon (started with
+`yath start`) and stream events back to the local renderer until the
+run completes. Exits with the run's pass/fail aggregate.
+
+The daemon is located automatically (this user's running daemons in
+this project root). Pass --workdir DIR or --ipc-file PATH to target a
+specific one, or --latest to pick the newest when multiple match.
     EOT
 }
 
 sub run {
     my $self = shift;
 
-    # XXX TODO: App::Yath2::Client is gone (PR #390); this command cannot run
-    # tests against a daemon until the IPC layer is reimplemented.
-    die "ERROR: 'yath run' requires App::Yath2::Client which has been removed (PR #390).\n" . "Use 'yath test' to run tests without a persistent daemon.\n";
-
-    my $settings = $self->settings;
-
-    set_procname(
-        set    => ['run ' . $settings->run->run_id],
-        prefix => $self->{+SETTINGS}->harness->procname_prefix,
-    );
-
-    $self->start_plugins_and_renderers();
-
-    # Get list of tests to run
-    my $search = $self->{+ARGS} // [];
-    my $tests  = $self->find_tests(@$search) || return $self->no_tests;
-
-    my $client = undef;    # XXX TODO: App::Yath2::Client->new(settings => $settings);
-
-    my $run_id = $settings->run->run_id;
-
-    my $jobs = [map { Test2::Harness2::Run::Job->new(test_file => $_) } @$tests];
-
-    my $ts = Getopt::Yath::Settings->new($settings->tests->all, clear => $self->{+OPTION_STATE}->{cleared}->{tests});
-
-    my $run = Test2::Harness2::Run->new(
-        $settings->run->all,
-        aggregator_ipc => $client->connect->callback,
-        test_settings  => $ts,
-        jobs           => $jobs,
-        settings       => $settings,
-    );
-
-    my $res = $client->queue_run($run);
-
-    my $guard = Scope::Guard->new(sub { $client->send_and_get(abort => $run_id) });
-
-    my $plugins   = $self->plugins   // [];
-    my $renderers = $self->renderers // [];
-
-    my @sig_render = grep { $_->can('signal') } @$renderers;
-    for my $sig (qw/INT TERM HUP/) {
-        $SIG{$sig} = sub {
-            $SIG{$sig} = 'DEFAULT';
-            eval { $_->signal($sig) } for @sig_render;
-            print STDERR "\nCought SIG$sig, shutting down...\n";
-            $client->send_and_get(abort => $run_id);
-            $guard->dismiss();
-            kill($sig, $$);
-        };
-    }
-
-    die "API Failure: " . encode_pretty_json($res->{api})
-        unless $res->{api}->{success};
-
-    # XXX TODO replace this with App::Yath::Log at some point?
-
-    my $run_complete;
-    while (!$run_complete) {
-        $_->step() for @$renderers;
-        $_->tick(type => 'client') for @$plugins;
-
-        $run_complete //= 1 unless $client->active;
-
-        # XXX TODO replace the poller loop with App::Yath::Log usage somewhere?
-
-        while (my $msg = $client->get_message(blocking => !$run_complete, timeout => 0.2)) {
-            if ($msg->terminate || $msg->run_complete) {
-                $run_complete //= 1;
-                $client->refuse_new_connections();
-            }
-
-            my $event = $msg->event or next;
-            $self->handle_event($event);
-        }
-    }
-
-    my $exit = $self->stop_plugins_and_renderers();
-
-    $guard->dismiss();
-
-    return $exit;
-}
-
-sub renderers {
-    my $self = shift;
-    $self->{+RENDERERS} //= App::Yath2::Options::Renderer->init_renderers($self->settings);
-}
-
-sub annotate_plugins {
-    my $self = shift;
-    return $self->{+ANNOTATE_PLUGINS} //= [grep { $_->can('annotate_event') } @{$self->plugins // []}];
-}
-
-sub start_plugins_and_renderers {
-    my $self = shift;
-
-    my $settings  = $self->settings;
-    my $renderers = $self->renderers;
-    my $plugins   = $self->plugins;
-
-    $_->client_setup(settings => $settings) for @$plugins;
-    $_->start() for @$renderers;
-}
-
-sub handle_event {
-    my $self = shift;
-    my ($event) = @_;
-
-    return unless defined $event;
-
-    my $renderers = $self->renderers;
-
-    $self->annotate($event);
-
-    my @events = $self->auditor->audit($event);
-    for my $e (@events) {
-        $_->render_event($e) for @$renderers;
-    }
-
-    return @events;
-}
-
-sub stop_plugins_and_renderers {
-    my $self = shift;
-    my ($alt_exit) = $@;
-    $alt_exit ||= 0;
-
-    my $settings  = $self->settings;
-    my $auditor   = $self->auditor;
-    my $plugins   = $self->plugins;
-    my $renderers = $self->renderers;
-
-    for my $plugin (reverse @$plugins) {
-        my @events = $plugin->client_teardown(settings => $settings, auditor => $auditor);
-        $self->handle_event($_) for @events;
-    }
-
-    $self->handle_event(Test2::Harness2::Event->new(
-        run_id     => $settings->run->run_id,
-        job_id     => 1,
-        job_try    => 1,
-        event_id   => gen_uuid(),
-        stamp      => time,
-        facet_data => {harness_final => $auditor->final_data},
-    ));
-
-    $_->end_of_events() for reverse @$renderers;
-
-    $_->finish($auditor) for reverse @$renderers;
-
-    my $exit ||= $auditor->exit_value;
-    $_->client_finalize(settings => $settings, auditor => $auditor, exit => \$exit) for @$plugins;
-
-    $_->exit_hook($auditor) for reverse @$renderers;
-
-    return $exit || $alt_exit;
-}
-
-sub annotate {
-    my $self = shift;
-    my ($event) = @_;
-
-    my $plugins = $self->annotate_plugins or return;
-    return unless @$plugins;
+    local $| = 1;
+    STDERR->autoflush(1);
 
     my $settings = $self->{+SETTINGS};
+    my $args     = $self->{+ARGS} // [];
 
-    my $fd = $event->{facet_data};
-    for my $p (@$plugins) {
-        my %inject = $p->annotate_event($event, $settings);
-        next unless keys %inject;
+    die "No test files supplied.\nUsage: yath run [--workdir DIR | --ipc-file PATH] FILE-OR-DIR [...]\n"
+        unless @$args;
 
-        # Can add new facets, but not modify existing ones.
-        # Someone could force the issue by modifying the event directly
-        # inside 'annotate_event', this is not supported, but also not
-        # forbidden, user beware.
-        for my $f (keys %inject) {
-            if (exists $fd->{$f}) {
-                if ('ARRAY' eq ref($fd->{$f})) {
-                    push @{$fd->{$f}} => @{$inject{$f}};
-                }
-                else {
-                    warn "Plugin '$p' tried to add facet '$f' via 'annotate_event()', but it is already present and not a list, ignoring plugin annotation.\n";
-                }
+    my $info = discover_daemons(
+        settings => $settings,
+        workdir  => $settings->run->workdir,
+        latest   => $settings->run->latest,
+    );
+    my $ipc_path = $info->{_path};
+
+    die "IPC info file '$ipc_path' is missing the harness pid\n"
+        unless $info->{pid};
+    die "IPC info file '$ipc_path' is missing ipcm_info\n"
+        unless $info->{ipcm_info};
+    die "IPC info file '$ipc_path' is missing workdir\n"
+        unless $info->{workdir};
+    die "harness pid $info->{pid} is no longer running (stale IPC info file '$ipc_path')\n"
+        unless kill 0 => $info->{pid};
+
+    my $workdir = $info->{workdir};
+    my $logdir  = "$workdir/logs";
+
+    # Build a Spawn handle that points at the running daemon. The
+    # daemon was spawned with watch_pids => [] by `yath start`, so
+    # nothing we do here can take it down on accident -- but pin
+    # terminate_on_destroy off explicitly anyway in case we evolve
+    # the protocol.
+    my $spawn = Test2::Harness2::Spawn->new(
+        pid                  => $info->{pid},
+        ipcm_info            => $info->{ipcm_info},
+        workdir              => $workdir,
+        terminate_on_destroy => 0,
+    );
+
+    my @files = $self->_collect_test_files($args);
+
+    my $run_id = $self->_queue_run($spawn, \@files);
+
+    eval { $spawn->subscribe(global => 1, run => $run_id, state => 1); 1 }
+        or warn "subscribe failed: $@";
+
+    # Fork the renderer with stop_run_id => $run_id so the Driver
+    # exits naturally once this run's harness_run_end has been
+    # dispatched -- yielding the same final summary `yath test`
+    # prints. Without stop_run_id the Driver would block forever:
+    # the daemon stays up past end-of-run so neither the on-disk
+    # LIVE sentinel nor Log->EOE ever flip.
+    my $renderer_pid = $self->_spawn_renderer($logdir, $spawn, $run_id);
+
+    my ($ipc_pass) = $self->_drive_ipc_loop($spawn, $run_id, $renderer_pid);
+
+    eval { $spawn->unsubscribe; 1 } or warn "unsubscribe failed: $@";
+
+    # Renderer is exiting on its own (stop_run_id == $run_id matched
+    # at end-of-run). Just reap it.
+    my $renderer_exit = $self->_reap_renderer($renderer_pid);
+    my $log_pass = $renderer_exit == 0;
+
+    return ($ipc_pass && $log_pass) ? 0 : 1;
+}
+
+sub _collect_test_files {
+    my ($self, $args) = @_;
+    my @files;
+    for my $arg (@$args) {
+        if (-d $arg) {
+            require File::Find;
+            File::Find::find(
+                {
+                    no_chdir => 1,
+                    wanted   => sub {
+                        return unless -f $_ && -r _;
+                        return unless /\.(?:t|t2)\z/;
+                        no strict 'refs';
+                        push @files => App::Yath2::TestFile->new(file => ${'File::Find::name'});
+                    },
+                },
+                $arg,
+            );
+            next;
+        }
+        die "Not a readable test file or directory: $arg\n" unless -f $arg && -r _;
+        push @files => App::Yath2::TestFile->new(file => $arg);
+    }
+    die "No test files matched under: @$args\n" unless @files;
+    return @files;
+}
+
+sub _queue_run {
+    my ($self, $spawn, $files) = @_;
+    my $settings = $self->{+SETTINGS};
+
+    my %args = (files => $files);
+    if (my $hash_seed = $settings->tests->set_hash_seed) {
+        $args{hash_seed} = $hash_seed if length $hash_seed;
+    }
+    if (my $chdir = $settings->tests->chdir) {
+        $args{chdir} = $chdir if length $chdir;
+    }
+
+    # Per-run resources travel as a serializable recipe:
+    #   [ [ class, key => value, ... ], ... ]
+    # The harness rehydrates each entry with $class->new(@args). See
+    # Test2::Harness2::request_handler_queue_test_run.
+    my @resource_specs = $self->_build_resource_specs;
+    $args{resources} = \@resource_specs if @resource_specs;
+
+    my $queued = $spawn->queue_test_run(%args);
+    die "queue_test_run failed: " . ($queued->{error} // '(no error)') . "\n"
+        unless $queued->{ok};
+
+    return $queued->{run_id};
+}
+
+# Build the per-run resource recipe shipped to the daemon. Mirrors
+# App::Yath2::Command::test::_build_resources but emits
+# [[class, @ctor_args], ...] rather than constructing live objects:
+# the harness owns those instances on the other side of the IPC.
+sub _build_resource_specs {
+    my $self     = shift;
+    my $settings = $self->{+SETTINGS};
+    my $rg       = $settings->resource;
+
+    my @out;
+
+    my $classes = $rg->classes // {};
+    if (keys %$classes) {
+        for my $mod (sort keys %$classes) {
+            my @args = @{$classes->{$mod} // []};
+
+            if ($mod eq 'Test2::Harness2::Resource::JobCount' && !@args) {
+                push @out => [
+                    $mod,
+                    slots       => $rg->slots,
+                    max_per_job => $rg->job_slots,
+                ];
+                next;
             }
-            else {
-                $fd->{$f} = $inject{$f};
-            }
+
+            push @out => [$mod, @args];
         }
     }
+
+    my $preload = eval { $settings->preload };
+    my $modules = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
+    if ($modules && @$modules) {
+        push @out => [
+            'Test2::Harness2::Resource::Preload',
+            name    => 'default',
+            modules => [@$modules],
+        ];
+    }
+
+    return @out;
 }
 
-sub auditor {
-    my $self = shift;
+sub _spawn_renderer {
+    my ($self, $logdir, $spawn, $run_id) = @_;
+    my $settings    = $self->{+SETTINGS};
+    my $harness_pid = $spawn->pid;
 
-    my $settings = $self->settings;
-    my $run      = $settings->run;
-    my $class    = $run->run_auditor;
+    my $pid = fork() // die "Could not fork renderer: $!";
+    return $pid if $pid;
 
-    # XXX TODO: Test2::Harness2::Collector::Auditor::Run is gone (PR #390).
-    # The run_auditor option default still points to it; a replacement is needed.
-    require(mod2file($class));
+    # Child: clear inherited Spawn ownership before any teardown.
+    eval { $spawn->clear_terminate_on_destroy; 1 };
 
-    return $self->{+AUDITOR} //= $class->new();
+    my $exit;
+    my $ok = eval {
+        require App::Yath2::Renderer::Driver;
+        $exit = App::Yath2::Renderer::Driver->run(
+            logdir      => $logdir,
+            settings    => $settings,
+            harness_pid => $harness_pid,
+            stop_run_id => $run_id,
+        );
+        1;
+    };
+    unless ($ok) {
+        my $err = $@;
+        print STDERR "Renderer child died: $err\n";
+        POSIX::_exit(2);
+    }
+    POSIX::_exit($exit // 0);
 }
 
-sub no_tests {
-    my $self = shift;
-    print "Nothing to do, no tests to run!\n";
-    return 1;
+sub _reap_renderer {
+    my ($self, $pid) = @_;
+    return 0 unless $pid;
+    my $got = waitpid($pid, 0);
+    return 0 unless $got == $pid;
+    return $? >> 8;
 }
 
-sub finder_args { }
+# Same flow as App::Yath2::Command::test::_drive_ipc_loop -- watch
+# state broadcasts for pass/fail signals, plus poll run_results so a
+# run that completed before our subscribe took effect still resolves.
+sub _drive_ipc_loop {
+    my ($self, $spawn, $run_id, $renderer_pid) = @_;
 
-sub find_tests {
-    my $self  = shift;
-    my @tests = @_;
+    my $ipc_pass     = 1;
+    my $seen_run_end = 0;
+    my $harness_pid  = $spawn->pid;
+    my $ipc          = $spawn->handle;
+    my $next_poll    = 0;
 
-    return $self->{+FIND_TESTS} if $self->{+FIND_TESTS};
+    while (1) {
+        my $renderer_gone = $renderer_pid
+            && (waitpid($renderer_pid, POSIX::WNOHANG()) == $renderer_pid);
 
-    my $settings     = $self->settings;
-    my $finder_class = $settings->finder->class;
+        eval { $ipc->poll(0); 1 } or warn "ipc poll: $@";
 
-    require(mod2file($finder_class));
+        for my $msg ($ipc->messages) {
+            my $content = $msg->content;
+            next unless ref($content) eq 'HASH';
 
-    my $finder = $finder_class->new($settings->finder->all, settings => $settings, search => \@tests, $self->finder_args);
-    my $tests  = $finder->find_files($self->plugins);
+            next unless ($content->{type} // '') eq 'state'
+                     && ($content->{item} // '') eq 'run';
 
-    return unless $tests && @$tests;
-    return $self->{+FIND_TESTS} = $tests;
+            my $rd = $content->{state};
+            next unless ref($rd) eq 'HASH';
+
+            if (defined $rd->{pass}) {
+                $ipc_pass = 0 unless $rd->{pass};
+            }
+            else {
+                my $results = ref($rd->{results}) eq 'HASH' ? $rd->{results} : {};
+                for my $jid (keys %$results) {
+                    my $jr = $results->{$jid};
+                    next unless ref($jr) eq 'HASH';
+                    next unless defined $jr->{completed_at};
+                    $ipc_pass = 0 unless $jr->{pass};
+                }
+            }
+
+            my $pen = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
+            my $run = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
+            my $have_results = ref($rd->{results}) eq 'HASH' && %{$rd->{results}};
+            $seen_run_end = 1 if $pen == 0 && $run == 0 && $have_results;
+        }
+
+        # Fall-back: poll run_results twice a second. The harness
+        # records every completed run in COMPLETED_RUNS at terminal
+        # time, so a run that finished before our subscribe took
+        # effect (small, fast tests) still surfaces here.
+        if (time >= $next_poll) {
+            $next_poll = time + 0.5;
+            my $res = eval { $spawn->run_results($run_id); };
+            if (ref($res) eq 'HASH' && $res->{ok}) {
+                my $state = $res->{state} // '';
+                if ($state ne 'running' && exists $res->{pass}) {
+                    $ipc_pass = 0 unless $res->{pass};
+                    $seen_run_end = 1;
+                }
+            }
+        }
+
+        last if $seen_run_end;
+
+        # Daemon died mid-run: bail. Don't grace; the run is gone.
+        last if $harness_pid && !kill(0 => $harness_pid);
+
+        # Renderer exiting first only means the on-disk log signalled
+        # end-of-run; the IPC state broadcast may still be in flight.
+        # Take one more authoritative run_results poll before bailing
+        # so pass/fail does not silently default to 1.
+        if ($renderer_gone) {
+            my $res = eval { $spawn->run_results($run_id); };
+            if (ref($res) eq 'HASH' && $res->{ok} && exists $res->{pass}) {
+                $ipc_pass = 0 unless $res->{pass};
+            }
+            last;
+        }
+
+        tinysleep(0.05);
+    }
+
+    return ($ipc_pass);
 }
 
 1;
@@ -312,3 +367,4 @@ __END__
 
 =head1 POD IS AUTO-GENERATED
 
+=cut

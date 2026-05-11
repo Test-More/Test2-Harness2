@@ -10,7 +10,7 @@ use File::Spec ();
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util qw/parse_exit tinysleep/;
+use Test2::Harness2::Util qw/load_module parse_exit tinysleep/;
 use Test2::Harness2::Util::IPC qw/ipc_default_spawn_args/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use POSIX qw/WNOHANG/;
@@ -649,12 +649,36 @@ sub request_handler_queue_test_run {
 
     my $run_id = $self->{+RUN_ORD_COUNTER}++;
 
+    # Per-run resources arrive as a recipe: [ [class, @ctor_args], ... ].
+    # Rehydrate into Resource instances here so Run->resources matches
+    # what the harness-global resource list looks like.
+    my @run_resources;
+    if (my $spec = $payload->{resources}) {
+        return {ok => 0, error => "'resources' must be an arrayref"}
+            unless ref($spec) eq 'ARRAY';
+        my $build_ok = eval {
+            for my $entry (@$spec) {
+                die "resources entry must be an arrayref\n"
+                    unless ref($entry) eq 'ARRAY';
+                my ($class, @args) = @$entry;
+                die "resources entry missing class\n"
+                    unless defined $class && length $class && !ref $class;
+                load_module($class);
+                push @run_resources => $class->new(@args);
+            }
+            1;
+        };
+        my $err = $@;
+        return {ok => 0, error => "failed to build per-run resources: $err"} unless $build_ok;
+    }
+
     my $ok = eval {
         my $run = Test2::Harness2::Run->from_files(
             files  => $files,
             run_id => $run_id,
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
             (defined $payload->{chdir}     ? (chdir     => $payload->{chdir})     : ()),
+            (@run_resources                ? (resources => \@run_resources)       : ()),
             %run_logger_opts,
         );
         push @{$self->{+QUEUE}} => $run;

@@ -4,63 +4,36 @@ use warnings;
 
 our $VERSION = '2.000013';
 
-# XXX TODO: App::Yath2::IPC removed (PR #390) — start/daemon functionality needs new IPC
-# XXX TODO: Test2::Harness2::Instance removed (PR #390) — instance management needs reimplementing
-# XXX TODO: Test2::Harness2::IPC::Protocol removed (PR #390) — protocol layer is gone
-# TODO: --set-hash-seed wiring once the global-preload path is fully implemented (Phase 7.2).
-# When yath start spawns a daemon harness with a global preload, it must
-# resolve $settings->tests->set_hash_seed and pass it to Test2::Harness2->spawn
-# (or ->start) as hash_seed => ..., so the harness's HASH_SEED slot agrees
-# with PERL_HASH_SEED in the preload root's environment. Run-time queue
-# handling of the same option already lives in App::Yath2::Command::test
-# and Test2::Harness2::request_handler_queue_test_run.
+use POSIX ();
+use Time::HiRes qw/sleep time/;
 
-use Getopt::Yath::Settings;
-use Test2::Harness2::Collector;
-use Test2::Harness2::Collector::Parser::IOParser;
+use Scope::Guard ();
 
+use Test2::Harness2;
 use Test2::Harness2::Util qw/mod2file/;
-use Test2::Harness2::Util::IPC qw/pid_is_running set_procname/;
-use Test2::Harness2::Util::JSON qw/encode_json/;
+use Test2::Harness2::Util::IPC qw/set_procname/;
 
-use File::Path qw/remove_tree/;
+use App::Yath2::Util::IPC qw/publish_ipc_file unlink_ipc_file/;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
-use Object::HashBase qw{
-    +log_file
 
-    +ipc
-    +yath_ipc
-    +runner
-    +scheduler
-    +resources
-    +instance
-    +collector
+use Object::HashBase qw{
     <args
     <settings
 };
 
-sub option_modules {
-    return (
-        'App::Yath2::Options::IPC',
-        'App::Yath2::Options::Harness',
-        'App::Yath2::Options::Workspace',
-        'App::Yath2::Options::Resource',
-        'App::Yath2::Options::Runner',
-        'App::Yath2::Options::Scheduler',
-        'App::Yath2::Options::Yath',
-        'App::Yath2::Options::Renderer',
-        'App::Yath2::Options::Tests',
-        'App::Yath2::Options::DB',
-        'App::Yath2::Options::WebClient',
-    );
-}
-
 use Getopt::Yath;
-include_options(__PACKAGE__->option_modules);
-
-use App::Yath2::Options::Tests qw/ set_dot_args /;
+include_options(
+    'App::Yath2::Options::Yath',
+    'App::Yath2::Options::Harness',
+    'App::Yath2::Options::Workspace',
+    'App::Yath2::Options::IPC',
+    'App::Yath2::Options::Preload',
+    'App::Yath2::Options::Resource',
+    'App::Yath2::Options::Runner',
+    'App::Yath2::Options::Tests',
+);
 
 option_group {group => 'start', category => "Start Options"} => sub {
     option foreground => (
@@ -68,266 +41,255 @@ option_group {group => 'start', category => "Start Options"} => sub {
         alt         => ['no-daemon'],
         alt_no      => ['daemon'],
         type        => 'Bool',
-        description => "Keep yath in the forground instead of daemonizing and returning you to the shell",
         default     => 0,
+        description => "Keep yath in the foreground instead of daemonizing and returning you to the shell.",
     );
 };
 
 sub load_plugins   { 1 }
 sub load_resources { 1 }
-sub load_renderers { 1 }
+sub load_renderers { 0 }
 
-sub accepts_dot_args   { 1 }
+sub accepts_dot_args   { 0 }
 sub args_include_tests { 0 }
 
 sub group { 'daemon' }
 
-sub summary { "Start a test runner" }
+sub summary { "Start a test runner daemon" }
 
 sub description {
     return <<"    EOT";
-This command is used to start a yath daemon that will load up and run tests on demand.
-(Use --no-daemon or -f to start one and keep it in the foreground)
+Start a yath harness that stays up after each test run finishes. Other
+yath commands (notably `yath run`) connect to the daemon via the IPC
+info file it publishes, so successive runs reuse the same harness
+process -- including any preload services it brought up at startup.
+
+By default the command daemonizes and returns once the harness is
+ready. Pass --foreground (-f) to keep the harness attached to the
+current terminal.
     EOT
-}
-
-sub process_base_name      { shift->should_daemonize ? "daemon" : "instance" }
-sub process_collector_name { "collector" }
-
-sub check_argv {
-    my $self = shift;
-
-    return unless @{$self->{+ARGS} // []};
-
-    die "Invalid arguments to 'start' command: " . join(", " => @{$self->{+ARGS} // []}) . "\n";
-}
-
-sub munge_settings {
-    my $self = shift;
-
-    my $settings = $self->settings;
-    $settings->runner->reloader('Test2::Harness2::Reloader')
-        unless $settings->runner->reloader;
 }
 
 sub run {
     my $self = shift;
 
-    # XXX TODO: App::Yath2::IPC, Test2::Harness2::Instance, and
-    # Test2::Harness2::IPC::Protocol are all gone (PR #390). The daemon/start
-    # architecture needs to be reimplemented before this command can work.
-    die "ERROR: 'yath start' is not yet functional — the IPC/Instance layer has been removed (PR #390).\n";
+    local $| = 1;
+    STDERR->autoflush(1);
 
-    $self->check_argv();
+    my $settings = $self->{+SETTINGS};
 
-    set_procname(
-        set    => [$self->process_base_name, "launcher"],
-        prefix => $self->{+SETTINGS}->harness->procname_prefix,
-    );
+    die "yath start takes no positional arguments; got: @{$self->{+ARGS}}\n"
+        if $self->{+ARGS} && @{$self->{+ARGS}};
 
-    $self->munge_settings();
+    my $workdir = $settings->workspace->workdir;
 
-    $self->become_daemon if $self->should_daemonize();
+    # Build + fork the harness. Spawning fires its global resource
+    # services (Resource::Preload included) and blocks until the
+    # service is ready to accept requests, so a startup failure
+    # surfaces here -- before we daemonize -- and the user sees the
+    # diagnostic on the terminal they invoked us from.
+    my $spawn = $self->_spawn_harness($workdir);
 
-    if ($self->start_daemon_runner) {
-        my $ipc_specs = $self->yath_ipc->validate_ipc();
-        print "Creating ipc file: $ipc_specs->{file}\n";
-    }
-
-    # Need to get this pre-fork
-    my $collector = $self->collector();
-
-    my $pid = fork // die "Could not fork: $!";
-    return $self->become_collector($pid) if $pid;
-    return $self->become_instance();
-}
-
-sub should_daemonize {
-    my $self = shift;
-
-    my $settings = $self->settings;
-
-    return 0 unless $settings->check_group('start');
-    return 0 if $settings->start->foreground;
-    return 1;
-}
-
-sub become_daemon {
-    my $self = shift;
-
-    require POSIX;
-
-    close(STDIN);
-    open(STDIN, '<', "/dev/null") or die "Could not open devnull: $!";
-
-    POSIX::setsid();
-
-    my $pid = fork // die "Could not fork";
-    if ($pid) {
-        sleep 2;
-        kill('HUP', $pid);
-        POSIX::_exit(0);
-    }
-}
-
-sub become_instance {
-    my $self = shift;
-
-    set_procname(
-        set    => [$self->process_base_name],
-        prefix => $self->{+SETTINGS}->harness->procname_prefix,
-    );
-
-    my $collector = $self->collector();
-    $collector->setup_child_output();
-
-    $self->instance->run;
-
-    return 0;
-}
-
-sub become_collector {
-    my $self = shift;
-    my ($pid) = @_;
-
-    my $settings = $self->settings;
-
-    set_procname(
-        set    => [$self->process_base_name],
-        append => [$self->process_collector_name],
-        prefix => $self->{+SETTINGS}->harness->procname_prefix,
-    );
-
-    my $collector = $self->collector();
-
-    my $exit = $collector->process($pid);
-
-    remove_tree($settings->workspace->workdir, {safe => 1, keep_root => 0})
-        unless $settings->workspace->keep_dirs;
-
-    return $exit;
-}
-
-sub log_file {
-    my $self = shift;
-    return $self->{+LOG_FILE} //= File::Spec->catfile($self->settings->workspace->workdir, 'log.jsonl');
-}
-
-sub collector {
-    my $self = shift;
-
-    return $self->{+COLLECTOR} if $self->{+COLLECTOR};
-
-    my $settings = $self->settings;
-
-    my $out_file = $self->log_file;
-
-    my $verbose = 2;
-    $verbose = 0 unless $settings->start->foreground;
-    $verbose = 0 if $settings->renderer->quiet;
-    my $renderers = App::Yath2::Options::Renderer->init_renderers($settings, verbose => $verbose, progress => 0);
-
-    $SIG{HUP} = sub {
-        $renderers = undef;
-        close(STDIN);
-        close(STDOUT);
-        close(STDERR);
+    # The Spawn handle's DESTROY sends a terminate to the harness;
+    # clear that ownership before any planned detachment so a normal
+    # parent exit doesn't take the daemon down with it.
+    my $detach_spawn = sub {
+        my $ok = eval { $spawn->clear_terminate_on_destroy; 1 };
+        warn "clear_terminate_on_destroy: $@" unless $ok;
     };
 
-    open(my $log, '>', $out_file) or die "Could not open '$out_file' for writing: $!";
-    $log->autoflush(1);
+    my $info_path;
+    my $writer_pid = $$;
+    my $cleanup_ipc = sub {
+        unlink_ipc_file($info_path, $writer_pid) if defined $info_path;
+    };
 
-    my $parser = Test2::Harness2::Collector::Parser::IOParser->new(job_id => 1, job_try => 1, run_id => 1, type => 'runner');
-    return $self->{+COLLECTOR} = Test2::Harness2::Collector->new(
-        parser       => $parser,
-        job_id       => 1,
-        job_try      => 1,
-        run_id       => 1,
-        always_flush => 1,
-        output       => sub {
-            for my $e (@_) {
-                print $log encode_json($e), "\n";
-                return unless $renderers;
-                $_->render_event($e) for @$renderers;
-            }
-        }
+    my $start_ok = eval {
+        $info_path = publish_ipc_file(
+            command  => 'start',
+            settings => $settings,
+            spawn    => $spawn,
+            workdir  => $workdir,
+        );
+        1;
+    };
+    unless ($start_ok) {
+        my $err = $@;
+        # Best-effort teardown of the harness we just spawned.
+        eval { $spawn->terminate; 1 };
+        eval { $spawn->wait;      1 };
+        die "Failed to publish IPC info file: $err";
+    }
+
+    if ($settings->start->foreground) {
+        # Foreground mode: stay attached, install signal handlers,
+        # wait for the harness to exit (whether through a signal we
+        # forward, or its own teardown).
+        $self->_run_foreground($spawn, $info_path, $cleanup_ipc);
+        return 0;
+    }
+
+    # Daemon mode: print the breadcrumb on the terminal, then
+    # detach. The harness service (our child via fork+exec / fork)
+    # is already running; we just need to step out of the way
+    # without taking it down.
+    print "started: pid=" . $spawn->pid . " workdir=$workdir ipc=$info_path\n";
+
+    # Detach: tell the harness to drop our pid from its watch_pids
+    # (so our exit does not trigger its shutdown), clear our local
+    # Spawn destructor's terminate hook, fork off a tiny watchdog
+    # to clean up the IPC info file when the daemon eventually goes
+    # away, then _exit so Perl's normal teardown does not unwind
+    # scope guards from IPC::Manager / Workspace that would tear
+    # the daemon's workdir contents down with us.
+    # Watchdog fork before clearing the destroy hook so an early
+    # crash here still cleans up the IPC info file once the daemon
+    # eventually exits.
+    $self->_spawn_ipc_watchdog($spawn->pid, $info_path);
+
+    # Clear the Spawn handle's destructor + skip Perl-level cleanup
+    # via POSIX::_exit. Otherwise IPC::Manager's bus post_disconnect
+    # hook + any inherited Scope::Guard destructors would recurse
+    # into the workdir we just handed off to the daemon.
+    $detach_spawn->();
+
+    STDOUT->flush;
+    STDERR->flush;
+    POSIX::_exit(0);
+}
+
+sub _spawn_harness {
+    my ($self, $workdir) = @_;
+    my $settings = $self->{+SETTINGS};
+
+    my @resources = $self->_build_resources;
+
+    # watch_pids => [] tells the daemon not to tie its lifecycle to
+    # any caller process: yath start exits as soon as the daemon is
+    # up, and the daemon stays alive until something else (a TERM,
+    # `yath stop`, etc.) takes it down. The default behaviour --
+    # watch the caller pid and exit when it goes away -- is what
+    # `yath test` wants but the exact opposite of what we want here.
+    return Test2::Harness2->spawn(
+        workdir     => $workdir,
+        protocol    => $settings->ipc->protocol,
+        resources   => \@resources,
+        watch_pids  => [],
     );
 }
 
-sub instance {
-    # XXX TODO: Test2::Harness2::Instance is gone (PR #390); needs reimplementing
-    die "Test2::Harness2::Instance has been removed (PR #390); yath start is not yet functional\n";
-}
-
-sub start_daemon_runner { 1 }
-
-sub yath_ipc {
-    # XXX TODO: App::Yath2::IPC is gone (PR #390); needs reimplementing
-    die "App::Yath2::IPC has been removed (PR #390); yath start is not yet functional\n";
-}
-
-sub ipc {
-    # XXX TODO: depends on App::Yath2::IPC which is gone (PR #390)
-    die "App::Yath2::IPC has been removed (PR #390); yath start is not yet functional\n";
-}
-
-sub scheduler {
+# Same shape as App::Yath2::Command::test::_build_resources: turn
+# Options::Resource's classes into instances, append a
+# Resource::Preload built from any -P / --preload modules.
+sub _build_resources {
     my $self = shift;
+    my $rg   = $self->{+SETTINGS}->resource;
 
-    return $self->{+SCHEDULER} if $self->{+SCHEDULER};
+    my @out;
 
-    my $runner    = $self->runner;
-    my $resources = $self->resources;
-    my $plugins   = $self->plugins;
+    my $classes = $rg->classes // {};
+    if (keys %$classes) {
+        for my $mod (sort keys %$classes) {
+            require(mod2file($mod));
+            my @args = @{$classes->{$mod} // []};
 
-    my $scheduler_s = $self->settings->scheduler;
-    my $class       = $scheduler_s->class;
-    require(mod2file($class));
+            if ($mod eq 'Test2::Harness2::Resource::JobCount' && !@args) {
+                push @out => $mod->new(
+                    slots       => $rg->slots,
+                    max_per_job => $rg->job_slots,
+                );
+                next;
+            }
 
-    return $self->{+SCHEDULER} = $class->new($scheduler_s->all, runner => $runner, resources => $resources, plugins => $plugins);
-}
+            my @ctor_args =
+                  $mod->can('parse_options')
+                ? $mod->parse_options(@args)
+                : @args;
+            push @out => $mod->new(@ctor_args);
+        }
+    }
 
-sub runner {
-    my $self = shift;
-
-    return $self->{+RUNNER} if $self->{+RUNNER};
-
-    my $plugins  = $self->plugins;
-    my $settings = $self->settings;
-    my $runner_s = $settings->runner;
-    my $class    = $runner_s->class;
-    require(mod2file($class));
-
-    my $ts = Getopt::Yath::Settings->new($settings->tests->all);
-
-    return $self->{+RUNNER} = $class->new($runner_s->all, test_settings => $ts, workdir => $settings->workspace->workdir, plugins => $plugins, is_daemon => $self->start_daemon_runner);
-}
-
-sub resources {
-    my $self = shift;
-
-    return $self->{+RESOURCES} if $self->{+RESOURCES};
-
-    my $settings    = $self->settings;
-    my $res_s       = $settings->resource;
-    my $res_classes = $res_s->classes;
-
-    my @res_class_list = keys %$res_classes;
-    require(mod2file($_)) for @res_class_list;
-
-    @res_class_list = sort { $a->sort_weight <=> $b->sort_weight } @res_class_list;
-
-    my @resources;
-    for my $mod (@res_class_list) {
-        my @raw       = ($res_s->all, @{$res_classes->{$mod}});
-        my @ctor_args = $mod->can('parse_options') ? $mod->parse_options(@raw) : @raw;
-        push @resources => $mod->new(
-            @ctor_args,
-            $mod->isa('App::Yath2::Resource') ? (settings => $settings) : (),
+    my $settings = $self->{+SETTINGS};
+    my $preload  = eval { $settings->preload };
+    my $modules  = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
+    if ($modules && @$modules) {
+        require Test2::Harness2::Resource::Preload;
+        push @out => Test2::Harness2::Resource::Preload->new(
+            name    => 'default',
+            modules => [@$modules],
         );
     }
 
-    return $self->{+RESOURCES} = \@resources;
+    return @out;
+}
+
+# Foreground: forward INT/TERM/HUP to the harness, then wait for it
+# to exit. unlink the IPC info file regardless of how we leave.
+sub _run_foreground {
+    my ($self, $spawn, $info_path, $cleanup) = @_;
+
+    set_procname(
+        set    => ['daemon', 'foreground'],
+        prefix => $self->{+SETTINGS}->harness->procname_prefix,
+    );
+
+    my $harness_pid = $spawn->pid;
+    print "started: pid=$harness_pid workdir=" . $self->{+SETTINGS}->workspace->workdir
+        . " ipc=$info_path\n";
+
+    my $terminated = 0;
+    for my $sig (qw/INT TERM HUP/) {
+        $SIG{$sig} = sub {
+            return if $terminated++;
+            print STDERR "Caught SIG$sig, asking harness $harness_pid to shut down...\n";
+            eval { $spawn->terminate; 1 } or warn "spawn->terminate: $@";
+        };
+    }
+
+    my $ok  = eval { $spawn->wait; 1 };
+    my $err = $@;
+    $cleanup->();
+    die "spawn->wait failed: $err" unless $ok;
+    return;
+}
+
+# Spawn a tiny watchdog child that waits for the harness pid to
+# disappear and then unlinks the published IPC file. Independent of
+# the parent process so it survives `yath start`'s exit; doesn't
+# hold a Spawn handle so it can't accidentally terminate the daemon
+# on its own DESTROY.
+sub _spawn_ipc_watchdog {
+    my ($self, $harness_pid, $info_path) = @_;
+
+    my $pid = fork;
+    die "fork (ipc watchdog): $!" unless defined $pid;
+
+    return if $pid;    # parent: caller exits below
+
+    # Child: detach from controlling terminal + process group, drop
+    # any inherited stdio, set procname, then sit watching the
+    # harness pid via kill 0.
+    require POSIX;
+    POSIX::setsid();
+
+    open(STDIN,  '<', '/dev/null');
+    open(STDOUT, '>', '/dev/null');
+    open(STDERR, '>', '/dev/null');
+
+    set_procname(
+        set    => ['daemon', 'ipc-watchdog'],
+        prefix => $self->{+SETTINGS}->harness->procname_prefix,
+    );
+
+    # Poll. kill(0, $pid) returns true while the process exists; a
+    # 0.5s tick is fine -- the watchdog is just cleaning up an info
+    # file, no liveness expectation.
+    while (kill 0 => $harness_pid) {
+        sleep(0.5);
+    }
+
+    unlink_ipc_file($info_path) if defined $info_path && -e $info_path;
+    POSIX::_exit(0);
 }
 
 1;
@@ -336,3 +298,4 @@ __END__
 
 =head1 POD IS AUTO-GENERATED
 
+=cut

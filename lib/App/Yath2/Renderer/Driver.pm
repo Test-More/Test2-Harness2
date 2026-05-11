@@ -40,6 +40,10 @@ sub run {
     my $harness_pid  = $args{harness_pid};
     my $log          = $args{log};
     my $logdir       = $args{logdir};
+    # Optional: a specific run_id whose completion should end the
+    # driver loop. Used by `yath run`, which dials into a persistent
+    # daemon whose log iterator never reaches EOE on its own.
+    my $stop_run_id  = $args{stop_run_id};
 
     croak "'log' or 'logdir' is required"
         unless $log || (defined $logdir && length $logdir);
@@ -93,6 +97,17 @@ sub run {
             $last_event_at = time;
             $no_progress_deadline = undef;
 
+            # In persistent-daemon mode the log accumulates events
+            # from every run that ever queued on this daemon. Skip
+            # events tagged with a run_id that is not ours. Events
+            # with no run_id (e.g. service_started for the harness)
+            # pass through; they predate any run and are still part
+            # of the renderer's expected lifecycle.
+            if (defined $stop_run_id) {
+                my $ev_rid = $class->_event_run_id($event);
+                next if defined $ev_rid && $ev_rid ne $stop_run_id;
+            }
+
             # Re-run lifecycle synthesis for transition events
             # before passing the underlying event downstream. The
             # synthesized lifecycle events are queued up to dispatch
@@ -111,6 +126,14 @@ sub run {
         if ($log->EOE) {
             last;
         }
+
+        # In persistent-daemon mode the iterator's LIVE sentinel never
+        # disappears, so EOE never flips. Exit cleanly once the
+        # specific run we were dispatched for has completed and its
+        # lifecycle synth has been drained.
+        last if defined $stop_run_id
+             && $seen_run_end{$stop_run_id}
+             && !@$synth_queue;
 
         # Sealed mode: no polling, no live sentinel. If EOE is false
         # but no event came back, treat as drained and exit.
@@ -164,6 +187,38 @@ sub _blessed_event {
     my %copy = %$event;
     $copy{facet_data} //= {};
     return Test2::Harness2::Event->new(\%copy);
+}
+
+# Extract a run_id from an event by scanning the facets that carry one.
+# Returns undef when no facet identifies a run (e.g. service_started for
+# the harness service, which predates any run). Used by `yath run` to
+# skip events that belong to other runs on a persistent daemon's log.
+sub _event_run_id {
+    my ($class, $event) = @_;
+
+    my $fd = ref($event) eq 'HASH' ? $event->{facet_data}
+           : (blessed($event) ? $event->facet_data : undef);
+    return undef unless ref($fd) eq 'HASH';
+
+    for my $facet (qw{
+        harness
+        harness_run
+        harness_run_queued
+        harness_run_start
+        harness_run_end
+        harness_job_queued
+        harness_job_start
+        harness_job_end
+        harness_job_exit
+        harness_collector_start
+        harness_collector_end
+    }) {
+        my $f = $fd->{$facet};
+        next unless ref($f) eq 'HASH';
+        return $f->{run_id} if defined $f->{run_id};
+    }
+
+    return undef;
 }
 
 # Inspect an on-disk event for a transition signal; on hit, push the

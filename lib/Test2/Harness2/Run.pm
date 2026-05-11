@@ -138,7 +138,15 @@ sub add_job {
     return;
 }
 
-sub TO_JSON { return {%{$_[0]}} }
+sub TO_JSON {
+    my $self = shift;
+    my %out = %$self;
+    # RESOURCES holds live blessed Resource instances (no required
+    # TO_JSON contract on those classes); omit them from the
+    # serialized snapshot rather than letting the encoder choke.
+    delete $out{+RESOURCES};
+    return \%out;
+}
 
 sub rehydrate {
     my $class = shift;
