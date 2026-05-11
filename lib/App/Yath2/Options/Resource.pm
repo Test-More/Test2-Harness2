@@ -158,6 +158,19 @@ sub jobs_post_process {
     $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['1/core,100mb/1s'];
 
+    # Default disk-space gate on the system tmpdir, derived from --utilize.
+    # min_free_pct = 100 - utilize, so --utilize 75 => 25% minimum free space.
+    # Skipped silently when Filesys::Df is not installed (Disk requires it at
+    # init; auto-injecting without it would croak on every invocation with a
+    # misleading dependency error). Users can override via -R Disk=...; the
+    # //= ensures their entry wins.
+    if (eval { require Filesys::Df; 1 }) {
+        require File::Spec;
+        my $tmpdir  = File::Spec->tmpdir;
+        my $min_pct = 100 - $utilize;
+        $resource->classes->{'Test2::Harness2::Resource::Disk'} //= ["$tmpdir:${min_pct}%"];
+    }
+
     if (defined $slots) {
         # User explicitly passed -j N: inject JobCount as a hard cap
         # alongside the utilizer + throttle stack.
@@ -197,6 +210,23 @@ memory, free C</tmp> space, etc.) is per-resource. The option exists
 now so command-line plumbing, validation, and propagation are in
 place; the role contract and per-resource implementations are wired
 up in follow-on work.
+
+=head3 Auto-injected Disk resource
+
+When C<Filesys::Df> is installed, yath automatically injects
+C<Test2::Harness2::Resource::Disk> targeting the system temporary directory
+(C<File::Spec-E<gt>tmpdir>, typically F</tmp>). The minimum free-space
+percentage is derived from C<--utilize>: C<min_free_pct = 100 - utilize>.
+With the default C<--utilize 75> that means at least 25% of the tmpdir must
+remain free before yath will start another job.
+
+If C<Filesys::Df> is not installed the Disk resource is silently skipped;
+no error is raised. To disable disk gating explicitly, pass
+C<--no-resource> and re-enable only the resources you want with C<-R>.
+
+To override the injected Disk settings (different mount, different
+threshold), supply your own C<-R Disk=...> on the command line; the user's
+entry wins via C<//=> and the auto-injected default is discarded.
 
 =head3 Spawn-throttle pairing
 

@@ -1,4 +1,5 @@
 use Test2::V0;
+use File::Spec;
 
 # Verify the Resource option group correctly parses every form of the
 # -j (slots) and -x (job_slots) flags, including the combined -j N:M
@@ -6,10 +7,16 @@ use Test2::V0;
 # fallbacks documented on each option.
 #
 # Also verifies the default resource injection behaviour:
-#   - No -j, no -R: CPU + Memory + UnixLimits + PipeLimits + Throttle (no JobCount)
-#   - -j N: same five plus JobCount
+#   - No -j, no -R: CPU + Memory + UnixLimits + PipeLimits + Throttle + Disk*
+#     (* Disk only when Filesys::Df is installed; no JobCount)
+#   - -j N: same set plus JobCount
 #   - -R ...: merges with defaults; user's per-class args win via //=
 #   - --no-resource: empty classes hash
+#
+# Filesys::Df is an optional dependency. When absent, Disk is silently
+# skipped. Tests below gate Disk-specific assertions accordingly.
+
+my $HAS_FILESYS_DF = eval { require Filesys::Df; 1 } ? 1 : 0;
 
 package TestResource {
     use Getopt::Yath;
@@ -117,7 +124,7 @@ subtest '-j is undef when not supplied' => sub {
     ok(!defined $r->slots, 'slots is undef when -j not given');
 };
 
-subtest 'default resource set (no -j, no -R): utilizers + throttle, no JobCount' => sub {
+subtest 'default resource set (no -j, no -R): utilizers + throttle + Disk*, no JobCount' => sub {
     my $r = parse();
     my $classes = $r->classes;
 
@@ -127,7 +134,15 @@ subtest 'default resource set (no -j, no -R): utilizers + throttle, no JobCount'
     ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits auto-injected');
     ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle auto-injected');
     ok(!exists $classes->{'Test2::Harness2::Resource::JobCount'},  'JobCount NOT injected without -j');
-    is(scalar keys %$classes, 5, 'exactly five default resources');
+
+    if ($HAS_FILESYS_DF) {
+        ok(exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk auto-injected (Filesys::Df present)');
+        is(scalar keys %$classes, 6, 'exactly six default resources (with Disk)');
+    }
+    else {
+        ok(!exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk NOT injected (Filesys::Df absent)');
+        is(scalar keys %$classes, 5, 'exactly five default resources (no Filesys::Df)');
+    }
 };
 
 subtest '-j N adds JobCount to default set' => sub {
@@ -140,7 +155,15 @@ subtest '-j N adds JobCount to default set' => sub {
     ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits present with -j');
     ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle present with -j');
     ok(exists $classes->{'Test2::Harness2::Resource::JobCount'},   'JobCount auto-injected when -j given');
-    is(scalar keys %$classes, 6, 'six resources when -j is given');
+
+    if ($HAS_FILESYS_DF) {
+        ok(exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk auto-injected with -j (Filesys::Df present)');
+        is(scalar keys %$classes, 7, 'seven resources when -j is given (with Disk)');
+    }
+    else {
+        ok(!exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk NOT injected (Filesys::Df absent)');
+        is(scalar keys %$classes, 6, 'six resources when -j is given (no Filesys::Df)');
+    }
 };
 
 subtest '--utilize defaults to 75' => sub {
@@ -176,8 +199,9 @@ subtest '--utilize default 75 flows into utilizer args' => sub {
 };
 
 subtest 'explicit -R merges with defaults; user class wins' => sub {
-    # -R JobCount alone: JobCount gets user's (empty) args; all four utilizers
-    # and Throttle are still injected via //= since the user didn't supply them.
+    # -R JobCount alone: JobCount gets user's (empty) args; all four utilizers,
+    # Throttle, and (when Filesys::Df is present) Disk are still injected via
+    # //= since the user didn't supply them.
     my $r = parse('-R', '+Test2::Harness2::Resource::JobCount');
     my $classes = $r->classes;
 
@@ -187,7 +211,15 @@ subtest 'explicit -R merges with defaults; user class wins' => sub {
     ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits still injected alongside -R');
     ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits still injected alongside -R');
     ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle still injected alongside -R');
-    is(scalar keys %$classes, 6, 'six classes: five defaults plus user-supplied JobCount');
+
+    if ($HAS_FILESYS_DF) {
+        ok(exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk still injected alongside -R (Filesys::Df present)');
+        is(scalar keys %$classes, 7, 'seven classes: six defaults plus user-supplied JobCount');
+    }
+    else {
+        ok(!exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk NOT injected (Filesys::Df absent)');
+        is(scalar keys %$classes, 6, 'six classes: five defaults plus user-supplied JobCount');
+    }
 };
 
 subtest '-R Throttle=10/2s: user Throttle args win, other defaults still present' => sub {
@@ -205,12 +237,23 @@ subtest '-R Throttle=10/2s: user Throttle args win, other defaults still present
     ok(exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits still injected');
     ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits still injected');
     ok(!exists $classes->{'Test2::Harness2::Resource::JobCount'},  'JobCount NOT injected without -j');
-    is(scalar keys %$classes, 5, 'five classes total (Throttle overridden, no JobCount)');
+
+    if ($HAS_FILESYS_DF) {
+        ok(exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk auto-injected (Filesys::Df present)');
+        is(scalar keys %$classes, 6, 'six classes total (Throttle overridden, Disk injected, no JobCount)');
+    }
+    else {
+        ok(!exists $classes->{'Test2::Harness2::Resource::Disk'}, 'Disk NOT injected (Filesys::Df absent)');
+        is(scalar keys %$classes, 5, 'five classes total (Throttle overridden, no Disk, no JobCount)');
+    }
 };
 
-subtest '-R Disk=/tmp:25%: six classes (5 defaults + Disk)' => sub {
-    # Disk is a custom class not in the default set; it should appear alongside
-    # all five defaults (CPU, Memory, UnixLimits, PipeLimits, Throttle).
+subtest '-R Disk=/tmp:25%: user Disk args win over auto-injected default' => sub {
+    # Disk is now part of the default set (when Filesys::Df is available).
+    # The user's -R Disk entry is set before post-process runs, so the //=
+    # auto-inject is a no-op; user args are preserved.  Whether or not
+    # Filesys::Df is installed, the count is 6: user Disk + 5 auto-injected
+    # defaults (CPU, Memory, UnixLimits, PipeLimits, Throttle).
     my $r = parse('-R', '+Test2::Harness2::Resource::Disk=/tmp:25%');
     my $classes = $r->classes;
 
@@ -218,7 +261,7 @@ subtest '-R Disk=/tmp:25%: six classes (5 defaults + Disk)' => sub {
     is(
         $classes->{'Test2::Harness2::Resource::Disk'},
         ['/tmp:25%'],
-        'Disk args are user-supplied',
+        'user Disk args win (not overridden by auto-inject)',
     );
     ok(exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU still injected');
     ok(exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory still injected');
@@ -226,7 +269,7 @@ subtest '-R Disk=/tmp:25%: six classes (5 defaults + Disk)' => sub {
     ok(exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits still injected');
     ok(exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle still injected');
     ok(!exists $classes->{'Test2::Harness2::Resource::JobCount'},  'JobCount NOT injected without -j');
-    is(scalar keys %$classes, 6, 'six classes: 5 defaults + Disk');
+    is(scalar keys %$classes, 6, 'six classes: 5 defaults + Disk (user-supplied or auto-injected)');
 };
 
 subtest 'Throttle default arg is 1/core,100mb/1s' => sub {
@@ -285,6 +328,80 @@ subtest '--utilize rejects out-of-range and non-numeric values' => sub {
     like(dies { parse('-U', '100') },   qr/--utilize must be greater than 0/);
     like(dies { parse('-U', '-5') },    qr/--utilize must be a number/);
     like(dies { parse('-U', 'fifty') }, qr/--utilize must be a number/);
+};
+
+# -------------------------------------------------------------------------
+# Disk auto-injection subtests
+# -------------------------------------------------------------------------
+
+subtest 'Disk auto-inject: default --utilize 75 => min_free 25%' => sub {
+    if (!$HAS_FILESYS_DF) {
+        skip_all 'Filesys::Df not installed; Disk auto-inject skipped';
+    }
+
+    my $tmpdir = File::Spec->tmpdir;
+    my $r      = parse();
+    is(
+        $r->classes->{'Test2::Harness2::Resource::Disk'},
+        ["$tmpdir:25%"],
+        'Disk default targets tmpdir with utilize-derived min_free (75 => 25%)',
+    );
+};
+
+subtest 'Disk auto-inject: -U 80 => min_free 20%' => sub {
+    if (!$HAS_FILESYS_DF) {
+        skip_all 'Filesys::Df not installed; Disk auto-inject skipped';
+    }
+
+    my $tmpdir = File::Spec->tmpdir;
+    my $r      = parse('-U', '80');
+    is(
+        $r->classes->{'Test2::Harness2::Resource::Disk'},
+        ["$tmpdir:20%"],
+        'Disk min_free is 20% when --utilize is 80',
+    );
+};
+
+subtest 'Disk auto-inject: -U 50 => min_free 50%' => sub {
+    if (!$HAS_FILESYS_DF) {
+        skip_all 'Filesys::Df not installed; Disk auto-inject skipped';
+    }
+
+    my $tmpdir = File::Spec->tmpdir;
+    my $r      = parse('-U', '50');
+    is(
+        $r->classes->{'Test2::Harness2::Resource::Disk'},
+        ["$tmpdir:50%"],
+        'Disk min_free is 50% when --utilize is 50',
+    );
+};
+
+subtest 'user -R Disk=... overrides auto-injected default (args win, not merged)' => sub {
+    if (!$HAS_FILESYS_DF) {
+        skip_all 'Filesys::Df not installed; Disk auto-inject skipped';
+    }
+
+    # When the user supplies a Disk entry, //= in post-process is a no-op.
+    # The user gets exactly /tmp:10% — NOT the tmpdir:25% that would have
+    # been auto-injected.
+    my $r = parse('-R', '+Test2::Harness2::Resource::Disk=/tmp:10%');
+    is(
+        $r->classes->{'Test2::Harness2::Resource::Disk'},
+        ['/tmp:10%'],
+        'user -R Disk args win: /tmp:10%',
+    );
+};
+
+subtest 'user -R Disk=/var:5gb replaces auto-inject entirely (no tmpdir added)' => sub {
+    if (!$HAS_FILESYS_DF) {
+        skip_all 'Filesys::Df not installed; Disk auto-inject skipped';
+    }
+
+    # The user gets exactly one Disk entry (/var:5gb).  The tmpdir default
+    # is NOT merged in — user's args are the whole Disk config.
+    my $r      = parse('-R', '+Test2::Harness2::Resource::Disk=/var:5gb');
+    my $disk   = $r->classes->{'Test2::Harness2::Resource::Disk'};
+    is($disk, ['/var:5gb'], 'user Disk entry is /var:5gb only (no tmpdir merged in)');
 };
 
 done_testing;
