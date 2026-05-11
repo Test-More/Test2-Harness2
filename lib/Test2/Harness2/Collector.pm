@@ -46,6 +46,7 @@ use Object::HashBase qw{
     <type
     <id
     <launch
+    <launch_callback
     <new_pgroup
     <env_vars
     <out_fh
@@ -159,14 +160,23 @@ sub init {
         $self->{+AUDITOR} = undef;    # re-instantiated in the child
     }
 
-    my $has_launch = defined $self->{+LAUNCH};
-    my $has_stdio  = defined($self->{+OUT_FH}) || defined($self->{+ERR_FH});
+    my $has_launch   = defined $self->{+LAUNCH};
+    my $has_callback = defined $self->{+LAUNCH_CALLBACK};
+    my $has_stdio    = defined($self->{+OUT_FH}) || defined($self->{+ERR_FH});
 
-    croak "Must specify either 'launch' or 'stdout'/'stderr', not both"
-        if $has_launch && $has_stdio;
+    croak "'launch' and 'launch_callback' are mutually exclusive"
+        if $has_launch && $has_callback;
 
-    croak "Must specify either 'launch' or 'stdout'/'stderr'"
-        unless $has_launch || $has_stdio;
+    my $has_any_launch = $has_launch || $has_callback;
+
+    croak "Must specify launch / launch_callback or stdout/stderr, not both"
+        if $has_any_launch && $has_stdio;
+
+    croak "Must specify launch / launch_callback or stdout/stderr"
+        unless $has_any_launch || $has_stdio;
+
+    croak "'launch_callback' must be a code ref"
+        if $has_callback && ref($self->{+LAUNCH_CALLBACK}) ne 'CODE';
 
     # Normalize launch to arrayref
     $self->{+LAUNCH} = [$self->{+LAUNCH}] if $has_launch && !ref($self->{+LAUNCH});
@@ -275,14 +285,21 @@ sub _spawn_collector {
     # Child -- never return from this scope. The Scope::Guard makes a runaway
     # control flow loud (POSIX::_exit(255)) instead of letting the caller's
     # code resume in a process it never expected to touch.
-    my $guard = Scope::Guard->new(sub { POSIX::_exit(255) });
+    #
+    # Stash the guard on $self (not just a my-var) so a deeper fork --
+    # specifically, the test grandchild a launch_callback spawns -- can
+    # dismiss it before calling exit(). Without that, the test child's
+    # `exit(0)` unwinds inherited scopes, fires this guard's DESTROY in
+    # the grandchild process, and POSIX::_exit(255)'s before Test2's END
+    # block + Stream2 formatter finalize get to emit the plan.
+    $self->{_collector_guard} = Scope::Guard->new(sub { POSIX::_exit(255) });
 
     my $ok  = eval { $self->_run_collector(); 1 };
     my $err = $@;
 
     $self->_emit_collector_error("Collector process died: $err") unless $ok;
 
-    $guard->dismiss;
+    $self->{_collector_guard}->dismiss;
     $self->_exit_mirroring_child($ok);
 }
 
@@ -346,9 +363,10 @@ sub _run_collector {
 sub _setup_child_handles {
     my $self = shift;
 
-    my $started_child = defined($self->{+LAUNCH}) || $self->{+_OWNS_CHILD};
+    my $has_launch = defined($self->{+LAUNCH}) || defined($self->{+LAUNCH_CALLBACK});
+    my $started_child = $has_launch || $self->{+_OWNS_CHILD};
 
-    if (defined $self->{+LAUNCH}) {
+    if ($has_launch) {
         my ($child_pid, $out_r, $err_r) = $self->_launch_child();
         $self->{+CHILD_PID} = $child_pid;
         return ($child_pid, $out_r, $err_r, $started_child);
@@ -1026,6 +1044,9 @@ sub _set_procname {
         my $cmd = ref($self->{+LAUNCH}) ? join(' ', @{$self->{+LAUNCH}}) : $self->{+LAUNCH};
         push @parts => $cmd;
     }
+    elsif ($self->{+LAUNCH_CALLBACK}) {
+        push @parts => 'launch_callback';
+    }
     elsif (defined $self->{+OUT_FH} || defined $self->{+ERR_FH}) {
         my @files;
         if (!ref($self->{+OUT_FH}) && defined $self->{+OUT_FH}) {
@@ -1076,6 +1097,7 @@ sub _launch_child_unix {
     my ($out_r, $out_w, $err_r, $err_w, $orig_stdout, $orig_stderr) = @_;
 
     my $cmd = $self->{+LAUNCH};
+    my $cb  = $self->{+LAUNCH_CALLBACK};
 
     $self->{+_CHILD_FORK_TIMES} = [times()];
     $self->{+_CHILD_FORK_STAMP} = time;
@@ -1099,6 +1121,24 @@ sub _launch_child_unix {
         }
 
         my %env = $self->_child_env_overrides;
+        # Callback path: child runs the callback in-process (no exec)
+        # so caller-preloaded state survives. The callback owns
+        # process-exit semantics; if it ever returns we treat that as
+        # a contract violation and exit non-zero loudly.
+        #
+        # Dismiss the _spawn_collector Scope::Guard inherited into
+        # this grandchild process so that the callback's eventual
+        # exit() does not fire its POSIX::_exit(255) destructor.
+        # Test2's END block needs to run cleanly through normal exit
+        # for the plan + assertion counts to flow through Stream2.
+        if ($cb) {
+            @ENV{keys %env} = values %env;
+            if (my $g = delete $self->{_collector_guard}) { $g->dismiss }
+            $cb->();
+            print STDERR "Test2::Harness2::Collector: launch_callback returned without exiting\n";
+            POSIX::_exit(255);
+        }
+
         local @ENV{keys %env} = values %env;
         exec(@$cmd) or croak "Failed to exec '@$cmd': $!";
     }

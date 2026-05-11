@@ -22,6 +22,7 @@ subtest 'defaults' => sub {
     ok(!$r->is_usable,            'not usable until host says so');
     ok(!$r->is_permanent_broken,  'not permanent_broken initially');
     is($r->available, 1,          'available always returns 1');
+    is($r->needed,    0,          'needed=0 -- resolver picks preloads, not _evaluate_resources_for');
 };
 
 subtest 'usability flips with host hook' => sub {

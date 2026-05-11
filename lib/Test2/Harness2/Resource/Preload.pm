@@ -43,6 +43,14 @@ sub init {
 
 sub resource_name { 'preload:' . $_[0]->{+NAME} }
 
+# Routing decision lives in the harness's resolver
+# (_resolve_preload_for_job), NOT in the scheduler's normal needs-this-
+# resource walk. Returning 0 here keeps _evaluate_resources_for from
+# selecting a preload on its own; the scheduler injects the resolved
+# Resource::Preload alongside the rest of the assigned resources after
+# the resolver picks one.
+sub needed { 0 }
+
 # Always available -- the yes/no decision is "is the service ready",
 # which is_usable answers. No slot accounting.
 sub available { 1 }
