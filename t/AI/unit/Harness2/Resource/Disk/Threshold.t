@@ -1,6 +1,6 @@
 use Test2::V0;
 
-use Test2::Harness2::Resource::Disk::Threshold qw/parse_threshold/;
+use Test2::Harness2::Resource::Disk::Threshold qw/parse_threshold evaluate_threshold/;
 
 subtest 'percent default unit' => sub {
     is(parse_threshold('25'),    {kind => 'pct', value => 25},  'bare number = pct');
@@ -29,6 +29,43 @@ subtest 'invalid input croaks' => sub {
     like(dies { parse_threshold('0kb') },  qr/threshold/, 'zero bytes rejected');
     like(dies { parse_threshold('mb') },   qr/threshold/, 'unit only');
     like(dies { parse_threshold(undef) },  qr/threshold/, 'undef');
+};
+
+subtest 'evaluate_threshold pct' => sub {
+    my $t = parse_threshold('25%');
+    is(evaluate_threshold($t, 250, 1000), 'ok',  'exactly at threshold');
+    is(evaluate_threshold($t, 251, 1000), 'ok',  'just above threshold');
+    is(evaluate_threshold($t, 249, 1000), 'low', 'just below threshold');
+    is(evaluate_threshold($t, 500, 1000), 'ok',  'well above');
+    is(evaluate_threshold($t, 0,   1000), 'low', 'zero free');
+};
+
+subtest 'evaluate_threshold bytes' => sub {
+    my $t   = parse_threshold('512kb');
+    my $cap = 512 * 1024;
+    is(evaluate_threshold($t, $cap,     1_000_000), 'ok',  'exactly at threshold');
+    is(evaluate_threshold($t, $cap + 1, 1_000_000), 'ok',  'just above');
+    is(evaluate_threshold($t, $cap - 1, 1_000_000), 'low', 'just below');
+    is(evaluate_threshold($t, 0,        1_000_000), 'low', 'zero free');
+};
+
+subtest 'evaluate_threshold errors' => sub {
+    like(
+        dies { evaluate_threshold(undef, 1, 1) },
+        qr/parsed threshold hashref/, 'undef threshold'
+    );
+    like(
+        dies { evaluate_threshold({kind => 'pct', value => 25}, 100, 0) },
+        qr/positive total_bytes/, 'pct with zero total'
+    );
+    like(
+        dies { evaluate_threshold({kind => 'wat', value => 5}, 100, 100) },
+        qr/unknown threshold kind/, 'bogus kind'
+    );
+    like(
+        dies { evaluate_threshold({kind => 'pct', value => 25}, undef, 100) },
+        qr/non-negative free_bytes/, 'undef free_bytes'
+    );
 };
 
 done_testing;
