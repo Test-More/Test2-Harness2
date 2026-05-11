@@ -296,12 +296,37 @@ sub mark_resumed {
     $self->{+BROKEN} = 0 unless $self->{+PERMANENT};
 }
 
-# Stubs filled in by later tasks. Keeping them present (even as
-# croaks) lets Task 3 commit a passing options.t while the rest of
-# the contract is still being built out.
-sub assign  { croak "Resource::Disk::assign not yet implemented (Task 6)" }
-sub release { croak "Resource::Disk::release not yet implemented (Task 6)" }
-sub status  { croak "Resource::Disk::status not yet implemented (Task 7)" }
+sub assign {
+    my ($self, %p) = @_;
+
+    my $id  = $p{id}  or croak "'id' is required";
+    my $job = $p{job} or croak "'job' is required";
+    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
+
+    croak "Resource::Disk: duplicate assign for id '$id'"
+        if exists $self->{+ASSIGNMENTS}->{$id};
+
+    $self->{+ASSIGNMENTS}->{$id} = {
+        job   => $job,
+        stamp => _now(),
+    };
+
+    return 1;
+}
+
+sub release {
+    my ($self, %p) = @_;
+
+    my $id = $p{id} or croak "'id' is required";
+
+    delete $self->{+ASSIGNMENTS}->{$id}
+        or croak "Resource::Disk: invalid release id '$id'";
+
+    return 1;
+}
+
+# Stub filled in by Task 7.
+sub status { croak "Resource::Disk::status not yet implemented (Task 7)" }
 
 1;
 

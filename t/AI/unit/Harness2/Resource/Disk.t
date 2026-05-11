@@ -213,4 +213,39 @@ subtest 'available() refreshes all mounts even when one is low' => sub {
     is($r->{samples}{$tmp_b}{ts}, $now, 'mount B sample fresh');
 };
 
+package TFakeTestFile {
+    sub new      { my ($c, $rel) = @_; bless {rel => $rel}, $c }
+    sub relative { $_[0]->{rel} }
+}
+
+package TFakeJobWithFile {
+    sub new       { my ($c, $tf) = @_; bless {tf => $tf}, $c }
+    sub test_file { $_[0]->{tf} }
+}
+
+subtest 'assign records id, release drops it' => sub {
+    my $r  = _make_resource();
+    my $tf = TFakeTestFile->new('t/foo.t');
+    my $j  = TFakeJobWithFile->new($tf);
+
+    no warnings 'redefine';
+    local *Filesys::Df::df = sub { {bavail => 10_000, blocks => 10_000} };
+
+    $r->assign(id => 'A1', job => $j, env => {});
+    $r->assign(id => 'A2', job => $j, env => {});
+    is([sort keys %{$r->assignments}], ['A1', 'A2'], 'two ids tracked');
+
+    $r->release(id => 'A1');
+    is([keys %{$r->assignments}], ['A2'], 'A1 dropped');
+
+    like(
+        dies { $r->assign(id => 'A2', job => $j, env => {}) },
+        qr/duplicate/, 'duplicate id croaks'
+    );
+    like(
+        dies { $r->release(id => 'unknown') },
+        qr/invalid release/, 'unknown id croaks'
+    );
+};
+
 done_testing;
