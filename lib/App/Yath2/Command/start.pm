@@ -319,7 +319,12 @@ sub resources {
 
     my @resources;
     for my $mod (@res_class_list) {
-        push @resources => $mod->new($res_s->all, @{$res_classes->{$mod}}, $mod->isa('App::Yath2::Resource') ? (settings => $settings) : ());
+        my @raw       = ($res_s->all, @{$res_classes->{$mod}});
+        my @ctor_args = $mod->can('parse_options') ? $mod->parse_options(@raw) : @raw;
+        push @resources => $mod->new(
+            @ctor_args,
+            $mod->isa('App::Yath2::Resource') ? (settings => $settings) : (),
+        );
     }
 
     return $self->{+RESOURCES} = \@resources;

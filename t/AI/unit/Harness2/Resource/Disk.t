@@ -308,4 +308,22 @@ subtest 'status does not trigger statvfs' => sub {
     is($calls, 1, 'status did not re-sample');
 };
 
+subtest 'parse_options output is consumable by new()' => sub {
+    my $tmp  = tempdir(CLEANUP => 1);
+    my %args = Test2::Harness2::Resource::Disk->parse_options(
+        # noise from $res_s->all in start.pm
+        slots       => 4,
+        job_slots   => 1,
+        classes     => {},
+        utilize     => 80,
+        no_resource => 0,
+        # the real positional entry
+        "$tmp:25%",
+    );
+    my $r = Test2::Harness2::Resource::Disk->new(%args);
+    is($r->resource_name,    'disk', 'constructed');
+    is($r->poll_interval,    5,      'default poll_interval');
+    is([keys %{$r->mounts}], [$tmp], 'one mount');
+};
+
 done_testing;
