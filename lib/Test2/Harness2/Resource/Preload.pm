@@ -37,8 +37,23 @@ sub init {
 
     croak "'scope' must be 'global' or 'run'"
         unless $self->{+SCOPE} eq 'global' || $self->{+SCOPE} eq 'run';
-    croak "scope='run' requires 'run'"
-        if $self->{+SCOPE} eq 'run' && !ref($self->{+RUN});
+    # `scope='run'` without `run` is allowed at construction so the
+    # harness can rehydrate per-run preload specs over IPC before the
+    # Run object exists. set_run() binds the Run before the Resource
+    # is consulted by services() or status() (called at scheduler
+    # dispatch time, after Run::from_files has returned).
+}
+
+# Bind the Run object after construction. Used by the harness to
+# attach per-run preloads rehydrated from a queue_test_run payload
+# (where the Run does not yet exist at Resource construction time).
+sub set_run {
+    my ($self, $run) = @_;
+    croak "set_run requires a Run object" unless ref $run;
+    croak "set_run only valid for scope='run' (got '$self->{+SCOPE}')"
+        unless $self->{+SCOPE} eq 'run';
+    $self->{+RUN} = $run;
+    return;
 }
 
 sub resource_name { 'preload:' . $_[0]->{+NAME} }

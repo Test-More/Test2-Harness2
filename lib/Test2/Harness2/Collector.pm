@@ -56,6 +56,7 @@ use Object::HashBase qw{
     <id
     <launch
     <launch_callback
+    <post_fork_callback
     <new_pgroup
     <cwd
     <env_vars
@@ -319,6 +320,15 @@ sub _run_collector {
     # Reset CPU-time baseline now that we're in the process that will
     # actually run the collection loop.
     $self->{+_START_TIMES} = [times()];
+
+    # Role::Preload's post_fork hook lands here: this is the first
+    # child of the preload service's spawn, before the collector
+    # forks again for the test grandchild. The callback runs in the
+    # collector process and must be cheap (the collector starts its
+    # auditing loop immediately after).
+    if (my $cb = $self->{+POST_FORK_CALLBACK}) {
+        eval { $cb->($self); 1 } or warn "post_fork_callback failed: $@";
+    }
 
     my ($child_pid, $out_r, $err_r, $started_child) = $self->_setup_child_handles();
     $self->_set_procname($child_pid);

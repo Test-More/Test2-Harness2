@@ -227,11 +227,18 @@ sub _build_resource_specs {
     my $preload = eval { $settings->preload };
     my $modules = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
     if ($modules && @$modules) {
-        push @out => [
-            'Test2::Harness2::Resource::Preload',
-            name    => 'default',
-            modules => [@$modules],
-        ];
+        require App::Yath2::Options::Preload;
+        for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
+            # yath run owns a per-run preload by definition: it lives
+            # only for the duration of this queued run, not for the
+            # whole daemon lifetime. The harness binds the Run object
+            # after rehydration via Resource::Preload::set_run.
+            push @out => [
+                'Test2::Harness2::Resource::Preload',
+                %$group,
+                scope => 'run',
+            ];
+        }
     }
 
     return @out;
@@ -340,8 +347,14 @@ sub _drive_ipc_loop {
 
         last if $seen_run_end;
 
-        # Daemon died mid-run: bail. Don't grace; the run is gone.
-        last if $harness_pid && !kill(0 => $harness_pid);
+        # Daemon died mid-run: bail with failure. We never saw an
+        # end-of-run signal, so pass/fail is unknowable -- treat as
+        # failure rather than silently returning success.
+        if ($harness_pid && !kill(0 => $harness_pid)) {
+            warn "yath run: harness pid $harness_pid disappeared before the run completed.\n";
+            $ipc_pass = 0;
+            last;
+        }
 
         # Renderer exiting first only means the on-disk log signalled
         # end-of-run; the IPC state broadcast may still be in flight.
@@ -351,6 +364,15 @@ sub _drive_ipc_loop {
             my $res = eval { $spawn->run_results($run_id); };
             if (ref($res) eq 'HASH' && $res->{ok} && exists $res->{pass}) {
                 $ipc_pass = 0 unless $res->{pass};
+            }
+            else {
+                # No authoritative pass/fail answer from the daemon
+                # (request errored or returned no pass). The most
+                # common case is the daemon went away mid-run before
+                # writing the run's terminal snapshot; either way we
+                # cannot honestly call this a pass, so fail closed.
+                warn "yath run: run_results did not return a pass/fail; treating as failure.\n";
+                $ipc_pass = 0;
             }
             last;
         }

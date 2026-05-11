@@ -257,10 +257,15 @@ sub _resolve_preload_for_job {
     my $prefs = $job->test_file->preload_preferences;
     return (undef, 'no_preload') unless $prefs && @$prefs;
 
-    my $resources = $self->{+RESOURCES} || [];
-    my @preloads  = grep {
+    # Walk both global and per-run resource lists; a per-run preload
+    # is invisible to the resolver if it never enters this scan.
+    my @all = (
+        @{$self->{+RESOURCES} || []},
+        (ref($run) ? @{$run->resources // []} : ()),
+    );
+    my @preloads = grep {
         blessed($_) && $_->isa('Test2::Harness2::Resource::Preload')
-    } @$resources;
+    } @all;
 
     my $run_id = ref($run) ? $run->run_id : undef;
 
@@ -269,7 +274,7 @@ sub _resolve_preload_for_job {
     # different run is invisible to this lookup.
     my (%by_global, %by_run);
     my (@globals_role, @run_role);
-    my $global_named_default;
+    my ($global_named_default, $run_named_default);
     for my $r (@preloads) {
         my $name = $r->name;
         if ($r->scope eq 'run') {
@@ -277,6 +282,7 @@ sub _resolve_preload_for_job {
             next unless defined $run_id && defined $rid && $run_id eq $rid;
             $by_run{$name} = $r;
             push @run_role => $r if $r->is_role_consumer;
+            $run_named_default = $r if $name eq 'default';
         }
         else {
             $by_global{$name} = $r;
@@ -285,7 +291,12 @@ sub _resolve_preload_for_job {
         }
     }
 
-    my $run_default    = (@run_role == 1) ? $run_role[0] : undef;
+    # Per-run default: an explicit `default`-named preload wins (the
+    # bare-module bucket `yath run -P Foo` produces) over the
+    # "exactly one role consumer" rule. Same precedence the global
+    # scope uses.
+    my $run_default = $run_named_default
+        // ((@run_role == 1) ? $run_role[0] : undef);
     my $global_default = $global_named_default
         // (@globals_role == 1 ? $globals_role[0] : undef);
 
@@ -681,6 +692,17 @@ sub request_handler_queue_test_run {
             (@run_resources                ? (resources => \@run_resources)       : ()),
             %run_logger_opts,
         );
+
+        # Bind the Run to any per-run Resource::Preload that arrived
+        # over IPC. The recipe carried scope='run' but had no Run
+        # object yet; finish the link now before the scheduler reads
+        # services() / status() off the resource.
+        for my $r (@run_resources) {
+            next unless $r->can('set_run');
+            next unless eval { $r->scope eq 'run' };
+            eval { $r->set_run($run); 1 };
+        }
+
         push @{$self->{+QUEUE}} => $run;
         $self->_install_in_flight_ref($_) for @{$run->resources // []};
         $self->{+RUN_STATES}->{$run->run_id} = Test2::Harness2::Run::State->new(
@@ -1311,7 +1333,16 @@ sub _handle_preload_state_message {
 
     my $run_id = $content->{run_id};
 
-    for my $res (@{$self->{+RESOURCES} // []}) {
+    # Look in both global resources and every queued run's per-run
+    # resources -- a per-run preload's mark_ready signal otherwise
+    # never lands on its Resource::Preload and the resolver defers
+    # forever.
+    my @candidates = @{$self->{+RESOURCES} // []};
+    for my $run (@{$self->{+QUEUE} // []}) {
+        push @candidates => @{$run->resources // []};
+    }
+
+    for my $res (@candidates) {
         next unless blessed($res) && $res->isa('Test2::Harness2::Resource::Preload');
         next unless $res->name eq $name;
         next unless $res->scope eq $scope;

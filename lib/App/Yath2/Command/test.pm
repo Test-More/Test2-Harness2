@@ -231,11 +231,13 @@ sub _build_resources {
         }
     }
 
-    # -P / --preload: any bare modules listed on the command line are
-    # bundled into one global Resource::Preload named "default". Tests
-    # without an explicit HARNESS-PRELOAD directive resolve to
-    # <default> and route through this service; tests with
-    # HARNESS-PRELOAD: <no> bypass it.
+    # -P / --preload: classify modules into preload groups. Bare
+    # modules collect into one "default" Resource::Preload; modules
+    # consuming Test2::Harness2::Role::Preload each become their own
+    # named Resource::Preload. Tests without an explicit
+    # HARNESS-PRELOAD directive resolve to <default> and route
+    # through the default; tests with HARNESS-PRELOAD: <no> bypass
+    # all preloads.
     my $settings = $self->{+SETTINGS};
     # Getopt::Yath::Settings dispatches group accessors dynamically and
     # does not respond to ->can('preload'), so the only way to find out
@@ -245,10 +247,10 @@ sub _build_resources {
     my $modules = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
     if ($modules && @$modules) {
         require Test2::Harness2::Resource::Preload;
-        push @out => Test2::Harness2::Resource::Preload->new(
-            name    => 'default',
-            modules => [@$modules],
-        );
+        require App::Yath2::Options::Preload;
+        for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
+            push @out => Test2::Harness2::Resource::Preload->new(%$group);
+        }
     }
 
     return @out;

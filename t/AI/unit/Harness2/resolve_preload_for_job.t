@@ -37,9 +37,10 @@ sub make_job {
 # minimum stubs so the resolver can read what it needs
 {
     no strict 'refs';
-    *Test2::Harness2::Test::FakeRun::run_id            = sub { $_[0]->{run_id} };
+    *Test2::Harness2::Test::FakeRun::run_id    = sub { $_[0]->{run_id} };
+    *Test2::Harness2::Test::FakeRun::resources = sub { $_[0]->{resources} // [] };
     *Test2::Harness2::Test::FakeTestFile::preload_preferences = sub { $_[0]->{_prefs} };
-    *Test2::Harness2::Test::FakeJob::test_file         = sub { $_[0]->{test_file} };
+    *Test2::Harness2::Test::FakeJob::test_file = sub { $_[0]->{test_file} };
 }
 
 sub make_harness {

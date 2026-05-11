@@ -117,13 +117,51 @@ sub hard_stop_pids {
 # up to write JSONL into log_path.
 sub emit_service_event { }
 
+# When this preload was built from a Role::Preload consumer (the -P
+# classifier set is_role_consumer => 1), MODULES carries exactly one
+# entry: the consumer class. Returns the class name in that case,
+# undef otherwise.
+sub _role_consumer_class {
+    my $self = shift;
+    return undef unless $self->{+IS_ROLE_CONSUMER};
+    my $mods = $self->{+MODULES} // [];
+    return undef unless @$mods;
+    return $mods->[0];
+}
+
 # Sequential require of each module in $self->modules. Croaks with a
 # clear message naming the preload + failing module + underlying
 # error. Single source of truth for the require step so the harness's
 # service_on_start (which awaits initial-load readiness) and a future
 # reload-restart can both share the same code path.
+#
+# For Role::Preload consumers the require + initialization step is
+# delegated to the consumer's do_preload (default supplied by the
+# role itself). That call runs in the service process after the
+# class has been loaded once via _require_module, so any custom
+# bootstrap a consumer wants to do happens before preload_ready fires.
 sub do_preload {
     my $self = shift;
+
+    if (my $class = $self->_role_consumer_class) {
+        my $ok  = eval { $self->_require_module($class); 1 };
+        my $err = $@;
+        unless ($ok) {
+            my $preload = $self->{+PRELOAD_NAME};
+            chomp(my $e = $err);
+            croak "Failed to load module '$class' for preload '$preload': $e";
+        }
+
+        $ok  = eval { $class->do_preload($self); 1 };
+        $err = $@;
+        unless ($ok) {
+            my $preload = $self->{+PRELOAD_NAME};
+            chomp(my $e = $err);
+            croak "do_preload failed for preload '$preload' (class '$class'): $e";
+        }
+
+        return 1;
+    }
 
     for my $mod (@{$self->{+MODULES}}) {
         my $ok  = eval { $self->_require_module($mod); 1 };
@@ -136,6 +174,26 @@ sub do_preload {
     }
 
     return 1;
+}
+
+# Fire a Role::Preload lifecycle hook on the consumer class, if any.
+# Hooks are class-method calls so consumers do not need a constructor;
+# state across hooks lives in package globals on the consumer side.
+# A hook exception is logged via warn but does not abort the spawn --
+# pre_fork failure should not strand the harness's launch_job.
+sub _fire_role_hook {
+    my ($self, $hook, $payload) = @_;
+    my $class = $self->_role_consumer_class or return;
+    return unless $class->can($hook);
+
+    my $ok = eval { $class->$hook($self, $payload); 1 };
+    unless ($ok) {
+        my $err = $@;
+        chomp(my $e = $err);
+        my $name = $self->{+PRELOAD_NAME};
+        warn "Role::Preload hook '$hook' for preload '$name' (class '$class') failed: $e\n";
+    }
+    return;
 }
 
 sub _require_module {
@@ -327,6 +385,11 @@ sub request_handler_spawn_test {
     require Test2::Harness2::Collector;
     require Long::Jump;
 
+    # Role::Preload pre_fork hook: runs in this (service) process
+    # before any forks. Use it to warm caches / open shared handles
+    # that the test should inherit. Errors warn but do not abort.
+    $self->_fire_role_hook(pre_fork => $payload);
+
     # Callback runs in the Collector's post-fork child (the test
     # grandchild) with STDOUT/STDERR already swapped to the
     # collector's pipes. Apply env, reset $0 + Test2's process-global
@@ -401,6 +464,12 @@ sub request_handler_spawn_test {
         # scoped, so it cannot be hoisted into a sub.
         "" =~ /^/;
 
+        # Role::Preload pre_launch hook: runs in the test grandchild
+        # immediately before the longjump that hands control to the
+        # test file. Use it for per-test state resets that the
+        # standard Test2 post-preload reset does not cover.
+        $self->_fire_role_hook(pre_launch => $payload);
+
         # Hand off to run()'s setjump anchor. longjump unwinds all
         # the way through Collector::_launch_child_unix's eval ->
         # Collector->spawn -> request_handler_spawn_test ->
@@ -421,24 +490,35 @@ sub request_handler_spawn_test {
     my $auditor = $payload->{auditor};
     my $env     = ref($payload->{env}) eq 'HASH' ? $payload->{env} : {};
 
+    # Role::Preload post_fork runs in the collector process (first
+    # child of this service) right after fork. Only set the callback
+    # when there is a role consumer; the Collector treats an unset
+    # post_fork_callback as a no-op.
+    my $self_ref = $self;    # capture for the closure
+    my $post_fork_cb;
+    if ($self_ref->_role_consumer_class) {
+        $post_fork_cb = sub { $self_ref->_fire_role_hook(post_fork => $payload) };
+    }
+
     my $handle;
     my $ok = eval {
         $handle = Test2::Harness2::Collector->spawn(
-            type            => 'Job',
-            id              => $payload->{job_id},
-            run_id          => $payload->{run_id},
-            job_try         => $payload->{job_try} // 1,
-            launch_callback => $cb,
-            new_pgroup      => 1,
-            parent_pids     => [$$],
-            env_vars        => { %$env },
-            logdir          => $payload->{logdir},
-            ipcm_info       => $self->ipcm_info,
-            ipc_parent      => $payload->{ipc_parent},
-            ipc_run         => $payload->{ipc_run},
-            ipc_harness     => $payload->{ipc_harness},
-            kill_timeout    => $payload->{kill_timeout},
-            spec            => $payload->{spec} // {},
+            type               => 'Job',
+            id                 => $payload->{job_id},
+            run_id             => $payload->{run_id},
+            job_try            => $payload->{job_try} // 1,
+            launch_callback    => $cb,
+            ($post_fork_cb ? (post_fork_callback => $post_fork_cb) : ()),
+            new_pgroup         => 1,
+            parent_pids        => [$$],
+            env_vars           => { %$env },
+            logdir             => $payload->{logdir},
+            ipcm_info          => $self->ipcm_info,
+            ipc_parent         => $payload->{ipc_parent},
+            ipc_run            => $payload->{ipc_run},
+            ipc_harness        => $payload->{ipc_harness},
+            kill_timeout       => $payload->{kill_timeout},
+            spec               => $payload->{spec} // {},
             (defined $auditor ? (auditor => $auditor) : ()),
             (defined $payload->{ch_dir} && length $payload->{ch_dir} ? (cwd => $payload->{ch_dir}) : ()),
         );

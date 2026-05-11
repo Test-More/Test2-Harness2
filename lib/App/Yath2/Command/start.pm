@@ -214,10 +214,10 @@ sub _build_resources {
     my $modules  = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
     if ($modules && @$modules) {
         require Test2::Harness2::Resource::Preload;
-        push @out => Test2::Harness2::Resource::Preload->new(
-            name    => 'default',
-            modules => [@$modules],
-        );
+        require App::Yath2::Options::Preload;
+        for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
+            push @out => Test2::Harness2::Resource::Preload->new(%$group);
+        }
     }
 
     return @out;
