@@ -8,7 +8,7 @@ use Carp qw/croak/;
 use Time::HiRes ();
 
 use Test2::Harness2::Util::JSON qw/decode_json/;
-use Test2::Harness2::Resource::Disk::Threshold qw/parse_threshold/;
+use Test2::Harness2::Resource::Disk::Threshold qw/parse_threshold evaluate_threshold/;
 
 use Object::HashBase qw{
     <mounts
@@ -204,20 +204,104 @@ sub init {
     # not a runtime defer.
     for my $mp (sort keys %{$self->{+MOUNTS}}) {
         croak "Resource::Disk: mount '$mp' does not exist" unless -e $mp;
-        my $sample = eval { Filesys::Df::df($mp) };
+        my $sample = eval { Filesys::Df::df($mp, 1) };
         croak "Resource::Disk: mount '$mp' could not be sampled: $@" if $@;
         croak "Resource::Disk: mount '$mp' returned no sample"
             unless ref($sample) eq 'HASH' && defined $sample->{bavail};
     }
 }
 
+sub available {
+    my ($self, %p) = @_;
+
+    croak "'job' is required" unless defined $p{job};
+
+    # Refresh every mount before deciding so status() sees fresh
+    # samples regardless of which mount is the first to fail.
+    $self->_refresh_sample($_) for keys %{$self->{+MOUNTS}};
+
+    for my $mp (keys %{$self->{+MOUNTS}}) {
+        my $sample = $self->{+SAMPLES}->{$mp};
+        return 0 if !$sample || ($sample->{state} // 'unknown') ne 'ok';
+    }
+
+    return 1;
+}
+
+# Sample one mount, respecting the TTL. On statvfs failure increment
+# consecutive_failures; at >= 3 flip the resource to permanent_broken.
+sub _refresh_sample {
+    my ($self, $mp) = @_;
+
+    my $now   = _now();
+    my $cache = $self->{+SAMPLES}->{$mp};
+    my $stale = !$cache || ($now - ($cache->{ts} // 0)) > $self->{+POLL_INTERVAL};
+
+    return $cache unless $stale;
+
+    # Pass block_size = 1 so Filesys::Df returns counts in bytes
+    # directly. Avoids any ambiguity about whether bavail / blocks /
+    # user_bavail / user_blocks are blocks or bytes.
+    my $sample = eval { Filesys::Df::df($mp, 1) };
+    my $err    = $@;
+
+    if (!$sample || ref($sample) ne 'HASH' || !defined $sample->{bavail}) {
+        my $fails = ($cache->{consecutive_failures} // 0) + 1;
+        $self->{+SAMPLES}->{$mp} = {
+            ts                   => $now,
+            free_bytes           => $cache ? $cache->{free_bytes}  : undef,
+            total_bytes          => $cache ? $cache->{total_bytes} : undef,
+            used_pct             => undef,
+            state                => 'unknown',
+            consecutive_failures => $fails,
+            last_error           => $err || 'sample returned no data',
+        };
+        $self->mark_permanent_broken if $fails >= 3;
+        return $self->{+SAMPLES}->{$mp};
+    }
+
+    my $free  = $sample->{bavail};
+    my $total = $sample->{blocks};
+
+    my $threshold = $self->{+MOUNTS}->{$mp}->{min_free};
+    my $state     = evaluate_threshold($threshold, $free, $total);
+
+    $self->{+SAMPLES}->{$mp} = {
+        ts                   => $now,
+        free_bytes           => $free,
+        total_bytes          => $total,
+        used_pct             => $total ? (($total - $free) / $total) * 100 : undef,
+        state                => $state,
+        consecutive_failures => 0,
+        last_error           => undef,
+    };
+
+    return $self->{+SAMPLES}->{$mp};
+}
+
+# Disk supports all four transitions because the failure-counter
+# inside available() flips permanent_broken from inside the resource.
+sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
+sub is_permanent_broken { $_[0]->{+PERMANENT}                     ? 1 : 0 }
+sub is_paused           { $_[0]->{+PAUSED}                        ? 1 : 0 }
+
+sub mark_broken           { $_[0]->{+BROKEN} = 1 }
+sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT} = 1 }
+sub mark_paused           { $_[0]->{+PAUSED} = 1 }
+
+# Clears transient broken/paused but leaves permanent_broken intact.
+sub mark_resumed {
+    my $self = shift;
+    $self->{+PAUSED} = 0;
+    $self->{+BROKEN} = 0 unless $self->{+PERMANENT};
+}
+
 # Stubs filled in by later tasks. Keeping them present (even as
 # croaks) lets Task 3 commit a passing options.t while the rest of
 # the contract is still being built out.
-sub available { croak "Resource::Disk::available not yet implemented (Task 5)" }
-sub assign    { croak "Resource::Disk::assign not yet implemented (Task 6)" }
-sub release   { croak "Resource::Disk::release not yet implemented (Task 6)" }
-sub status    { croak "Resource::Disk::status not yet implemented (Task 7)" }
+sub assign  { croak "Resource::Disk::assign not yet implemented (Task 6)" }
+sub release { croak "Resource::Disk::release not yet implemented (Task 6)" }
+sub status  { croak "Resource::Disk::status not yet implemented (Task 7)" }
 
 1;
 
