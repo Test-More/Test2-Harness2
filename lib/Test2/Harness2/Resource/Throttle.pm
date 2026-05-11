@@ -39,20 +39,31 @@ our $READ_MEMINFO_AVAIL = undef;    # coderef override; undef = read /proc/memin
 sub _detect_core_count {
     return $DETECT_CORE_COUNT->() if defined $DETECT_CORE_COUNT;
 
-    # Try System::Info first (cross-platform, optional dep).
-    my $ok = eval { require System::Info; 1 };
-    if ($ok) {
-        my $info = eval { System::Info->new };
-        return $info->ncore if $info && $info->can('ncore') && $info->ncore;
+    # Try System::Info first (cross-platform, optional dep). Don't
+    # gate on ->can('ncore') -- System::Info dispatches via a
+    # platform-specific subclass and AUTOLOAD/delegation, so can()
+    # returns false even though the call works. Just try it.
+    my $loaded = eval { require System::Info; 1 };
+    if ($loaded) {
+        my $n = eval { System::Info->new->ncore };
+        return $n if $n && $n > 0;
     }
 
     # Fall back to counting "processor" lines in /proc/cpuinfo (Linux).
+    # The naive idiom `$count++ while <$fh> =~ /^processor/;` is wrong:
+    # `while` exits the first time the regex fails to match, so the
+    # very next non-processor line (vendor_id, cpu family, ...) ends
+    # the loop with count=1 regardless of CPU count. Read every line
+    # explicitly.
     if (-r '/proc/cpuinfo') {
-        open my $fh, '<', '/proc/cpuinfo' or return 1;
-        my $count = 0;
-        $count++ while <$fh> =~ /^processor\s*:/;
-        close $fh;
-        return $count if $count > 0;
+        if (open my $fh, '<', '/proc/cpuinfo') {
+            my $count = 0;
+            while (my $line = <$fh>) {
+                $count++ if $line =~ /^processor\s*:/;
+            }
+            close $fh;
+            return $count if $count > 0;
+        }
     }
 
     return 1;    # final fallback: assume 1 core
