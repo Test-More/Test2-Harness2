@@ -12,7 +12,6 @@ use Test2::Harness2::Resource::Disk::Threshold qw/parse_threshold evaluate_thres
 
 use Object::HashBase qw{
     <mounts
-    <poll_interval
     <assignments
     <samples
     +broken
@@ -35,7 +34,7 @@ sub resource_name { 'disk' }
 # (slots, job_slots, classes, utilize, no_resource, ...) is noise
 # from the resource group settings hash being passed through verbatim
 # by App::Yath2::Command::start::resources -- silently dropped.
-my %CTOR_KEYS = map { $_ => 1 } qw/mounts poll_interval/;
+my %CTOR_KEYS = map { $_ => 1 } qw/mounts/;
 
 # Class method called by App::Yath2::Command::test::_build_resources
 # and App::Yath2::Command::start::resources. Translates the raw arg
@@ -47,8 +46,6 @@ sub parse_options {
     my %ctor;
     my %file_mounts;
     my %inline_mounts;
-    my $file_seen_poll;
-    my $user_poll_set = 0;
 
     my $i = 0;
     while ($i < @args) {
@@ -61,7 +58,6 @@ sub parse_options {
             && $i + 1 < @args)
         {
             $ctor{$arg} = $args[$i + 1];
-            $user_poll_set = 1 if $arg eq 'poll_interval';
             $i += 2;
             next;
         }
@@ -91,9 +87,8 @@ sub parse_options {
         }
 
         if ($arg =~ m{^\@(.+)\z}) {
-            my $path = $1;
-            my ($pi, $mounts) = $class->_load_config_file($path);
-            $file_seen_poll = $pi if defined $pi;
+            my $path   = $1;
+            my $mounts = $class->_load_config_file($path);
             $file_mounts{$_} = $mounts->{$_} for keys %$mounts;
         }
         elsif ($arg =~ m{^(/.+?):(.+)\z}) {
@@ -116,11 +111,6 @@ sub parse_options {
 
     $ctor{mounts} = \%mounts if %mounts;
 
-    # poll_interval precedence: user-supplied wins; else file value if any; else default 5.
-    if (!$user_poll_set) {
-        $ctor{poll_interval} = defined($file_seen_poll) ? $file_seen_poll : 5;
-    }
-
     return %ctor;
 }
 
@@ -140,16 +130,10 @@ sub _load_config_file {
     croak "Resource::Disk: top-level of '$path' must be a JSON object"
         unless ref($data) eq 'HASH';
 
-    my %top_allowed = map { $_ => 1 } qw/poll_interval mounts/;
+    my %top_allowed = map { $_ => 1 } qw/mounts/;
     for my $k (sort keys %$data) {
         croak "Resource::Disk: unknown key '$k' in '$path'"
             unless $top_allowed{$k};
-    }
-
-    my $pi = $data->{poll_interval};
-    if (defined $pi) {
-        croak "Resource::Disk: poll_interval in '$path' must be a positive number"
-            unless $pi =~ m/^[0-9]+(?:\.[0-9]+)?\z/ && $pi > 0;
     }
 
     my $raw_mounts = $data->{mounts} // {};
@@ -174,23 +158,18 @@ sub _load_config_file {
         $mounts{$mp} = {min_free => $threshold};
     }
 
-    return ($pi, \%mounts);
+    return \%mounts;
 }
 
 sub init {
     my $self = shift;
 
-    $self->{+MOUNTS}        //= {};
-    $self->{+POLL_INTERVAL} //= 5;
-    $self->{+ASSIGNMENTS}   //= {};
-    $self->{+SAMPLES}       //= {};
+    $self->{+MOUNTS}      //= {};
+    $self->{+ASSIGNMENTS} //= {};
+    $self->{+SAMPLES}     //= {};
 
     croak "Resource::Disk: 'mounts' is required and must be non-empty"
         unless ref($self->{+MOUNTS}) eq 'HASH' && keys %{$self->{+MOUNTS}};
-
-    croak "Resource::Disk: 'poll_interval' must be a positive number"
-        unless $self->{+POLL_INTERVAL} =~ m/^[0-9]+(?:\.[0-9]+)?\z/
-        && $self->{+POLL_INTERVAL} > 0;
 
     # Defer Filesys::Df load until init so the option-loader (which
     # require()s every Resource class to discover its options) does
@@ -216,9 +195,9 @@ sub available {
 
     croak "'job' is required" unless defined $p{job};
 
-    # Refresh every mount before deciding so status() sees fresh
-    # samples regardless of which mount is the first to fail.
-    $self->_refresh_sample($_) for keys %{$self->{+MOUNTS}};
+    # Sample every mount on every call so status() sees fresh readings
+    # regardless of which mount is the first to fail.
+    $self->_take_sample($_) for keys %{$self->{+MOUNTS}};
 
     for my $mp (keys %{$self->{+MOUNTS}}) {
         my $sample = $self->{+SAMPLES}->{$mp};
@@ -228,16 +207,13 @@ sub available {
     return 1;
 }
 
-# Sample one mount, respecting the TTL. On statvfs failure increment
+# Sample one mount via Filesys::Df. On failure increment
 # consecutive_failures; at >= 3 flip the resource to permanent_broken.
-sub _refresh_sample {
+sub _take_sample {
     my ($self, $mp) = @_;
 
     my $now   = _now();
     my $cache = $self->{+SAMPLES}->{$mp};
-    my $stale = !$cache || ($now - ($cache->{ts} // 0)) > $self->{+POLL_INTERVAL};
-
-    return $cache unless $stale;
 
     # Pass block_size = 1 so Filesys::Df returns counts in bytes
     # directly. Avoids any ambiguity about whether bavail / blocks /
@@ -389,9 +365,9 @@ Test2::Harness2::Resource::Disk - Throttle jobs when disk space is low.
 =head1 DESCRIPTION
 
 Gates new test launches when free space on any tracked mount drops
-below a per-mount threshold. Sampling is inline via L<Filesys::Df>
-with a per-mount TTL cache keyed off C<poll_interval> seconds
-(default 5).
+below a per-mount threshold. Every C<available()> call performs a
+fresh L<Filesys::Df> sample on each tracked mount — there is no
+TTL cache.
 
 This resource is a I<gate>, not a slot pool: every job is either
 allowed or deferred based on whichever monitored mount is currently
@@ -414,7 +390,6 @@ Inline mount specification.
 Load a JSON config file. The file's top-level shape is:
 
     {
-      "poll_interval": 5,
       "mounts": {
         "/tmp": { "min_free": "25%" },
         "/var": { "min_free": "1gb" }
@@ -454,6 +429,34 @@ of this distribution. Normal C<yath> use that does not request
 C<-R Disk> works without it. Install via C<cpanm Filesys::Df> when
 this resource is needed.
 
+=head1 NETWORK FILESYSTEMS
+
+Do not use this resource on network filesystems (NFS, CIFS/SMB,
+sshfs, glusterfs, ceph, davfs, 9p, beegfs, lustre, afs, coda, or any
+fuse-based remote mount). Two reasons:
+
+=over 4
+
+=item *
+
+Every C<available()> call performs a C<statvfs(2)> on each tracked
+mount. On a fast local filesystem this is a single µs-scale syscall
+and disappears in the noise. On a network filesystem each call may
+block on a network round-trip, multiplying scheduler latency by
+orders of magnitude.
+
+=item *
+
+Free-space readings on network filesystems are typically cached on
+the client and refreshed on a server-side timer. The reading
+C<statvfs> reports may be seconds out of date, defeating the
+threshold gate's intended invariant.
+
+=back
+
+If you need disk-space gating against a network mount, run a small
+local cache or scratch volume and gate against that instead.
+
 =head1 ATTRIBUTES
 
 =over 4
@@ -464,10 +467,6 @@ Hashref of C<< { '/path' => { min_free => THRESHOLD } } >> where
 THRESHOLD is a parsed hashref from
 L<Test2::Harness2::Resource::Disk::Threshold/parse_threshold>.
 Must be non-empty.
-
-=item poll_interval
-
-Seconds between disk samples per mount. Defaults to C<5>.
 
 =back
 

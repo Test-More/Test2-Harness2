@@ -7,13 +7,13 @@ sub kvhash { my %h = @_; \%h }
 
 subtest 'inline single mount' => sub {
     my $args = kvhash(Test2::Harness2::Resource::Disk->parse_options('/tmp:25%'));
-    is($args->{poll_interval}, 5, 'default poll_interval');
     is(
         $args->{mounts}, {
             '/tmp' => {min_free => {kind => 'pct', value => 25}},
         },
         'mount parsed'
     );
+    ok(!exists $args->{poll_interval}, 'no poll_interval in output');
 };
 
 subtest 'multiple inline + byte unit' => sub {
@@ -33,7 +33,6 @@ subtest 'config file via @path' => sub {
     my ($fh, $path) = tempfile(SUFFIX => '.json', UNLINK => 1);
     print {$fh} <<'JSON';
 {
-  "poll_interval": 11,
   "mounts": {
     "/scratch": { "min_free": "2gb" }
   }
@@ -44,13 +43,13 @@ JSON
     my $args = kvhash(
         Test2::Harness2::Resource::Disk->parse_options('@' . $path),
     );
-    is($args->{poll_interval}, 11, 'poll_interval from config');
     is(
         $args->{mounts}, {
             '/scratch' => {min_free => {kind => 'bytes', value => 2 * 1024**3}},
         },
         'config mounts'
     );
+    ok(!exists $args->{poll_interval}, 'no poll_interval in output');
 };
 
 subtest 'inline overrides config (later wins)' => sub {
@@ -138,45 +137,17 @@ JSON
         dies { Test2::Harness2::Resource::Disk->parse_options('@' . $path2) },
         qr/min_freeee/, 'per-mount typo'
     );
-};
 
-subtest 'explicit poll_interval beats config file' => sub {
-    my ($fh, $path) = tempfile(SUFFIX => '.json', UNLINK => 1);
-    print {$fh} <<'JSON';
-{ "poll_interval": 11, "mounts": { "/tmp": { "min_free": "25%" } } }
+    my ($fh3, $path3) = tempfile(SUFFIX => '.json', UNLINK => 1);
+    print {$fh3} <<'JSON';
+{ "poll_interval": 5, "mounts": { "/tmp": { "min_free": "25%" } } }
 JSON
-    close $fh;
+    close $fh3;
 
-    # User passing the same value as the default (5) must still win
-    # over the file's 11.
-    my $args = kvhash(
-        Test2::Harness2::Resource::Disk->parse_options(
-            poll_interval => 5,
-            '@' . $path,
-        ),
+    like(
+        dies { Test2::Harness2::Resource::Disk->parse_options('@' . $path3) },
+        qr/poll_interval/, 'poll_interval no longer recognised'
     );
-    is($args->{poll_interval}, 5, 'explicit poll_interval=5 wins over file 11');
-
-    # User-supplied non-default value also wins.
-    my $args2 = kvhash(
-        Test2::Harness2::Resource::Disk->parse_options(
-            poll_interval => 7,
-            '@' . $path,
-        ),
-    );
-    is($args2->{poll_interval}, 7, 'explicit poll_interval=7 wins over file 11');
-
-    # No user value: file wins.
-    my $args3 = kvhash(
-        Test2::Harness2::Resource::Disk->parse_options('@' . $path),
-    );
-    is($args3->{poll_interval}, 11, 'no user value: file wins');
-
-    # Neither user nor file: default 5.
-    my $args4 = kvhash(
-        Test2::Harness2::Resource::Disk->parse_options('/tmp:25%'),
-    );
-    is($args4->{poll_interval}, 5, 'no user no file: default 5');
 };
 
 done_testing;

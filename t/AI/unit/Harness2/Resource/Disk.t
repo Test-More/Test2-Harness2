@@ -1,5 +1,6 @@
 use Test2::V0;
 use File::Temp qw/tempdir/;
+use Time::HiRes ();
 
 use Test2::Harness2::Resource::Disk;
 
@@ -17,30 +18,6 @@ subtest 'init requires non-empty mounts' => sub {
     like(
         dies { Test2::Harness2::Resource::Disk->new(mounts => {}) },
         qr/'mounts' is required/, 'empty mounts'
-    );
-};
-
-subtest 'init rejects bad poll_interval' => sub {
-    my $tmp = tempdir(CLEANUP => 1);
-    like(
-        dies {
-            Test2::Harness2::Resource::Disk->new(
-                mounts        => {$tmp => {min_free => {kind => 'pct', value => 25}}},
-                poll_interval => 0,
-            );
-        },
-        qr/poll_interval/,
-        'zero rejected'
-    );
-    like(
-        dies {
-            Test2::Harness2::Resource::Disk->new(
-                mounts        => {$tmp => {min_free => {kind => 'pct', value => 25}}},
-                poll_interval => 'abc',
-            );
-        },
-        qr/poll_interval/,
-        'non-numeric rejected'
     );
 };
 
@@ -66,7 +43,6 @@ subtest 'init succeeds for a real mount' => sub {
         mounts => {$tmp => {min_free => {kind => 'pct', value => 25}}},
     );
     is($r->resource_name, 'disk', 'name');
-    is($r->poll_interval, 5,      'default poll_interval');
 };
 
 sub _make_resource {
@@ -74,8 +50,7 @@ sub _make_resource {
     my $tmp       = tempdir(CLEANUP => 1);
     my $threshold = $p{threshold} // {kind => 'pct', value => 25};
     return Test2::Harness2::Resource::Disk->new(
-        mounts        => {$tmp => {min_free => $threshold}},
-        poll_interval => $p{poll_interval} // 5,
+        mounts => {$tmp => {min_free => $threshold}},
     );
 }
 
@@ -110,45 +85,16 @@ subtest 'available() honours bytes threshold' => sub {
     is($r->available(job => _fake_job()), 0, 'low bytes defers');
 };
 
-subtest 'available() caches within poll_interval and refreshes after' => sub {
-    my $r = _make_resource(poll_interval => 5);
-
-    my $calls = 0;
-    no warnings 'redefine';
-    local *Filesys::Df::df = sub { $calls++; return {bavail => 10_000, blocks => 10_000} };
-
-    # Pin the clock.
-    my $now = 1000;
-    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
-
-    is($r->available(job => _fake_job()), 1, 'first call');
-    is($calls,                            1, 'sampled once');
-
-    # Within TTL: cache hit.
-    $r->available(job => _fake_job());
-    $r->available(job => _fake_job());
-    is($calls, 1, 'still one statvfs');
-
-    # Past TTL: re-sample.
-    $now += 6;
-    $r->available(job => _fake_job());
-    is($calls, 2, 're-sampled after TTL');
-};
-
 subtest 'three consecutive sample failures flip permanent_broken' => sub {
-    my $r   = _make_resource();
-    my $now = 1000;
-    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
+    my $r = _make_resource();
 
     no warnings 'redefine';
     local *Filesys::Df::df = sub { die "statvfs: device gone\n" };
 
     is($r->is_permanent_broken, 0, 'starts ok');
     $r->available(job => _fake_job());
-    $now += 6;
     is($r->is_permanent_broken, 0, 'one failure');
     $r->available(job => _fake_job());
-    $now += 6;
     is($r->is_permanent_broken, 0, 'two failures');
     $r->available(job => _fake_job());
     is($r->is_permanent_broken, 1, 'three -> permanent_broken');
@@ -193,7 +139,6 @@ subtest 'available() refreshes all mounts even when one is low' => sub {
             $tmp_a => {min_free => {kind => 'pct', value => 50}},
             $tmp_b => {min_free => {kind => 'pct', value => 50}},
         },
-        poll_interval => 5,
     );
 
     no warnings 'redefine';
@@ -203,14 +148,10 @@ subtest 'available() refreshes all mounts even when one is low' => sub {
         return {bavail => 800, blocks => 1000};                       # 80% ok
     };
 
-    my $now = 5000;
-    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
-
+    my $before = Time::HiRes::time();
     is($r->available(job => _fake_job()), 0, 'overall result is defer');
-
-    # Both samples must be fresh (ts == $now).
-    is($r->{samples}{$tmp_a}{ts}, $now, 'mount A sample fresh');
-    is($r->{samples}{$tmp_b}{ts}, $now, 'mount B sample fresh');
+    ok($r->{samples}{$tmp_a}{ts} >= $before, 'mount A sample fresh');
+    ok($r->{samples}{$tmp_b}{ts} >= $before, 'mount B sample fresh');
 };
 
 package TFakeTestFile {
@@ -295,14 +236,8 @@ subtest 'status does not trigger statvfs' => sub {
     no warnings 'redefine';
     local *Filesys::Df::df = sub { $calls++; {bavail => 10_000, blocks => 10_000} };
 
-    my $now = 3000;
-    local $Test2::Harness2::Resource::Disk::CLOCK = sub { $now };
-
     $r->available(job => _fake_job);
     is($calls, 1, 'available() sampled once');
-
-    # Advance well past the TTL.
-    $now += 1000;
 
     $r->status for 1 .. 5;
     is($calls, 1, 'status did not re-sample');
@@ -322,7 +257,6 @@ subtest 'parse_options output is consumable by new()' => sub {
     );
     my $r = Test2::Harness2::Resource::Disk->new(%args);
     is($r->resource_name,    'disk', 'constructed');
-    is($r->poll_interval,    5,      'default poll_interval');
     is([keys %{$r->mounts}], [$tmp], 'one mount');
 };
 
