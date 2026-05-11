@@ -13,6 +13,8 @@ use Object::HashBase qw{
     <scope
     <run
     <is_role_consumer
+    <reloader_class
+    <reloader_args
     +_usable
     +_broken
     +_permanent_broken
@@ -171,6 +173,10 @@ sub services {
         is_role_consumer => $self->{+IS_ROLE_CONSUMER} ? 1 : 0,
         ($self->{+SCOPE} eq 'run' && ref($self->{+RUN})
             ? (run_id => $self->{+RUN}->run_id)
+            : ()),
+        (defined $self->{+RELOADER_CLASS}
+            ? (reloader_class => $self->{+RELOADER_CLASS},
+               reloader_args  => ($self->{+RELOADER_ARGS} // {}))
             : ()),
         exec => {
             cmd           => \@cmd,

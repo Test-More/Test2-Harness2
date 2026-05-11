@@ -41,34 +41,9 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         description => "When using staged preload, dump the depmap for each stage as json files",
     );
 
-    option reload_in_place => (
-        type        => 'Bool',
-        alt         => ['reload'],
-        default     => 0,
-        description => "Reload modules in-place when possible (Not recommended)",
-    );
-
-    option reloader => (
-        type => 'Auto',
-
-        autofill  => 'Test2::Harness2::Reloader',
-        normalize => sub { fqmod($_[0], 'Test2::Harness2::Reloader') },
-
-        description => "Use a reloader (default Test2::Harness2::Reloader) to detect module changes, and reload stages as necessary.",
-    );
-
-    option restrict_reload => (
-        type => 'AutoList',
-        normalize => sub { clean_path($_[0]) },
-        autofill => sub {
-            my ($opt, $settings) = @_;
-
-            require Getopt::Yath::Settings;
-            my $ts = Getopt::Yath::Settings->new($settings->tests->all);
-
-            return map { clean_path($_) } @{$ts->includes};
-        },
-    );
+    # Legacy reload_* options removed: the modern reloader subsystem
+    # ships via App::Yath2::Options::Reloader (--reloader=mstat|inotify|none)
+    # and routes through Resource::Preload + PreloadService directly.
 };
 
 

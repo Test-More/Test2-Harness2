@@ -20,12 +20,15 @@ use Object::HashBase qw{
     <log_path
     <ipcm_info
     <workdir
+    <reloader_class
+    <reloader_args
     kill_timeout
     state
     own_pgroup
     watch_pids
     +pid
     +_name
+    +_reloader
     +_pending_spawns
 };
 
@@ -226,6 +229,11 @@ sub service_on_start {
 
     $self->do_preload;
 
+    # Instantiate the reloader (if any) after do_preload so the
+    # reloader sees the fully-populated %INC. Failure here is
+    # non-fatal: the preload still works, just without hot reload.
+    $self->_instantiate_reloader;
+
     my %payload = (
         kind         => 'preload_ready',
         preload_name => $self->{+PRELOAD_NAME},
@@ -236,6 +244,75 @@ sub service_on_start {
     my $client = $self->client;
     $client->send_message('harness', \%payload) if $client;
 
+    return;
+}
+
+# Build a reloader instance from the spec the harness shipped at
+# service-spawn time. spec shape: { class => 'Test2::Harness2::Reloader::...',
+# args => { ... } }. Falls back to a no-op if no class is given or
+# the require fails -- the preload itself is still valid without a
+# reloader.
+sub _instantiate_reloader {
+    my $self = shift;
+    my $class = $self->{+RELOADER_CLASS};
+    return unless defined $class && length $class;
+
+    my $args = $self->{+RELOADER_ARGS} // {};
+    $args = {} unless ref($args) eq 'HASH';
+
+    my $ok  = eval { require( $class =~ s{::}{/}gr . '.pm' ); 1 };
+    my $err = $@;
+    unless ($ok) {
+        warn "PreloadService: could not load reloader '$class': $err\n";
+        return;
+    }
+
+    my $rel;
+    $ok  = eval { $rel = $class->new(%$args); 1 };
+    $err = $@;
+    unless ($ok) {
+        warn "PreloadService: could not instantiate reloader '$class': $err\n";
+        return;
+    }
+
+    $self->{+_RELOADER} = $rel;
+    return;
+}
+
+# IPC::Manager fires this every ~0.2s. Drive the reloader's tick from
+# here; emit preload_broken / preload_ready transitions on state
+# changes.
+sub run_on_interval {
+    my $self = shift;
+    my $rel  = $self->{+_RELOADER} or return;
+
+    my $was_error = $rel->last_error;
+    eval { $rel->do_reload($self); 1 } or warn "reloader tick: $@";
+    my $now_error = $rel->last_error;
+
+    # Edge transitions only -- avoid spamming the harness with one
+    # message per tick when the state is unchanged.
+    if (!defined($was_error) && defined($now_error)) {
+        $self->_send_preload_state('preload_broken', error => "$now_error");
+    }
+    elsif (defined($was_error) && !defined($now_error)) {
+        $self->_send_preload_state('preload_ready');
+    }
+
+    return;
+}
+
+sub _send_preload_state {
+    my ($self, $kind, %extra) = @_;
+    my $client = $self->client or return;
+    my %payload = (
+        kind         => $kind,
+        preload_name => $self->{+PRELOAD_NAME},
+        scope        => $self->{+SCOPE},
+        ($self->{+SCOPE} eq 'run' ? (run_id => $self->{+RUN_ID}) : ()),
+        %extra,
+    );
+    eval { $client->send_message('harness', \%payload); 1 };
     return;
 }
 

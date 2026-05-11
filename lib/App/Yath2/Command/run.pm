@@ -28,6 +28,7 @@ include_options(
     'App::Yath2::Options::IPC',
     'App::Yath2::Options::Log',
     'App::Yath2::Options::Preload',
+    'App::Yath2::Options::Reloader',
     'App::Yath2::Options::Renderer',
     'App::Yath2::Options::Resource',
     'App::Yath2::Options::Runner',
@@ -228,6 +229,9 @@ sub _build_resource_specs {
     my $modules = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
     if ($modules && @$modules) {
         require App::Yath2::Options::Preload;
+        require App::Yath2::Options::Reloader;
+        my $reloader_backend = eval { $settings->reloader->backend };
+        my $reloader_class = App::Yath2::Options::Reloader::resolve_reloader_class($reloader_backend);
         for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
             # yath run owns a per-run preload by definition: it lives
             # only for the duration of this queued run, not for the
@@ -237,6 +241,7 @@ sub _build_resource_specs {
                 'Test2::Harness2::Resource::Preload',
                 %$group,
                 scope => 'run',
+                (defined $reloader_class ? (reloader_class => $reloader_class) : ()),
             ];
         }
     }

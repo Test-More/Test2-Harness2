@@ -104,7 +104,18 @@ option_group {group => 'yath', category => 'Yath Options'} => sub {
             }
 
             my %default = map {($_ => 1, clean_path($_) => 1)} grep { $_ } split /\n/, `$^X -e 'print "\$_\n" for \@INC'`;
-            my @add = map { "-I$_" } grep { !$default{$_} } map {clean_path($_)} @INC, @missing;
+            my @final_inc = map { clean_path($_) } @INC, @missing;
+            my @add = map { "-I$_" } grep { !$default{$_} } @final_inc;
+
+            # The yath wrapper splats @INC from $ENV{T2_HARNESS_INCLUDES}
+            # in its BEGIN block before option parsing runs, so -I flags
+            # alone are discarded by the next process. Carry the merged
+            # @INC across the exec via that env var so the new yath sees
+            # the user's -D path on @INC and the dev_libs trigger does
+            # not just fire again -- which otherwise produces an
+            # infinite re-exec loop.
+            $ENV{T2_HARNESS_INCLUDES} = join ';' => @final_inc;
+
             exec($^X, @add, $settings->yath->script, @{$settings->yath->orig_argv // []});
         },
 

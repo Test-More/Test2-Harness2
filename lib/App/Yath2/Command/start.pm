@@ -30,6 +30,7 @@ include_options(
     'App::Yath2::Options::Workspace',
     'App::Yath2::Options::IPC',
     'App::Yath2::Options::Preload',
+    'App::Yath2::Options::Reloader',
     'App::Yath2::Options::Resource',
     'App::Yath2::Options::Runner',
     'App::Yath2::Options::Tests',
@@ -215,8 +216,14 @@ sub _build_resources {
     if ($modules && @$modules) {
         require Test2::Harness2::Resource::Preload;
         require App::Yath2::Options::Preload;
+        require App::Yath2::Options::Reloader;
+        my $reloader_backend = eval { $settings->reloader->backend };
+        my $reloader_class = App::Yath2::Options::Reloader::resolve_reloader_class($reloader_backend);
         for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
-            push @out => Test2::Harness2::Resource::Preload->new(%$group);
+            push @out => Test2::Harness2::Resource::Preload->new(
+                %$group,
+                (defined $reloader_class ? (reloader_class => $reloader_class) : ()),
+            );
         }
     }
 

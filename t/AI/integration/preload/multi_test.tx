@@ -1,0 +1,7 @@
+use Test2::V0;
+
+ok($INC{'AISimplePreload.pm'}, 'AISimplePreload preloaded');
+ok($INC{'AIPreload.pm'},       'AIPreload preloaded');
+is(AIPreload::greet(), 'hello from AIPreload', 'preloaded sub callable');
+
+done_testing;

@@ -3277,3 +3277,142 @@ describes:
 Those sections will be rewritten in place when the next round of
 spec maintenance touches them; until then, treat this addendum as
 authoritative where it conflicts.
+
+# Addendum — Preload rework progress (2026-05-11)
+
+This addendum tracks the user-visible changes that landed on
+`preload_rework` (incomplete phase 3; phases 1, 1.5, and 2 are
+substantively done). Subsequent phases will append below.
+
+## Daemon-mode commands
+
+The harness now supports a long-lived daemon split from the test
+client:
+
+- `yath start [--workdir DIR] [--foreground] [-P MOD ...]` — spawns
+  a Test2::Harness2 service, daemonizes, prints
+  `started: pid=N workdir=DIR ipc=PATH`. Without `--workdir` a
+  temp workdir is created under the system tempdir. The IPC info
+  file lands in the *original* system tempdir (captured before
+  yath rewrites TMPDIR for the workspace), so sibling commands
+  can discover it.
+- `yath run [--workdir DIR | --ipc-file PATH | --latest] [-j N]
+  [-P MOD ...] [--chdir DIR] FILE-OR-DIR ...` — queues a run on a
+  running daemon. Auto-discovers a single matching daemon in this
+  project root for this user when no locator is given. Streams
+  events through the same renderer Driver that `yath test` uses,
+  printing the final "Yath Result Summary" once the queued run
+  completes. Exits with the run's pass/fail aggregate.
+- `yath stop [--workdir | --ipc-file | --latest | --all]
+  [--timeout SECS]` — graceful shutdown via Spawn->terminate
+  (SIGTERM fallback), wait for exit + IPC info cleanup.
+- `yath kill [...]  [--signal NAME]` — hard signal (default
+  SIGKILL). Same locator set as `yath stop`.
+- `yath status [--workdir | --ipc-file | --latest]` — connect to
+  one daemon and print service identity, queue + in-flight jobs,
+  and the active resource services (with status info).
+- `yath list [--all-projects] [--all-users]` — table of running
+  daemons. By default scoped to this user/project.
+
+Shared discovery (`App::Yath2::Util::IPC::discover_daemons`) backs
+run/stop/kill/status/list. It scans `--ipc-dir-order` directories,
+matches by `command` (`start`), filters by project + user, and
+returns one or many records depending on the caller's `count` /
+`latest` / `all` knobs. `yath run --workdir DIR` matches the record
+whose `workdir` field equals DIR regardless of where the IPC info
+file landed (system tmp vs workdir/tmp).
+
+## Per-run resources
+
+`yath run`'s `-j`, `-P`, `--chdir`, `--slots-per-job`, etc. now ship
+as per-run resources. The recipe is a serializable spec
+(`[[class, key => value, ...], ...]`) that the harness rehydrates
+into Resource instances on the other side of the IPC, attaches to
+the new Run via Run::resources, and binds back to the Run for
+per-run Resource::Preload entries via the new
+`Resource::Preload::set_run` setter (init now accepts `scope='run'`
+without `run` so the IPC round-trip works).
+
+Two harness-side scans were broadened from "globals only" to
+include `$run->resources`:
+
+- `_resolve_preload_for_job` — otherwise a per-run preload was
+  invisible to the resolver and the test launched without it.
+- `_handle_preload_state_message` — otherwise the per-run preload's
+  `preload_ready` / `preload_broken` signal never reached its
+  Resource::Preload and the resource stayed not-usable forever.
+
+The resolver's "per-run default" rule also accepts a per-run preload
+literally named `default`, so `yath run -P SomeMod` routes through
+the bare-module bucket without the user having to add a
+`HARNESS-PRELOAD:` directive.
+
+## Role::Preload + Role::Reloader
+
+`Test2::Harness2::Role::Preload` is the consumer contract for
+"complex" preloads: name (required), modules (optional), do_preload
+(default = sequential require of modules), and pre_fork/post_fork/
+pre_launch lifecycle hooks (all no-op defaults). PreloadService now
+dispatches these hooks at the right positions in its spawn pipeline
+(pre_fork in the service before fork, post_fork in the collector
+process via the new Collector `post_fork_callback`, pre_launch in
+the test grandchild just before the Long::Jump). Anonymous `-P Mod`
+bundles still route through the default `Resource::Preload` named
+`default`; modules consuming Role::Preload split out into their
+own named preload via `App::Yath2::Options::Preload::classify_preload_modules`.
+
+`Test2::Harness2::Role::Reloader` is the consumer contract for the
+reloader subsystem: watch_paths + do_reload (required) with optional
+debounce_secs / before_reload / after_reload hooks.
+
+Concrete backends:
+
+- `Reloader::Common` — base class with the in-place / churn / restart
+  primitives. `_attempt_in_place_reload` clears the typeglob CODE
+  slots in the target stash via `undef *{"${mod}::${sym}"}` (the
+  `delete $stash->{$sym}` form leaves the CODE slot live), then
+  delete-then-re-`require`s the file. On a `require` failure the
+  abs / file / inc_key entries in %INC are restored to the absolute
+  path so the next reloader tick still sees the file as a candidate
+  and can retry once the source is fixed. `_attempt_churn_reload`
+  parses `HARNESS-CHURN-START` / `HARNESS-CHURN-STOP` markers,
+  scopes the symbol-table sweep to subs declared in that range, and
+  evals just that fragment so unrelated subs in the file survive
+  the reload. `request_restart` signals the harness with
+  `preload_restarting` and exec's a fresh copy of the service.
+- `Reloader::HiResStat` — `Time::HiRes::stat`-based mtime polling.
+  Walks `_filter_inc`'d candidate %INC entries each tick; the very
+  first tick is a pure snapshot (no reloads) so an existing dirty
+  mtime at startup does not retrigger every monitored file.
+- `Reloader::INotify` — `Linux::Inotify2`-based event-driven
+  backend. Non-blocking poll per tick, recursively watches every
+  directory under `watch_paths`, drains accumulated events into
+  the same candidate-file pipeline as HiResStat.
+
+PreloadService wiring: after `do_preload` runs the service constructs
+its reloader via `reloader_class` + `reloader_args` (passed in from
+the `Resource::Preload` spec) and ticks it from the IPC manager's
+`run_on_interval`. `_send_preload_state` emits `preload_broken` on
+the `!defined -> defined` edge of `last_error` and `preload_ready`
+on the reverse edge, so the harness keeps a current view of whether
+the preload is usable. The `--reloader=mstat|inotify|none` CLI
+option (`App::Yath2::Options::Reloader`) selects the backend; default
+is `none`. Resource::Preload merges the resolved reloader class into
+every preload group built from `-P MOD` / `--preload`.
+
+## Renderer Driver in persistent-daemon mode
+
+`App::Yath2::Renderer::Driver` accepts a `stop_run_id` argument.
+When set, the driver loop exits once that run's `harness_run_end`
+has been dispatched and the synth queue drained (instead of
+blocking forever waiting for the daemon's LIVE sentinel to
+disappear). The Driver also filters out events tagged with a
+different run_id when `stop_run_id` is set, so a second `yath run`
+on the same daemon does not double-count events from earlier runs.
+
+## TO_JSON safety
+
+`Test2::Harness2::Run::TO_JSON` strips the live RESOURCES slot
+before encoding; otherwise emit_service_event would die trying to
+JSON-encode blessed Resource instances on the daemon's run_queued
+event.
