@@ -125,10 +125,10 @@ sub jobs_post_process {
     my $settings = $state->{settings};
     my $resource = $settings->resource;
 
-    $resource->option(job_slots => 1) unless $resource->job_slots;
+    $resource->option(job_slots => 1)  unless $resource->job_slots;
     $resource->option(classes   => {}) unless $resource->classes;
 
-    my $slots     = $resource->slots;      # may be undef (user did not pass -j)
+    my $slots     = $resource->slots;       # may be undef (user did not pass -j)
     my $job_slots = $resource->job_slots;
 
     if (defined $slots) {
@@ -149,8 +149,8 @@ sub jobs_post_process {
     #    - CPU + Memory + UnixLimits + PipeLimits with --utilize value
     #    - Throttle=5/500ms
     #    - Plus JobCount if user explicitly passed -j N
-    my $utilize    = $resource->utilize;       # defaulted to 75 above
-    my @util_args  = (utilize_percent => $utilize);
+    my $utilize   = $resource->utilize;              # defaulted to 75 above
+    my @util_args = (utilize_percent => $utilize);
 
     $resource->classes->{'Test2::Harness2::Resource::CPU'}        //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
@@ -164,9 +164,16 @@ sub jobs_post_process {
     # init; auto-injecting without it would croak on every invocation with a
     # misleading dependency error). Users can override via -R Disk=...; the
     # //= ensures their entry wins.
+    #
+    # Use settings->yath->orig_tmp -- App::Yath::Script captures the real
+    # system tmpdir at startup before yath rewrites TMPDIR / TEMPDIR /
+    # TMP_DIR / TEMP_DIR (see App::Yath2::Options::Workspace) to point
+    # at a per-run workspace. File::Spec->tmpdir here would resolve
+    # through the rewritten env vars and gate on the workspace path
+    # instead of the real /tmp.
     if (eval { require Filesys::Df; 1 }) {
         require File::Spec;
-        my $tmpdir  = File::Spec->tmpdir;
+        my $tmpdir  = ($settings->check_group('yath') ? $settings->yath->orig_tmp : undef) // File::Spec->tmpdir;
         my $min_pct = 100 - $utilize;
         $resource->classes->{'Test2::Harness2::Resource::Disk'} //= ["$tmpdir:${min_pct}%"];
     }
