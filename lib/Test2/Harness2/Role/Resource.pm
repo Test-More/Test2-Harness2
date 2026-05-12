@@ -83,8 +83,9 @@ sub set_in_flight_ref {
 }
 
 sub in_flight {
-    my $ref = $_[0]->{+IN_FLIGHT_REF};
-    return defined($ref) ? ${$ref} : 0;
+    my $ref = $_[0]->{+IN_FLIGHT_REF}
+        or croak ref($_[0]) . ": in_flight called before scheduler installed in_flight_ref";
+    return ${$ref};
 }
 
 sub inline_key_prefixes { [] }

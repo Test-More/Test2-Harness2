@@ -98,6 +98,8 @@ subtest 'assign / release' => sub {
 
 subtest 'status snapshot' => sub {
     my $r = _make(utilize_percent => 70);
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
     @STAT_QUEUE = ();
     _push_stat(0, 0, 0, 0);
     $r->is_temporarily_unavailable;

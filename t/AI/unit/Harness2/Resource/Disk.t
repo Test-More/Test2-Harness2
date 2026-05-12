@@ -240,7 +240,9 @@ subtest 'status snapshot shape' => sub {
 };
 
 subtest 'status does not trigger statvfs' => sub {
-    my $r     = _make_resource();
+    my $r         = _make_resource();
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
     my $calls = 0;
     no warnings 'redefine';
     local *Filesys::Df::df = sub { $calls++; {bavail => 10_000, blocks => 10_000} };

@@ -48,6 +48,8 @@ subtest 'init validation' => sub {
 subtest 'no tests, no services: plenty free' => sub {
     local $CAP_PAGES = 16384;
     my $r = _make();
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
     is($r->is_temporarily_unavailable, 0, 'no usage -> ok');
 };
 

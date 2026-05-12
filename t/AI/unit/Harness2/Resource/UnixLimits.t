@@ -102,7 +102,9 @@ subtest 'status snapshot' => sub {
     local %LIMITS   = (nproc   => 1000, nofile => 1024, as => 0);
     local %STATUS   = (Threads => 100,  VmSize => 0);
     local $FD_COUNT = 50;
-    my $r  = _make();
+    my $r         = _make();
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
     my $st = $r->status;
     is($st->{resource}, 'unixlimits', 'name');
     ok($st->{dimensions}{nproc},      'nproc dim present');
