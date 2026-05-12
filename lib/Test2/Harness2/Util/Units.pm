@@ -122,11 +122,7 @@ sub parse_size_or_pct {
 
     croak "$name is required" unless defined $raw && length $raw;
 
-    # With no default_unit, bare numbers (no kb/mb/gb/tb/% suffix) are
-    # ambiguous; reject them with a clear message. With a default_unit
-    # supplied the bare number is interpreted as that unit -- this is
-    # the path used by callers like Resource::Disk where "25" means
-    # "25%" and a leading-digit threshold is intentional shorthand.
+    # Reject ambiguous bare numbers unless caller supplied default_unit.
     unless (defined $default) {
         my $s = $raw;
         $s =~ s/\s+//g;

@@ -82,7 +82,7 @@ sub parse_options {
             $inline{as} = $parsed;
         }
         elsif ($arg =~ m{^([0-9]+(?:\.[0-9]+)?)%\z}) {
-            # Bare-pct shorthand applies to nproc + nofile (not as).
+            # Bare pct applies to nproc + nofile, not as.
             my $pct = $1;
             croak "Resource::UnixLimits: pct must be > 0 and < 100 (got '$pct')"
                 unless $pct > 0 && $pct < 100;
@@ -96,7 +96,6 @@ sub parse_options {
         $i += 1;
     }
 
-    # File then inline.
     for my $dim (qw/nproc nofile as name/) {
         $out{$dim} = $file_vals{$dim} if exists $file_vals{$dim};
     }
@@ -140,7 +139,7 @@ sub _load_config_file {
     return \%out;
 }
 
-# Test seam: tests override these to inject deterministic samples.
+# Test seam.
 sub _read_self_limits {
     open my $fh, '<', '/proc/self/limits' or die "open /proc/self/limits: $!";
     my %out;
@@ -181,12 +180,7 @@ sub _count_self_fd {
     return $n;
 }
 
-# Compute the {state, soft_cap, current, free, effective_min_free, headroom}
-# status for one dimension (nproc / nofile / as). Returns a key/value
-# list suitable for splatting into a hash slot. "Dimension" is the
-# per-rlimit axis being checked -- the resource gates three of them
-# independently and returns a 'low' state if any goes below its
-# headroom.
+# Status (key/value list) for one rlimit dimension: nproc / nofile / as.
 sub _assess_dimension {
     my ($self, $dim, $soft_cap, $current) = @_;
 
@@ -220,11 +214,7 @@ sub _assess_dimension {
     );
 }
 
-# Sample the kernel state for every configured dimension and run
-# _assess_dimension on each. Returns
-# { nproc => {state=>..., ...}, nofile => {...}, as => {...} }
-# (the 'as' key is absent unless the resource was configured with an
-# AS threshold).
+# Sample + assess every configured dimension. 'as' key absent when no AS threshold configured.
 sub _dimension_states {
     my $self = shift;
 

@@ -136,20 +136,11 @@ sub jobs_post_process {
             if $job_slots > $slots;
     }
 
-    # 1. --no-resource / --no-resources: explicit opt-out, do nothing.
-    # `no_resource` is only present in the group hash when the
-    # classes Map's clear-form trigger fired. Use check_option so
-    # reading the absent key does not croak.
     return if $resource->check_option('no_resource') && $resource->no_resource;
 
-    # 2. Inject the default resource set. Any class the user already
-    #    supplied via -R wins -- //= only writes when the key is absent.
-    #    So `-R Throttle=10/2s` ends up with the user's Throttle plus
-    #    the four utilizers and the remaining defaults.
-    #    - CPU + Memory + UnixLimits + PipeLimits with --utilize value
-    #    - Throttle=5/500ms
-    #    - Plus JobCount if user explicitly passed -j N
-    my $utilize   = $resource->utilize;              # defaulted to 75 above
+    # Inject default resources. //= preserves any class the user passed via -R.
+    my $utilize   = $resource->utilize;
+
     my @util_args = (utilize_percent => $utilize);
 
     $resource->classes->{'Test2::Harness2::Resource::CPU'}        //= [@util_args];
@@ -158,19 +149,10 @@ sub jobs_post_process {
     $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
     $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['1/core,100mb/1s'];
 
-    # Default disk-space gate on the system tmpdir, derived from --utilize.
-    # min_free_pct = 100 - utilize, so --utilize 75 => 25% minimum free space.
-    # Skipped silently when Filesys::Df is not installed (Disk requires it at
-    # init; auto-injecting without it would croak on every invocation with a
-    # misleading dependency error). Users can override via -R Disk=...; the
-    # //= ensures their entry wins.
-    #
-    # Use settings->yath->orig_tmp -- App::Yath::Script captures the real
-    # system tmpdir at startup before yath rewrites TMPDIR / TEMPDIR /
-    # TMP_DIR / TEMP_DIR (see App::Yath2::Options::Workspace) to point
-    # at a per-run workspace. File::Spec->tmpdir here would resolve
-    # through the rewritten env vars and gate on the workspace path
-    # instead of the real /tmp.
+    # Disk gate on system tmpdir, derived from --utilize. Skipped when
+    # Filesys::Df missing; auto-injecting it would croak with a confusing dep error.
+    # orig_tmp captures the real tmpdir before yath rewrites TMPDIR to the per-run
+    # workspace (see App::Yath2::Options::Workspace).
     if (eval { require Filesys::Df; 1 }) {
         require File::Spec;
         my $tmpdir  = ($settings->check_group('yath') ? $settings->yath->orig_tmp : undef) // File::Spec->tmpdir;
@@ -178,9 +160,8 @@ sub jobs_post_process {
         $resource->classes->{'Test2::Harness2::Resource::Disk'} //= ["$tmpdir:${min_pct}%"];
     }
 
+    # -j N: add JobCount as a hard cap alongside the utilizer/throttle stack.
     if (defined $slots) {
-        # User explicitly passed -j N: inject JobCount as a hard cap
-        # alongside the utilizer + throttle stack.
         $resource->classes->{'Test2::Harness2::Resource::JobCount'} //= [];
     }
 }

@@ -17,9 +17,7 @@ use Object::HashBase qw{
 
 sub inline_key_prefixes { [qw/utilize/] }
 
-# Keys this resource accepts at construction time. Anything else
-# coming through parse_options is noise from the resource group
-# settings hash and is dropped silently.
+# Known keys; other resource-group settings are ignored.
 my %OPTION_KEYS = map { $_ => 1 } qw/utilize_percent name/;
 
 sub init {
@@ -112,7 +110,7 @@ sub _load_config_file {
     return \%out;
 }
 
-# Test seam: tests override to inject deterministic /proc/stat rows.
+# Test seam.
 sub _read_stat_first_line {
     open my $fh, '<', '/proc/stat' or die "open /proc/stat: $!";
     my $line = <$fh>;
@@ -127,7 +125,7 @@ sub _sample {
     chomp $line;
     my @fields = split /\s+/, $line;
     shift @fields;    # 'cpu' label
-                      # Fields after label: user nice system idle iowait irq softirq steal guest guest_nice
+                      # remaining: user nice system idle iowait irq softirq steal guest guest_nice
     croak "Resource::CPU: malformed /proc/stat line '$line'"
         unless @fields >= 5;
 

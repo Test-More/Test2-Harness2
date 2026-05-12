@@ -18,18 +18,11 @@ use Object::HashBase qw{
     &Test2::Harness2::Role::Resource
 };
 
-# Test seams for system detection. Tests override these package-level
-# subs to inject deterministic values without touching /proc.
-our $DETECT_CORE_COUNT  = undef;    # coderef override; undef = use real detection
-our $READ_MEMINFO_AVAIL = undef;    # coderef override; undef = read /proc/meminfo
+# Test seams. Coderef override; undef = real detection.
+our $DETECT_CORE_COUNT  = undef;
+our $READ_MEMINFO_AVAIL = undef;
 
-# Throttle keeps assign / release bookkeeping bespoke rather than
-# inheriting the role's defaults. The rate-limit semantics are likely
-# to grow custom release behaviour (e.g. recording exit time
-# alongside assigned_at so the sliding-window math can credit early
-# completions) so the bespoke copies stay even though today's bodies
-# would match the role's defaults. Pause state uses the role's
-# default slot-backed methods.
+# Bespoke assign/release: kept for future per-completion bookkeeping (e.g. credit on early exit).
 
 my %OPTION_KEYS = map { $_ => 1 } qw/cap window name bases core_count/;
 
@@ -56,7 +49,6 @@ sub init {
         && length($self->{+NAME})
         && $self->{+NAME} !~ /\s/;
 
-    # Validate bases entries if provided.
     if (my $bases = $self->{+BASES}) {
         croak "Resource::Throttle: 'bases' must be an arrayref"
             unless ref($bases) eq 'ARRAY';
@@ -70,17 +62,12 @@ sub init {
         }
     }
 
-    # Check that /proc/meminfo is readable if RAM bases are specified, and
-    # croak at init time on non-Linux to give a clear early error.
     my $has_ram_basis = grep { $_->{type} eq 'ram' } @{$self->{+BASES}};
     if ($has_ram_basis && !defined $READ_MEMINFO_AVAIL) {
-        # Not on Linux (no /proc/meminfo) -- croak at init only when a RAM
-        # basis was actually specified. Plain window-only throttle is fine.
         croak "Resource::Throttle: RAM basis requires Linux (/proc/meminfo); " . "this platform does not have /proc/meminfo"
             unless -e '/proc/meminfo';
     }
 
-    # Detect and cache the core count once.
     $self->{+CORE_COUNT} //= _detect_core_count();
 }
 
@@ -144,9 +131,6 @@ sub is_unknown_kv_arg {
     return 1;
 }
 
-# Class method called by App::Yath2::Command::test::_build_resources
-# and App::Yath2::Command::start::resources via the parse_options
-# dispatch added in the Disk plan.
 sub parse_options {
     my ($class, @args) = @_;
 
@@ -160,7 +144,6 @@ sub parse_options {
         my $arg = $args[$i];
 
         if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
-            # Known ctor keys (programmatic call) flow through.
             $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
             $i += 2;
             next;
@@ -188,7 +171,6 @@ sub parse_options {
     croak "Resource::Throttle: only a single rule per instance is supported " . "(saw " . scalar(@inline_rules) . " rules)"
         if @inline_rules > 1;
 
-    # Precedence: file values applied first, then inline overrides.
     if (%file_vals) {
         $out{cap}    = $file_vals{cap}    if exists $file_vals{cap};
         $out{window} = $file_vals{window} if exists $file_vals{window};
@@ -234,7 +216,6 @@ sub _parse_rule_entry {
     }
 
     if ($arg =~ m{^([0-9]+)\z}) {
-        # Bare-cap shorthand: <N> means <N>/1s (one-second window).
         my $cap = $1;
         croak "Resource::Throttle: cap in '$arg' must be a positive integer"
             unless $cap > 0;
@@ -318,32 +299,11 @@ sub available {
     return $count < $tokens ? 1 : 0;
 }
 
-# _token_count() computes (tokens_per_window, effective_window).
-#
-# Token math (from spec):
-#   For each basis B with current resource value V:
-#       tokens_for_basis = floor(V / B_unit)
-#   tokens_per_window = cap × MIN_over_bases(tokens_for_basis)
-#
-# When no bases specified: tokens_per_window = cap (original behaviour).
-#
-# Adaptive scaling (RAM bases only):
-#   basis_unit  = original_unit
-#   window_mult = 1
-#   halvings    = 0
-#   while basis_unit > free_ram and halvings < 2:
-#       basis_unit  /= 2
-#       window_mult *= 2
-#       halvings    += 1
-#   # After 2 halvings: stop. If still > free_ram: that basis => 0 tokens.
-#
-# Effective window = original_window × MAX(window_mult across all RAM bases).
+# See POD "Adaptive scaling" for the token / window algorithm.
 sub _token_count {
     my $self = shift;
 
     my $bases = $self->{+BASES};
-
-    # No bases: preserve original behaviour (tokens = cap, window unchanged).
     return ($self->{+CAP}, $self->{+WINDOW}) unless @$bases;
 
     my $free_ram     = undef;    # lazily fetched
@@ -357,7 +317,6 @@ sub _token_count {
             push @basis_tokens => $tokens;
         }
         elsif ($b->{type} eq 'ram') {
-            # Fetch free RAM once per _token_count() call.
             $free_ram //= _read_meminfo_available();
 
             my $basis_unit  = $b->{bytes};
@@ -372,20 +331,12 @@ sub _token_count {
 
             $max_win_mult = $window_mult if $window_mult > $max_win_mult;
 
-            my $tokens;
-            if ($basis_unit > $free_ram) {
-                # Even after 2 halvings, basis > free RAM: contribute 0 tokens.
-                $tokens = 0;
-            }
-            else {
-                $tokens = floor($free_ram / $basis_unit);
-            }
+            my $tokens = ($basis_unit > $free_ram) ? 0 : floor($free_ram / $basis_unit);
 
             push @basis_tokens => $tokens;
         }
     }
 
-    # tokens_per_window = cap × MIN_over_bases(tokens_for_basis)
     my $min_tokens = $basis_tokens[0];
     for my $t (@basis_tokens) {
         $min_tokens = $t if $t < $min_tokens;

@@ -51,7 +51,6 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
-        # Drop unknown k=>v pairs from the resource-group settings.
         if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
             $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
             $i += 2;
@@ -74,7 +73,6 @@ sub parse_options {
             $inline_threshold = $parsed;
         }
         elsif ($arg =~ m{^[0-9]}) {
-            # Bare-threshold shorthand: <pct%> or <size>.
             my $parsed;
             eval { $parsed = parse_size_or_pct($arg, name => 'min_free'); 1 }
                 or croak "Resource::Memory: bad threshold '$arg': $@";
@@ -87,7 +85,6 @@ sub parse_options {
         $i += 1;
     }
 
-    # Precedence: file then inline.
     $out{min_free} = $file_vals{min_free} if exists $file_vals{min_free};
     $out{name}     = $file_vals{name}     if exists $file_vals{name};
     $out{min_free} = $inline_threshold    if defined $inline_threshold;
@@ -120,7 +117,7 @@ sub _load_config_file {
     return \%out;
 }
 
-# Test seam: tests override this. Production reads /proc/meminfo.
+# Test seam.
 sub _read_meminfo {
     open my $fh, '<', '/proc/meminfo' or die "open /proc/meminfo: $!";
     my $body = do { local $/; <$fh> };

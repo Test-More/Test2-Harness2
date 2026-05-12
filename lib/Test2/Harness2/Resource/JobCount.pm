@@ -33,38 +33,21 @@ sub init {
     $self->{+ASSIGNMENTS} //= {};
 }
 
-# JobCount has no backing service, so there is nothing to "break". The
-# role's is_broken / is_permanent_broken defaults (both 0) are
-# correct, and the role's croaking defaults for mark_broken /
-# mark_permanent_broken catch any caller that accidentally tries to
-# transition this resource into a broken state. Pausing is supported
-# via the role's default slot-backed mark_paused / mark_resumed.
+# Brokenness not supported; rely on role's croaking defaults. Pause uses role default.
 
 sub _job_slot_bounds {
     my ($self, $job, %p) = @_;
 
-    # Unavailable-action skip/fail launches pass min/max overrides
-    # directly so the assignment doesn't care what the real test file
-    # declared (a one-liner "skip_all" or "die" only needs a single
-    # slot, even if the test file normally asks for eight).
+    # %p overrides are used by unavailable-action skip/fail launches.
     my $tf = $job->test_file;
-    # check_min_slots / check_max_slots trigger a scan first so a test
-    # file's HARNESS-JOB-SLOTS header is honoured. The bare min_slots /
-    # max_slots accessors only return the role default and never reflect
-    # the file's own declaration.
+    # check_*_slots scans HARNESS-JOB-SLOTS; bare *_slots accessors return only the role default.
     my $min = $p{min} // ($tf->can('check_min_slots') ? $tf->check_min_slots : $tf->min_slots) || 1;
     my $max = $p{max} // ($tf->can('check_max_slots') ? $tf->check_max_slots : $tf->max_slots);
     $max = $min unless defined $max;
 
-    # Per-job cap from -j N:M / -x M. The cap clamps the upper bound
-    # for tests that fit; tests whose minimum exceeds the cap are
-    # reported as permanently unsatisfiable below (return -1) so the
-    # scheduler can route them through an unavailable-action skip_all.
-    # Other tests continue to use this resource normally -- the
-    # resource itself is not broken, just unable to grant THIS
-    # specific job.
-    # max <= 0 from the test means "as many as are free" (handled in
-    # available()); substitute the cap so the cap wins on that case.
+    # Per-job cap from -j N:M / -x M. Tests with min > cap are flagged
+    # permanently unsatisfiable in available() (returns -1).
+    # max <= 0 from the test means "as many as free"; cap wins in that case.
     if (defined $self->{+MAX_PER_JOB}) {
         my $cap = $self->{+MAX_PER_JOB};
         $max = $cap if $max < 1 || $max > $cap;
@@ -81,10 +64,7 @@ sub available {
     my ($min, $max) = $self->_job_slot_bounds($job, %p);
     my $need = $p{need} // $min;
 
-    # Permanently unsatisfiable: pool smaller than min, or per-job cap
-    # smaller than min. Return -1 so the scheduler routes this job
-    # through the unavailable-action skip path rather than deferring
-    # forever.
+    # -1: pool or per-job cap < min -> permanently unsatisfiable (scheduler skips, not defers).
     return -1 if $self->{+SLOTS} < $min;
     return -1 if defined $self->{+MAX_PER_JOB} && $self->{+MAX_PER_JOB} < $min;
 
@@ -126,10 +106,7 @@ sub assign {
 
     $env->{T2_HARNESS_MY_JOB_CONCURRENCY} = $count;
 
-    # The scheduler does not consume this return value (assign is
-    # fire-and-forget on the scheduler's side). It is handed back for
-    # tests that want to assert the granted slot count without reaching
-    # into the assignment hash.
+    # Return value is for tests; scheduler ignores it.
     return $count;
 }
 
@@ -143,8 +120,7 @@ sub release {
 
     $self->{+USED} -= $assign->{count};
 
-    # See assign() above: the scheduler ignores this return value; it
-    # exists for tests that want to assert the released slot count.
+    # Return value is for tests; scheduler ignores it.
     return $assign->{count};
 }
 

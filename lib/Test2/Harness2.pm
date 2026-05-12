@@ -2071,10 +2071,7 @@ sub _evaluate_resources_for {
         # Transient brokenness / paused state: try again later.
         return ('defer') unless $res->is_usable;
 
-        # Utilizer-aware resources (Role::Resource::Utilizer) expose an
-        # is_temporarily_unavailable predicate that is checked here,
-        # between is_usable and available. When the subsystem (memory,
-        # CPU, etc.) is currently saturated the resource defers this tick.
+        # Utilizer saturation check (between is_usable and available).
         return ('defer')
             if $res->can('is_temporarily_unavailable')
             && $res->is_temporarily_unavailable;

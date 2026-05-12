@@ -17,10 +17,7 @@ use Object::HashBase qw{
     &Test2::Harness2::Role::Resource
 };
 
-# Keys this resource accepts at construction time. Anything else
-# (slots, job_slots, classes, utilize, no_resource, ...) is noise
-# from the resource group settings hash being passed through verbatim
-# by App::Yath2::Command::start::resources -- silently dropped.
+# Known keys; other resource-group settings are ignored.
 my %OPTION_KEYS = map { $_ => 1 } qw/mounts/;
 
 sub is_broken             { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
@@ -38,23 +35,15 @@ sub init {
     croak "Resource::Disk: 'mounts' is required and must be non-empty"
         unless ref($self->{+MOUNTS}) eq 'HASH' && keys %{$self->{+MOUNTS}};
 
-    # Defer Filesys::Df load until init so the option-loader (which
-    # require()s every Resource class to discover its options) does
-    # not blow up when this optional dep is missing.
+    # Defer Filesys::Df load: optional dep, option-loader require()s every Resource class.
     my $loaded = eval { require Filesys::Df; 1 };
     my $err    = $@;
     unless ($loaded) {
-        # "Module not installed" is the expected failure mode. Anything
-        # else (broken install, XS load error, syntax error in a local
-        # copy, ...) is worth warning about so it does not get masked
-        # by the friendly install-it message below.
+        # Warn on broken-install / XS errors so they don't get masked by the install hint below.
         warn $err if $err && $err !~ m{\bCan't locate Filesys/Df\.pm\b};
         croak "Resource::Disk requires Filesys::Df; install it (cpanm Filesys::Df) and retry";
     }
 
-    # Validate every configured mount: must exist and statvfs cleanly
-    # right now. A typo in the mount path is a configuration error,
-    # not a runtime defer.
     for my $mp (sort keys %{$self->{+MOUNTS}}) {
         croak "Resource::Disk: mount '$mp' does not exist" unless -e $mp;
         my $sample;
@@ -65,18 +54,13 @@ sub init {
     }
 }
 
-# Clears transient broken/paused but leaves permanent_broken intact.
-# Overrides the role's mark_resumed because Disk's broken flag and
-# permanent flag are separate.
+# Override: clear transient broken + paused, preserve permanent_broken.
 sub mark_resumed {
     my $self = shift;
     $self->{+PAUSED} = 0;
     $self->{+BROKEN} = 0 unless $self->{+PERMANENT};
 }
 
-# Compare a parsed threshold (kind => 'pct'|'bytes', value => N)
-# against a sample. Returns 'ok' when free space meets or exceeds the
-# threshold, 'low' otherwise.
 sub _evaluate_threshold {
     my ($threshold, $free_bytes, $total_bytes) = @_;
 
@@ -101,13 +85,7 @@ sub _evaluate_threshold {
     croak "evaluate_threshold: unknown threshold kind '$threshold->{kind}'";
 }
 
-# Predicate for the "drop unknown k=v pair from resource group
-# settings" guard at the top of parse_options. Returns true when the
-# arg looks like an unknown key paired with a following value -- the
-# loop then advances past both. Anything else (positional /path:THR
-# entries, @file entries, refs) is left to the per-form branches
-# below. Extracting this lets parse_options stay free of multi-line
-# conditional expressions in the middle of its loop.
+# Disk override: positional /path:THR + @file entries are not unknown kv.
 sub is_unknown_kv_arg {
     my ($class, $arg, $has_next) = @_;
     return 0 unless $has_next;
@@ -119,10 +97,6 @@ sub is_unknown_kv_arg {
     return 1;
 }
 
-# Class method called by App::Yath2::Command::test::_build_resources
-# and App::Yath2::Command::start::resources. Translates the raw arg
-# list (positional inline entries + arbitrary k=>v from the resource
-# group settings) into a key/value list ready for Disk->new.
 sub parse_options {
     my ($class, @args) = @_;
 
@@ -134,14 +108,12 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
-        # Known k=>v pair: consume both.
         if (defined $arg && !ref($arg) && exists $OPTION_KEYS{$arg} && $i + 1 < @args) {
             $out{$arg} = $args[$i + 1];
             $i += 2;
             next;
         }
 
-        # Drop unknown k=>v pairs from the resource-group settings.
         if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
             $i += 2;
             next;
@@ -149,9 +121,6 @@ sub parse_options {
 
         croak "Resource::Disk: undef positional entry" unless defined $arg;
 
-        # Skip ref values that appear as stray v in unknown k=>v pairs
-        # that were already consumed -- this shouldn't occur in normal
-        # use, but guard against it.
         if (ref($arg)) {
             $i += 1;
             next;
@@ -176,7 +145,7 @@ sub parse_options {
         $i += 1;
     }
 
-    # Merge: file values lose to inline values (later inline overrides earlier file).
+    # File values lose to inline; later inline overrides earlier file.
     my %mounts;
     $mounts{$_} = $file_mounts{$_}   for keys %file_mounts;
     $mounts{$_} = $inline_mounts{$_} for keys %inline_mounts;
@@ -226,8 +195,7 @@ sub available {
 
     croak "'job' is required" unless defined $p{job};
 
-    # Sample every mount on every call so status() sees fresh readings
-    # regardless of which mount is the first to fail.
+    # Sample every mount so status() reflects fresh readings for all of them.
     $self->_take_sample($_) for keys %{$self->{+MOUNTS}};
 
     for my $mp (keys %{$self->{+MOUNTS}}) {
@@ -238,17 +206,14 @@ sub available {
     return 1;
 }
 
-# Sample one mount via Filesys::Df. On failure increment
-# consecutive_failures; at >= 3 flip the resource to permanent_broken.
+# 3 consecutive sample failures => permanent_broken.
 sub _take_sample {
     my ($self, $mp) = @_;
 
     my $now   = hi_res_time();
     my $cache = $self->{+SAMPLES}->{$mp};
 
-    # Pass block_size = 1 so Filesys::Df returns counts in bytes
-    # directly. Avoids any ambiguity about whether bavail / blocks /
-    # user_bavail / user_blocks are blocks or bytes.
+    # block_size=1: Filesys::Df returns bavail/blocks in bytes, not blocks.
     my $sample;
     my $ok  = eval { $sample = Filesys::Df::df($mp, 1); 1 };
     my $err = $@;

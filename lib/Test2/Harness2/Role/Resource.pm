@@ -9,19 +9,13 @@ use Carp qw/croak/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
 
-# Order matters: Role::Tiny must mark the package as a role before
-# Object::HashBase loads, so HashBase suppresses its `new` generation
-# and so consumers' '&' prefix import picks this up as a role.
+# Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
 use Object::HashBase qw{<assignments +paused +name};
 
 requires 'available';
 requires 'status';
 
-# Whether this resource participates in a given job's allocation. The
-# scheduler checks this first: resources that return 0 are skipped
-# entirely for that job (no brokenness check, no assign, no release).
-# Default: yes, always needed.
 sub needed { 1 }
 
 sub resource_name {
@@ -35,15 +29,9 @@ sub resource_name {
     return lc($class);
 }
 
-# Brokenness queries. Defaults assume the resource cannot enter these
-# states; consumers that can override to read from their own storage.
-# is_usable layers over the three.
 sub is_broken           { 0 }
 sub is_permanent_broken { 0 }
-
-# Pause-state default reads the role's PAUSED slot. Consumers without
-# a 'paused' HashBase slot get autoviv-as-undef, which collapses to 0.
-sub is_paused { $_[0]->{+PAUSED} ? 1 : 0 }
+sub is_paused           { $_[0]->{+PAUSED} ? 1 : 0 }
 
 sub is_usable {
     my $self = shift;
@@ -53,28 +41,13 @@ sub is_usable {
     return 1;
 }
 
-# Broken-state transitions. The role can't pick a storage model for
-# the consumer, so the defaults croak: calling mark_broken on a
-# resource that never declared it could support the transition is a
-# contract violation, not a silent no-op. Resources that can be
-# broken override these to do their own bookkeeping; resources that
-# cannot (e.g. JobCount) leave the croaking defaults in place so bad
-# callers fail loudly.
+# Croaking defaults: resources that support brokenness override.
 sub mark_broken           { croak ref($_[0]) . "::mark_broken is not implemented" }
 sub mark_permanent_broken { croak ref($_[0]) . "::mark_permanent_broken is not implemented" }
 
-# Pause-state transitions default to flipping the PAUSED slot.
-# Resources that don't support pause override with a croak; resources
-# that need extra bookkeeping (e.g. Disk's mark_resumed preserving the
-# permanent-broken flag) override too.
 sub mark_paused  { $_[0]->{+PAUSED} = 1 }
 sub mark_resumed { $_[0]->{+PAUSED} = 0 }
 
-# Default assign / release: store one record per assignment id in the
-# ASSIGNMENTS hash slot. Resources whose grammar needs richer
-# bookkeeping (JobCount's slot-count math, Throttle's queue of
-# timestamps) override these locally. The defaults expect the
-# consumer to have declared an 'assignments' HashBase slot.
 sub assign {
     my ($self, %p) = @_;
 
@@ -101,20 +74,9 @@ sub release {
     return 1;
 }
 
-# Default: no extra recognised inline `key=` prefixes for
-# parse_options. Resources with their own inline kv forms override to
-# return an arrayref of bare key tokens (without the trailing `=`).
 sub inline_key_prefixes { [] }
 
-# Predicate consumed by parse_options: "is this $arg the first half
-# of an unknown k=>v pair that should be silently dropped?" Returns
-# true only when $arg is a plain key-shaped token (not numeric, not
-# @file, not name=, not one of the consumer's declared inline key=
-# prefixes) AND there is a following value to pair it with.
-#
-# Resources whose grammars do not fit this shape (Disk's /path:THR
-# entries, Throttle's bare-numeric rule shorthand) override this
-# method locally.
+# True when $arg is an unknown key= token paired with a following value (caller advances past both).
 sub is_unknown_kv_arg {
     my ($class, $arg, $has_next) = @_;
 
@@ -136,45 +98,19 @@ sub is_unknown_kv_arg {
     return 1;
 }
 
-# Declare the supervised subprocesses this resource needs in the
-# current environment. Each list entry is an arrayref:
-#
-#     [ $service_class, @construction_params ]
-#
-# $service_class must consume Test2::Harness2::Role::ResourceService;
-# @construction_params are passed through to $service_class->new as-is,
-# with the host layering name / log_path / ipcm_info on top before
-# construction. A resource that has nothing to supervise in the current
-# environment returns an empty list -- there is no separate
-# "applicable" hook; the resource's own logic decides membership by
-# including or omitting each service from the returned list.
 sub services { () }
-
-# Teardown hook; called by the harness when a resource is released globally
-# (harness shutdown) or per-run (run completes). Default: no-op.
 sub teardown { }
 
-# ----------------------------------------------------------------------
-# Shared option-parsing helpers. Used by parse_options /
-# _load_config_file in each resource so the JSON-config / unknown-key /
-# name-validation boilerplate doesn't get reimplemented per consumer.
-# Methods derive their error-message prefix from the consumer's class
-# name (stripping the leading Test2::Harness2:: namespace), so callers
-# don't need to thread a $label argument through.
+# Shared option-parsing helpers. Error-message prefix derives from
+# the consumer's class via label() below. See POD.
 
-# Internal: "Resource::CPU" from "Test2::Harness2::Resource::CPU", or
-# the role package itself when called directly on it (tests, debug).
 sub label {
     my $class = ref($_[0]) || $_[0];
     $class =~ s/^Test2::Harness2:://;
     return $class;
 }
 
-# Open + slurp + decode a JSON config file with the shared error
-# conventions every resource uses. Returns the decoded top-level
-# hashref. Croaks (prefixed with the consumer's label) on missing
-# file, unreadable file, open failure, JSON parse failure, or
-# non-object top level.
+# Slurp + decode JSON config. Croaks (with label prefix) on missing/unreadable/parse-fail/non-object.
 sub slurp_json_config {
     my ($class, $path) = @_;
 
@@ -201,9 +137,7 @@ sub slurp_json_config {
     return $data;
 }
 
-# Reject any key in $data that is not in $allowed. $allowed may be an
-# arrayref or hashref (slot set). Iterates in sorted-key order so the
-# first failure is deterministic.
+# Croak on any key in $data outside $allowed (arrayref or hashref). Sorted: deterministic first failure.
 sub whitelist_keys {
     my ($class, $data, $allowed, $path) = @_;
 
@@ -229,10 +163,7 @@ sub whitelist_keys {
     return;
 }
 
-# Validate a "name" string: defined, non-ref, non-empty,
-# whitespace-free. $where is an optional context suffix like
-# " in '$path'" for file-load errors; omit it for inline-arg context.
-# Returns the validated name unchanged.
+# Croak unless $name is a defined, non-ref, non-empty, whitespace-free string. $where appends context.
 sub validate_name {
     my ($class, $name, $where) = @_;
 
@@ -318,12 +249,8 @@ the resource itself never forks. See L</SERVICES> below.
         return $need;
     }
 
-    # The `&` prefix above imports the role's `assignments` and
-    # `paused` slots into the consumer (so $self->{+ASSIGNMENTS} /
-    # $self->{+PAUSED} resolve), then defers Role::Tiny composition
-    # to end-of-scope. assign / release / mark_paused / mark_resumed /
-    # is_paused all have working defaults provided by the role;
-    # override only when your bookkeeping differs.
+    # Role provides assign / release / mark_paused / mark_resumed /
+    # is_paused defaults; override only for richer bookkeeping.
 
     sub status { ... }
 

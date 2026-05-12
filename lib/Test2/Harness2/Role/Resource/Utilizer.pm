@@ -6,47 +6,19 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-# Role::Tiny must be loaded before Object::HashBase so HashBase sees
-# the package as a role and suppresses `new` generation.
+# Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
 use Object::HashBase qw{<utilize_percent};
 
-# The role layers two responsibilities on top of the base resource
-# contract:
-#
-# 1. A `utilize_percent` attribute -- the threshold (0 < pct < 100) at
-#    which the resource considers its monitored subsystem
-#    "saturated". The base class does not know how to read CPU load,
-#    free memory, /tmp space, etc.; each consumer wires its own
-#    sampler and compares against this threshold.
-# 2. A `temporarily_unavailable` predicate the scheduler consults
-#    before calling `available`. When true, the resource defers new
-#    assignments until the next sample shows the subsystem has eased
-#    back below the threshold.
-#
-# Both the threshold setter and the predicate are required. Consumers
-# that have not implemented their per-subsystem sampler yet should
-# stub them with a `croak` that names the method, matching the
-# existing Disk / Memory / PipeLimits / UnixLimits stub style.
-
 requires 'is_temporarily_unavailable';
 
-# utilize_percent read-only accessor + UTILIZE_PERCENT constant come
-# from the HashBase `<utilize_percent` slot above.
-
-# Default setter: store the validated value. Consumers that need to
-# react to changes (re-prime a sampler, flush a cached threshold, etc.)
-# override.
 sub set_utilize_percent {
     my ($self, $pct) = @_;
     $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
     return;
 }
 
-# Validate-and-set helper that consumers may call from their own
-# `set_utilize_percent` override. Centralises the
-# 0 < pct < 100 contract so every utilizer enforces the same range
-# (mirroring the App::Yath2::Options::Resource `--utilize` validation).
+# Validate 0 < pct < 100. Returns the validated value.
 sub _validate_utilize_percent {
     my ($self, $pct) = @_;
 

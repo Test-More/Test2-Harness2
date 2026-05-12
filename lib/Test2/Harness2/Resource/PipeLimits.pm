@@ -99,7 +99,6 @@ sub parse_options {
             $inline{headroom} = $parsed;
         }
         elsif ($arg =~ m{^[0-9]}) {
-            # Bare integer (count of pages) or pct.
             my $parsed;
             eval { $parsed = parse_count_or_pct($arg, name => 'headroom'); 1 }
                 or croak "Resource::PipeLimits: bad bare threshold '$arg': $@";
@@ -123,7 +122,6 @@ sub parse_options {
     $out{pipes_per_test}    //= 2;
     $out{pipes_per_service} //= 2;
     $out{service_count}     //= 0;
-    # pages_per_pipe filled in by init from /proc if not supplied.
     $out{headroom} //= {kind => 'pct', value => 10};
     $out{name}     //= 'pipelimits';
 
@@ -160,7 +158,7 @@ sub _load_config_file {
     return \%out;
 }
 
-# Test seam: override to inject /proc/sys/fs/pipe-user-pages-soft value.
+# Test seam.
 sub _read_cap_pages {
     my $path = '/proc/sys/fs/pipe-user-pages-soft';
     return DEFAULT_USER_PIPE_PAGES_SOFT unless -r $path;
@@ -170,7 +168,7 @@ sub _read_cap_pages {
     return ($line && $line =~ m/^([0-9]+)/) ? ($1 + 0) : DEFAULT_USER_PIPE_PAGES_SOFT;
 }
 
-# Test seam: override to inject /proc/sys/fs/pipe-max-size value.
+# Test seam.
 sub _read_pages_per_pipe {
     my $path = '/proc/sys/fs/pipe-max-size';
     return DEFAULT_PAGES_PER_PIPE unless -r $path;
