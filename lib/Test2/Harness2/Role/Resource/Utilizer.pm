@@ -6,13 +6,15 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-# IN_FLIGHT slot lives on the base Resource role; mirror the constant
-# here so $self->{+IN_FLIGHT} resolves at compile time.
-use constant IN_FLIGHT => 'in_flight';
-
 # Role::Tiny must mark this as a role before HashBase loads.
+# &Resource pulls in the base role's slot constants (IN_FLIGHT etc.)
+# so $self->{+IN_FLIGHT} resolves at compile time inside this role.
 use Role::Tiny;
-use Object::HashBase qw{<utilize_percent <min_concurrent};
+use Object::HashBase qw{
+    &Test2::Harness2::Role::Resource
+    <utilize_percent
+    <min_concurrent
+};
 
 requires 'is_temporarily_unavailable';
 
