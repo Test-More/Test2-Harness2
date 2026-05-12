@@ -8,7 +8,6 @@ use Carp qw/croak/;
 
 use Test2::Harness2::Util::Units qw/parse_count_or_pct parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
-use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <nproc
@@ -18,7 +17,7 @@ use Object::HashBase qw{
     &Test2::Harness2::Role::Resource::Utilizer
 };
 
-sub _inline_key_prefixes { [qw/nproc nofile as/] }
+sub inline_key_prefixes { [qw/nproc nofile as/] }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/nproc nofile as name utilize_percent/;
 
@@ -54,7 +53,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
-        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
             $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
             $i += 2;
             next;
@@ -67,7 +66,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            $inline_name = validate_name($1, 'Resource::UnixLimits');
+            $inline_name = $class->validate_name($1);
         }
         elsif ($arg =~ m{^(nproc|nofile)=(.+)\z}) {
             my ($dim, $raw) = ($1, $2);
@@ -116,8 +115,8 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    my $data = slurp_json_config($path, 'Resource::UnixLimits');
-    whitelist_keys($data, [qw/nproc nofile as name/], $path, 'Resource::UnixLimits');
+    my $data = $class->slurp_json_config($path);
+    $class->whitelist_keys($data, [qw/nproc nofile as name/], $path);
 
     my %out;
     for my $dim (qw/nproc nofile/) {
@@ -136,7 +135,7 @@ sub _load_config_file {
         $out{as} = $parsed;
     }
     if (defined $data->{name}) {
-        $out{name} = validate_name($data->{name}, 'Resource::UnixLimits', " in '$path'");
+        $out{name} = $class->validate_name($data->{name}, " in '$path'");
     }
     return \%out;
 }

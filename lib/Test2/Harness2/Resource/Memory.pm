@@ -8,7 +8,6 @@ use Carp qw/croak/;
 
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
-use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <min_free
@@ -16,7 +15,7 @@ use Object::HashBase qw{
     &Test2::Harness2::Role::Resource::Utilizer
 };
 
-sub _inline_key_prefixes { [qw/min_free/] }
+sub inline_key_prefixes { [qw/min_free/] }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/min_free name utilize_percent/;
 
@@ -53,7 +52,7 @@ sub parse_options {
         my $arg = $args[$i];
 
         # Drop unknown k=>v pairs from the resource-group settings.
-        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
             $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
             $i += 2;
             next;
@@ -66,7 +65,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            $inline_name = validate_name($1, 'Resource::Memory');
+            $inline_name = $class->validate_name($1);
         }
         elsif ($arg =~ m{^min_free=(.+)\z}) {
             my $parsed;
@@ -103,8 +102,8 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    my $data = slurp_json_config($path, 'Resource::Memory');
-    whitelist_keys($data, [qw/min_free name/], $path, 'Resource::Memory');
+    my $data = $class->slurp_json_config($path);
+    $class->whitelist_keys($data, [qw/min_free name/], $path);
 
     my %out;
     if (defined $data->{min_free}) {
@@ -115,7 +114,7 @@ sub _load_config_file {
         $out{min_free} = $parsed;
     }
     if (defined $data->{name}) {
-        $out{name} = validate_name($data->{name}, 'Resource::Memory', " in '$path'");
+        $out{name} = $class->validate_name($data->{name}, " in '$path'");
     }
 
     return \%out;

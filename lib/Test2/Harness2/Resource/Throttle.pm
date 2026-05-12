@@ -9,7 +9,6 @@ use POSIX qw/floor/;
 
 use Test2::Harness2::Util::Units qw/parse_duration parse_byte_size/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
-use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <cap
@@ -134,7 +133,7 @@ sub _read_meminfo_available {
     croak "Resource::Throttle: MemAvailable not found in /proc/meminfo";
 }
 
-sub _is_unknown_kv_arg {
+sub is_unknown_kv_arg {
     my ($class, $arg, $has_next) = @_;
     return 0 unless $has_next;
     return 0 unless defined $arg;
@@ -160,7 +159,7 @@ sub parse_options {
     while ($i < @args) {
         my $arg = $args[$i];
 
-        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
             # Known ctor keys (programmatic call) flow through.
             $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
             $i += 2;
@@ -174,7 +173,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            $inline_name = validate_name($1, 'Resource::Throttle');
+            $inline_name = $class->validate_name($1);
         }
         elsif ($arg =~ m{^[0-9]}) {
             push @inline_rules => $class->_parse_rule_entry($arg);
@@ -284,8 +283,8 @@ sub _parse_bases {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    my $data = slurp_json_config($path, 'Resource::Throttle');
-    whitelist_keys($data, [qw/cap window name/], $path, 'Resource::Throttle');
+    my $data = $class->slurp_json_config($path);
+    $class->whitelist_keys($data, [qw/cap window name/], $path);
 
     croak "Resource::Throttle: 'cap' is required in '$path'"
         unless defined $data->{cap};
@@ -303,7 +302,7 @@ sub _load_config_file {
 
     my %out = (cap => $cap + 0, window => $secs);
     if (defined $data->{name}) {
-        $out{name} = validate_name($data->{name}, 'Resource::Throttle', " in '$path'");
+        $out{name} = $class->validate_name($data->{name}, " in '$path'");
     }
 
     return \%out;

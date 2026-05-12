@@ -7,6 +7,7 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 # Order matters: Role::Tiny must mark the package as a role before
 # Object::HashBase loads, so HashBase suppresses its `new` generation
@@ -103,7 +104,7 @@ sub release {
 # Default: no extra recognised inline `key=` prefixes for
 # parse_options. Resources with their own inline kv forms override to
 # return an arrayref of bare key tokens (without the trailing `=`).
-sub _inline_key_prefixes { [] }
+sub inline_key_prefixes { [] }
 
 # Predicate consumed by parse_options: "is this $arg the first half
 # of an unknown k=>v pair that should be silently dropped?" Returns
@@ -114,7 +115,7 @@ sub _inline_key_prefixes { [] }
 # Resources whose grammars do not fit this shape (Disk's /path:THR
 # entries, Throttle's bare-numeric rule shorthand) override this
 # method locally.
-sub _is_unknown_kv_arg {
+sub is_unknown_kv_arg {
     my ($class, $arg, $has_next) = @_;
 
     return 0 unless $has_next;
@@ -124,8 +125,8 @@ sub _is_unknown_kv_arg {
     return 0 if $arg =~ m{^@};
     return 0 if $arg =~ m{^name=};
 
-    my $prefixes = $class->_inline_key_prefixes;
-    croak ref($class) || $class, ": _inline_key_prefixes must return an ARRAY ref"
+    my $prefixes = $class->inline_key_prefixes;
+    croak ref($class) || $class, ": inline_key_prefixes must return an ARRAY ref"
         unless ref($prefixes) eq 'ARRAY';
 
     for my $p (@$prefixes) {
@@ -152,6 +153,96 @@ sub services { () }
 # Teardown hook; called by the harness when a resource is released globally
 # (harness shutdown) or per-run (run completes). Default: no-op.
 sub teardown { }
+
+# ----------------------------------------------------------------------
+# Shared option-parsing helpers. Used by parse_options /
+# _load_config_file in each resource so the JSON-config / unknown-key /
+# name-validation boilerplate doesn't get reimplemented per consumer.
+# Methods derive their error-message prefix from the consumer's class
+# name (stripping the leading Test2::Harness2:: namespace), so callers
+# don't need to thread a $label argument through.
+
+# Internal: "Resource::CPU" from "Test2::Harness2::Resource::CPU", or
+# the role package itself when called directly on it (tests, debug).
+sub label {
+    my $class = ref($_[0]) || $_[0];
+    $class =~ s/^Test2::Harness2:://;
+    return $class;
+}
+
+# Open + slurp + decode a JSON config file with the shared error
+# conventions every resource uses. Returns the decoded top-level
+# hashref. Croaks (prefixed with the consumer's label) on missing
+# file, unreadable file, open failure, JSON parse failure, or
+# non-object top level.
+sub slurp_json_config {
+    my ($class, $path) = @_;
+
+    my $label = $class->label;
+
+    croak "$label: 'path' is required" unless defined $path && length $path;
+
+    croak "$label config file '$path' does not exist"  unless -e $path;
+    croak "$label config file '$path' is not readable" unless -r _;
+
+    open my $fh, '<:raw', $path
+        or croak "$label: cannot open config file '$path': $!";
+    my $body = do { local $/; <$fh> };
+    close $fh;
+
+    my $data;
+    my $ok  = eval { $data = decode_json($body); 1 };
+    my $err = $@;
+    croak "$label: cannot parse JSON in '$path': $err" unless $ok;
+
+    croak "$label: top-level of '$path' must be a JSON object"
+        unless ref($data) eq 'HASH';
+
+    return $data;
+}
+
+# Reject any key in $data that is not in $allowed. $allowed may be an
+# arrayref or hashref (slot set). Iterates in sorted-key order so the
+# first failure is deterministic.
+sub whitelist_keys {
+    my ($class, $data, $allowed, $path) = @_;
+
+    croak $class->label, ": whitelist_keys: 'data' must be a HASH ref"
+        unless ref($data) eq 'HASH';
+
+    my %allowed;
+    if (ref($allowed) eq 'ARRAY') {
+        %allowed = map { $_ => 1 } @$allowed;
+    }
+    elsif (ref($allowed) eq 'HASH') {
+        %allowed = %$allowed;
+    }
+    else {
+        croak $class->label, ": whitelist_keys: 'allowed' must be ARRAY or HASH ref";
+    }
+
+    my $label = $class->label;
+    for my $k (sort keys %$data) {
+        croak "$label: unknown key '$k' in '$path'" unless $allowed{$k};
+    }
+
+    return;
+}
+
+# Validate a "name" string: defined, non-ref, non-empty,
+# whitespace-free. $where is an optional context suffix like
+# " in '$path'" for file-load errors; omit it for inline-arg context.
+# Returns the validated name unchanged.
+sub validate_name {
+    my ($class, $name, $where) = @_;
+
+    my $loc = defined($where) ? $where : '';
+
+    croak $class->label, ": name$loc must be a non-empty whitespace-free string"
+        unless defined($name) && !ref($name) && length($name) && $name !~ /\s/;
+
+    return $name;
+}
 
 1;
 
@@ -370,19 +461,19 @@ C<&> prefix inherit both slots automatically. Resources with richer
 bookkeeping (slot-count math, time-windowed queues, etc.) override
 C<assign> / C<release> locally.
 
-=item \@prefixes = $class->_inline_key_prefixes
+=item \@prefixes = $class->inline_key_prefixes
 
 Arrayref of bare key tokens (without the trailing C<=>) that the
 consumer's C<parse_options> recognises as inline key/value entries.
 Defaults to C<[]>. Consumers with extra inline forms override.
 
-=item $bool = $class->_is_unknown_kv_arg($arg, $has_next)
+=item $bool = $class->is_unknown_kv_arg($arg, $has_next)
 
 Predicate for "is this C<$arg> the first half of an unknown
 key=>value pair from the resource-group settings hash that should be
 silently dropped?" The default returns true when C<$arg> is a plain
 key-shaped token (not numeric, not C<@file>, not C<name=>, not in
-C<_inline_key_prefixes>) and there is a following value to pair it
+C<inline_key_prefixes>) and there is a following value to pair it
 with. Resources whose grammar does not fit this shape override
 locally.
 

@@ -8,7 +8,6 @@ use Carp qw/croak/;
 
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
-use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys/;
 
 use Object::HashBase qw{
     <mounts
@@ -109,7 +108,7 @@ sub _evaluate_threshold {
 # entries, @file entries, refs) is left to the per-form branches
 # below. Extracting this lets parse_options stay free of multi-line
 # conditional expressions in the middle of its loop.
-sub _is_unknown_kv_arg {
+sub is_unknown_kv_arg {
     my ($class, $arg, $has_next) = @_;
     return 0 unless $has_next;
     return 0 unless defined $arg;
@@ -143,7 +142,7 @@ sub parse_options {
         }
 
         # Drop unknown k=>v pairs from the resource-group settings.
-        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) {
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
             $i += 2;
             next;
         }
@@ -190,8 +189,8 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    my $data = slurp_json_config($path, 'Resource::Disk');
-    whitelist_keys($data, [qw/mounts/], $path, 'Resource::Disk');
+    my $data = $class->slurp_json_config($path);
+    $class->whitelist_keys($data, [qw/mounts/], $path);
 
     my $raw_mounts = $data->{mounts} // {};
     croak "Resource::Disk: mounts in '$path' must be a JSON object"
