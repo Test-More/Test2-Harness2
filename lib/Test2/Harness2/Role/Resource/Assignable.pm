@@ -10,6 +10,16 @@ use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Role::Tiny;
 
+# Constants for the two hash slots this role reads/writes. Consumers
+# that declare matching Object::HashBase slots (named 'assignments'
+# and 'paused') already define same-valued constants; Role::Tiny
+# composition leaves the consumer's versions in place. Inside this
+# role the +ASSIGNMENTS / +PAUSED tokens resolve at compile time
+# against the role's own constants, so the slot key strings are baked
+# in regardless of composition order.
+use constant ASSIGNMENTS => 'assignments';
+use constant PAUSED      => 'paused';
+
 # Resources that maintain a flat $self->{assignments} hash keyed by
 # assignment id pick up assign / release / pause-state bookkeeping
 # from this role instead of duplicating the same six methods. The
@@ -18,9 +28,9 @@ use Role::Tiny;
 # the role; resources with bespoke assign semantics (none currently)
 # would skip it.
 
-sub is_paused    { $_[0]->{paused} ? 1 : 0 }
-sub mark_paused  { $_[0]->{paused} = 1 }
-sub mark_resumed { $_[0]->{paused} = 0 }
+sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
+sub mark_paused  { $_[0]->{+PAUSED} = 1 }
+sub mark_resumed { $_[0]->{+PAUSED} = 0 }
 
 sub assign {
     my ($self, %p) = @_;
@@ -30,9 +40,9 @@ sub assign {
     croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
 
     croak ref($self) . ": duplicate assign for id '$id'"
-        if exists $self->{assignments}->{$id};
+        if exists $self->{+ASSIGNMENTS}->{$id};
 
-    $self->{assignments}->{$id} = {job => $job, assigned_at => hi_res_time()};
+    $self->{+ASSIGNMENTS}->{$id} = {job => $job, assigned_at => hi_res_time()};
 
     return 1;
 }
@@ -42,7 +52,7 @@ sub release {
 
     my $id = $p{id} or croak "'id' is required";
 
-    delete $self->{assignments}->{$id}
+    delete $self->{+ASSIGNMENTS}->{$id}
         or croak ref($self) . ": invalid release id '$id'";
 
     return 1;
@@ -84,12 +94,14 @@ toggle stored at C<< $self->{paused} >>.
 
 =back
 
-The role uses lowercase string keys (C<assignments>, C<paused>) so
-consumers that allocate matching L<Object::HashBase> slots -- naming
-them C<assignments> and C<paused> -- pick up the methods directly.
-Resources that override any of the above (e.g. Disk's bespoke
-C<mark_resumed> that preserves a permanent-broken flag) keep their
-own implementation; Role::Tiny lets the consumer's method win.
+The role exposes C<ASSIGNMENTS> and C<PAUSED> constants whose values
+are the lowercase strings C<'assignments'> and C<'paused'>. Consumers
+that allocate matching L<Object::HashBase> slots -- naming them
+C<assignments> and C<paused> -- get same-valued constants of their
+own, and the methods read/write the same hash slots in either
+direction. Resources that override any of the above (e.g. Disk's
+bespoke C<mark_resumed> that preserves a permanent-broken flag) keep
+their own implementation; Role::Tiny lets the consumer's method win.
 
 =head1 SOURCE
 
