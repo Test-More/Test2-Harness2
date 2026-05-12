@@ -6,12 +6,21 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
+use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+
 use Role::Tiny;
 
 requires 'available';
-requires 'assign';
-requires 'release';
 requires 'status';
+
+# Slot keys used by the default assign / release / pause-state
+# implementations. Consumers that rely on those defaults must declare
+# matching Object::HashBase slots ('assignments' and 'paused');
+# Object::HashBase will then generate same-valued constants in the
+# consumer package, so the +ASSIGNMENTS / +PAUSED tokens resolve to
+# the same hash keys whether evaluated in the role or the consumer.
+use constant ASSIGNMENTS => 'assignments';
+use constant PAUSED      => 'paused';
 
 # Whether this resource participates in a given job's allocation. The
 # scheduler checks this first: resources that return 0 are skipped
@@ -26,13 +35,15 @@ sub resource_name {
     return lc($name);
 }
 
-# Brokenness / paused state queries. Defaults assume the resource
-# cannot enter these states; consumers that can override these
-# accessors to read from their own storage. is_usable layers over the
-# three.
+# Brokenness queries. Defaults assume the resource cannot enter these
+# states; consumers that can override to read from their own storage.
+# is_usable layers over the three.
 sub is_broken           { 0 }
 sub is_permanent_broken { 0 }
-sub is_paused           { 0 }
+
+# Pause-state default reads the role's PAUSED slot. Consumers without
+# a 'paused' HashBase slot get autoviv-as-undef, which collapses to 0.
+sub is_paused { $_[0]->{+PAUSED} ? 1 : 0 }
 
 sub is_usable {
     my $self = shift;
@@ -42,17 +53,88 @@ sub is_usable {
     return 1;
 }
 
-# State-transition hooks. The role can't pick a storage model for the
-# consumer, so the defaults croak: calling mark_broken on a resource
-# that never declared it could support the transition is a contract
-# violation, not a silent no-op. Resources that can be broken/paused
-# override these to do their own bookkeeping; resources that cannot
-# (e.g. JobCount's broken transitions) leave the croaking defaults in
-# place so bad callers fail loudly.
+# Broken-state transitions. The role can't pick a storage model for
+# the consumer, so the defaults croak: calling mark_broken on a
+# resource that never declared it could support the transition is a
+# contract violation, not a silent no-op. Resources that can be
+# broken override these to do their own bookkeeping; resources that
+# cannot (e.g. JobCount) leave the croaking defaults in place so bad
+# callers fail loudly.
 sub mark_broken           { croak ref($_[0]) . "::mark_broken is not implemented" }
 sub mark_permanent_broken { croak ref($_[0]) . "::mark_permanent_broken is not implemented" }
-sub mark_paused           { croak ref($_[0]) . "::mark_paused is not implemented" }
-sub mark_resumed          { croak ref($_[0]) . "::mark_resumed is not implemented" }
+
+# Pause-state transitions default to flipping the PAUSED slot.
+# Resources that don't support pause override with a croak; resources
+# that need extra bookkeeping (e.g. Disk's mark_resumed preserving the
+# permanent-broken flag) override too.
+sub mark_paused  { $_[0]->{+PAUSED} = 1 }
+sub mark_resumed { $_[0]->{+PAUSED} = 0 }
+
+# Default assign / release: store one record per assignment id in the
+# ASSIGNMENTS hash slot. Resources whose grammar needs richer
+# bookkeeping (JobCount's slot-count math, Throttle's queue of
+# timestamps) override these locally. The defaults expect the
+# consumer to have declared an 'assignments' HashBase slot.
+sub assign {
+    my ($self, %p) = @_;
+
+    my $id  = $p{id}  or croak "'id' is required";
+    my $job = $p{job} or croak "'job' is required";
+    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
+
+    croak ref($self) . ": duplicate assign for id '$id'"
+        if exists $self->{+ASSIGNMENTS}->{$id};
+
+    $self->{+ASSIGNMENTS}->{$id} = {job => $job, assigned_at => hi_res_time()};
+
+    return 1;
+}
+
+sub release {
+    my ($self, %p) = @_;
+
+    my $id = $p{id} or croak "'id' is required";
+
+    delete $self->{+ASSIGNMENTS}->{$id}
+        or croak ref($self) . ": invalid release id '$id'";
+
+    return 1;
+}
+
+# Default: no extra recognised inline `key=` prefixes for
+# parse_options. Resources with their own inline kv forms override to
+# return an arrayref of bare key tokens (without the trailing `=`).
+sub _inline_key_prefixes { [] }
+
+# Predicate consumed by parse_options: "is this $arg the first half
+# of an unknown k=>v pair that should be silently dropped?" Returns
+# true only when $arg is a plain key-shaped token (not numeric, not
+# @file, not name=, not one of the consumer's declared inline key=
+# prefixes) AND there is a following value to pair it with.
+#
+# Resources whose grammars do not fit this shape (Disk's /path:THR
+# entries, Throttle's bare-numeric rule shorthand) override this
+# method locally.
+sub _is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if $arg =~ m{^[0-9]};
+    return 0 if $arg =~ m{^@};
+    return 0 if $arg =~ m{^name=};
+
+    my $prefixes = $class->_inline_key_prefixes;
+    croak ref($class) || $class, ": _inline_key_prefixes must return an ARRAY ref"
+        unless ref($prefixes) eq 'ARRAY';
+
+    for my $p (@$prefixes) {
+        return 0 if $arg =~ m{^\Q$p\E=};
+    }
+
+    return 1;
+}
 
 # Declare the supervised subprocesses this resource needs in the
 # current environment. Each list entry is an arrayref:
@@ -133,7 +215,7 @@ the resource itself never forks. See L</SERVICES> below.
     use strict;
     use warnings;
 
-    use Object::HashBase qw/<limit <used/;
+    use Object::HashBase qw/<limit <used <assignments +paused/;
 
     use Role::Tiny::With;
     with 'Test2::Harness2::Role::Resource';
@@ -145,9 +227,11 @@ the resource itself never forks. See L</SERVICES> below.
         return $need;
     }
 
-    sub assign  { ... }
-    sub release { ... }
-    sub status  { ... }
+    # assign / release / mark_paused / mark_resumed / is_paused all
+    # have working defaults provided by the role; override only when
+    # your bookkeeping differs.
+
+    sub status { ... }
 
     sub services {
         my $self = shift;
@@ -158,7 +242,10 @@ the resource itself never forks. See L</SERVICES> below.
 
 =head1 REQUIRED METHODS
 
-Consumers must implement these. The role applies C<requires> to each.
+Consumers must implement these. The role applies C<requires> to
+C<available> and C<status>. C<assign> and C<release> have default
+implementations (see L</PROVIDED METHODS>) but most consumers will
+either rely on those or implement their own.
 
 =over 4
 
@@ -243,16 +330,53 @@ these states override the accessors to read from their own storage.
 
 True when none of broken / permanent_broken / paused are set.
 
-=item $resource->mark_broken / mark_permanent_broken / mark_paused / mark_resumed
+=item $resource->mark_broken / mark_permanent_broken
 
-State-transition hooks. The role's B<default implementations croak>:
-calling mark_broken on a resource that never declared it could support
-the transition is a contract violation, not a silent no-op. Resources
-that can enter these states override each mark_* they actually support,
-and record the transition so the matching C<is_*> accessor starts
-returning true. C<mark_permanent_broken> should also flip C<is_broken>
-to true; C<mark_resumed> clears transient broken/paused flags but must
-leave permanent brokenness intact.
+State-transition hooks for brokenness. The role's B<default
+implementations croak>: calling mark_broken on a resource that never
+declared it could support the transition is a contract violation, not
+a silent no-op. Resources that can enter these states override each
+mark_* they actually support, and record the transition so the
+matching C<is_*> accessor starts returning true.
+C<mark_permanent_broken> should also flip C<is_broken> to true;
+C<mark_resumed> clears transient broken/paused flags but must leave
+permanent brokenness intact.
+
+=item $resource->mark_paused / mark_resumed
+
+Pause-state transitions. The defaults set / clear C<< $self->{paused} >>,
+matching the default C<is_paused>. Consumers that don't support pause
+override with a croaking version; consumers that need extra
+bookkeeping (e.g. preserving a permanent-broken flag through resume)
+override locally.
+
+=item $bool = $resource->assign(%params) / release(%params)
+
+Default implementations store / delete one record per assignment id
+in the C<assignments> hash slot:
+
+    $self->{assignments}->{$id} = { job => $job, assigned_at => $stamp }
+
+Consumers using the defaults B<must> declare matching
+L<Object::HashBase> slots named C<assignments> and C<paused>.
+Resources with richer bookkeeping (slot-count math, time-windowed
+queues, etc.) override C<assign> / C<release> locally.
+
+=item \@prefixes = $class->_inline_key_prefixes
+
+Arrayref of bare key tokens (without the trailing C<=>) that the
+consumer's C<parse_options> recognises as inline key/value entries.
+Defaults to C<[]>. Consumers with extra inline forms override.
+
+=item $bool = $class->_is_unknown_kv_arg($arg, $has_next)
+
+Predicate for "is this C<$arg> the first half of an unknown
+key=>value pair from the resource-group settings hash that should be
+silently dropped?" The default returns true when C<$arg> is a plain
+key-shaped token (not numeric, not C<@file>, not C<name=>, not in
+C<_inline_key_prefixes>) and there is a following value to pair it
+with. Resources whose grammar does not fit this shape override
+locally.
 
 =item @entries = $resource->services
 

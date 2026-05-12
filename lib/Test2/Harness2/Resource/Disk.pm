@@ -20,7 +20,6 @@ use Object::HashBase qw{
 };
 
 use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 
 # Keys this resource accepts at construction time. Anything else

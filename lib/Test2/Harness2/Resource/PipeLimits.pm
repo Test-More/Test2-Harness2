@@ -24,10 +24,8 @@ use Object::HashBase qw{
 };
 
 use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
-with 'Test2::Harness2::Role::Resource::OptionParser';
 
 sub _inline_key_prefixes { [qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom/] }
 

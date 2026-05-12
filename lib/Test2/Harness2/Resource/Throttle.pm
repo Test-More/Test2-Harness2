@@ -29,21 +29,15 @@ with 'Test2::Harness2::Role::Resource';
 our $DETECT_CORE_COUNT  = undef;    # coderef override; undef = use real detection
 our $READ_MEMINFO_AVAIL = undef;    # coderef override; undef = read /proc/meminfo
 
-# Throttle keeps assign / release / paused bookkeeping bespoke rather
-# than consuming Test2::Harness2::Role::Resource::Assignable. State-
-# transition methods (is_paused / mark_paused / mark_resumed) follow
-# the assignable shape so the role would fit; assign + release also
-# follow the same shape today. The reason Throttle keeps its own
-# copies is that the rate-limit semantics are likely to grow custom
-# release behaviour (e.g. recording exit time alongside assigned_at
-# so the sliding-window math can credit early completions) and
-# inheriting from the role would have to be undone the moment that
-# happens.
+# Throttle keeps assign / release bookkeeping bespoke rather than
+# inheriting the role's defaults. The rate-limit semantics are likely
+# to grow custom release behaviour (e.g. recording exit time
+# alongside assigned_at so the sliding-window math can credit early
+# completions) so the bespoke copies stay even though today's bodies
+# would match the role's defaults. Pause state uses the role's
+# default slot-backed methods.
 
 sub resource_name { $_[0]->{+NAME} // 'throttle' }
-sub is_paused     { $_[0]->{+PAUSED} ? 1 : 0 }
-sub mark_paused   { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed  { $_[0]->{+PAUSED} = 0 }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/cap window name bases core_count/;
 

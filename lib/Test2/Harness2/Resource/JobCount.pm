@@ -43,13 +43,8 @@ sub init {
 # role's is_broken / is_permanent_broken defaults (both 0) are
 # correct, and the role's croaking defaults for mark_broken /
 # mark_permanent_broken catch any caller that accidentally tries to
-# transition this resource into a broken state.
-#
-# Pausing is still supported so an operator (or test) can halt
-# scheduling without touching slot state.
-sub is_paused    { $_[0]->{+PAUSED} ? 1 : 0 }
-sub mark_paused  { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed { $_[0]->{+PAUSED} = 0 }
+# transition this resource into a broken state. Pausing is supported
+# via the role's default slot-backed mark_paused / mark_resumed.
 
 sub _job_slot_bounds {
     my ($self, $job, %p) = @_;
