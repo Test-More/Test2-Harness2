@@ -2062,6 +2062,11 @@ sub _evaluate_resources_for {
     #                            to decide skip / fail / abort.
     my @all = (@{$self->{+RESOURCES}}, @{$run->resources // []});
 
+    # Authoritative in-flight count, passed to resources that need it
+    # (utilizers' starvation-guard check). Single source of truth on
+    # the harness avoids per-resource counters.
+    my $in_flight = scalar keys %{$self->{+RUNNING_JOBS} // {}};
+
     my @use;
     for my $res (@all) {
         next unless $res->needed(job => $job);
@@ -2071,13 +2076,10 @@ sub _evaluate_resources_for {
         # Transient brokenness / paused state: try again later.
         return ('defer') unless $res->is_usable;
 
-        # Utilizer saturation check (between is_usable and available).
-        # should_defer_for_utilization layers a starvation guard over
-        # is_temporarily_unavailable so at least min_concurrent (default 1)
-        # tests always run.
+        # Utilizer saturation: defer when min_concurrent floor met AND saturated.
         return ('defer')
             if $res->can('should_defer_for_utilization')
-            && $res->should_defer_for_utilization;
+            && $res->should_defer_for_utilization($in_flight);
 
         my $av = $res->available(job => $job);
         return ('skip', $res->resource_name) if $av < 0;

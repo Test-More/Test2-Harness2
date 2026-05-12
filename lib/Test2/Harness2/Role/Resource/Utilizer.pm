@@ -6,10 +6,6 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-# ASSIGNMENTS slot lives on the base Resource role; mirror its constant
-# here so $self->{+ASSIGNMENTS} resolves at compile time inside this role.
-use constant ASSIGNMENTS => 'assignments';
-
 # Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
 use Object::HashBase qw{<utilize_percent <min_concurrent};
@@ -22,14 +18,16 @@ sub set_utilize_percent {
     return;
 }
 
-# Scheduler-level check: defer only when saturated AND in-flight assignments
-# already meet the minimum-concurrent floor. Prevents starvation when the
-# subsystem never drops below threshold -- at least min_concurrent (default 1)
-# tests are always allowed to run.
+# Scheduler-level check. Caller passes the harness's authoritative
+# in-flight count. Defer only when saturated AND in-flight already
+# meets the min_concurrent floor (default 1) -- below the floor, at
+# least min_concurrent tests are always allowed to run even if the
+# subsystem never drops back below threshold.
 sub should_defer_for_utilization {
-    my $self      = shift;
-    my $min       = $self->{+MIN_CONCURRENT} // 1;
-    my $in_flight = scalar keys %{$self->{+ASSIGNMENTS} // {}};
+    my ($self, $in_flight) = @_;
+    croak "should_defer_for_utilization: 'in_flight' is required"
+        unless defined $in_flight;
+    my $min = $self->{+MIN_CONCURRENT} // 1;
     return 0 if $in_flight < $min;
     return $self->is_temporarily_unavailable ? 1 : 0;
 }
@@ -132,16 +130,18 @@ contract violation, not a silent C<0>.
 
 =over 4
 
-=item $bool = $resource->should_defer_for_utilization
+=item $bool = $resource->should_defer_for_utilization($in_flight)
 
-Scheduler hook. Returns true only when both:
+Scheduler hook. The caller passes the authoritative count of
+currently-running tests (the harness keeps this in C<RUNNING_JOBS>);
+the role does not maintain its own counter. Returns true only when
+both:
 
 =over 4
 
 =item *
 
-the resource has at least C<min_concurrent> assignments already
-in flight (C<scalar keys %{ $self->{+ASSIGNMENTS} }>); and
+C<$in_flight> is at least C<min_concurrent>; and
 
 =item *
 

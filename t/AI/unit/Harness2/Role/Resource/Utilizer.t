@@ -133,22 +133,17 @@ subtest 'should_defer_for_utilization honors min_concurrent floor' => sub {
     my $r = My::Util::Resource->new;
     $r->mark_saturated;
 
-    # No in-flight assignments: scheduler must NOT defer even though
-    # the subsystem reports saturated. This prevents starvation when
-    # the system never drops below the threshold.
-    $r->{assignments} = {};
-    is($r->should_defer_for_utilization, 0, 'saturated + 0 in-flight: do not defer (default min=1)');
+    # in_flight=0: scheduler must NOT defer even though saturated.
+    # Prevents starvation when system never drops below threshold.
+    is($r->should_defer_for_utilization(0), 0, 'saturated + 0 in-flight: do not defer (default min=1)');
 
-    # 1 in-flight (default floor met): defer when saturated.
-    $r->{assignments} = {id1 => {job => 1, assigned_at => 0}};
-    is($r->should_defer_for_utilization, 1, 'saturated + 1 in-flight: defer');
+    # in_flight=1 (default floor met): defer when saturated.
+    is($r->should_defer_for_utilization(1), 1, 'saturated + 1 in-flight: defer');
 
     # Not saturated: never defer regardless of in-flight count.
     $r->mark_unsaturated;
-    is($r->should_defer_for_utilization, 0, 'not saturated + 1 in-flight: do not defer');
-
-    $r->{assignments} = {};
-    is($r->should_defer_for_utilization, 0, 'not saturated + 0 in-flight: do not defer');
+    is($r->should_defer_for_utilization(1), 0, 'not saturated + 1 in-flight: do not defer');
+    is($r->should_defer_for_utilization(0), 0, 'not saturated + 0 in-flight: do not defer');
 };
 
 subtest 'should_defer_for_utilization respects custom min_concurrent' => sub {
@@ -156,15 +151,19 @@ subtest 'should_defer_for_utilization respects custom min_concurrent' => sub {
     $r->mark_saturated;
 
     for my $n (0, 1, 2) {
-        $r->{assignments} = {map { ("id$_" => {job => $_, assigned_at => 0}) } 1 .. $n};
-        is($r->should_defer_for_utilization, 0, "saturated + $n in-flight (< 3 floor): do not defer");
+        is($r->should_defer_for_utilization($n), 0, "saturated + $n in-flight (< 3 floor): do not defer");
     }
+    is($r->should_defer_for_utilization(3), 1, 'saturated + 3 in-flight (== floor): defer');
+    is($r->should_defer_for_utilization(4), 1, 'saturated + 4 in-flight (> floor): defer');
+};
 
-    $r->{assignments} = {map { ("id$_" => {job => $_, assigned_at => 0}) } 1 .. 3};
-    is($r->should_defer_for_utilization, 1, 'saturated + 3 in-flight (== floor): defer');
-
-    $r->{assignments} = {map { ("id$_" => {job => $_, assigned_at => 0}) } 1 .. 4};
-    is($r->should_defer_for_utilization, 1, 'saturated + 4 in-flight (> floor): defer');
+subtest 'should_defer_for_utilization requires in_flight arg' => sub {
+    my $r = My::Util::Resource->new;
+    like(
+        dies { $r->should_defer_for_utilization() },
+        qr/'in_flight' is required/,
+        'undef in_flight rejected'
+    );
 };
 
 subtest 'min_concurrent accessor' => sub {
