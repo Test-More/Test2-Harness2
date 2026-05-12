@@ -6,9 +6,9 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <min_free
@@ -92,10 +92,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            my $n = $1;
-            croak "Resource::Memory: empty name=" unless defined $n && length $n;
-            croak "Resource::Memory: name='$n' must be whitespace-free" if $n =~ /\s/;
-            $inline_name = $n;
+            $inline_name = validate_name($1, 'Resource::Memory');
         }
         elsif ($arg =~ m{^min_free=(.+)\z}) {
             my $parsed;
@@ -132,34 +129,19 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    croak "Resource::Memory config file '$path' does not exist" unless -e $path;
-    open my $fh, '<:raw', $path or croak "Resource::Memory: cannot open '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    my $data;
-    eval { $data = decode_json($body); 1 }
-        or croak "Resource::Memory: cannot parse JSON in '$path': $@";
-    croak "Resource::Memory: top-level of '$path' must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/min_free name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::Memory: unknown key '$k' in '$path'" unless $allowed{$k};
-    }
+    my $data = slurp_json_config($path, 'Resource::Memory');
+    whitelist_keys($data, [qw/min_free name/], $path, 'Resource::Memory');
 
     my %out;
     if (defined $data->{min_free}) {
         my $parsed;
-        eval { $parsed = parse_size_or_pct($data->{min_free}, name => 'min_free'); 1 }
-            or croak "Resource::Memory: bad min_free in '$path': $@";
+        my $ok  = eval { $parsed = parse_size_or_pct($data->{min_free}, name => 'min_free'); 1 };
+        my $err = $@;
+        croak "Resource::Memory: bad min_free in '$path': $err" unless $ok;
         $out{min_free} = $parsed;
     }
     if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::Memory: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
+        $out{name} = validate_name($data->{name}, 'Resource::Memory', " in '$path'");
     }
 
     return \%out;

@@ -6,9 +6,9 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::Units qw/parse_count_or_pct parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <nproc
@@ -95,10 +95,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            my $n = $1;
-            croak "Resource::UnixLimits: empty name=" unless defined $n && length $n;
-            croak "Resource::UnixLimits: name='$n' must be whitespace-free" if $n =~ /\s/;
-            $inline_name = $n;
+            $inline_name = validate_name($1, 'Resource::UnixLimits');
         }
         elsif ($arg =~ m{^(nproc|nofile)=(.+)\z}) {
             my ($dim, $raw) = ($1, $2);
@@ -147,42 +144,27 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    croak "Resource::UnixLimits config file '$path' does not exist" unless -e $path;
-    open my $fh, '<:raw', $path or croak "Resource::UnixLimits: cannot open '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    my $data;
-    eval { $data = decode_json($body); 1 }
-        or croak "Resource::UnixLimits: cannot parse JSON in '$path': $@";
-    croak "Resource::UnixLimits: top-level must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/nproc nofile as name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::UnixLimits: unknown key '$k' in '$path'" unless $allowed{$k};
-    }
+    my $data = slurp_json_config($path, 'Resource::UnixLimits');
+    whitelist_keys($data, [qw/nproc nofile as name/], $path, 'Resource::UnixLimits');
 
     my %out;
     for my $dim (qw/nproc nofile/) {
-        if (defined $data->{$dim}) {
-            my $parsed;
-            eval { $parsed = parse_count_or_pct($data->{$dim}, name => $dim); 1 }
-                or croak "Resource::UnixLimits: bad $dim in '$path': $@";
-            $out{$dim} = $parsed;
-        }
+        next unless defined $data->{$dim};
+        my $parsed;
+        my $ok  = eval { $parsed = parse_count_or_pct($data->{$dim}, name => $dim); 1 };
+        my $err = $@;
+        croak "Resource::UnixLimits: bad $dim in '$path': $err" unless $ok;
+        $out{$dim} = $parsed;
     }
     if (defined $data->{as}) {
         my $parsed;
-        eval { $parsed = parse_size_or_pct($data->{as}, name => 'as'); 1 }
-            or croak "Resource::UnixLimits: bad as in '$path': $@";
+        my $ok  = eval { $parsed = parse_size_or_pct($data->{as}, name => 'as'); 1 };
+        my $err = $@;
+        croak "Resource::UnixLimits: bad as in '$path': $err" unless $ok;
         $out{as} = $parsed;
     }
     if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::UnixLimits: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
+        $out{name} = validate_name($data->{name}, 'Resource::UnixLimits', " in '$path'");
     }
     return \%out;
 }

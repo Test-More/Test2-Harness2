@@ -7,9 +7,9 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 use POSIX qw/floor/;
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::Units qw/parse_duration parse_byte_size/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <cap
@@ -187,7 +187,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            $inline_name = $class->_parse_name_arg($arg, $1);
+            $inline_name = validate_name($1, 'Resource::Throttle');
         }
         elsif ($arg =~ m{^[0-9]}) {
             push @inline_rules => $class->_parse_rule_entry($arg);
@@ -218,15 +218,6 @@ sub parse_options {
     $out{name} //= 'throttle';
 
     return %out;
-}
-
-sub _parse_name_arg {
-    my ($class, $orig, $name) = @_;
-    croak "Resource::Throttle: empty name= entry '$orig'"
-        unless defined $name && length $name;
-    croak "Resource::Throttle: name='$name' must be a non-empty whitespace-free string"
-        if $name =~ /\s/;
-    return $name;
 }
 
 # Parse one rule entry: <CAP>/<BASIS,...>/<DURATION>, <CAP>/<DURATION>,
@@ -306,25 +297,8 @@ sub _parse_bases {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    croak "Resource::Throttle config file '$path' does not exist"  unless -e $path;
-    croak "Resource::Throttle config file '$path' is not readable" unless -r _;
-
-    open my $fh, '<:raw', $path
-        or croak "Resource::Throttle: cannot open config file '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    my $data;
-    eval { $data = decode_json($body); 1 }
-        or croak "Resource::Throttle: cannot parse JSON in '$path': $@";
-    croak "Resource::Throttle: top-level of '$path' must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/cap window name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::Throttle: unknown key '$k' in '$path'"
-            unless $allowed{$k};
-    }
+    my $data = slurp_json_config($path, 'Resource::Throttle');
+    whitelist_keys($data, [qw/cap window name/], $path, 'Resource::Throttle');
 
     croak "Resource::Throttle: 'cap' is required in '$path'"
         unless defined $data->{cap};
@@ -336,15 +310,13 @@ sub _load_config_file {
         unless $cap =~ m/^[0-9]+\z/ && $cap > 0;
 
     my $secs;
-    eval { $secs = parse_duration($data->{window}, name => 'window'); 1 }
-        or croak "Resource::Throttle: bad window in '$path': $@";
+    my $ok  = eval { $secs = parse_duration($data->{window}, name => 'window'); 1 };
+    my $err = $@;
+    croak "Resource::Throttle: bad window in '$path': $err" unless $ok;
 
     my %out = (cap => $cap + 0, window => $secs);
     if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::Throttle: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
+        $out{name} = validate_name($data->{name}, 'Resource::Throttle', " in '$path'");
     }
 
     return \%out;

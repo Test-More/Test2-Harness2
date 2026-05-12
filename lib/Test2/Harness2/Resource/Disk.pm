@@ -6,9 +6,9 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys/;
 
 use Object::HashBase qw{
     <mounts
@@ -196,32 +196,15 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    croak "Resource::Disk config file '$path' does not exist"  unless -e $path;
-    croak "Resource::Disk config file '$path' is not readable" unless -r _;
-
-    open my $fh, '<:raw', $path
-        or croak "Resource::Disk: cannot open config file '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    my $data;
-    eval { $data = decode_json($body); 1 }
-        or croak "Resource::Disk: cannot parse JSON in '$path': $@";
-    croak "Resource::Disk: top-level of '$path' must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %top_allowed = map { $_ => 1 } qw/mounts/;
-    for my $k (sort keys %$data) {
-        croak "Resource::Disk: unknown key '$k' in '$path'"
-            unless $top_allowed{$k};
-    }
+    my $data = slurp_json_config($path, 'Resource::Disk');
+    whitelist_keys($data, [qw/mounts/], $path, 'Resource::Disk');
 
     my $raw_mounts = $data->{mounts} // {};
     croak "Resource::Disk: mounts in '$path' must be a JSON object"
         unless ref($raw_mounts) eq 'HASH';
 
     my %mounts;
-    my %mount_allowed = map { $_ => 1 } qw/min_free/;
+    my %mount_allowed = (min_free => 1);
     for my $mp (sort keys %$raw_mounts) {
         my $cfg = $raw_mounts->{$mp};
         croak "Resource::Disk: mount '$mp' in '$path' must be a JSON object"
@@ -233,8 +216,12 @@ sub _load_config_file {
         croak "Resource::Disk: mount '$mp' in '$path' missing 'min_free'"
             unless defined $cfg->{min_free};
         my $threshold;
-        eval { $threshold = parse_size_or_pct($cfg->{min_free}, default_unit => '%', name => 'threshold'); 1 }
-            or croak "Resource::Disk: bad threshold for mount '$mp' in '$path': $@";
+        my $ok = eval {
+            $threshold = parse_size_or_pct($cfg->{min_free}, default_unit => '%', name => 'threshold');
+            1;
+        };
+        my $err = $@;
+        croak "Resource::Disk: bad threshold for mount '$mp' in '$path': $err" unless $ok;
         $mounts{$mp} = {min_free => $threshold};
     }
 

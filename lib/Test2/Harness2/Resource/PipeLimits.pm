@@ -6,9 +6,9 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util::Units qw/parse_count_or_pct/;
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
+use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
     <pipes_per_test
@@ -111,10 +111,7 @@ sub parse_options {
             %file_vals = %{$class->_load_config_file($1)};
         }
         elsif ($arg =~ m{^name=(.*)\z}) {
-            my $n = $1;
-            croak "Resource::PipeLimits: empty name=" unless defined $n && length $n;
-            croak "Resource::PipeLimits: name='$n' must be whitespace-free" if $n =~ /\s/;
-            $inline_name = $n;
+            $inline_name = validate_name($1, 'Resource::PipeLimits');
         }
         elsif ($arg =~ m{^(pipes_per_test|pipes_per_service|service_count|pages_per_pipe)=([0-9]+)\z}) {
             $inline{$1} = $2 + 0;
@@ -163,41 +160,29 @@ sub parse_options {
 sub _load_config_file {
     my ($class, $path) = @_;
 
-    croak "Resource::PipeLimits config file '$path' does not exist" unless -e $path;
-    open my $fh, '<:raw', $path or croak "Resource::PipeLimits: cannot open '$path': $!";
-    my $body = do { local $/; <$fh> };
-    close $fh;
-
-    my $data;
-    eval { $data = decode_json($body); 1 }
-        or croak "Resource::PipeLimits: cannot parse JSON in '$path': $@";
-    croak "Resource::PipeLimits: top-level must be a JSON object"
-        unless ref($data) eq 'HASH';
-
-    my %allowed = map { $_ => 1 } qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom name/;
-    for my $k (sort keys %$data) {
-        croak "Resource::PipeLimits: unknown key '$k' in '$path'" unless $allowed{$k};
-    }
+    my $data = slurp_json_config($path, 'Resource::PipeLimits');
+    whitelist_keys(
+        $data,
+        [qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom name/],
+        $path, 'Resource::PipeLimits',
+    );
 
     my %out;
     for my $k (qw/pipes_per_test pipes_per_service service_count pages_per_pipe/) {
-        if (defined $data->{$k}) {
-            croak "Resource::PipeLimits: $k in '$path' must be a non-negative integer"
-                unless $data->{$k} =~ m/^[0-9]+\z/;
-            $out{$k} = $data->{$k} + 0;
-        }
+        next unless defined $data->{$k};
+        croak "Resource::PipeLimits: $k in '$path' must be a non-negative integer"
+            unless $data->{$k} =~ m/^[0-9]+\z/;
+        $out{$k} = $data->{$k} + 0;
     }
     if (defined $data->{headroom}) {
         my $parsed;
-        eval { $parsed = parse_count_or_pct($data->{headroom}, name => 'headroom'); 1 }
-            or croak "Resource::PipeLimits: bad headroom in '$path': $@";
+        my $ok  = eval { $parsed = parse_count_or_pct($data->{headroom}, name => 'headroom'); 1 };
+        my $err = $@;
+        croak "Resource::PipeLimits: bad headroom in '$path': $err" unless $ok;
         $out{headroom} = $parsed;
     }
     if (defined $data->{name}) {
-        my $n = $data->{name};
-        croak "Resource::PipeLimits: name in '$path' must be a non-empty whitespace-free string"
-            unless !ref($n) && length($n) && $n !~ /\s/;
-        $out{name} = $n;
+        $out{name} = validate_name($data->{name}, 'Resource::PipeLimits', " in '$path'");
     }
     return \%out;
 }

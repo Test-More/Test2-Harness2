@@ -150,7 +150,7 @@ subtest 'invalid entry croaks with offender named' => sub {
     );
     like(
         dies { Test2::Harness2::Resource::Throttle->parse_options('5/2s', 'name=') },
-        qr/name=/, 'empty name= rejected'
+        qr/name must be a non-empty whitespace-free string/, 'empty name= rejected'
     );
 };
 
