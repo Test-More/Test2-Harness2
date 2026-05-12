@@ -77,7 +77,7 @@ sub run {
     my $workdir = $settings->workspace->workdir;
     my $logdir  = "$workdir/logs";
 
-    my $spawn   = $self->_spawn_harness($workdir);
+    my $spawn = $self->_spawn_harness($workdir);
 
     my ($info_path, $ipc_guard) = $self->_publish_ipc($spawn, $workdir);
 
@@ -113,7 +113,7 @@ sub run {
     # log or ipc reports something is wrong, the result is a failure.
     # The renderer's exit code is nonzero only when the EOE safeguard
     # fired; normal renderer completion is 0 regardless of pass/fail.
-    my $log_pass = $renderer_exit == 0;
+    my $log_pass   = $renderer_exit == 0;
     my $final_pass = ($ipc_pass && $log_pass) ? 1 : 0;
 
     my $archive = $self->_resolve_archive_path;
@@ -222,7 +222,11 @@ sub _build_resources {
             next;
         }
 
-        push @out => $mod->new(@args);
+        my @ctor_args =
+              $mod->can('parse_options')
+            ? $mod->parse_options(@args)
+            : @args;
+        push @out => $mod->new(@ctor_args);
     }
     return @out;
 }
@@ -349,7 +353,7 @@ sub _drive_ipc_loop {
     my $seen_run_end     = 0;
     my $seen_harness_end = 0;
 
-    my $harness_pid       = $spawn->pid;
+    my $harness_pid = $spawn->pid;
     my $harness_dead_at;
     my $harness_grace_sec = 10;
 
@@ -372,9 +376,8 @@ sub _drive_ipc_loop {
             next unless ref($content) eq 'HASH';
 
             # State broadcasts: { type=>'state', item=>'run', run_id=>$id, state=>$run_data }
-            if (($content->{type} // '') eq 'state'
-                && ($content->{item} // '') eq 'run')
-            {
+            my $is_run_state = ($content->{type} // '') eq 'state' && ($content->{item} // '') eq 'run';
+            if ($is_run_state) {
                 my $rd = $content->{state};
                 next unless ref($rd) eq 'HASH';
 
@@ -389,8 +392,8 @@ sub _drive_ipc_loop {
                     my $results = ref($rd->{results}) eq 'HASH' ? $rd->{results} : {};
                     for my $jid (keys %$results) {
                         my $jr = $results->{$jid};
-                        next unless ref($jr) eq 'HASH';
-                        next unless defined $jr->{completed_at};
+                        next          unless ref($jr) eq 'HASH';
+                        next          unless defined $jr->{completed_at};
                         $ipc_pass = 0 unless $jr->{pass};
                     }
                 }
@@ -400,8 +403,8 @@ sub _drive_ipc_loop {
                 # snapshot mirrors Run::State, which carries those
                 # arrays. (No top-level 'state' field is sent over
                 # the wire today.)
-                my $pen = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
-                my $run = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
+                my $pen          = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
+                my $run          = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
                 my $have_results = ref($rd->{results}) eq 'HASH' && %{$rd->{results}};
                 if ($pen == 0 && $run == 0 && $have_results) {
                     $seen_run_end = 1;
@@ -464,23 +467,23 @@ sub _shutdown_harness {
 # end of run -- so the archive must land in the original system
 # tmp to survive.
 sub _resolve_archive_path {
-    my $self = shift;
+    my $self     = shift;
     my $settings = $self->{+SETTINGS};
 
-    my $logging = $settings->log;
+    my $logging  = $settings->log;
     my $log_file = $logging->file;
     croak "log 'file' set to empty string"
         if defined $log_file && !length $log_file;
     return $log_file if defined $log_file;
 
-    my $stamp = strftime('%Y%m%d-%H%M%S', localtime);
+    my $stamp   = strftime('%Y%m%d-%H%M%S', localtime);
     my $log_dir = $logging->dir;
     croak "log 'dir' set to empty string"
         if defined $log_dir && !length $log_dir;
     return File::Spec->catfile($log_dir, "$stamp.yath") if defined $log_dir;
 
-    my $project = $settings->yath->project // '__UNKNOWN__';
-    my $user    = $settings->yath->user    // 'unknown';
+    my $project = $settings->yath->project  // '__UNKNOWN__';
+    my $user    = $settings->yath->user     // 'unknown';
     my $tmp     = $settings->yath->orig_tmp // File::Spec->tmpdir();
     return File::Spec->catfile(
         $tmp,

@@ -42,29 +42,13 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         short          => 'j',
         alt            => ['jobs', 'job-count'],
         description    => 'Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.',
-        notes          => "If System::Info is installed, this will default to half the cpu core count, otherwise the default is 2.",
+        notes          => "On Linux, if unset, no hard concurrency cap is applied; the default utilizer + throttle resources gate scheduling. On other platforms (where the utilizer/throttle stack is unavailable) an unset value auto-derives to half the logical CPU count (minimum 1), falling back to 2 when the count cannot be detected. Install System::Info for the most reliable cross-platform CPU count.",
         long_examples  => [' 4', ' 8:2'],
         short_examples => ['4',  '8:2'],
         from_env_vars  => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
         clear_env_vars => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
 
-        default => sub {
-            my $ncore = eval { require System::Info; System::Info->new->ncore } || 0;
-            if ($ncore) {
-                if ($ncore > 2) {
-                    $ncore /= 2;
-                    print "System::Info is installed, setting job count to $ncore (Half the cores on this system)\n";
-                    return $ncore;
-                }
-                else {
-                    print "System::Info is installed, setting job count to 2 (Because we have less than 3 cores)\n";
-                    return 2;
-                }
-            }
-
-            print "Setting job count to 2. Install a sufficient version of System::Info to have this default to half the total number of cores.\n";
-            return 2;
-        },
+        default => sub { undef },
 
         trigger => sub {
             my $opt    = shift;
@@ -109,6 +93,7 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         description    => 'Percentage of system utilization (0 < pct < 100) at which any utilization-aware resources should signal temporarily-unavailable. Each resource that consumes the Test2::Harness2::Role::Resource::Utilizer role is given this percentage; once its monitored subsystem (CPU, memory, /tmp space, etc.) crosses the threshold the resource starts deferring new assignments. Pairs with a per-class spawn-throttle window (see POD).',
         long_examples  => [' 80', ' 50'],
         short_examples => [' 80', ' 50'],
+        default        => sub { 75 },
 
         # The role implementations are not wired up yet; this option is
         # a stub that validates the input and propagates it through
@@ -139,36 +124,81 @@ sub jobs_post_process {
 
     my $settings = $state->{settings};
     my $resource = $settings->resource;
-    $resource->option(slots     => 1) unless $resource->slots;
-    $resource->option(job_slots => 1) unless $resource->job_slots;
 
-    my $slots     = $resource->slots;
+    $resource->option(job_slots => 1)  unless $resource->job_slots;
+    $resource->option(classes   => {}) unless $resource->classes;
+
+    my $slots     = $resource->slots;       # may be undef (user did not pass -j)
     my $job_slots = $resource->job_slots;
 
-    die "The slots per job (set to $job_slots) must not be larger than the total number of slots (set to $slots).\n" if $job_slots > $slots;
+    if (defined $slots) {
+        die "The slots per job (set to $job_slots) must not be larger than the total number of slots (set to $slots).\n"
+            if $job_slots > $slots;
+    }
 
-    $resource->option(classes => {}) unless $resource->classes;
-
-    # New rule (Phase 6.2): the harness no longer mandates a job
-    # limiter; yath-test is the layer that injects the default.
-    #
-    # 1. If the user supplied any --resource / -R, do nothing -- the
-    #    supplied set is authoritative.
-    # 2. Otherwise, if --no-resource / --no-resources was set, also do
-    #    nothing -- the user explicitly asked for a no-limiter harness.
-    # 3. Otherwise inject Test2::Harness2::Resource::JobCount; the slot
-    #    count comes from --slots (-j), which already has a
-    #    System::Info-backed default that falls back to 2.
-    return if keys %{$resource->classes};
-
-    # `no_resource` is only present in the group hash when the
-    # classes Map's clear-form trigger fired (--no-resource /
-    # --no-resources). Use check_option so reading the absent key does
-    # not croak.
     return if $resource->check_option('no_resource') && $resource->no_resource;
 
-    require Test2::Harness2::Resource::JobCount;
-    $resource->classes->{'Test2::Harness2::Resource::JobCount'} //= [];
+    # Inject default resources. //= preserves any class the user passed via -R.
+    my $utilize = $resource->utilize;
+
+    if ($^O eq 'linux') {
+        my @util_args = (utilize_percent => $utilize);
+
+        $resource->classes->{'Test2::Harness2::Resource::CPU'}        //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::UnixLimits'} //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['1/core,100mb/1s'];
+    }
+    elsif (!defined $slots) {
+        # The utilizer + throttle stack reads /proc on Linux; off-Linux
+        # there is no portable equivalent. Fall back to a JobCount cap
+        # derived from the CPU count: half the logical CPUs (minimum 1),
+        # or 2 when the count cannot be detected.
+        my $cpu = _detect_cpu_count();
+        my $auto = $cpu ? (int($cpu / 2) || 1) : 2;
+        $resource->option(slots => $auto);
+        $slots = $auto;
+    }
+
+    # Disk gate on system tmpdir, derived from --utilize. Skipped when
+    # Filesys::Df missing; auto-injecting it would croak with a confusing dep error.
+    # orig_tmp captures the real tmpdir before yath rewrites TMPDIR to the per-run
+    # workspace (see App::Yath2::Options::Workspace).
+    if (eval { require Filesys::Df; 1 }) {
+        require File::Spec;
+        my $tmpdir  = ($settings->check_group('yath') ? $settings->yath->orig_tmp : undef) // File::Spec->tmpdir;
+        my $min_pct = 100 - $utilize;
+        $resource->classes->{'Test2::Harness2::Resource::Disk'} //= ["$tmpdir:${min_pct}%"];
+    }
+
+    # -j N (explicit or auto-derived): add JobCount as a hard cap.
+    if (defined $slots) {
+        $resource->classes->{'Test2::Harness2::Resource::JobCount'} //= [];
+    }
+}
+
+# Best-effort cross-platform logical-CPU count. Returns undef when no
+# detection path works.
+#
+# Order: System::Info (cross-platform CPAN dep when present), then
+# POSIX sysconf (Linux/macOS/BSD), then Windows NUMBER_OF_PROCESSORS.
+sub _detect_cpu_count {
+    my $n = eval { require System::Info; System::Info->new->ncore };
+    return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
+
+    if ($^O eq 'MSWin32') {
+        $n = $ENV{NUMBER_OF_PROCESSORS};
+        return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
+        return undef;
+    }
+
+    $n = eval {
+        require POSIX;
+        POSIX::sysconf(&POSIX::_SC_NPROCESSORS_ONLN);
+    };
+    return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
+    return undef;
 }
 
 1;
@@ -185,53 +215,52 @@ App::Yath2::Options::Resource - Resource-related options for yath commands.
 
 =head1 DESCRIPTION
 
-Defines the C<--resource> / C<-R>, C<--slots> / C<-j>, C<--job-slots>
-/ C<-x>, C<--no-resource>, and C<--utilize> / C<-U> options.
+Defines C<--resource> / C<-R>, C<--slots> / C<-j>, C<--job-slots> /
+C<-x>, C<--no-resource>, and C<--utilize> / C<-U>, and post-processes
+them to auto-inject the default resource stack.
 
-=head2 The --utilize / -U option (stub)
+C<--utilize PCT> sets a percentage (C<0 E<lt> PCT E<lt> 100>, default
+C<75>) used as the saturation threshold by every auto-injected
+utilizer (CPU, Memory, UnixLimits, PipeLimits, Disk). Each resource
+applies it to its own monitored subsystem.
 
-C<--utilize PCT> is a stub option (Phase 6.3 of the resource model
-overhaul). It accepts a percentage strictly greater than C<0> and
-strictly less than C<100>; values outside that range or non-numeric
-values are rejected at option-parse time.
-
-The intended (not-yet-wired) behavior: every resource class that
-consumes L<Test2::Harness2::Role::Resource::Utilizer> receives the
-percentage and uses it as its "this subsystem is too utilized; defer
-new assignments" threshold. The exact subsystem (CPU load, free
-memory, free C</tmp> space, etc.) is per-resource. The option exists
-now so command-line plumbing, validation, and propagation are in
-place; the role contract and per-resource implementations are wired
-up in follow-on work.
-
-=head3 Spawn-throttle pairing
-
-The percentage gate alone is not sufficient: a freshly spawned test
-needs a moment to actually consume CPU/memory/disk before the
-resource sample reflects it. Without throttling the harness would
-launch a burst of tests against an apparently-idle system and only
-notice the over-commit on the next sample.
-
-The Utilizer role pairs the percentage with a spawn-throttle window:
+=head2 Auto-injected resources
 
 =over 4
 
-=item *
+=item Linux
 
-In a sliding 2-second window, count the delta C<(spawned - exited)>.
+L<CPU|Test2::Harness2::Resource::CPU>,
+L<Memory|Test2::Harness2::Resource::Memory>,
+L<UnixLimits|Test2::Harness2::Resource::UnixLimits>,
+L<PipeLimits|Test2::Harness2::Resource::PipeLimits>, and
+L<Throttle|Test2::Harness2::Resource::Throttle> all auto-inject and
+read C<--utilize>. With no C<-j> there is no hard cap; the stack
+alone gates new launches. Passing C<-j N> adds
+L<JobCount|Test2::Harness2::Resource::JobCount> on top as a firm
+upper bound.
 
-=item *
+=item Non-Linux
 
-If the delta is at or above a per-class threshold, wait one more
-second before starting the next batch.
+The utilizer/throttle stack is Linux-only (samples C</proc>). On
+other platforms yath falls back to JobCount only. With no C<-j> the
+slot count is half the detected logical CPU count (minimum 1), or
+C<2> when the count cannot be detected. Install L<System::Info> for
+a reliable cross-platform CPU count.
 
-=item *
+=item Disk (any platform)
 
-If 40 spawn and 40 exit in the same 2 seconds (delta C<0>), the
-window is "balanced" and there is no throttling -- short tests are
-allowed to roll through at full speed.
+When L<Filesys::Df> is installed, L<Test2::Harness2::Resource::Disk>
+auto-injects against the system tmpdir (C<File::Spec-E<gt>tmpdir>)
+with C<min_free_pct = 100 - utilize>. Pass C<-R Disk=...> to
+override; pass C<--no-resource> to disable.
 
 =back
+
+L<Test2::Harness2::Resource::Throttle> pairs the percentage gate with
+a sliding spawn-rate window so a freshly spawned test gets time to
+consume resources before the next launch. See that module for the
+rule grammar.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
 

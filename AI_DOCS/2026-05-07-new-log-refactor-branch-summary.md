@@ -399,7 +399,7 @@ prior single-version behavior.
 
 Merged into `2.0` at commit `e45acaa9b` with `--no-ff`. 73 commits total
 on the branch. Suite at merge: 216/216 passing under
-`AUTHOR_TESTING=1 yath -D test -j16 t`.
+`AUTHOR_TESTING=1 yath -D test t`.
 
 Code on `2.0` is provisional pending end-to-end "AI slop" review before
 a stable release. Yath 2.0 is unreleased and under rapid prototyping;

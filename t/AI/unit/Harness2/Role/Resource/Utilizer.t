@@ -115,8 +115,8 @@ subtest 'role refuses to compose without required methods' => sub {
     my $err = _build_unimplemented(1);
     like(
         $err,
-        qr/Can't apply role .*Test2::Harness2::Role::Resource::Utilizer.* missing.*set_utilize_percent|requires the method.*set_utilize_percent|Can't apply.*missing\b.*set_utilize_percent/i,
-        'composition fails when required methods are absent (set_utilize_percent)',
+        qr/Can't apply role .*Test2::Harness2::Role::Resource::Utilizer.* missing.*is_temporarily_unavailable|requires the method.*is_temporarily_unavailable|Can't apply.*missing\b.*is_temporarily_unavailable/i,
+        'composition fails when required methods are absent (is_temporarily_unavailable)',
     );
 };
 
@@ -127,6 +127,65 @@ subtest 'utilize_percent reads storage slot' => sub {
     ok(!defined $r->utilize_percent, 'unset');
     $r->set_utilize_percent(75);
     is($r->utilize_percent, 75, 'reads back after set');
+};
+
+subtest 'should_defer_for_utilization honors min_concurrent floor' => sub {
+    my $r = My::Util::Resource->new;
+    $r->mark_saturated;
+
+    # in_flight comes from the scheduler via a shared scalar ref;
+    # mutating $in_flight is visible to the resource immediately.
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
+
+    is($r->should_defer_for_utilization, 0, 'saturated + 0 in-flight: do not defer (default min=1)');
+
+    $in_flight = 1;
+    is($r->should_defer_for_utilization, 1, 'saturated + 1 in-flight: defer');
+
+    $r->mark_unsaturated;
+    is($r->should_defer_for_utilization, 0, 'not saturated + 1 in-flight: do not defer');
+    $in_flight = 0;
+    is($r->should_defer_for_utilization, 0, 'not saturated + 0 in-flight: do not defer');
+};
+
+subtest 'should_defer_for_utilization respects custom min_concurrent' => sub {
+    my $r = My::Util::Resource->new(min_concurrent => 3);
+    $r->mark_saturated;
+
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
+
+    for my $n (0, 1, 2) {
+        $in_flight = $n;
+        is($r->should_defer_for_utilization, 0, "saturated + $n in-flight (< 3 floor): do not defer");
+    }
+    $in_flight = 3;
+    is($r->should_defer_for_utilization, 1, 'saturated + 3 in-flight (== floor): defer');
+    $in_flight = 4;
+    is($r->should_defer_for_utilization, 1, 'saturated + 4 in-flight (> floor): defer');
+};
+
+subtest 'set_in_flight_ref requires scalar ref' => sub {
+    my $r = My::Util::Resource->new;
+    like(
+        dies { $r->set_in_flight_ref() },
+        qr/scalar ref required/,
+        'undef rejected'
+    );
+    like(
+        dies { $r->set_in_flight_ref(5) },
+        qr/scalar ref required/,
+        'plain scalar rejected'
+    );
+};
+
+subtest 'min_concurrent accessor' => sub {
+    my $r = My::Util::Resource->new;
+    ok(!defined $r->min_concurrent, 'undef by default (caller-side); should_defer_for_utilization treats undef as 1');
+
+    my $r2 = My::Util::Resource->new(min_concurrent => 5);
+    is($r2->min_concurrent, 5, 'reads back from constructor arg');
 };
 
 done_testing;

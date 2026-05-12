@@ -92,33 +92,33 @@ subtest 'status reflects current state' => sub {
     is($s->{assignments}[0]{count}, 1);
 };
 
-subtest 'JobCount supports paused state but not broken' => sub {
-    # available() no longer self-gates on broken/paused state -- the
-    # scheduler checks is_usable first. JobCount has no backing
-    # service, so broken transitions are not supported: the role's
-    # croaking defaults apply. Pausing is supported.
+subtest 'JobCount state transitions via role defaults' => sub {
+    # available() does not self-gate on broken/paused -- the scheduler
+    # checks is_usable first. JobCount does not override the role's
+    # state-transition methods, so it inherits slot-backed defaults.
     my $r = Test2::Harness2::Resource::JobCount->new(slots => 2);
     ok($r->is_usable, 'usable when healthy');
 
-    like(
-        dies { $r->mark_broken },
-        qr/mark_broken is not implemented/,
-        'JobCount cannot be marked broken',
-    );
-    like(
-        dies { $r->mark_permanent_broken },
-        qr/mark_permanent_broken is not implemented/,
-        'JobCount cannot be marked permanent_broken',
-    );
-    is($r->is_broken,           0, 'is_broken stays 0');
-    is($r->is_permanent_broken, 0, 'is_permanent_broken stays 0');
-
-    $r->mark_paused;
-    ok($r->is_paused,  'paused after mark_paused');
-    ok(!$r->is_usable, 'not usable when paused');
+    $r->mark_broken;
+    is($r->is_broken, 1, 'mark_broken sets transient flag');
+    ok(!$r->is_usable, 'not usable when broken');
     $r->mark_resumed;
-    ok(!$r->is_paused, 'resumed after mark_resumed');
-    ok($r->is_usable,  'usable after resume');
+    is($r->is_broken, 0, 'mark_resumed clears transient broken');
+
+    $r->mark_permanent_broken;
+    is($r->is_permanent_broken, 1, 'mark_permanent_broken sticks');
+    is($r->is_broken,           1, 'permanent also reports broken');
+    $r->mark_resumed;
+    is($r->is_permanent_broken, 1, 'permanent survives mark_resumed');
+    is($r->is_broken,           1, 'broken stays set while permanent');
+
+    my $r2 = Test2::Harness2::Resource::JobCount->new(slots => 2);
+    $r2->mark_paused;
+    ok($r2->is_paused,  'paused after mark_paused');
+    ok(!$r2->is_usable, 'not usable when paused');
+    $r2->mark_resumed;
+    ok(!$r2->is_paused, 'resumed after mark_resumed');
+    ok($r2->is_usable,  'usable after resume');
 };
 
 subtest 'duplicate assign id rejected' => sub {

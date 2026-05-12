@@ -2,156 +2,256 @@ package Test2::Harness2::Resource::UnixLimits;
 use strict;
 use warnings;
 
-# Implementation note: this resource accepts a --utilize percentage; the
-# gating mechanism is wired up in a follow-up step.
-
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
+use Test2::Harness2::Util::Units qw/parse_count_or_pct parse_size_or_pct/;
+
 use Object::HashBase qw{
-    <thresholds
-    <poll_interval
-    <nofile_headroom
-    <nproc_headroom
-    <utilize_percent
+    <nproc
+    <nofile
+    <as
+    &Test2::Harness2::Role::Resource
+    &Test2::Harness2::Role::Resource::Utilizer
 };
 
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
-with 'Test2::Harness2::Role::Resource::Utilizer';
+sub inline_key_prefixes { [qw/nproc nofile as/] }
 
-sub resource_name { 'unix_limits' }
+my %OPTION_KEYS = map { $_ => 1 } qw/nproc nofile as name utilize_percent/;
 
 sub init {
     my $self = shift;
 
-    # Per-ulimit headroom: "don't touch these last N units of slack".
-    # When current usage + this headroom would meet or exceed the
-    # ulimit, available() returns 0 until the next sample shows the
-    # pressure has eased.
-    $self->{+NOFILE_HEADROOM} //= 64;
-    $self->{+NPROC_HEADROOM}  //= 8;
-    $self->{+POLL_INTERVAL}   //= 2;
+    croak "Resource::UnixLimits requires Linux (this is $^O)" unless $^O eq 'linux';
 
-    # thresholds is a hashref of per-limit overrides:
-    #   { RLIMIT_NOFILE => { headroom => 128 },
-    #     RLIMIT_NPROC  => { headroom => 16  } }
-    # Entries here override the simple *_HEADROOM defaults above and
-    # are the place to plug in any future rlimits (RLIMIT_AS, etc.).
-    $self->{+THRESHOLDS} //= {};
+    for my $dim (qw/nproc nofile/) {
+        my $v = $self->{$dim};
+        croak "Resource::UnixLimits: $dim is required" unless ref($v) eq 'HASH';
+        croak "Resource::UnixLimits: $dim.kind must be 'count' or 'pct'"
+            unless $v->{kind} && ($v->{kind} eq 'count' || $v->{kind} eq 'pct');
+        croak "Resource::UnixLimits: $dim.value must be > 0" unless $v->{value} > 0;
+    }
+    if (my $as = $self->{+AS}) {
+        croak "Resource::UnixLimits: AS.kind must be 'bytes' or 'pct'"
+            unless ref($as) eq 'HASH' && $as->{kind} && ($as->{kind} eq 'bytes' || $as->{kind} eq 'pct');
+        croak "Resource::UnixLimits: AS.value must be > 0" unless $as->{value} > 0;
+    }
 }
 
-# STUB: throttles new test launches when the user's per-process resource
-# limits (ulimits) are close to being hit. This is a *preventative*
-# brake -- it reads the ulimits we care about, samples our own current
-# usage against them, and refuses new assignments (available returns 0)
-# when the free margin drops below the configured headroom.
-#
-# Scope:
-# - Unix-family platforms only. No Windows support. Intended to work on
-#   Linux, the BSD variants (FreeBSD / OpenBSD / NetBSD / DragonFly /
-#   macOS), and Solaris / illumos.
-#
-# Limits this resource should consider throttling on:
-# - RLIMIT_NPROC   -- max user processes. Every concurrent test costs
-#                     at minimum one extra process (collector + child
-#                     test + any preload stage forks it chained off
-#                     of), so NPROC is the most direct cap on "how
-#                     many tests we can spawn".
-# - RLIMIT_NOFILE  -- max open file descriptors. A leaking test suite,
-#                     or one running in the same user session as
-#                     long-lived editors / IDEs / browsers, can chew
-#                     through the cap quickly. Every collector pipe
-#                     pair, every open log file, every test-process
-#                     stdio counts against this.
-# - (optional, future)
-#   RLIMIT_AS / RLIMIT_DATA -- address space. Memory.pm already covers
-#                     *system* free memory; the ulimit version would
-#                     cover the per-user cap that some sysadmins
-#                     impose independently.
-#   RLIMIT_CPU / RLIMIT_FSIZE -- probably not worth throttling on,
-#                     but they can be added via `thresholds` if a
-#                     need appears.
-#
-# Intended implementation shape:
-# 1. A `service_unix_limits_monitor` child runs in the background. It:
-#    - Reads the ulimits at start via POSIX::RLIMIT_* + getrlimit()
-#      (or BSD::Resource on platforms that need it).
-#    - Samples current usage every poll_interval seconds -- see the
-#      per-flavour notes below for where that data lives.
-#    - Emits IPC updates back to the harness (and transitively this
-#      resource) with the current (limit, used, free) triple per
-#      tracked rlimit.
-# 2. available(%p) consults the latest sampled state. For each tracked
-#    rlimit, it computes
-#        free = (limit - used) - headroom
-#    If any tracked rlimit's free is < the job's estimated cost
-#    (NOFILE: test_file->opens_hint or a conservative constant;
-#    NPROC: 1 + collector + any additional children the job declares)
-#    available returns 0. Otherwise it returns the job's requested
-#    grant.
-# 3. assign / release track per-assignment estimates so the in-flight
-#    accounting stays close to what the next poll will confirm. The
-#    poll is authoritative; the bookkeeping only covers the window
-#    between spawn and the monitor's next sample.
-#
-# Per-flavour sampling differs enough that each OS family is a
-# reasonable candidate for its own subclass. Suggested split:
-#
-# - Test2::Harness2::Resource::UnixLimits::Linux
-#     - /proc/self/limits for the rlimit values themselves.
-#     - /proc/self/fd walk (or /proc/<pid>/fdinfo) for precise NOFILE.
-#     - User-process count: /proc scan filtered by UID, or
-#       `ps --no-headers -U <uid> -o pid | wc -l`.
-#     - cgroup v2 pids.max + pids.current can override RLIMIT_NPROC
-#       in modern systemd user sessions -- worth reading when present.
-# - Test2::Harness2::Resource::UnixLimits::BSD
-#     - FreeBSD / OpenBSD / NetBSD / DragonFly: sysctl(KERN_PROC_*) +
-#       kvm_getprocs for the user-process count, kinfo_getfile /
-#       libprocstat for FD enumeration.
-#     - macOS (Darwin) is BSD-shaped but uses proc_pidinfo /
-#       libproc instead of kvm_*. Likely worth its own sub-subclass
-#       (UnixLimits::BSD::Darwin) if the divergence gets sharp.
-# - Test2::Harness2::Resource::UnixLimits::Solaris
-#     - /proc/<pid>/psinfo + prctl(2) for rlimits.
-#     - /proc/<pid>/fd for open FD enumeration (same shape as Linux
-#       but different record format).
-#     - User-process count: pgrep -U <user> | wc -l works as a
-#       portable fallback across illumos distributions.
-#
-# The base class owns the role contract + the generic math; each
-# subclass owns the sampler. A small `viable()`-style chooser
-# (check $^O and pick the first subclass whose viable() returns
-# true, bail out otherwise) keeps the Resource::UnixLimits ->
-# platform-impl mapping transparent to the harness config. If no
-# subclass is viable the resource should cleanly refuse to start
-# rather than load and misreport usage.
-sub available { croak __PACKAGE__ . "::available is not implemented yet" }
-sub assign    { croak __PACKAGE__ . "::assign is not implemented yet" }
-sub release   { croak __PACKAGE__ . "::release is not implemented yet" }
+sub parse_options {
+    my ($class, @args) = @_;
 
-# Utilizer role contract; wired up alongside the sampler in a
-# follow-up step.
-sub set_utilize_percent {
-    croak __PACKAGE__ . "::set_utilize_percent is not implemented yet";
+    my %out;
+    my %file_vals;
+    my (%inline, $inline_name);
+
+    my $i = 0;
+    while ($i < @args) {
+        my $arg = $args[$i];
+
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
+            $i += 2;
+            next;
+        }
+
+        croak "Resource::UnixLimits: undef positional entry" unless defined $arg;
+        croak "Resource::UnixLimits: ref positional entry" if ref $arg;
+
+        if ($arg =~ m{^\@(.+)\z}) {
+            %file_vals = %{$class->_load_config_file($1)};
+        }
+        elsif ($arg =~ m{^name=(.*)\z}) {
+            $inline_name = $class->validate_name($1);
+        }
+        elsif ($arg =~ m{^(nproc|nofile)=(.+)\z}) {
+            my ($dim, $raw) = ($1, $2);
+            my $parsed;
+            eval { $parsed = parse_count_or_pct($raw, name => $dim); 1 }
+                or croak "Resource::UnixLimits: bad $dim in '$arg': $@";
+            $inline{$dim} = $parsed;
+        }
+        elsif ($arg =~ m{^as=(.+)\z}) {
+            my $parsed;
+            eval { $parsed = parse_size_or_pct($1, name => 'as'); 1 }
+                or croak "Resource::UnixLimits: bad as in '$arg': $@";
+            $inline{as} = $parsed;
+        }
+        elsif ($arg =~ m{^([0-9]+(?:\.[0-9]+)?)%\z}) {
+            # Bare pct applies to nproc + nofile, not as.
+            my $pct = $1;
+            croak "Resource::UnixLimits: pct must be > 0 and < 100 (got '$pct')"
+                unless $pct > 0 && $pct < 100;
+            $inline{nproc}  = {kind => 'pct', value => $pct + 0};
+            $inline{nofile} = {kind => 'pct', value => $pct + 0};
+        }
+        else {
+            croak "Resource::UnixLimits: unrecognised entry '$arg'";
+        }
+
+        $i += 1;
+    }
+
+    for my $dim (qw/nproc nofile as name/) {
+        $out{$dim} = $file_vals{$dim} if exists $file_vals{$dim};
+    }
+    for my $dim (qw/nproc nofile as/) {
+        $out{$dim} = $inline{$dim} if exists $inline{$dim};
+    }
+    $out{name} = $inline_name if defined $inline_name;
+
+    $out{nproc}  //= {kind => 'pct', value => 10};
+    $out{nofile} //= {kind => 'pct', value => 10};
+    $out{name}   //= 'unixlimits';
+
+    return %out;
+}
+
+sub _load_config_file {
+    my ($class, $path) = @_;
+
+    my $data = $class->slurp_json_config($path);
+    $class->whitelist_keys($data, [qw/nproc nofile as name/], $path);
+
+    my %out;
+    for my $dim (qw/nproc nofile/) {
+        next unless defined $data->{$dim};
+        my $parsed;
+        my $ok  = eval { $parsed = parse_count_or_pct($data->{$dim}, name => $dim); 1 };
+        my $err = $@;
+        croak "Resource::UnixLimits: bad $dim in '$path': $err" unless $ok;
+        $out{$dim} = $parsed;
+    }
+    if (defined $data->{as}) {
+        my $parsed;
+        my $ok  = eval { $parsed = parse_size_or_pct($data->{as}, name => 'as'); 1 };
+        my $err = $@;
+        croak "Resource::UnixLimits: bad as in '$path': $err" unless $ok;
+        $out{as} = $parsed;
+    }
+    if (defined $data->{name}) {
+        $out{name} = $class->validate_name($data->{name}, " in '$path'");
+    }
+    return \%out;
+}
+
+# Test seam.
+sub _read_self_limits {
+    open my $fh, '<', '/proc/self/limits' or die "open /proc/self/limits: $!";
+    my %out;
+    while (my $line = <$fh>) {
+        if ($line =~ m/^Max processes\s+(\S+)/) {
+            $out{nproc} = $1 eq 'unlimited' ? undef : $1 + 0;
+        }
+        elsif ($line =~ m/^Max open files\s+(\S+)/) {
+            $out{nofile} = $1 eq 'unlimited' ? undef : $1 + 0;
+        }
+        elsif ($line =~ m/^Max address space\s+(\S+)/) {
+            $out{as} = $1 eq 'unlimited' ? undef : $1 + 0;
+        }
+    }
+    close $fh;
+    return \%out;
+}
+
+sub _read_self_status {
+    open my $fh, '<', '/proc/self/status' or die "open /proc/self/status: $!";
+    my %out;
+    while (my $line = <$fh>) {
+        $out{Threads} = $1 + 0 if $line =~ m/^Threads:\s+([0-9]+)/;
+        $out{VmSize}  = $1 + 0 if $line =~ m/^VmSize:\s+([0-9]+)\s*kB/;
+    }
+    close $fh;
+    return \%out;
+}
+
+sub _count_self_fd {
+    opendir my $dh, '/proc/self/fd' or die "opendir /proc/self/fd: $!";
+    my $n = 0;
+    while (my $e = readdir $dh) {
+        next if $e eq '.' || $e eq '..';
+        $n++;
+    }
+    closedir $dh;
+    return $n;
+}
+
+# Status (key/value list) for one rlimit dimension: nproc / nofile / as.
+sub _assess_dimension {
+    my ($self, $dim, $soft_cap, $current) = @_;
+
+    return (
+        state              => 'ok', soft_cap => $soft_cap, current => $current,
+        effective_min_free => 0,    headroom => $self->{$dim}
+    ) unless defined $soft_cap;
+
+    my $headroom = $self->{$dim};
+    my $explicit =
+          $headroom->{kind} eq 'count' ? $headroom->{value}
+        : $headroom->{kind} eq 'bytes' ? $headroom->{value}
+        :                                int($soft_cap * $headroom->{value} / 100);
+
+    my $utilize = 0;
+    if (defined $self->{+UTILIZE_PERCENT}) {
+        $utilize = int($soft_cap * (100 - $self->{+UTILIZE_PERCENT}) / 100);
+    }
+
+    my $effective = $explicit > $utilize ? $explicit : $utilize;
+    my $free      = $soft_cap - $current;
+    my $state     = $free < $effective ? 'low' : 'ok';
+
+    return (
+        state              => $state,
+        soft_cap           => $soft_cap,
+        current            => $current,
+        free               => $free,
+        effective_min_free => $effective,
+        headroom           => $headroom,
+    );
+}
+
+# Sample + assess every configured dimension. 'as' key absent when no AS threshold configured.
+sub _dimension_states {
+    my $self = shift;
+
+    my $limits  = $self->_read_self_limits;
+    my $status  = $self->_read_self_status;
+    my $fdcount = $self->_count_self_fd;
+
+    my %dims;
+    $dims{nproc}  = {$self->_assess_dimension('nproc',  $limits->{nproc},  $status->{Threads} // 0)};
+    $dims{nofile} = {$self->_assess_dimension('nofile', $limits->{nofile}, $fdcount)};
+    if ($self->{+AS}) {
+        my $vmsize_bytes = ($status->{VmSize} // 0) * 1024;
+        $dims{as} = {$self->_assess_dimension('as', $limits->{as}, $vmsize_bytes)};
+    }
+    return \%dims;
 }
 
 sub is_temporarily_unavailable {
-    croak __PACKAGE__ . "::is_temporarily_unavailable is not implemented yet";
+    my $self = shift;
+    my $dims = $self->_dimension_states;
+    for my $d (values %$dims) {
+        return 1 if $d->{state} eq 'low';
+    }
+    return 0;
+}
+
+sub available {
+    my ($self, %p) = @_;
+    croak "'job' is required" unless defined $p{job};
+    return 1;
 }
 
 sub status {
     my $self = shift;
     return {
         resource        => $self->resource_name,
-        thresholds      => $self->{+THRESHOLDS},
-        nofile_headroom => $self->{+NOFILE_HEADROOM},
-        nproc_headroom  => $self->{+NPROC_HEADROOM},
-        broken          => $self->is_broken,
+        utilize_percent => $self->{+UTILIZE_PERCENT},
         paused          => $self->is_paused,
-        permanent       => $self->is_permanent_broken,
-        assignments     => [],
+        dimensions      => $self->_dimension_states,
+        in_flight       => $self->in_flight,
     };
 }
 
@@ -165,28 +265,38 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Resource::UnixLimits - (STUB) Throttle jobs against per-user Unix ulimits.
+Test2::Harness2::Resource::UnixLimits - Throttle jobs against per-process Unix ulimits.
 
-=head1 STATUS
+=head1 SYNOPSIS
 
-Stub only. Placeholder for a resource that prevents new jobs from starting
-when the user's per-process resource limits (RLIMIT_NPROC, RLIMIT_NOFILE,
-optionally RLIMIT_AS) are close to being hit.
+    yath -D test -R UnixLimits
+    yath -D test -R UnixLimits=10%
+    yath -D test -R UnixLimits=nproc=128,nofile=10%
+    yath -D test -R UnixLimits=as=512mb
 
-Intended to support Linux, the BSD variants (FreeBSD / OpenBSD / NetBSD /
-DragonFly / macOS), and Solaris / illumos. Each platform's sampler is a
-candidate for a dedicated subclass (e.g.
-L<Test2::Harness2::Resource::UnixLimits::Linux>,
-L<Test2::Harness2::Resource::UnixLimits::BSD>,
-L<Test2::Harness2::Resource::UnixLimits::Solaris>) that plugs into this
-base class's scheduling contract.
+=head1 DESCRIPTION
 
-Windows and other non-Unix platforms are explicitly out of scope for this
-resource.
+Defers starts when process soft ulimits (C<nproc>, C<nofile>, C<as>)
+are near saturation. C<nproc> and C<nofile> default on with 10%
+headroom; C<as> is off until an explicit threshold is supplied.
+Thresholds accept count / bytes / percent; C<--utilize PCT> layers
+on top (C<max(explicit, utilize-derived)>).
+
+=head1 LIMITATIONS
+
+Linux only.
 
 =head1 SOURCE
 
 L<https://github.com/Test-More/Test2-Harness>
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
 
 =head1 AUTHORS
 

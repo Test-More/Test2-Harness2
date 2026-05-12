@@ -66,6 +66,30 @@ Three primitives, picked by purpose. Never use 4-arg `select` directly.
 ## Conditionals
 
 - Single-statement conditional blocks must use postfix form: `do_thing() if $cond` or `do_thing() unless $cond`, never `if ($cond) { do_thing(); }`. Multi-statement blocks keep the block form.
+- Never write a multi-line conditional expression inside the parens of `if`/`unless`/`while`/`until`. A conditional whose test expression spans more than one source line is hard to scan; the eye loses which clauses combine. Refactor by one of:
+  - Accumulate the boolean step by step:
+
+        my $ok = defined $arg;
+        $ok &&= !ref($arg);
+        $ok &&= $arg !~ m{^[0-9]};
+        $ok &&= $arg !~ m{^@};
+        if ($ok) { ... }
+
+  - Extract a predicate helper that returns true/false:
+
+        sub _is_unknown_kv_arg {
+            my ($class, $arg, $has_next) = @_;
+            return 0 unless $has_next;
+            return 0 unless defined $arg;
+            return 0 if ref $arg;
+            return 0 if $arg =~ m{^[0-9]};
+            return 0 if $arg =~ m{^@};
+            return 1;
+        }
+
+        if ($class->_is_unknown_kv_arg($arg, $i + 1 < @args)) { ... }
+
+  Either form is acceptable; pick the one that reads best for the surrounding code. Short conditionals that fit on a single source line are still fine.
 
 ## Lists and pushes
 

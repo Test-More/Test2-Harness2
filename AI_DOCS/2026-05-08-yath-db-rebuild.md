@@ -558,7 +558,7 @@ pre-rebuild baseline summarized.
   payload round-trip across the four flavors via SQL backend (DBIC's
   codec is structurally identical because Result classes own it).
 
-Acceptance criterion at merge: `AUTHOR_TESTING=1 yath -D test -j16 t/`
+Acceptance criterion at merge: `AUTHOR_TESTING=1 yath -D test t/`
 exits 0 with 225+ passing files (count grows as new tests land).
 
 ## 8. Salvage / Discard
@@ -691,7 +691,7 @@ contract that this rebuild operates on top of.
 
 Merge commit must satisfy:
 
-1. `AUTHOR_TESTING=1 yath -D test -j16 t/` passes.
+1. `AUTHOR_TESTING=1 yath -D test t/` passes.
 2. `git grep 'App::Yath2::DB::Internal'` returns nothing.
 3. `git grep 'BEGIN-block forwarder'` (or any artifact of the DBIC
    delegation pattern) returns nothing.

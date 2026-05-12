@@ -6,33 +6,31 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
+use Test2::Harness2::Util::JSON qw/decode_json/;
+
+# Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
+use Object::HashBase qw{+paused +name +in_flight_ref +broken +permanent_broken};
 
 requires 'available';
-requires 'assign';
-requires 'release';
 requires 'status';
 
-# Whether this resource participates in a given job's allocation. The
-# scheduler checks this first: resources that return 0 are skipped
-# entirely for that job (no brokenness check, no assign, no release).
-# Default: yes, always needed.
 sub needed { 1 }
 
 sub resource_name {
-    my $self  = shift;
+    my $self = shift;
+    if (ref $self) {
+        my $n = $self->{+NAME};
+        return $n if defined $n && length $n;
+    }
     my $class = ref($self) || $self;
-    (my $name = $class) =~ s/^.*:://;
-    return lc($name);
+    $class =~ s/^.*:://;
+    return lc($class);
 }
 
-# Brokenness / paused state queries. Defaults assume the resource
-# cannot enter these states; consumers that can override these
-# accessors to read from their own storage. is_usable layers over the
-# three.
-sub is_broken           { 0 }
-sub is_permanent_broken { 0 }
-sub is_paused           { 0 }
+sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT_BROKEN} ? 1 : 0 }
+sub is_permanent_broken { $_[0]->{+PERMANENT_BROKEN}                     ? 1 : 0 }
+sub is_paused           { $_[0]->{+PAUSED}                               ? 1 : 0 }
 
 sub is_usable {
     my $self = shift;
@@ -42,35 +40,154 @@ sub is_usable {
     return 1;
 }
 
-# State-transition hooks. The role can't pick a storage model for the
-# consumer, so the defaults croak: calling mark_broken on a resource
-# that never declared it could support the transition is a contract
-# violation, not a silent no-op. Resources that can be broken/paused
-# override these to do their own bookkeeping; resources that cannot
-# (e.g. JobCount's broken transitions) leave the croaking defaults in
-# place so bad callers fail loudly.
-sub mark_broken           { croak ref($_[0]) . "::mark_broken is not implemented" }
-sub mark_permanent_broken { croak ref($_[0]) . "::mark_permanent_broken is not implemented" }
-sub mark_paused           { croak ref($_[0]) . "::mark_paused is not implemented" }
-sub mark_resumed          { croak ref($_[0]) . "::mark_resumed is not implemented" }
+sub mark_broken           { $_[0]->{+BROKEN} = 1 }
+sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT_BROKEN} = 1 }
+sub mark_paused           { $_[0]->{+PAUSED} = 1 }
 
-# Declare the supervised subprocesses this resource needs in the
-# current environment. Each list entry is an arrayref:
-#
-#     [ $service_class, @construction_params ]
-#
-# $service_class must consume Test2::Harness2::Role::ResourceService;
-# @construction_params are passed through to $service_class->new as-is,
-# with the host layering name / log_path / ipcm_info on top before
-# construction. A resource that has nothing to supervise in the current
-# environment returns an empty list -- there is no separate
-# "applicable" hook; the resource's own logic decides membership by
-# including or omitting each service from the returned list.
+# Clear transient broken + paused; preserve permanent_broken.
+sub mark_resumed {
+    my $self = shift;
+    $self->{+PAUSED} = 0;
+    $self->{+BROKEN} = 0 unless $self->{+PERMANENT_BROKEN};
+}
+
+# No-op defaults. Resources that need per-assignment state (Throttle's
+# timestamp window, JobCount's slot math) override locally. The
+# scheduler maintains the aggregate in-flight count; resources read
+# it via in_flight() which dereferences the shared scalar ref the
+# scheduler installs at registration time.
+sub assign {
+    my ($self, %p) = @_;
+    croak "'id' is required"           unless $p{id};
+    croak "'job' is required"          unless $p{job};
+    croak "'env' hashref is required"  unless ref($p{env}) eq 'HASH';
+    return 1;
+}
+
+sub release {
+    my ($self, %p) = @_;
+    croak "'id' is required" unless $p{id};
+    return 1;
+}
+
+# Install a scalar ref the resource will deref to read the current
+# in-flight count. Called once by the scheduler when the resource is
+# registered. The scheduler mutates the underlying scalar directly;
+# resources see updates without per-resource notification.
+sub set_in_flight_ref {
+    my ($self, $ref) = @_;
+    croak "set_in_flight_ref: scalar ref required"
+        unless ref($ref) eq 'SCALAR';
+    $self->{+IN_FLIGHT_REF} = $ref;
+    return;
+}
+
+sub in_flight {
+    my $ref = $_[0]->{+IN_FLIGHT_REF}
+        or croak ref($_[0]) . ": in_flight called before scheduler installed in_flight_ref";
+    return ${$ref};
+}
+
+sub inline_key_prefixes { [] }
+
+# True when $arg is an unknown key= token paired with a following value (caller advances past both).
+sub is_unknown_kv_arg {
+    my ($class, $arg, $has_next) = @_;
+
+    return 0 unless $has_next;
+    return 0 unless defined $arg;
+    return 0 if ref $arg;
+    return 0 if $arg =~ m{^[0-9]};
+    return 0 if $arg =~ m{^@};
+    return 0 if $arg =~ m{^name=};
+
+    my $prefixes = $class->inline_key_prefixes;
+    croak ref($class) || $class, ": inline_key_prefixes must return an ARRAY ref"
+        unless ref($prefixes) eq 'ARRAY';
+
+    for my $p (@$prefixes) {
+        return 0 if $arg =~ m{^\Q$p\E=};
+    }
+
+    return 1;
+}
+
 sub services { () }
-
-# Teardown hook; called by the harness when a resource is released globally
-# (harness shutdown) or per-run (run completes). Default: no-op.
 sub teardown { }
+
+# Shared option-parsing helpers. Error-message prefix derives from
+# the consumer's class via label() below. See POD.
+
+sub label {
+    my $class = ref($_[0]) || $_[0];
+    $class =~ s/^Test2::Harness2:://;
+    return $class;
+}
+
+# Slurp + decode JSON config. Croaks (with label prefix) on missing/unreadable/parse-fail/non-object.
+sub slurp_json_config {
+    my ($class, $path) = @_;
+
+    my $label = $class->label;
+
+    croak "$label: 'path' is required" unless defined $path && length $path;
+
+    croak "$label config file '$path' does not exist"  unless -e $path;
+    croak "$label config file '$path' is not readable" unless -r _;
+
+    open my $fh, '<:raw', $path
+        or croak "$label: cannot open config file '$path': $!";
+    my $body = do { local $/; <$fh> };
+    close $fh;
+
+    my $data;
+    my $ok  = eval { $data = decode_json($body); 1 };
+    my $err = $@;
+    croak "$label: cannot parse JSON in '$path': $err" unless $ok;
+
+    croak "$label: top-level of '$path' must be a JSON object"
+        unless ref($data) eq 'HASH';
+
+    return $data;
+}
+
+# Croak on any key in $data outside $allowed (arrayref or hashref). Sorted: deterministic first failure.
+sub whitelist_keys {
+    my ($class, $data, $allowed, $path) = @_;
+
+    croak $class->label, ": whitelist_keys: 'data' must be a HASH ref"
+        unless ref($data) eq 'HASH';
+
+    my %allowed;
+    if (ref($allowed) eq 'ARRAY') {
+        %allowed = map { $_ => 1 } @$allowed;
+    }
+    elsif (ref($allowed) eq 'HASH') {
+        %allowed = %$allowed;
+    }
+    else {
+        croak $class->label, ": whitelist_keys: 'allowed' must be ARRAY or HASH ref";
+    }
+
+    my $label = $class->label;
+    for my $k (sort keys %$data) {
+        croak "$label: unknown key '$k' in '$path'" unless $allowed{$k};
+    }
+
+    return;
+}
+
+# Croak unless $name is a defined, non-ref, non-empty, whitespace-free string. $where appends context.
+sub validate_name {
+    my ($class, $name, $where) = @_;
+
+    my $loc = defined($where) ? $where : '';
+
+    croak $class->label, ": name$loc must be a non-empty whitespace-free string"
+        unless defined($name) && !ref($name) && length($name) && $name !~ /\s/;
+
+    return $name;
+}
 
 1;
 
@@ -116,27 +233,23 @@ units.
 =back
 
 If every needed resource returns a positive grant, the scheduler calls
-C<assign> on each; when the job finishes it calls C<release>. The
-harness itself does not mandate any specific resource class. A harness
-constructed with no resources at all is a valid (unlimited concurrency)
-configuration. The C<yath test> command is the layer that injects a
-default L<Test2::Harness2::Resource::JobCount> when the user has not
-specified a resource on the command line.
+C<assign> on each; when the job finishes it calls C<release>. A harness
+with no resources is a valid (unlimited concurrency) configuration.
+L<App::Yath2::Options::Resource> handles the default auto-inject when
+yath is run on the command line.
 
-Resources may also declare one or more supervised subprocesses via the
-L</services> method. The harness instantiates and supervises each one;
-the resource itself never forks. See L</SERVICES> below.
+Resources may also declare supervised subprocesses via L</services>;
+the harness owns the fork/supervise/restart loop, the resource never
+forks. See L</SERVICES>.
 
 =head1 SYNOPSIS
 
     package My::Resource;
-    use strict;
-    use warnings;
 
-    use Object::HashBase qw/<limit <used/;
-
-    use Role::Tiny::With;
-    with 'Test2::Harness2::Role::Resource';
+    use Object::HashBase qw{
+        <limit <used
+        &Test2::Harness2::Role::Resource
+    };
 
     sub available {
         my ($self, %p) = @_;
@@ -145,20 +258,14 @@ the resource itself never forks. See L</SERVICES> below.
         return $need;
     }
 
-    sub assign  { ... }
-    sub release { ... }
-    sub status  { ... }
-
-    sub services {
-        my $self = shift;
-        return (
-            [ 'My::Resource::Daemon', name => 'mydaemon', config => $self->config ],
-        );
-    }
+    sub status { ... }
 
 =head1 REQUIRED METHODS
 
-Consumers must implement these. The role applies C<requires> to each.
+Consumers must implement these. The role applies C<requires> to
+C<available> and C<status>. C<assign> and C<release> have default
+implementations (see L</PROVIDED METHODS>) but most consumers will
+either rely on those or implement their own.
 
 =over 4
 
@@ -173,45 +280,35 @@ three-way signal:
 
 =item C<-1>
 
-This resource can never satisfy the request (e.g. the run needs 8 slots but
-only 4 exist). The job should be skipped, not deferred.
+Resource can never satisfy this job; skip.
 
 =item C<0>
 
-Not available right now, try again later. No blocking state should be
-implied.
+Not available now; defer.
 
 =item C<E<gt> 0>
 
-Resource is available; the integer is the amount granted (for
-multi-unit resources this may be less than requested).
+Granted; the integer is the amount.
 
 =back
 
-C<%params> is free-form and depends on the resource. The scheduler passes
-at least C<id> (assignment id) and C<job> (the L<Test2::Harness2::Run::Job>
-object); resources may accept additional keys to express richer requests
-(e.g. 'need => 2').
+C<%params> always includes C<id> and C<job>; resources may accept
+additional keys (e.g. C<need =E<gt> 2>).
 
 =item $resource->assign(%params)
 
-Reserve the resource for a job. Called only after C<available> returned a
-positive number. Receives the same C<%params> plus an C<env> hashref the
-resource may populate with environment variables that should be exported to
-the child process (see L<Test2::Harness2::Resource::JobCount> for an
-example).
+Reserve the resource for a job. Receives C<%params> plus an C<env>
+hashref the resource may populate with environment variables
+exported to the child process.
 
 =item $resource->release(%params)
 
-Release a previously-assigned resource. Receives at least the C<id> passed
-to C<assign>.
+Release a previously-assigned resource. Receives at least C<id>.
 
 =item $status = $resource->status
 
-Return a hashref describing the resource's current state (useful for UI
-display or the C<resources> status request). Format is resource-specific;
-at minimum include enough to show the operator what is assigned and what is
-free.
+Return a hashref describing the resource's current state. Format is
+resource-specific.
 
 =back
 
@@ -221,23 +318,20 @@ free.
 
 =item $bool = $resource->needed(job =E<gt> $job)
 
-Default: true. Override to opt this resource out for jobs that do not
-need it -- the scheduler then skips every subsequent step
-(brokenness/usable/available/assign/release) for that (resource, job)
-pair.
+Default: true. Override to opt out per-job; the scheduler then skips
+every other check for that pair.
 
 =item $name = $resource->resource_name
 
-Default: the last component of the class name, lowercased.
+Defaults to C<< $self->{+NAME} >> when set, otherwise the lowercased
+last component of the class name. Pass C<< name => 'foo' >> at
+construction to override.
 
 =item $bool = $resource->is_broken / is_permanent_broken / is_paused
 
-Return whether the resource is in the corresponding state. A broken or
-permanently-broken resource must not be assigned new work. A paused
-resource should likewise refuse assignment but may resume later. The
-role's default implementation returns C<0> for all three, so resources
-that cannot be broken get a working baseline. Consumers that track
-these states override the accessors to read from their own storage.
+Each accessor returns true iff the corresponding slot is set, except
+C<is_broken> also returns true while C<permanent_broken> is set.
+Defaults are slot-backed; consumers rarely override.
 
 =item $bool = $resource->is_usable
 
@@ -245,72 +339,66 @@ True when none of broken / permanent_broken / paused are set.
 
 =item $resource->mark_broken / mark_permanent_broken / mark_paused / mark_resumed
 
-State-transition hooks. The role's B<default implementations croak>:
-calling mark_broken on a resource that never declared it could support
-the transition is a contract violation, not a silent no-op. Resources
-that can enter these states override each mark_* they actually support,
-and record the transition so the matching C<is_*> accessor starts
-returning true. C<mark_permanent_broken> should also flip C<is_broken>
-to true; C<mark_resumed> clears transient broken/paused flags but must
-leave permanent brokenness intact.
+Defaults set or clear the corresponding slot. C<mark_permanent_broken>
+sets both C<broken> and C<permanent_broken> (sticky). C<mark_resumed>
+clears C<paused> and C<broken> but preserves C<permanent_broken>.
+Consumers with extra bookkeeping override locally.
+
+=item $bool = $resource->assign(%params) / release(%params)
+
+Defaults validate required keys (C<id>, C<job>, C<env> hashref for
+C<assign>; C<id> for C<release>) and return C<1>; no per-id state
+is kept. Override for richer bookkeeping.
+
+=item $resource->set_in_flight_ref(\$counter)
+
+Installed once by the scheduler at registration time. Resources
+should not call this themselves.
+
+=item $n = $resource->in_flight
+
+Current in-flight job count. Croaks if called before
+C<set_in_flight_ref>.
+
+=item \@prefixes = $class->inline_key_prefixes
+
+Bare key tokens (without C<=>) that this class's C<parse_options>
+recognises as inline key/value entries. Defaults to C<[]>; override
+to extend.
+
+=item $bool = $class->is_unknown_kv_arg($arg, $has_next)
+
+True when C<$arg> looks like an unknown C<key=value> token from the
+resource-group settings hash. Used by C<parse_options> to silently
+drop unknown keys it did not request.
 
 =item @entries = $resource->services
 
-Return the list of supervised subprocesses this resource requires.
-Each entry is an arrayref:
-
-    [ $service_class, @construction_params ]
-
-C<$service_class> must consume L<Test2::Harness2::Role::ResourceService>.
-C<@construction_params> are passed verbatim to
-C<< $service_class->new >>; the host adds C<name>, C<log_path>, and
-C<ipcm_info> on top before construction.
-
-Default: empty list. A resource that only needs supervision in certain
-environments returns an empty list when no service is applicable; there
-is no separate "applicable" hook.
+List of supervised subprocesses, each an arrayref
+C<[ $service_class, @construction_params ]>. C<$service_class> must
+consume L<Test2::Harness2::Role::ResourceService>. Default: empty
+list. See L</SERVICES>.
 
 =item $resource->teardown
 
-Called when the resource is being retired (harness shutdown for global
-resources, run completion for per-run resources). Default: no-op.
+Called when the resource is being retired (harness shutdown for
+global resources, run completion for per-run resources). Default:
+no-op.
 
 =back
 
 =head1 SERVICES
 
-A resource declares its supervised subprocesses via L</services>. Each
-entry names a class that consumes L<Test2::Harness2::Role::ResourceService>
-plus the constructor arguments for one instance of that class. The host
-is responsible for instantiating the service, spawning it, tracking its
-pid, and restarting or retiring it when it exits. The resource itself
-never forks.
+A resource declares supervised subprocesses via L</services>. The
+host instantiates each one, supervising its lifecycle; the resource
+never forks. Each entry's construction-params list must include
+C<name => $name> so the host can derive the service's log path and
+enforce per-scope name uniqueness. The host appends C<log_path> and
+C<ipcm_info> before calling C<< $service_class->new >>.
 
-The first argument of each construction-params list B<must> be C<name>
-(followed by the service's desired unique name within its scope). The
-host reads the name to derive the service's log file path and to
-enforce per-scope name uniqueness.
-
-Every service instance is constructed as:
-
-    $service_class->new(
-        @construction_params,
-        name      => $name,         # mandatory; first pair in @construction_params
-        log_path  => $log_path,     # host-derived from name + scope
-        ipcm_info => $ipcm_info,    # host's IPC::Manager info
-    );
-
-Any additional arguments the resource wants to pass go before C<name>
-in the params list.
-
-=head2 Restartability
-
-L<Test2::Harness2::Role::ResourceService/restartable> controls the
-host's behaviour when the service exits before shutdown. A
-non-restartable service that exits flips the owning resource to
-C<permanent_broken>; a restartable service is re-spawned, subject to
-spiral protection (C<$host-E<gt>max_restart_attempts>,
-C<$host-E<gt>restart_healthy_secs>).
+Restart behaviour is controlled by
+L<Test2::Harness2::Role::ResourceService/restartable>; see that
+role for the spiral-protection knobs.
 
 =head1 SOURCE
 

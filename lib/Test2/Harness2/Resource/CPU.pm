@@ -2,60 +2,173 @@ package Test2::Harness2::Resource::CPU;
 use strict;
 use warnings;
 
-# Implementation note: this resource accepts a --utilize percentage; the
-# gating mechanism is wired up in a follow-up step.
-
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
+
 use Object::HashBase qw{
-    <poll_interval
-    <utilize_percent
+    +prev_stat
+    +last_busy_pct
+    &Test2::Harness2::Role::Resource
+    &Test2::Harness2::Role::Resource::Utilizer
 };
 
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
-with 'Test2::Harness2::Role::Resource::Utilizer';
+sub inline_key_prefixes { [qw/utilize/] }
 
-sub resource_name { 'cpu' }
+# Known keys; other resource-group settings are ignored.
+my %OPTION_KEYS = map { $_ => 1 } qw/utilize_percent name/;
 
 sub init {
     my $self = shift;
 
-    $self->{+POLL_INTERVAL} //= 2;
+    croak "Resource::CPU requires Linux (this is $^O)" unless $^O eq 'linux';
+
+    $self->{+LAST_BUSY_PCT} //= 0;
+
+    my $u = $self->{+UTILIZE_PERCENT};
+    croak "Resource::CPU: utilize_percent must be > 0 and < 100"
+        unless defined $u && $u =~ m/^[0-9]+(?:\.[0-9]+)?\z/ && $u > 0 && $u < 100;
 }
 
-# STUB: gates new test launches on aggregate CPU usage across every
-# CPU on the host. Intended implementation: a service_cpu_monitor
-# child reads /proc/stat or platform equivalent every poll_interval
-# seconds, reports the latest aggregate utilisation back to the
-# harness, and this resource refuses new assignments while the
-# percentage is at or above the configured utilize_percent.
-sub available { croak __PACKAGE__ . "::available is not implemented yet" }
-sub assign    { croak __PACKAGE__ . "::assign is not implemented yet" }
-sub release   { croak __PACKAGE__ . "::release is not implemented yet" }
+sub parse_options {
+    my ($class, @args) = @_;
 
-# Utilizer role contract; wired up alongside the CPU sampler in a
-# follow-up step.
-sub set_utilize_percent {
-    croak __PACKAGE__ . "::set_utilize_percent is not implemented yet";
+    my %out;
+    my %file_vals;
+    my $inline_util;
+    my $inline_name;
+
+    my $i = 0;
+    while ($i < @args) {
+        my $arg = $args[$i];
+
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
+            $i += 2;
+            next;
+        }
+
+        croak "Resource::CPU: undef positional entry" unless defined $arg;
+        croak "Resource::CPU: ref positional entry" if ref $arg;
+
+        if ($arg =~ m{^\@(.+)\z}) {
+            %file_vals = %{$class->_load_config_file($1)};
+        }
+        elsif ($arg =~ m{^name=(.*)\z}) {
+            $inline_name = $class->validate_name($1);
+        }
+        elsif ($arg =~ m{^utilize=([0-9]+(?:\.[0-9]+)?)\z}) {
+            my $u = $1;
+            croak "Resource::CPU: utilize must be > 0 and < 100 (got '$u')"
+                unless $u > 0 && $u < 100;
+            $inline_util = $u + 0;
+        }
+        elsif ($arg =~ m{^([0-9]+(?:\.[0-9]+)?)\z}) {
+            my $u = $1;
+            croak "Resource::CPU: utilize must be > 0 and < 100 (got '$u')"
+                unless $u > 0 && $u < 100;
+            $inline_util = $u + 0;
+        }
+        else {
+            croak "Resource::CPU: unrecognised entry '$arg'";
+        }
+
+        $i += 1;
+    }
+
+    $out{utilize_percent} = $file_vals{utilize_percent} if exists $file_vals{utilize_percent};
+    $out{name}            = $file_vals{name}            if exists $file_vals{name};
+    $out{utilize_percent} = $inline_util                if defined $inline_util;
+    $out{name}            = $inline_name                if defined $inline_name;
+
+    $out{utilize_percent} //= 80;
+    $out{name}            //= 'cpu';
+
+    return %out;
+}
+
+sub _load_config_file {
+    my ($class, $path) = @_;
+
+    my $data = $class->slurp_json_config($path);
+    $class->whitelist_keys($data, [qw/utilize_percent name/], $path);
+
+    my %out;
+    if (defined $data->{utilize_percent}) {
+        my $u = $data->{utilize_percent};
+        croak "Resource::CPU: utilize_percent in '$path' must be > 0 and < 100 (got '$u')"
+            unless $u =~ m/^[0-9]+(?:\.[0-9]+)?\z/ && $u > 0 && $u < 100;
+        $out{utilize_percent} = $u + 0;
+    }
+    if (defined $data->{name}) {
+        $out{name} = $class->validate_name($data->{name}, " in '$path'");
+    }
+
+    return \%out;
+}
+
+# Test seam.
+sub _read_stat_first_line {
+    open my $fh, '<', '/proc/stat' or die "open /proc/stat: $!";
+    my $line = <$fh>;
+    close $fh;
+    return $line;
+}
+
+sub _sample {
+    my $self = shift;
+
+    my $line = $self->_read_stat_first_line;
+    chomp $line;
+    my @fields = split /\s+/, $line;
+    shift @fields;    # 'cpu' label
+                      # remaining: user nice system idle iowait irq softirq steal guest guest_nice
+    croak "Resource::CPU: malformed /proc/stat line '$line'"
+        unless @fields >= 5;
+
+    my $idle  = $fields[3] + $fields[4];    # idle + iowait
+    my $total = 0;
+    $total += $_ for @fields;
+
+    my $prev = $self->{+PREV_STAT};
+    $self->{+PREV_STAT} = {total => $total, idle => $idle};
+
+    return $self->{+LAST_BUSY_PCT} unless $prev;    # first call
+
+    my $dt = $total - $prev->{total};
+    my $di = $idle - $prev->{idle};
+
+    return $self->{+LAST_BUSY_PCT} if $dt <= 0;     # divide-by-zero guard
+
+    my $busy_pct = 100 * (1 - $di / $dt);
+    $busy_pct = 0   if $busy_pct < 0;
+    $busy_pct = 100 if $busy_pct > 100;
+
+    $self->{+LAST_BUSY_PCT} = $busy_pct;
+    return $busy_pct;
 }
 
 sub is_temporarily_unavailable {
-    croak __PACKAGE__ . "::is_temporarily_unavailable is not implemented yet";
+    my $self = shift;
+    my $busy = $self->_sample;
+    return $busy >= $self->{+UTILIZE_PERCENT} ? 1 : 0;
+}
+
+sub available {
+    my ($self, %p) = @_;
+    croak "'job' is required" unless defined $p{job};
+    return 1;
 }
 
 sub status {
     my $self = shift;
     return {
         resource        => $self->resource_name,
-        poll_interval   => $self->{+POLL_INTERVAL},
         utilize_percent => $self->{+UTILIZE_PERCENT},
-        broken          => $self->is_broken,
+        busy_pct        => $self->{+LAST_BUSY_PCT},
         paused          => $self->is_paused,
-        permanent       => $self->is_permanent_broken,
-        assignments     => [],
+        in_flight       => $self->in_flight,
     };
 }
 
@@ -69,55 +182,35 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Resource::CPU - (STUB) Throttle jobs against aggregate CPU usage.
+Test2::Harness2::Resource::CPU - Throttle jobs against aggregate CPU usage.
 
-=head1 STATUS
+=head1 SYNOPSIS
 
-Stub only. Implements L<Test2::Harness2::Role::Resource::Utilizer>;
-both the role's required methods C<croak> until the CPU sampler is
-wired up.
+    yath -D test -R CPU                 # default utilize=80
+    yath -D test -R CPU=70              # bare integer = utilize_percent
+    yath -D test -R CPU=utilize=70      # explicit
 
 =head1 DESCRIPTION
 
-Refuses new assignments when aggregate CPU utilisation across every
-CPU on the host is at or above the configured C<utilize_percent>
-(from C<--utilize> / C<-U>). Aggregate (not per-CPU) is intentional:
-single-thread tests can saturate one core without the host being
-under any aggregate load, and the goal here is "is the box busy"
-rather than "is any CPU busy".
+Defers new test starts when aggregate CPU usage meets
+C<utilize_percent>. Samples C</proc/stat>; multi-core systems are
+handled by the aggregate jiffies in the first C<cpu> row.
 
-The intended (not-yet-wired) implementation runs a CPU-usage sampler
-service that reads C</proc/stat> on Linux (and the platform
-equivalents elsewhere) every C<poll_interval> seconds, then reports
-the rolling average back to this resource for comparison against the
-threshold.
+=head1 LIMITATIONS
 
-=head1 ATTRIBUTES
-
-=over 4
-
-=item poll_interval
-
-Seconds between samples of CPU usage. Default: C<2>.
-
-=item utilize_percent
-
-Threshold from C<--utilize> / C<-U>. Strictly between C<0> and
-C<100>; validated by the
-L<Test2::Harness2::Role::Resource::Utilizer> contract.
-
-=back
-
-=head1 SEE ALSO
-
-L<Test2::Harness2::Role::Resource::Utilizer> -- the role this
-resource consumes.
-
-L<App::Yath2::Options::Resource> -- the C<--utilize> / C<-U> option.
+Linux only.
 
 =head1 SOURCE
 
 L<https://github.com/Test-More/Test2-Harness>
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
 
 =head1 AUTHORS
 
