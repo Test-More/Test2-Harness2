@@ -192,16 +192,9 @@ Test2::Harness2::Resource::CPU - Throttle jobs against aggregate CPU usage.
 
 =head1 DESCRIPTION
 
-Defers new test starts when aggregate CPU usage (across every CPU and
-core) is at or above C<utilize_percent>. Samples C</proc/stat>'s first
-C<cpu> row at each call; computes percent from the delta against the
-previous sample. The first call after construction stores the snapshot
-and returns 0% (no delta yet); subsequent calls compute against that
-prior snapshot and update it.
-
-Multi-core scales automatically: the aggregate C<cpu> row sums jiffies
-across every CPU, so C<--utilize 80> on an 8-core box means "defer
-when ~6.4 cores worth of work is in flight".
+Defers new test starts when aggregate CPU usage meets
+C<utilize_percent>. Samples C</proc/stat>; multi-core systems are
+handled by the aggregate jiffies in the first C<cpu> row.
 
 =head1 LIMITATIONS
 

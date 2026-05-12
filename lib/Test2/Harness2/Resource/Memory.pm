@@ -220,9 +220,7 @@ conservative wins.
 
 =head1 LIMITATIONS
 
-Linux only. Constructing this resource on any other OS croaks at
-C<init>. Cross-platform support is future work (separate
-per-platform subclasses).
+Linux only.
 
 =head1 SOURCE
 

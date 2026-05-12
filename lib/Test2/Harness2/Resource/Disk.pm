@@ -302,85 +302,28 @@ samples.
 
 =head1 CLI
 
-C<-R Disk=ENTRY,ENTRY,...> -- each ENTRY is one of:
+C<-R Disk=ENTRY,ENTRY,...> where ENTRY is either C</path:THRESHOLD>
+or C<@/path/to/file.json>. Later entries override earlier ones
+per-mount; inline always wins over file. The JSON shape:
 
-=over 4
+    { "mounts": { "/tmp": { "min_free": "25%" } } }
 
-=item C</path:THRESHOLD>
-
-Inline mount specification.
-
-=item C<@/path/to/file.json>
-
-Load a JSON config file. The file's top-level shape is:
-
-    {
-      "mounts": {
-        "/tmp": { "min_free": "25%" },
-        "/var": { "min_free": "1gb" }
-      }
-    }
-
-=back
-
-Inline and C<@file> entries may be combined. Per-mount-key, later
-entries override earlier ones (file values lose to inline values).
-
-=head1 THRESHOLDS
-
-A threshold is C<NUMBER[UNIT]>:
-
-=over 4
-
-=item *
-
-C<25> -- 25% free required (default unit = %)
-
-=item *
-
-C<25%> -- 25% free required (must satisfy C<< 0 < pct < 100 >>)
-
-=item *
-
-C<512kb>, C<512mb>, C<1gb>, C<2tb> -- absolute free bytes required
-(case-insensitive)
-
-=back
+Thresholds use the L<Test2::Harness2::Util::Units> grammar:
+percentage (C<25%>) or absolute byte size (C<512mb>, C<1gb>).
+Default unit when no suffix is given is C<%>.
 
 =head1 OPTIONAL DEPENDENCY
 
-This resource requires L<Filesys::Df>, which is not a hard dependency
-of this distribution. Normal C<yath> use that does not request
-C<-R Disk> works without it. Install via C<cpanm Filesys::Df> when
-this resource is needed.
+Requires L<Filesys::Df> (not a hard dependency of this distribution).
+Install when using this resource: C<cpanm Filesys::Df>.
 
 =head1 NETWORK FILESYSTEMS
 
-Do not use this resource on network filesystems (NFS, CIFS/SMB,
-sshfs, glusterfs, ceph, davfs, 9p, beegfs, lustre, afs, coda, or any
-fuse-based remote mount). Two reasons:
-
-=over 4
-
-=item *
-
-Every C<available()> call performs a C<statvfs(2)> on each tracked
-mount. On a fast local filesystem this is a single µs-scale syscall
-and disappears in the noise. On a network filesystem each call may
-block on a network round-trip, multiplying scheduler latency by
-orders of magnitude.
-
-=item *
-
-Free-space readings on network filesystems are typically cached on
-the client and refreshed on a server-side timer. The reading
-C<statvfs> reports may be seconds out of date, defeating the
-threshold gate's intended invariant.
-
-=back
-
-If you need disk-space gating against a network mount, run a small
-local cache or scratch volume and gate against that instead.
+Do not use this resource on network filesystems (NFS, CIFS, sshfs,
+fuse-based remote mounts). Each C<available()> call performs
+C<statvfs(2)> per tracked mount, which on a network mount blocks on
+a round-trip and may return stale data cached by the client. Gate
+against a local scratch volume instead.
 
 =head1 ATTRIBUTES
 
@@ -388,17 +331,11 @@ local cache or scratch volume and gate against that instead.
 
 =item mounts (required)
 
-Hashref of C<< { '/path' => { min_free => THRESHOLD } } >> where
-THRESHOLD is a parsed hashref of the form
-C<< { kind => 'pct'|'bytes', value => N } >> (as returned by
-L<Test2::Harness2::Util::Units/parse_size_or_pct> with
-C<< default_unit => '%' >>). Must be non-empty.
+Non-empty hashref C<< { '/path' => { min_free => THRESHOLD } } >>.
+THRESHOLD is a parsed hashref from
+L<Test2::Harness2::Util::Units/parse_size_or_pct>.
 
 =back
-
-=head1 METHODS
-
-Implements L<Test2::Harness2::Role::Resource>.
 
 =head1 SOURCE
 

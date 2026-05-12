@@ -47,9 +47,7 @@ In tests:
 Thin wrapper around L<Time::HiRes/time> that consumers call instead
 of C<Time::HiRes::time> directly, so a single C<local>-bound override
 in tests is enough to drive a deterministic timeline across every
-caller. Resources that compare wall-clock timestamps (sliding-window
-throttles, age-of-assignment reporting, etc.) import this function
-rather than each maintaining their own C<$CLOCK> package variable.
+caller.
 
 =head1 EXPORTS
 

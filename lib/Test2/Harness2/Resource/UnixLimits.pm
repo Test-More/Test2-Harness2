@@ -276,22 +276,15 @@ Test2::Harness2::Resource::UnixLimits - Throttle jobs against per-process Unix u
 
 =head1 DESCRIPTION
 
-Defers new test starts when the harness process is close to one of
-its soft ulimits. Three dimensions: C<nproc> (Threads:), C<nofile>
-(count of C</proc/self/fd>), and C<as> (VmSize: vs RLIMIT_AS).
-
-C<nproc> and C<nofile> are checked by default with a 10% headroom.
-C<as> is off by default and enabled only when an explicit threshold
-is supplied.
-
-Each dimension's threshold may be expressed as a count, bytes (for
-C<as>), or a percentage. C<--utilize PCT> layers on top:
-effective threshold per dimension is C<max(explicit, utilize-derived)>.
+Defers starts when process soft ulimits (C<nproc>, C<nofile>, C<as>)
+are near saturation. C<nproc> and C<nofile> default on with 10%
+headroom; C<as> is off until an explicit threshold is supplied.
+Thresholds accept count / bytes / percent; C<--utilize PCT> layers
+on top (C<max(explicit, utilize-derived)>).
 
 =head1 LIMITATIONS
 
-Linux only. macOS / BSD / Solaris are deferred to per-platform
-subclasses.
+Linux only.
 
 =head1 SOURCE
 

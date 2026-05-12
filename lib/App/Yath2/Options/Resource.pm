@@ -215,94 +215,52 @@ App::Yath2::Options::Resource - Resource-related options for yath commands.
 
 =head1 DESCRIPTION
 
-Defines the C<--resource> / C<-R>, C<--slots> / C<-j>, C<--job-slots>
-/ C<-x>, C<--no-resource>, and C<--utilize> / C<-U> options, and
-post-processes them to auto-inject the default resource stack.
+Defines C<--resource> / C<-R>, C<--slots> / C<-j>, C<--job-slots> /
+C<-x>, C<--no-resource>, and C<--utilize> / C<-U>, and post-processes
+them to auto-inject the default resource stack.
 
-=head2 Linux defaults
+C<--utilize PCT> sets a percentage (C<0 E<lt> PCT E<lt> 100>, default
+C<75>) used as the saturation threshold by every auto-injected
+utilizer (CPU, Memory, UnixLimits, PipeLimits, Disk). Each resource
+applies it to its own monitored subsystem.
 
-On Linux, yath auto-injects the L<Test2::Harness2::Role::Resource::Utilizer>
-stack: L<CPU|Test2::Harness2::Resource::CPU>,
+=head2 Auto-injected resources
+
+=over 4
+
+=item Linux
+
+L<CPU|Test2::Harness2::Resource::CPU>,
 L<Memory|Test2::Harness2::Resource::Memory>,
 L<UnixLimits|Test2::Harness2::Resource::UnixLimits>,
 L<PipeLimits|Test2::Harness2::Resource::PipeLimits>, and
-L<Throttle|Test2::Harness2::Resource::Throttle>. Each consumes the
-percentage from C<--utilize> as its "defer when subsystem busier than
-this" threshold. With no C<-j> the scheduler runs no hard cap -- the
-utilizer/throttle stack alone gates new launches.
+L<Throttle|Test2::Harness2::Resource::Throttle> all auto-inject and
+read C<--utilize>. With no C<-j> there is no hard cap; the stack
+alone gates new launches. Passing C<-j N> adds
+L<JobCount|Test2::Harness2::Resource::JobCount> on top as a firm
+upper bound.
 
-Passing C<-j N> on Linux is supported: it adds
-L<JobCount|Test2::Harness2::Resource::JobCount> as a hard cap I<in
-addition to> the utilizer/throttle stack. Use this when you want a
-firm upper bound on concurrency regardless of system load.
+=item Non-Linux
 
-=head2 Non-Linux defaults
+The utilizer/throttle stack is Linux-only (samples C</proc>). On
+other platforms yath falls back to JobCount only. With no C<-j> the
+slot count is half the detected logical CPU count (minimum 1), or
+C<2> when the count cannot be detected. Install L<System::Info> for
+a reliable cross-platform CPU count.
 
-The utilizer/throttle stack samples C</proc> and is Linux-only. On
-other platforms those resources are not auto-injected; yath falls
-back to L<JobCount|Test2::Harness2::Resource::JobCount>. With no
-C<-j>, the slot count is derived from the detected logical CPU
-count (half, minimum 1), or C<2> when the count cannot be detected.
-Pass C<-j N> to override.
+=item Disk (any platform)
 
-CPU-count detection order: L<System::Info> (when installed), POSIX
-C<sysconf(_SC_NPROCESSORS_ONLN)> (macOS/BSD/Solaris), then
-C<%ENV{NUMBER_OF_PROCESSORS}> (Windows). Install L<System::Info> for
-the most reliable cross-platform reading.
+When L<Filesys::Df> is installed, L<Test2::Harness2::Resource::Disk>
+auto-injects against the system tmpdir (C<File::Spec-E<gt>tmpdir>)
+with C<min_free_pct = 100 - utilize>. Pass C<-R Disk=...> to
+override; pass C<--no-resource> to disable.
 
-=head2 The --utilize / -U option
+=back
 
-C<--utilize PCT> accepts a percentage strictly greater than C<0> and
-strictly less than C<100>; values outside that range or non-numeric
-values are rejected at option-parse time. The default is C<75>.
-
-Every auto-injected resource that consumes
-L<Test2::Harness2::Role::Resource::Utilizer> receives the percentage
-as its C<utilize_percent> attribute. Each resource interprets that as
-"this subsystem is too utilized; defer new assignments" against its
-own monitored subsystem (CPU load, free memory, pipe pages, ulimit
-headroom, etc.). C<--utilize> also feeds the Disk gate's
-C<min_free_pct = 100 - utilize>.
-
-=head2 Auto-injected Disk resource
-
-When L<Filesys::Df> is installed, yath automatically injects
-L<Test2::Harness2::Resource::Disk> targeting the system temporary
-directory (C<File::Spec-E<gt>tmpdir>, typically F</tmp>). The minimum
-free-space percentage is derived from C<--utilize>:
-C<min_free_pct = 100 - utilize>. With the default C<--utilize 75>
-that means at least 25% of the tmpdir must remain free before yath
-will start another job.
-
-If L<Filesys::Df> is not installed the Disk resource is silently
-skipped; no error is raised. To disable disk gating explicitly, pass
-C<--no-resource> and re-enable only the resources you want with
-C<-R>.
-
-To override the injected Disk settings (different mount, different
-threshold), supply your own C<-R Disk=...> on the command line; the
-user's entry wins via C<//=> and the auto-injected default is
-discarded.
-
-=head2 Spawn-throttle pairing
-
-The percentage gate alone is not sufficient: a freshly spawned test
-needs a moment to actually consume CPU/memory/disk before the
-resource sample reflects it. Without throttling the harness would
-launch a burst of tests against an apparently-idle system and only
-notice the over-commit on the next sample.
-
-L<Test2::Harness2::Resource::Throttle> pairs the percentage gate
-with a sliding spawn-rate window. Each rule has a C<cap> and a
-C<window> in seconds; an in-flight assignment occupies a slot until
-its age (time since assignment) exceeds C<window>. New launches are
-deferred while the in-window count is at or above C<cap>.
-
-The default rule string is C<1/core,100mb/1s>: one slot per CPU
-core, scaled adaptively against free RAM (one slot per 100 MiB free,
-with halving fallbacks when memory is tight), measured over a
-one-second window. See L<Test2::Harness2::Resource::Throttle> for
-the full rule grammar.
+L<Test2::Harness2::Resource::Throttle> pairs the percentage gate with
+a sliding spawn-rate window so a freshly spawned test gets time to
+consume resources before the next launch. See that module for the
+rule grammar.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
 

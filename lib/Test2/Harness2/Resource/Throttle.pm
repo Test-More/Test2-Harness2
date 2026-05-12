@@ -456,109 +456,69 @@ Test2::Harness2::Resource::Throttle - Limit how many tests can be in their just-
 
 A "slot" is occupied from the moment a test starts (C<assign>) until
 B<either> the test releases B<or> C<window> seconds elapse, whichever
-comes first. Cap is C<N> slots per window.
-
-Use case: a fragile shared resource (DB pool, port binding, license
-server, GPU bootstrap) cannot tolerate dozens of tests racing through
-their setup phase at once, but is fine with the same number running
-concurrently after their initial ramp-up.
-
-This resource is a I<gate>, not a slot pool: every job is either
-allowed or deferred. C<assign> and C<release> exist only to satisfy
-the resource contract and to populate C<status> with the list of jobs
-running under the gate; no per-test units are reserved.
+comes first. Cap is C<N> slots per window. This is a gate, not a
+slot pool: every job is either allowed or deferred.
 
 =head1 CLI
 
-C<-R Throttle=ENTRY,ENTRY,...> -- entries are:
+C<-R Throttle=ENTRY,ENTRY,...> -- entries:
 
 =over 4
 
 =item C<CAP/DURATION>
 
-The rule. C<CAP> is a positive integer. C<DURATION> accepts
-C<ms>/C<s>/C<m> suffixes; bare number is seconds. e.g. C<5/2s>,
-C<10/500ms>, C<3/1m>.
+Positive integer cap. Duration accepts C<ms>/C<s>/C<m> suffixes;
+bare number is seconds. e.g. C<5/2s>, C<10/500ms>, C<3/1m>.
 
 =item C<CAP>
 
-Shorthand for C<CAP/1s> (one-second window). e.g. C<-R Throttle=5> is
-equivalent to C<-R Throttle=5/1s>.
+Shorthand for C<CAP/1s>.
 
 =item C<CAP/BASIS[,BASIS...]/DURATION>
 
-Multi-basis form. C<BASIS> elements are separated by commas and must be
-one of:
+Multi-basis form (see L</BASIS> below).
+
+=item C<name=STRING>
+
+Cosmetic label (default C<"throttle">). Non-empty, whitespace-free.
+
+=item C<@/path/to/file.json>
+
+JSON config. Top-level keys: C<cap>, C<window>, C<name>.
+
+=back
+
+Later inline entries override earlier ones per-key. At most one rule
+entry per Throttle instance.
+
+=head2 BASIS
 
 =over 4
 
 =item C<core> or C<cores>
 
-The system core count (detected once at startup). This basis divides the
-core count by 1, so C<1/core/1s> on an 8-core machine grants 8 tokens per
-window.
+System core count (detected at startup; defaults to C<1> if neither
+L<System::Info> nor C</proc/cpuinfo> is available).
 
 =item C<NUMkb>, C<NUMmb>, C<NUMgb>, C<NUMtb>
 
 A byte threshold. Free RAM (from C</proc/meminfo> C<MemAvailable>) is
-divided by this unit to give the token count. e.g. C<1/100mb/1s> on a
-system with 400MB free grants 4 tokens per window.
+divided by this unit to give the token count. RAM basis requires
+Linux; specifying one on another platform croaks at construction.
 
 =back
 
 Token math: for each basis B with current resource value V,
-C<tokens_for_basis = floor(V / B)>. The effective per-window token count
-is C<cap * MIN(tokens_for_basis over all bases)>.
-
-=item C<name=STRING>
-
-Optional cosmetic label (default C<"throttle">). Used by C<status()>
-and (when supported) to disambiguate multiple instances. Must be
-non-empty and whitespace-free.
-
-=item C<@/path/to/file.json>
-
-Optional config file. Top-level keys: C<cap> (required positive
-integer), C<window> (required duration string), C<name> (optional
-string).
-
-=back
-
-Inline entries override file entries per-key (later wins). At most
-one rule entry (explicit or shorthand) per Throttle instance.
+C<tokens_for_basis = floor(V / B)>. The effective per-window token
+count is C<cap * MIN(tokens_for_basis over all bases)>.
 
 =head1 ADAPTIVE SCALING UNDER MEMORY PRESSURE
 
-When a RAM basis is configured and free RAM falls below the configured
-basis unit, the throttle applies adaptive scaling:
-
-=over 4
-
-=item *
-
-On each call to C<available()>, free RAM is sampled from C</proc/meminfo>.
-
-=item *
-
-If free RAM < basis unit: the basis unit is halved and the window is
-doubled. This can happen at most twice (2 halvings, giving 4x the
-original window).
-
-=item *
-
-After 2 halvings (basis at 1/4 original): if the system is still below
-the halved basis, that basis contributes 0 tokens, causing the throttle
-to defer all new jobs.
-
-=item *
-
-The effective window is C<original_window * window_multiplier> where
-C<window_multiplier> is the largest multiplier from any RAM basis.
-Slots assigned under the original window are counted against the
-(longer) effective window, so tightening under pressure retroactively
-holds those slots longer.
-
-=back
+When a RAM basis is configured and free RAM falls below the basis
+unit, the basis unit is halved and the window doubled (up to twice).
+After two halvings the basis contributes zero tokens and the throttle
+defers all new launches. Slots assigned under the original window
+are counted against the (longer) effective window.
 
 Example with 8-core system, C<1/core,100mb/1s>:
 
@@ -569,25 +529,10 @@ Example with 8-core system, C<1/core,100mb/1s>:
     30 MB     | 25mb (2x)  | 4x (4s eff) | 1          | 8           | min(1,8)*1 = 1
     10 MB     | 25mb (cap) | 4x (4s eff) | 0 (defer)  | 8           | min(0,8)*1 = 0
 
-=head1 PLATFORM NOTES
-
-The C<core> basis works on any platform where C<System::Info> is
-installed or where C</proc/cpuinfo> is readable. On systems where
-neither is available, the core count defaults to 1 (a low but
-functional cap).
-
-The C<NUMmb>/C<NUMgb>/etc. RAM basis requires Linux C</proc/meminfo>.
-Specifying a RAM basis on a non-Linux system causes an exception at
-resource construction time. Plain C<CAP/DURATION> (without a basis)
-works everywhere.
-
 =head1 LIMITATIONS
 
-A single yath invocation supports at most one Throttle instance.
-C<App::Yath2::Options::Resource>'s C<--resource> Map is keyed by the
-resolved class name, so a second C<-R Throttle=...> (in any spelling)
-clobbers the first. Layered Throttle rules (multiple windows /
-classes) are out of scope for this initial implementation.
+At most one Throttle instance per yath invocation. Layered rules
+(multiple windows / classes) are not supported.
 
 =head1 SOURCE
 
