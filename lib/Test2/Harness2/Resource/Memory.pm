@@ -221,10 +221,10 @@ Test2::Harness2::Resource::Memory - Throttle jobs when free memory is low.
 
 =head1 SYNOPSIS
 
-    yath -D test -j16 -R Memory                       # default min_free=5%
-    yath -D test -j16 -R Memory=20%                   # min_free=20%
-    yath -D test -j16 -R Memory=512mb                 # absolute min_free
-    yath -D test -j16 -R Memory=20% -U 80             # both layered
+    yath -D test -R Memory                       # default min_free=5%
+    yath -D test -R Memory=20%                   # min_free=20%
+    yath -D test -R Memory=512mb                 # absolute min_free
+    yath -D test -R Memory=20% -U 80             # both layered
 
 =head1 DESCRIPTION
 

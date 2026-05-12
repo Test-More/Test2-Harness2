@@ -204,9 +204,9 @@ Test2::Harness2::Resource::CPU - Throttle jobs against aggregate CPU usage.
 
 =head1 SYNOPSIS
 
-    yath -D test -j16 -R CPU                 # default utilize=80
-    yath -D test -j16 -R CPU=70              # bare integer = utilize_percent
-    yath -D test -j16 -R CPU=utilize=70      # explicit
+    yath -D test -R CPU                 # default utilize=80
+    yath -D test -R CPU=70              # bare integer = utilize_percent
+    yath -D test -R CPU=utilize=70      # explicit
 
 =head1 DESCRIPTION
 

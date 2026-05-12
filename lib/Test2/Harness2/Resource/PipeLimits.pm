@@ -275,9 +275,9 @@ Test2::Harness2::Resource::PipeLimits - Throttle jobs when per-user pipe budget 
 
 =head1 SYNOPSIS
 
-    yath -D test -j16 -R PipeLimits
-    yath -D test -j16 -R PipeLimits=10%
-    yath -D test -j16 -R PipeLimits=service_count=5,headroom=15%
+    yath -D test -R PipeLimits
+    yath -D test -R PipeLimits=10%
+    yath -D test -R PipeLimits=service_count=5,headroom=15%
 
 =head1 DESCRIPTION
 

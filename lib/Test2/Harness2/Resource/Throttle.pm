@@ -488,17 +488,17 @@ Test2::Harness2::Resource::Throttle - Limit how many tests can be in their just-
 
 =head1 SYNOPSIS
 
-    yath -D test -j16 -R Throttle=5/2s
-    yath -D test -j16 -R Throttle=5             # shorthand: 5/1s
-    yath -D test -j16 -R Throttle=10/500ms
-    yath -D test -j16 -R Throttle=3/1m,name=db_throttle
-    yath -D test -j16 -R Throttle=@/etc/yath/throttle.json
+    yath -D test -R Throttle=5/2s
+    yath -D test -R Throttle=5             # shorthand: 5/1s
+    yath -D test -R Throttle=10/500ms
+    yath -D test -R Throttle=3/1m,name=db_throttle
+    yath -D test -R Throttle=@/etc/yath/throttle.json
 
     # Multi-basis grammar (new):
-    yath -D test -j16 -R Throttle=1/core/1s         # 1 slot per core, 1s window
-    yath -D test -j16 -R Throttle=1/1gb/1s           # 1 slot per GB free RAM
-    yath -D test -j16 -R Throttle=1/core,100mb/1s    # 1 slot per core AND per 100MB free
-    yath -D test -j16 -R Throttle=1/core,500mb,1gb/2s
+    yath -D test -R Throttle=1/core/1s         # 1 slot per core, 1s window
+    yath -D test -R Throttle=1/1gb/1s           # 1 slot per GB free RAM
+    yath -D test -R Throttle=1/core,100mb/1s    # 1 slot per core AND per 100MB free
+    yath -D test -R Throttle=1/core,500mb,1gb/2s
 
 =head1 DESCRIPTION
 

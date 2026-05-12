@@ -298,10 +298,10 @@ Test2::Harness2::Resource::UnixLimits - Throttle jobs against per-process Unix u
 
 =head1 SYNOPSIS
 
-    yath -D test -j16 -R UnixLimits
-    yath -D test -j16 -R UnixLimits=10%
-    yath -D test -j16 -R UnixLimits=nproc=128,nofile=10%
-    yath -D test -j16 -R UnixLimits=as=512mb
+    yath -D test -R UnixLimits
+    yath -D test -R UnixLimits=10%
+    yath -D test -R UnixLimits=nproc=128,nofile=10%
+    yath -D test -R UnixLimits=as=512mb
 
 =head1 DESCRIPTION
 

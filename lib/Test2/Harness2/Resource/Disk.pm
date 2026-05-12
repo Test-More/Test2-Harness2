@@ -343,10 +343,10 @@ Test2::Harness2::Resource::Disk - Throttle jobs when disk space is low.
 
 =head1 SYNOPSIS
 
-    yath -D test -j16 -R Disk=/tmp:25%
-    yath -D test -j16 -R Disk=/tmp:25%,/var:1gb
-    yath -D test -j16 -R Disk=@/etc/yath/disk.json
-    yath -D test -j16 -R Disk=/tmp:25%,@/etc/yath/disk.json,/scratch:512mb
+    yath -D test -R Disk=/tmp:25%
+    yath -D test -R Disk=/tmp:25%,/var:1gb
+    yath -D test -R Disk=@/etc/yath/disk.json
+    yath -D test -R Disk=/tmp:25%,@/etc/yath/disk.json,/scratch:512mb
 
 =head1 DESCRIPTION
 

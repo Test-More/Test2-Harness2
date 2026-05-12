@@ -56,20 +56,20 @@ When neither condition can be met, drop the cryptic code and state the rule itse
 ## Testing
 
 - Use `Test2::V0` in unit tests where possible.
-- Run tests with: `perl -Ilib yath -D test -j16`
-- When using `-v` for verbose output, drop `-j16`: `perl -Ilib yath -D test`
+- Run tests with: `perl -Ilib yath -D test`. The harness auto-injects a JobCount resource (half the CPU cores, fallback 2) when no `-R` is given, so passing `-j16` is no longer needed. Override with `-R JobCount=N` only when the default is wrong for the workload.
+- For verbose output: `perl -Ilib yath -D test -v` (still concurrent unless you also pass `-j1`).
 - Tests that are substantially AI- or Claude-generated go under `t/AI/`, preserving the relative path beneath that prefix (e.g. `t/AI/unit/Foo.t`, `t/AI/integration/bar.t`). Anything outside `t/AI/` is reserved for tests originally written by humans; AI may modify those later as long as they stay readable. Tests copied in from `reference/old2/t/` or `reference/legacy/t/` count as human-authored and do **not** move under `t/AI/`.
 - The `App::Yath::Script` wrapper (which ships the `yath` binary) is a separate distribution. By default `cpanfile` pulls the released CPAN version; to test against the unreleased code on `origin/script`, run `perl author/install-yath-script` (idempotent, only reinstalls when the branch SHA changes). The `ubuntu-script-branch` CI job runs the suite against that unreleased version on every PR.
 - **Running `yath` commands from this repo:** the installed `yath` binary works directly when `-D` is placed *between* `yath` and the command. Examples:
-  - `yath -D test -j16 t/AI/...`
+  - `yath -D test t/AI/...`
   - `yath -D replay /path/to/logs/`
   - `yath -D extract /path/to/run.yath /tmp/out`
   - `yath -D archive /path/to/logs /tmp/run.yath`
 
   The `-D` flag tells the wrapper to load this checkout's `lib/` ahead of the installed dist, so changes in this branch take effect without reinstalling. Without `-D` the installed dist runs whatever was on CPAN.
 - **Always set `AUTHOR_TESTING=1` when running tests.** Some tests gate themselves behind `Test2::Require::AuthorTesting` (slow, flaky-by-design, or otherwise not safe to ship as default-CI). Skipping them silently hides regressions during local development. Examples:
-  - `AUTHOR_TESTING=1 prove -j16 -Ilib -It/lib -r t/AI`
-  - `AUTHOR_TESTING=1 yath -D test -j16 t/AI/...`
+  - `AUTHOR_TESTING=1 prove -j16 -Ilib -It/lib -r t/AI` (prove still needs `-j16`; it has no auto-concurrency)
+  - `AUTHOR_TESTING=1 yath -D test t/AI/...`
 
   The one exception: when validating the `AUTHOR_TESTING` gate itself (e.g., confirming a test correctly skips when the env var is unset), run that test once without the env var set to verify the skip path, then resume normal `AUTHOR_TESTING=1` runs.
 
