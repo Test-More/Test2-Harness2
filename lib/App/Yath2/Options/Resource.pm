@@ -42,7 +42,7 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         short          => 'j',
         alt            => ['jobs', 'job-count'],
         description    => 'Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.',
-        notes          => "On Linux, if unset, no hard concurrency cap is applied; the default utilizer + throttle resources gate scheduling. On other platforms (where the utilizer/throttle stack is unavailable) an unset value auto-derives to half the logical CPU count (minimum 1), falling back to 2 when the count cannot be detected.",
+        notes          => "On Linux, if unset, no hard concurrency cap is applied; the default utilizer + throttle resources gate scheduling. On other platforms (where the utilizer/throttle stack is unavailable) an unset value auto-derives to half the logical CPU count (minimum 1), falling back to 2 when the count cannot be detected. Install System::Info for the most reliable cross-platform CPU count.",
         long_examples  => [' 4', ' 8:2'],
         short_examples => ['4',  '8:2'],
         from_env_vars  => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
@@ -179,16 +179,21 @@ sub jobs_post_process {
 }
 
 # Best-effort cross-platform logical-CPU count. Returns undef when no
-# detection path works. Linux is intentionally not special-cased here
-# because the auto-cap fallback only fires off-Linux.
+# detection path works.
+#
+# Order: System::Info (cross-platform CPAN dep when present), then
+# POSIX sysconf (Linux/macOS/BSD), then Windows NUMBER_OF_PROCESSORS.
 sub _detect_cpu_count {
+    my $n = eval { require System::Info; System::Info->new->ncore };
+    return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
+
     if ($^O eq 'MSWin32') {
-        my $n = $ENV{NUMBER_OF_PROCESSORS};
+        $n = $ENV{NUMBER_OF_PROCESSORS};
         return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
         return undef;
     }
 
-    my $n = eval {
+    $n = eval {
         require POSIX;
         POSIX::sysconf(&POSIX::_SC_NPROCESSORS_ONLN);
     };
@@ -236,9 +241,12 @@ PipeLimits, Throttle) all sample C</proc> and require Linux. On other
 platforms those classes are not auto-injected. Instead, when C<-j> /
 C<--slots> is left unset, yath derives a JobCount cap from the
 detected logical CPU count (half, minimum 1) and falls back to 2
-slots when the count cannot be detected (POSIX C<sysconf> /
-C<NUMBER_OF_PROCESSORS> both unavailable). Pass C<-j N> explicitly to
-override.
+slots when the count cannot be detected.
+
+Detection order: L<System::Info> (when installed), POSIX C<sysconf>
+(Linux/macOS/BSD), then C<NUMBER_OF_PROCESSORS> (Windows). Install
+C<System::Info> for the most reliable cross-platform reading. Pass
+C<-j N> explicitly to override.
 
 =head3 Auto-injected Disk resource
 
