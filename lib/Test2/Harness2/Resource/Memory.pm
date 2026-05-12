@@ -22,6 +22,9 @@ use Role::Tiny::With;
 with 'Test2::Harness2::Role::Resource::Assignable';
 with 'Test2::Harness2::Role::Resource';
 with 'Test2::Harness2::Role::Resource::Utilizer';
+with 'Test2::Harness2::Role::Resource::OptionParser';
+
+sub _inline_key_prefixes { [qw/min_free/] }
 
 sub resource_name { $_[0]->{+NAME} // 'memory' }
 
@@ -52,18 +55,6 @@ sub set_utilize_percent {
     my ($self, $pct) = @_;
     $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
     return;
-}
-
-sub _is_unknown_kv_arg {
-    my ($class, $arg, $has_next) = @_;
-    return 0 unless $has_next;
-    return 0 unless defined $arg;
-    return 0 if ref $arg;
-    return 0 if $arg =~ m{^[0-9]};
-    return 0 if $arg =~ m{^@};
-    return 0 if $arg =~ m{^name=};
-    return 0 if $arg =~ m{^min_free=};
-    return 1;
 }
 
 sub parse_options {
