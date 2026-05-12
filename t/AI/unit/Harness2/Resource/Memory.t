@@ -105,30 +105,28 @@ subtest 'pause / resume' => sub {
 
 subtest 'assign / release' => sub {
     my $r = _make();
-    $r->assign(id => 'A', job => _job, env => {});
-    like(
-        dies { $r->assign(id => 'A', job => _job, env => {}) },
-        qr/duplicate/, 'duplicate id'
-    );
-    like(
-        dies { $r->release(id => 'unknown') },
-        qr/invalid release/, 'unknown id'
-    );
-    $r->release(id => 'A');
+    # Role's default assign/release validate args only (no per-id
+    # tracking); the scheduler is the authority on id-uniqueness.
+    ok(lives { $r->assign(id => 'A', job => _job, env => {}) }, 'assign returns ok');
+    ok(lives { $r->release(id => 'A') }, 'release returns ok');
+    like(dies { $r->assign(job => _job, env => {}) },         qr/'id' is required/,   'assign requires id');
+    like(dies { $r->assign(id => 'A', env => {}) },           qr/'job' is required/,  'assign requires job');
+    like(dies { $r->assign(id => 'A', job => _job) },         qr/'env' hashref/,      'assign requires env hashref');
+    like(dies { $r->release() },                              qr/'id' is required/,   'release requires id');
 };
 
 subtest 'status snapshot' => sub {
     my $r = _make(min_free => {kind => 'pct', value => 25});
     $r->assign(id => 'X', job => _job, env => {});
+    $r->notify_in_flight(1);    # scheduler-pushed count
     my $st = $r->status;
     is($st->{resource},            'memory',                     'name');
     is($st->{min_free},            {kind => 'pct', value => 25}, 'threshold echoed');
     is($st->{mem_total_bytes},     8000000 * 1024,               'total');
     is($st->{mem_available_bytes}, 4000000 * 1024,               'available');
     ok($st->{effective_min_free_bytes} > 0, 'effective threshold computed');
-    is($st->{paused},                 0,   'not paused');
-    is($st->{total_assignments},      1,   'one assigned');
-    is($st->{assignments}->[0]->{id}, 'X', 'id present');
+    is($st->{paused},    0, 'not paused');
+    is($st->{in_flight}, 1, 'in_flight from scheduler cache');
 };
 
 done_testing;

@@ -12,6 +12,7 @@ use Object::HashBase qw{
     <slots
     <max_per_job
     <used
+    <assignments
     &Test2::Harness2::Role::Resource
 };
 

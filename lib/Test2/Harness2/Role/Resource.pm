@@ -6,12 +6,11 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
 
 # Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
-use Object::HashBase qw{<assignments +paused +name};
+use Object::HashBase qw{+paused +name +in_flight};
 
 requires 'available';
 requires 'status';
@@ -48,30 +47,33 @@ sub mark_permanent_broken { croak ref($_[0]) . "::mark_permanent_broken is not i
 sub mark_paused  { $_[0]->{+PAUSED} = 1 }
 sub mark_resumed { $_[0]->{+PAUSED} = 0 }
 
+# No-op defaults. Resources that need per-assignment state (Throttle's
+# timestamp window, JobCount's slot math) override locally. The
+# scheduler tracks aggregate in-flight count and pushes it via
+# notify_in_flight (read from $self->{+IN_FLIGHT}).
 sub assign {
     my ($self, %p) = @_;
-
-    my $id  = $p{id}  or croak "'id' is required";
-    my $job = $p{job} or croak "'job' is required";
-    croak "'env' hashref is required" unless ref($p{env}) eq 'HASH';
-
-    croak ref($self) . ": duplicate assign for id '$id'"
-        if exists $self->{+ASSIGNMENTS}->{$id};
-
-    $self->{+ASSIGNMENTS}->{$id} = {job => $job, assigned_at => hi_res_time()};
-
+    croak "'id' is required"           unless $p{id};
+    croak "'job' is required"          unless $p{job};
+    croak "'env' hashref is required"  unless ref($p{env}) eq 'HASH';
     return 1;
 }
 
 sub release {
     my ($self, %p) = @_;
-
-    my $id = $p{id} or croak "'id' is required";
-
-    delete $self->{+ASSIGNMENTS}->{$id}
-        or croak ref($self) . ": invalid release id '$id'";
-
+    croak "'id' is required" unless $p{id};
     return 1;
+}
+
+# Scheduler-fed cache: the harness calls this on every resource after
+# each RUNNING_JOBS mutation. Status output and the utilizer
+# starvation guard read $self->{+IN_FLIGHT} from here instead of
+# maintaining their own per-resource counter.
+sub notify_in_flight {
+    my ($self, $n) = @_;
+    croak "notify_in_flight: 'n' is required" unless defined $n;
+    $self->{+IN_FLIGHT} = $n;
+    return;
 }
 
 sub inline_key_prefixes { [] }

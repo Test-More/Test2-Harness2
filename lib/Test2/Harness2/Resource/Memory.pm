@@ -7,7 +7,6 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
-use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <min_free
@@ -23,8 +22,6 @@ sub init {
     my $self = shift;
 
     croak "Resource::Memory requires Linux (this is $^O)" unless $^O eq 'linux';
-
-    $self->{+ASSIGNMENTS} //= {};
 
     my $mf = $self->{+MIN_FREE};
     croak "Resource::Memory: 'min_free' is required"
@@ -179,18 +176,6 @@ sub status {
     my ($total, $available) = $self->_sample;
     my $threshold = $self->_effective_min_free_bytes($total);
 
-    my @assignments;
-    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
-        my $a  = $self->{+ASSIGNMENTS}->{$id};
-        my $tf = $a->{job}->test_file;
-        push @assignments => {
-            id          => $id,
-            test        => $tf->relative,
-            assigned_at => $a->{assigned_at},
-            age         => hi_res_time() - $a->{assigned_at},
-        };
-    }
-
     return {
         resource                 => $self->resource_name,
         min_free                 => $self->{+MIN_FREE},
@@ -199,8 +184,7 @@ sub status {
         mem_available_bytes      => $available,
         effective_min_free_bytes => $threshold,
         paused                   => $self->is_paused,
-        total_assignments        => scalar(keys %{$self->{+ASSIGNMENTS}}),
-        assignments              => \@assignments,
+        in_flight                => $self->{+IN_FLIGHT} // 0,
     };
 }
 

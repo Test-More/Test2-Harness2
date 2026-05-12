@@ -57,18 +57,19 @@ subtest 'tally crosses threshold' => sub {
     # headroom=10% of 160 = 16. 32 - (next test would add 32) = 0 < 16 -> defer.
     local $CAP_PAGES = 160;
     my $r = _make(service_count => 3, headroom => {kind => 'pct', value => 10});
+    $r->notify_in_flight(0);
     is($r->is_temporarily_unavailable, 0, '0 tests: 64 free > 16');
 
-    $r->assign(id => 'A', job => _job, env => {});
+    $r->notify_in_flight(1);
     is($r->is_temporarily_unavailable, 1, '1 test in flight: adding another would breach headroom');
 };
 
 subtest 'release frees the slot' => sub {
     local $CAP_PAGES = 160;
     my $r = _make(service_count => 3);
-    $r->assign(id => 'A', job => _job, env => {});
+    $r->notify_in_flight(1);
     is($r->is_temporarily_unavailable, 1, 'at limit');
-    $r->release(id => 'A');
+    $r->notify_in_flight(0);
     is($r->is_temporarily_unavailable, 0, 'released');
 };
 
@@ -77,19 +78,18 @@ subtest 'utilize-derived layered with explicit (more conservative wins)' => sub 
     # utilize=80 -> derived headroom = (1-0.8)*200 = 40 (more conservative).
     local $CAP_PAGES = 200;
     my $r = _make(headroom => {kind => 'count', value => 20}, utilize_percent => 80);
+    $r->notify_in_flight(0);
     is($r->is_temporarily_unavailable, 0, 'no tests, ok');
 
-    # Add 5 tests: 5 * 2 * 16 = 160 pages used. Free = 40. Next test would add 32 -> 8 free < 40 -> defer.
-    for my $id ('A' .. 'E') {
-        $r->assign(id => $id, job => _job, env => {});
-    }
+    # 5 tests: 5 * 2 * 16 = 160 pages used. Free = 40. Next test would add 32 -> 8 free < 40 -> defer.
+    $r->notify_in_flight(5);
     is($r->is_temporarily_unavailable, 1, 'utilize-derived 40 wins over 20');
 };
 
 subtest 'status snapshot' => sub {
     local $CAP_PAGES = 200;
     my $r = _make(service_count => 2);
-    $r->assign(id => 'A', job => _job, env => {});
+    $r->notify_in_flight(1);
     my $st = $r->status;
     is($st->{resource},       'pipelimits',  'name');
     is($st->{cap_pages},      200,           'cap');
@@ -98,6 +98,7 @@ subtest 'status snapshot' => sub {
     is($st->{service_pages},  2 * 2 * 16,    'service_pages');
     is($st->{test_pages},     1 * 2 * 16,    'test_pages');
     is($st->{free_pages},     200 - 64 - 32, 'free_pages');
+    is($st->{in_flight},      1,             'in_flight from scheduler cache');
 };
 
 done_testing;

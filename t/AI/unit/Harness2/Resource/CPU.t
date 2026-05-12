@@ -91,9 +91,9 @@ subtest 'pause / resume' => sub {
 
 subtest 'assign / release' => sub {
     my $r = _make();
-    $r->assign(id => 'A', job => _job, env => {});
-    like(dies { $r->release(id => 'X') }, qr/invalid/, 'unknown id');
-    $r->release(id => 'A');
+    ok(lives { $r->assign(id => 'A', job => _job, env => {}) }, 'assign ok');
+    ok(lives { $r->release(id => 'A') }, 'release ok');
+    like(dies { $r->release() }, qr/'id' is required/, 'release requires id');
 };
 
 subtest 'status snapshot' => sub {

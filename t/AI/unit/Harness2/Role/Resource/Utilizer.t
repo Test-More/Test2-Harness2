@@ -133,17 +133,18 @@ subtest 'should_defer_for_utilization honors min_concurrent floor' => sub {
     my $r = My::Util::Resource->new;
     $r->mark_saturated;
 
-    # in_flight=0: scheduler must NOT defer even though saturated.
-    # Prevents starvation when system never drops below threshold.
-    is($r->should_defer_for_utilization(0), 0, 'saturated + 0 in-flight: do not defer (default min=1)');
+    # in_flight comes from the scheduler via notify_in_flight; the
+    # role reads $self->{+IN_FLIGHT}.
+    $r->notify_in_flight(0);
+    is($r->should_defer_for_utilization, 0, 'saturated + 0 in-flight: do not defer (default min=1)');
 
-    # in_flight=1 (default floor met): defer when saturated.
-    is($r->should_defer_for_utilization(1), 1, 'saturated + 1 in-flight: defer');
+    $r->notify_in_flight(1);
+    is($r->should_defer_for_utilization, 1, 'saturated + 1 in-flight: defer');
 
-    # Not saturated: never defer regardless of in-flight count.
     $r->mark_unsaturated;
-    is($r->should_defer_for_utilization(1), 0, 'not saturated + 1 in-flight: do not defer');
-    is($r->should_defer_for_utilization(0), 0, 'not saturated + 0 in-flight: do not defer');
+    is($r->should_defer_for_utilization, 0, 'not saturated + 1 in-flight: do not defer');
+    $r->notify_in_flight(0);
+    is($r->should_defer_for_utilization, 0, 'not saturated + 0 in-flight: do not defer');
 };
 
 subtest 'should_defer_for_utilization respects custom min_concurrent' => sub {
@@ -151,18 +152,21 @@ subtest 'should_defer_for_utilization respects custom min_concurrent' => sub {
     $r->mark_saturated;
 
     for my $n (0, 1, 2) {
-        is($r->should_defer_for_utilization($n), 0, "saturated + $n in-flight (< 3 floor): do not defer");
+        $r->notify_in_flight($n);
+        is($r->should_defer_for_utilization, 0, "saturated + $n in-flight (< 3 floor): do not defer");
     }
-    is($r->should_defer_for_utilization(3), 1, 'saturated + 3 in-flight (== floor): defer');
-    is($r->should_defer_for_utilization(4), 1, 'saturated + 4 in-flight (> floor): defer');
+    $r->notify_in_flight(3);
+    is($r->should_defer_for_utilization, 1, 'saturated + 3 in-flight (== floor): defer');
+    $r->notify_in_flight(4);
+    is($r->should_defer_for_utilization, 1, 'saturated + 4 in-flight (> floor): defer');
 };
 
-subtest 'should_defer_for_utilization requires in_flight arg' => sub {
+subtest 'notify_in_flight requires count arg' => sub {
     my $r = My::Util::Resource->new;
     like(
-        dies { $r->should_defer_for_utilization() },
-        qr/'in_flight' is required/,
-        'undef in_flight rejected'
+        dies { $r->notify_in_flight() },
+        qr/'n' is required/,
+        'undef count rejected'
     );
 };
 

@@ -6,7 +6,6 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     +prev_stat
@@ -25,7 +24,6 @@ sub init {
 
     croak "Resource::CPU requires Linux (this is $^O)" unless $^O eq 'linux';
 
-    $self->{+ASSIGNMENTS}   //= {};
     $self->{+LAST_BUSY_PCT} //= 0;
 
     my $u = $self->{+UTILIZE_PERCENT};
@@ -165,26 +163,12 @@ sub available {
 
 sub status {
     my $self = shift;
-
-    my @assignments;
-    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
-        my $a  = $self->{+ASSIGNMENTS}->{$id};
-        my $tf = $a->{job}->test_file;
-        push @assignments => {
-            id          => $id,
-            test        => $tf->relative,
-            assigned_at => $a->{assigned_at},
-            age         => hi_res_time() - $a->{assigned_at},
-        };
-    }
-
     return {
-        resource          => $self->resource_name,
-        utilize_percent   => $self->{+UTILIZE_PERCENT},
-        busy_pct          => $self->{+LAST_BUSY_PCT},
-        paused            => $self->is_paused,
-        total_assignments => scalar(keys %{$self->{+ASSIGNMENTS}}),
-        assignments       => \@assignments,
+        resource        => $self->resource_name,
+        utilize_percent => $self->{+UTILIZE_PERCENT},
+        busy_pct        => $self->{+LAST_BUSY_PCT},
+        paused          => $self->is_paused,
+        in_flight       => $self->{+IN_FLIGHT} // 0,
     };
 }
 

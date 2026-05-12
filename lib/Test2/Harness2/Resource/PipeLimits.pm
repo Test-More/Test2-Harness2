@@ -7,7 +7,6 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 
 use Test2::Harness2::Util::Units qw/parse_count_or_pct/;
-use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <pipes_per_test
@@ -38,8 +37,6 @@ sub init {
     my $self = shift;
 
     croak "Resource::PipeLimits requires Linux (this is $^O)" unless $^O eq 'linux';
-
-    $self->{+ASSIGNMENTS} //= {};
 
     for my $k (qw/pipes_per_test pipes_per_service service_count/) {
         my $v = $self->{$k};
@@ -202,7 +199,7 @@ sub _effective_min_free_pages {
 sub _usage_pages {
     my $self          = shift;
     my $service_pages = $self->{+SERVICE_COUNT} * $self->{+PIPES_PER_SERVICE} * $self->{+PAGES_PER_PIPE};
-    my $in_flight     = scalar keys %{$self->{+ASSIGNMENTS}};
+    my $in_flight     = $self->{+IN_FLIGHT} // 0;
     my $test_pages    = $in_flight * $self->{+PIPES_PER_TEST} * $self->{+PAGES_PER_PIPE};
     return ($service_pages, $test_pages);
 }
@@ -228,18 +225,6 @@ sub status {
     my $free = $self->{+CAP_PAGES} - $svc - $tst;
     my $thr  = $self->_effective_min_free_pages;
 
-    my @assignments;
-    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
-        my $a  = $self->{+ASSIGNMENTS}->{$id};
-        my $tf = $a->{job}->test_file;
-        push @assignments => {
-            id          => $id,
-            test        => $tf->relative,
-            assigned_at => $a->{assigned_at},
-            age         => hi_res_time() - $a->{assigned_at},
-        };
-    }
-
     return {
         resource                 => $self->resource_name,
         utilize_percent          => $self->{+UTILIZE_PERCENT},
@@ -254,8 +239,7 @@ sub status {
         free_pages               => $free,
         headroom                 => $self->{+HEADROOM},
         effective_min_free_pages => $thr,
-        total_assignments        => scalar(keys %{$self->{+ASSIGNMENTS}}),
-        assignments              => \@assignments,
+        in_flight                => $self->{+IN_FLIGHT} // 0,
     };
 }
 

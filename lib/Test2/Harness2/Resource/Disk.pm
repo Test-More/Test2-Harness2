@@ -28,9 +28,8 @@ sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT} = 1 }
 sub init {
     my $self = shift;
 
-    $self->{+MOUNTS}      //= {};
-    $self->{+ASSIGNMENTS} //= {};
-    $self->{+SAMPLES}     //= {};
+    $self->{+MOUNTS}  //= {};
+    $self->{+SAMPLES} //= {};
 
     croak "Resource::Disk: 'mounts' is required and must be non-empty"
         unless ref($self->{+MOUNTS}) eq 'HASH' && keys %{$self->{+MOUNTS}};
@@ -272,25 +271,13 @@ sub status {
         };
     }
 
-    my @assignments;
-    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
-        my $a  = $self->{+ASSIGNMENTS}->{$id};
-        my $tf = $a->{job}->test_file;
-        push @assignments => {
-            id          => $id,
-            test        => $tf->relative,
-            assigned_at => $a->{assigned_at},
-            age         => $now - $a->{assigned_at},
-        };
-    }
-
     return {
-        resource    => $self->resource_name,
-        broken      => $self->is_broken,
-        permanent   => $self->is_permanent_broken,
-        paused      => $self->is_paused,
-        mounts      => \%mounts,
-        assignments => \@assignments,
+        resource  => $self->resource_name,
+        broken    => $self->is_broken,
+        permanent => $self->is_permanent_broken,
+        paused    => $self->is_paused,
+        mounts    => \%mounts,
+        in_flight => $self->{+IN_FLIGHT} // 0,
     };
 }
 

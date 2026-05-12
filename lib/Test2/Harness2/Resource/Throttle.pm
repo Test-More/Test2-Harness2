@@ -15,6 +15,7 @@ use Object::HashBase qw{
     <window
     <bases
     <core_count
+    <assignments
     &Test2::Harness2::Role::Resource
 };
 

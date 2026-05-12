@@ -6,6 +6,10 @@ our $VERSION = '2.000013';
 
 use Carp qw/croak/;
 
+# IN_FLIGHT slot lives on the base Resource role; mirror the constant
+# here so $self->{+IN_FLIGHT} resolves at compile time.
+use constant IN_FLIGHT => 'in_flight';
+
 # Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
 use Object::HashBase qw{<utilize_percent <min_concurrent};
@@ -18,16 +22,16 @@ sub set_utilize_percent {
     return;
 }
 
-# Scheduler-level check. Caller passes the harness's authoritative
-# in-flight count. Defer only when saturated AND in-flight already
+# Scheduler-level check. Reads the scheduler-pushed in-flight count
+# from $self->{+IN_FLIGHT} (kept current by notify_in_flight from the
+# base Resource role). Defer only when saturated AND in-flight already
 # meets the min_concurrent floor (default 1) -- below the floor, at
 # least min_concurrent tests are always allowed to run even if the
 # subsystem never drops back below threshold.
 sub should_defer_for_utilization {
-    my ($self, $in_flight) = @_;
-    croak "should_defer_for_utilization: 'in_flight' is required"
-        unless defined $in_flight;
-    my $min = $self->{+MIN_CONCURRENT} // 1;
+    my $self      = shift;
+    my $in_flight = $self->{+IN_FLIGHT} // 0;
+    my $min       = $self->{+MIN_CONCURRENT} // 1;
     return 0 if $in_flight < $min;
     return $self->is_temporarily_unavailable ? 1 : 0;
 }

@@ -183,7 +183,7 @@ package TFakeJobWithFile {
     sub test_file { $_[0]->{tf} }
 }
 
-subtest 'assign records id, release drops it' => sub {
+subtest 'assign / release validate args' => sub {
     my $r  = _make_resource();
     my $tf = TFakeTestFile->new('t/foo.t');
     my $j  = TFakeJobWithFile->new($tf);
@@ -191,21 +191,13 @@ subtest 'assign records id, release drops it' => sub {
     no warnings 'redefine';
     local *Filesys::Df::df = sub { {bavail => 10_000, blocks => 10_000} };
 
-    $r->assign(id => 'A1', job => $j, env => {});
-    $r->assign(id => 'A2', job => $j, env => {});
-    is([sort keys %{$r->assignments}], ['A1', 'A2'], 'two ids tracked');
-
-    $r->release(id => 'A1');
-    is([keys %{$r->assignments}], ['A2'], 'A1 dropped');
-
-    like(
-        dies { $r->assign(id => 'A2', job => $j, env => {}) },
-        qr/duplicate/, 'duplicate id croaks'
-    );
-    like(
-        dies { $r->release(id => 'unknown') },
-        qr/invalid release/, 'unknown id croaks'
-    );
+    # Role's default assign/release validate args only; the scheduler
+    # owns id-uniqueness and release-tracking via RUNNING_JOBS.
+    ok(lives { $r->assign(id => 'A1', job => $j, env => {}) }, 'assign A1');
+    ok(lives { $r->assign(id => 'A2', job => $j, env => {}) }, 'assign A2');
+    ok(lives { $r->release(id => 'A1') },                      'release A1');
+    ok(lives { $r->release(id => 'A2') },                      'release A2');
+    like(dies { $r->release() }, qr/'id' is required/, 'release requires id');
 };
 
 subtest 'status snapshot shape' => sub {
@@ -223,6 +215,7 @@ subtest 'status snapshot shape' => sub {
     my $tf = TFakeTestFile->new('t/foo.t');
     my $j  = TFakeJobWithFile->new($tf);
     $r->assign(id => 'X1', job => $j, env => {});
+    $r->notify_in_flight(1);    # scheduler-pushed count
 
     my $st = $r->status;
     is($st->{resource},  'disk', 'resource name');
@@ -242,11 +235,7 @@ subtest 'status snapshot shape' => sub {
     is($st->{mounts}->{$tmp}->{sample_age},           0, 'fresh sample');
     is($st->{mounts}->{$tmp}->{consecutive_failures}, 0, 'no failures');
 
-    is(scalar @{$st->{assignments}},    1,         'one assignment');
-    is($st->{assignments}->[0]->{id},   'X1',      'id');
-    is($st->{assignments}->[0]->{test}, 't/foo.t', 'test path');
-    ok(exists $st->{assignments}->[0]->{assigned_at}, 'assigned_at');
-    is($st->{assignments}->[0]->{age}, 0, 'age');
+    is($st->{in_flight}, 1, 'in_flight from scheduler cache');
 };
 
 subtest 'status does not trigger statvfs' => sub {

@@ -1399,6 +1399,7 @@ sub _handle_job_release {
 
     my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
     return unless $cur;
+    $self->_notify_resources_in_flight;
 
     my $run_id = $cur->{run}->run_id;
     $self->_forget_run_pid($run_id, $cur->{pid}) if $cur->{pid};
@@ -1614,6 +1615,7 @@ sub _synth_release_orphan_job {
 
     my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
     return unless $cur;
+    $self->_notify_resources_in_flight;
 
     $self->_forget_run_pid($run_id, $pid) if $pid;
     $self->_release_job_resources($cur);
@@ -2062,11 +2064,6 @@ sub _evaluate_resources_for {
     #                            to decide skip / fail / abort.
     my @all = (@{$self->{+RESOURCES}}, @{$run->resources // []});
 
-    # Authoritative in-flight count, passed to resources that need it
-    # (utilizers' starvation-guard check). Single source of truth on
-    # the harness avoids per-resource counters.
-    my $in_flight = scalar keys %{$self->{+RUNNING_JOBS} // {}};
-
     my @use;
     for my $res (@all) {
         next unless $res->needed(job => $job);
@@ -2077,9 +2074,10 @@ sub _evaluate_resources_for {
         return ('defer') unless $res->is_usable;
 
         # Utilizer saturation: defer when min_concurrent floor met AND saturated.
+        # Resource reads scheduler-pushed in-flight count from its +IN_FLIGHT slot.
         return ('defer')
             if $res->can('should_defer_for_utilization')
-            && $res->should_defer_for_utilization($in_flight);
+            && $res->should_defer_for_utilization;
 
         my $av = $res->available(job => $job);
         return ('skip', $res->resource_name) if $av < 0;
@@ -2089,6 +2087,24 @@ sub _evaluate_resources_for {
     }
 
     return ('launch', \@use);
+}
+
+# Broadcast the current scheduler-known in-flight count to every
+# resource. Called on every RUNNING_JOBS mutation (launch + completion
+# + watchdog cleanup). Resources cache the value (see
+# Test2::Harness2::Role::Resource::notify_in_flight) so status output
+# and utilizer starvation-guard checks read it from a single source.
+sub _notify_resources_in_flight {
+    my $self = shift;
+    my $n    = scalar keys %{$self->{+RUNNING_JOBS} // {}};
+
+    my @resources = @{$self->{+RESOURCES} // []};
+    for my $run (@{$self->{+QUEUE} // []}) {
+        push @resources => @{$run->resources // []};
+    }
+    $_->notify_in_flight($n) for @resources;
+
+    return;
 }
 
 sub _ensure_run_service_started {
@@ -2291,6 +2307,7 @@ sub _launch_job {
             assigned_resources => $resources,
             log_file           => $resp->{log_file},
         };
+        $self->_notify_resources_in_flight;
         $self->_register_run_pid(
             $run_id, $resp->{pid},
             kind       => 'collector',

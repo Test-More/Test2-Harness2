@@ -7,7 +7,6 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 
 use Test2::Harness2::Util::Units qw/parse_count_or_pct parse_size_or_pct/;
-use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
 use Object::HashBase qw{
     <nproc
@@ -25,8 +24,6 @@ sub init {
     my $self = shift;
 
     croak "Resource::UnixLimits requires Linux (this is $^O)" unless $^O eq 'linux';
-
-    $self->{+ASSIGNMENTS} //= {};
 
     for my $dim (qw/nproc nofile/) {
         my $v = $self->{$dim};
@@ -249,28 +246,12 @@ sub available {
 
 sub status {
     my $self = shift;
-
-    my $dims = $self->_dimension_states;
-
-    my @assignments;
-    for my $id (sort keys %{$self->{+ASSIGNMENTS}}) {
-        my $a  = $self->{+ASSIGNMENTS}->{$id};
-        my $tf = $a->{job}->test_file;
-        push @assignments => {
-            id          => $id,
-            test        => $tf->relative,
-            assigned_at => $a->{assigned_at},
-            age         => hi_res_time() - $a->{assigned_at},
-        };
-    }
-
     return {
-        resource          => $self->resource_name,
-        utilize_percent   => $self->{+UTILIZE_PERCENT},
-        paused            => $self->is_paused,
-        dimensions        => $dims,
-        total_assignments => scalar(keys %{$self->{+ASSIGNMENTS}}),
-        assignments       => \@assignments,
+        resource        => $self->resource_name,
+        utilize_percent => $self->{+UTILIZE_PERCENT},
+        paused          => $self->is_paused,
+        dimensions      => $self->_dimension_states,
+        in_flight       => $self->{+IN_FLIGHT} // 0,
     };
 }
 
