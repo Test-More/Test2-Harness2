@@ -12,7 +12,7 @@ use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 # Object::HashBase loads, so HashBase suppresses its `new` generation
 # and so consumers' '&' prefix import picks this up as a role.
 use Role::Tiny;
-use Object::HashBase qw{<assignments +paused};
+use Object::HashBase qw{<assignments +paused +name};
 
 requires 'available';
 requires 'status';
@@ -24,10 +24,14 @@ requires 'status';
 sub needed { 1 }
 
 sub resource_name {
-    my $self  = shift;
+    my $self = shift;
+    if (ref $self) {
+        my $n = $self->{+NAME};
+        return $n if defined $n && length $n;
+    }
     my $class = ref($self) || $self;
-    (my $name = $class) =~ s/^.*:://;
-    return lc($name);
+    $class =~ s/^.*:://;
+    return lc($class);
 }
 
 # Brokenness queries. Defaults assume the resource cannot enter these
@@ -314,7 +318,11 @@ pair.
 
 =item $name = $resource->resource_name
 
-Default: the last component of the class name, lowercased.
+Default: returns C<< $self->{+NAME} >> when set, otherwise the last
+component of the class name, lowercased. The C<name> slot is declared
+on the role itself, so consumers gain it through the L<Object::HashBase>
+C<&> import; setting it at construction time (e.g. C<< MyRes->new(name => 'foo') >>)
+gives the resource a custom identifier without overriding this method.
 
 =item $bool = $resource->is_broken / is_permanent_broken / is_paused
 

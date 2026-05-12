@@ -15,8 +15,6 @@ use Object::HashBase qw{
     &Test2::Harness2::Role::Resource
 };
 
-sub resource_name { 'jobcount' }
-
 sub init {
     my $self = shift;
 

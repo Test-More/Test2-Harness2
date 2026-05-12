@@ -16,7 +16,6 @@ use Object::HashBase qw{
     <window
     <bases
     <core_count
-    +name
     &Test2::Harness2::Role::Resource
 };
 
@@ -32,8 +31,6 @@ our $READ_MEMINFO_AVAIL = undef;    # coderef override; undef = read /proc/memin
 # completions) so the bespoke copies stay even though today's bodies
 # would match the role's defaults. Pause state uses the role's
 # default slot-backed methods.
-
-sub resource_name { $_[0]->{+NAME} // 'throttle' }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/cap window name bases core_count/;
 

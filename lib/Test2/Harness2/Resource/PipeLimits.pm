@@ -17,14 +17,11 @@ use Object::HashBase qw{
     <pages_per_pipe
     <cap_pages
     <headroom
-    +name
     &Test2::Harness2::Role::Resource
     &Test2::Harness2::Role::Resource::Utilizer
 };
 
 sub _inline_key_prefixes { [qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom/] }
-
-sub resource_name { $_[0]->{+NAME} // 'pipelimits' }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom name utilize_percent/;
 
@@ -44,7 +41,6 @@ sub init {
     croak "Resource::PipeLimits requires Linux (this is $^O)" unless $^O eq 'linux';
 
     $self->{+ASSIGNMENTS} //= {};
-    $self->{+NAME}        //= 'pipelimits';
 
     for my $k (qw/pipes_per_test pipes_per_service service_count/) {
         my $v = $self->{$k};
@@ -62,12 +58,6 @@ sub init {
         && ($h->{kind} eq 'count' || $h->{kind} eq 'pct')
         && defined $h->{value}
         && $h->{value} > 0;
-}
-
-sub set_utilize_percent {
-    my ($self, $pct) = @_;
-    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
-    return;
 }
 
 sub parse_options {

@@ -24,7 +24,6 @@ use Object::HashBase qw{
 # by App::Yath2::Command::start::resources -- silently dropped.
 my %OPTION_KEYS = map { $_ => 1 } qw/mounts/;
 
-sub resource_name         { 'disk' }
 sub is_broken             { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
 sub is_permanent_broken   { $_[0]->{+PERMANENT}                     ? 1 : 0 }
 sub mark_broken           { $_[0]->{+BROKEN} = 1 }

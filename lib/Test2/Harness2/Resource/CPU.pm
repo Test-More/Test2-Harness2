@@ -10,7 +10,6 @@ use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
-    +name
     +prev_stat
     +last_busy_pct
     &Test2::Harness2::Role::Resource
@@ -18,8 +17,6 @@ use Object::HashBase qw{
 };
 
 sub _inline_key_prefixes { [qw/utilize/] }
-
-sub resource_name { $_[0]->{+NAME} // 'cpu' }
 
 # Keys this resource accepts at construction time. Anything else
 # coming through parse_options is noise from the resource group
@@ -32,18 +29,11 @@ sub init {
     croak "Resource::CPU requires Linux (this is $^O)" unless $^O eq 'linux';
 
     $self->{+ASSIGNMENTS}   //= {};
-    $self->{+NAME}          //= 'cpu';
     $self->{+LAST_BUSY_PCT} //= 0;
 
     my $u = $self->{+UTILIZE_PERCENT};
     croak "Resource::CPU: utilize_percent must be > 0 and < 100"
         unless defined $u && $u =~ m/^[0-9]+(?:\.[0-9]+)?\z/ && $u > 0 && $u < 100;
-}
-
-sub set_utilize_percent {
-    my ($self, $pct) = @_;
-    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
-    return;
 }
 
 sub parse_options {

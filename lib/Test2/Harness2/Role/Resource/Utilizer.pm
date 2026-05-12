@@ -29,11 +29,19 @@ use Object::HashBase qw{<utilize_percent};
 # stub them with a `croak` that names the method, matching the
 # existing Disk / Memory / PipeLimits / UnixLimits stub style.
 
-requires 'set_utilize_percent';
 requires 'is_temporarily_unavailable';
 
 # utilize_percent read-only accessor + UTILIZE_PERCENT constant come
 # from the HashBase `<utilize_percent` slot above.
+
+# Default setter: store the validated value. Consumers that need to
+# react to changes (re-prime a sampler, flush a cached threshold, etc.)
+# override.
+sub set_utilize_percent {
+    my ($self, $pct) = @_;
+    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
+    return;
+}
 
 # Validate-and-set helper that consumers may call from their own
 # `set_utilize_percent` override. Centralises the
@@ -117,16 +125,6 @@ Consumers must implement these. C<requires> applies to each.
 
 =over 4
 
-=item $resource->set_utilize_percent($pct)
-
-Receives the percentage from C<--utilize> / C<-U>. Must validate via
-C<_validate_utilize_percent> (provided below) or its own equivalent
-range check (0 < pct < 100), store the value, and arrange for the
-sampler / monitor service to consult it on subsequent samples.
-
-Stub implementations in resources that do not yet have a sampler
-should C<croak> with a clear "not implemented" message.
-
 =item $bool = $resource->is_temporarily_unavailable
 
 Return true when the resource's monitored subsystem is currently
@@ -153,18 +151,21 @@ L<Object::HashBase> from the role's C<< <utilize_percent >> slot;
 consumers that import the role via the C<&> prefix inherit both the
 accessor and the C<UTILIZE_PERCENT> constant.
 
+=item $resource->set_utilize_percent($pct)
+
+Validate (via C<_validate_utilize_percent> below) and store the
+threshold into the C<utilize_percent> slot. Receives the percentage
+from C<--utilize> / C<-U>. The role's default implementation is
+suitable for any resource that wants the value stored and nothing
+else; resources that need to react to changes (re-prime a sampler,
+flush a cached threshold, etc.) override.
+
 =item $pct = $resource->_validate_utilize_percent($pct)
 
-Helper for use inside an implementation's C<set_utilize_percent>.
+Helper for use inside a custom C<set_utilize_percent> override.
 Validates that C<$pct> is numeric and strictly between C<0> and
 C<100>; croaks otherwise. Returns the validated value so the caller
-can store it directly:
-
-    sub set_utilize_percent {
-        my ($self, $pct) = @_;
-        $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
-        return;
-    }
+can store it directly.
 
 =back
 

@@ -14,14 +14,11 @@ use Object::HashBase qw{
     <nproc
     <nofile
     <as
-    +name
     &Test2::Harness2::Role::Resource
     &Test2::Harness2::Role::Resource::Utilizer
 };
 
 sub _inline_key_prefixes { [qw/nproc nofile as/] }
-
-sub resource_name { $_[0]->{+NAME} // 'unixlimits' }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/nproc nofile as name utilize_percent/;
 
@@ -31,7 +28,6 @@ sub init {
     croak "Resource::UnixLimits requires Linux (this is $^O)" unless $^O eq 'linux';
 
     $self->{+ASSIGNMENTS} //= {};
-    $self->{+NAME}        //= 'unixlimits';
 
     for my $dim (qw/nproc nofile/) {
         my $v = $self->{$dim};
@@ -45,12 +41,6 @@ sub init {
             unless ref($as) eq 'HASH' && $as->{kind} && ($as->{kind} eq 'bytes' || $as->{kind} eq 'pct');
         croak "Resource::UnixLimits: AS.value must be > 0" unless $as->{value} > 0;
     }
-}
-
-sub set_utilize_percent {
-    my ($self, $pct) = @_;
-    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
-    return;
 }
 
 sub parse_options {

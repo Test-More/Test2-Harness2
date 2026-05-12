@@ -12,14 +12,11 @@ use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys va
 
 use Object::HashBase qw{
     <min_free
-    +name
     &Test2::Harness2::Role::Resource
     &Test2::Harness2::Role::Resource::Utilizer
 };
 
 sub _inline_key_prefixes { [qw/min_free/] }
-
-sub resource_name { $_[0]->{+NAME} // 'memory' }
 
 my %OPTION_KEYS = map { $_ => 1 } qw/min_free name utilize_percent/;
 
@@ -29,7 +26,6 @@ sub init {
     croak "Resource::Memory requires Linux (this is $^O)" unless $^O eq 'linux';
 
     $self->{+ASSIGNMENTS} //= {};
-    $self->{+NAME}        //= 'memory';
 
     my $mf = $self->{+MIN_FREE};
     croak "Resource::Memory: 'min_free' is required"
@@ -42,12 +38,6 @@ sub init {
         croak "Resource::Memory: min_free.value (pct) must be < 100"
             unless $mf->{value} < 100;
     }
-}
-
-sub set_utilize_percent {
-    my ($self, $pct) = @_;
-    $self->{+UTILIZE_PERCENT} = $self->_validate_utilize_percent($pct);
-    return;
 }
 
 sub parse_options {

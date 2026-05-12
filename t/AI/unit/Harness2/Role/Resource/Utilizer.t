@@ -115,8 +115,8 @@ subtest 'role refuses to compose without required methods' => sub {
     my $err = _build_unimplemented(1);
     like(
         $err,
-        qr/Can't apply role .*Test2::Harness2::Role::Resource::Utilizer.* missing.*set_utilize_percent|requires the method.*set_utilize_percent|Can't apply.*missing\b.*set_utilize_percent/i,
-        'composition fails when required methods are absent (set_utilize_percent)',
+        qr/Can't apply role .*Test2::Harness2::Role::Resource::Utilizer.* missing.*is_temporarily_unavailable|requires the method.*is_temporarily_unavailable|Can't apply.*missing\b.*is_temporarily_unavailable/i,
+        'composition fails when required methods are absent (is_temporarily_unavailable)',
     );
 };
 
