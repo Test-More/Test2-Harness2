@@ -10,7 +10,7 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 
 # Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
-use Object::HashBase qw{+paused +name +in_flight};
+use Object::HashBase qw{+paused +name +in_flight +broken +permanent_broken};
 
 requires 'available';
 requires 'status';
@@ -28,9 +28,9 @@ sub resource_name {
     return lc($class);
 }
 
-sub is_broken           { 0 }
-sub is_permanent_broken { 0 }
-sub is_paused           { $_[0]->{+PAUSED} ? 1 : 0 }
+sub is_broken           { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT_BROKEN} ? 1 : 0 }
+sub is_permanent_broken { $_[0]->{+PERMANENT_BROKEN}                     ? 1 : 0 }
+sub is_paused           { $_[0]->{+PAUSED}                               ? 1 : 0 }
 
 sub is_usable {
     my $self = shift;
@@ -40,12 +40,16 @@ sub is_usable {
     return 1;
 }
 
-# Croaking defaults: resources that support brokenness override.
-sub mark_broken           { croak ref($_[0]) . "::mark_broken is not implemented" }
-sub mark_permanent_broken { croak ref($_[0]) . "::mark_permanent_broken is not implemented" }
+sub mark_broken           { $_[0]->{+BROKEN} = 1 }
+sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT_BROKEN} = 1 }
+sub mark_paused           { $_[0]->{+PAUSED} = 1 }
 
-sub mark_paused  { $_[0]->{+PAUSED} = 1 }
-sub mark_resumed { $_[0]->{+PAUSED} = 0 }
+# Clear transient broken + paused; preserve permanent_broken.
+sub mark_resumed {
+    my $self = shift;
+    $self->{+PAUSED} = 0;
+    $self->{+BROKEN} = 0 unless $self->{+PERMANENT_BROKEN};
+}
 
 # No-op defaults. Resources that need per-assignment state (Throttle's
 # timestamp window, JobCount's slot math) override locally. The
@@ -349,33 +353,47 @@ gives the resource a custom identifier without overriding this method.
 Return whether the resource is in the corresponding state. A broken or
 permanently-broken resource must not be assigned new work. A paused
 resource should likewise refuse assignment but may resume later. The
-role's default implementation returns C<0> for all three, so resources
-that cannot be broken get a working baseline. Consumers that track
-these states override the accessors to read from their own storage.
+role's default implementations read the C<broken>, C<permanent_broken>,
+and C<paused> slots (all declared on the role itself); C<is_broken>
+also returns true while C<permanent_broken> is set. Consumers gain the slots
+through the L<Object::HashBase> C<&> import and rarely override the
+accessors.
 
 =item $bool = $resource->is_usable
 
 True when none of broken / permanent_broken / paused are set.
 
-=item $resource->mark_broken / mark_permanent_broken
+=item $resource->mark_broken / mark_permanent_broken / mark_paused / mark_resumed
 
-State-transition hooks for brokenness. The role's B<default
-implementations croak>: calling mark_broken on a resource that never
-declared it could support the transition is a contract violation, not
-a silent no-op. Resources that can enter these states override each
-mark_* they actually support, and record the transition so the
-matching C<is_*> accessor starts returning true.
-C<mark_permanent_broken> should also flip C<is_broken> to true;
-C<mark_resumed> clears transient broken/paused flags but must leave
-permanent brokenness intact.
+State-transition hooks. The role's defaults set / clear the
+corresponding slot:
 
-=item $resource->mark_paused / mark_resumed
+=over 4
 
-Pause-state transitions. The defaults set / clear C<< $self->{paused} >>,
-matching the default C<is_paused>. Consumers that don't support pause
-override with a croaking version; consumers that need extra
-bookkeeping (e.g. preserving a permanent-broken flag through resume)
-override locally.
+=item *
+
+C<mark_broken> sets C<broken>.
+
+=item *
+
+C<mark_permanent_broken> sets both C<broken> and C<permanent_broken>;
+the permanent flag is sticky.
+
+=item *
+
+C<mark_paused> sets C<paused>.
+
+=item *
+
+C<mark_resumed> clears C<paused> and C<broken>, but leaves
+C<permanent_broken> intact -- a permanently-broken resource stays
+broken across resume.
+
+=back
+
+Consumers with extra bookkeeping (e.g. clearing per-mount sample
+caches on resume, refusing transitions a backing service does not
+support) override locally.
 
 =item $bool = $resource->assign(%params) / release(%params)
 

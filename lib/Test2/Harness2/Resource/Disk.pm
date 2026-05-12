@@ -12,18 +12,11 @@ use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 use Object::HashBase qw{
     <mounts
     <samples
-    +broken
-    +permanent
     &Test2::Harness2::Role::Resource
 };
 
 # Known keys; other resource-group settings are ignored.
 my %OPTION_KEYS = map { $_ => 1 } qw/mounts/;
-
-sub is_broken             { $_[0]->{+BROKEN} || $_[0]->{+PERMANENT} ? 1 : 0 }
-sub is_permanent_broken   { $_[0]->{+PERMANENT}                     ? 1 : 0 }
-sub mark_broken           { $_[0]->{+BROKEN} = 1 }
-sub mark_permanent_broken { $_[0]->{+BROKEN} = $_[0]->{+PERMANENT} = 1 }
 
 sub init {
     my $self = shift;
@@ -51,13 +44,6 @@ sub init {
         croak "Resource::Disk: mount '$mp' returned no sample"
             unless ref($sample) eq 'HASH' && defined $sample->{bavail};
     }
-}
-
-# Override: clear transient broken + paused, preserve permanent_broken.
-sub mark_resumed {
-    my $self = shift;
-    $self->{+PAUSED} = 0;
-    $self->{+BROKEN} = 0 unless $self->{+PERMANENT};
 }
 
 sub _evaluate_threshold {
