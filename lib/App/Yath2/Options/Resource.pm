@@ -42,7 +42,7 @@ option_group {group => 'resource', category => "Resource Options"} => sub {
         short          => 'j',
         alt            => ['jobs', 'job-count'],
         description    => 'Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.',
-        notes          => "If unset, no hard concurrency cap is applied; the default utilizer + throttle resources gate scheduling.",
+        notes          => "On Linux, if unset, no hard concurrency cap is applied; the default utilizer + throttle resources gate scheduling. On other platforms (where the utilizer/throttle stack is unavailable) an unset value auto-derives to half the logical CPU count (minimum 1), falling back to 2 when the count cannot be detected.",
         long_examples  => [' 4', ' 8:2'],
         short_examples => ['4',  '8:2'],
         from_env_vars  => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
@@ -139,15 +139,27 @@ sub jobs_post_process {
     return if $resource->check_option('no_resource') && $resource->no_resource;
 
     # Inject default resources. //= preserves any class the user passed via -R.
-    my $utilize   = $resource->utilize;
+    my $utilize = $resource->utilize;
 
-    my @util_args = (utilize_percent => $utilize);
+    if ($^O eq 'linux') {
+        my @util_args = (utilize_percent => $utilize);
 
-    $resource->classes->{'Test2::Harness2::Resource::CPU'}        //= [@util_args];
-    $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
-    $resource->classes->{'Test2::Harness2::Resource::UnixLimits'} //= [@util_args];
-    $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
-    $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['1/core,100mb/1s'];
+        $resource->classes->{'Test2::Harness2::Resource::CPU'}        //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::Memory'}     //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::UnixLimits'} //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::PipeLimits'} //= [@util_args];
+        $resource->classes->{'Test2::Harness2::Resource::Throttle'}   //= ['1/core,100mb/1s'];
+    }
+    elsif (!defined $slots) {
+        # The utilizer + throttle stack reads /proc on Linux; off-Linux
+        # there is no portable equivalent. Fall back to a JobCount cap
+        # derived from the CPU count: half the logical CPUs (minimum 1),
+        # or 2 when the count cannot be detected.
+        my $cpu = _detect_cpu_count();
+        my $auto = $cpu ? (int($cpu / 2) || 1) : 2;
+        $resource->option(slots => $auto);
+        $slots = $auto;
+    }
 
     # Disk gate on system tmpdir, derived from --utilize. Skipped when
     # Filesys::Df missing; auto-injecting it would croak with a confusing dep error.
@@ -160,10 +172,28 @@ sub jobs_post_process {
         $resource->classes->{'Test2::Harness2::Resource::Disk'} //= ["$tmpdir:${min_pct}%"];
     }
 
-    # -j N: add JobCount as a hard cap alongside the utilizer/throttle stack.
+    # -j N (explicit or auto-derived): add JobCount as a hard cap.
     if (defined $slots) {
         $resource->classes->{'Test2::Harness2::Resource::JobCount'} //= [];
     }
+}
+
+# Best-effort cross-platform logical-CPU count. Returns undef when no
+# detection path works. Linux is intentionally not special-cased here
+# because the auto-cap fallback only fires off-Linux.
+sub _detect_cpu_count {
+    if ($^O eq 'MSWin32') {
+        my $n = $ENV{NUMBER_OF_PROCESSORS};
+        return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
+        return undef;
+    }
+
+    my $n = eval {
+        require POSIX;
+        POSIX::sysconf(&POSIX::_SC_NPROCESSORS_ONLN);
+    };
+    return $n if defined($n) && $n =~ /^\d+\z/ && $n > 0;
+    return undef;
 }
 
 1;
@@ -198,6 +228,17 @@ memory, free C</tmp> space, etc.) is per-resource. The option exists
 now so command-line plumbing, validation, and propagation are in
 place; the role contract and per-resource implementations are wired
 up in follow-on work.
+
+=head3 Non-Linux fallback
+
+The default utilizer + throttle resources (CPU, Memory, UnixLimits,
+PipeLimits, Throttle) all sample C</proc> and require Linux. On other
+platforms those classes are not auto-injected. Instead, when C<-j> /
+C<--slots> is left unset, yath derives a JobCount cap from the
+detected logical CPU count (half, minimum 1) and falls back to 2
+slots when the count cannot be detected (POSIX C<sysconf> /
+C<NUMBER_OF_PROCESSORS> both unavailable). Pass C<-j N> explicitly to
+override.
 
 =head3 Auto-injected Disk resource
 

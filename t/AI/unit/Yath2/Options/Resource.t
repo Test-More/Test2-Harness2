@@ -404,4 +404,50 @@ subtest 'user -R Disk=/var:5gb replaces auto-inject entirely (no tmpdir added)' 
     is($disk, ['/var:5gb'], 'user Disk entry is /var:5gb only (no tmpdir merged in)');
 };
 
+subtest 'non-Linux fallback: no utilizer stack, JobCount derived from CPU count' => sub {
+    no warnings 'redefine';
+    local $^O = 'darwin';
+    local *App::Yath2::Options::Resource::_detect_cpu_count = sub { 8 };
+
+    my $r       = parse();
+    my $classes = $r->classes;
+
+    ok(!exists $classes->{'Test2::Harness2::Resource::CPU'},        'CPU not injected off-Linux');
+    ok(!exists $classes->{'Test2::Harness2::Resource::Memory'},     'Memory not injected off-Linux');
+    ok(!exists $classes->{'Test2::Harness2::Resource::UnixLimits'}, 'UnixLimits not injected off-Linux');
+    ok(!exists $classes->{'Test2::Harness2::Resource::PipeLimits'}, 'PipeLimits not injected off-Linux');
+    ok(!exists $classes->{'Test2::Harness2::Resource::Throttle'},   'Throttle not injected off-Linux');
+    ok(exists $classes->{'Test2::Harness2::Resource::JobCount'},    'JobCount auto-injected off-Linux');
+    is($r->slots, 4, 'slots = half of CPU count (8 / 2 = 4)');
+};
+
+subtest 'non-Linux fallback: CPU count undetected falls back to 2' => sub {
+    no warnings 'redefine';
+    local $^O = 'darwin';
+    local *App::Yath2::Options::Resource::_detect_cpu_count = sub { undef };
+
+    my $r = parse();
+    is($r->slots, 2, 'slots = 2 when CPU count is unobtainable');
+    ok(exists $r->classes->{'Test2::Harness2::Resource::JobCount'}, 'JobCount auto-injected');
+};
+
+subtest 'non-Linux fallback: half of 1 CPU rounds up to 1' => sub {
+    no warnings 'redefine';
+    local $^O = 'darwin';
+    local *App::Yath2::Options::Resource::_detect_cpu_count = sub { 1 };
+
+    my $r = parse();
+    is($r->slots, 1, 'slots = 1 when CPU count is 1 (floor 1, not 0)');
+};
+
+subtest 'non-Linux: explicit -j overrides auto-derived cap' => sub {
+    no warnings 'redefine';
+    local $^O = 'darwin';
+    local *App::Yath2::Options::Resource::_detect_cpu_count = sub { 16 };
+
+    my $r = parse('-j', '3');
+    is($r->slots, 3, 'user-supplied -j wins over auto-derive');
+    ok(exists $r->classes->{'Test2::Harness2::Resource::JobCount'}, 'JobCount injected from user -j');
+};
+
 done_testing;
