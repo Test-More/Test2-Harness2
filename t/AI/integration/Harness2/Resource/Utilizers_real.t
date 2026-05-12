@@ -42,10 +42,12 @@ subtest 'Memory=1kb: trivially satisfied, test runs' => sub {
     like($r->{stdout}, qr/PASSED/i, 'pass.t ran');
 };
 
-subtest 'Memory=99%: defers' => sub {
-    # 99% of MemTotal required free -- vanishingly rare. Timeout short.
+subtest 'Memory=99%: starvation guard still runs 1 test' => sub {
+    # 99% of MemTotal required free is unsatisfiable in practice. The
+    # default min_concurrent=1 floor on Role::Resource::Utilizer keeps
+    # the scheduler from starving: at least one test must still run.
     my $r = run_yath(['-R', 'Memory=99%'], 15);
-    unlike($r->{stdout}, qr/PASSED/i, 'pass.t did NOT run');
+    like($r->{stdout}, qr/PASSED/i, 'pass.t ran despite saturation (min_concurrent=1 floor)');
 };
 
 done_testing;

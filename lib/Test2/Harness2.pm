@@ -2072,9 +2072,12 @@ sub _evaluate_resources_for {
         return ('defer') unless $res->is_usable;
 
         # Utilizer saturation check (between is_usable and available).
+        # should_defer_for_utilization layers a starvation guard over
+        # is_temporarily_unavailable so at least min_concurrent (default 1)
+        # tests always run.
         return ('defer')
-            if $res->can('is_temporarily_unavailable')
-            && $res->is_temporarily_unavailable;
+            if $res->can('should_defer_for_utilization')
+            && $res->should_defer_for_utilization;
 
         my $av = $res->available(job => $job);
         return ('skip', $res->resource_name) if $av < 0;
