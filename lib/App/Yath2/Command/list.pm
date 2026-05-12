@@ -76,12 +76,12 @@ sub run {
     my @rows;
     for my $rec (@$all) {
         push @rows => [
-            $rec->{pid}                                  // '?',
-            $rec->{project}                              // '?',
-            $rec->{user}                                  // '?',
+            $rec->{pid}     // '?',
+            $rec->{project} // '?',
+            $rec->{user}    // '?',
             _fmt_stamp($rec->{created_at}),
-            $rec->{workdir}                              // '?',
-            $rec->{_path}                                // '?',
+            $rec->{workdir} // '?',
+            $rec->{_path}   // '?',
         ];
     }
 

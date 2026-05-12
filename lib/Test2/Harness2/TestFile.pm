@@ -8,22 +8,8 @@ use Carp qw/croak/;
 use File::Spec ();
 
 use Object::HashBase qw{
-    <absolute <relative
-    <features <switches
-    <category <duration <stage
-    <conflicts
-    <retry <retry_isolated
-    <smoke <isolation
-    <non_perl <is_binary
-    <event_timeout <post_exit_timeout
-    <min_slots <max_slots
-    <meta
-    <ch_dir
-    <comment
+    &Test2::Harness2::Role::TestFile
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::TestFile';
 
 sub init {
     my $self = shift;

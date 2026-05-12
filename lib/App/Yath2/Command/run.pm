@@ -196,34 +196,20 @@ sub _queue_run {
     return $queued->{run_id};
 }
 
-# Build the per-run resource recipe shipped to the daemon. Mirrors
-# App::Yath2::Command::test::_build_resources but emits
-# [[class, @ctor_args], ...] rather than constructing live objects:
-# the harness owns those instances on the other side of the IPC.
+# Build the per-run resource recipe shipped to the daemon. Per-run
+# resources are additive on top of the daemon's globals; the daemon
+# already owns whichever CPU/Memory/Throttle/JobCount/etc. stack the
+# operator picked at `yath start` time, so re-shipping any of those
+# from here would just install redundant duplicate gates bound to
+# this single Run.
+#
+# Currently the only resource shape that genuinely belongs per-run
+# is Resource::Preload with scope='run'; ship those and nothing else.
 sub _build_resource_specs {
     my $self     = shift;
     my $settings = $self->{+SETTINGS};
-    my $rg       = $settings->resource;
 
     my @out;
-
-    my $classes = $rg->classes // {};
-    if (keys %$classes) {
-        for my $mod (sort keys %$classes) {
-            my @args = @{$classes->{$mod} // []};
-
-            if ($mod eq 'Test2::Harness2::Resource::JobCount' && !@args) {
-                push @out => [
-                    $mod,
-                    slots       => $rg->slots,
-                    max_per_job => $rg->job_slots,
-                ];
-                next;
-            }
-
-            push @out => [$mod, @args];
-        }
-    }
 
     my $preload = eval { $settings->preload };
     my $modules = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;

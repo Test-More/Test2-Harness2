@@ -13,26 +13,10 @@ use Test2::Harness2::Util qw/open_file clean_path/;
 use Test2::Util::UUID qw/gen_uuid/;
 
 use Object::HashBase qw{
-    <absolute <relative
     +_scanned +_shbang
-    +features +switches
-    +category +duration +stage
-    +conflicts
-    +retry +retry_isolated
-    <smoke <isolation
-    +non_perl +is_binary
-    +event_timeout +post_exit_timeout
-    +min_slots +max_slots
-    +meta
-    +preload_preferences
-    <ch_dir
-    <comment
-
     <input <env_vars <test_args <job_class <queue_args
+    &Test2::Harness2::Role::TestFile
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::TestFile';
 
 # {{{ Construction
 

@@ -7,22 +7,44 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 use File::Spec ();
 
+# Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
+use Object::HashBase qw{
+    <absolute <relative
+    <max_slots
+    <category <duration <stage
+    <ch_dir
+    <event_timeout <post_exit_timeout
+    +min_slots
+    +conflicts
+    +switches
+    +features +meta
+    +comment
+    +preload_preferences
+    +smoke +isolation
+    +retry +retry_isolated
+    +non_perl +is_binary
+};
 
-# absolute and relative together fully describe a test file's path.
-# Consumers must provide both accessors; the role derives its path helpers
-# from them. (The legacy `file` slot has been dropped -- see init in
-# concrete classes for how a caller-supplied `file` arg is resolved into
-# absolute + relative and then discarded.)
-requires 'absolute';
-requires 'relative';
-
-# Preload preference list, normalized to the form the resolver
-# expects. Default is ['<default>'] -- "use the scope's default
-# preload, fall through to no preload". Producers (notably
-# App::Yath2::TestFile) override this to return the parsed
-# HARNESS-PRELOAD: directive value.
-sub preload_preferences { ['<default>'] }
+# Default-aware readers for attributes with non-undef defaults. A
+# consumer that pre-seeds the slot via defaults() (the producer pattern
+# in App::Yath2::TestFile / Test2::Harness2::TestFile) gets its stored
+# value back. A minimal consumer that does NOT pre-seed gets a fresh
+# default value on every call, so mutating one returned default doesn't
+# leak into the next read.
+sub min_slots           { defined $_[0]->{+MIN_SLOTS}           ? $_[0]->{+MIN_SLOTS}           : 1 }
+sub comment             { defined $_[0]->{+COMMENT}             ? $_[0]->{+COMMENT}             : '#' }
+sub conflicts           { defined $_[0]->{+CONFLICTS}           ? $_[0]->{+CONFLICTS}           : [] }
+sub switches            { defined $_[0]->{+SWITCHES}            ? $_[0]->{+SWITCHES}            : [] }
+sub features            { defined $_[0]->{+FEATURES}            ? $_[0]->{+FEATURES}            : {} }
+sub meta                { defined $_[0]->{+META}                ? $_[0]->{+META}                : {} }
+sub preload_preferences { defined $_[0]->{+PRELOAD_PREFERENCES} ? $_[0]->{+PRELOAD_PREFERENCES} : ['<default>'] }
+sub smoke               { $_[0]->{+SMOKE}                 // 0 }
+sub isolation           { $_[0]->{+ISOLATION}             // 0 }
+sub retry               { $_[0]->{+RETRY}                 // 0 }
+sub retry_isolated      { $_[0]->{+RETRY_ISOLATED}        // 0 }
+sub non_perl            { $_[0]->{+NON_PERL}              // 0 }
+sub is_binary           { $_[0]->{+IS_BINARY}             // 0 }
 
 # Per-feature defaults consulted by check_feature when the caller
 # supplies no explicit default and the consumer's data has no entry
@@ -49,33 +71,34 @@ my %RANK = (
     isolation  => 100,
 );
 
-# Per-attribute defaults. The canonical values live in defaults();
-# each accessor below reads its slot from that hashref so a consumer
-# that wants to adjust the defaults wholesale can override defaults()
-# in one place. defaults() builds a fresh hashref (with fresh mutable
-# sub-containers) on every call so consumers never share arrayrefs or
-# hashrefs across objects.
+# Per-attribute defaults. Consumers seed these into their HashBase
+# slots in init (typically via `$self->{$k} //= $defaults->{$k}` over
+# defaults()), so the slot reader returns the documented default
+# instead of undef. defaults() builds a fresh hashref (with fresh
+# mutable sub-containers) on every call so consumers never share
+# arrayrefs / hashrefs across instances.
 sub defaults {
     return {
-        min_slots         => 1,
-        max_slots         => undef,
-        category          => undef,
-        duration          => undef,
-        stage             => undef,
-        conflicts         => [],
-        smoke             => 0,
-        isolation         => 0,
-        retry             => 0,
-        retry_isolated    => 0,
-        non_perl          => 0,
-        is_binary         => 0,
-        switches          => [],
-        features          => {},
-        meta              => {},
-        ch_dir            => undef,
-        event_timeout     => undef,
-        post_exit_timeout => undef,
-        comment           => '#',
+        MIN_SLOTS()           => 1,
+        MAX_SLOTS()           => undef,
+        CATEGORY()            => undef,
+        DURATION()            => undef,
+        STAGE()               => undef,
+        CONFLICTS()           => [],
+        SMOKE()               => 0,
+        ISOLATION()           => 0,
+        RETRY()               => 0,
+        RETRY_ISOLATED()      => 0,
+        NON_PERL()            => 0,
+        IS_BINARY()           => 0,
+        SWITCHES()            => [],
+        FEATURES()            => {},
+        META()                => {},
+        CH_DIR()              => undef,
+        EVENT_TIMEOUT()       => undef,
+        POST_EXIT_TIMEOUT()   => undef,
+        COMMENT()             => '#',
+        PRELOAD_PREFERENCES() => ['<default>'],
     };
 }
 
@@ -96,41 +119,10 @@ sub json_fields {
     };
 }
 
-# {{{ Per-attribute default accessors
-#
-# Consuming classes typically install their own (HashBase) slot
-# readers that shadow these methods at method-resolution time. The
-# default accessors below describe the role contract and serve as a
-# fallback for any consumer that does not shadow them; in practice
-# they rarely run for a HashBase consumer because the slot reader
-# wins. Each one delegates to defaults() so a consumer can override
-# every default in a single place by overriding defaults() alone.
-
-sub min_slots         { $_[0]->defaults->{min_slots} }
-sub max_slots         { $_[0]->defaults->{max_slots} }
-sub category          { $_[0]->defaults->{category} }
-sub duration          { $_[0]->defaults->{duration} }
-sub stage             { $_[0]->defaults->{stage} }
-sub conflicts         { $_[0]->defaults->{conflicts} }
-sub smoke             { $_[0]->defaults->{smoke} }
-sub isolation         { $_[0]->defaults->{isolation} }
-sub retry             { $_[0]->defaults->{retry} }
-sub retry_isolated    { $_[0]->defaults->{retry_isolated} }
-sub non_perl          { $_[0]->defaults->{non_perl} }
-sub is_binary         { $_[0]->defaults->{is_binary} }
-sub switches          { $_[0]->defaults->{switches} }
-sub features          { $_[0]->defaults->{features} }
-sub meta              { $_[0]->defaults->{meta} }
-sub ch_dir            { $_[0]->defaults->{ch_dir} }
-sub event_timeout     { $_[0]->defaults->{event_timeout} }
-sub post_exit_timeout { $_[0]->defaults->{post_exit_timeout} }
-sub comment           { $_[0]->defaults->{comment} }
-
 # Cheap helper to read a single key out of the meta hash. Returns the
 # list of values stored under that key, or () when missing. Kept as a
-# separate name because HashBase consumers shadow meta() with a slot
-# reader that does not accept a key argument; meta_get() is unambiguous
-# and works whether or not the consumer shadows meta.
+# separate name because the slot reader meta() does not accept a key
+# argument; meta_get() is unambiguous.
 sub meta_get {
     my ($self, $key) = @_;
     my $hash = $self->meta // {};

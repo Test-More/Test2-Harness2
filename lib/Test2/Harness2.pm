@@ -675,7 +675,10 @@ sub request_handler_queue_test_run {
                 die "resources entry missing class\n"
                     unless defined $class && length $class && !ref $class;
                 load_module($class);
-                push @run_resources => $class->new(@args);
+                my @ctor_args = $class->can('parse_options')
+                    ? $class->parse_options(@args)
+                    : @args;
+                push @run_resources => $class->new(@ctor_args);
             }
             1;
         };

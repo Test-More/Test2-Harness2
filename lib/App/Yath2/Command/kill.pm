@@ -65,8 +65,8 @@ sub summary { "Hard-kill a running yath daemon" }
 sub description {
     return <<"    EOT";
 Send SIGKILL (or another signal via --signal) directly to a running
-yath daemon's pid. No graceful drain. Use `yath stop` when the daemon
-should be allowed to finish in-flight work.
+yath daemon's pid. No graceful shutdown. Use `yath stop` when the daemon should
+be allowed to finish in-flight work.
     EOT
 }
 

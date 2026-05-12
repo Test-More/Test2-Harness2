@@ -16,12 +16,8 @@ use Object::HashBase qw{
     <reloader_class
     <reloader_args
     +_usable
-    +_broken
-    +_permanent_broken
+    &Test2::Harness2::Role::Resource
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
 
 sub init {
     my $self = shift;
@@ -34,8 +30,6 @@ sub init {
     $self->{+SCOPE}            //= 'global';
     $self->{+IS_ROLE_CONSUMER} //= 0;
     $self->{+_USABLE}            = 0;
-    $self->{+_BROKEN}            = 0;
-    $self->{+_PERMANENT_BROKEN}  = 0;
 
     croak "'scope' must be 'global' or 'run'"
         unless $self->{+SCOPE} eq 'global' || $self->{+SCOPE} eq 'run';
@@ -83,8 +77,8 @@ sub status {
         name              => $self->{+NAME},
         scope             => $self->{+SCOPE},
         usable            => $self->{+_USABLE} ? 1 : 0,
-        broken            => $self->{+_BROKEN} ? 1 : 0,
-        permanent_broken  => $self->{+_PERMANENT_BROKEN} ? 1 : 0,
+        broken            => $self->{+BROKEN} ? 1 : 0,
+        permanent_broken  => $self->{+PERMANENT_BROKEN} ? 1 : 0,
         is_role_consumer  => $self->{+IS_ROLE_CONSUMER} ? 1 : 0,
         modules           => [@{$self->{+MODULES}}],
         ($self->{+SCOPE} eq 'run' && ref($self->{+RUN})
@@ -93,20 +87,14 @@ sub status {
     };
 }
 
-# Role::Resource defaults return 0; override here so the harness can
-# read state through the standard accessors.
-sub is_broken           { $_[0]->{+_BROKEN} ? 1 : 0 }
-sub is_permanent_broken { $_[0]->{+_PERMANENT_BROKEN} ? 1 : 0 }
-sub is_paused           { 0 }
-
 # Override the role default. The role returns true unless something
 # is wrong; for preload we additionally require the service to have
 # signalled ready. The service is considered "not yet ready" until
 # its preload_ready IPC arrives, even with no broken flags set.
 sub is_usable {
     my $self = shift;
-    return 0 if $self->{+_BROKEN};
-    return 0 if $self->{+_PERMANENT_BROKEN};
+    return 0 if $self->{+BROKEN};
+    return 0 if $self->{+PERMANENT_BROKEN};
     return $self->{+_USABLE} ? 1 : 0;
 }
 
@@ -118,9 +106,9 @@ sub is_usable {
 # section 5.
 sub mark_ready {
     my $self = shift;
-    return if $self->{+_PERMANENT_BROKEN};
+    return if $self->{+PERMANENT_BROKEN};
     $self->{+_USABLE} = 1;
-    $self->{+_BROKEN} = 0;
+    $self->{+BROKEN}  = 0;
 }
 
 sub mark_unusable {
@@ -130,16 +118,19 @@ sub mark_unusable {
 
 sub mark_broken {
     my $self = shift;
-    $self->{+_BROKEN} = 1;
+    $self->{+BROKEN}  = 1;
     $self->{+_USABLE} = 0;
 }
 
 sub mark_permanent_broken {
     my $self = shift;
-    $self->{+_PERMANENT_BROKEN} = 1;
-    $self->{+_USABLE}           = 0;
+    $self->{+BROKEN}           = 1;
+    $self->{+PERMANENT_BROKEN} = 1;
+    $self->{+_USABLE}          = 0;
 }
 
+# Preload does not support pause semantics; override the role's
+# slot-setting defaults with no-ops.
 sub mark_paused  { }
 sub mark_resumed { }
 
