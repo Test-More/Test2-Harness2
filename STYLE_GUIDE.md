@@ -24,6 +24,7 @@ not here.
   - postfix: `warn $@ unless eval { ...; 1 };`
   - block:   `unless (eval { ...; 1 }) { warn $@; exit(1); }`
   - or-form: `eval { ...; 1 } or warn $@;` — acceptable when the eval block is a single statement and the `or`-clause is also a single statement, so nothing can clobber `$@` between the eval close-brace and the use. (For longer blocks or multi-statement handlers, use the three-step form instead.)
+  - capture-in-block: `unless (eval { ...; 1 }) { my $err = $@; ...handler using $err... }` — also acceptable. Conditions: the conditional itself must test the return value of `eval` (not `$@`), and if `$@` is referenced anywhere other than the very first statement of the block, it must be assigned to a local variable on that first statement so later code can't clobber it. The whole point of this form is that `eval` success is decided by its return, while `$@` is only used (via the saved local) to format the error.
 - If/else branching on eval result: use three-step form. `my $ok = eval { ...; 1 }; my $err = $@; if ($ok) { ... } else { ... }`.
 - If the conditional block has statements before `$@` is used (e.g. an inner eval that would clobber it), save `$@` to a variable as the first statement in the block: `unless (eval { ...; 1 }) { my $err = $@; ... }`.
 - A multi-line eval block must never appear inside the parens of a conditional. Instead use the three-step form: `my $ok = eval { ...; 1 }; my $err = $@; if/unless ($ok) { ... }`. The postfix/inline/or-form variants are only for eval blocks short enough to fit on a single line.
