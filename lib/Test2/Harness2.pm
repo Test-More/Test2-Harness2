@@ -44,6 +44,7 @@ use Object::HashBase qw{
     +run_states
     +scheduler
     +running_jobs
+    +in_flight_count
     <resource_services
     <run_pids
     +run_flags
@@ -142,6 +143,7 @@ sub init {
     $self->{+RUN_STATES}                //= {};
     $self->{+SCHEDULER}                 //= {};
     $self->{+RUNNING_JOBS}              //= {};
+    $self->{+IN_FLIGHT_COUNT}           //= 0;
     $self->{+RESOURCE_SERVICES}         //= {};
     $self->{+RUN_PIDS}                  //= {};
     $self->{+RUN_FLAGS}                 //= {};
@@ -193,6 +195,18 @@ sub _init_resources {
     # callers that construct a harness directly remain in full control
     # of which limiters (if any) participate.
     $self->{+RESOURCES} //= [];
+
+    $self->_install_in_flight_ref($_) for @{$self->{+RESOURCES}};
+}
+
+# Hand the resource a scalar ref pointing at our authoritative
+# in-flight counter. The resource derefs to read; no per-mutation
+# notification loop needed.
+sub _install_in_flight_ref {
+    my ($self, $res) = @_;
+    return unless $res && $res->can('set_in_flight_ref');
+    $res->set_in_flight_ref(\$self->{+IN_FLIGHT_COUNT});
+    return;
 }
 
 #-------------------------------------------------------------------
@@ -515,6 +529,7 @@ sub request_handler_queue_test_run {
             %run_logger_opts,
         );
         push @{$self->{+QUEUE}} => $run;
+        $self->_install_in_flight_ref($_) for @{$run->resources // []};
         $self->{+RUN_STATES}->{$run->run_id} = Test2::Harness2::Run::State->new(
             run_id     => $run->run_id,
             created_at => $run->created_at,
@@ -1399,7 +1414,7 @@ sub _handle_job_release {
 
     my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
     return unless $cur;
-    $self->_notify_resources_in_flight;
+    $self->{+IN_FLIGHT_COUNT}--;
 
     my $run_id = $cur->{run}->run_id;
     $self->_forget_run_pid($run_id, $cur->{pid}) if $cur->{pid};
@@ -1470,6 +1485,7 @@ sub service_post_hard_stop {
         $self->_release_job_resources($cur);
     }
     $self->{+RUNNING_JOBS}      = {};
+    $self->{+IN_FLIGHT_COUNT}   = 0;
     $self->{+RESOURCE_SERVICES} = {};
     $self->{+RUN_PIDS}          = {};
     $self->{+RUN_FLAGS}         = {};
@@ -1615,7 +1631,7 @@ sub _synth_release_orphan_job {
 
     my $cur = delete $self->{+RUNNING_JOBS}->{$job_id};
     return unless $cur;
-    $self->_notify_resources_in_flight;
+    $self->{+IN_FLIGHT_COUNT}--;
 
     $self->_forget_run_pid($run_id, $pid) if $pid;
     $self->_release_job_resources($cur);
@@ -2074,7 +2090,8 @@ sub _evaluate_resources_for {
         return ('defer') unless $res->is_usable;
 
         # Utilizer saturation: defer when min_concurrent floor met AND saturated.
-        # Resource reads scheduler-pushed in-flight count from its +IN_FLIGHT slot.
+        # Resource derefs the scheduler's IN_FLIGHT_COUNT slot via the
+        # scalar ref installed at registration time.
         return ('defer')
             if $res->can('should_defer_for_utilization')
             && $res->should_defer_for_utilization;
@@ -2089,23 +2106,6 @@ sub _evaluate_resources_for {
     return ('launch', \@use);
 }
 
-# Broadcast the current scheduler-known in-flight count to every
-# resource. Called on every RUNNING_JOBS mutation (launch + completion
-# + watchdog cleanup). Resources cache the value (see
-# Test2::Harness2::Role::Resource::notify_in_flight) so status output
-# and utilizer starvation-guard checks read it from a single source.
-sub _notify_resources_in_flight {
-    my $self = shift;
-    my $n    = scalar keys %{$self->{+RUNNING_JOBS} // {}};
-
-    my @resources = @{$self->{+RESOURCES} // []};
-    for my $run (@{$self->{+QUEUE} // []}) {
-        push @resources => @{$run->resources // []};
-    }
-    $_->notify_in_flight($n) for @resources;
-
-    return;
-}
 
 sub _ensure_run_service_started {
     my ($self, $run) = @_;
@@ -2307,7 +2307,7 @@ sub _launch_job {
             assigned_resources => $resources,
             log_file           => $resp->{log_file},
         };
-        $self->_notify_resources_in_flight;
+        $self->{+IN_FLIGHT_COUNT}++;
         $self->_register_run_pid(
             $run_id, $resp->{pid},
             kind       => 'collector',

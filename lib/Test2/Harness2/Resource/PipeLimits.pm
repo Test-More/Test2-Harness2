@@ -199,8 +199,7 @@ sub _effective_min_free_pages {
 sub _usage_pages {
     my $self          = shift;
     my $service_pages = $self->{+SERVICE_COUNT} * $self->{+PIPES_PER_SERVICE} * $self->{+PAGES_PER_PIPE};
-    my $in_flight     = $self->{+IN_FLIGHT} // 0;
-    my $test_pages    = $in_flight * $self->{+PIPES_PER_TEST} * $self->{+PAGES_PER_PIPE};
+    my $test_pages    = $self->in_flight * $self->{+PIPES_PER_TEST} * $self->{+PAGES_PER_PIPE};
     return ($service_pages, $test_pages);
 }
 
@@ -239,7 +238,7 @@ sub status {
         free_pages               => $free,
         headroom                 => $self->{+HEADROOM},
         effective_min_free_pages => $thr,
-        in_flight                => $self->{+IN_FLIGHT} // 0,
+        in_flight                => $self->in_flight,
     };
 }
 

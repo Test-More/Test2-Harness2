@@ -10,7 +10,7 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 
 # Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
-use Object::HashBase qw{+paused +name +in_flight +broken +permanent_broken};
+use Object::HashBase qw{+paused +name +in_flight_ref +broken +permanent_broken};
 
 requires 'available';
 requires 'status';
@@ -53,8 +53,9 @@ sub mark_resumed {
 
 # No-op defaults. Resources that need per-assignment state (Throttle's
 # timestamp window, JobCount's slot math) override locally. The
-# scheduler tracks aggregate in-flight count and pushes it via
-# notify_in_flight (read from $self->{+IN_FLIGHT}).
+# scheduler maintains the aggregate in-flight count; resources read
+# it via in_flight() which dereferences the shared scalar ref the
+# scheduler installs at registration time.
 sub assign {
     my ($self, %p) = @_;
     croak "'id' is required"           unless $p{id};
@@ -69,15 +70,21 @@ sub release {
     return 1;
 }
 
-# Scheduler-fed cache: the harness calls this on every resource after
-# each RUNNING_JOBS mutation. Status output and the utilizer
-# starvation guard read $self->{+IN_FLIGHT} from here instead of
-# maintaining their own per-resource counter.
-sub notify_in_flight {
-    my ($self, $n) = @_;
-    croak "notify_in_flight: 'n' is required" unless defined $n;
-    $self->{+IN_FLIGHT} = $n;
+# Install a scalar ref the resource will deref to read the current
+# in-flight count. Called once by the scheduler when the resource is
+# registered. The scheduler mutates the underlying scalar directly;
+# resources see updates without per-resource notification.
+sub set_in_flight_ref {
+    my ($self, $ref) = @_;
+    croak "set_in_flight_ref: scalar ref required"
+        unless ref($ref) eq 'SCALAR';
+    $self->{+IN_FLIGHT_REF} = $ref;
     return;
+}
+
+sub in_flight {
+    my $ref = $_[0]->{+IN_FLIGHT_REF};
+    return defined($ref) ? ${$ref} : 0;
 }
 
 sub inline_key_prefixes { [] }

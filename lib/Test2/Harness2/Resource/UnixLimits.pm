@@ -251,7 +251,7 @@ sub status {
         utilize_percent => $self->{+UTILIZE_PERCENT},
         paused          => $self->is_paused,
         dimensions      => $self->_dimension_states,
-        in_flight       => $self->{+IN_FLIGHT} // 0,
+        in_flight       => $self->in_flight,
     };
 }
 

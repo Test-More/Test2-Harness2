@@ -118,7 +118,8 @@ subtest 'assign / release' => sub {
 subtest 'status snapshot' => sub {
     my $r = _make(min_free => {kind => 'pct', value => 25});
     $r->assign(id => 'X', job => _job, env => {});
-    $r->notify_in_flight(1);    # scheduler-pushed count
+    my $in_flight = 1;          # scheduler-shared scalar ref
+    $r->set_in_flight_ref(\$in_flight);
     my $st = $r->status;
     is($st->{resource},            'memory',                     'name');
     is($st->{min_free},            {kind => 'pct', value => 25}, 'threshold echoed');
@@ -126,7 +127,7 @@ subtest 'status snapshot' => sub {
     is($st->{mem_available_bytes}, 4000000 * 1024,               'available');
     ok($st->{effective_min_free_bytes} > 0, 'effective threshold computed');
     is($st->{paused},    0, 'not paused');
-    is($st->{in_flight}, 1, 'in_flight from scheduler cache');
+    is($st->{in_flight}, 1, 'in_flight from scheduler ref');
 };
 
 done_testing;

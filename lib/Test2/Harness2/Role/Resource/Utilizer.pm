@@ -7,8 +7,6 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 
 # Role::Tiny must mark this as a role before HashBase loads.
-# &Resource pulls in the base role's slot constants (IN_FLIGHT etc.)
-# so $self->{+IN_FLIGHT} resolves at compile time inside this role.
 use Role::Tiny;
 use Object::HashBase qw{
     &Test2::Harness2::Role::Resource
@@ -24,17 +22,15 @@ sub set_utilize_percent {
     return;
 }
 
-# Scheduler-level check. Reads the scheduler-pushed in-flight count
-# from $self->{+IN_FLIGHT} (kept current by notify_in_flight from the
-# base Resource role). Defer only when saturated AND in-flight already
-# meets the min_concurrent floor (default 1) -- below the floor, at
-# least min_concurrent tests are always allowed to run even if the
-# subsystem never drops back below threshold.
+# Scheduler-level check. Reads the scheduler's shared in-flight count
+# via the base role's in_flight() accessor. Defer only when saturated
+# AND in-flight already meets the min_concurrent floor (default 1) --
+# below the floor, at least min_concurrent tests are always allowed
+# to run even if the subsystem never drops back below threshold.
 sub should_defer_for_utilization {
-    my $self      = shift;
-    my $in_flight = $self->{+IN_FLIGHT} // 0;
-    my $min       = $self->{+MIN_CONCURRENT} // 1;
-    return 0 if $in_flight < $min;
+    my $self = shift;
+    my $min  = $self->{+MIN_CONCURRENT} // 1;
+    return 0 if $self->in_flight < $min;
     return $self->is_temporarily_unavailable ? 1 : 0;
 }
 
@@ -136,18 +132,17 @@ contract violation, not a silent C<0>.
 
 =over 4
 
-=item $bool = $resource->should_defer_for_utilization($in_flight)
+=item $bool = $resource->should_defer_for_utilization
 
-Scheduler hook. The caller passes the authoritative count of
-currently-running tests (the harness keeps this in C<RUNNING_JOBS>);
-the role does not maintain its own counter. Returns true only when
-both:
+Scheduler hook. Reads the current in-flight count via the base role's
+C<in_flight> accessor, which derefs the scheduler's shared scalar
+ref. Returns true only when both:
 
 =over 4
 
 =item *
 
-C<$in_flight> is at least C<min_concurrent>; and
+C<in_flight> is at least C<min_concurrent>; and
 
 =item *
 

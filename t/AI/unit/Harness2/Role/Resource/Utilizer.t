@@ -133,17 +133,19 @@ subtest 'should_defer_for_utilization honors min_concurrent floor' => sub {
     my $r = My::Util::Resource->new;
     $r->mark_saturated;
 
-    # in_flight comes from the scheduler via notify_in_flight; the
-    # role reads $self->{+IN_FLIGHT}.
-    $r->notify_in_flight(0);
+    # in_flight comes from the scheduler via a shared scalar ref;
+    # mutating $in_flight is visible to the resource immediately.
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
+
     is($r->should_defer_for_utilization, 0, 'saturated + 0 in-flight: do not defer (default min=1)');
 
-    $r->notify_in_flight(1);
+    $in_flight = 1;
     is($r->should_defer_for_utilization, 1, 'saturated + 1 in-flight: defer');
 
     $r->mark_unsaturated;
     is($r->should_defer_for_utilization, 0, 'not saturated + 1 in-flight: do not defer');
-    $r->notify_in_flight(0);
+    $in_flight = 0;
     is($r->should_defer_for_utilization, 0, 'not saturated + 0 in-flight: do not defer');
 };
 
@@ -151,22 +153,30 @@ subtest 'should_defer_for_utilization respects custom min_concurrent' => sub {
     my $r = My::Util::Resource->new(min_concurrent => 3);
     $r->mark_saturated;
 
+    my $in_flight = 0;
+    $r->set_in_flight_ref(\$in_flight);
+
     for my $n (0, 1, 2) {
-        $r->notify_in_flight($n);
+        $in_flight = $n;
         is($r->should_defer_for_utilization, 0, "saturated + $n in-flight (< 3 floor): do not defer");
     }
-    $r->notify_in_flight(3);
+    $in_flight = 3;
     is($r->should_defer_for_utilization, 1, 'saturated + 3 in-flight (== floor): defer');
-    $r->notify_in_flight(4);
+    $in_flight = 4;
     is($r->should_defer_for_utilization, 1, 'saturated + 4 in-flight (> floor): defer');
 };
 
-subtest 'notify_in_flight requires count arg' => sub {
+subtest 'set_in_flight_ref requires scalar ref' => sub {
     my $r = My::Util::Resource->new;
     like(
-        dies { $r->notify_in_flight() },
-        qr/'n' is required/,
-        'undef count rejected'
+        dies { $r->set_in_flight_ref() },
+        qr/scalar ref required/,
+        'undef rejected'
+    );
+    like(
+        dies { $r->set_in_flight_ref(5) },
+        qr/scalar ref required/,
+        'plain scalar rejected'
     );
 };
 

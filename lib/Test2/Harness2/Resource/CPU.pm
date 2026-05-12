@@ -168,7 +168,7 @@ sub status {
         utilize_percent => $self->{+UTILIZE_PERCENT},
         busy_pct        => $self->{+LAST_BUSY_PCT},
         paused          => $self->is_paused,
-        in_flight       => $self->{+IN_FLIGHT} // 0,
+        in_flight       => $self->in_flight,
     };
 }
 

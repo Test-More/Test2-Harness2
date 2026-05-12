@@ -215,7 +215,8 @@ subtest 'status snapshot shape' => sub {
     my $tf = TFakeTestFile->new('t/foo.t');
     my $j  = TFakeJobWithFile->new($tf);
     $r->assign(id => 'X1', job => $j, env => {});
-    $r->notify_in_flight(1);    # scheduler-pushed count
+    my $in_flight = 1;          # scheduler-shared scalar ref
+    $r->set_in_flight_ref(\$in_flight);
 
     my $st = $r->status;
     is($st->{resource},  'disk', 'resource name');
@@ -235,7 +236,7 @@ subtest 'status snapshot shape' => sub {
     is($st->{mounts}->{$tmp}->{sample_age},           0, 'fresh sample');
     is($st->{mounts}->{$tmp}->{consecutive_failures}, 0, 'no failures');
 
-    is($st->{in_flight}, 1, 'in_flight from scheduler cache');
+    is($st->{in_flight}, 1, 'in_flight from scheduler ref');
 };
 
 subtest 'status does not trigger statvfs' => sub {

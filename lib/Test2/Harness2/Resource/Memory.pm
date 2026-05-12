@@ -184,7 +184,7 @@ sub status {
         mem_available_bytes      => $available,
         effective_min_free_bytes => $threshold,
         paused                   => $self->is_paused,
-        in_flight                => $self->{+IN_FLIGHT} // 0,
+        in_flight                => $self->in_flight,
     };
 }
 

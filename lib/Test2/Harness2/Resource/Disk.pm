@@ -263,7 +263,7 @@ sub status {
         permanent => $self->is_permanent_broken,
         paused    => $self->is_paused,
         mounts    => \%mounts,
-        in_flight => $self->{+IN_FLIGHT} // 0,
+        in_flight => $self->in_flight,
     };
 }
 
