@@ -267,12 +267,13 @@ The Linux per-user pipe page budget
 across all pipes one user may hold open. Exceeding it makes new
 C<pipe(2)> calls fail.
 
-PipeLimits maintains a tally derived from the harness's
-C<assign>/C<release> contract (each test pair consumes
-C<pipes_per_test> pipes; the harness's own services consume a
-configured C<service_count * pipes_per_service> baseline) and defers
-new test starts when the next test would push usage past the
-configured headroom. No C</proc> walking; the tally is internal.
+PipeLimits computes pipe-page usage from the scheduler's authoritative
+in-flight count (read via the base role's C<in_flight> accessor): each
+running test consumes C<pipes_per_test> pipes, plus a fixed
+C<service_count * pipes_per_service> baseline for the harness's own
+services. It defers new test starts when launching another would push
+usage past the configured headroom. No C</proc> walking; the math is
+internal.
 
 C<headroom> may be expressed as a count of pages or as a percent of
 the cap. C<--utilize PCT> layers on top; effective threshold is the

@@ -446,7 +446,7 @@ Test2::Harness2::Resource::Throttle - Limit how many tests can be in their just-
     yath -D test -R Throttle=3/1m,name=db_throttle
     yath -D test -R Throttle=@/etc/yath/throttle.json
 
-    # Multi-basis grammar (new):
+    # Multi-basis grammar:
     yath -D test -R Throttle=1/core/1s         # 1 slot per core, 1s window
     yath -D test -R Throttle=1/1gb/1s           # 1 slot per GB free RAM
     yath -D test -R Throttle=1/core,100mb/1s    # 1 slot per core AND per 100MB free

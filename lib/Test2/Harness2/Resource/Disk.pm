@@ -296,8 +296,9 @@ TTL cache.
 This resource is a I<gate>, not a slot pool: every job is either
 allowed or deferred based on whichever monitored mount is currently
 lowest. C<assign> / C<release> exist only to satisfy the resource
-contract and to populate C<status> with the list of jobs running
-under the gate; no bytes are reserved per assignment.
+contract; no bytes are reserved per assignment. C<status> reports
+the scheduler's aggregate in-flight count alongside the per-mount
+samples.
 
 =head1 CLI
 

@@ -59,18 +59,10 @@ __END__
 
 Test2::Harness2::Role::Resource::Utilizer - Utilization-aware resource role.
 
-=head1 STATUS
-
-The role contract is defined. Per-resource implementations are stubs;
-each utilization-aware resource (Memory, PipeLimits, UnixLimits, CPU)
-consumes the role and croaks from its required methods until the
-platform-specific sampler is wired up.
-
 =head1 DESCRIPTION
 
 This role layers utilization-aware behaviour on top of
-L<Test2::Harness2::Role::Resource>. A consumer of both roles is a
-resource that:
+L<Test2::Harness2::Role::Resource>. A consumer of both roles:
 
 =over 4
 
@@ -81,20 +73,20 @@ C<release>, C<status>).
 
 =item *
 
-Accepts a percentage threshold (0 < pct < 100) describing how heavily
-loaded its monitored subsystem -- CPU load, free memory, free C</tmp>
-space, etc. -- is allowed to be before the resource starts deferring
-new assignments.
+Accepts a percentage threshold (C<0 E<lt> pct E<lt> 100>) describing
+how heavily loaded its monitored subsystem -- CPU load, free memory,
+free C</tmp> space, etc. -- is allowed to be before the resource
+starts deferring new assignments.
 
 =item *
 
-Exposes a C<is_temporarily_unavailable> predicate that reports
+Implements C<is_temporarily_unavailable> as a predicate that reports
 whether the monitored subsystem is currently saturated. The scheduler
-calls C<should_defer_for_utilization> (provided by this role) which
-layers a starvation guard on top: while in-flight assignments stay
-below C<min_concurrent> (default C<1>), saturation does not defer.
-This guarantees that at least C<min_concurrent> tests can always be
-running even if the subsystem never drops back below the threshold.
+calls L</should_defer_for_utilization> (provided by this role) which
+adds a starvation guard: while in-flight assignments stay below
+C<min_concurrent> (default C<1>) saturation does not defer, so at
+least C<min_concurrent> tests can always be running even if the
+subsystem never drops back below the threshold.
 
 =back
 
@@ -105,12 +97,10 @@ both roles still go through the same scheduler walk:
            -> should_defer_for_utilization
            -> available -> assign
 
-The new step folds in between the existing C<is_usable> check and the
-C<available> call.
+C<should_defer_for_utilization> folds in between C<is_usable> and
+C<available>.
 
 =head1 REQUIRED METHODS
-
-Consumers must implement these. C<requires> applies to each.
 
 =over 4
 
@@ -120,11 +110,6 @@ Return true when the resource's monitored subsystem is currently
 above the configured threshold, false otherwise. The scheduler does
 not call this directly; it calls L</should_defer_for_utilization>
 which delegates here after applying the starvation guard.
-
-Resources that can never be saturated (or that lack a sampler) should
-C<croak> from this method until they are implemented; calling
-C<is_temporarily_unavailable> on a not-yet-wired utilizer is a
-contract violation, not a silent C<0>.
 
 =back
 
@@ -187,34 +172,14 @@ can store it directly.
 
 =back
 
-=head1 SPAWN-THROTTLE WINDOW
+=head1 SPAWN-THROTTLE PAIRING
 
-The percentage gate is paired with a spawn-throttle window so the
-system has time to actually consume newly spawned tests' resources
-before more tests are launched against an apparently-idle sample.
-
-=over 4
-
-=item *
-
-The harness tracks, in a sliding 2-second window, the count of
-C<(spawned - exited)>.
-
-=item *
-
-When the delta is at or above a per-class threshold the harness
-waits one more second before starting the next batch.
-
-=item *
-
-If 40 spawn and 40 exit in the same 2 seconds (delta C<0>), no
-throttling occurs.
-
-=back
-
-The window is implemented at the harness layer; per-resource code
-exposes its threshold via the role's status hash and otherwise stays
-out of the way.
+The percentage gate alone is not sufficient: a freshly spawned test
+needs a moment to actually consume CPU/memory/disk before the
+resource sample reflects it. L<Test2::Harness2::Resource::Throttle>
+complements the utilizer gate by capping how many tests can be in
+their just-spawned phase at once, measured over a sliding window.
+See that module for the rule grammar and adaptive scaling.
 
 =head1 SEE ALSO
 

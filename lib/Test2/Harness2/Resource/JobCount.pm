@@ -169,12 +169,29 @@ Test2::Harness2::Resource::JobCount - Limit on concurrent test jobs.
 
 =head1 DESCRIPTION
 
-Caps the total number of jobs the harness service will run concurrently.
-The harness itself does not require any specific resource. The
-C<yath test> command auto-injects an instance of this class when the
-user has not specified a resource on the command line; the slot count
-defaults to half the cpu core count (via L<System::Info>) and falls
-back to C<2> if L<System::Info> is unavailable.
+Caps the total number of jobs the harness will run concurrently.
+The harness itself does not require any specific resource;
+L<App::Yath2::Options::Resource> auto-injects this class in two
+cases:
+
+=over 4
+
+=item *
+
+The user passed C<-j N> -- the slot count comes straight from C<-j>.
+On Linux this layers on top of the utilizer/throttle stack as a hard
+cap; on other platforms it is the only resource limiting concurrency.
+
+=item *
+
+The system is non-Linux (no utilizer/throttle stack available) and
+the user did not pass C<-j> -- the slot count defaults to half the
+detected logical CPU count (minimum 1), falling back to C<2> when
+the count cannot be detected.
+
+=back
+
+See L<App::Yath2::Options::Resource> for the full auto-inject rules.
 
 Each job declares its slot requirements on its L<Test2::Harness2::Role::TestFile>
 (C<min_slots> / C<max_slots>). The resource grants an integer count from

@@ -236,9 +236,9 @@ If every needed resource returns a positive grant, the scheduler calls
 C<assign> on each; when the job finishes it calls C<release>. The
 harness itself does not mandate any specific resource class. A harness
 constructed with no resources at all is a valid (unlimited concurrency)
-configuration. The C<yath test> command is the layer that injects a
-default L<Test2::Harness2::Resource::JobCount> when the user has not
-specified a resource on the command line.
+configuration. L<App::Yath2::Options::Resource> is the layer that
+auto-injects a default resource stack (utilizer + throttle on Linux,
+JobCount fallback elsewhere) when the user has not opted out.
 
 Resources may also declare one or more supervised subprocesses via the
 L</services> method. The harness instantiates and supervises each one;
@@ -405,16 +405,30 @@ support) override locally.
 
 =item $bool = $resource->assign(%params) / release(%params)
 
-Default implementations store / delete one record per assignment id
-in the C<assignments> hash slot:
+The role's default implementations only validate arguments
+(C<assign> requires C<id>, C<job>, and an C<env> hashref; C<release>
+requires C<id>) and return C<1>. They do not track per-id state --
+the scheduler owns id-uniqueness via C<RUNNING_JOBS> and the
+authoritative in-flight count (see L</in_flight> below). Resources
+with their own bookkeeping (slot-count math, time-windowed queues,
+etc.) override C<assign> / C<release> locally.
 
-    $self->{assignments}->{$id} = { job => $job, assigned_at => $stamp }
+=item $resource->set_in_flight_ref(\$counter)
 
-The C<assignments> and C<paused> slots are declared on the role
-itself, so consumers importing the role via the L<Object::HashBase>
-C<&> prefix inherit both slots automatically. Resources with richer
-bookkeeping (slot-count math, time-windowed queues, etc.) override
-C<assign> / C<release> locally.
+Install a scalar ref pointing at the scheduler's authoritative
+in-flight counter. Called once per resource at registration time --
+global resources at harness init, per-run resources when their run
+is queued. The scheduler mutates the underlying scalar on every
+job-launch / release / hard-stop; resources see the new value via
+L</in_flight> without per-resource notification.
+
+=item $n = $resource->in_flight
+
+Return the current in-flight job count by dereferencing the scalar
+ref installed via L</set_in_flight_ref>. Croaks if called before the
+ref is installed -- that is a contract violation, not a recoverable
+state. Used by status snapshots, the utilizer starvation guard, and
+any consumer-specific math that wants the aggregate count.
 
 =item \@prefixes = $class->inline_key_prefixes
 
