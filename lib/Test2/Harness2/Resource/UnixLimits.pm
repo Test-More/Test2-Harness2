@@ -14,15 +14,10 @@ use Object::HashBase qw{
     <nproc
     <nofile
     <as
-    <assignments
-    +utilize_percent
     +name
-    +paused
+    &Test2::Harness2::Role::Resource
+    &Test2::Harness2::Role::Resource::Utilizer
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
-with 'Test2::Harness2::Role::Resource::Utilizer';
 
 sub _inline_key_prefixes { [qw/nproc nofile as/] }
 

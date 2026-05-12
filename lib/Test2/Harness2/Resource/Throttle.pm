@@ -14,15 +14,11 @@ use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys va
 use Object::HashBase qw{
     <cap
     <window
-    <assignments
     <bases
     <core_count
     +name
-    +paused
+    &Test2::Harness2::Role::Resource
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
 
 # Test seams for system detection. Tests override these package-level
 # subs to inject deterministic values without touching /proc.

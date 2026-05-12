@@ -12,15 +12,10 @@ use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys va
 
 use Object::HashBase qw{
     <min_free
-    <assignments
-    +utilize_percent
     +name
-    +paused
+    &Test2::Harness2::Role::Resource
+    &Test2::Harness2::Role::Resource::Utilizer
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
-with 'Test2::Harness2::Role::Resource::Utilizer';
 
 sub _inline_key_prefixes { [qw/min_free/] }
 

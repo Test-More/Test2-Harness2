@@ -12,15 +12,11 @@ use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys/;
 
 use Object::HashBase qw{
     <mounts
-    <assignments
     <samples
     +broken
     +permanent
-    +paused
+    &Test2::Harness2::Role::Resource
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
 
 # Keys this resource accepts at construction time. Anything else
 # (slots, job_slots, classes, utilize, no_resource, ...) is noise

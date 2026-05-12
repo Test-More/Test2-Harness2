@@ -17,15 +17,10 @@ use Object::HashBase qw{
     <pages_per_pipe
     <cap_pages
     <headroom
-    <assignments
-    +utilize_percent
     +name
-    +paused
+    &Test2::Harness2::Role::Resource
+    &Test2::Harness2::Role::Resource::Utilizer
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
-with 'Test2::Harness2::Role::Resource::Utilizer';
 
 sub _inline_key_prefixes { [qw/pipes_per_test pipes_per_service service_count pages_per_pipe headroom/] }
 

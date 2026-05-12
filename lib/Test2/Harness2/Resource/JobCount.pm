@@ -12,12 +12,8 @@ use Object::HashBase qw{
     <slots
     <max_per_job
     <used
-    <assignments
-    +paused
+    &Test2::Harness2::Role::Resource
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
 
 sub resource_name { 'jobcount' }
 

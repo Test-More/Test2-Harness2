@@ -8,19 +8,14 @@ use Carp qw/croak/;
 
 use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 
+# Order matters: Role::Tiny must mark the package as a role before
+# Object::HashBase loads, so HashBase suppresses its `new` generation
+# and so consumers' '&' prefix import picks this up as a role.
 use Role::Tiny;
+use Object::HashBase qw{<assignments +paused};
 
 requires 'available';
 requires 'status';
-
-# Slot keys used by the default assign / release / pause-state
-# implementations. Consumers that rely on those defaults must declare
-# matching Object::HashBase slots ('assignments' and 'paused');
-# Object::HashBase will then generate same-valued constants in the
-# consumer package, so the +ASSIGNMENTS / +PAUSED tokens resolve to
-# the same hash keys whether evaluated in the role or the consumer.
-use constant ASSIGNMENTS => 'assignments';
-use constant PAUSED      => 'paused';
 
 # Whether this resource participates in a given job's allocation. The
 # scheduler checks this first: resources that return 0 are skipped
@@ -215,10 +210,11 @@ the resource itself never forks. See L</SERVICES> below.
     use strict;
     use warnings;
 
-    use Object::HashBase qw/<limit <used <assignments +paused/;
-
-    use Role::Tiny::With;
-    with 'Test2::Harness2::Role::Resource';
+    use Object::HashBase qw{
+        <limit
+        <used
+        &Test2::Harness2::Role::Resource
+    };
 
     sub available {
         my ($self, %p) = @_;
@@ -227,9 +223,12 @@ the resource itself never forks. See L</SERVICES> below.
         return $need;
     }
 
-    # assign / release / mark_paused / mark_resumed / is_paused all
-    # have working defaults provided by the role; override only when
-    # your bookkeeping differs.
+    # The `&` prefix above imports the role's `assignments` and
+    # `paused` slots into the consumer (so $self->{+ASSIGNMENTS} /
+    # $self->{+PAUSED} resolve), then defers Role::Tiny composition
+    # to end-of-scope. assign / release / mark_paused / mark_resumed /
+    # is_paused all have working defaults provided by the role;
+    # override only when your bookkeeping differs.
 
     sub status { ... }
 
@@ -357,10 +356,11 @@ in the C<assignments> hash slot:
 
     $self->{assignments}->{$id} = { job => $job, assigned_at => $stamp }
 
-Consumers using the defaults B<must> declare matching
-L<Object::HashBase> slots named C<assignments> and C<paused>.
-Resources with richer bookkeeping (slot-count math, time-windowed
-queues, etc.) override C<assign> / C<release> locally.
+The C<assignments> and C<paused> slots are declared on the role
+itself, so consumers importing the role via the L<Object::HashBase>
+C<&> prefix inherit both slots automatically. Resources with richer
+bookkeeping (slot-count math, time-windowed queues, etc.) override
+C<assign> / C<release> locally.
 
 =item \@prefixes = $class->_inline_key_prefixes
 

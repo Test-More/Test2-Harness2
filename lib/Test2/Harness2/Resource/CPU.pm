@@ -10,17 +10,12 @@ use Test2::Harness2::Util::HiResTime qw/hi_res_time/;
 use Test2::Harness2::Util::ResourceConfig qw/slurp_json_config whitelist_keys validate_name/;
 
 use Object::HashBase qw{
-    <assignments
-    +utilize_percent
     +name
-    +paused
     +prev_stat
     +last_busy_pct
+    &Test2::Harness2::Role::Resource
+    &Test2::Harness2::Role::Resource::Utilizer
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Resource';
-with 'Test2::Harness2::Role::Resource::Utilizer';
 
 sub _inline_key_prefixes { [qw/utilize/] }
 
