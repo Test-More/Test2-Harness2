@@ -20,9 +20,17 @@ use Test2::Harness2::Util::File::JSONL;
 use Test2::Harness2::Util::IPC qw/start_process swap_io/;
 
 use Importer Importer => 'import';
-our @EXPORT = qw/yath make_example_dir/;
+our @EXPORT    = qw/yath make_example_dir/;
+our @EXPORT_OK = qw/tester_ipc_dir/;
 
 my $pdir = tempdir(CLEANUP => 1);
+
+# Accessor for the shared IPC info-file directory that yath() injects via
+# YATH_IPC_DIR. Tests that bypass yath() (e.g. raw fork+exec of `yath run`)
+# can call this to pin YATH_IPC_DIR in the spawned child, so a `yath start`
+# launched via yath() and a sibling `yath run` launched by exec agree on
+# where to publish/discover the IPC info file.
+sub tester_ipc_dir { return $pdir }
 
 require App::Yath2;
 my $apppath = App::Yath2->app_path;
@@ -115,9 +123,8 @@ sub yath {
 
     print "DEBUG: Command = " . join(" \n" => @cmd) . "\n" if $debug;
 
-#    local %ENV = %ENV;
+    local %ENV = %ENV;
     $ENV{YATH_IPC_DIR} = $pdir;
-    $ENV{YATH_PERSISTENCE_DIR} = $pdir;
     $ENV{YATH_CMD} = $cmd;
     $ENV{NESTED_YATH} = 1;
     $ENV{T2_HARNESS_PROC_PREFIX} = "nested";

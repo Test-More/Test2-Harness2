@@ -198,6 +198,18 @@ sub terminate {
     die $err;
 }
 
+# Fire-and-forget peer message. Used by clients like `yath reload` to
+# fan a request out to every peer the harness owns without going
+# through the harness's request dispatcher. Returns 1 on enqueue
+# success, 0 (with $@ set) on failure.
+sub broadcast_message {
+    my ($self, $peer, $payload) = @_;
+    my $hdl    = $self->handle;
+    my $client = $hdl->client;
+    my $ok     = eval { $client->send_message($peer, $payload); 1 };
+    return $ok ? 1 : 0;
+}
+
 sub detach {
     my $self = shift;
     my $res  = $self->_send_request('detach', {pid => $$});
@@ -342,6 +354,13 @@ Ask the service to finish after its current queue drains.
 =item $res = $spawn->terminate
 
 Send a hard-stop C<Terminate> request and wait for the service to exit.
+
+=item $spawn->broadcast_message($peer, $payload)
+
+Send a one-way message to the named peer on the harness's IPC bus. No
+response is expected; returns truthy on successful enqueue, falsy (with
+C<$@> set) on send failure. Used by C<yath reload> and similar fan-out
+clients to address peers other than the harness service itself.
 
 =item $res = $spawn->detach
 

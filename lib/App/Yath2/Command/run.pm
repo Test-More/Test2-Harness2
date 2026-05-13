@@ -11,7 +11,7 @@ use Test2::Harness2::Spawn;
 use Test2::Harness2::Util qw/mod2file tinysleep/;
 
 use App::Yath2::TestFile;
-use App::Yath2::Util::IPC qw/discover_daemons/;
+use App::Yath2::Util::IPC qw/discover_daemons assert_daemon_alive/;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -92,14 +92,11 @@ sub run {
     );
     my $ipc_path = $info->{_path};
 
-    die "IPC info file '$ipc_path' is missing the harness pid\n"
-        unless $info->{pid};
     die "IPC info file '$ipc_path' is missing ipcm_info\n"
         unless $info->{ipcm_info};
     die "IPC info file '$ipc_path' is missing workdir\n"
         unless $info->{workdir};
-    die "harness pid $info->{pid} is no longer running (stale IPC info file '$ipc_path')\n"
-        unless kill 0 => $info->{pid};
+    assert_daemon_alive($info);
 
     my $workdir = $info->{workdir};
     my $logdir  = "$workdir/logs";

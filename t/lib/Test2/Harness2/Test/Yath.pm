@@ -15,10 +15,10 @@ our $VERSION = '2.000011';
 #   3. Re-export Tester's public API so tests have one entry point.
 BEGIN { $ENV{YATH_TESTER_INIT} = 1 unless defined $ENV{YATH_TESTER_INIT} }
 
-use App::Yath2::Tester qw/yath make_example_dir/;
+use App::Yath2::Tester qw/yath make_example_dir tester_ipc_dir/;
 
 use Importer Importer => 'import';
-our @EXPORT_OK = qw/yath make_example_dir/;
+our @EXPORT_OK = qw/yath make_example_dir tester_ipc_dir/;
 
 1;
 

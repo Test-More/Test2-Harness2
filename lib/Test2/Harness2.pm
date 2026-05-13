@@ -787,6 +787,71 @@ sub request_handler_status {
     };
 }
 
+# yath reload: enumerate the preload services this harness owns so
+# the client can dispatch reload requests to each one without taking
+# the harness's dispatcher offline. Run-scoped preloads are
+# intentionally skipped; reloading a run-scoped preload mid-run would
+# invalidate the test state it was built for.
+#
+# 'name' in the response is the bus-level peer name the caller addresses
+# over IPC (preload-<n> for global), not the host-side tracking name
+# (which is just <n>). 'preload' is the bare preload name for display.
+sub request_handler_list_preloads {
+    my $self = shift;
+
+    my @out;
+    for my $info (values %{$self->{+RESOURCE_SERVICES} // {}}) {
+        next unless ($info->{service_class} // '') eq 'Test2::Harness2::PreloadService';
+        next unless ($info->{scope}         // '') eq 'global';
+        next unless defined $info->{pid} && kill 0 => $info->{pid};
+
+        my $res        = $info->{resource};
+        my $preload    = (ref($res) && $res->can('name') ? $res->name : ($info->{name} // '?'));
+        my $bus_name   = (ref($res) && $res->can('scope')) ? _preload_peer_name($res) : "preload-$preload";
+
+        push @out => {
+            pid     => $info->{pid},
+            name    => $bus_name,
+            preload => $preload,
+            scope   => $info->{scope},
+        };
+    }
+    return {ok => 1, preloads => \@out};
+}
+
+# yath abort: latch user_abort onto one or all live runs. Pending
+# jobs in those runs flow through the existing aborted-run synth-fail
+# path (see _handle_broken_resource); currently running jobs are left
+# alone (that matches the documented "remove pending tests, leave the
+# runner active" semantics).
+sub request_handler_abort_run {
+    my ($self, $payload, $msg) = @_;
+
+    my $states = $self->{+RUN_STATES} // {};
+
+    my @target_ids;
+    if ($payload->{all}) {
+        @target_ids = sort keys %$states;
+    }
+    elsif (defined $payload->{run_id}) {
+        return {ok => 0, error => "no run with id '$payload->{run_id}'"}
+            unless $states->{$payload->{run_id}};
+        @target_ids = ($payload->{run_id});
+    }
+    else {
+        return {ok => 0, error => 'request must set either run_id or all'};
+    }
+
+    my @aborted;
+    for my $rid (@target_ids) {
+        my $rs = $states->{$rid} or next;
+        next if defined $rs->aborted_reason;    # idempotent
+        $rs->latch_aborted_reason('user_abort');
+        push @aborted, $rid;
+    }
+    return {ok => 1, aborted => \@aborted};
+}
+
 sub request_handler_finish {
     my $self = shift;
     return {ok => 0} unless $self->{+STATE} eq 'running';

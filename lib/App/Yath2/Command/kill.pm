@@ -125,7 +125,9 @@ sub _collect_targets {
     my $settings = $self->{+SETTINGS};
     my $kill     = $settings->kill;
 
-    if ($kill->all) {
+    # Group->all is a real method that returns the options hash (always truthy);
+    # use option('all') to read the actual --all flag value.
+    if ($kill->option('all')) {
         my $list = discover_daemons(
             settings => $settings,
             count    => 'all',

@@ -24,6 +24,7 @@ our @EXPORT_OK = qw{
     publish_ipc_file
     resolve_dir_order_paths
     discover_daemons
+    assert_daemon_alive
 };
 
 # IPC info filename:
@@ -394,6 +395,19 @@ sub discover_daemons {
     }
 
     return $candidates[0];
+}
+
+# Validate that an IPC info record points at a live harness pid.
+# Shared by run/status/etc. so the user sees one consistent
+# stale-daemon diagnostic regardless of which command tripped it.
+sub assert_daemon_alive {
+    my ($info) = @_;
+    my $path = $info->{_path} // '<unknown>';
+    croak "IPC info file '$path' is missing the harness pid\n"
+        unless defined $info->{pid};
+    croak "harness pid $info->{pid} is no longer running (stale IPC info file '$path')\n"
+        unless pid_is_running($info->{pid});
+    return;
 }
 
 1;

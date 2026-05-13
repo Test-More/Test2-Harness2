@@ -9,7 +9,8 @@ use File::Temp qw/tempfile/;
 
 use Test2::Harness2::Util qw/parse_exit/;
 
-# XXX TODO: App::Yath2::Client depends on removed IPC layer (PR #390)
+# XXX TODO: this command still needs to be wired up to send a launch request
+# through Test2::Harness2::Spawn (see other Command/*.pm for the pattern).
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -69,8 +70,10 @@ include_options(
 );
 
 sub run {
-    # XXX TODO: App::Yath2::Client removed (PR #390); reimplment once IPC/preload layer is restored
-    die "ERROR: 'yath spawn' is not yet functional — IPC layer removed (PR #390).\n";
+    # XXX TODO: implement against Test2::Harness2::Spawn -- connect to the
+    # running daemon, ask the preload service to fork a child that execs the
+    # requested script with the requested env, and forward exit status.
+    die "ERROR: 'yath spawn' is not yet implemented.\n";
 }
 
 sub env {

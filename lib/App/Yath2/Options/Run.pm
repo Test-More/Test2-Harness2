@@ -107,7 +107,9 @@ option_group {group => 'run', category => "Run Options"} => sub {
         long_examples => [''],
     );
 
-    # XXX TODO: Test2::Harness2::Collector::Auditor::Run removed (PR #390); needs a replacement class
+    # XXX TODO: Test2::Harness2::Collector::Auditor::Run does not exist yet -- only
+    # the per-test Auditor::Test is implemented. A run-level auditor class still
+    # needs to be written before this default is reachable.
     option run_auditor => (
         type => 'Scalar',
         default => 'Test2::Harness2::Collector::Auditor::Run',

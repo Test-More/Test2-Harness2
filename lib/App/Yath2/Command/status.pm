@@ -7,7 +7,7 @@ our $VERSION = '2.000013';
 use POSIX qw/strftime/;
 
 use Test2::Harness2::Spawn;
-use App::Yath2::Util::IPC qw/discover_daemons/;
+use App::Yath2::Util::IPC qw/discover_daemons assert_daemon_alive/;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
@@ -72,8 +72,7 @@ sub run {
         latest   => $settings->status->latest,
     );
 
-    die "harness pid $info->{pid} is no longer running (stale IPC info file '$info->{_path}')\n"
-        unless kill 0 => $info->{pid};
+    assert_daemon_alive($info);
 
     my $spawn = Test2::Harness2::Spawn->new(
         pid                  => $info->{pid},

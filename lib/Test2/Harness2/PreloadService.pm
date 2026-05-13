@@ -619,6 +619,20 @@ sub request_handler_spawn_test {
     return;
 }
 
+# yath reload: drive the configured reloader one tick on demand and
+# return the outcome synchronously. Without a reloader configured the
+# request is a successful no-op: the preload has no dynamic state to
+# reload, so reporting failure would mislead the operator into
+# thinking something broke.
+sub request_handler_reload {
+    my ($self, $payload, $msg) = @_;
+    my $rel = $self->{+_RELOADER}
+        or return {ok => 1, noop => 1, message => 'no reloader configured'};
+    my $ok  = eval { $rel->do_reload($self); 1 };
+    my $err = $@;
+    return $ok ? {ok => 1} : {ok => 0, error => "$err"};
+}
+
 1;
 
 __END__
