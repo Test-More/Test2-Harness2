@@ -115,6 +115,14 @@ sub is_unknown_kv_arg {
 sub services { () }
 sub teardown { }
 
+# Resources that override this to return a string opt in to being
+# spawned via the named PreloadService when one is live on this daemon.
+# Returning undef (or omitting the override) keeps the existing
+# standalone fork behavior. Instance-level override is the canonical
+# surface so a single class can have differently-configured instances
+# (Resource::Preload uses this to wire preload-from-preload).
+sub preferred_preload { undef }
+
 # Shared option-parsing helpers. Error-message prefix derives from
 # the consumer's class via label() below. See POD.
 
@@ -384,6 +392,19 @@ list. See L</SERVICES>.
 Called when the resource is being retired (harness shutdown for
 global resources, run completion for per-run resources). Default:
 no-op.
+
+=item $name = $resource->preferred_preload
+
+Opt-in seam for spawning the resource's services through a running
+preload service rather than via a standalone fork. Default returns
+C<undef>, preserving the standalone-fork behavior. Override to return
+the name of a C<PreloadService> whose loaded modules the resource
+wants to reuse; the harness, if it finds a live preload with that
+name, will route this resource's service spawns through it. The
+canonical surface is per-instance (not class-only) so a single class
+can carry differently-configured instances --
+L<Test2::Harness2::Resource::Preload> uses this to wire
+preload-from-preload setups.
 
 =back
 

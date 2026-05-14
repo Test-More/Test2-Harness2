@@ -111,8 +111,13 @@ sub _read_meminfo_available {
 
     open my $fh, '<', '/proc/meminfo'
         or croak "Resource::Throttle: cannot open /proc/meminfo: $!";
-    while (<$fh>) {
-        if (/^MemAvailable:\s+(\d+)\s+kB/) {
+    # Read into a lexical, not $_. Callers may have $_ aliased to a
+    # live list element (e.g. `map { $_->status } @{+RESOURCES}` in
+    # request_handler_status); bare `<$fh>` would overwrite that
+    # aliased $_ and replace the Throttle resource itself with the
+    # last line read.
+    while (defined(my $line = <$fh>)) {
+        if ($line =~ /^MemAvailable:\s+(\d+)\s+kB/) {
             close $fh;
             return $1 * 1024;    # convert kB to bytes
         }

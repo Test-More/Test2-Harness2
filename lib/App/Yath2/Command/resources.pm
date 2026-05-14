@@ -139,6 +139,20 @@ sub _render {
             print "  ", (defined $r ? $r : '?'), "\n";
         }
     }
+
+    my $services = $st->{services} // [];
+    if (@$services) {
+        printf("\nServices: %d\n", scalar @$services);
+        for my $s (@$services) {
+            printf("  %s (%s) pid=%s scope=%s via_preload=%s\n",
+                ($s->{name}          // '?'),
+                ($s->{service_class} // '?'),
+                ($s->{pid}           // '?'),
+                ($s->{scope}         // '?'),
+                ($s->{via_preload} ? 'yes' : 'no'),
+            );
+        }
+    }
 }
 
 1;

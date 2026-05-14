@@ -316,10 +316,14 @@ sub _send_preload_state {
     return;
 }
 
-# Restartability matches Resource::Preload's contract: a clean exit
-# flips the resource to permanent_broken so the harness reports the
-# preload as gone rather than silently respawning into the same failure.
-sub restartable { 0 }
+# Preloads are stateless and replaceable: a fresh restart re-requires
+# the configured module set and resumes serving spawn requests. The
+# harness's restart-spiral protection in
+# Role::ResourceServiceHost::handle_resource_service_exit caps the
+# attempt rate, so a permanently broken preload still flips to
+# permanent_broken once it crosses the threshold rather than thrashing
+# forever.
+sub restartable { 1 }
 
 # Tells IPC::Manager::Service::State::_ipcm_service to return rather
 # than exit after run() returns. The test grandchild's longjump
@@ -371,27 +375,31 @@ sub run {
     # longjump. Propagate role's intended exit code (0).
     return 0 unless defined $jumped;
 
-    # Test-grandchild path: longjump fired from
-    # request_handler_spawn_test's launch_callback. setjump returns
-    # an arrayref of the args longjump was given (after the tag) --
-    # the callback passes the absolute test path as a single scalar
-    # so $jumped is [$test_file_abs].
-    my ($test_file_abs) = @$jumped;
+    # setjump returns an arrayref of the args longjump was given
+    # (after the tag). The post-refactor protocol carries a single
+    # hashref: { kind => '<spawn_kind>', ...kind-specific... }. New
+    # kinds (e.g. spawn_service) ride the same anchor by adding
+    # branches below.
+    my ($payload) = @$jumped;
+    croak "preload longjump payload not a hashref"
+        unless ref($payload) eq 'HASH';
 
-    croak "preload longjump payload missing test_file_abs"
-        unless defined $test_file_abs && length $test_file_abs;
+    my $kind = $payload->{kind} // '';
 
-    # The post-jump grandchild process is at runtime, but it was
-    # spawned under State::import's BEGIN-time call to _ipcm_service
-    # -- so the parser is still mid-parse of the boot perl's -e
-    # snippet. goto::file's filter_add hooks into that snippet's
-    # compilation; once run() returns, _ipcm_service + import + BEGIN
-    # all unwind and perl resumes parsing -e -- where the filter
-    # intercepts and feeds the test file's source.
-    $0 = $test_file_abs;
-    goto::file->import($test_file_abs);
+    if ($kind eq 'spawn_test') {
+        my $test_file_abs = $payload->{test_file_abs};
+        croak "preload spawn_test payload missing test_file_abs"
+            unless defined $test_file_abs && length $test_file_abs;
+        $0 = $test_file_abs;
+        goto::file->import($test_file_abs);
+        return 0;
+    }
 
-    return 0;
+    if ($kind eq 'spawn_service') {
+        return _post_jump_spawn_service($self, $payload);
+    }
+
+    croak "unknown preload longjump payload kind: '$kind'";
 }
 
 # Async dispatch from harness. The harness calls $client->send_message
@@ -403,8 +411,10 @@ sub run_on_general_message {
     my $content = $msg->content;
     return unless ref($content) eq 'HASH';
     my $kind = $content->{kind} // $content->{request};
-    return unless defined $kind && $kind eq 'spawn_test';
-    return $self->request_handler_spawn_test($content, $msg);
+    return unless defined $kind;
+    return $self->request_handler_spawn_test($content, $msg)    if $kind eq 'spawn_test';
+    return $self->request_handler_spawn_service($content, $msg) if $kind eq 'spawn_service';
+    return;
 }
 
 # IPC handler for spawn_test from the harness. Async: no response.
@@ -554,7 +564,10 @@ sub request_handler_spawn_test {
         # leaving the post-jump code in run() to call goto::file and
         # let the parser take over from there. This must be the last
         # statement in the callback; longjump never returns.
-        Long::Jump::longjump('preload_spawn', $test);
+        Long::Jump::longjump('preload_spawn', {
+            kind          => 'spawn_test',
+            test_file_abs => $test,
+        });
 
         # Defensive fallback: longjump should always succeed because
         # run() installs the anchor before forks start happening. If
@@ -619,6 +632,57 @@ sub request_handler_spawn_test {
     return;
 }
 
+# yath resource-spawn-via-preload: drop-and-reparent a service-class
+# child off this preload. Double-forks so the grandchild's parent is
+# reaped by us immediately, orphaning the grandchild to the harness
+# (subreaper-capable Linux) or init (elsewhere). The grandchild then
+# longjumps out of our run() loop into the setjump frame, which
+# constructs the resource service class under a fresh IPC peer name
+# and enters its own service loop.
+sub request_handler_spawn_service {
+    my ($self, $payload, $msg) = @_;
+
+    for my $f (qw/class peer_name spawn_id notify_to/) {
+        unless (defined $payload->{$f} && length $payload->{$f}) {
+            warn "PreloadService::spawn_service: missing '$f' in payload; ignoring\n";
+            return;
+        }
+    }
+
+    my $child_a = fork;
+    unless (defined $child_a) {
+        warn "PreloadService::spawn_service: outer fork failed: $!\n";
+        return;
+    }
+    if ($child_a) {
+        waitpid $child_a, 0;
+        return;
+    }
+
+    my $child_b = fork;
+    if (!defined $child_b) {
+        warn "PreloadService::spawn_service: inner fork failed: $!\n";
+        POSIX::_exit(127);
+    }
+    if ($child_b) {
+        POSIX::_exit(0);
+    }
+
+    # Grandchild: unwind out of PreloadService::run via setjump frame.
+    require Long::Jump;
+    Long::Jump::longjump('preload_spawn', {
+        kind      => 'spawn_service',
+        class     => $payload->{class},
+        peer_name => $payload->{peer_name},
+        ctor_args => $payload->{ctor_args} // {},
+        notify_to => $payload->{notify_to},
+        spawn_id  => $payload->{spawn_id},
+    });
+
+    print STDERR "PreloadService::spawn_service: longjump returned (anchor missing?)\n";
+    POSIX::_exit(255);
+}
+
 # yath reload: drive the configured reloader one tick on demand and
 # return the outcome synchronously. Without a reloader configured the
 # request is a successful no-op: the preload has no dynamic state to
@@ -631,6 +695,47 @@ sub request_handler_reload {
     my $ok  = eval { $rel->do_reload($self); 1 };
     my $err = $@;
     return $ok ? {ok => 1} : {ok => 0, error => "$err"};
+}
+
+# Runs in the grandchild (post-longjump) after the setjump frame has
+# unwound PreloadService::run. Loads the resource service class, builds
+# the service object under a fresh IPC peer name, registers the client
+# (writing peer dir + pidfile), sends the resource_service_started
+# notification to the harness, and enters the new service loop.
+sub _post_jump_spawn_service {
+    my ($self, $payload) = @_;
+
+    my $class    = $payload->{class};
+    my $modfile  = $class =~ s{::}{/}gr . '.pm';
+    require $modfile;
+
+    my $ctor_args = $payload->{ctor_args} // {};
+    my $svc = $class->new(
+        name      => $payload->{peer_name},
+        ipcm_info => $self->ipcm_info,
+        %$ctor_args,
+    );
+
+    # Force the client to materialise under the new peer name BEFORE
+    # the notification fires, so the harness's reply-path (if any) and
+    # any other peer that wants to address us by name has a peer dir
+    # to find.
+    my $client = $svc->client;
+
+    $client->send_message(
+        $payload->{notify_to},
+        {
+            kind        => 'resource_service_started',
+            pid         => $$,
+            via_preload => 1,
+            spawn_id    => $payload->{spawn_id},
+            peer_name   => $payload->{peer_name},
+        },
+    );
+
+    $svc->run;
+
+    POSIX::_exit(0);
 }
 
 1;

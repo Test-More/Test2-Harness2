@@ -15,6 +15,7 @@ use Object::HashBase qw{
     <is_role_consumer
     <reloader_class
     <reloader_args
+    <preferred_preload
     +_usable
     &Test2::Harness2::Role::Resource
 };
@@ -53,6 +54,67 @@ sub set_run {
 }
 
 sub resource_name { 'preload:' . $_[0]->{+NAME} }
+
+# CLI-side option parsing. Resource::Preload is rarely built directly
+# from `-R Test2::Harness2::Resource::Preload=...` (subclasses are the
+# common shape) but still accepts a name= / from= / scope= shape for
+# symmetry with the rest of the Resource:: tree and so a subclass can
+# delegate to SUPER::parse_options without reinventing it. The
+# important entry is `from=NAME`, which maps to preferred_preload and
+# wires this Preload's PreloadService to spawn from another live
+# PreloadService named NAME instead of forking standalone.
+sub inline_key_prefixes { [qw/from scope/] }
+
+# CLI surface plus every programmatic constructor slot. The harness's
+# queue_test_run handler builds per-run resources from `[class, k, v,
+# ...]` recipes (see App::Yath2::Util::IPC + Test2::Harness2.pm
+# queue_test_run handler), and dispatches through parse_options when
+# the class provides one. Any slot the constructor requires must
+# appear here, or the recipe's kwargs are silently dropped and `new()`
+# croaks on the missing attribute.
+my %OPTION_KEYS = map { $_ => 1 } qw{
+    name from scope preferred_preload
+    modules is_role_consumer
+    reloader_class reloader_args
+    run
+};
+
+sub parse_options {
+    my ($class, @args) = @_;
+
+    my %out;
+
+    my $i = 0;
+    while ($i < @args) {
+        my $arg = $args[$i];
+
+        if ($class->is_unknown_kv_arg($arg, $i + 1 < @args)) {
+            $out{$arg} = $args[$i + 1] if exists $OPTION_KEYS{$arg};
+            $i += 2;
+            next;
+        }
+
+        croak "Resource::Preload: undef positional entry" unless defined $arg;
+        croak "Resource::Preload: ref positional entry" if ref $arg;
+
+        if ($arg =~ m{\Aname=(.+)\z}) {
+            $out{name} = $1;
+        }
+        elsif ($arg =~ m{\Afrom=(.+)\z}) {
+            $out{preferred_preload} = $1;
+        }
+        elsif ($arg =~ m{\Ascope=(.+)\z}) {
+            $out{scope} = $1;
+        }
+        else {
+            croak "Resource::Preload: unrecognised entry '$arg'";
+        }
+
+        $i += 1;
+    }
+
+    return %out;
+}
 
 # Routing decision lives in the harness's resolver
 # (_resolve_preload_for_job), NOT in the scheduler's normal needs-this-

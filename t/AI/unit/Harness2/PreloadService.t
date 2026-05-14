@@ -40,7 +40,7 @@ subtest 'defaults' => sub {
     is($s->scope, 'global', 'scope defaults to global');
     is($s->modules, [], 'modules accessor');
     is($s->is_role_consumer, 0, 'is_role_consumer defaults false');
-    ok(!$s->restartable, 'not auto-restartable');
+    ok($s->restartable, 'auto-restartable by default');
 };
 
 subtest 'run scope' => sub {

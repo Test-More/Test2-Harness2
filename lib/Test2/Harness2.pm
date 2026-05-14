@@ -51,7 +51,11 @@ use Object::HashBase qw{
     <collector_grace_secs
     +pending_synth_completions
     +pending_spawn_requests
+    +pending_preload_spawns
+    +resources_awaiting_preload
+    +known_preload_names
     <preload_spawn_timeout_secs
+    <preload_service_spawn_timeout_secs
     +completed_runs
     +finish_after_initial_run
     +emitter
@@ -151,7 +155,11 @@ sub init {
     $self->{+RUN_FLAGS}                 //= {};
     $self->{+PENDING_SYNTH_COMPLETIONS} //= {};
     $self->{+PENDING_SPAWN_REQUESTS}     //= {};
+    $self->{+PENDING_PRELOAD_SPAWNS}     //= {};
+    $self->{+RESOURCES_AWAITING_PRELOAD} //= {};
+    $self->{+KNOWN_PRELOAD_NAMES}        //= {};
     $self->{+PRELOAD_SPAWN_TIMEOUT_SECS} //= 30;
+    $self->{+PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS} //= 30;
     $self->{+COLLECTOR_GRACE_SECS}       //= DEFAULT_COLLECTOR_GRACE_SECS;
     $self->{+COMPLETED_RUNS}             //= {};
     $self->{+WATCH_PIDS}                 //= [@{$self->{+PARENT_PIDS}}];
@@ -773,6 +781,30 @@ sub request_handler_status {
 
     my @resources = map { $_->status } @{$self->{+RESOURCES}};
 
+    # Per-service entries (preload + non-preload alike). Surfaces
+    # via_preload for operator visibility — `yath ps` / `yath resources`
+    # read this section to tell preload-mediated services apart from
+    # standalone ones.
+    my @services;
+    for my $info (values %{$self->{+RESOURCE_SERVICES} // {}}) {
+        # Skip entries whose pid is no longer reachable. RESOURCE_SERVICES is
+        # not pruned synchronously when a service dies (the SIGCHLD reaper runs
+        # asynchronously, and a reload of a preload can leave the old pid in
+        # the hash for a tick or two), so without this guard `yath ps` /
+        # `yath resources` would render a row with stale data for a dead pid.
+        next unless defined $info->{pid} && kill 0 => $info->{pid};
+
+        push @services, {
+            pid           => $info->{pid},
+            name          => $info->{name},
+            service_class => $info->{service_class},
+            scope         => $info->{scope},
+            run_id        => (ref($info->{run}) && $info->{run}->can('run_id') ? $info->{run}->run_id : $info->{run}),
+            via_preload   => $info->{via_preload} ? 1 : 0,
+            started_at    => $info->{started_at},
+        };
+    }
+
     return {
         service => {
             name    => $self->{+NAME},
@@ -784,6 +816,7 @@ sub request_handler_status {
         queue     => $queue,
         running   => \@running,
         resources => \@resources,
+        services  => \@services,
     };
 }
 
@@ -962,6 +995,9 @@ sub run_on_general_message {
 
     return $self->_handle_preload_state_message($kind, $content)
         if defined $kind && $kind =~ m/^preload_(?:ready|broken)$/;
+
+    return $self->_handle_resource_service_started($content)
+        if defined $kind && $kind eq 'resource_service_started';
 
     # Per-job lifecycle. After Stage 4 of the RunService flatten the
     # auditor sends test_job_* events to the harness directly (the
@@ -1431,7 +1467,20 @@ sub _handle_preload_state_message {
         elsif ($kind eq 'preload_broken') {
             $res->mark_broken;
         }
-        return;
+        last;
+    }
+
+    # Drain any dependent resource services that were queued waiting
+    # for this preload. preload_ready dispatches them through the
+    # preload; permanent preload_broken flushes them to standalone so
+    # they still come up (just unpreloaded). Transient preload_broken
+    # leaves the queue intact so a subsequent preload_ready can still
+    # drain it.
+    if ($kind eq 'preload_ready') {
+        $self->_drain_resources_awaiting_preload($name);
+    }
+    elsif ($kind eq 'preload_broken' && $content->{permanent}) {
+        $self->_fallback_resources_awaiting_preload($name);
     }
 
     return;
@@ -1895,6 +1944,7 @@ sub run_on_interval {
     my $self = shift;
 
     $self->_age_pending_spawn_requests;
+    $self->_check_pending_preload_spawn_timeouts;
 
     my $pending = $self->{+PENDING_SYNTH_COMPLETIONS};
     return unless $pending && keys %$pending;
@@ -2990,6 +3040,293 @@ sub _preload_peer_name {
     return "preload-$n" if $res->scope eq 'global';
     my $rid = $res->run->run_id;
     return "preload-$rid-$n";
+}
+
+# Deterministic peer name for a resource service spawned via preload.
+# Format mirrors _preload_peer_name: resource-<n> for global scope,
+# resource-<run_id>-<n> for run scope. The harness uses this so the
+# grandchild (which only sees the payload) can register under the
+# expected name without round-tripping through this helper.
+sub _resource_peer_name {
+    my ($self, $entry) = @_;
+    my $n     = $entry->{name};
+    my $scope = $entry->{scope} // 'global';
+    return "resource-$n" if $scope eq 'global';
+    my $rid = $entry->{run};
+    $rid = $rid->run_id if ref($rid) && $rid->can('run_id');
+    return "resource-$n" unless defined $rid && length $rid;
+    return "resource-$rid-$n";
+}
+
+# Look up a live, global-scope, not-permanent_broken PreloadService
+# whose underlying resource.name matches $pname. Returns the
+# resource_services entry hash or undef. Initial design covers
+# global-scope preloads only; run-scoped reuse is a follow-up.
+sub _find_eligible_preload_service {
+    my ($self, $pname) = @_;
+    return undef unless defined $pname && length $pname;
+
+    for my $info (values %{ $self->{+RESOURCE_SERVICES} // {} }) {
+        next unless ($info->{service_class} // '') eq 'Test2::Harness2::PreloadService';
+        next unless ($info->{scope}         // '') eq 'global';
+        my $res = $info->{resource};
+        next unless ref($res) && $res->can('name');
+        next unless $res->name eq $pname;
+        next if $res->can('is_permanent_broken') && $res->is_permanent_broken;
+        next unless defined $info->{pid} && kill 0 => $info->{pid};
+        return $info;
+    }
+    return undef;
+}
+
+# Send a spawn_service message to the named PreloadService and install
+# a pending entry the resource_service_started handler will finalize.
+# Returns the allocated spawn_id on dispatch success, undef on send
+# failure (caller's _start_service_entry falls back to standalone).
+#
+# Distinct from _spawn_via_preload (which spawns test-job collectors
+# through a PreloadService): this one spawns a *resource service*
+# (e.g. another PreloadService, or any Role::Service implementor) by
+# asking an already-running PreloadService to fork it for us. The
+# split keeps the two payload shapes ('spawn_test' vs 'spawn_service')
+# from sharing state and pending-table semantics.
+sub _spawn_service_via_preload {
+    my ($self, $preload_info, $entry) = @_;
+
+    my $spawn_id  = ++$self->{_PRELOAD_SPAWN_COUNTER};
+    my $peer_name = $self->_resource_peer_name($entry);
+
+    # The resource_services tracking entry keys the service under the
+    # name extracted from its ctor args (e.g. 'myapp' for a
+    # Resource::Preload-spawned PreloadService). That is NOT the IPC
+    # bus name -- PreloadService advertises itself as 'preload-<name>'
+    # (or 'preload-<run_id>-<name>' for run scope). Send to the bus
+    # name, not the tracking name, or the message is rejected as
+    # "not a valid message recipient".
+    my $preload_bus_name = _preload_peer_name($preload_info->{resource});
+
+    $self->{+PENDING_PRELOAD_SPAWNS}->{$spawn_id} = {
+        entry        => $entry,
+        peer_name    => $peer_name,
+        preload_pid  => $preload_info->{pid},
+        preload_name => $preload_bus_name,
+        sent_at      => time,
+    };
+
+    my $client = $self->client;
+    my $ok = eval {
+        $client->send_message($preload_bus_name, {
+            kind      => 'spawn_service',
+            class     => $entry->{service_class},
+            peer_name => $peer_name,
+            ctor_args => do {
+                my $ca = { %{ $entry->{service_args} // {} } };
+                my $wp = $ca->{watch_pids} // [];
+                $wp = [$wp] unless ref($wp) eq 'ARRAY';
+                $ca->{watch_pids} = [ @$wp, $self->pid ];
+                $ca;
+            },
+            notify_to => $self->name,
+            spawn_id  => $spawn_id,
+        });
+        1;
+    };
+    my $err = $@;
+
+    unless ($ok) {
+        delete $self->{+PENDING_PRELOAD_SPAWNS}->{$spawn_id};
+        warn "Test2::Harness2: preload spawn dispatch to '$preload_bus_name' failed: $err\n";
+        return undef;
+    }
+
+    return $spawn_id;
+}
+
+# Finalize a preload-mediated resource spawn. The grandchild's
+# notification carries pid + spawn_id; we look up the pending entry,
+# clear it, and register the new pid in resource_services via
+# track_resource_service. Emits resource_spawn_via_preload for
+# operator visibility.
+sub _handle_resource_service_started {
+    my ($self, $content) = @_;
+
+    return unless $content->{via_preload};
+
+    my $sid = $content->{spawn_id};
+    return unless defined $sid;
+
+    my $pending = delete $self->{+PENDING_PRELOAD_SPAWNS}->{$sid}
+        or return;    # unknown / stale spawn_id
+
+    my $entry = $pending->{entry};
+    my $pid   = $content->{pid};
+
+    my $args_ref = ref($entry->{service_args}) eq 'HASH'
+        ? [%{$entry->{service_args}}]
+        : ($entry->{service_args} // []);
+
+    # Track under the bus peer name ('resource-myappservice') so the
+    # human-facing `yath ps` / `yath resources` output continues to show
+    # the IPC peer name. Carry the raw entry name as `entry_name` so the
+    # restart path (handle_resource_service_exit -> _start_service_entry)
+    # can rebuild the bus name through _resource_peer_name without
+    # double-prefixing into 'resource-resource-myappservice' on every
+    # restart cycle.
+    $self->track_resource_service(
+        pid           => $pid,
+        resource      => $entry->{resource},
+        service_class => $entry->{service_class},
+        service_args  => $args_ref,
+        name          => $pending->{peer_name},
+        entry_name    => $entry->{name},
+        log_path      => $entry->{log_path},
+        scope         => $entry->{scope},
+        (defined $entry->{run} ? (run => $entry->{run}) : ()),
+        started_at    => time,
+        attempts      => $entry->{attempts} // 1,
+        via_preload   => 1,
+    );
+
+    $self->emit_service_event(
+        kind          => 'resource_spawn_via_preload',
+        resource      => (ref($entry->{resource}) && $entry->{resource}->can('resource_name')
+                          ? $entry->{resource}->resource_name : '?'),
+        service_class => $entry->{service_class},
+        name          => $pending->{peer_name},
+        scope         => $entry->{scope} // 'global',
+        preload_name  => $pending->{preload_name},
+        preload_pid   => $pending->{preload_pid},
+        pid           => $pid,
+        spawn_id      => $sid,
+    );
+
+    return;
+}
+
+# Drain the wait-for-preload queue for $pname through
+# _spawn_service_via_preload. Called from _handle_preload_state_message
+# when preload_ready arrives, after the matching Resource::Preload has
+# been flipped to ready. If for some reason the preload is no longer
+# eligible by the time we reach here (raced with permanent_broken,
+# etc.) the entries fall back to standalone with a fallback event.
+sub _drain_resources_awaiting_preload {
+    my ($self, $pname) = @_;
+    return unless defined $pname && length $pname;
+
+    my $queue = delete $self->{+RESOURCES_AWAITING_PRELOAD}->{$pname};
+    return unless ref($queue) eq 'ARRAY' && @$queue;
+
+    my $preload_info = $self->_find_eligible_preload_service($pname);
+    for my $entry (@$queue) {
+        if ($preload_info) {
+            $self->_spawn_service_via_preload($preload_info, $entry);
+        }
+        else {
+            $self->_fallback_single_entry($entry, $pname, 'preload not eligible at drain time');
+        }
+    }
+    return;
+}
+
+# Flush the wait-for-preload queue for $pname through
+# _ipcm_service_standalone. Called when the preload reports
+# permanent_broken: the dependents still come up, just unpreloaded.
+sub _fallback_resources_awaiting_preload {
+    my ($self, $pname) = @_;
+    return unless defined $pname && length $pname;
+
+    my $queue = delete $self->{+RESOURCES_AWAITING_PRELOAD}->{$pname};
+    return unless ref($queue) eq 'ARRAY' && @$queue;
+
+    for my $entry (@$queue) {
+        $self->_fallback_single_entry($entry, $pname, 'preload permanent_broken');
+    }
+    return;
+}
+
+# Helper: emit the fallback event for one queued entry and re-dispatch
+# it through _ipcm_service_standalone. Shared between the drain and
+# fallback paths so the event shape stays consistent.
+sub _fallback_single_entry {
+    my ($self, $entry, $pname, $reason) = @_;
+
+    my $res = $entry->{resource};
+    $self->emit_service_event(
+        kind          => 'resource_spawn_preload_fallback',
+        resource      => (ref($res) && $res->can('resource_name')
+                          ? $res->resource_name : '?'),
+        service_class => $entry->{service_class},
+        name          => $entry->{name},
+        scope         => $entry->{scope} // 'global',
+        preload_name  => $pname,
+        reason        => $reason,
+    );
+
+    my $args = ref($entry->{service_args}) eq 'HASH'
+        ? [%{$entry->{service_args}}]
+        : ($entry->{service_args} // []);
+
+    $self->_ipcm_service_standalone(
+        resource => $res,
+        class    => $entry->{service_class},
+        args     => $args,
+        name     => $entry->{name},
+        log_path => $entry->{log_path},
+        scope    => $entry->{scope} // 'global',
+        (defined $entry->{run} ? (run => $entry->{run}) : ()),
+    );
+
+    return;
+}
+
+# Walk PENDING_PRELOAD_SPAWNS, drop entries older than
+# PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS, and re-dispatch via standalone.
+# Closes the gap where a grandchild fails to start before sending its
+# resource_service_started notification (compile error, fork issue,
+# killed before notify, etc.). Called from run_on_interval each tick.
+sub _check_pending_preload_spawn_timeouts {
+    my $self = shift;
+
+    my $pending  = $self->{+PENDING_PRELOAD_SPAWNS} // {};
+    my $deadline = $self->{+PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS} // 30;
+    my $now      = time;
+
+    for my $sid (keys %$pending) {
+        my $p = $pending->{$sid};
+        next if $now - ($p->{sent_at} // $now) < $deadline;
+
+        delete $pending->{$sid};
+
+        my $entry = $p->{entry};
+        my $res   = $entry->{resource};
+
+        $self->emit_service_event(
+            kind          => 'resource_spawn_preload_timeout',
+            resource      => (ref($res) && $res->can('resource_name') ? $res->resource_name : '?'),
+            service_class => $entry->{service_class},
+            name          => $entry->{name},
+            scope         => $entry->{scope} // 'global',
+            preload_name  => $p->{preload_name},
+            spawn_id      => $sid,
+            reason        => "no notification within ${deadline}s",
+        );
+
+        my $args = ref($entry->{service_args}) eq 'HASH'
+            ? [%{$entry->{service_args}}]
+            : ($entry->{service_args} // []);
+
+        $self->_ipcm_service_standalone(
+            resource => $res,
+            class    => $entry->{service_class},
+            args     => $args,
+            name     => $entry->{name},
+            log_path => $entry->{log_path},
+            scope    => $entry->{scope} // 'global',
+            (defined $entry->{run} ? (run => $entry->{run}) : ()),
+        );
+    }
+
+    return;
 }
 
 1;

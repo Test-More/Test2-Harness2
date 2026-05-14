@@ -160,6 +160,27 @@ sub run {
             );
             print "  $_\n" for $table->render;
         }
+
+        my $services = $st->{services} // [];
+        if (@$services) {
+            my @rows;
+            for my $s (@$services) {
+                push @rows => [
+                    ($s->{pid}           // '?'),
+                    ($s->{name}          // '?'),
+                    ($s->{service_class} // '?'),
+                    ($s->{scope}         // '?'),
+                    ($s->{via_preload}   ? 'yes' : 'no'),
+                ];
+            }
+            my $table = Term::Table->new(
+                collapse => 1,
+                header   => [qw/PID NAME CLASS SCOPE VIA_PRELOAD/],
+                rows     => \@rows,
+            );
+            print "  Services:\n";
+            print "    $_\n" for $table->render;
+        }
         print "\n";
 
         $any = 1;

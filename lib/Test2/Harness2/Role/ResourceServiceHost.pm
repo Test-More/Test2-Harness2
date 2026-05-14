@@ -70,6 +70,25 @@ sub start_resource_services {
     my $scope = $opts{scope} // 'global';
     my $run   = $opts{run};
 
+    # Precompute the set of PreloadService names that will come up as
+    # part of this batch so dependents whose preferred preload is in
+    # the batch but not yet ready can enqueue (see
+    # RESOURCES_AWAITING_PRELOAD) instead of falling straight back to
+    # a standalone spawn. Guarded on `exists` so non-harness
+    # ResourceServiceHost consumers (which don't carry this slot) are
+    # unaffected.
+    if (exists $self->{known_preload_names}) {
+        my %known;
+        for my $r (@$resources) {
+            next unless ref($r) && $r->isa('Test2::Harness2::Resource::Preload');
+            next unless $r->can('name');
+            my $pname = $r->name;
+            next unless defined $pname && length $pname;
+            $known{$pname} = 1;
+        }
+        $self->{known_preload_names} = \%known;
+    }
+
     # Walk the resources once to build the full plan (class +
     # construction params + derived name + log_path), validating that
     # every service class composes the service role and that every
@@ -271,6 +290,82 @@ sub _assert_service_name_unused {
 sub _start_service_entry {
     my ($self, %opts) = @_;
 
+    my $res   = $opts{resource} // croak "'resource' is required";
+    my $class = $opts{class}    // croak "'class' is required";
+    my $name  = $opts{name}     // croak "'name' is required";
+
+    # Preload-mediated path: resource opts in via preferred_preload
+    # (instance method; class-level overrides still work via normal
+    # Perl method lookup), and a live, global, not-broken
+    # PreloadService of that name is hosted by this consumer.
+    my $pname = $res->can('preferred_preload') ? $res->preferred_preload : undef;
+    if (defined $pname && length $pname) {
+        if (my $preload_info = $self->_find_eligible_preload_service($pname)) {
+            my $entry = {
+                name          => $name,
+                scope         => $opts{scope} // 'global',
+                run           => $opts{run},
+                service_class => $class,
+                service_args  => $self->_ctor_args_to_hash($opts{args}),
+                resource      => $res,
+                log_path      => $opts{log_path},
+            };
+            my $spawn_id = $self->_spawn_service_via_preload($preload_info, $entry);
+            return 'pending' if defined $spawn_id;
+            # Fall through to standalone on dispatch failure (warn
+            # already emitted inside _spawn_service_via_preload).
+        }
+        elsif ($self->{known_preload_names}
+            && $self->{known_preload_names}->{$pname})
+        {
+            # Preload is configured for this host but its service has
+            # not finished its module-load + preload_ready handshake.
+            # Queue this dependent and let the preload_ready handler
+            # drain the queue when the preload finally comes up;
+            # permanent_broken drains it to standalone instead. The
+            # queue lives on the harness as RESOURCES_AWAITING_PRELOAD
+            # (HashBase slot) but the role accesses it by bareword key
+            # since the constant is package-local.
+            push @{$self->{resources_awaiting_preload}->{$pname}} => {
+                name          => $name,
+                scope         => $opts{scope} // 'global',
+                run           => $opts{run},
+                service_class => $class,
+                service_args  => $self->_ctor_args_to_hash($opts{args}),
+                resource      => $res,
+                log_path      => $opts{log_path},
+            };
+            $self->emit_service_event(
+                kind          => 'resource_spawn_preload_pending',
+                resource      => $res->resource_name,
+                service_class => $class,
+                name          => $name,
+                scope         => $opts{scope} // 'global',
+                preload_name  => $pname,
+            );
+            return 'awaiting_preload';
+        }
+        # No eligible preload and none coming: emit fallback event +
+        # fall through.
+        $self->emit_service_event(
+            kind          => 'resource_spawn_preload_fallback',
+            resource      => $res->resource_name,
+            service_class => $class,
+            name          => $name,
+            scope         => $opts{scope} // 'global',
+            preload_name  => $pname,
+            reason        => 'no eligible preload',
+        );
+    }
+
+    return $self->_ipcm_service_standalone(%opts);
+}
+
+# Standalone spawn: the original _start_service_entry body, factored
+# out so the preload-mediated branch above can fall through to it.
+sub _ipcm_service_standalone {
+    my ($self, %opts) = @_;
+
     my $res      = $opts{resource} // croak "'resource' is required";
     my $class    = $opts{class}    // croak "'class' is required";
     my $args     = $opts{args}     // [];
@@ -330,6 +425,17 @@ sub _start_service_entry {
     );
 
     return 'started';
+}
+
+# Normalise the args arrayref carried by start_resource_services
+# (positional [k, v, k, v, ...]) into a hashref the preload-side ctor
+# can splat. Best-effort; falls back to empty hash for unrecognised
+# shapes.
+sub _ctor_args_to_hash {
+    my ($self, $args) = @_;
+    return {} unless ref($args) eq 'ARRAY';
+    return {} if @$args % 2;
+    return {@$args};
 }
 
 sub _fail_service {
@@ -401,17 +507,26 @@ sub track_resource_service {
     # into the class after the service is gone.
     my $restartable = $class->restartable ? 1 : 0;
 
+    # entry_name carries the raw "as-declared" name from the resource's
+    # services() recipe, distinct from `name` which is the rendered /
+    # bus-facing identity. For standalone services they're the same; for
+    # preload-spawned services name is 'resource-<entry_name>'. Restart
+    # uses entry_name to avoid stacking 'resource-' prefixes each cycle.
+    my $entry_name = $p{entry_name} // $name;
+
     $self->resource_services->{$pid} = {
         pid           => $pid,
         resource      => $res,
         service_class => $class,
         service_args  => $p{service_args} // [],
         name          => $name,
+        entry_name    => $entry_name,
         log_path      => $log_path,
         scope         => $scope,
         restartable   => $restartable,
         started_at    => $p{started_at} // time,
         attempts      => $p{attempts}   // 1,
+        via_preload   => $p{via_preload} ? 1 : 0,
         (defined $run ? (run => $run) : ()),
     };
 
@@ -457,7 +572,10 @@ sub handle_resource_service_exit {
     my $res         = $svc->{resource};
     my $class       = $svc->{service_class};
     my $args        = $svc->{service_args} // [];
-    my $name        = $svc->{name};
+    # Use entry_name (raw as-declared name) for restart so the preload-
+    # spawn path's _resource_peer_name re-derives the same bus name
+    # rather than stacking another 'resource-' prefix each cycle.
+    my $name        = $svc->{entry_name} // $svc->{name};
     my $log_path    = $svc->{log_path};
     my $scope       = $svc->{scope} // 'global';
     my $run         = $svc->{run};
