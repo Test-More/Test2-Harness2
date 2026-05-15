@@ -64,6 +64,7 @@ requires "Plack::Runner" => "0";
 requires "Router::Simple" => "0";
 requires "Scalar::Util" => "0";
 requires "Scope::Guard" => "0";
+requires "Socket::MsgHdr" => "0.05";
 requires "Statistics::Basic" => "0";
 requires "Storable" => "0";
 requires "Sys::Hostname" => "0";

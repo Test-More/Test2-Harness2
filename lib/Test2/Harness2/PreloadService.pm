@@ -399,6 +399,10 @@ sub run {
         return _post_jump_spawn_service($self, $payload);
     }
 
+    if ($kind eq 'spawn_script') {
+        return _post_jump_spawn_script($self, $payload);
+    }
+
     croak "unknown preload longjump payload kind: '$kind'";
 }
 
@@ -414,6 +418,7 @@ sub run_on_general_message {
     return unless defined $kind;
     return $self->request_handler_spawn_test($content, $msg)    if $kind eq 'spawn_test';
     return $self->request_handler_spawn_service($content, $msg) if $kind eq 'spawn_service';
+    return $self->request_handler_spawn_script($content, $msg)  if $kind eq 'spawn_script';
     return;
 }
 
@@ -736,6 +741,153 @@ sub _post_jump_spawn_service {
     $svc->run;
 
     POSIX::_exit(0);
+}
+
+# IPC handler for spawn_script from the harness. Async: no response.
+# Validates the payload, double-forks (so the grandchild reparents off
+# this PreloadService to init / the harness's subreaper), and longjumps
+# to the setjump frame in run() with kind=spawn_script. The grandchild
+# resumes in _post_jump_spawn_script with %INC still populated from
+# the preload phase.
+sub request_handler_spawn_script {
+    my ($self, $payload, $msg) = @_;
+
+    for my $f (qw/script_abs env cwd sock_path spawn_id notify_to/) {
+        unless (defined $payload->{$f}) {
+            warn "PreloadService::spawn_script: missing '$f' in payload; ignoring\n";
+            return;
+        }
+    }
+
+    my $child_a = fork;
+    unless (defined $child_a) {
+        warn "PreloadService::spawn_script: outer fork failed: $!\n";
+        return;
+    }
+    if ($child_a) {
+        waitpid $child_a, 0;
+        return;
+    }
+
+    my $child_b = fork;
+    if (!defined $child_b) {
+        warn "PreloadService::spawn_script: inner fork failed: $!\n";
+        POSIX::_exit(127);
+    }
+    if ($child_b) {
+        POSIX::_exit(0);
+    }
+
+    require Long::Jump;
+    Long::Jump::longjump('preload_spawn', {
+        kind       => 'spawn_script',
+        script_abs => $payload->{script_abs},
+        argv       => $payload->{argv} // [],
+        env        => $payload->{env}  // {},
+        cwd        => $payload->{cwd},
+        sock_path  => $payload->{sock_path},
+        spawn_id   => $payload->{spawn_id},
+        notify_to  => $payload->{notify_to},
+    });
+
+    print STDERR "PreloadService::spawn_script: longjump returned (anchor missing?)\n";
+    POSIX::_exit(255);
+}
+
+# Runs in the grandchild (post-longjump) after the setjump frame has
+# unwound PreloadService::run. Connects to the CLI's SCM_RIGHTS socket,
+# receives stdin/stdout/stderr FDs, dup2s them, chdirs, swaps %ENV,
+# notifies the harness of our pid, then runs the script via do().
+sub _post_jump_spawn_script {
+    my ($self, $payload) = @_;
+
+    require POSIX;
+    require IO::Socket::UNIX;
+    require App::Yath2::Spawn::FdPass;
+
+    # Open the CLI's listening socket and receive the three FDs.
+    my $sock = IO::Socket::UNIX->new(
+        Peer => $payload->{sock_path},
+        Type => IO::Socket::UNIX::SOCK_STREAM(),
+    );
+    unless ($sock) {
+        print STDERR "yath spawn grandchild: connect $payload->{sock_path}: $!\n";
+        POSIX::_exit(126);
+    }
+
+    my $fds;
+    my $ok = eval { $fds = App::Yath2::Spawn::FdPass::recv_fds($sock, 3); 1 };
+    unless ($ok && $fds && @$fds == 3) {
+        print STDERR "yath spawn grandchild: recv_fds failed: $@\n";
+        POSIX::_exit(126);
+    }
+    close $sock;
+
+    POSIX::dup2($fds->[0], 0) or POSIX::_exit(126);
+    POSIX::dup2($fds->[1], 1) or POSIX::_exit(126);
+    POSIX::dup2($fds->[2], 2) or POSIX::_exit(126);
+    POSIX::close($_) for @$fds;
+
+    chdir $payload->{cwd} or POSIX::_exit(126);
+    %ENV = %{$payload->{env}};
+
+    # Tell the harness our pid so it can waitpid us and forward the
+    # exit notification back to the CLI.
+    # We must open a fresh IPC connection here: the inherited client
+    # has pid_check() tied to the PreloadService PID, so using it in
+    # the grandchild would croak.  A short-lived listen=0 connection
+    # is sufficient for a one-shot send_message call.
+    {
+        require IPC::Manager;
+        my $gc_client = IPC::Manager->connect(
+            "spawn-gc-$$",
+            $self->{+IPCM_INFO},
+            listen => 0,
+        );
+        my $ok = eval {
+            $gc_client->send_message($payload->{notify_to}, {
+                kind     => 'script_spawned',
+                pid      => $$,
+                spawn_id => $payload->{spawn_id},
+            });
+            1;
+        };
+        my $err = $@;
+        unless ($ok) {
+            print STDERR "yath spawn grandchild: script_spawned failed: $err\n";
+            POSIX::_exit(126);
+        }
+    }
+
+    local @ARGV = @{$payload->{argv} // []};
+    $0 = $payload->{script_abs};
+
+    # We can reliably catch runtime die() from the script (eval returns
+    # undef + $@) and read failures (do() returns undef + $! set). Compile
+    # errors set $@ but do() does NOT die, AND the script body may contain
+    # its own eval{die} which leaves $@ set on successful return — so we
+    # cannot distinguish "compile failed" from "ran fine with internal
+    # eval" by inspecting $@ post-do. Scripts that need a non-zero exit
+    # for compile failure must use a wrapper or call exit() explicitly.
+    my $exit_code = 0;
+    my ($rv, $do_io_err);
+    my $did = eval {
+        local $!;
+        $rv        = do $payload->{script_abs};
+        $do_io_err = $!;
+        1;
+    };
+    my $eval_err = $@;
+    if (!$did) {
+        print STDERR "yath spawn: $eval_err\n";
+        $exit_code = 1;
+    }
+    elsif (!defined($rv) && $do_io_err) {
+        print STDERR "yath spawn: cannot read $payload->{script_abs}: $do_io_err\n";
+        $exit_code = 2;
+    }
+
+    POSIX::_exit($exit_code);
 }
 
 1;

@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Test2::API qw/context run_subtest/;
+use Test2::Tools::Basic qw/ok/;
 use Test2::Tools::Compare qw/is/;
 
 use Carp qw/croak/;
@@ -179,7 +180,8 @@ sub yath {
 
     print "DEBUG: Waiting for $pid\n" if $debug;
     waitpid($pid, 0);
-    my $exit = $?;
+    my $raw_status = $?;
+    my $exit = ($raw_status >> 8) & 0xFF;
 
     my (@lines);
     if ($capture) {
@@ -207,7 +209,12 @@ sub yath {
         sub {
             if (defined $exittest) {
                 my $ictx = context(level => 3);
-                is($exit, $exittest, "Exit Value Check");
+                if (ref $exittest eq 'CODE') {
+                    ok($exittest->($exit), "Exit Value Check (coderef)");
+                }
+                else {
+                    is($exit, $exittest, "Exit Value Check");
+                }
                 $ictx->release;
             }
 

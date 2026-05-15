@@ -15,6 +15,7 @@ use Object::HashBase qw{
     <ipcm_info
     <workdir
     <name
+    <listen
     +handle
     <terminate_on_destroy
     +_waited
@@ -41,13 +42,15 @@ sub _build_handle {
     require IPC::Manager;
     require IPC::Manager::Service::Handle;
 
-    # The parent-side spawn handle only sends to the harness service
-    # (sync_request + finish/terminate) and never receives inbound
-    # traffic from arbitrary peers, so it does not need its own
-    # listen socket. Pre-build the client with listen=0 and hand it
-    # to the Service::Handle so its lazy client builder is bypassed.
+    # By default the parent-side spawn handle only sends to the harness
+    # service (sync_request + finish/terminate) and never receives inbound
+    # traffic from arbitrary peers, so it does not need its own listen
+    # socket. Callers that need to receive async messages (e.g. the
+    # spawn command waiting for script_exited) set listen=>1 at
+    # construction time to enable the inbound socket.
     my $handle_name = $self->{+NAME} . '-spawn-' . $$;
-    my $client      = IPC::Manager->connect($handle_name, $self->{+IPCM_INFO}, ipc_default_connect_args());
+    my @connect_args = $self->{+LISTEN} ? () : ipc_default_connect_args();
+    my $client      = IPC::Manager->connect($handle_name, $self->{+IPCM_INFO}, @connect_args);
 
     return IPC::Manager::Service::Handle->new(
         service_name => $self->{+NAME},
@@ -82,6 +85,8 @@ sub queue_test_run {
 }
 
 sub status { $_[0]->_send_request('status') }
+
+sub spawn_script { $_[0]->_send_request('spawn_script', $_[1]) }
 
 # Patterns surfaced by IPC::Manager::Service::Handle::sync_request when the
 # peer is gone.  Both are expected outcomes when the service exits before
