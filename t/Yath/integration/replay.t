@@ -1,5 +1,5 @@
-# HARNESS-CONFLICTS YATH
-# HARNESS-DURATION-SLOW
+# HARNESS2: conflicts yath
+# HARNESS2: duration slow
 use Test2::V0;
 
 use File::Spec;

@@ -231,8 +231,8 @@ sub _install_in_flight_ref {
 # Preload routing.
 #
 # _resolve_preload_for_job($run, $job) walks the job's preload
-# preference list (parsed from HARNESS-PRELOAD: at scan time, default
-# ['<default>']) and returns one of:
+# preference list (parsed from `HARNESS2: preload ...` at scan time,
+# default ['<default>']) and returns one of:
 #
 #   (undef, 'no_preload')          -> use the direct-fork path.
 #   ($resource, 'preload')         -> spawn the test via $resource's
@@ -248,7 +248,7 @@ sub _install_in_flight_ref {
 #
 # A `<no>` token is the explicit opt-out and always resolves to
 # no_preload, even when earlier candidates were broken or missing
-# (so a user can write `HARNESS-PRELOAD: maybe-foo <no>` to mean
+# (so a user can write `HARNESS2: preload maybe-foo @off` to mean
 # "prefer maybe-foo, otherwise run unpreloaded").
 #
 # A `<default>` token resolves to the per-run default (if one exists
@@ -2309,7 +2309,7 @@ sub _try_launch_next_pending {
 
         if ($decision eq 'skip') {
             # A resource is healthy but can never grant the slots THIS
-            # job demands (e.g. test declares HARNESS-JOB-SLOTS 8 and
+            # job demands (e.g. test declares `HARNESS2: slots 8` and
             # the per-job cap is 4). Route through the unavailable-action
             # skip launch so the renderer/log show a real skip_all event
             # with a reason, the run service sees a normal job

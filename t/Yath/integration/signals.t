@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: signal handling under nested yath not aligned with current Streamer (AUTHOR_TESTING bypasses old gate)";
 __END__

@@ -120,7 +120,7 @@ inherit the pre-populated C<%INC>.
 The C<test> command consumes this group's C<modules> list and, when
 non-empty, injects a single L<Test2::Harness2::Resource::Preload>
 named C<default> into the harness's resources. Tests that do not
-opt out (via C<HARNESS-PRELOAD: E<lt>noE<gt>>) route through that
+opt out (via C<HARNESS2: preload @off>) route through that
 preload service automatically.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED

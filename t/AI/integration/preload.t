@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 
 use lib 't/lib';
@@ -19,7 +19,7 @@ skip_all "T2_NO_FORK is set" if $ENV{T2_NO_FORK};
 #   * `-PMod` causes Mod to be loaded once in the preload service and
 #     remain in %INC for tests routed through the default bucket.
 #   * Multiple `-P` modules in one invocation all preload.
-#   * `HARNESS-PRELOAD: <no>` opts a test out of the preload.
+#   * `HARNESS2: preload @off` opts a test out of the preload.
 #   * A preload that dies at compile time fails `yath test` with a
 #     non-zero exit and surfaces the error message in the output.
 #   * A preload that references a missing module fails the same way
@@ -40,7 +40,7 @@ yath(
 
         my $filtered = join "\n" => grep { m/(PASSED|FAILED|RETRY).*\.tx/ } split /\n/, $out->{output};
 
-        like($filtered, qr{PASSED.*no_preload\.tx},   'no_preload.tx ran (HARNESS-PRELOAD: <no> opt-out)');
+        like($filtered, qr{PASSED.*no_preload\.tx},   'no_preload.tx ran (HARNESS2: preload @off opt-out)');
         like($filtered, qr{PASSED.*preload_test\.tx}, 'preload_test.tx ran with AISimplePreload preloaded');
         like($filtered, qr{PASSED.*multi_test\.tx},   'multi_test.tx ran with both modules preloaded');
     },

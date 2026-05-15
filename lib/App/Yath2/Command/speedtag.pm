@@ -66,7 +66,7 @@ sub cli_args { "[--] LOG max_short_duration_seconds max_medium_duration_seconds"
 sub description {
     return <<"    EOT";
 Reads per-job durations from a recorded yath log and rewrites the
-HARNESS-DURATION-* header on every test file according to the supplied
+HARNESS2: duration header on every test file according to the supplied
 thresholds. LOG is either a .yath archive file or a directory that looks like
 \$workdir/logs.
 
@@ -157,10 +157,10 @@ sub run {
             my $injected;
             my ($old, $new);
             for my $line (<$rfh>) {
-                if ($line =~ m/^(\s*)#(\s*)HARNESS-(CAT(EGORY)?|DUR(ATION))-(LONG|MEDIUM|SHORT)$/i) {
+                if ($line =~ m/^(\s*)(\#|\/\/)\s*HARNESS2:\s*duration\s+\S+\s*$/i) {
                     next if $injected++;
                     $old  = $line;
-                    $line = "${1}#${2}HARNESS-DURATION-" . uc($dur) . "\n";
+                    $line = "$1$2 HARNESS2: duration " . lc($dur) . "\n";
                     $new  = $line;
                 }
                 push @lines => $line;
@@ -168,7 +168,7 @@ sub run {
             close($rfh);
 
             unless ($injected) {
-                my $new_line = "# HARNESS-DURATION-" . uc($dur) . "\n";
+                my $new_line = "# HARNESS2: duration " . lc($dur) . "\n";
                 my @header;
                 while (@lines && $lines[0] =~ m/^(#|use\s|package\s)/) {
                     push @header => shift @lines;

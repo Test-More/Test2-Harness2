@@ -41,7 +41,7 @@ sub _job_slot_bounds {
 
     # %p overrides are used by unavailable-action skip/fail launches.
     my $tf = $job->test_file;
-    # check_*_slots scans HARNESS-JOB-SLOTS; bare *_slots accessors return only the role default.
+    # check_*_slots scans the `HARNESS2: slots` directive; bare *_slots accessors return only the role default.
     my $min = $p{min} // ($tf->can('check_min_slots') ? $tf->check_min_slots : $tf->min_slots) || 1;
     my $max = $p{max} // ($tf->can('check_max_slots') ? $tf->check_max_slots : $tf->max_slots);
     $max = $min unless defined $max;

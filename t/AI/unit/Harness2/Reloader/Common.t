@@ -110,7 +110,7 @@ subtest '_attempt_in_place_reload captures compile errors' => sub {
     like($rel->last_error, qr/.+/, 'last_error set');
 };
 
-subtest 'find_churn parses HARNESS-CHURN markers' => sub {
+subtest 'find_churn parses HARNESS2: churn block markers' => sub {
     my $tmp = tempdir(CLEANUP => 1);
     my $path = "$tmp/churn.pm";
     open(my $fh, '>', $path) or die;
@@ -118,16 +118,16 @@ subtest 'find_churn parses HARNESS-CHURN markers' => sub {
 package ChurnFix;
 use strict; use warnings;
 
-# HARNESS-CHURN-START
+# HARNESS2: churn {
 sub a { 1 }
-# HARNESS-CHURN-STOP
+# HARNESS2: churn }
 
 sub b { 2 }
 
-# HARNESS-CHURN-START
+# HARNESS2: churn {
 sub c { 3 }
 sub d { 4 }
-# HARNESS-CHURN-STOP
+# HARNESS2: churn }
 
 1;
 EOM
@@ -153,9 +153,9 @@ use strict; use warnings;
 
 our $loaded_at = 'original';
 
-# HARNESS-CHURN-START
+# HARNESS2: churn {
 sub greet { 'hello' }
-# HARNESS-CHURN-STOP
+# HARNESS2: churn }
 
 1;
 EOM
@@ -176,9 +176,9 @@ use strict; use warnings;
 
 our $loaded_at = 'original';
 
-# HARNESS-CHURN-START
+# HARNESS2: churn {
 sub greet { 'world' }
-# HARNESS-CHURN-STOP
+# HARNESS2: churn }
 
 1;
 EOM

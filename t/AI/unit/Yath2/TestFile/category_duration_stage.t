@@ -22,47 +22,47 @@ sub tf_for {
     return App::Yath2::TestFile->new(file => $path);
 }
 
-subtest 'HARNESS-DURATION-LONG sets duration = long' => sub {
-    my $tf = tf_for('dur_long.t', '# HARNESS-DURATION-LONG');
+subtest 'HARNESS2: duration long sets duration = long' => sub {
+    my $tf = tf_for('dur_long.t', '# HARNESS2: duration long');
     $tf->scan;
     is($tf->duration, 'long', 'duration lowercased to long');
     is($tf->category, undef,  'category untouched');
 };
 
-subtest 'HARNESS-DUR-SHORT (alias) sets duration = short' => sub {
-    my $tf = tf_for('dur_short.t', '# HARNESS-DUR-SHORT');
+subtest 'HARNESS2: duration short (alias) sets duration = short' => sub {
+    my $tf = tf_for('dur_short.t', '# HARNESS2: duration short');
     $tf->scan;
     is($tf->duration, 'short', 'dur alias accepted');
 };
 
-subtest 'HARNESS-DURATION MEDIUM (space form) sets duration = medium' => sub {
-    my $tf = tf_for('dur_medium.t', '# HARNESS-DURATION MEDIUM');
+subtest 'HARNESS2: duration medium (space form) sets duration = medium' => sub {
+    my $tf = tf_for('dur_medium.t', '# HARNESS2: duration medium');
     $tf->scan;
     is($tf->duration, 'medium', 'space-separated form accepted');
 };
 
-subtest 'HARNESS-CATEGORY-IO sets category = io' => sub {
-    my $tf = tf_for('cat_io.t', '# HARNESS-CATEGORY-IO');
+subtest 'HARNESS2: category io sets category = io' => sub {
+    my $tf = tf_for('cat_io.t', '# HARNESS2: category io');
     $tf->scan;
     is($tf->category, 'io',  'category lowercased to io');
     is($tf->duration, undef, 'duration untouched');
 };
 
-subtest 'HARNESS-CAT-NETWORK (alias) sets category = network' => sub {
-    my $tf = tf_for('cat_network.t', '# HARNESS-CAT-NETWORK');
+subtest 'HARNESS2: category network (alias) sets category = network' => sub {
+    my $tf = tf_for('cat_network.t', '# HARNESS2: category network');
     $tf->scan;
     is($tf->category, 'network', 'cat alias accepted');
 };
 
-subtest 'HARNESS-CATEGORY-LONG is sugar for HARNESS-DURATION-LONG' => sub {
-    my $tf = tf_for('cat_as_dur.t', '# HARNESS-CATEGORY-LONG');
+subtest 'HARNESS2: duration long is sugar for HARNESS2: duration long' => sub {
+    my $tf = tf_for('cat_as_dur.t', '# HARNESS2: duration long');
     $tf->scan;
     is($tf->duration, 'long', 'long/medium/short under CATEGORY routed to duration');
     is($tf->category, undef,  'category stays undef');
 };
 
-subtest 'HARNESS-STAGE-DBStage preserves case' => sub {
-    my $tf = tf_for('stage.t', '# HARNESS-STAGE-DBStage');
+subtest 'HARNESS2: stage DBStage preserves case' => sub {
+    my $tf = tf_for('stage.t', '# HARNESS2: stage DBStage');
     $tf->scan;
     is($tf->stage, 'DBStage', 'stage name case-preserved');
 };

@@ -1,5 +1,5 @@
 use Test2::V0 -target => 'Test2::Harness2::Util::File::JSONL';
-# HARNESS-DURATION-SHORT
+# HARNESS2: duration short
 
 use ok $CLASS;
 

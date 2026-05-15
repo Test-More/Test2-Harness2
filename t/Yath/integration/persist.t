@@ -1,10 +1,10 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: persistent runner daemon (start/stop/run/which/reload/watch) not implemented";
 __END__
 
 use Test2::V0;
-# HARNESS-DURATION-LONG
+# HARNESS2: duration long
 
 use File::Temp qw/tempdir/;
 use File::Spec;

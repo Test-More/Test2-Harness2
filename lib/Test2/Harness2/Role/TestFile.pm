@@ -258,7 +258,7 @@ This role is the contract. It defines the interface, the per-attribute
 defaults, the pure-data lookup helpers (C<check_feature>,
 C<check_duration>, etc.), and the JSON serialization story
 (C<TO_JSON>/C<rehydrate>). It does B<not> scan files, read shebangs,
-parse C<HARNESS-*> directives, mutate state, or perform I/O. Producers
+parse C<HARNESS2:> directives, mutate state, or perform I/O. Producers
 that need to do those things (e.g. L<App::Yath2::TestFile>) live
 outside the harness library and consume this role as well.
 
@@ -485,8 +485,8 @@ per resource).
 
 Scheduler hints. Defaults: C<category =E<gt> undef>, C<duration =E<gt>
 undef>, C<stage =E<gt> undef>. The raw attributes stay undef until a
-producer (e.g. a C<HARNESS-CATEGORY-*> /
-C<HARNESS-DURATION-*> / C<HARNESS-STAGE-*> directive scanner)
+producer (e.g. a C<HARNESS2: category> /
+C<HARNESS2: duration> / C<HARNESS2: stage> directive scanner)
 populates them. C<check_category> and C<check_duration> fall back to
 C<'general'> / C<'medium'> respectively when the raw attribute is
 still undef.

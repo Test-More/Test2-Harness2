@@ -43,7 +43,7 @@ EOM
     my $tf = "$dir/t.t";
     open my $tfh, '>', $tf or die;
     print $tfh <<'EOT';
-# HARNESS-PRELOAD: default
+# HARNESS2: preload default
 use Test2::V0;
 ok($INC{'PerRunPreloaded/Fixture.pm'}, 'per-run fixture pre-loaded')
     or diag "INC has: ", join(', ', sort keys %INC);

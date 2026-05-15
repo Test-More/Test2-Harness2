@@ -7,7 +7,7 @@ use App::Yath2::TestFile;
 
 # End-to-end verification that App::Yath2::Finder::exclude_file sees
 # the per-file HARNESS metadata through the new TestFile parser. (Avoid
-# writing the literal "HARNESS-<wildcard>" form in this comment because
+# writing the literal "HARNESS2: <wildcard>" form in this comment because
 # the scanner would treat it as a directive and warn.) exclude_file is a
 # pure method that reads only its own HashBase flags plus the
 # TestFile's check_feature / check_duration helpers, so we can exercise
@@ -43,12 +43,12 @@ sub finder {
 
 my $noop = tf(
     'noop.t',
-    "#!/usr/bin/perl\n# HARNESS-NO-RUN\nprint qq{should not run};\n",
+    "#!/usr/bin/perl\n# HARNESS2: feature.run \@off\nprint qq{should not run};\n",
 );
 
 my $long = tf(
     'long.t',
-    "#!/usr/bin/perl\n# HARNESS-DURATION-LONG\nprint qq{long ok};\n",
+    "#!/usr/bin/perl\n# HARNESS2: duration long\nprint qq{long ok};\n",
 );
 
 my $short = tf(
@@ -56,7 +56,7 @@ my $short = tf(
     "#!/usr/bin/perl\nprint qq{short ok};\n",
 );
 
-subtest 'HARNESS-NO-RUN excludes a file via check_feature(run => 1)' => sub {
+subtest 'HARNESS2: feature.run @off excludes a file via check_feature(run => 1)' => sub {
     my $f = finder();
     is(
         [$f->exclude_file($noop)],

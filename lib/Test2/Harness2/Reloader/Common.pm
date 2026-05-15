@@ -23,7 +23,7 @@ use Object::HashBase qw{
 #   _filter_inc()            arrayref of %INC entries inside the project root.
 #   _attempt_in_place_reload reload one file; returns (ok, err).
 #   find_churn / _attempt_churn_reload
-#                            HARNESS-CHURN-START/STOP partial reload (3.7).
+#                            `HARNESS2: churn {` ... `HARNESS2: churn }` partial reload.
 #   request_restart($svc)    send preload_restarting IPC + exec a fresh copy.
 #
 # Subclasses (HiResStat, INotify) supply watch_paths() + do_reload().
@@ -239,9 +239,9 @@ sub request_restart {
     exec($^X, $0, @ARGV) or die "exec failed in request_restart: $!";
 }
 
-# Find HARNESS-CHURN-START / HARNESS-CHURN-STOP sections in $file.
-# Returns a list of arrayrefs [$start_line, $body, $end_line] for
-# each section. Used by Task 3.7.
+# Find HARNESS2: churn { / HARNESS2: churn } block sections in
+# $file. Returns a list of arrayrefs [$start_line, $body, $end_line]
+# for each section. Used by the churn-only partial reload path.
 sub find_churn {
     my ($self, $file) = @_;
     return () unless defined $file && length $file && -f $file;
@@ -249,13 +249,13 @@ sub find_churn {
     open(my $fh, '<', $file) or return ();
 
     my @out;
-    my $active = 0;
+    my $active  = 0;
     my $line_no = 0;
     while (defined(my $line = <$fh>)) {
         $line_no++;
 
         if ($active) {
-            if ($line =~ /\A\s*#\s*HARNESS-CHURN-STOP\s*\z/) {
+            if ($line =~ m{\A\s*(?:\#|//)\s*HARNESS2:\s*churn\s*\}\s*\z}) {
                 $out[-1][2] = $line_no;
                 $active = 0;
                 next;
@@ -264,7 +264,7 @@ sub find_churn {
             next;
         }
 
-        if ($line =~ /\A\s*#\s*HARNESS-CHURN-START\s*\z/) {
+        if ($line =~ m{\A\s*(?:\#|//)\s*HARNESS2:\s*churn\s*\{\s*\z}) {
             $active = 1;
             push @out => [$line_no, '', undef];
         }
@@ -373,7 +373,7 @@ status. Compile errors are caught.
 
 =item ($ok, $err) = $rel->_attempt_churn_reload($file)
 
-For files containing C<HARNESS-CHURN-START> / C<HARNESS-CHURN-STOP>
+For files containing C<HARNESS2: churn {> / C<HARNESS2: churn }>
 sections, re-evals only those sections in the module's package with
 C<no warnings 'redefine'>. Module-level state outside the sections
 survives.

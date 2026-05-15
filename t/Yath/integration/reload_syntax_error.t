@@ -1,11 +1,11 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: persistent runner daemon + preload reload not implemented (AUTHOR_TESTING bypasses old gate)";
 __END__
 
 use Test2::V0;
 use Test2::Require::AuthorTesting;
-# HARNESS-DURATION-LONG
+# HARNESS2: duration long
 
 use File::Temp qw/tempdir/;
 use File::Spec;

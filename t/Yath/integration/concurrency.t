@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: job concurrency scheduling not validated yet against current scheduler";
 __END__

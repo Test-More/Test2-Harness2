@@ -236,8 +236,8 @@ sub _build_resources {
     # modules collect into one "default" Resource::Preload; modules
     # consuming Test2::Harness2::Role::Preload each become their own
     # named Resource::Preload. Tests without an explicit
-    # HARNESS-PRELOAD directive resolve to <default> and route
-    # through the default; tests with HARNESS-PRELOAD: <no> bypass
+    # HARNESS2: preload directive resolve to @default and route
+    # through the default; tests with `HARNESS2: preload @off` bypass
     # all preloads.
     my $settings = $self->{+SETTINGS};
     # Getopt::Yath::Settings dispatches group accessors dynamically and

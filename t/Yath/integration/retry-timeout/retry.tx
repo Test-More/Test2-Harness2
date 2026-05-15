@@ -1,4 +1,4 @@
-# HARNESS-TIMEOUT-EVENT 5
+# HARNESS2: timeout.event 5
 use strict;
 use warnings;
 

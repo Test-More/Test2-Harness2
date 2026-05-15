@@ -113,8 +113,8 @@ subtest 'end-to-end scan: no shebang leaves slots at role defaults' => sub {
     );
 };
 
-subtest 'end-to-end scan: HARNESS- directive on line 1 is not a shebang' => sub {
-    my $tf = tf_for('directive_first.t', "# HARNESS-NO-FORK\nuse strict;\n");
+subtest 'end-to-end scan: HARNESS2 directive on line 1 is not a shebang' => sub {
+    my $tf = tf_for('directive_first.t', "# HARNESS2: feature.fork \@off\nuse strict;\n");
     $tf->scan;
     is($tf->switches, [], 'switches untouched');
     is($tf->non_perl, 0,  'non_perl untouched');

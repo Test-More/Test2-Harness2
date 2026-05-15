@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# When a test declares HARNESS-JOB-SLOTS larger than the per-job cap
+# When a test declares HARNESS2: slots larger than the per-job cap
 # the user passed (-j N:M / -x M), the job-limiter must report the
 # resource as permanently unsatisfiable for THAT test. The scheduler
 # then routes the job through an unavailable-action skip_all so:
@@ -41,10 +41,10 @@ open my $fh1, '>', $t1 or die "open $t1: $!";
 print $fh1 "use Test2::V0; ok(1, 'one slot'); done_testing;\n";
 close $fh1;
 
-# A wide test asking for 8 slots via the HARNESS-JOB-SLOTS header.
+# A wide test asking for 8 slots via the HARNESS2: slots header.
 my $t8 = "$tmp/eight.t";
 open my $fh8, '>', $t8 or die "open $t8: $!";
-print $fh8 "# HARNESS-JOB-SLOTS 8\nuse Test2::V0; ok(1, 'eight slots'); done_testing;\n";
+print $fh8 "# HARNESS2: slots 8\nuse Test2::V0; ok(1, 'eight slots'); done_testing;\n";
 close $fh8;
 
 sub run_yath {

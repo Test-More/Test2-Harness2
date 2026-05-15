@@ -1,5 +1,5 @@
-# HARNESS-CONFLICTS YATH
-# HARNESS-DURATION-LONG
+# HARNESS2: conflicts yath
+# HARNESS2: duration long
 use Test2::V0;
 use Test2::Require::AuthorTesting;
 

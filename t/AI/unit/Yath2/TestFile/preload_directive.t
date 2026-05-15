@@ -18,7 +18,7 @@ subtest 'no directive -> [<default>]' => sub {
 
 subtest 'colon-style directive parses' => sub {
     my $tf = _tf(<<'EOT');
-# HARNESS-PRELOAD: Foo Bar <default>
+# HARNESS2: preload Foo Bar @default
 use Test2::V0;
 ok 1;
 done_testing;
@@ -28,7 +28,7 @@ EOT
 
 subtest 'no-colon style also works' => sub {
     my $tf = _tf(<<'EOT');
-# HARNESS-PRELOAD Foo Bar
+# HARNESS2: preload Foo Bar
 use Test2::V0;
 ok 1;
 done_testing;
@@ -38,7 +38,7 @@ EOT
 
 subtest '<no> alone parses' => sub {
     my $tf = _tf(<<'EOT');
-# HARNESS-PRELOAD: <no>
+# HARNESS2: preload @off
 use Test2::V0;
 ok 1;
 done_testing;
@@ -46,16 +46,18 @@ EOT
     is($tf->preload_preferences, ['<no>'], 'opt-out captured');
 };
 
-subtest 'invalid directive croaks via parse_preload_directive' => sub {
+subtest 'mixed @off with later names passes through as-is' => sub {
     my $tf = _tf(<<'EOT');
-# HARNESS-PRELOAD: Foo <no> Bar
+# HARNESS2: preload Foo @off Bar
 use Test2::V0;
 ok 1;
 done_testing;
 EOT
-    my $ok = eval { $tf->preload_preferences; 1 };
-    ok(!$ok, 'invalid directive croaks');
-    like($@, qr/<no>/, 'error mentions <no> placement rule');
+    is(
+        $tf->preload_preferences,
+        ['Foo', '<no>', 'Bar'],
+        'parser is permissive; resolver decides what to do with a mid-list <no>',
+    );
 };
 
 done_testing;

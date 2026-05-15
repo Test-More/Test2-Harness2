@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: plugin loading (-p+SmokePlugin) and -D dev-libs not aligned";
 __END__

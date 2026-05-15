@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Path qw/make_path/;

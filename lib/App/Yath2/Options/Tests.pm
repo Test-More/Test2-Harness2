@@ -50,7 +50,7 @@ option_group {group => 'tests', category => 'Test Options', maybe => 1} => sub {
     option use_fork => (
         type          => 'Bool',
         alt           => ['fork'],
-        description   => "(default: on, except on windows) Normally tests are run by forking, which allows for features like preloading. This will turn off the behavior globally (which is not compatible with preloading). This is slower, it is better to tag misbehaving tests with the '# HARNESS-NO-PRELOAD' comment in their header to disable forking only for those tests.",
+        description   => "(default: on, except on windows) Normally tests are run by forking, which allows for features like preloading. This will turn off the behavior globally (which is not compatible with preloading). This is slower, it is better to tag misbehaving tests with the '# HARNESS2: feature.preload \@off' comment in their header to disable forking only for those tests.",
         from_env_vars => [qw/!T2_NO_FORK T2_HARNESS_FORK !T2_HARNESS_NO_FORK YATH_FORK !YATH_NO_FORK/],
     );
 
@@ -137,7 +137,7 @@ option_group {group => 'tests', category => 'Test Options', maybe => 1} => sub {
         type           => 'Scalar',
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
-        description    => 'Kill test if no output is received within timeout period. (Default: 60 seconds). Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis. This prevents a hung test from running forever.',
+        description    => 'Kill test if no output is received within timeout period. (Default: 60 seconds). Add the "# HARNESS2: feature.timeout \@off" comment to the top of a test file to disable timeouts on a per-test basis. This prevents a hung test from running forever.',
     );
 
     option post_exit_timeout => (
@@ -145,7 +145,7 @@ option_group {group => 'tests', category => 'Test Options', maybe => 1} => sub {
         type           => 'Scalar',
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
-        description    => 'Stop waiting post-exit after the timeout period. (Default: 15 seconds) Some tests fork and allow the parent to exit before writing all their output. If Test2::Harness2 detects an incomplete plan after the test exits it will monitor for more events until the timeout period. Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis.'
+        description    => 'Stop waiting post-exit after the timeout period. (Default: 15 seconds) Some tests fork and allow the parent to exit before writing all their output. If Test2::Harness2 detects an incomplete plan after the test exits it will monitor for more events until the timeout period. Add the "# HARNESS2: feature.timeout \@off" comment to the top of a test file to disable timeouts on a per-test basis.'
     );
 
     option unsafe_inc => (

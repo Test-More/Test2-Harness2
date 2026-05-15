@@ -52,10 +52,10 @@ subtest 'Explicit default argument overrides the feature table' => sub {
 };
 
 subtest 'Directive-set features beat the defaults table' => sub {
-    my $notimeout = tf_for('no_timeout.t', '#!/usr/bin/perl', '# HARNESS-NO-TIMEOUT');
+    my $notimeout = tf_for('no_timeout.t', '#!/usr/bin/perl', '# HARNESS2: feature.timeout @off');
     is($notimeout->check_feature('timeout'), 0, 'NO-TIMEOUT wins over default 1');
 
-    my $useiso = tf_for('use_iso.t', '#!/usr/bin/perl', '# HARNESS-USE-ISOLATION');
+    my $useiso = tf_for('use_iso.t', '#!/usr/bin/perl', '# HARNESS2: feature.isolation @on');
     is($useiso->check_feature('isolation'), 1, 'USE-ISOLATION wins over default 0');
 };
 
@@ -65,15 +65,15 @@ subtest 'check_duration fallback chain' => sub {
     my $plain = tf_for('plain_d.t', '#!/usr/bin/perl');
     is($plain->check_duration, 'medium', 'no directive, timeout on -> medium');
 
-    my $no_to = tf_for('no_to_d.t', '#!/usr/bin/perl', '# HARNESS-NO-TIMEOUT');
+    my $no_to = tf_for('no_to_d.t', '#!/usr/bin/perl', '# HARNESS2: feature.timeout @off');
     is($no_to->check_duration, 'long', 'NO-TIMEOUT lifts duration to long');
 
-    my $short = tf_for('dur_short.t', '#!/usr/bin/perl', '# HARNESS-DURATION-SHORT');
+    my $short = tf_for('dur_short.t', '#!/usr/bin/perl', '# HARNESS2: duration short');
     is($short->check_duration, 'short', 'explicit DURATION-SHORT wins');
 
     my $short_notimeout = tf_for(
         'short_notimeout.t',        '#!/usr/bin/perl',
-        '# HARNESS-DURATION-SHORT', '# HARNESS-NO-TIMEOUT',
+        '# HARNESS2: duration short', '# HARNESS2: feature.timeout @off',
     );
     is(
         $short_notimeout->check_duration,
@@ -88,15 +88,15 @@ subtest 'check_category fallback chain' => sub {
     my $plain = tf_for('plain_c.t', '#!/usr/bin/perl');
     is($plain->check_category, 'general', 'no directive -> general');
 
-    my $iso = tf_for('iso_c.t', '#!/usr/bin/perl', '# HARNESS-USE-ISOLATION');
+    my $iso = tf_for('iso_c.t', '#!/usr/bin/perl', '# HARNESS2: feature.isolation @on');
     is($iso->check_category, 'isolation', 'USE-ISOLATION lifts category to isolation');
 
-    my $cat = tf_for('cat_io.t', '#!/usr/bin/perl', '# HARNESS-CATEGORY-IO');
+    my $cat = tf_for('cat_io.t', '#!/usr/bin/perl', '# HARNESS2: category io');
     is($cat->check_category, 'io', 'explicit CATEGORY-IO wins');
 
     my $cat_iso = tf_for(
         'cat_iso.t',             '#!/usr/bin/perl',
-        '# HARNESS-CATEGORY-IO', '# HARNESS-USE-ISOLATION',
+        '# HARNESS2: category io', '# HARNESS2: feature.isolation @on',
     );
     is(
         $cat_iso->check_category,
@@ -115,7 +115,7 @@ subtest 'check_stage / check_min_slots / check_max_slots pass-through' => sub {
 
     my $set = tf_for(
         'set_s.t',                 '#!/usr/bin/perl',
-        '# HARNESS-STAGE-DBStage', '# HARNESS-JOB-SLOTS 2 4',
+        '# HARNESS2: stage DBStage', '# HARNESS2: slots 2 4',
     );
     is($set->check_stage,     'DBStage', 'stage returned case-preserved');
     is($set->check_min_slots, 2,         'min_slots returned as stored');
@@ -161,15 +161,15 @@ subtest 'binary fixture: fork and preload disabled' => sub {
     is($tf->check_feature('preload'), 0, 'is_binary forces preload off');
 };
 
-subtest 'safety override beats explicit HARNESS-USE-FORK' => sub {
-    my $tf = tf_for('bash_usefork.t', '#!/usr/bin/bash', '# HARNESS-USE-FORK');
+subtest 'safety override beats explicit HARNESS2: feature.fork @on' => sub {
+    my $tf = tf_for('bash_usefork.t', '#!/usr/bin/bash', '# HARNESS2: feature.fork @on');
     is($tf->check_feature('fork'), 0, 'USE-FORK on non-perl test still returns 0');
 };
 
 # ---- scan is invoked lazily by each check_* ----
 
 subtest 'check_feature triggers scan on first call' => sub {
-    my $tf = tf_for('lazy.t', '#!/usr/bin/perl', '# HARNESS-NO-STREAM');
+    my $tf = tf_for('lazy.t', '#!/usr/bin/perl', '# HARNESS2: feature.stream @off');
 
     # Construct a TestFile but do NOT call scan directly. _scanned is
     # an internal HashBase slot (no public reader); poke the slot

@@ -23,7 +23,7 @@ with 'Test2::Harness2::Role::Reloader';
 #   1. Honor debounce_secs() -- skip if the last successful reload
 #      was too recent.
 #   2. Try _attempt_in_place_reload($file).
-#   3. If that fails and the file contains HARNESS-CHURN sections,
+#   3. If that fails and the file contains `HARNESS2: churn {` sections,
 #      fall back to _attempt_churn_reload($file).
 #   4. On reload failure, record last_error and return without
 #      restarting; the caller decides whether to flip the resource
@@ -184,8 +184,8 @@ C<.pm>/C<.t> files that are both under C<project_root> and currently
 loaded in C<%INC>, and stats each one. Files whose mtime has changed
 since the previous tick are reloaded via
 L<Test2::Harness2::Reloader::Common>'s C<_attempt_in_place_reload>;
-if that fails and the file contains C<HARNESS-CHURN-START> /
-C<HARNESS-CHURN-STOP> markers, it falls back to
+if that fails and the file contains C<HARNESS2: churn {> /
+C<HARNESS2: churn }> markers, it falls back to
 C<_attempt_churn_reload>.
 
 Reload failures are recorded in C<last_error> and do not throw; the

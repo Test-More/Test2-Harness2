@@ -1,5 +1,5 @@
-# HARNESS-CONFLICTS YATH
-# HARNESS-DURATION-MODERATE
+# HARNESS2: conflicts yath
+# HARNESS2: duration moderate
 use Test2::V0;
 
 use File::Temp qw/tempdir/;
@@ -41,7 +41,7 @@ yath(
             my $found = 0;
             while (my $line = <$fh>) {
                 chomp($line);
-                next unless $line =~ m/^#\s*HARNESS-DURATION-(SHORT|MEDIUM|LONG)$/;
+                next unless $line =~ m/^#\s*HARNESS2:\s*duration\s+(short|medium|long)$/i;
                 $found = 1;
                 last;
             }

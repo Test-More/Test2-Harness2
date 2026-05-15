@@ -90,7 +90,7 @@ option_group {prefix => 'notify', group => 'notify', category => "Notification O
 
     option email_owner => (
         type => 'Bool',
-        description => 'Email the owner of broken tests files upon failure. Add `# HARNESS-META-OWNER foo@example.com` to the top of a test file to give it an owner',
+        description => 'Email the owner of broken tests files upon failure. Add `# HARNESS2: meta.owner foo@example.com` to the top of a test file to give it an owner',
         default => sub {
             my ($opt, $settings) = @_;
             return 1 if @{$settings->notify->email};
@@ -576,12 +576,12 @@ This renderer is used for sending email and/or slack notifications from yath.
 
     #!/usr/bin/perl
     use Test2::V0;
-    # HARNESS-META owner author@example.com
-    # HARNESS-META slack #slack_channel
-    # HARNESS-META slack #slack_user
+    # HARNESS2: meta.owner "author@example.com"
+    # HARNESS2: meta.slack #slack_channel
+    # HARNESS2: meta.slack #slack_user
 
-You can use the C<# HARNESS-META owner EMAIL_ADDRESS> to specify an "owner"
-email address. You can use the C<# HARNESS-META slack USER/CHANNEL> to specify
+You can use the C<# HARNESS2: meta.owner EMAIL_ADDRESS> to specify an "owner"
+email address. You can use the C<# HARNESS2: meta.slack USER/CHANNEL> to specify
 a slack user or channel that owns the test.
 
 =head2 RUNNING WITH NOTIFICATIONS ENABLED

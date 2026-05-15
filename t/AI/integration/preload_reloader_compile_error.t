@@ -17,7 +17,7 @@ use App::Yath2::TestFile;
 #      bumped; HiResStat picks up the change, fails to require the
 #      file, records last_error -- so PreloadService emits
 #      preload_broken to the harness.
-#   3. A test that opts out of the preload (HARNESS-PRELOAD: <no>)
+#   3. A test that opts out of the preload (HARNESS2: preload @off)
 #      runs successfully; the broken preload does not affect tests
 #      routed around it.
 #   4. The fixture is rewritten back to a valid module with greet
@@ -89,7 +89,7 @@ EOM
     # Test routed through the preload, asserting greet='before'.
     my $tf_before = "$dir/before.t";
     write_file($tf_before, <<'EOT');
-# HARNESS-PRELOAD: default
+# HARNESS2: preload default
 use Test2::V0;
 ok($INC{'Reloadable/Fixture.pm'}, 'fixture pre-loaded');
 is(Reloadable::Fixture::greet(), 'before', 'fixture greet=before');
@@ -99,10 +99,10 @@ EOT
     # Test that explicitly opts out of any preload; this must run
     # successfully even while the named preload is in the broken
     # state, exercising the harness's "no_preload" fallback path
-    # for HARNESS-PRELOAD: <no>.
+    # for HARNESS2: preload @off.
     my $tf_no = "$dir/no_preload.t";
     write_file($tf_no, <<'EOT');
-# HARNESS-PRELOAD: <no>
+# HARNESS2: preload @off
 use Test2::V0;
 ok(1, 'no-preload test ran while the preload was broken');
 done_testing;
@@ -168,7 +168,7 @@ EOM
 
     # Step 3: a <no>-routed test runs while the preload is broken.
     # The harness's resolver picks the no_preload path for any
-    # HARNESS-PRELOAD: <no> file regardless of the named preload's
+    # HARNESS2: preload @off file regardless of the named preload's
     # state, so this run must complete and pass.
     my $q2 = $spawn->queue_test_run(
         files => [App::Yath2::TestFile->new(file => $tf_no)],
@@ -203,7 +203,7 @@ EOM
 
     my $tf_after = "$dir/after.t";
     write_file($tf_after, <<'EOT');
-# HARNESS-PRELOAD: default
+# HARNESS2: preload default
 use Test2::V0;
 ok($INC{'Reloadable/Fixture.pm'}, 'fixture pre-loaded');
 is(Reloadable::Fixture::greet(), 'after', 'fixture greet=after after recovery');

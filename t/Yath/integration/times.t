@@ -1,5 +1,5 @@
-# HARNESS-CONFLICTS YATH
-# HARNESS-DURATION-MODERATE
+# HARNESS2: conflicts yath
+# HARNESS2: duration moderate
 use Test2::V0;
 
 use File::Temp qw/tempdir/;

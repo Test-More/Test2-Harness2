@@ -40,8 +40,8 @@ sub run {
 
     print $fh <<'    EOT';
 #!/usr/bin/env perl
-# HARNESS-NO-PRELOAD
-# HARNESS-CAT-LONG
+# HARNESS2: feature.preload @off
+# HARNESS2: duration long
 # THIS IS A GENERATED YATH RUNNER TEST
 use strict;
 use warnings;
