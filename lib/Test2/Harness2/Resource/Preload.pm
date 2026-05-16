@@ -5,7 +5,6 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Carp qw/croak/;
-use Scalar::Util qw/blessed/;
 
 use Object::HashBase qw{
     <name

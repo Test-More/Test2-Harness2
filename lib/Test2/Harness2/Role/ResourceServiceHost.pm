@@ -70,31 +70,56 @@ sub start_resource_services {
     my $scope = $opts{scope} // 'global';
     my $run   = $opts{run};
 
-    # Precompute the set of PreloadService names that will come up as
-    # part of this batch so dependents whose preferred preload is in
-    # the batch but not yet ready can enqueue (see
-    # RESOURCES_AWAITING_PRELOAD) instead of falling straight back to
-    # a standalone spawn. Guarded on `exists` so non-harness
-    # ResourceServiceHost consumers (which don't carry this slot) are
-    # unaffected.
-    if (exists $self->{known_preload_names}) {
-        my %known;
-        for my $r (@$resources) {
-            next unless ref($r) && $r->isa('Test2::Harness2::Resource::Preload');
-            next unless $r->can('name');
-            my $pname = $r->name;
-            next unless defined $pname && length $pname;
-            $known{$pname} = 1;
-        }
-        $self->{known_preload_names} = \%known;
+    $self->_record_known_preload_names($resources);
+
+    # Build the full plan (class + ctor params + derived name +
+    # log_path) before forking anything so a name collision aborts
+    # the whole batch instead of leaving half-started services.
+    my $plan = $self->_build_service_plan($resources, $scope, $run);
+
+    for my $entry (@$plan) {
+        $self->_start_service_entry(
+            resource => $entry->{resource},
+            class    => $entry->{class},
+            args     => $entry->{args},
+            name     => $entry->{name},
+            log_path => $entry->{log_path},
+            scope    => $scope,
+            (defined $run ? (run => $run) : ()),
+        );
     }
 
-    # Walk the resources once to build the full plan (class +
-    # construction params + derived name + log_path), validating that
-    # every service class composes the service role and that every
-    # name is unique within this scope. We never want to fork a
-    # subprocess only to discover another in the batch would collide
-    # with it.
+    return;
+}
+
+# Precompute the set of PreloadService names that will come up as
+# part of this batch so dependents whose preferred preload is in the
+# batch but not yet ready can enqueue (see RESOURCES_AWAITING_PRELOAD)
+# instead of falling straight back to a standalone spawn. Guarded on
+# `exists` so non-harness ResourceServiceHost consumers (which don't
+# carry this slot) are unaffected.
+sub _record_known_preload_names {
+    my ($self, $resources) = @_;
+    return unless exists $self->{known_preload_names};
+
+    my %known;
+    for my $r (@$resources) {
+        next unless ref($r) && $r->isa('Test2::Harness2::Resource::Preload');
+        next unless $r->can('name');
+        my $pname = $r->name;
+        next unless defined $pname && length $pname;
+        $known{$pname} = 1;
+    }
+    $self->{known_preload_names} = \%known;
+}
+
+# Walk the resources once and produce the validated service plan.
+# Each entry: { resource, class, args, name, log_path }. Croaks on
+# malformed entries, missing names, or in-batch / cross-scope name
+# collisions.
+sub _build_service_plan {
+    my ($self, $resources, $scope, $run) = @_;
+
     my @plan;
     my %seen;
     for my $res (@$resources) {
@@ -147,7 +172,7 @@ sub start_resource_services {
             $self->_touch_log_file($log_path);
 
             $seen{$name} = {resource => $res, class => $class};
-            push @plan => {
+            push @plan, {
                 resource => $res,
                 class    => $class,
                 args     => \@args,
@@ -156,20 +181,7 @@ sub start_resource_services {
             };
         }
     }
-
-    for my $entry (@plan) {
-        $self->_start_service_entry(
-            resource => $entry->{resource},
-            class    => $entry->{class},
-            args     => $entry->{args},
-            name     => $entry->{name},
-            log_path => $entry->{log_path},
-            scope    => $scope,
-            (defined $run ? (run => $run) : ()),
-        );
-    }
-
-    return;
+    return \@plan;
 }
 
 # Pull the 'name' value out of a key/value construction-params list

@@ -4,8 +4,6 @@ use warnings;
 
 our $VERSION = '2.000013';
 
-use Time::HiRes qw/sleep time/;
-
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
 use Object::HashBase qw{

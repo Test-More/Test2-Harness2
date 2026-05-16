@@ -484,103 +484,11 @@ sub request_handler_spawn_test {
 
     # Callback runs in the Collector's post-fork child (the test
     # grandchild) with STDOUT/STDERR already swapped to the
-    # collector's pipes. Apply env, reset $0 + Test2's process-global
-    # state, then longjump out to PreloadService::run's setjump
-    # anchor. The post-jump branch in run() calls goto::file with the
-    # test path; State::import + BEGIN unwind cleanly and perl
-    # resumes parsing the boot -e snippet under the source filter
-    # goto::file installed.
-    my $cb = sub {
-        if (ref($payload->{env}) eq 'HASH') {
-            for my $k (keys %{$payload->{env}}) {
-                $ENV{$k} = $payload->{env}->{$k};
-            }
-        }
-
-        my $test = $payload->{test_file_abs};
-
-        # Process-level reset (port from
-        # reference/old2/lib/Test2/Harness2/Collector/Preloaded.pm
-        # build_init_state + test2_state + final_state):
-        @ARGV = ();
-        srand();
-        FindBin::init()                if defined &FindBin::init;
-        Getopt::Long::ConfigDefaults() if defined &Getopt::Long::ConfigDefaults;
-
-        # Reset Test2's process-global state so the test child's hub,
-        # formatter, and assertion counters are fresh. The instance
-        # carries a sticky FORMATTER slot that post_preload_reset
-        # leaves alone, so clear it explicitly before resetting --
-        # otherwise the test child inherits whatever (default TAP)
-        # formatter the preload service finalized into.
-        if (eval { require Test2::API; 1 }) {
-            Test2::API::test2_post_preload_reset()
-                if Test2::API->can('test2_post_preload_reset');
-
-            # post_preload_reset leaves the existing Stack populated
-            # with hubs from the preload-service-side Test2 usage.
-            # Drain it so the next context call rebuilds a fresh
-            # root hub via Stack::new_hub, which reads T2_FORMATTER
-            # from %ENV at hub-build time and gives us Stream2
-            # instead of the preload service's inherited (default)
-            # formatter.
-            if (my $stack = Test2::API::test2_stack()) {
-                @$stack = ();
-            }
-
-            # post_preload_reset leaves EXIT_CALLBACKS in place;
-            # plugins that registered them (Test2::Plugin::SRand,
-            # etc.) re-run at the test child's END and can confuse
-            # Test2's set_exit logic into flagging the test as
-            # failing. Clear them via the public API.
-            my $inst = $Test2::API::INST;
-            if ($inst) {
-                $inst->{exit_callbacks}              = [];
-                $inst->{post_load_callbacks}         = [];
-                $inst->{context_init_callbacks}      = [];
-                $inst->{context_acquire_callbacks}   = [];
-                $inst->{context_release_callbacks}   = [];
-                $inst->{pre_subtest_callbacks}       = [];
-                $inst->{formatter}                   = undef;
-            }
-        }
-
-        # Pre-load Stream2 so the test child's first Test2::API
-        # context triggers _finalize and reads T2_FORMATTER=Stream2
-        # from %ENV (applied above from the spawn payload).
-        eval { require Test2::Formatter::Stream2 };
-
-        # Empty-pattern reset so the test child's "" =~ /^/ semantics
-        # match a freshly-started perl rather than inheriting the
-        # preload service's last-match state. Has to be dynamically
-        # scoped, so it cannot be hoisted into a sub.
-        "" =~ /^/;
-
-        # Role::Preload pre_launch hook: runs in the test grandchild
-        # immediately before the longjump that hands control to the
-        # test file. Use it for per-test state resets that the
-        # standard Test2 post-preload reset does not cover.
-        $self->_fire_role_hook(pre_launch => $payload);
-
-        # Hand off to run()'s setjump anchor. longjump unwinds all
-        # the way through Collector::_launch_child_unix's eval ->
-        # Collector->spawn -> request_handler_spawn_test ->
-        # run_on_general_message -> role's run loop -> our setjump,
-        # leaving the post-jump code in run() to call goto::file and
-        # let the parser take over from there. This must be the last
-        # statement in the callback; longjump never returns.
-        Long::Jump::longjump('preload_spawn', {
-            kind          => 'spawn_test',
-            test_file_abs => $test,
-        });
-
-        # Defensive fallback: longjump should always succeed because
-        # run() installs the anchor before forks start happening. If
-        # it ever does come back, treat as a contract bug and bail
-        # the grandchild.
-        print STDERR "preload-spawn: longjump 'preload_spawn' returned (anchor missing?)\n";
-        exit(255);
-    };
+    # collector's pipes. Resets process and Test2 state, fires the
+    # pre_launch hook, then longjumps out to run()'s setjump anchor;
+    # the post-jump branch in run() calls goto::file with the test
+    # path so the parser takes over from there.
+    my $cb = sub { $self->_test_grandchild_launch($payload) };
 
     my $auditor = $payload->{auditor};
     my $env     = ref($payload->{env}) eq 'HASH' ? $payload->{env} : {};
@@ -635,6 +543,86 @@ sub request_handler_spawn_test {
     }
 
     return;
+}
+
+# Test grandchild launch body, factored out of request_handler_spawn_test.
+# Runs in the Collector's post-fork child with STDOUT/STDERR already
+# swapped to the collector's pipes. Applies env, resets process and
+# Test2 state, fires pre_launch, then longjumps out to run().
+sub _test_grandchild_launch {
+    my ($self, $payload) = @_;
+
+    if (ref($payload->{env}) eq 'HASH') {
+        $ENV{$_} = $payload->{env}->{$_} for keys %{$payload->{env}};
+    }
+
+    _reset_process_state();
+    _reset_test2_state();
+
+    # Pre-load Stream2 so the test child's first Test2::API context
+    # triggers _finalize and reads T2_FORMATTER=Stream2 from %ENV
+    # (applied above from the spawn payload).
+    eval { require Test2::Formatter::Stream2 };
+
+    # Empty-pattern reset so the test child's "" =~ /^/ semantics
+    # match a freshly-started perl rather than inheriting the
+    # preload service's last-match state. Must be dynamically scoped
+    # at the grandchild level -- cannot be hoisted further.
+    "" =~ /^/;
+
+    # Role::Preload pre_launch hook: runs in the test grandchild
+    # immediately before the longjump that hands control to the test
+    # file. Use it for per-test state resets that the standard Test2
+    # post-preload reset does not cover.
+    $self->_fire_role_hook(pre_launch => $payload);
+
+    Long::Jump::longjump('preload_spawn', {
+        kind          => 'spawn_test',
+        test_file_abs => $payload->{test_file_abs},
+    });
+
+    # Defensive fallback: longjump should always succeed because run()
+    # installs the anchor before forks start happening. If it ever
+    # does come back, treat as a contract bug and bail the grandchild.
+    print STDERR "preload-spawn: longjump 'preload_spawn' returned (anchor missing?)\n";
+    exit(255);
+}
+
+# Port from reference/old2/lib/Test2/Harness2/Collector/Preloaded.pm
+# build_init_state.
+sub _reset_process_state {
+    @ARGV = ();
+    srand();
+    FindBin::init()                if defined &FindBin::init;
+    Getopt::Long::ConfigDefaults() if defined &Getopt::Long::ConfigDefaults;
+}
+
+# Reset Test2's process-global state so the test child's hub, formatter,
+# and assertion counters are fresh. post_preload_reset leaves a sticky
+# FORMATTER slot and a populated Stack populated with hubs from the
+# preload-service-side Test2 usage -- both need explicit clearing here
+# so the test child rebuilds a fresh root hub via Stack::new_hub and
+# picks up T2_FORMATTER=Stream2 at hub-build time. EXIT_CALLBACKS and
+# friends also linger from preload-side plugins (SRand, etc.) and can
+# confuse set_exit if left in place.
+sub _reset_test2_state {
+    return unless eval { require Test2::API; 1 };
+
+    Test2::API::test2_post_preload_reset()
+        if Test2::API->can('test2_post_preload_reset');
+
+    if (my $stack = Test2::API::test2_stack()) {
+        @$stack = ();
+    }
+
+    my $inst = do { no warnings 'once'; $Test2::API::INST } or return;
+    $inst->{exit_callbacks}            = [];
+    $inst->{post_load_callbacks}       = [];
+    $inst->{context_init_callbacks}    = [];
+    $inst->{context_acquire_callbacks} = [];
+    $inst->{context_release_callbacks} = [];
+    $inst->{pre_subtest_callbacks}     = [];
+    $inst->{formatter}                 = undef;
 }
 
 # yath resource-spawn-via-preload: drop-and-reparent a service-class

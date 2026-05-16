@@ -9,20 +9,18 @@ my $dir = tempdir(CLEANUP => 1);
 yath(command => 'start', args => ["--workdir=$dir"], exit => 0);
 
 # Run watch with a hard timeout; sending SIGTERM ends it cleanly.
+# Default $SIG{TERM} terminates by signal, so Tester sees the
+# WIFSIGNALED ($? >> 8 == 0) form -- exit is 0, not signal-based.
+# The wallclock check is the real validation that watch stayed alive
+# until the timeout fired rather than exiting on its own.
 my $t0 = time;
 yath(
     command    => 'watch',
     args       => ["--workdir=$dir"],
     timeout    => 4,
-    timeout_cb => sub { },   # default action (TERM) is what we want
-    exit       => T(),        # killed by signal -> any exit is OK
-    test       => sub {
-        my $o = shift;
-        # Watch should at least have opened the renderer; assert by
-        # looking for any output banner. Empty output is acceptable on
-        # a freshly-started daemon, so the assertion is lenient.
-        pass('watch ran and was terminated by timeout');
-    },
+    timeout_cb => sub { },
+    exit       => 0,
+    test       => sub { pass('watch ran and was terminated by timeout') },
 );
 ok((time - $t0) >= 3, 'watch ran until SIGTERM (wallclock confirms not an early die)');
 

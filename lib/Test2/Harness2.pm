@@ -636,69 +636,20 @@ sub request_handler_queue_test_run {
     return {ok => 0, error => "'files' must be a non-empty arrayref"}
         unless ref($files) eq 'ARRAY' && @$files;
 
-    # Logger options were dropped. Strip them from the payload so the
-    # Run constructor never sees them. Kept as a tidy filter so older
-    # clients passing them don't fail the request.
-    my %run_logger_opts;
-
-    # --set-hash-seed (Phase 7.2): when both the harness and the
-    # incoming run have an explicit seed, they must match. Any
-    # global preload tied to the harness was spawned with the
-    # harness's seed in PERL_HASH_SEED, and a run asking for a
-    # different value cannot reuse those preload processes.
-    #
-    # When the harness has no seed (no global preload was set up
-    # with a fixed seed) we accept any run-level seed: the run
-    # service simply propagates it into PERL_HASH_SEED for that
-    # run's test children. When the run has no opinion we accept
-    # whatever the harness was started with -- the run's children
-    # inherit the harness's seed via the test environment.
-    #
-    # TODO Phase 7.2 follow-up: once a Preload resource exists and
-    # the harness can declare global preloads, tighten this so an
-    # unset-vs-set status mismatch is also rejected (the preload's
-    # hash table is already baked).
-    my $run_seed     = $payload->{hash_seed};
-    my $harness_seed = $self->{+HASH_SEED};
-    if (defined($run_seed) && length $run_seed && defined($harness_seed) && length $harness_seed) {
-        return {ok => 0, error => "--set-hash-seed=$run_seed on the run does not match --set-hash-seed=$harness_seed on the harness; preload was started with seed $harness_seed and cannot be reused"}
-            if $run_seed ne $harness_seed;
+    if (my $err = $self->_validate_run_hash_seed($payload->{hash_seed})) {
+        return {ok => 0, error => $err};
     }
 
-    # Allocate the next run ordinal up-front so we can hand it to
-    # Run->from_files. A caller-supplied run_id is rejected: run ids
-    # are owned by the harness and incoming payload values would
+    # Run ids are owned by the harness; a caller-supplied value would
     # collide with the counter.
     return {ok => 0, error => "'run_id' is allocated by the harness; do not pass it"}
         if defined $payload->{run_id};
 
     my $run_id = $self->{+RUN_ORD_COUNTER}++;
 
-    # Per-run resources arrive as a recipe: [ [class, @ctor_args], ... ].
-    # Rehydrate into Resource instances here so Run->resources matches
-    # what the harness-global resource list looks like.
-    my @run_resources;
-    if (my $spec = $payload->{resources}) {
-        return {ok => 0, error => "'resources' must be an arrayref"}
-            unless ref($spec) eq 'ARRAY';
-        my $build_ok = eval {
-            for my $entry (@$spec) {
-                die "resources entry must be an arrayref\n"
-                    unless ref($entry) eq 'ARRAY';
-                my ($class, @args) = @$entry;
-                die "resources entry missing class\n"
-                    unless defined $class && length $class && !ref $class;
-                load_module($class);
-                my @ctor_args = $class->can('parse_options')
-                    ? $class->parse_options(@args)
-                    : @args;
-                push @run_resources => $class->new(@ctor_args);
-            }
-            1;
-        };
-        my $err = $@;
-        return {ok => 0, error => "failed to build per-run resources: $err"} unless $build_ok;
-    }
+    my ($resources_ok, $resources_or_err) = $self->_rehydrate_run_resources($payload->{resources});
+    return {ok => 0, error => $resources_or_err} unless $resources_ok;
+    my @run_resources = @$resources_or_err;
 
     my $ok = eval {
         my $run = Test2::Harness2::Run->from_files(
@@ -707,13 +658,11 @@ sub request_handler_queue_test_run {
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
             (defined $payload->{chdir}     ? (chdir     => $payload->{chdir})     : ()),
             (@run_resources                ? (resources => \@run_resources)       : ()),
-            %run_logger_opts,
         );
 
-        # Bind the Run to any per-run Resource::Preload that arrived
-        # over IPC. The recipe carried scope='run' but had no Run
-        # object yet; finish the link now before the scheduler reads
-        # services() / status() off the resource.
+        # Per-run Resource::Preload entries arrived with scope='run'
+        # but no Run object yet; finish the link now before the
+        # scheduler reads services() / status() off the resource.
         for my $r (@run_resources) {
             next unless $r->can('set_run');
             next unless eval { $r->scope eq 'run' };
@@ -730,19 +679,15 @@ sub request_handler_queue_test_run {
         $self->_scheduler_queue_run($run);
         1;
     };
-    my $err = $@;
-    return {ok => 0, error => "$err"} unless $ok;
+    return {ok => 0, error => "$@"} unless $ok;
 
     my $run = $self->{+QUEUE}->[-1];
 
-    # Flat run_id / queued_at / job_ids alongside the nested
-    # run_data: App::Yath2::Renderer::Driver's lifecycle synthesizer
-    # reads these directly off the harness facet to build the
-    # per-job harness_job_queued events that the progress bar's T
-    # (todo) counter increments on. Without the flat keys the
-    # synthesizer's `return unless defined $rid` guard fires and the
-    # T counter stays at 0 for the whole run. run_data is kept for
-    # any downstream consumer that still wants the full Run TO_JSON
+    # Flat run_id / queued_at / job_ids alongside the nested run_data:
+    # Renderer::Driver's lifecycle synthesizer reads the flat keys
+    # off the harness facet to build harness_job_queued events that
+    # increment the progress bar's T (todo) counter. run_data is
+    # kept for downstream consumers that still want the full TO_JSON
     # dump.
     $self->emit_service_event(
         kind      => 'run_queued',
@@ -752,11 +697,59 @@ sub request_handler_queue_test_run {
         run_data  => $run->TO_JSON,
     );
 
-    # job_queued events are emitted by the run service once it has
-    # started, so the per-job lifecycle stream lives in the run's own
-    # .jsonl and not in the harness's service log.
-
     return {ok => 1, run_id => $run->run_id};
+}
+
+# --set-hash-seed compatibility check. When both the harness and the
+# run carry an explicit seed they must match: any global preload tied
+# to the harness was spawned with the harness's seed in
+# PERL_HASH_SEED, and a run asking for a different value cannot
+# reuse those preload processes. Either side unset is accepted -- the
+# harness's seed propagates to children via env when the run has no
+# opinion, and the run's seed wins in PERL_HASH_SEED when the harness
+# was started without one. Returns an error string when incompatible,
+# or undef when OK.
+sub _validate_run_hash_seed {
+    my ($self, $run_seed) = @_;
+
+    my $harness_seed = $self->{+HASH_SEED};
+    return undef unless defined($run_seed) && length $run_seed;
+    return undef unless defined($harness_seed) && length $harness_seed;
+    return undef if $run_seed eq $harness_seed;
+
+    return "--set-hash-seed=$run_seed on the run does not match "
+        . "--set-hash-seed=$harness_seed on the harness; preload was started "
+        . "with seed $harness_seed and cannot be reused";
+}
+
+# Build per-run Resource instances from the IPC-recipe form:
+# [ [class, @ctor_args], ... ]. Each class gets parse_options applied
+# (when defined) so the constructor sees the same kwargs the harness-
+# global resources do. Returns (1, \@instances) on success, or
+# (0, "error string") on failure.
+sub _rehydrate_run_resources {
+    my ($self, $spec) = @_;
+    return (1, []) unless defined $spec;
+    return (0, "'resources' must be an arrayref") unless ref($spec) eq 'ARRAY';
+
+    my @out;
+    my $ok = eval {
+        for my $entry (@$spec) {
+            die "resources entry must be an arrayref\n"
+                unless ref($entry) eq 'ARRAY';
+            my ($class, @args) = @$entry;
+            die "resources entry missing class\n"
+                unless defined $class && length $class && !ref $class;
+            load_module($class);
+            my @ctor_args = $class->can('parse_options')
+                ? $class->parse_options(@args)
+                : @args;
+            push @out, $class->new(@ctor_args);
+        }
+        1;
+    };
+    return (0, "failed to build per-run resources: $@") unless $ok;
+    return (1, \@out);
 }
 
 sub request_handler_status {
@@ -2243,13 +2236,9 @@ sub _try_launch_next_pending {
 
     return 0 unless @{$self->{+QUEUE} // []};
 
-    # Runs are processed serially in the order they were queued.
-    # The scheduler iterates QUEUE (an ordered arrayref) and finds
+    # Runs are processed serially in the order they were queued. Find
     # the first run that is not yet complete from the scheduler's
-    # perspective; that becomes the head run for this tick. Other
-    # queued runs are not even considered until the head run has
-    # drained its own pending+running. We never run a later run
-    # ahead of an earlier one.
+    # perspective; that becomes the head run for this tick.
     my $head_run;
     for my $run (@{$self->{+QUEUE}}) {
         next if $self->_scheduler_run_complete($run->run_id);
@@ -2264,84 +2253,83 @@ sub _try_launch_next_pending {
     # considered for launch we spin up its resource services.
     $self->_ensure_run_service_started($head_run);
 
-    # Iterate the scheduler's own pending list, not $run->pending.
-    # The scheduler's list is the authoritative view of what we
-    # have not yet attempted to launch; $run->pending mirrors
-    # the run service and can lag behind reality.
+    # Iterate the scheduler's own pending list (authoritative view of
+    # what we have not yet attempted), not $run->pending (mirrors run
+    # service and can lag behind).
     for my $job_id (@{$self->_scheduler_pending_for_run($run_id)}) {
         my ($job) = grep { $_->job_id eq $job_id } @{$head_run->jobs};
         next unless $job;
 
-        # Run-level abort state (see _handle_broken_resource):
-        # once a run is aborted, every remaining job takes the
-        # unavailable-action fail path, whether or not that specific
-        # job needed the broken resource. The aborted flag on the
-        # decision distinguishes the original trigger (aborted=0)
-        # from follow-ups swept up by the abort (aborted=1).
-        my ($decision, $arg, %dec_opts);
-        my $preload_resource;
-        my $rstate = $self->{+RUN_STATES}->{$head_run->run_id};
-        if ($rstate && defined $rstate->aborted_reason) {
-            ($decision, $arg) = ('broken', $rstate->aborted_reason);
-            $dec_opts{aborted} = 1;
-        }
-        else {
-            # Preload routing runs before the generic resource walk so
-            # an unmet preload preference can short-circuit
-            # _evaluate_resources_for entirely (defer / broken). The
-            # resolver returns one of:
-            #   (undef, 'no_preload')       -> normal direct-fork path
-            #   ($resource, 'preload')      -> spawn via preload service
-            #   (undef, 'defer')             -> retry next tick
-            #   (undef, 'broken', $first)    -> route through broken_resource_behavior
-            my ($pres, $pkind, $pextra) = $self->_resolve_preload_for_job($head_run, $job);
-            if ($pkind eq 'defer') {
-                next;
-            }
-            elsif ($pkind eq 'broken') {
-                ($decision, $arg) = ('broken', "preload:$pextra");
-            }
-            else {
-                $preload_resource = $pres;
-                ($decision, $arg) = $self->_evaluate_resources_for($head_run, $job);
-            }
-        }
-
-        if ($decision eq 'skip') {
-            # A resource is healthy but can never grant the slots THIS
-            # job demands (e.g. test declares `HARNESS2: slots 8` and
-            # the per-job cap is 4). Route through the unavailable-action
-            # skip launch so the renderer/log show a real skip_all event
-            # with a reason, the run service sees a normal job
-            # completion, and the run can finalize. The skip launch
-            # itself goes through the limiter pool with need=1, so it
-            # may defer if the pool is currently saturated.
-            my $outcome = $self->_launch_unavailable_action_job($head_run, $job, 'skip', $arg);
-            return 1 if $outcome eq 'launched' || $outcome eq 'skip';
-            next;    # 'defer' -- try again next tick
-        }
-
-        if ($decision eq 'broken') {
-            # A needed resource has been permanently broken (or
-            # the run has been aborted wholesale).
-            # broken_resource_behavior decides how the job is
-            # dispatched; the unavailable-action launch shares the
-            # job-limiter pool and may defer if the pool is saturated.
-            my $outcome = $self->_handle_broken_resource($head_run, $job, $arg, %dec_opts);
-            return 1 if $outcome eq 'launched' || $outcome eq 'skip';
-            next;    # 'defer' -- try the next job in this run
-        }
-
-        next if $decision eq 'defer';
-
-        $self->_launch_job(
-            $head_run, $job, $arg,
-            (defined $preload_resource ? (preload_resource => $preload_resource) : ()),
-        );
-        return 1;
+        my $outcome = $self->_dispatch_pending_job($head_run, $job);
+        return 1 if $outcome eq 'launched';
+        next;     # 'defer' or 'skipped'
     }
 
     return 0;
+}
+
+# Per-job dispatch decision for _try_launch_next_pending. Returns
+# 'launched' to signal the caller a job was started (and the tick is
+# done), or 'defer' to advance to the next pending job. Encapsulates
+# the run-aborted short-circuit, preload routing, and resource
+# evaluation, plus the unavailable-action / broken-resource branches.
+sub _dispatch_pending_job {
+    my ($self, $run, $job) = @_;
+
+    my ($decision, $arg, %dec_opts);
+    my $preload_resource;
+
+    my $rstate = $self->{+RUN_STATES}->{$run->run_id};
+    if ($rstate && defined $rstate->aborted_reason) {
+        # Run aborted: every remaining job takes the unavailable-action
+        # fail path. aborted=1 distinguishes follow-ups from the
+        # original trigger (aborted=0, set by _handle_broken_resource).
+        ($decision, $arg) = ('broken', $rstate->aborted_reason);
+        $dec_opts{aborted} = 1;
+    }
+    else {
+        # Preload routing runs before the generic resource walk so an
+        # unmet preload preference can short-circuit
+        # _evaluate_resources_for entirely. Resolver returns:
+        #   (undef, 'no_preload')      -> normal direct-fork path
+        #   ($resource, 'preload')     -> spawn via preload service
+        #   (undef, 'defer')           -> retry next tick
+        #   (undef, 'broken', $first)  -> route through broken_resource_behavior
+        my ($pres, $pkind, $pextra) = $self->_resolve_preload_for_job($run, $job);
+        return 'defer' if $pkind eq 'defer';
+
+        if ($pkind eq 'broken') {
+            ($decision, $arg) = ('broken', "preload:$pextra");
+        }
+        else {
+            $preload_resource = $pres;
+            ($decision, $arg) = $self->_evaluate_resources_for($run, $job);
+        }
+    }
+
+    if ($decision eq 'skip') {
+        # Resource is healthy but can never grant the slots THIS job
+        # demands (e.g. test declares `HARNESS2: slots 8` and per-job
+        # cap is 4). Route through the unavailable-action skip launch
+        # so the renderer/log show a real skip_all event. The skip
+        # launch shares the job-limiter pool and may defer when
+        # saturated.
+        my $outcome = $self->_launch_unavailable_action_job($run, $job, 'skip', $arg);
+        return $outcome eq 'launched' || $outcome eq 'skip' ? 'launched' : 'defer';
+    }
+
+    if ($decision eq 'broken') {
+        my $outcome = $self->_handle_broken_resource($run, $job, $arg, %dec_opts);
+        return $outcome eq 'launched' || $outcome eq 'skip' ? 'launched' : 'defer';
+    }
+
+    return 'defer' if $decision eq 'defer';
+
+    $self->_launch_job(
+        $run, $job, $arg,
+        (defined $preload_resource ? (preload_resource => $preload_resource) : ()),
+    );
+    return 'launched';
 }
 
 # Finalize the run if it's complete: snapshot final results from
@@ -2702,75 +2690,24 @@ sub _launch_job {
 
     # The resolver hands us the Resource::Preload to route this job
     # through (when one was requested). Append it to the assigned-
-    # resources list so the standard release-on-cleanup path
-    # (_release_job_resources) handles its assign/release lifecycle,
-    # even though Resource::Preload's assign/release are no-ops.
+    # resources list so the standard release-on-cleanup path handles
+    # its assign/release lifecycle (even though Resource::Preload's
+    # assign/release are no-ops).
     my $preload_resource = delete $opts{preload_resource};
-    if (defined $preload_resource) {
-        $resources = [@$resources, $preload_resource];
-    }
+    $resources = [@$resources, $preload_resource] if defined $preload_resource;
 
-    # First job of this run -- announce run_started and stamp the
-    # per-run started_at slot so the eventual run_completed +
-    # collector_report event can carry wall-time bracketing.
-    unless ($self->_scheduler_started($run_id)) {
-        my $started_at = time;
-        # Flat run_id / started_at: the Renderer::Driver lifecycle
-        # synthesizer reads these directly off the harness facet to
-        # stamp run_states->{$rid}{started_at}. Match the same
-        # flat-key contract used by run_queued above.
-        $self->emit_service_event(
-            kind       => 'run_started',
-            run_id     => $run_id,
-            started_at => $started_at,
-        );
-        my $flags = $self->_run_flags($run_id);
-        $flags->{started_at} //= $started_at;
-    }
+    $self->_announce_run_started_if_first($run_id);
 
-    my $assign_id = gen_uuid();
-    my %env;
-    # Forward T2_HARNESS_INCLUDES from the parent environment to the
-    # spawned test child so callers can inject paths into the child's
-    # @INC without resorting to per-test CLI flags. Mirrors
-    # reference/old2/lib/Test2/Harness2/TestSettings.pm:122.
-    $env{T2_HARNESS_INCLUDES} = $ENV{T2_HARNESS_INCLUDES}
-        if defined $ENV{T2_HARNESS_INCLUDES} && length $ENV{T2_HARNESS_INCLUDES};
-
-    # --set-hash-seed propagation: Phase 7.1. The run carries the
-    # effective seed value (resolved from the option's autofill or
-    # the user-supplied value at queue-build time). When set, every
-    # test child gets PERL_HASH_SEED so the child interpreter starts
-    # with a deterministic hash seed. When the run does not request
-    # one, the child inherits whatever the parent's PERL_HASH_SEED
-    # already is (which the App-Yath-Script wrapper or the user may
-    # or may not have set).
-    my $hash_seed = $run->hash_seed;
-    $env{PERL_HASH_SEED} = $hash_seed if defined $hash_seed && length $hash_seed;
+    my $assign_id   = gen_uuid();
     my %assign_args = %{$opts{assign_args} // {}};
+    my %env         = $self->_build_launch_env($run);
     for my $res (@$resources) {
         $res->assign(id => $assign_id, job => $job, env => \%env, %assign_args);
     }
 
-    # Working-directory selection for the test child. Priority:
-    #   1. Run-level chdir set by the user (--chdir on yath test) -- wins
-    #      for every job in the run, overriding any per-test path the
-    #      Finder discovered.
-    #   2. Per-test ch_dir auto-discovered by App::Yath2::Finder when it
-    #      walked a directory tree of tests.
-    #   3. Otherwise, the harness's own cwd (no chdir).
+    # ch_dir priority: run-level --chdir > per-test ch_dir (Finder) > none.
     my $ch_dir = $run->chdir // $job->test_file->ch_dir;
 
-    # Preload-routed jobs take the IPC path: send a spawn_test request
-    # to the preload service, record a placeholder RUNNING_JOBS entry,
-    # and return. The placeholder's pid stays undef until the
-    # collector grandchild's auditor lands a test_job_started event,
-    # which _handle_test_job_started uses to fill in pid +
-    # RUN_PIDS registration.
-    #
-    # Direct (no-preload) jobs spawn the Collector inline. Stage 5 of
-    # the RunService flatten: the harness owns the collector fork, the
-    # test is its grandchild, and the reap lands at run_on_pid.
     my $launch_ok = eval {
         if (defined $preload_resource) {
             $self->_spawn_via_preload(
@@ -2779,42 +2716,19 @@ sub _launch_job {
                 assign_id          => $assign_id,
                 assigned_resources => $resources,
                 (defined $opts{launch} ? (launch => $opts{launch}) : ()),
-                (defined $ch_dir    ? (ch_dir => $ch_dir)        : ()),
+                (defined $ch_dir       ? (ch_dir => $ch_dir)       : ()),
             );
             $self->_scheduler_mark_running($run_id, $job_id);
             return 1;
         }
 
-        my $resp = $self->_spawn_collector_for_job(
-            $run, $job,
-            env => \%env,
+        $self->_launch_collector_inline(
+            $run, $job, $resources,
+            assign_id => $assign_id,
+            env       => \%env,
             (defined $opts{launch} ? (launch => $opts{launch}) : ()),
             (defined $ch_dir       ? (ch_dir => $ch_dir)       : ()),
         );
-        die "collector spawn returned no pid"
-            unless ref($resp) eq 'HASH' && $resp->{ok} && $resp->{pid};
-
-        $self->_scheduler_mark_running($run_id, $job_id);
-
-        my $started_at = time;
-        $self->{+RUNNING_JOBS}->{$job_id} = {
-            run                => $run,
-            job                => $job,
-            pid                => $resp->{pid},
-            started_at         => $started_at,
-            assign_id          => $assign_id,
-            assigned_resources => $resources,
-            log_file           => $resp->{log_file},
-        };
-        $self->{+IN_FLIGHT_COUNT}++;
-        $self->_register_run_pid(
-            $run_id, $resp->{pid},
-            kind       => 'collector',
-            job_id     => $job_id,
-            job_try    => $job->job_try,
-            started_at => $started_at,
-        );
-
         1;
     };
     my $launch_err = $@;
@@ -2825,14 +2739,94 @@ sub _launch_job {
         # so _release_job_resources won't reach it on its own.
         for my $res (@$resources) {
             my $rok  = eval { $res->release(id => $assign_id, job => $job); 1 };
-            my $rerr = $@;
-            warn "failed to release resource '" . $res->resource_name . "' after launch failure: $rerr"
+            warn "failed to release resource '" . $res->resource_name . "' after launch failure: $@"
                 unless $rok;
         }
         die $launch_err;
     }
 
     return $job_id;
+}
+
+# First job of this run: emit run_started and stamp started_at.
+# Renderer::Driver's lifecycle synthesizer reads the flat run_id /
+# started_at fields off the harness facet to stamp
+# run_states->{$rid}{started_at}.
+sub _announce_run_started_if_first {
+    my ($self, $run_id) = @_;
+    return if $self->_scheduler_started($run_id);
+
+    my $started_at = time;
+    $self->emit_service_event(
+        kind       => 'run_started',
+        run_id     => $run_id,
+        started_at => $started_at,
+    );
+    $self->_run_flags($run_id)->{started_at} //= $started_at;
+}
+
+# Build the base env hash for a launched test child. Forwards
+# T2_HARNESS_INCLUDES so callers can inject @INC paths without per-test
+# CLI flags. Propagates the run's --set-hash-seed value as
+# PERL_HASH_SEED when present.
+sub _build_launch_env {
+    my ($self, $run) = @_;
+
+    my %env;
+    $env{T2_HARNESS_INCLUDES} = $ENV{T2_HARNESS_INCLUDES}
+        if defined $ENV{T2_HARNESS_INCLUDES} && length $ENV{T2_HARNESS_INCLUDES};
+
+    my $hash_seed = $run->hash_seed;
+    $env{PERL_HASH_SEED} = $hash_seed if defined $hash_seed && length $hash_seed;
+
+    return %env;
+}
+
+# Direct (no-preload) launch path: harness owns the collector fork,
+# the test is its grandchild, and the reap lands at run_on_pid. Calls
+# the inline collector spawn helper, registers the running job, and
+# bumps in-flight bookkeeping. Dies on spawn failure so the caller's
+# resource-rollback path runs.
+sub _launch_collector_inline {
+    my ($self, $run, $job, $resources, %opts) = @_;
+
+    my $run_id    = $run->run_id;
+    my $job_id    = $job->job_id;
+    my $assign_id = delete $opts{assign_id};
+    my $env       = delete $opts{env};
+
+    my $resp = $self->_spawn_collector_for_job(
+        $run, $job,
+        env => $env,
+        (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+        (defined $opts{ch_dir} ? (ch_dir => $opts{ch_dir}) : ()),
+    );
+    die "collector spawn returned no pid"
+        unless ref($resp) eq 'HASH' && $resp->{ok} && $resp->{pid};
+
+    $self->_scheduler_mark_running($run_id, $job_id);
+
+    my $started_at = time;
+    $self->{+RUNNING_JOBS}->{$job_id} = {
+        run                => $run,
+        job                => $job,
+        pid                => $resp->{pid},
+        started_at         => $started_at,
+        assign_id          => $assign_id,
+        assigned_resources => $resources,
+        log_file           => $resp->{log_file},
+    };
+    $self->{+IN_FLIGHT_COUNT}++;
+
+    $self->_register_run_pid(
+        $run_id, $resp->{pid},
+        kind       => 'collector',
+        job_id     => $job_id,
+        job_try    => $job->job_try,
+        started_at => $started_at,
+    );
+
+    return;
 }
 
 # Build the Collector spawn args + invoke Collector->spawn directly,

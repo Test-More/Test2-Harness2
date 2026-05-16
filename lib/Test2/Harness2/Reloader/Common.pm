@@ -7,7 +7,7 @@ our $VERSION = '2.000013';
 use Carp qw/croak/;
 use Cwd qw/abs_path/;
 use File::Spec ();
-use Scalar::Util qw/blessed weaken/;
+use Scalar::Util qw/blessed/;
 
 use Object::HashBase qw{
     <project_root
