@@ -130,6 +130,13 @@ sub run {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: ping is a thin IPC round-trip client with no test args.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

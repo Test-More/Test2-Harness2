@@ -310,7 +310,8 @@ third party components.
 
 =head1 EXPORTS
 
-There are 2 exports from this module.
+C<yath> and C<make_example_dir> are exported by default. C<tester_ipc_dir>
+is exportable on request.
 
 =head2 $result = yath(...)
 
@@ -487,6 +488,15 @@ argument to enable it.
 This will create a temporary directory with 't', 't2', and 'xt' subdirectories
 each of which will contain a single passing test.
 
+=head2 $dir = tester_ipc_dir()
+
+Return the shared IPC info-file directory that L</yath> injects via
+C<YATH_IPC_DIR>. Tests that bypass L</yath> (e.g. raw fork+exec of
+C<yath run>) call this to pin C<YATH_IPC_DIR> in the spawned child,
+so a C<yath start> launched via L</yath> and a sibling C<yath run>
+launched by exec agree on where to publish and discover the IPC
+info file.
+
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
@@ -518,8 +528,3 @@ modify it under the same terms as Perl itself.
 See L<http://dev.perl.org/licenses/>
 
 =cut
-
-=pod
-
-=cut POD NEEDS AUDIT
-

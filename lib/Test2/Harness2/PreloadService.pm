@@ -918,6 +918,206 @@ exposes them through C<service_started_fields>. The C<BEGIN> +
 C<do_preload> + spawn-test plumbing lands in later tasks of the
 preload-rework plan.
 
+=head1 METHODS
+
+=head2 init
+
+Object::HashBase initializer. Validates required attributes
+(C<preload_name>, C<modules>), applies defaults for C<scope>,
+C<is_role_consumer>, C<kill_timeout>, C<state>, C<watch_pids>, and
+C<own_pgroup>, derives C<workdir> from C<log_path>, and caches the
+bus-level service name via L</_compute_name>.
+
+=head2 name
+
+Returns the bus-level service name (C<preload-NAME> for global scope,
+C<preload-RUNID-NAME> for run scope).
+
+=head2 _compute_name
+
+Private. Derives the bus-level service name from C<preload_name>,
+C<scope>, and C<run_id>.
+
+=head2 service_started_fields
+
+Extra fields emitted on the C<service_started> event so a log reader
+can tell which preload this is and whether it is a Role::Preload
+consumer.
+
+=head2 hard_stop_pids
+
+Returns the pids of any in-flight spawn workers that must be reaped
+during a hard stop. Currently a stub returning an empty list.
+
+=head2 emit_service_event
+
+No-op placeholder; real JSONL emission lands with the spawn-pathway
+task.
+
+=head2 _role_consumer_class
+
+Private. Returns the consumer class name when this preload was built
+from a L<Test2::Harness2::Role::Preload> consumer, otherwise C<undef>.
+
+=head2 do_preload
+
+Sequentially C<require>s each module in C<modules>. For Role::Preload
+consumers, loads the consumer class and delegates to its
+C<do_preload>. Croaks with a clear message naming the preload and
+failing module on error.
+
+=head2 _fire_role_hook
+
+Private. Fires a L<Test2::Harness2::Role::Preload> lifecycle hook on
+the consumer class (if any). Exceptions warn but do not propagate.
+
+=head2 _require_module
+
+Private. Thin wrapper around C<require> that uses
+L<Test2::Harness2::Util/mod2file>.
+
+=head2 service_on_start
+
+Called by Role::Service after the pgroup / subreaper /
+C<service_started> steps. Adds the parent pid to C<watch_pids>, runs
+L</do_preload>, instantiates the reloader, and sends C<preload_ready>
+to the harness.
+
+=head2 _instantiate_reloader
+
+Private. Builds a reloader instance from C<reloader_class> +
+C<reloader_args>. Failure is non-fatal (preload still works without
+hot reload).
+
+=head2 run_on_interval
+
+Per-tick callback from IPC::Manager. Drives the reloader's
+C<do_reload> and emits C<preload_broken> / C<preload_ready> on edge
+transitions only.
+
+=head2 _send_preload_state
+
+Private. Sends a preload-state message (C<preload_broken>,
+C<preload_ready>, etc.) to the harness with the standard
+preload_name/scope/run_id identification.
+
+=head2 restartable
+
+Returns true. Preloads are stateless and replaceable; the harness's
+restart-spiral cap in
+L<Test2::Harness2::Role::ResourceServiceHost> handles permanent
+failure.
+
+=head2 run_returns_to_caller
+
+Returns true. Tells L<IPC::Manager::Service::State> to return rather
+than exit when L</run> returns, so the boot perl's C<-e> snippet can
+resume parsing under the source filter installed by L</run>.
+
+=head2 run_should_end
+
+Returns true once C<state> is C<terminating>. Drives loop exit after
+a Role::Service C<terminate> request.
+
+=head2 run
+
+Overrides L<Test2::Harness2::Role::Service/run> to install a
+L<Long::Jump> C<preload_spawn> setjump anchor around the IPC loop.
+Dispatches the post-longjump payload by kind (C<spawn_test>,
+C<spawn_service>, C<spawn_script>) and, for C<spawn_test>, hands the
+test path to L<goto::file> so the surviving perl continues as if it
+had been invoked with the test file directly.
+
+=head2 run_on_general_message
+
+Async dispatch entry point for harness messages. Routes by C<kind>
+to L</request_handler_spawn_test>, L</request_handler_spawn_service>,
+or L</request_handler_spawn_script>.
+
+=head2 request_handler_spawn_test
+
+IPC handler for C<spawn_test>. Fires the C<pre_fork> role hook and
+delegates to L</_collector_spawn_test>. See the source for the full
+nine-step launch sequence (harness -> Collector -> grandchild ->
+longjump -> goto::file -> test runs in C<main>).
+
+=head2 _collector_spawn_test
+
+Private. Calls L<Test2::Harness2::Collector/spawn> with a
+C<launch_callback> (L</_test_grandchild_launch>) and an optional
+C<post_fork_callback> for role consumers.
+
+=head2 _test_grandchild_launch
+
+Private. Test-grandchild body invoked from the Collector's
+C<launch_callback>. Applies env, resets process and Test2 state
+(L</_reset_process_state>, L</_reset_test2_state>), pre-loads
+L<Test2::Formatter::Stream2>, fires the C<pre_launch> role hook,
+then longjumps C<preload_spawn> with the test path.
+
+=head2 _reset_process_state
+
+Private. Clears C<@ARGV>, reseeds C<srand>, and reinitializes
+L<FindBin> and L<Getopt::Long>.
+
+=head2 _reset_test2_state
+
+Private. Calls C<test2_post_preload_reset>, clears the hub stack,
+and zeroes the lingering C<exit_callbacks>, C<post_load_callbacks>,
+context callbacks, and C<formatter> on the cached C<$Test2::API::INST>.
+
+=head2 request_handler_spawn_service
+
+IPC handler for C<spawn_service>. Validates payload, double-forks to
+orphan the grandchild off this preload, then longjumps
+C<preload_spawn> with C<kind=spawn_service>. The grandchild resumes
+in L</_post_jump_spawn_service>.
+
+=head2 request_handler_reload
+
+Synchronous handler for C<reload>. Drives one tick of the configured
+reloader (no-op success if no reloader is configured) and returns
+C<< {ok => 1} >> or C<< {ok => 0, error => ...} >>.
+
+=head2 _post_jump_spawn_service
+
+Private. Grandchild post-longjump body for C<spawn_service>. Loads
+the resource service class, constructs it under a fresh IPC peer
+name, materializes the client, sends C<resource_service_started> to
+the harness, and enters the new service's run loop.
+
+=head2 request_handler_spawn_script
+
+IPC handler for C<spawn_script>. Validates payload, double-forks,
+then longjumps C<preload_spawn> with C<kind=spawn_script>. The
+grandchild resumes in L</_post_jump_spawn_script>.
+
+=head2 _post_jump_spawn_script
+
+Private. Grandchild post-longjump body for C<spawn_script>.
+Installs CLI-passed FDs via L</_spawn_script_install_fds>, chdirs,
+swaps C<%ENV>, notifies the harness via
+L</_spawn_script_notify_harness>, then runs the script via
+L</_spawn_script_run>.
+
+=head2 _spawn_script_install_fds
+
+Private. Connects to the CLI's SCM_RIGHTS socket, receives three FDs
+via L<App::Yath2::Spawn::FdPass>, and C<dup2>s them over
+STDIN/STDOUT/STDERR.
+
+=head2 _spawn_script_notify_harness
+
+Private. Opens a fresh non-listening IPC client (the inherited one's
+C<pid_check> is bound to the parent pid) and sends C<script_spawned>
+to the harness.
+
+=head2 _spawn_script_run
+
+Private. Runs the script via C<do $script_abs>, distinguishing
+runtime C<die>, missing-file, and clean exits. Returns the intended
+process exit code.
+
 =head1 SOURCE
 
 L<https://github.com/Test-More/Test2-Harness>

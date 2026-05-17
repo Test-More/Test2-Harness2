@@ -407,6 +407,17 @@ True when C<conflicts_list> is non-empty.
 
 True when the file at L</absolute> has the executable bit set.
 
+=item $arrayref = $tf->preload_preferences
+
+Ordered list of preload-name tokens describing which preload services
+this test file is willing to run under. Default: C<['<default>']>
+(use the harness's default preload for the file's stage). The
+tokens C<'<default>'> and C<'<no>'> are reserved: C<'<default>'>
+defers to the harness's default selection, C<'<no>'> means "run
+without any preload"; any other string names a specific preload
+service. Producer-side scanners (C<App::Yath2::TestFile>) translate
+the C<HARNESS2: preload> directive into this list.
+
 =item @values = $tf->meta_get($key)
 
 Returns the list of values stored under C<$key> in the C<meta>

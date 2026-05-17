@@ -120,6 +120,14 @@ sub run {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). Return
+constants describing this command's behavior. All return false: abort is a
+short-lived client that only talks to an existing daemon.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

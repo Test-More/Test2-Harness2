@@ -808,6 +808,40 @@ was something else.
 
 =back
 
+=head2 Private helpers
+
+=over 4
+
+=item _record_known_preload_names
+
+Precompute the set of L<Test2::Harness2::Resource::Preload> service
+names in the batch so dependents whose preferred preload is coming
+up later in the same batch can enqueue against it instead of falling
+back to a standalone spawn. No-op on hosts that do not carry the
+C<known_preload_names> slot.
+
+=item _build_service_plan
+
+Walk the resources once and produce the validated service plan
+(C<{ resource, class, args, name, log_path }> entries). Croaks on
+malformed entries, missing names, in-batch collisions, or cross-scope
+name collisions before any service is spawned.
+
+=item _ipcm_service_standalone
+
+Fall-through spawn path used when no live preload service is
+available. Calls L<IPC::Manager/ipcm_service> directly, marks the
+resource permanent_broken on construction or ready-timeout failure,
+and otherwise hands the resulting pid to L</track_resource_service>.
+
+=item _ctor_args_to_hash
+
+Normalise a positional C<[k, v, k, v, ...]> args arrayref into a
+hashref the preload-side ctor can splat. Returns C<{}> for any
+shape it cannot make sense of.
+
+=back
+
 =head1 SERVICE CONTRACT
 
 See L<Test2::Harness2::Role::Resource/SERVICES> for the full

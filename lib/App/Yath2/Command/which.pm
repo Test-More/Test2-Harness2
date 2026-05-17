@@ -148,6 +148,24 @@ sub _jsonable {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: which only reads IPC info files and prints them.
+
+=head2 _collect
+
+Return the IPC info records matching the user's selectors (C<--all>,
+C<--workdir>, C<--latest>), printing friendly diagnostics to STDERR on
+not-found and returning the empty list.
+
+=head2 _jsonable
+
+Shallow-copy an IPC info record and drop internal C<_>-prefixed keys so the
+JSON output matches the on-disk IPC info file.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

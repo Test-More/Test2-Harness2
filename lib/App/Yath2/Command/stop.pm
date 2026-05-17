@@ -174,6 +174,24 @@ sub _stop_one {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: stop is a graceful-shutdown client with no harness machinery of its own.
+
+=head2 _collect_targets
+
+Resolve the set of daemon IPC info records to stop. Honors C<--all>,
+C<--workdir>, and C<--latest> via L<App::Yath2::Util::IPC/discover_daemons>.
+
+=head2 _stop_one
+
+Send an in-bus terminate to one daemon (falling back to SIGTERM on bus
+failure), wait up to C<--timeout> seconds for it to exit, and clean up the IPC
+info file once the pid is gone.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

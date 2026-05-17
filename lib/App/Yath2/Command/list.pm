@@ -109,6 +109,18 @@ sub _fmt_stamp {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: list only scans IPC info files, no harness machinery is needed.
+
+=head2 _fmt_stamp
+
+Format an epoch timestamp as C<YYYY-MM-DD HH:MM:SS> in local time, or C<?>
+when the value is missing/invalid.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

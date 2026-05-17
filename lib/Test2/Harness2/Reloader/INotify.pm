@@ -217,6 +217,46 @@ C<[ project_root ]>.
 
 =back
 
+=head1 METHODS
+
+=over 4
+
+=item $rel->init
+
+L<Object::HashBase> hook: chains C<SUPER::init>, requires
+L<Linux::Inotify2>, defaults C<watch_paths> to C<[ project_root ]>,
+opens a non-blocking inotify descriptor, and recursively watches each
+directory with C<IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO>.
+
+=item $rel->do_reload($svc)
+
+One reloader tick. Drains queued inotify events and reloads each
+affected candidate file. Satisfies
+L<Test2::Harness2::Role::Reloader>.
+
+=item @events = $rel->_drain_events
+
+Private. Non-blocking C<poll()> on the inotify descriptor; returns
+(and clears) the events buffered by the watch callback.
+
+=item @abs = $rel->_candidates_from_events(\@events)
+
+Private. Filters the event batch to C<.pm>/C<.t> files live in C<%INC>
+under C<project_root>, de-duped.
+
+=item $rel->_reload_changed($svc, \@files)
+
+=item $rel->_reload_one($svc, $abs)
+
+Private. C<_reload_changed> honors
+L<debounce_secs|Test2::Harness2::Role::Reloader/debounce_secs> and
+delegates per-file work to C<_reload_one>, which calls
+C<before_reload>, attempts
+L<_attempt_in_place_reload|Test2::Harness2::Reloader::Common>
+with a churn fallback, and fires C<after_reload>.
+
+=back
+
 =head1 SEE ALSO
 
 L<Test2::Harness2::Reloader::Common>, L<Test2::Harness2::Role::Reloader>,

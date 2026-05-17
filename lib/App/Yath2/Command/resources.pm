@@ -159,6 +159,18 @@ sub _render {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: this command only reads a status snapshot from a running daemon.
+
+=head2 _render
+
+Print the resources block (and any services block) from one daemon status
+snapshot. Each resource is shown as C<name key=value ...>.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

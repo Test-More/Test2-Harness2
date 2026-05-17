@@ -121,4 +121,33 @@ success; C<$err> carries the load error otherwise.
 
 =back
 
+=head1 METHODS
+
+=over 4
+
+=item $arrayref = $rel->watch_paths
+
+B<Required.> Consumers must provide this. Returns an arrayref of
+absolute directories the reloader monitors.
+
+=item $rel->do_reload($svc)
+
+B<Required.> Consumers must provide this. Drives one reloader tick
+from the PreloadService's per-interval hook.
+
+=item $secs = $rel->debounce_secs
+
+Floor on the interval between two consecutive reloads. Default
+C<0.25>; override in the consumer to tune.
+
+=item $rel->before_reload($svc, $file)
+
+=item $rel->after_reload($svc, $file, $ok, $err)
+
+Hooks fired around each in-place reload attempt. Default no-ops;
+override in the consumer to emit service events, mutate state, or
+react to failures.
+
+=back
+
 =cut

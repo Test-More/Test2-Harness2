@@ -370,6 +370,56 @@ sub _finalize_after_renderer_exit {
 
 __END__
 
+=head1 METHODS
+
+=head2 _collect_test_files
+
+Walk the positional arguments, expanding directories with L<File::Find> for
+C<.t> / C<.t2> files and wrapping each match in an L<App::Yath2::TestFile>.
+
+=head2 _queue_run
+
+Submit the collected test files to the daemon via
+L<Test2::Harness2::Spawn/queue_test_run>, including any per-run resource
+recipe, and return the assigned run_id.
+
+=head2 _build_resource_specs
+
+Build the serializable per-run resource recipe. Only Resource::Preload entries
+with C<scope='run'> are shipped; global resources are owned by the daemon.
+
+=head2 _spawn_renderer
+
+Fork an L<App::Yath2::Renderer::Driver> child bound to this run's id via
+C<stop_run_id> so it exits naturally at end-of-run.
+
+=head2 _reap_renderer
+
+Wait for the renderer child to exit and return its exit status (0 on
+success, nonzero on log-side failure).
+
+=head2 _drive_ipc_loop
+
+Main client loop: poll the IPC bus, drain state broadcasts, fall back to
+C<run_results> polling, and watch for the daemon or renderer disappearing
+before end-of-run. Returns the IPC-side pass/fail bit.
+
+=head2 _drain_state_messages
+
+Pull pending bus messages and update C<ipc_pass> and C<seen_run_end> from
+run-state broadcasts.
+
+=head2 _poll_run_results
+
+Twice-a-second authoritative poll for runs that completed before our
+subscription took effect; sets C<seen_run_end> + C<ipc_pass> from
+L<Test2::Harness2::Spawn/run_results>.
+
+=head2 _finalize_after_renderer_exit
+
+When the renderer exits first, take one final C<run_results> poll so pass/fail
+never silently defaults to success.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

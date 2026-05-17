@@ -220,6 +220,45 @@ is expected to call C<do_reload> on this cadence.
 
 =back
 
+=head1 METHODS
+
+=over 4
+
+=item $rel->init
+
+L<Object::HashBase> hook: chains C<SUPER::init>, defaults
+C<watch_paths> to C<[ project_root ]>, sets C<poll_interval_secs> to
+C<0.25>, and validates C<watch_paths> is an arrayref.
+
+=item $rel->do_reload($svc)
+
+One reloader tick. Walks C<watch_paths>, snapshots mtimes on the first
+call, and on subsequent calls reloads each candidate whose mtime has
+moved. Satisfies L<Test2::Harness2::Role::Reloader>.
+
+=item @abs = $rel->_scan_candidates
+
+Private. Walks C<watch_paths> for C<.pm>/C<.t> files whose absolute
+path is also live in C<%INC> under C<project_root>.
+
+=item $rel->_snapshot_mtimes(\@files)
+
+Private. Caches the current mtime for each file (used to seed state on
+the first tick).
+
+=item $rel->_reload_changed($svc, \@files)
+
+=item $rel->_reload_one($svc, $abs, $mtime)
+
+Private. C<_reload_changed> stats each candidate, honors
+L<debounce_secs|Test2::Harness2::Role::Reloader/debounce_secs>, and
+delegates per-file work to C<_reload_one>, which calls
+C<before_reload>, attempts
+L<_attempt_in_place_reload|Test2::Harness2::Reloader::Common>
+with a churn fallback, and fires C<after_reload>.
+
+=back
+
 =head1 SEE ALSO
 
 L<Test2::Harness2::Reloader::Common>, L<Test2::Harness2::Role::Reloader>.

@@ -163,6 +163,29 @@ sub _reload_broadcast {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: reload only nudges existing preload services on a running daemon.
+
+=head2 _fetch_preload_peers
+
+Ask the daemon for the list of global-scope preload services via a
+C<list_preloads> request. Dies on bus-level failure.
+
+=head2 _reload_sync
+
+Send a synchronous reload request to one preload peer via
+L<IPC::Manager::Handle/sync_request> and print the peer's pass/fail/no-op
+status line.
+
+=head2 _reload_broadcast
+
+Fire-and-forget reload via L<Test2::Harness2::Spawn/broadcast_message>; prints
+a "reload queued" line without waiting for the peer to finish.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

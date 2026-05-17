@@ -649,6 +649,33 @@ test file's env (test file wins per key); splices in C<queue_args>
 and C<%inject>. Dies if the test file's C<run> feature is set to a
 falsy value.
 
+=item $arrayref = $tf->preload_preferences
+
+Scanner-aware accessor for the file's preload preference list. Calls
+C<scan> first; returns C<['<default>']> when no preference was
+declared. See L<Test2::Harness2::Role::TestFile/preload_preferences>
+for the value semantics.
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _apply_directives
+
+Map the C<Test2::Harness2::Util::Directives> parser output into the
+appropriate HashBase slots (slots, duration, category, stage,
+conflicts, preload, feature, timeout, retry, meta).
+
+=item _xlate_preload_list
+
+Translate the directive parser's preload value list into the internal
+preference tokens (C<'default'> -E<gt> C<'<default>'>, C<0> -E<gt>
+C<'<no>'>, anything else passes through), and drop a trailing C<'<no>'>
+that immediately follows C<'<default>'> (the default token already
+implies the same fallback).
+
 =back
 
 =head1 SOURCE

@@ -449,4 +449,103 @@ App::Yath2::Util::IPC - IPC info file helpers
 
 Helpers for writing, reading, and discovering yath IPC info files.
 
+=head1 METHODS
+
+=over 4
+
+=item $name = resolve_ipc_filename(project => ..., user => ..., command => ..., stamp => ..., pid => ...)
+
+Build the C<${project}-${user}-${command}-${stamp}-yath-${pid}-ipc.json>
+filename used for IPC info files. All arguments required.
+
+=item ($dir, $is_tempdir) = resolve_ipc_dir($settings)
+
+Pick the first writable directory from the settings' explicit
+C<ipc->dir> or, failing that, the C<ipc->dir_order> symbol chain.
+Returns the directory and a boolean flag indicating whether the
+chosen entry was the system tempdir.
+
+=item @paths = resolve_dir_order_paths($settings, \@symbols)
+
+Materialise the full ordered list of directories implied by the
+C<--ipc-dir-order> symbol list (C<cwd>, C<tempdir>, C<user_rc>,
+C<project_rc>, or a raw path). Used by scan-style consumers.
+
+=item $path = write_ipc_file($path, \%data)
+
+Atomically serialise C<%data> as JSON and write it at C<$path> with
+owner-only (0600) permissions.
+
+=item $path = publish_ipc_file(command => ..., settings => ..., spawn => ..., workdir => ...)
+
+Producer-side entry point used after a yath command spawns a harness
+service. Resolves the on-disk path (explicit C<--ipc-file> wins),
+builds the JSON payload from the supplied L<Test2::Harness2::Spawn>
+handle, and writes it via L</write_ipc_file>. Returns the path so the
+caller can register a cleanup guard.
+
+=item \%data = read_ipc_file($path)
+
+Slurp and JSON-decode an IPC info file. Croaks on I/O or parse error.
+
+=item unlink_ipc_file($path, $expect_pid?)
+
+Remove an IPC info file. When C<$expect_pid> is supplied, the unlink
+is skipped unless the current process matches (prevents forked
+children from cleaning up parent-owned guards).
+
+=item \@records = find_ipc_files(dirs => \@dirs, command => ..., host => ..., live => 1)
+
+Scan each directory for filenames matching the IPC info file regex,
+read and filter the records (by command name, hostname, liveness),
+prune stale entries whose pid is no longer running on the local
+host, and return a list sorted newest-first by C<created_at>.
+
+=item $record_or_arrayref = discover_daemons(settings => ..., %opts)
+
+Shared resolution used by C<yath run> / C<stop> / C<kill> / C<status>
+/ C<list>. Dispatches to one of the L</_discover_by_explicit_ipc_file>,
+L</_discover_by_workdir>, or L</_discover_by_auto> helpers depending
+on the option mix; honors C<count =E<gt> 'one'|'all'|'any'> and the
+C<latest> / C<all> flags. Croaks with a user-readable message on
+missing or ambiguous matches.
+
+=item assert_daemon_alive(\%info)
+
+Sanity-check an IPC info record: croak when its harness pid is
+missing or no longer running. Used by every daemon-targeting command
+so users see one consistent stale-daemon diagnostic.
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _discover_by_explicit_ipc_file
+
+Branch of L</discover_daemons> for an explicit C<--ipc-file> path or
+the C<settings->ipc->file> setting.
+
+=item _discover_by_workdir
+
+Branch of L</discover_daemons> for the C<--workdir> case.
+
+=item _discover_by_auto
+
+Branch of L</discover_daemons> for the auto-discovery case (no
+explicit file or workdir).
+
+=item _scan_ipc_records
+
+Collect IPC info records from the resolved primary directory plus
+the C<--ipc-dir-order> chain, optionally filtered by command.
+
+=item _filter_by_project_user
+
+Filter a record list by project + user, defaulting both from settings
+(pass an explicit value to override, pass C<''> to disable a filter).
+
+=back
+
 =cut

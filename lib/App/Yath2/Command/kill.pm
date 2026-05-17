@@ -148,6 +148,19 @@ sub _collect_targets {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: kill is a signal-sender that needs no plugins, resources, renderers, or
+test arguments.
+
+=head2 _collect_targets
+
+Resolve the set of daemon IPC info records to signal. Honors C<--all>,
+C<--workdir>, and C<--latest> via L<App::Yath2::Util::IPC/discover_daemons>.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

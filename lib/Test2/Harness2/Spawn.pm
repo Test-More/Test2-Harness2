@@ -360,6 +360,14 @@ Ask the service to finish after its current queue drains.
 
 Send a hard-stop C<Terminate> request and wait for the service to exit.
 
+=item $res = $spawn->spawn_script($payload)
+
+Send a C<spawn_script> request to the harness service and return the
+response. The C<$payload> is a hashref of arguments the spawn service
+recognises (script path, args, env, etc.); the harness forks a worker
+to run the script and the response carries the assigned job/run
+identifiers.
+
 =item $spawn->broadcast_message($peer, $payload)
 
 Send a one-way message to the named peer on the harness's IPC bus. No

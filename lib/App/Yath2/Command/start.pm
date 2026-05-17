@@ -284,6 +284,40 @@ sub _spawn_ipc_watchdog {
 
 __END__
 
+=head1 METHODS
+
+=head2 _publish_ipc_or_die
+
+Publish the IPC info file via L<App::Yath2::Util::IPC/publish_ipc_file>. On
+failure, terminate and reap the just-spawned harness before rethrowing so we
+do not orphan it.
+
+=head2 _detach_into_daemon
+
+Print the startup breadcrumb, fork the IPC watchdog, clear the Spawn destroy
+hook, and C<POSIX::_exit> so Perl teardown does not unwind scope guards that
+own workdir contents now belonging to the daemon.
+
+=head2 _spawn_harness
+
+Build the resource list and fork the harness via L<Test2::Harness2/spawn> with
+C<watch_pids =E<gt> []> so the daemon outlives its parent.
+
+=head2 _build_resources
+
+Instantiate the resource classes from C<--resource> options and append a
+L<Test2::Harness2::Resource::Preload> for each C<-P> / C<--preload> module.
+
+=head2 _run_foreground
+
+Stay attached: forward INT/TERM/HUP to the harness, wait for it to exit, then
+unlink the published IPC info file regardless of how we leave.
+
+=head2 _spawn_ipc_watchdog
+
+Fork a detached child that polls the harness pid and unlinks the IPC info
+file once the harness exits, so the breadcrumb does not outlive its daemon.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

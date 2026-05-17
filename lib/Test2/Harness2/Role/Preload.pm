@@ -171,4 +171,42 @@ hands control to the test file.
 
 =back
 
+=head1 METHODS
+
+=over 4
+
+=item $name = Consumer->name
+
+B<Required.> Consumers must provide this. Class method returning the
+string identifier used as the preload service / resource name and
+exposed via C<preload_name> in service_started fields.
+
+=item $arrayref = $self->modules
+
+Returns the modules loaded sequentially by the default C<do_preload>.
+Default is an empty arrayref; override in the consumer.
+
+=item $self->do_preload($svc)
+
+Runs in the long-lived preload service process to perform the initial
+load. Default C<require>s each entry from C<modules()> and croaks with
+a diagnostic naming the preload on failure. Override to bootstrap
+state that simple C<require> cannot express.
+
+=item $self->pre_fork($svc, $payload)
+
+=item $self->post_fork($svc, $payload)
+
+=item $self->pre_launch($svc, $payload)
+
+Default-no-op spawn-pipeline hooks; override in the consumer as
+needed. C<pre_fork> runs in the preload service process before the
+spawn fork; C<post_fork> runs in the soon-to-exit intermediate child
+(keep cheap); C<pre_launch> runs in the test grandchild immediately
+before control transfers to the test file. C<$svc> is the live
+PreloadService; C<$payload> is the spawn request payload
+(C<test_file_abs>, C<run_id>, C<job_id>, C<env>, ...).
+
+=back
+
 =cut

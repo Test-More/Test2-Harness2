@@ -4,6 +4,41 @@ use warnings;
 
 our $VERSION = '2.000013';
 
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2::Util::Directives - Parser for C<HARNESS2:> in-file directives.
+
+=head1 SYNOPSIS
+
+    my $p = Test2::Harness2::Util::Directives->new(comments => ['#', '//']);
+    my $result = $p->parse_file('t/some_test.t');
+    # OR
+    my $result = Test2::Harness2::Util::Directives->parse_file(
+        't/some_test.t', comments => ['#'],
+    );
+
+=head1 DESCRIPTION
+
+Recognises lines matching C<< <comment> HARNESS2: <key> <values>... >>
+and accumulates them into a nested hash. Supports block form (C<key {>
+... C<key }>), boolean sigils (C<@on>/C<@off>/C<@yes>/C<@no>/C<@true>/C<@false>),
+the C<@default> sigil (expands per-key from C<%DEFAULTS>), dotted keys
+(folded into a subtree), and quoted values.
+
+=head1 METHODS
+
+=head2 new(comments => \@strings)
+
+Constructs a parser that recognises directive lines beginning with
+any of the supplied comment leaders (e.g. C<['#']>, C<['#', '//']>).
+Croaks on missing/empty/non-string comment entries.
+
+=cut
+
 use Carp qw/croak/;
 
 my %SIGIL_TRUE  = map { $_ => 1 } qw/@on @true @yes/;
@@ -39,6 +74,13 @@ sub new {
     }, $class;
 }
 
+=head2 parse_file($path, %ctor_args)
+
+Class or instance method. Opens C<$path> and feeds it through
+L</parse_fh>. Returns the L</finish> result.
+
+=cut
+
 sub parse_file {
     my ($invocant, $path, %args) = @_;
     open my $fh, '<', $path or croak "open '$path': $!";
@@ -46,6 +88,14 @@ sub parse_file {
     close $fh;
     return $h;
 }
+
+=head2 parse_fh($fh, %ctor_args)
+
+Reads from an open filehandle line by line via L</parse_line> and
+returns the L</finish> result. When called as a class method,
+constructs a fresh parser from C<%ctor_args> first.
+
+=cut
 
 sub parse_fh {
     my ($invocant, $fh, %args) = @_;
@@ -57,6 +107,12 @@ sub parse_fh {
     return $self->finish;
 }
 
+=head2 parse_string($text, %ctor_args)
+
+Like L</parse_fh> but reads from an in-memory string.
+
+=cut
+
 sub parse_string {
     my ($invocant, $text, %args) = @_;
     my $self = ref($invocant) ? $invocant : $invocant->new(%args);
@@ -65,6 +121,15 @@ sub parse_string {
     }
     return $self->finish;
 }
+
+=head2 parse_line($line)
+
+Feeds one line into the parser. Tracks line numbers internally for
+error messages. Croaks on an embedded newline. Dispatches to
+L</_parse_inside_block> when a block directive is open, otherwise
+to L</_parse_top_level>.
+
+=cut
 
 sub parse_line {
     my ($self, $line) = @_;
@@ -78,6 +143,15 @@ sub parse_line {
     return $self->_parse_inside_block($line) if $self->{open_block};
     return $self->_parse_top_level($line);
 }
+
+=head2 _parse_inside_block($line)
+
+Handles one line while a block directive is open: only the matching
+C<key }> closer is accepted, an unrelated directive croaks, and a
+stray C<key {> nests-and-croaks. Always returns when the close is
+consumed or the line is not a directive.
+
+=cut
 
 sub _parse_inside_block {
     my ($self, $line) = @_;
@@ -113,6 +187,14 @@ sub _parse_inside_block {
     croak "HARNESS2 directive inside block at line $self->{line_no} (block '$self->{open_block}{key}' is open)";
 }
 
+=head2 _parse_top_level($line)
+
+Top-level directive dispatch: opens a block on C<key {>, records
+each value via L</_record_value>, and croaks on a stray C<key }> /
+empty value list.
+
+=cut
+
 sub _parse_top_level {
     my ($self, $line) = @_;
 
@@ -147,6 +229,14 @@ sub _parse_top_level {
     return;
 }
 
+=head2 _record_value($key, $value)
+
+Stores one value under C<$key>. Bare values append as-is. Sigils
+(C<@on>/C<@off>/etc.) expand to booleans; C<@default> expands from
+C<%DEFAULTS>. Unknown sigils croak.
+
+=cut
+
 sub _record_value {
     my ($self, $key, $v) = @_;
 
@@ -170,6 +260,14 @@ sub _record_value {
     }
 }
 
+=head2 finish
+
+Closes the parser. Croaks if a block directive is still open at
+EOF, prunes empty subtrees, and returns the accumulated result
+hashref.
+
+=cut
+
 sub finish {
     my $self = shift;
 
@@ -181,6 +279,13 @@ sub finish {
     return $self->{result};
 }
 
+=head2 _find_brace_idx(\@tokens)
+
+Returns the index of the first C<{> or C<}> token in C<\@tokens>,
+or C<undef>.
+
+=cut
+
 sub _find_brace_idx {
     my ($self, $tokens) = @_;
     for my $i (0 .. $#$tokens) {
@@ -188,6 +293,14 @@ sub _find_brace_idx {
     }
     return undef;
 }
+
+=head2 _tokenize($rest)
+
+Splits the post-C<HARNESS2:> portion of a line into tokens. Honors
+double-quoted strings (with backslash escapes) and treats whitespace
+as the separator. Croaks on unterminated quotes.
+
+=cut
 
 sub _tokenize {
     my ($self, $rest) = @_;
@@ -239,6 +352,13 @@ sub _tokenize {
     return @out;
 }
 
+=head2 _validate_key($key)
+
+Croaks on an empty key or one that doesn't match
+C<< [a-z][a-z0-9_-]* (\.[a-z][a-z0-9_-]*)* >>.
+
+=cut
+
 sub _validate_key {
     my ($self, $key) = @_;
     croak "empty key at line $self->{line_no}"
@@ -246,6 +366,15 @@ sub _validate_key {
     croak "malformed key '$key' at line $self->{line_no}"
         unless $key =~ /\A[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\z/;
 }
+
+=head2 _append_value($key, $value)
+
+Pushes C<$value> onto the leaf arrayref at C<$key>, creating
+intermediate hash subtrees as needed. Croaks on collisions where a
+dotted path tries to traverse through a leaf or assign a leaf onto a
+subtree.
+
+=cut
 
 sub _append_value {
     my ($self, $key, $val) = @_;
@@ -280,6 +409,13 @@ sub _append_value {
     push @{$node->{$last}}, $val;
 }
 
+=head2 _prune($node)
+
+Recursively removes empty hash subtrees and empty leaf arrays from
+the result hash so callers do not see zero-content branches.
+
+=cut
+
 sub _prune {
     my ($self, $node) = @_;
     for my $k (keys %$node) {
@@ -295,3 +431,40 @@ sub _prune {
 }
 
 1;
+
+__END__
+
+=pod
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<https://dev.perl.org/licenses/>
+
+=cut
+

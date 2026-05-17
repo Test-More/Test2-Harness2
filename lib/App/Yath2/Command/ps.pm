@@ -216,6 +216,43 @@ sub _print_services {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: ps is a read-only daemon-status client.
+
+=head2 _discover
+
+Return an arrayref of IPC info records, either a single one when C<--workdir>
+is given or every match across the requested project/user scope.
+
+=head2 _alive_or_warn
+
+Wrap L<App::Yath2::Util::IPC/assert_daemon_alive> so unreachable daemons in
+multi-target mode only warn instead of aborting the whole listing.
+
+=head2 _fetch_status
+
+Open a L<Test2::Harness2::Spawn> handle and request a status snapshot. Failures
+in multi-target mode warn and skip; single-target failures rethrow.
+
+=head2 _print_daemon_block
+
+Print the per-daemon header line followed by the running-jobs and services
+sub-tables for one status snapshot.
+
+=head2 _print_running_jobs
+
+Render the in-flight job table (pid, run_id, job_id, test_file, age) via
+L<Term::Table>.
+
+=head2 _print_services
+
+Render the active-services table (pid, name, class, scope, via_preload) when
+the daemon reports any.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

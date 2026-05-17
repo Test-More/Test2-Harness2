@@ -4,6 +4,27 @@ use warnings;
 
 our $VERSION = '2.000013';
 
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+App::Yath2::Spawn::FdPass - SCM_RIGHTS file-descriptor passing over a Unix socket.
+
+=head1 DESCRIPTION
+
+Thin wrapper around L<Socket::MsgHdr> that ships a fixed list of file
+descriptors across a Unix-domain socket via C<SCM_RIGHTS> ancillary
+data. Used by L<App::Yath2::Spawn::Client> and the preload service's
+script-spawn grandchild to hand STDIN/STDOUT/STDERR across processes.
+
+=head1 EXPORTS
+
+C<send_fds>, C<recv_fds>.
+
+=cut
+
 use Carp qw/croak/;
 use Socket qw/SOL_SOCKET SCM_RIGHTS/;
 use Socket::MsgHdr ();
@@ -11,14 +32,16 @@ use Importer Importer => 'import';
 
 our @EXPORT_OK = qw/send_fds recv_fds/;
 
-# Send a list of file descriptors over a Unix-domain socket as a
-# SCM_RIGHTS ancillary message. The kernel duplicates each FD into
-# the receiver's FD table; the receiver gets fresh FD numbers pointing
-# at the same underlying file objects.
-#
-# A single byte of payload (\0) accompanies the ancillary data — most
-# kernels refuse to deliver an SCM_RIGHTS message with zero-length
-# normal data, so we always include a placeholder.
+=head2 send_fds($sock, \@fds)
+
+Sends each integer FD in C<\@fds> across the Unix socket as an
+C<SCM_RIGHTS> ancillary message. A single C<\0> payload byte
+accompanies the control data because most kernels refuse to deliver
+an SCM_RIGHTS message with zero-length normal data. The receiver
+sees fresh FD numbers pointing at the same underlying file objects.
+
+=cut
+
 sub send_fds {
     my ($sock, $fds) = @_;
     croak "send_fds: socket required"       unless defined $sock;
@@ -32,9 +55,15 @@ sub send_fds {
     return $sent;
 }
 
-# Receive $count file descriptors from a Unix-domain socket. Returns
-# an arrayref of integer FD numbers; the caller is responsible for
-# closing them (or dup2'ing them, then closing).
+=head2 recv_fds($sock, $count)
+
+Receives exactly C<$count> file descriptors from C<$sock>. Returns
+an arrayref of integer FD numbers. The caller owns each FD --
+C<dup2()> or C<close()> as needed. Croaks on short read, missing
+ancillary data, or descriptor-count mismatch.
+
+=cut
+
 sub recv_fds {
     my ($sock, $count) = @_;
     croak "recv_fds: socket required" unless defined $sock;
@@ -60,3 +89,39 @@ sub recv_fds {
 }
 
 1;
+
+__END__
+
+=pod
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<https://dev.perl.org/licenses/>
+
+=cut

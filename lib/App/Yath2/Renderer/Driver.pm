@@ -511,6 +511,67 @@ sealed-mode consumers (replay command) -- pass C<log =E<gt> $log>
 to use a pre-built backend, or C<logdir =E<gt> $dir> to open a
 live workdir.
 
+=head1 METHODS
+
+=over 4
+
+=item $exit = $class->run(%args)
+
+Entry point. Builds an L<App::Yath2::OutputManager>, opens the live
+or sealed log, runs the event loop, drains any pending synthesized
+events, and returns the exit code. C<settings> is required; one of
+C<log> or C<logdir> is required.
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _build_output_manager
+
+Construct the L<App::Yath2::OutputManager> and attach renderers via
+L<App::Yath2::Options::Renderer>.
+
+=item _event_loop
+
+Read events from the log, drain synthesized lifecycle events first,
+detect a stuck iterator via L</_check_stuck_iterator>, and exit on
+EOE / sealed drain / target-run completion.
+
+=item _handle_event
+
+Synthesize lifecycle facets from the on-disk event, then queue the
+event itself behind the synth for dispatch. Skips events whose
+run_id does not match C<stop_run_id> when targeting a single run.
+
+=item _check_stuck_iterator
+
+Detect a stuck iterator: when the harness pid is gone (or the LIVE
+sentinel disappeared) and EOE has not flipped, grant C<grace>
+seconds of quiescence then bail with a clear error. Returns true
+when the loop should exit.
+
+=item _event_run_id
+
+Extract a C<run_id> from an event by scanning the C<harness*>
+facets that carry one. Returns C<undef> when no facet identifies
+a run (e.g. C<service_started>); used to filter events for a
+specific run on a persistent daemon's log.
+
+=item _maybe_synthesize_lifecycle
+
+Inspect an on-disk event for a transition signal; on hit, push the
+corresponding lifecycle facets onto the synth queue, lazy-loading
+per-job spec / report artifacts via L</_job_spec> and L</_job_report>.
+
+=item _blessed_event / _job_spec / _job_report
+
+Internal helpers: ensure the event is a blessed L<Test2::Harness2::Event>,
+and lazily fetch cached per-job spec / report rows keyed by job_id+try.
+
+=back
+
 =head1 SOURCE
 
 L<https://github.com/Test-More/Test2-Harness>

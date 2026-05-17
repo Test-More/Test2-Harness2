@@ -92,6 +92,14 @@ sub run {
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / accepts_dot_args
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). Plugins,
+resources, and dot-args are all off; watch overrides C<load_renderers> to true
+because it drives L<App::Yath2::Renderer::Driver> against the daemon's log.
+
 =head1 POD IS AUTO-GENERATED
 
 =cut

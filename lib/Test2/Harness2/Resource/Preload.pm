@@ -278,4 +278,82 @@ cap exceeded; never cleared without a fresh harness invocation
 See AI_DOCS/2026-05-10-preload-rework-design.md sections 3, 4, and
 5 for the surrounding architecture.
 
+=head1 METHODS
+
+=head2 init
+
+Object::HashBase initializer. Validates C<name> and C<modules>,
+applies defaults for C<scope> and C<is_role_consumer>, and starts
+out not-yet-usable. Allows C<scope='run'> without a bound C<run>
+so the harness can rehydrate per-run preload specs over IPC; the
+Run is attached later via L</set_run>.
+
+=head2 set_run
+
+Binds a L<Test2::Harness2::Run> object after construction. Only
+valid for C<scope='run'>; the harness calls this before the
+scheduler consults L</services> or L</status>.
+
+=head2 resource_name
+
+Returns C<"preload:NAME">.
+
+=head2 inline_key_prefixes
+
+Returns the inline-key prefixes accepted by L</parse_options>
+(C<from>, C<scope>) for the C<-R> CLI shape.
+
+=head2 parse_options
+
+CLI option parser. Accepts C<name=>, C<from=> (mapped to
+C<preferred_preload>), C<scope=>, and recognised kwargs from the
+internal C<%OPTION_KEYS> set. Croaks on undef / ref / unknown
+positional entries.
+
+=head2 needed
+
+Returns 0. Routing lives in the harness's
+C<_resolve_preload_for_job>; the scheduler injects the resolved
+Resource::Preload alongside the rest of the assigned resources
+rather than picking one itself.
+
+=head2 available
+
+Returns 1. The yes/no decision is "is the service ready" (see
+L</is_usable>); there is no slot accounting.
+
+=head2 assign / release
+
+Pure markers. Both return 1 and set no env vars; assignment is
+routing, not slot consumption.
+
+=head2 status
+
+Returns a hashref of the resource's identity and current flags
+(C<name>, C<scope>, C<usable>, C<broken>, C<permanent_broken>,
+C<is_role_consumer>, C<modules>, and C<run_id> when applicable).
+
+=head2 is_usable
+
+Overrides the role default. Returns false while C<broken> or
+C<permanent_broken>, or until the service has signalled
+preload_ready (C<_usable> set).
+
+=head2 mark_ready / mark_unusable / mark_broken / mark_permanent_broken / mark_paused / mark_resumed
+
+State transitions driven by the harness in response to C<preload_*>
+IPC events. C<mark_ready> is the only way out of transient
+C<broken>; C<mark_permanent_broken> is sticky. C<mark_paused> /
+C<mark_resumed> are no-ops because preloads do not participate in
+pause semantics.
+
+=head2 services
+
+Returns the spawn recipe for the PreloadService. Builds a fresh
+C<perl> invocation with C<@INC> propagated as C<-I> flags and
+C<stay_in_begin=1> so L<IPC::Manager::Service::State>'s C<import>
+runs the service loop synchronously at BEGIN time of the spawned
+C<-e> snippet -- the only state in which L<goto::file> can usefully
+install a source filter from inside L<Test2::Harness2::PreloadService/run>.
+
 =cut

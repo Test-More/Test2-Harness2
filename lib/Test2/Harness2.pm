@@ -3593,6 +3593,214 @@ execution anywhere unintended.
 If C<jump_to> is set but no matching setjump is active, C<start()> croaks
 before forking. Without C<jump_to>, C<start()> behaves exactly as before.
 
+=head1 METHODS
+
+This section documents the internal subroutines added by the preload-as-resource
+rework. Most are (internal) helpers invoked by the IPC service loop, the
+scheduler, or the various C<request_handler_*> entry points. They are listed
+here so the implementation reads coherently, not because external callers should
+invoke them.
+
+=head2 Preload resolution
+
+=head2 _resolve_preload_for_job
+
+(internal) For C<($run, $job)>, walks the job's C<preload_preferences> against
+the per-run preload index and returns C<($resource, $kind, $extra)>. C<$kind>
+is one of C<no_preload>, C<preload>, C<defer>, or C<broken>.
+
+=head2 _index_preloads_for_run
+
+(internal) Builds C<{ by_global, by_run, global_default, run_default }> for a
+run, picking out L<Test2::Harness2::Resource::Preload> instances visible to it.
+
+=head2 _classify_preload_state
+
+(internal) Maps a L<Test2::Harness2::Resource::Preload> to one of
+C<permanent>, C<usable>, or C<defer>.
+
+=head2 Run setup
+
+=head2 _validate_run_hash_seed
+
+(internal) Returns an error string if the run's C<--set-hash-seed> conflicts
+with the harness's, or C<undef> when compatible.
+
+=head2 _rehydrate_run_resources
+
+(internal) Constructs per-run L<Test2::Harness2::Resource> instances from the
+IPC-recipe form C<[ [class, @ctor_args], ... ]>. Returns C<(1, \@instances)>
+on success or C<(0, $error)> on failure.
+
+=head2 Request handlers
+
+=head2 request_handler_list_preloads
+
+Returns C<{ ok =E<gt> 1, preloads =E<gt> \@list }> describing every live,
+global-scope L<Test2::Harness2::PreloadService>. Used by C<yath ps> /
+C<yath spawn>.
+
+=head2 request_handler_abort_run
+
+Latches a C<user_abort> reason onto one run (C<run_id>) or all runs (C<all>).
+Pending jobs flow through the existing unavailable-action path; running jobs
+are left alone.
+
+=head2 request_handler_spawn_script
+
+Handles C<yath spawn>: resolves the requested preload stage, asserts the IPC
+transport carries SCM_RIGHTS, and forwards the script's exec payload to the
+matching L<Test2::Harness2::PreloadService>. Returns
+C<{ ok =E<gt> 1, mode =E<gt> 'preload', spawn_id =E<gt> N }> or an error hash.
+
+=head2 IPC message handlers
+
+=head2 _handle_preload_state_message
+
+(internal) Applies C<preload_ready> / C<preload_broken> messages to the
+matching L<Test2::Harness2::Resource::Preload>, then drains or falls back any
+dependent resource services queued under L</_drain_resources_awaiting_preload>
+/ L</_fallback_resources_awaiting_preload>.
+
+=head2 _handle_test_collector_exit
+
+(internal) Bridges a reaped test-collector pid to the run service. Either
+forgets the pid (when the run service has already accepted completion) or
+records a pending synthetic completion the watchdog can flush.
+
+=head2 _handle_script_spawn_exit
+
+(internal) Handles reap of a C<yath spawn> grandchild. Either dispatches
+C<script_exited> immediately, or stashes the raw exit when C<script_spawned>
+hasn't been seen yet (raced ahead of L</_handle_script_spawned>).
+
+=head2 _handle_script_spawned
+
+(internal) Records the grandchild pid sent by the preload service after it
+forked the script, and drains any race-stashed exit from
+L</_handle_script_spawn_exit>.
+
+=head2 _handle_resource_service_started
+
+(internal) Finalizes a preload-mediated resource spawn: registers the new pid
+under the bus peer name and emits C<resource_spawn_via_preload>.
+
+=head2 Scheduler
+
+=head2 _scheduler_mark_pending
+
+(internal) Pushes C<$job_id> back into the run's pending queue and clears it
+from C<running>, used when a deferred / timed-out launch needs to be retried.
+
+=head2 _dispatch_pending_job
+
+(internal) Per-job dispatch decision used by C<_try_launch_next_pending>.
+Combines the run-aborted short-circuit, the preload resolver, and the generic
+resource evaluator, returning C<'launched'>, C<'defer'>, or C<'skipped'>.
+
+=head2 Launch helpers
+
+=head2 _announce_run_started_if_first
+
+(internal) Emits the one-shot C<run_started> service event and stamps
+C<started_at> the first time a run actually launches a job.
+
+=head2 _build_launch_env
+
+(internal) Builds the base C<%env> for a launched test child: forwards
+C<T2_HARNESS_INCLUDES> and propagates the run's hash seed via
+C<PERL_HASH_SEED>.
+
+=head2 _launch_collector_inline
+
+(internal) Direct (no-preload) launch path. Spawns the collector via
+L</_spawn_collector_for_job>, registers the C<RUNNING_JOBS> entry, bumps
+in-flight bookkeeping, and records the collector pid under the run.
+
+=head2 _spawn_via_preload
+
+(internal) Async test-job launch through a preload service. Registers a
+placeholder C<RUNNING_JOBS> entry, sends the C<spawn_test> payload, and arms
+the timeout watchdog (see L</_age_pending_spawn_requests>).
+
+=head2 _register_pending_preload_spawn / _build_spawn_test_payload
+
+(internal) Helpers for L</_spawn_via_preload>: the first installs the
+placeholder and tracking row, the second builds the C<spawn_test> payload sent
+to the preload bus peer.
+
+=head2 _age_pending_spawn_requests
+
+(internal) Per-tick watchdog for in-flight C<spawn_test> requests. Times out
+stale entries, flips the preload to transient broken, releases held resources,
+and returns the job to pending.
+
+=head2 Preload / resource peer naming
+
+=head2 _preload_peer_name / _resource_peer_name
+
+(internal) Deterministic bus names for L<Test2::Harness2::PreloadService>
+peers and preload-spawned resource services. Global scope yields
+C<preload-NAME> / C<resource-NAME>; run scope adds the run id between the
+prefix and the name.
+
+=head2 _assert_fdpass_transport
+
+(internal) Dies unless the configured IPC transport is
+C<IPC::Manager::Client::ConnectionUnix> (the only transport that can carry
+SCM_RIGHTS, which C<yath spawn> needs).
+
+=head2 Preload-spawned resource services
+
+=head2 _find_eligible_preload_service
+
+(internal) Returns the C<resource_services> tracking entry for a live,
+global-scope, not-C<permanent_broken> L<Test2::Harness2::PreloadService>
+whose underlying resource matches C<$pname>, or C<undef>.
+
+=head2 _spawn_service_via_preload
+
+(internal) Sends a C<spawn_service> message to a preload service and records a
+C<PENDING_PRELOAD_SPAWNS> row that L</_handle_resource_service_started>
+finalizes. Returns the allocated spawn id on dispatch success, C<undef> on
+send failure.
+
+=head2 _drain_resources_awaiting_preload
+
+(internal) Drains the wait-for-preload queue for a stage through
+L</_spawn_service_via_preload> once the preload becomes ready. Entries that
+are no longer eligible fall through to L</_fallback_single_entry>.
+
+=head2 _fallback_resources_awaiting_preload
+
+(internal) Flushes the same queue through standalone spawn when the preload
+reports C<permanent_broken>; dependents still come up, just unpreloaded.
+
+=head2 _fallback_single_entry
+
+(internal) Emits the C<resource_spawn_preload_fallback> event and
+re-dispatches one queued entry via C<_ipcm_service_standalone>; shared by both
+the drain and fallback paths.
+
+=head2 _check_pending_preload_spawn_timeouts
+
+(internal) Per-tick watchdog for C<PENDING_PRELOAD_SPAWNS>. Drops entries
+older than C<PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS> and re-dispatches them via
+standalone spawn, emitting C<resource_spawn_preload_timeout>.
+
+=head2 yath spawn exit dispatch
+
+=head2 _dispatch_script_exited
+
+(internal) Sends a C<script_exited> notification to the spawn caller. Returns
+true on success, false on send failure.
+
+=head2 _poll_script_exits
+
+(internal) Defensive backup reaper for C<yath spawn> grandchildren when the
+normal C<run_on_pid> path does not fire. Drives
+L</_dispatch_script_exited> on any C<WNOHANG>-reaped pid.
+
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at

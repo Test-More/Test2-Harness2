@@ -390,4 +390,75 @@ L<Test2::Harness2::Reloader::INotify>) consume
 L<Test2::Harness2::Role::Reloader> and provide C<watch_paths> +
 C<do_reload>.
 
+=head1 METHODS
+
+=over 4
+
+=item $rel->init
+
+L<Object::HashBase> hook: defaults C<project_root>, C<last_reload_at>,
+and the internal churn cache.
+
+=item $ts = $rel->last_reload_at
+
+=item $err = $rel->last_error
+
+Unix epoch of the most recent successful reload (0 if none) and the
+stringified error from the most recent failure (undef otherwise).
+
+=item ($ok, $err) = $rel->_attempt_in_place_reload($file)
+
+Private. Symbol-table sweep + Moose meta reset + C<require>. Catches
+compile errors and returns them as C<$err>.
+
+=item ($ok, $err) = $rel->_attempt_churn_reload($file)
+
+Private. Re-evals C<HARNESS2: churn {>...C<HARNESS2: churn }> sections
+of C<$file> in the module's package with C<no warnings 'redefine'>.
+
+=item @sections = $rel->find_churn($file)
+
+Scan C<$file> for churn markers and return one C<[$start, $body, $end]>
+triple per block.
+
+=item $rel->request_restart($svc, %opts)
+
+Notify the harness with C<preload_restarting>, then C<exec()> a fresh
+copy of this process. C<%opts> may pass an C<exec_cb> coderef which
+receives the argv list instead of actually exec()ing (used by unit
+tests).
+
+=item ($inc_key, $mod) = $rel->_resolve_inc_module($abs)
+
+Private. Reverse-look-up the C<%INC> key for an absolute path and
+derive the corresponding module name.
+
+=item $arrayref = $rel->_filter_inc(%opts)
+
+Private. Returns the C<%INC> entries whose absolute paths live under
+C<project_root>, as C<[$inc_key, $abs_path]> pairs. Accepts a C<root>
+override.
+
+=item $dir = Test2::Harness2::Reloader::Common->_project_root($start)
+
+=item $path = Test2::Harness2::Reloader::Common::_has_yath_rc($dir)
+
+Private. Walk up from C<$start> (or cwd) until a C<.yath.rc*> file or
+C<.git/> is found and return that directory. C<_has_yath_rc> returns
+the absolute path of the rc file in C<$dir> or undef.
+
+=item Test2::Harness2::Reloader::Common::_moose_reset_package_cache_flag($mod)
+
+=item Test2::Harness2::Reloader::Common::_clear_package_stash($mod)
+
+=item ($ok, $err) = Test2::Harness2::Reloader::Common::_require_abs($abs)
+
+=item Test2::Harness2::Reloader::Common::_restore_inc($abs, @keys)
+
+Private helpers used by C<_attempt_in_place_reload>: hint Class::MOP to
+recompile, undef the package's globs, C<require> by absolute path under
+a warning trap, and re-seat C<%INC> entries after a failed require.
+
+=back
+
 =cut
