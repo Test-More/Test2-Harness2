@@ -4,6 +4,8 @@ use warnings;
 
 our $VERSION = '2.000013';
 
+# Remove this command, 2.0 does not need it
+
 use Object::HashBase qw/<settings <args <env_vars <option_state <plugins/;
 
 use Test2::Harness2::Util qw/open_file/;

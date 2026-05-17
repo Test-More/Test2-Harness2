@@ -30,6 +30,7 @@ option_group {group => 'reloader', category => "Reloader Options"} => sub {
     );
 };
 
+# Same treatment as that of the function provided by the Preload options library, see comment there
 # Map a normalized backend name to its concrete reloader class, or
 # undef when no reloader should be installed. Used by test / start /
 # run when building Resource::Preload entries.

@@ -30,6 +30,8 @@ option_group {group => 'preload', category => "Preload Options"} => sub {
     );
 };
 
+# 3 modules all use this, they use it in a similar block/function in each. This should not live in the Options library, and there is too much duplication around calling it in the command modules. Create a new module to contain this, and the other logic around it.
+# This function is also too long, break it up
 # Classify the -P modules list into preload groups.
 #
 # Returns a list of hashrefs, each shaped:

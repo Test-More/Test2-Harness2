@@ -71,6 +71,7 @@ current terminal.
     EOT
 }
 
+# Function too long, break it up
 sub run {
     my $self = shift;
 

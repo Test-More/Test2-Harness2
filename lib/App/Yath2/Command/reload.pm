@@ -64,6 +64,8 @@ each preload returns from its reload.
     EOT
 }
 
+# This function is too long break it up.
+# Do the same for other commands added in this branch
 sub run {
     my $self = shift;
 

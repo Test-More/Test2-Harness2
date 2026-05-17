@@ -15,6 +15,7 @@ include_options(
 );
 
 option_group {group => 'runner', category => "Runner Options"} => sub {
+    # This comment is not needed
     # NOTE: the legacy --preload / -P / --preload-early / --preload-retry-delay
     # options were removed when the staged-preload subsystem was
     # replaced. The new -P / --preload entry point lives in
@@ -41,6 +42,7 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         description => "When using staged preload, dump the depmap for each stage as json files",
     );
 
+    # Comments not needed
     # Legacy reload_* options removed: the modern reloader subsystem
     # ships via App::Yath2::Options::Reloader (--reloader=mstat|inotify|none)
     # and routes through Resource::Preload + PreloadService directly.

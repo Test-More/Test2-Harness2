@@ -108,6 +108,7 @@ sub run {
         }
 
         if ($opts->watch && !$first) {
+            # Is there a better way to refresh and update the screen to show all new info, none of the old info, other than this?
             print "\e[2J\e[1;1H";    # clear screen + home cursor
         }
         $first = 0;

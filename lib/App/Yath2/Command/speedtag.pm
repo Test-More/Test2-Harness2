@@ -10,6 +10,8 @@ use Cwd qw/getcwd/;
 use Test2::Harness2::Util qw/clean_path/;
 use Test2::Harness2::Util::File::JSON;
 
+# Remove this command, not needed for yath2
+
 use App::Yath2::Log();
 
 use Role::Tiny::With;

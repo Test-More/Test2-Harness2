@@ -73,6 +73,7 @@ specific one, or --latest to pick the newest when multiple match.
     EOT
 }
 
+# Function too long, break it up
 sub run {
     my $self = shift;
 
@@ -270,6 +271,7 @@ sub _reap_renderer {
     return $? >> 8;
 }
 
+# Function too long, break it up
 # Same flow as App::Yath2::Command::test::_drive_ipc_loop -- watch
 # state broadcasts for pass/fail signals, plus poll run_results so a
 # run that completed before our subscribe took effect still resolves.
