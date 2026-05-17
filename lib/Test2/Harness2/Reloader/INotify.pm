@@ -83,77 +83,82 @@ sub init {
 sub do_reload {
     my ($self, $svc) = @_;
 
-    my $inotify = $self->{+INOTIFY} or return;
+    my @batch = $self->_drain_events;
+    return unless @batch;
 
-    # Drain the inotify queue (non-blocking). poll() fires our
-    # per-watch callback which pushes events into $self->{+_EVENTS}.
-    # We still poll even if %INC is empty so the kernel queue does
-    # not grow unbounded.
+    my @candidates = $self->_candidates_from_events(\@batch);
+    return unless @candidates;
+
+    $self->_reload_changed($svc, \@candidates);
+    return;
+}
+
+sub _drain_events {
+    my ($self) = @_;
+    my $inotify = $self->{+INOTIFY} or return ();
+
+    # Drain non-blocking. poll() invokes the per-watch callback which
+    # pushes events into $self->{+_EVENTS}. We poll even when %INC is
+    # empty so the kernel queue does not grow unbounded.
     $inotify->poll;
     my $events = $self->{+_EVENTS} //= [];
-    return unless @$events;
+    return () unless @$events;
+    return splice @$events;
+}
 
-    my @batch = splice @$events;
+sub _candidates_from_events {
+    my ($self, $batch) = @_;
 
     my %inc_abs;
     for my $entry (@{$self->_filter_inc}) {
-        my ($key, $abs) = @$entry;
+        my (undef, $abs) = @$entry;
         $inc_abs{$abs} = 1;
     }
-    return unless keys %inc_abs;
+    return () unless keys %inc_abs;
 
-    my %seen;
-    my @candidates;
-    for my $e (@batch) {
+    my (%seen, @out);
+    for my $e (@$batch) {
         my $file = $e->fullname;
         next unless defined $file && length $file;
         next unless $file =~ /\.(?:pm|t)\z/;
         my $abs = abs_path($file) // $file;
         next unless $inc_abs{$abs};
         next if $seen{$abs}++;
-        push @candidates => $abs;
+        push @out => $abs;
     }
-    return unless @candidates;
+    return @out;
+}
+
+sub _reload_changed {
+    my ($self, $svc, $files) = @_;
 
     my $now      = time;
     my $debounce = $self->debounce_secs;
     my $last     = $self->last_reload_at // 0;
 
-    for my $abs (@candidates) {
-        # Debounce: skip if we successfully reloaded too recently.
-        if ($last && ($now - $last) < $debounce) {
-            next;
-        }
-
-        $self->before_reload($svc, $abs);
-
-        my ($ok, $err) = $self->_attempt_in_place_reload($abs);
-
-        if (!$ok) {
-            my @churn = $self->find_churn($abs);
-            if (@churn) {
-                my ($cok, $cerr) = $self->_attempt_churn_reload($abs);
-                if ($cok) {
-                    $ok  = 1;
-                    $err = undef;
-                }
-                else {
-                    $err = $cerr // $err;
-                }
-            }
-        }
-
-        if (!$ok) {
-            $self->{+LAST_ERROR} = $err;
-        }
-
-        $self->after_reload($svc, $abs, $ok, $err);
-
+    for my $abs (@$files) {
+        next if $last && ($now - $last) < $debounce;
+        $self->_reload_one($svc, $abs);
         $now  = time;
         $last = $self->last_reload_at // 0;
     }
+}
 
-    return;
+sub _reload_one {
+    my ($self, $svc, $abs) = @_;
+
+    $self->before_reload($svc, $abs);
+
+    my ($ok, $err) = $self->_attempt_in_place_reload($abs);
+
+    if (!$ok && $self->find_churn($abs)) {
+        my ($cok, $cerr) = $self->_attempt_churn_reload($abs);
+        if ($cok) { ($ok, $err) = (1, undef) }
+        else      { $err = $cerr // $err }
+    }
+
+    $self->{+LAST_ERROR} = $err unless $ok;
+    $self->after_reload($svc, $abs, $ok, $err);
 }
 
 1;

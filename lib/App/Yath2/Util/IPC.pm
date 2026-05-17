@@ -319,82 +319,107 @@ sub discover_daemons {
     my $settings = $p{settings} or croak "'settings' is required";
     my $count    = $p{count} // 'one';
 
-    # Explicit --ipc-file: short-circuit. Read the file directly.
-    if (my $f = $p{ipc_file} // eval { $settings->ipc->file }) {
-        my $rec = read_ipc_file($f);
-        $rec->{_path} = $f;
-        return $count eq 'all' ? [$rec] : $rec;
+    if (my $explicit = _discover_by_explicit_ipc_file(\%p, $settings, $count)) {
+        return $explicit;
     }
 
-    # Explicit --workdir: find the IPC info record whose `workdir`
-    # field matches. The file itself may live in workdir/tmp (older
-    # default) or in the system tempdir (post-discovery fix), so we
-    # scan both candidate dirs and filter by the workdir field.
-    if (my $wd = $p{workdir}) {
-        my @dirs;
-        push @dirs => "$wd/tmp"          if -d "$wd/tmp";
-        push @dirs => $wd                if -d $wd;
-        my ($sys_tmp) = resolve_ipc_dir($settings);
-        push @dirs => $sys_tmp           if defined $sys_tmp;
-        my $dir_order = $settings->ipc->dir_order || [];
-        push @dirs => resolve_dir_order_paths($settings, $dir_order);
-        my %seen;
-        @dirs = grep { defined && length && !$seen{$_}++ && -d } @dirs;
-
-        my $all_records = find_ipc_files(dirs => \@dirs);
-        my @matching = grep { ($_->{workdir} // '') eq $wd } @$all_records;
-
-        croak "no IPC info file matching workdir '$wd' (is the daemon running?)\n"
-            unless @matching;
-        croak "multiple IPC info files for workdir '$wd'; pass --ipc-file PATH to disambiguate\n"
-            if @matching > 1 && $count eq 'one';
-
-        return $count eq 'all' ? \@matching : $matching[0];
+    if ($p{workdir}) {
+        return _discover_by_workdir(\%p, $settings, $count);
     }
 
-    # Auto-discovery: scan dir_order + primary.
-    my ($primary_dir) = resolve_ipc_dir($settings);
-    my $dir_order    = $settings->ipc->dir_order || [];
-    my @dirs = ($primary_dir, resolve_dir_order_paths($settings, $dir_order));
+    return _discover_by_auto(\%p, $settings, $count);
+}
+
+sub _discover_by_explicit_ipc_file {
+    my ($p, $settings, $count) = @_;
+
+    my $f = $p->{ipc_file} // eval { $settings->ipc->file };
+    return undef unless $f;
+
+    my $rec = read_ipc_file($f);
+    $rec->{_path} = $f;
+    return $count eq 'all' ? [$rec] : $rec;
+}
+
+sub _discover_by_workdir {
+    my ($p, $settings, $count) = @_;
+    my $wd = $p->{workdir};
+
+    my @dirs;
+    push @dirs => "$wd/tmp" if -d "$wd/tmp";
+    push @dirs => $wd       if -d $wd;
+    my ($sys_tmp) = resolve_ipc_dir($settings);
+    push @dirs => $sys_tmp if defined $sys_tmp;
+    my $dir_order = $settings->ipc->dir_order || [];
+    push @dirs => resolve_dir_order_paths($settings, $dir_order);
     my %seen;
     @dirs = grep { defined && length && !$seen{$_}++ && -d } @dirs;
 
-    my $cmd_filter = $p{command} // 'start';
-    my $cmd_arg    = $cmd_filter eq 'any' ? undef : $cmd_filter;
+    my $all_records = find_ipc_files(dirs => \@dirs);
+    my @matching    = grep { ($_->{workdir} // '') eq $wd } @$all_records;
 
-    my $records = find_ipc_files(
-        dirs => \@dirs,
-        (defined $cmd_arg ? (command => $cmd_arg) : ()),
-    );
+    croak "no IPC info file matching workdir '$wd' (is the daemon running?)\n"
+        unless @matching;
+    croak "multiple IPC info files for workdir '$wd'; pass --ipc-file PATH to disambiguate\n"
+        if @matching > 1 && $count eq 'one';
 
-    # project/user override: pass an explicit value to filter on it,
-    # pass an empty string '' to skip the filter entirely. Default is
-    # to filter to this settings's project + user.
-    my $project = exists $p{project}
-        ? $p{project}
-        : ($settings->yath->project // '');
-    my $user = exists $p{user}
-        ? $p{user}
-        : ($settings->yath->user // $ENV{USER} // (getpwuid($<))[0] // '');
+    return $count eq 'all' ? \@matching : $matching[0];
+}
 
-    my @candidates = grep {
-        (!defined($project) || $project eq '' || ($_->{project} // '') eq $project)
-            && (!defined($user) || $user eq '' || ($_->{user} // '') eq $user)
-    } @$records;
+sub _discover_by_auto {
+    my ($p, $settings, $count) = @_;
 
-    if ($count eq 'all' || $p{all}) {
-        return \@candidates;
-    }
+    my $records    = _scan_ipc_records($p, $settings);
+    my @candidates = _filter_by_project_user($p, $settings, $records);
+
+    return \@candidates if $count eq 'all' || $p->{all};
 
     croak "No running yath daemon found. Run `yath start` or pass --workdir DIR / --ipc-file PATH.\n"
         unless @candidates;
 
-    if (@candidates > 1 && !$p{latest}) {
+    if (@candidates > 1 && !$p->{latest}) {
         my $list = join "", map { "  $_->{_path}  (pid $_->{pid})\n" } @candidates;
         croak "Multiple running yath daemons matched; pass --latest, --workdir, or --ipc-file:\n$list";
     }
 
     return $candidates[0];
+}
+
+sub _scan_ipc_records {
+    my ($p, $settings) = @_;
+
+    my ($primary_dir) = resolve_ipc_dir($settings);
+    my $dir_order = $settings->ipc->dir_order || [];
+    my @dirs = ($primary_dir, resolve_dir_order_paths($settings, $dir_order));
+    my %seen;
+    @dirs = grep { defined && length && !$seen{$_}++ && -d } @dirs;
+
+    my $cmd_filter = $p->{command} // 'start';
+    my $cmd_arg    = $cmd_filter eq 'any' ? undef : $cmd_filter;
+
+    return find_ipc_files(
+        dirs => \@dirs,
+        (defined $cmd_arg ? (command => $cmd_arg) : ()),
+    );
+}
+
+sub _filter_by_project_user {
+    my ($p, $settings, $records) = @_;
+
+    # project/user override: pass an explicit value to filter on it,
+    # pass '' to skip the filter entirely. Defaults to this settings's
+    # project + user.
+    my $project = exists $p->{project}
+        ? $p->{project}
+        : ($settings->yath->project // '');
+    my $user = exists $p->{user}
+        ? $p->{user}
+        : ($settings->yath->user // $ENV{USER} // (getpwuid($<))[0] // '');
+
+    return grep {
+        (!defined($project) || $project eq '' || ($_->{project} // '') eq $project)
+            && (!defined($user) || $user eq '' || ($_->{user} // '') eq $user)
+    } @$records;
 }
 
 # Validate that an IPC info record points at a live harness pid.

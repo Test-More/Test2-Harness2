@@ -86,66 +86,77 @@ sub run {
         terminate_on_destroy => 0,
     );
 
-    # Fetch the list of global preload peer names via the harness.
-    my $list = $spawn->_send_request('list_preloads');
-    unless (ref($list) eq 'HASH' && $list->{ok}) {
-        my $err = ref($list) eq 'HASH' ? ($list->{error} // 'unknown error') : '(no response)';
-        die "list_preloads failed: $err\n";
-    }
-
-    my $peers = $list->{preloads} // [];
+    my $peers = _fetch_preload_peers($spawn);
     unless (@$peers) {
         print "No global preload services configured on this daemon.\n";
         return 0;
     }
 
-    my $handle = $spawn->handle;
-
     my $any_fail = 0;
     for my $peer (@$peers) {
-        my $name = $peer->{name};
-        if ($opts->wait) {
-            my $envelope;
-            my $ok  = eval { $envelope = $handle->sync_request($name, {request => 'reload'}); 1 };
-            my $err = $@;
-            if (!$ok) {
-                chomp $err;
-                printf("%s pid=%s ERROR (%s)\n", $name, ($peer->{pid} // '?'), $err);
-                $any_fail = 1;
-                next;
-            }
-            # sync_request returns the bus envelope { ipcm_request_id, response };
-            # the handler's return value is the inner 'response' hash.
-            my $res = (ref($envelope) eq 'HASH' && ref($envelope->{response}) eq 'HASH')
-                ? $envelope->{response}
-                : (ref($envelope) eq 'HASH' ? $envelope : {});
-            my $rok  = ref($res) eq 'HASH' && $res->{ok};
-            my $noop = $rok && ref($res) eq 'HASH' && $res->{noop};
-            my $status =
-                  !$rok ? 'failed'
-                : $noop ? 'no-op (no reloader configured)'
-                :         'reloaded ok';
-            printf("%s pid=%s %s%s\n",
-                $name, ($peer->{pid} // '?'),
-                $status,
-                ($rok ? '' : ' (' . ($res->{error} // '?') . ')'),
-            );
-            $any_fail = 1 unless $rok;
-        }
-        else {
-            my $ok  = $spawn->broadcast_message($name, {request => 'reload'});
-            my $err = $@;
-            if (!$ok) {
-                chomp $err;
-                printf("%s pid=%s ERROR (%s)\n", $name, ($peer->{pid} // '?'), $err);
-                $any_fail = 1;
-                next;
-            }
-            printf("%s pid=%s reload queued\n", $name, ($peer->{pid} // '?'));
-        }
+        my $ok = $opts->wait
+            ? _reload_sync($spawn->handle, $peer)
+            : _reload_broadcast($spawn, $peer);
+        $any_fail = 1 unless $ok;
     }
 
     return $any_fail ? 1 : 0;
+}
+
+sub _fetch_preload_peers {
+    my ($spawn) = @_;
+    my $list = $spawn->_send_request('list_preloads');
+    unless (ref($list) eq 'HASH' && $list->{ok}) {
+        my $err = ref($list) eq 'HASH' ? ($list->{error} // 'unknown error') : '(no response)';
+        die "list_preloads failed: $err\n";
+    }
+    return $list->{preloads} // [];
+}
+
+sub _reload_sync {
+    my ($handle, $peer) = @_;
+    my $name = $peer->{name};
+
+    my $envelope;
+    my $ok = eval { $envelope = $handle->sync_request($name, {request => 'reload'}); 1 };
+    if (!$ok) {
+        my $err = $@; chomp $err;
+        printf("%s pid=%s ERROR (%s)\n", $name, ($peer->{pid} // '?'), $err);
+        return 0;
+    }
+
+    # sync_request returns the bus envelope { ipcm_request_id, response };
+    # the handler's return value is the inner 'response' hash.
+    my $res = (ref($envelope) eq 'HASH' && ref($envelope->{response}) eq 'HASH')
+        ? $envelope->{response}
+        : (ref($envelope) eq 'HASH' ? $envelope : {});
+    my $rok  = ref($res) eq 'HASH' && $res->{ok};
+    my $noop = $rok && $res->{noop};
+    my $status =
+          !$rok ? 'failed'
+        : $noop ? 'no-op (no reloader configured)'
+        :         'reloaded ok';
+
+    printf("%s pid=%s %s%s\n",
+        $name, ($peer->{pid} // '?'),
+        $status,
+        ($rok ? '' : ' (' . ($res->{error} // '?') . ')'),
+    );
+    return $rok ? 1 : 0;
+}
+
+sub _reload_broadcast {
+    my ($spawn, $peer) = @_;
+    my $name = $peer->{name};
+
+    my $ok = $spawn->broadcast_message($name, {request => 'reload'});
+    if (!$ok) {
+        my $err = $@; chomp $err;
+        printf("%s pid=%s ERROR (%s)\n", $name, ($peer->{pid} // '?'), $err);
+        return 0;
+    }
+    printf("%s pid=%s reload queued\n", $name, ($peer->{pid} // '?'));
+    return 1;
 }
 
 1;

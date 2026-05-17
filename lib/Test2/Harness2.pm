@@ -271,8 +271,45 @@ sub _resolve_preload_for_job {
     my $prefs = $job->test_file->preload_preferences;
     return (undef, 'no_preload') unless $prefs && @$prefs;
 
-    # Walk both global and per-run resource lists; a per-run preload
-    # is invisible to the resolver if it never enters this scan.
+    my $idx = $self->_index_preloads_for_run($run);
+
+    my $deferred = 0;
+    my $first_name;
+
+    for my $entry (@$prefs) {
+        $first_name //= $entry;
+
+        return (undef, 'no_preload') if $entry eq '<no>';
+
+        if ($entry eq '<default>') {
+            my $cand = $idx->{run_default} // $idx->{global_default};
+            return (undef, 'no_preload') unless $cand;    # implicit <no>
+            my $verdict = _classify_preload_state($cand);
+            return ($cand, 'preload') if $verdict eq 'usable';
+            $deferred++                if $verdict eq 'defer';
+            return (undef, 'no_preload') if $verdict eq 'permanent';
+            next;
+        }
+
+        # Bare name: per-run preferred over global.
+        my $cand = $idx->{by_run}{$entry} // $idx->{by_global}{$entry};
+        next unless $cand;    # missing: skip; broken verdict comes from exhaustion
+
+        my $verdict = _classify_preload_state($cand);
+        return ($cand, 'preload') if $verdict eq 'usable';
+        $deferred++              if $verdict eq 'defer';
+        # permanent: keep scanning -- a later <no>/named candidate may accept.
+    }
+
+    return (undef, 'defer') if $deferred;
+    return (undef, 'broken', $first_name // '');
+}
+
+# Build (scope, name) index of preload resources visible to this run.
+# Per-run preloads are only included when their run_id matches.
+sub _index_preloads_for_run {
+    my ($self, $run) = @_;
+
     my @all = (
         @{$self->{+RESOURCES} || []},
         (ref($run) ? @{$run->resources // []} : ()),
@@ -283,76 +320,34 @@ sub _resolve_preload_for_job {
 
     my $run_id = ref($run) ? $run->run_id : undef;
 
-    # Index by (scope, name) for fast lookup. Per-run preloads are only
-    # keyed under the run_id they were spawned for; a preload from a
-    # different run is invisible to this lookup.
-    my (%by_global, %by_run);
-    my (@globals_role, @run_role);
+    my (%by_global, %by_run, @globals_role, @run_role);
     my ($global_named_default, $run_named_default);
+
     for my $r (@preloads) {
         my $name = $r->name;
         if ($r->scope eq 'run') {
             my $rid = ref($r->run) ? $r->run->run_id : undef;
             next unless defined $run_id && defined $rid && $run_id eq $rid;
-            $by_run{$name} = $r;
+            $by_run{$name}     = $r;
             push @run_role => $r if $r->is_role_consumer;
             $run_named_default = $r if $name eq 'default';
         }
         else {
-            $by_global{$name} = $r;
+            $by_global{$name}     = $r;
             push @globals_role => $r if $r->is_role_consumer;
             $global_named_default = $r if $name eq 'default';
         }
     }
 
-    # Per-run default: an explicit `default`-named preload wins (the
-    # bare-module bucket `yath run -P Foo` produces) over the
-    # "exactly one role consumer" rule. Same precedence the global
-    # scope uses.
-    my $run_default = $run_named_default
-        // ((@run_role == 1) ? $run_role[0] : undef);
-    my $global_default = $global_named_default
-        // (@globals_role == 1 ? $globals_role[0] : undef);
-
-    my $deferred = 0;
-    my $first_name;
-
-    for my $entry (@$prefs) {
-        $first_name //= $entry;
-
-        if ($entry eq '<no>') {
-            return (undef, 'no_preload');
-        }
-
-        if ($entry eq '<default>') {
-            my $cand = $run_default // $global_default;
-            return (undef, 'no_preload') unless $cand;    # implicit <no>
-            my $verdict = _classify_preload_state($cand);
-            return ($cand, 'preload') if $verdict eq 'usable';
-            $deferred++ if $verdict eq 'defer';
-            # permanent: <default>'s implicit <no> kicks in immediately.
-            return (undef, 'no_preload') if $verdict eq 'permanent';
-            next;
-        }
-
-        # Bare name: per-run preferred over global.
-        my $cand = $by_run{$entry} // $by_global{$entry};
-        unless ($cand) {
-            # Missing entirely -- not deferrable, not satisfiable, just
-            # skip. If nothing else accepts the job the list-exhausted
-            # branch returns broken + first preferred name.
-            next;
-        }
-
-        my $verdict = _classify_preload_state($cand);
-        return ($cand, 'preload') if $verdict eq 'usable';
-        $deferred++ if $verdict eq 'defer';
-        # permanent: keep scanning -- a later <no> / named candidate may
-        # accept the job.
-    }
-
-    return (undef, 'defer')                       if $deferred;
-    return (undef, 'broken', $first_name // '');
+    # Default precedence: an explicit `default`-named preload (the
+    # bare-module bucket from `-P Foo`) wins over the "exactly one
+    # role consumer" rule.
+    return {
+        by_global      => \%by_global,
+        by_run         => \%by_run,
+        global_default => $global_named_default // (@globals_role == 1 ? $globals_role[0] : undef),
+        run_default    => $run_named_default    // (@run_role == 1     ? $run_role[0]     : undef),
+    };
 }
 
 sub _classify_preload_state {
@@ -1886,14 +1881,30 @@ sub service_post_hard_stop {
 sub run_on_pid {
     my ($self, $pid, $exit) = @_;
 
-    # Test-collector exit. The harness owns the collector now (Stage 5
-    # of the RunService flatten), so this is the normal reap site.
-    # The auditor's test_job_completed message may have already
-    # arrived before the pid was reaped, in which case nothing more
-    # is needed beyond clearing the per-run pid index. If it has
-    # not, arm a grace timer so the watchdog in run_on_interval can
-    # synthesize completion if the auditor never gets a chance to
-    # speak (collector crash, signal during emit, etc.).
+    return if $self->_handle_test_collector_exit($pid, $exit);
+
+    # Script-spawn handler returns true only when the pid matched a
+    # script-spawn entry definitively. The "race" case stashes the
+    # exit speculatively and falls through to the resource-service
+    # handler in case the pid actually belongs there.
+    return if $self->_handle_script_spawn_exit($pid, $exit);
+
+    # Resource-service exit (the shared host role owns restart-spiral
+    # protection, state flags, and re-invocation). Reparented descendants
+    # that aren't one of ours silently fall through.
+    $self->handle_resource_service_exit($pid, $exit);
+    return;
+}
+
+# Test-collector exit. The harness owns the collector since Stage 5
+# of the RunService flatten, so this is the normal reap site. If
+# test_job_completed arrived first, just clear the per-run pid index;
+# otherwise arm a synth-completion grace entry so run_on_interval can
+# synthesize completion when the auditor never gets to speak (collector
+# crash, signal during emit, etc.). Returns true if handled.
+sub _handle_test_collector_exit {
+    my ($self, $pid, $exit) = @_;
+
     for my $job_id (keys %{$self->{+RUNNING_JOBS} // {}}) {
         my $cur = $self->{+RUNNING_JOBS}->{$job_id};
         next unless $cur->{pid} && $cur->{pid} == $pid;
@@ -1902,20 +1913,14 @@ sub run_on_pid {
         my $run_id = $run->run_id;
         my $flags  = $self->{+RUN_FLAGS}->{$run_id};
 
-        # Already completed (test_job_completed landed before the
-        # reap): forget the per-run pid index entry; let job_release
-        # handle the RUNNING_JOBS / resource-release cleanup as
-        # usual.
         if ($flags && $flags->{completed_job_ids}{$job_id}) {
             $self->_forget_run_pid($run_id, $pid);
-            return;
+            return 1;
         }
 
-        # Not completed yet: arm a synth-completion grace entry.
-        # KEEP RUNNING_JOBS in place; a real test_job_completed
-        # arriving inside the grace window cancels the synth, and
-        # the watchdog reuses the existing RUNNING_JOBS entry to
-        # synthesize a completion + cleanup if the window expires.
+        # Keep RUNNING_JOBS in place: a real test_job_completed inside
+        # the grace window cancels the synth, and the watchdog reuses
+        # this entry to synthesize completion + cleanup if it expires.
         $self->{+PENDING_SYNTH_COMPLETIONS}->{$job_id} = {
             run_id           => $run_id,
             job_id           => $job_id,
@@ -1925,20 +1930,29 @@ sub run_on_pid {
             raw_exit_on_reap => $exit,
         };
 
-        return;
+        return 1;
     }
+    return 0;
+}
 
-    # Script-spawn grandchild exit. IPC::Manager's reap_children
-    # (waitpid -1) reaps the grandchild before _poll_script_exits
-    # can see it, so we handle the notification here in run_on_pid
-    # instead of in the polling loop.
-    #
-    # Two sub-cases:
-    #   (a) script_spawned already arrived -> child_pid is set in entry.
-    #       Send script_exited immediately.
-    #   (b) script_spawned races the reap -> child_pid not yet set.
-    #       Store the exit in _SCRIPT_SPAWN_EXITS; _handle_script_spawned
-    #       drains it and sends script_exited once child_pid is known.
+# Script-spawn grandchild exit. IPC::Manager's reap_children
+# (waitpid -1) reaps the grandchild before _poll_script_exits can
+# see it, so we handle the notification here.
+#
+# Two sub-cases:
+#   (a) script_spawned already arrived -> child_pid is set; send
+#       script_exited immediately.
+#   (b) script_spawned races the reap -> child_pid not yet set; stash
+#       the exit in _SCRIPT_SPAWN_EXITS for _handle_script_spawned
+#       to drain. Only stash when *some* pending entry still lacks a
+#       child_pid -- otherwise this pid belongs to something else
+#       (resource service, reparented descendant) and stashing would
+#       leak unboundedly.
+#
+# Returns true when this pid maps to a known script-spawn entry.
+sub _handle_script_spawn_exit {
+    my ($self, $pid, $exit) = @_;
+
     my $table = $self->{+PENDING_SCRIPT_SPAWNS} // {};
     my $expecting_unmatched = 0;
     for my $sid (keys %$table) {
@@ -1946,24 +1960,15 @@ sub run_on_pid {
         if (defined($entry->{child_pid}) && $entry->{child_pid} == $pid) {
             $self->_dispatch_script_exited($sid, $entry, $exit);
             delete $table->{$sid};
-            return;
+            return 1;
         }
         $expecting_unmatched = 1 unless defined $entry->{child_pid};
     }
 
-    # Case (b): only stash this pid if some pending entry is still
-    # missing its child_pid; otherwise this pid belongs to something
-    # else (a resource service, a reparented descendant) and stashing
-    # it would be an unbounded leak.
+    # Race case: stash speculatively but report "not handled" so the
+    # caller still asks the resource-service handler.
     $self->{+_SCRIPT_SPAWN_EXITS}->{$pid} = $exit if $expecting_unmatched;
-
-    # Resource-service exit (handled by the shared host role, which
-    # takes care of restart-spiral protection, state flags, and
-    # re-invocation). Reparented descendants that aren't one of ours
-    # silently fall through.
-    $self->handle_resource_service_exit($pid, $exit);
-
-    return;
+    return 0;
 }
 
 # Collector-side watchdog: if a collector pid disappeared without
@@ -2925,22 +2930,34 @@ sub _spawn_via_preload {
     my $run_id  = $run->run_id;
     my $job_id  = $job->job_id;
     my $job_try = $job->job_try // 1;
-    my $env     = $opts{env} // {};
-    my $launch  = $opts{launch};
-    my $ch_dir  = $opts{ch_dir};
 
     my $test_file_abs = $job->test_file_abs;
     croak "'test_file' must be absolute"
         unless File::Spec->file_name_is_absolute($test_file_abs);
 
-    my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
-    my $queued_at;
-    if (my $rs = $self->{+RUN_STATES}->{$run_id}) {
-        my $r = $rs->results->{$job_id};
-        $queued_at = $r->{queued_at} if $r && defined $r->{queued_at};
+    my $now = time;
+    $self->_register_pending_preload_spawn($run, $job, $preload_resource, $now, \%opts);
+
+    my $payload = $self->_build_spawn_test_payload($run, $job, $test_file_abs, \%opts);
+    my $peer    = _preload_peer_name($preload_resource);
+
+    my $send_ok = eval { $self->client->send_message($peer, $payload); 1 };
+    unless ($send_ok) {
+        my $send_err = $@;
+        # Roll back so the caller's launch_failed path (which releases
+        # assigned resources) can take over cleanly.
+        delete $self->{+RUNNING_JOBS}->{$job_id};
+        delete $self->{+PENDING_SPAWN_REQUESTS}->{"$run_id\0$job_id"};
+        croak "Failed to dispatch spawn_test to '$peer': $send_err";
     }
 
-    my $now = time;
+    return;
+}
+
+sub _register_pending_preload_spawn {
+    my ($self, $run, $job, $preload_resource, $now, $opts) = @_;
+    my $run_id = $run->run_id;
+    my $job_id = $job->job_id;
 
     $self->{+RUNNING_JOBS}->{$job_id} = {
         run                  => $run,
@@ -2950,8 +2967,8 @@ sub _spawn_via_preload {
         preload_name         => $preload_resource->name,
         preload_scope        => $preload_resource->scope,
         started_at           => $now,
-        assign_id            => $opts{assign_id},
-        assigned_resources   => $opts{assigned_resources} // [],
+        assign_id            => $opts->{assign_id},
+        assigned_resources   => $opts->{assigned_resources} // [],
         log_file             => undef,
     };
 
@@ -2962,47 +2979,48 @@ sub _spawn_via_preload {
         preload_name  => $preload_resource->name,
         preload_scope => $preload_resource->scope,
     };
+}
 
-    my $peer = _preload_peer_name($preload_resource);
+sub _build_spawn_test_payload {
+    my ($self, $run, $job, $test_file_abs, $opts) = @_;
+    my $run_id  = $run->run_id;
+    my $job_id  = $job->job_id;
+    my $job_try = $job->job_try // 1;
+    my $env     = $opts->{env}    // {};
+    my $launch  = $opts->{launch};
+    my $ch_dir  = $opts->{ch_dir};
 
-    my %payload = (
-        kind              => 'spawn_test',
-        run_id            => $run_id,
-        job_id            => $job_id,
-        job_try           => $job_try,
-        test_file_abs     => $test_file_abs,
-        env               => { T2_FORMATTER => 'Stream2', %$env },
-        auditor           => $self->{+TEST_AUDITOR},
-        ipc_parent        => $self->{+NAME},
-        ipc_run           => $self->{+NAME},
-        ipc_harness       => $self->{+NAME},
-        kill_timeout      => $self->{+KILL_TIMEOUT},
-        logdir            => $self->{+LOGDIR},
-        spec              => {
-            %{ $test_file_spec->TO_JSON },
-            run_id    => $run_id,
-            job_id    => $job_id,
-            job_try   => $job_try,
+    my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
+
+    my $queued_at;
+    if (my $rs = $self->{+RUN_STATES}->{$run_id}) {
+        my $r = $rs->results->{$job_id};
+        $queued_at = $r->{queued_at} if $r && defined $r->{queued_at};
+    }
+
+    return {
+        kind          => 'spawn_test',
+        run_id        => $run_id,
+        job_id        => $job_id,
+        job_try       => $job_try,
+        test_file_abs => $test_file_abs,
+        env           => {T2_FORMATTER => 'Stream2', %$env},
+        auditor       => $self->{+TEST_AUDITOR},
+        ipc_parent    => $self->{+NAME},
+        ipc_run       => $self->{+NAME},
+        ipc_harness   => $self->{+NAME},
+        kill_timeout  => $self->{+KILL_TIMEOUT},
+        logdir        => $self->{+LOGDIR},
+        spec          => {
+            %{$test_file_spec->TO_JSON},
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $job_try,
             (defined $queued_at ? (queued_at => $queued_at) : ()),
         },
         (defined $launch ? (launch => $launch) : ()),
         (defined $ch_dir && length $ch_dir ? (ch_dir => $ch_dir) : ()),
-    );
-
-    my $client   = $self->client;
-    my $send_ok  = eval { $client->send_message($peer, \%payload); 1 };
-    my $send_err = $@;
-
-    unless ($send_ok) {
-        # Roll back the placeholder + pending entry; let the caller's
-        # eval handle the launch_failed path (which releases assigned
-        # resources).
-        delete $self->{+RUNNING_JOBS}->{$job_id};
-        delete $self->{+PENDING_SPAWN_REQUESTS}->{"$run_id\0$job_id"};
-        croak "Failed to dispatch spawn_test to '$peer': $send_err";
-    }
-
-    return;
+    };
 }
 
 # Walk PENDING_SPAWN_REQUESTS; for any entry past

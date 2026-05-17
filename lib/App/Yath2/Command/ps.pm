@@ -77,116 +77,139 @@ sub run {
 
     my $settings = $self->{+SETTINGS};
     my $ps       = $settings->ps;
+    my $single   = $ps->workdir ? 1 : 0;
 
-    my $single = $ps->workdir ? 1 : 0;
-    my @daemons;
+    my $daemons = $self->_discover($settings, $ps);
+    unless ($daemons) {
+        print "No running yath daemons.\n";
+        return 0;
+    }
+
+    my $now = time;
+    my $any = 0;
+    for my $info (@$daemons) {
+        next unless $self->_alive_or_warn($info, $single);
+        my $st = $self->_fetch_status($info, $single) // next;
+        $self->_print_daemon_block($st, $now);
+        $any = 1;
+    }
+
+    return $any ? 0 : 1;
+}
+
+sub _discover {
+    my ($self, $settings, $ps) = @_;
+
     if ($ps->workdir) {
         my $info = discover_daemons(
             settings => $settings,
             workdir  => $ps->workdir,
             latest   => $ps->latest,
         );
-        push @daemons, $info;
-    }
-    else {
-        my $list = discover_daemons(
-            settings => $settings,
-            count    => 'all',
-            ($ps->all_projects ? (project => undef) : ()),
-            ($ps->all_users    ? (user    => undef) : ()),
-        );
-        unless (@$list) {
-            print "No running yath daemons.\n";
-            return 0;
-        }
-        push @daemons, @$list;
+        return [$info];
     }
 
-    my $now = time;
-    my $any = 0;
-    for my $info (@daemons) {
-        my $ok  = eval { assert_daemon_alive($info); 1 };
-        my $err = $@;
-        unless ($ok) {
-            die $err if $single;
-            warn $err;
-            next;
-        }
+    my $list = discover_daemons(
+        settings => $settings,
+        count    => 'all',
+        ($ps->all_projects ? (project => undef) : ()),
+        ($ps->all_users    ? (user    => undef) : ()),
+    );
+    return @$list ? $list : undef;
+}
 
-        my $spawn = Test2::Harness2::Spawn->new(
-            pid                  => $info->{pid},
-            ipcm_info            => $info->{ipcm_info},
-            workdir              => $info->{workdir},
-            terminate_on_destroy => 0,
-        );
+sub _alive_or_warn {
+    my ($self, $info, $single) = @_;
+    my $ok = eval { assert_daemon_alive($info); 1 };
+    return 1 if $ok;
+    my $err = $@;
+    die $err if $single;
+    warn $err;
+    return 0;
+}
 
-        my $st;
-        my $sok  = eval { $st = $spawn->status; 1 };
-        my $serr = $@;
-        unless ($sok) {
-            die $serr if $single;
-            warn "ps: status for pid=$info->{pid} failed: $serr";
-            next;
-        }
+sub _fetch_status {
+    my ($self, $info, $single) = @_;
 
-        my $svc     = $st->{service} // {};
-        my $running = $st->{running} // [];
+    my $spawn = Test2::Harness2::Spawn->new(
+        pid                  => $info->{pid},
+        ipcm_info            => $info->{ipcm_info},
+        workdir              => $info->{workdir},
+        terminate_on_destroy => 0,
+    );
 
-        printf("Daemon: pid=%s workdir=%s (state=%s) — %d in-flight job(s)\n",
-            ($svc->{pid}     // '?'),
-            ($svc->{workdir} // '?'),
-            ($svc->{state}   // '?'),
-            scalar @$running,
-        );
+    my $st;
+    my $ok = eval { $st = $spawn->status; 1 };
+    return $st if $ok;
 
-        if (@$running) {
-            my @rows;
-            for my $j (@$running) {
-                my $age = defined $j->{started}
-                    ? sprintf("%.1fs", $now - $j->{started})
-                    : '?';
-                push @rows => [
-                    ($j->{pid}       // '?'),
-                    ($j->{run_id}    // '?'),
-                    ($j->{job_id}    // '?'),
-                    ($j->{test_file} // '?'),
-                    $age,
-                ];
-            }
-            my $table = Term::Table->new(
-                collapse => 1,
-                header   => [qw/PID RUN_ID JOB_ID TEST_FILE AGE/],
-                rows     => \@rows,
-            );
-            print "  $_\n" for $table->render;
-        }
+    my $err = $@;
+    die $err if $single;
+    warn "ps: status for pid=$info->{pid} failed: $err";
+    return undef;
+}
 
-        my $services = $st->{services} // [];
-        if (@$services) {
-            my @rows;
-            for my $s (@$services) {
-                push @rows => [
-                    ($s->{pid}           // '?'),
-                    ($s->{name}          // '?'),
-                    ($s->{service_class} // '?'),
-                    ($s->{scope}         // '?'),
-                    ($s->{via_preload}   ? 'yes' : 'no'),
-                ];
-            }
-            my $table = Term::Table->new(
-                collapse => 1,
-                header   => [qw/PID NAME CLASS SCOPE VIA_PRELOAD/],
-                rows     => \@rows,
-            );
-            print "  Services:\n";
-            print "    $_\n" for $table->render;
-        }
-        print "\n";
+sub _print_daemon_block {
+    my ($self, $st, $now) = @_;
 
-        $any = 1;
+    my $svc     = $st->{service}  // {};
+    my $running = $st->{running}  // [];
+
+    printf("Daemon: pid=%s workdir=%s (state=%s) — %d in-flight job(s)\n",
+        ($svc->{pid}     // '?'),
+        ($svc->{workdir} // '?'),
+        ($svc->{state}   // '?'),
+        scalar @$running,
+    );
+
+    $self->_print_running_jobs($running, $now) if @$running;
+    $self->_print_services($st->{services} // []);
+    print "\n";
+}
+
+sub _print_running_jobs {
+    my ($self, $running, $now) = @_;
+    my @rows;
+    for my $j (@$running) {
+        my $age = defined $j->{started}
+            ? sprintf("%.1fs", $now - $j->{started})
+            : '?';
+        push @rows => [
+            ($j->{pid}       // '?'),
+            ($j->{run_id}    // '?'),
+            ($j->{job_id}    // '?'),
+            ($j->{test_file} // '?'),
+            $age,
+        ];
     }
+    my $table = Term::Table->new(
+        collapse => 1,
+        header   => [qw/PID RUN_ID JOB_ID TEST_FILE AGE/],
+        rows     => \@rows,
+    );
+    print "  $_\n" for $table->render;
+}
 
-    return $any ? 0 : 1;
+sub _print_services {
+    my ($self, $services) = @_;
+    return unless @$services;
+
+    my @rows;
+    for my $s (@$services) {
+        push @rows => [
+            ($s->{pid}           // '?'),
+            ($s->{name}          // '?'),
+            ($s->{service_class} // '?'),
+            ($s->{scope}         // '?'),
+            ($s->{via_preload} ? 'yes' : 'no'),
+        ];
+    }
+    my $table = Term::Table->new(
+        collapse => 1,
+        header   => [qw/PID NAME CLASS SCOPE VIA_PRELOAD/],
+        rows     => \@rows,
+    );
+    print "  Services:\n";
+    print "    $_\n" for $table->render;
 }
 
 1;

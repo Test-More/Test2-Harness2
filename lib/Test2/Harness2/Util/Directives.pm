@@ -75,41 +75,49 @@ sub parse_line {
 
     return unless defined $line;
 
-    if ($self->{open_block}) {
-        return unless $line =~ $self->{comment_re};
-        my $rest = $1;
-        return unless length $rest;
+    return $self->_parse_inside_block($line) if $self->{open_block};
+    return $self->_parse_top_level($line);
+}
 
-        my @tokens = $self->_tokenize($rest);
-        return unless @tokens;
-
-        my ($key, @rest_tok) = @tokens;
-        $self->_validate_key($key);
-
-        my $brace_idx = $self->_find_brace_idx(\@rest_tok);
-        if (defined $brace_idx && $rest_tok[$brace_idx] eq '}') {
-            croak "block close marker must be last token at line $self->{line_no}"
-                unless $brace_idx == $#rest_tok;
-            croak "block close has extra tokens at line $self->{line_no}"
-                if @rest_tok > 1;
-            croak "block close key mismatch at line $self->{line_no}: opened '$self->{open_block}{key}', closed '$key'"
-                unless $key eq $self->{open_block}{key};
-
-            $self->_append_value($key, 1);
-            $self->{open_block} = undef;
-            return;
-        }
-
-        if (defined $brace_idx && $rest_tok[$brace_idx] eq '{') {
-            croak "nested HARNESS2 block at line $self->{line_no}";
-        }
-
-        croak "HARNESS2 directive inside block at line $self->{line_no} (block '$self->{open_block}{key}' is open)";
-    }
+sub _parse_inside_block {
+    my ($self, $line) = @_;
 
     return unless $line =~ $self->{comment_re};
     my $rest = $1;
+    return unless length $rest;
 
+    my @tokens = $self->_tokenize($rest);
+    return unless @tokens;
+
+    my ($key, @rest_tok) = @tokens;
+    $self->_validate_key($key);
+
+    my $brace_idx = $self->_find_brace_idx(\@rest_tok);
+    if (defined $brace_idx && $rest_tok[$brace_idx] eq '}') {
+        croak "block close marker must be last token at line $self->{line_no}"
+            unless $brace_idx == $#rest_tok;
+        croak "block close has extra tokens at line $self->{line_no}"
+            if @rest_tok > 1;
+        croak "block close key mismatch at line $self->{line_no}: opened '$self->{open_block}{key}', closed '$key'"
+            unless $key eq $self->{open_block}{key};
+
+        $self->_append_value($key, 1);
+        $self->{open_block} = undef;
+        return;
+    }
+
+    if (defined $brace_idx && $rest_tok[$brace_idx] eq '{') {
+        croak "nested HARNESS2 block at line $self->{line_no}";
+    }
+
+    croak "HARNESS2 directive inside block at line $self->{line_no} (block '$self->{open_block}{key}' is open)";
+}
+
+sub _parse_top_level {
+    my ($self, $line) = @_;
+
+    return unless $line =~ $self->{comment_re};
+    my $rest = $1;
     return unless length $rest;
 
     my @tokens = $self->_tokenize($rest);
@@ -126,7 +134,7 @@ sub parse_line {
         if ($brace eq '{') {
             croak "block-open '$key {' must not have other tokens at line $self->{line_no}"
                 if @values > 1;
-            $self->{open_block} = { key => $key };
+            $self->{open_block} = {key => $key};
             return;
         }
         croak "unexpected block-close '$key }' at line $self->{line_no} (no block open)";
@@ -135,25 +143,30 @@ sub parse_line {
     croak "directive '$key' has no values at line $self->{line_no}"
         unless @values;
 
-    for my $v (@values) {
-        if ($v =~ /\A\@/) {
-            if ($SIGIL_TRUE{$v}) {
-                $self->_append_value($key, 1);
-            }
-            elsif ($SIGIL_FALSE{$v}) {
-                $self->_append_value($key, 0);
-            }
-            elsif ($v eq '@default') {
-                my $exp = $DEFAULTS{$key} // [];
-                $self->_append_value($key, $_) for @$exp;
-            }
-            else {
-                croak "unknown sigil '$v' at line $self->{line_no}";
-            }
-        }
-        else {
-            $self->_append_value($key, $v);
-        }
+    $self->_record_value($key, $_) for @values;
+    return;
+}
+
+sub _record_value {
+    my ($self, $key, $v) = @_;
+
+    if ($v !~ /\A\@/) {
+        $self->_append_value($key, $v);
+        return;
+    }
+
+    if ($SIGIL_TRUE{$v}) {
+        $self->_append_value($key, 1);
+    }
+    elsif ($SIGIL_FALSE{$v}) {
+        $self->_append_value($key, 0);
+    }
+    elsif ($v eq '@default') {
+        my $exp = $DEFAULTS{$key} // [];
+        $self->_append_value($key, $_) for @$exp;
+    }
+    else {
+        croak "unknown sigil '$v' at line $self->{line_no}";
     }
 }
 

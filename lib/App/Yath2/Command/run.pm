@@ -258,99 +258,112 @@ sub _reap_renderer {
 sub _drive_ipc_loop {
     my ($self, $spawn, $run_id, $renderer_pid) = @_;
 
-    my $ipc_pass     = 1;
-    my $seen_run_end = 0;
-    my $harness_pid  = $spawn->pid;
-    my $ipc          = $spawn->handle;
-    my $next_poll    = 0;
+    my $state = {
+        ipc_pass     => 1,
+        seen_run_end => 0,
+        harness_pid  => $spawn->pid,
+        ipc          => $spawn->handle,
+        next_poll    => 0,
+    };
 
     while (1) {
         my $renderer_gone = $renderer_pid
             && (waitpid($renderer_pid, POSIX::WNOHANG()) == $renderer_pid);
 
-        eval { $ipc->poll(0); 1 } or warn "ipc poll: $@";
+        eval { $state->{ipc}->poll(0); 1 } or warn "ipc poll: $@";
+        $self->_drain_state_messages($state);
+        $self->_poll_run_results($state, $spawn, $run_id);
 
-        for my $msg ($ipc->messages) {
-            my $content = $msg->content;
-            next unless ref($content) eq 'HASH';
-
-            next unless ($content->{type} // '') eq 'state'
-                     && ($content->{item} // '') eq 'run';
-
-            my $rd = $content->{state};
-            next unless ref($rd) eq 'HASH';
-
-            if (defined $rd->{pass}) {
-                $ipc_pass = 0 unless $rd->{pass};
-            }
-            else {
-                my $results = ref($rd->{results}) eq 'HASH' ? $rd->{results} : {};
-                for my $jid (keys %$results) {
-                    my $jr = $results->{$jid};
-                    next unless ref($jr) eq 'HASH';
-                    next unless defined $jr->{completed_at};
-                    $ipc_pass = 0 unless $jr->{pass};
-                }
-            }
-
-            my $pen = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
-            my $run = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
-            my $have_results = ref($rd->{results}) eq 'HASH' && %{$rd->{results}};
-            $seen_run_end = 1 if $pen == 0 && $run == 0 && $have_results;
-        }
-
-        # Fall-back: poll run_results twice a second. The harness
-        # records every completed run in COMPLETED_RUNS at terminal
-        # time, so a run that finished before our subscribe took
-        # effect (small, fast tests) still surfaces here.
-        if (time >= $next_poll) {
-            $next_poll = time + 0.5;
-            my $res = eval { $spawn->run_results($run_id); };
-            if (ref($res) eq 'HASH' && $res->{ok}) {
-                my $state = $res->{state} // '';
-                if ($state ne 'running' && exists $res->{pass}) {
-                    $ipc_pass = 0 unless $res->{pass};
-                    $seen_run_end = 1;
-                }
-            }
-        }
-
-        last if $seen_run_end;
+        last if $state->{seen_run_end};
 
         # Daemon died mid-run: bail with failure. We never saw an
         # end-of-run signal, so pass/fail is unknowable -- treat as
         # failure rather than silently returning success.
-        if ($harness_pid && !kill(0 => $harness_pid)) {
-            warn "yath run: harness pid $harness_pid disappeared before the run completed.\n";
-            $ipc_pass = 0;
+        if ($state->{harness_pid} && !kill(0 => $state->{harness_pid})) {
+            warn "yath run: harness pid $state->{harness_pid} disappeared before the run completed.\n";
+            $state->{ipc_pass} = 0;
             last;
         }
 
-        # Renderer exiting first only means the on-disk log signalled
-        # end-of-run; the IPC state broadcast may still be in flight.
-        # Take one more authoritative run_results poll before bailing
-        # so pass/fail does not silently default to 1.
         if ($renderer_gone) {
-            my $res = eval { $spawn->run_results($run_id); };
-            if (ref($res) eq 'HASH' && $res->{ok} && exists $res->{pass}) {
-                $ipc_pass = 0 unless $res->{pass};
-            }
-            else {
-                # No authoritative pass/fail answer from the daemon
-                # (request errored or returned no pass). The most
-                # common case is the daemon went away mid-run before
-                # writing the run's terminal snapshot; either way we
-                # cannot honestly call this a pass, so fail closed.
-                warn "yath run: run_results did not return a pass/fail; treating as failure.\n";
-                $ipc_pass = 0;
-            }
+            $self->_finalize_after_renderer_exit($state, $spawn, $run_id);
             last;
         }
 
         tinysleep(0.05);
     }
 
-    return ($ipc_pass);
+    return $state->{ipc_pass};
+}
+
+sub _drain_state_messages {
+    my ($self, $state) = @_;
+
+    for my $msg ($state->{ipc}->messages) {
+        my $content = $msg->content;
+        next unless ref($content) eq 'HASH';
+        next unless ($content->{type} // '') eq 'state'
+                 && ($content->{item} // '') eq 'run';
+
+        my $rd = $content->{state};
+        next unless ref($rd) eq 'HASH';
+
+        if (defined $rd->{pass}) {
+            $state->{ipc_pass} = 0 unless $rd->{pass};
+        }
+        else {
+            my $results = ref($rd->{results}) eq 'HASH' ? $rd->{results} : {};
+            for my $jid (keys %$results) {
+                my $jr = $results->{$jid};
+                next unless ref($jr) eq 'HASH';
+                next unless defined $jr->{completed_at};
+                $state->{ipc_pass} = 0 unless $jr->{pass};
+            }
+        }
+
+        my $pen = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
+        my $run = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
+        my $have_results = ref($rd->{results}) eq 'HASH' && %{$rd->{results}};
+        $state->{seen_run_end} = 1 if $pen == 0 && $run == 0 && $have_results;
+    }
+}
+
+# Fall-back: poll run_results twice a second. The harness records every
+# completed run in COMPLETED_RUNS at terminal time, so a run that
+# finished before our subscribe took effect (small, fast tests) still
+# surfaces here.
+sub _poll_run_results {
+    my ($self, $state, $spawn, $run_id) = @_;
+    return if time < $state->{next_poll};
+
+    $state->{next_poll} = time + 0.5;
+    my $res = eval { $spawn->run_results($run_id); };
+    return unless ref($res) eq 'HASH' && $res->{ok};
+
+    my $rstate = $res->{state} // '';
+    return unless $rstate ne 'running' && exists $res->{pass};
+
+    $state->{ipc_pass}     = 0 unless $res->{pass};
+    $state->{seen_run_end} = 1;
+}
+
+# Renderer exiting first only means the on-disk log signalled end-of-run;
+# the IPC state broadcast may still be in flight. Take one authoritative
+# run_results poll so pass/fail does not silently default to 1.
+sub _finalize_after_renderer_exit {
+    my ($self, $state, $spawn, $run_id) = @_;
+
+    my $res = eval { $spawn->run_results($run_id); };
+    if (ref($res) eq 'HASH' && $res->{ok} && exists $res->{pass}) {
+        $state->{ipc_pass} = 0 unless $res->{pass};
+        return;
+    }
+
+    # No authoritative pass/fail answer (request errored or returned
+    # nothing). Most commonly the daemon went away mid-run before
+    # writing the terminal snapshot -- either way fail closed.
+    warn "yath run: run_results did not return a pass/fail; treating as failure.\n";
+    $state->{ipc_pass} = 0;
 }
 
 1;

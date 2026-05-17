@@ -115,10 +115,37 @@ sub _attempt_in_place_reload {
     croak "_attempt_in_place_reload requires a file" unless defined $file && length $file;
 
     my $abs = abs_path($file) // $file;
+    my ($inc_key, $mod) = $self->_resolve_inc_module($abs);
 
-    # Locate the %INC key (and module name when discoverable) for
-    # this file via reverse lookup.
-    my ($inc_key, $mod);
+    _moose_reset_package_cache_flag($mod);
+    _clear_package_stash($mod);
+
+    delete $INC{$inc_key} if defined $inc_key;
+    delete $INC{$file};
+    delete $INC{$abs};
+
+    my ($ok, $err) = _require_abs($abs);
+
+    unless ($ok) {
+        _restore_inc($abs, $inc_key, $file);
+        $self->{+LAST_ERROR} = $err;
+        return (0, $err);
+    }
+
+    # Restore inc entries (require may have left them).
+    $INC{$inc_key} //= $abs if defined $inc_key;
+    $INC{$file}    //= $abs;
+    $INC{$abs}     //= $abs;
+
+    $self->{+LAST_RELOAD_AT} = time;
+    $self->{+LAST_ERROR}     = undef;
+    return (1, undef);
+}
+
+sub _resolve_inc_module {
+    my ($self, $abs) = @_;
+
+    my $inc_key;
     for my $k (keys %INC) {
         my $v = $INC{$k};
         next unless defined $v;
@@ -127,6 +154,8 @@ sub _attempt_in_place_reload {
         $inc_key = $k;
         last;
     }
+
+    my $mod;
     if (defined $inc_key) {
         my $stripped = $inc_key;
         $stripped =~ s{\.pm\z}{};
@@ -134,43 +163,40 @@ sub _attempt_in_place_reload {
         $mod = $stripped if length $stripped;
     }
 
-    # Moose meta snapshot (best-effort). reset_meta lets us discard
-    # the existing class+role wiring so the require below can rebuild
-    # it. We only attempt this when Class::MOP is loaded; otherwise
-    # ignore.
-    if ($mod && $INC{'Class/MOP.pm'}) {
-        eval {
-            require Class::MOP;
-            if (my $meta = Class::MOP::class_of($mod)) {
-                if ($meta->can('reset_package_cache_flag')) {
-                    $meta->reset_package_cache_flag;
-                }
-            }
-            1;
-        };
-    }
+    return ($inc_key, $mod);
+}
 
-    # Symbol-table sweep: undef each non-namespace slot in the
-    # module's stash before re-require so stale subs do not linger
-    # if the new source removed them. Skip when no module name was
-    # discoverable (.t script, non-perl file referenced via %INC,
-    # etc.). `undef` on a glob name in the stash clears the CODE
-    # slot specifically; `delete` on the stash hash leaves the
-    # typeglob's CODE slot intact and require's redefine warning is
-    # suppressed because perl thinks the sub still exists.
-    if (defined $mod && length $mod) {
-        no strict 'refs';
-        my $stash = \%{"${mod}::"};
-        my @syms = grep { !/::\z/ } keys %$stash;
-        for my $sym (@syms) {
-            undef *{"${mod}::${sym}"};
+# Best-effort Moose hint: tell Class::MOP the package stash will
+# mutate so the next require recompiles cleanly. No-op without MOP.
+sub _moose_reset_package_cache_flag {
+    my ($mod) = @_;
+    return unless $mod && $INC{'Class/MOP.pm'};
+    eval {
+        require Class::MOP;
+        if (my $meta = Class::MOP::class_of($mod)) {
+            $meta->reset_package_cache_flag if $meta->can('reset_package_cache_flag');
         }
+        1;
+    };
+}
+
+# Undef each non-namespace glob in $mod's stash so stale subs do
+# not linger when the new source removes them. `undef` on the glob
+# (vs delete on the hash slot) is what actually clears the CODE
+# slot so require's redefine warning fires on real changes.
+sub _clear_package_stash {
+    my ($mod) = @_;
+    return unless defined $mod && length $mod;
+    no strict 'refs';
+    my $stash = \%{"${mod}::"};
+    my @syms = grep { !/::\z/ } keys %$stash;
+    for my $sym (@syms) {
+        undef *{"${mod}::${sym}"};
     }
+}
 
-    delete $INC{$inc_key} if defined $inc_key;
-    delete $INC{$file};
-    delete $INC{$abs};
-
+sub _require_abs {
+    my ($abs) = @_;
     my @warnings;
     my $ok = eval {
         local $SIG{__WARN__} = sub { push @warnings => @_ };
@@ -178,32 +204,18 @@ sub _attempt_in_place_reload {
         require $abs;
         1;
     };
-    my $err = $@;
+    return ($ok, $@);
+}
 
-    unless ($ok) {
-        # Restore %INC mappings on failure so subsequent reloader
-        # ticks can still locate this file as a "module under the
-        # project root" candidate. Perl's failed require leaves
-        # the slot as a non-creatable hash value (assigning to it
-        # raises "Modification of non-creatable hash value"); delete
-        # first and then re-set with the abs path.
-        for my $k (grep { defined } $inc_key, $file, $abs) {
-            delete $INC{$k};
-            $INC{$k} = $abs;
-        }
-
-        $self->{+LAST_ERROR} = $err;
-        return (0, $err);
+# After a failed require Perl leaves the %INC slot as a non-creatable
+# hash value; delete then re-assign so subsequent reloader ticks can
+# still find this file as a project-root module candidate.
+sub _restore_inc {
+    my ($abs, @keys) = @_;
+    for my $k (grep { defined } @keys) {
+        delete $INC{$k};
+        $INC{$k} = $abs;
     }
-
-    # Restore inc entries.
-    $INC{$inc_key} //= $abs if defined $inc_key;
-    $INC{$file}    //= $abs;
-    $INC{$abs}     //= $abs;
-
-    $self->{+LAST_RELOAD_AT} = time;
-    $self->{+LAST_ERROR}     = undef;
-    return (1, undef);
 }
 
 # Send preload_restarting to the harness and exec a fresh copy of
@@ -282,22 +294,8 @@ sub _attempt_churn_reload {
     my @churn = $self->find_churn($file);
     return (0, "no CHURN sections in $file") unless @churn;
 
-    my ($inc_key, $mod);
     my $abs = abs_path($file) // $file;
-    for my $k (keys %INC) {
-        my $v = $INC{$k};
-        next unless defined $v;
-        my $r = abs_path($v) // $v;
-        next unless $r eq $abs;
-        $inc_key = $k;
-        last;
-    }
-    if (defined $inc_key) {
-        my $stripped = $inc_key;
-        $stripped =~ s{\.pm\z}{};
-        $stripped =~ s{/}{::}g;
-        $mod = $stripped if length $stripped;
-    }
+    my (undef, $mod) = $self->_resolve_inc_module($abs);
     return (0, "could not resolve module for $file") unless defined $mod && length $mod;
 
     for my $block (@churn) {

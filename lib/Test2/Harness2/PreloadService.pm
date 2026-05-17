@@ -477,61 +477,13 @@ sub request_handler_spawn_test {
     require Test2::Harness2::Collector;
     require Long::Jump;
 
-    # Role::Preload pre_fork hook: runs in this (service) process
-    # before any forks. Use it to warm caches / open shared handles
-    # that the test should inherit. Errors warn but do not abort.
+    # Role::Preload pre_fork hook: in *this* (service) process before
+    # any forks. Use it to warm caches / open shared handles the test
+    # should inherit. Errors warn but do not abort.
     $self->_fire_role_hook(pre_fork => $payload);
 
-    # Callback runs in the Collector's post-fork child (the test
-    # grandchild) with STDOUT/STDERR already swapped to the
-    # collector's pipes. Resets process and Test2 state, fires the
-    # pre_launch hook, then longjumps out to run()'s setjump anchor;
-    # the post-jump branch in run() calls goto::file with the test
-    # path so the parser takes over from there.
-    my $cb = sub { $self->_test_grandchild_launch($payload) };
-
-    my $auditor = $payload->{auditor};
-    my $env     = ref($payload->{env}) eq 'HASH' ? $payload->{env} : {};
-
-    # Role::Preload post_fork runs in the collector process (first
-    # child of this service) right after fork. Only set the callback
-    # when there is a role consumer; the Collector treats an unset
-    # post_fork_callback as a no-op.
-    my $self_ref = $self;    # capture for the closure
-    my $post_fork_cb;
-    if ($self_ref->_role_consumer_class) {
-        $post_fork_cb = sub { $self_ref->_fire_role_hook(post_fork => $payload) };
-    }
-
-    my $handle;
-    my $ok = eval {
-        $handle = Test2::Harness2::Collector->spawn(
-            type               => 'Job',
-            id                 => $payload->{job_id},
-            run_id             => $payload->{run_id},
-            job_try            => $payload->{job_try} // 1,
-            launch_callback    => $cb,
-            ($post_fork_cb ? (post_fork_callback => $post_fork_cb) : ()),
-            new_pgroup         => 1,
-            parent_pids        => [$$],
-            env_vars           => { %$env },
-            logdir             => $payload->{logdir},
-            ipcm_info          => $self->ipcm_info,
-            ipc_parent         => $payload->{ipc_parent},
-            ipc_run            => $payload->{ipc_run},
-            ipc_harness        => $payload->{ipc_harness},
-            kill_timeout       => $payload->{kill_timeout},
-            spec               => $payload->{spec} // {},
-            (defined $auditor ? (auditor => $auditor) : ()),
-            (defined $payload->{ch_dir} && length $payload->{ch_dir} ? (cwd => $payload->{ch_dir}) : ()),
-        );
-        1;
-    };
-    my $err = $@;
-    unless ($ok) {
-        warn "spawn_test: Collector->spawn failed: $err";
-        return;
-    }
+    my $handle = $self->_collector_spawn_test($payload);
+    return unless $handle;
 
     my $cpid = ref($handle) ? $handle->pid : undef;
     if (defined $cpid) {
@@ -543,6 +495,59 @@ sub request_handler_spawn_test {
     }
 
     return;
+}
+
+sub _collector_spawn_test {
+    my ($self, $payload) = @_;
+
+    # launch_callback runs in the Collector's post-fork child (the
+    # test grandchild) with STDOUT/STDERR already swapped to the
+    # collector's pipes. _test_grandchild_launch resets process and
+    # Test2 state, fires pre_launch, then longjumps out to run()'s
+    # setjump anchor; run() then goto::file's the test path.
+    my $launch_cb = sub { $self->_test_grandchild_launch($payload) };
+
+    # post_fork runs in the collector process (first child of this
+    # service) right after fork. Only set when a role consumer exists;
+    # Collector treats an unset callback as no-op.
+    my $post_fork_cb;
+    if ($self->_role_consumer_class) {
+        my $self_ref = $self;
+        $post_fork_cb = sub { $self_ref->_fire_role_hook(post_fork => $payload) };
+    }
+
+    my $env = ref($payload->{env}) eq 'HASH' ? $payload->{env} : {};
+    my $auditor = $payload->{auditor};
+
+    my $handle;
+    my $ok = eval {
+        $handle = Test2::Harness2::Collector->spawn(
+            type            => 'Job',
+            id              => $payload->{job_id},
+            run_id          => $payload->{run_id},
+            job_try         => $payload->{job_try} // 1,
+            launch_callback => $launch_cb,
+            ($post_fork_cb ? (post_fork_callback => $post_fork_cb) : ()),
+            new_pgroup   => 1,
+            parent_pids  => [$$],
+            env_vars     => {%$env},
+            logdir       => $payload->{logdir},
+            ipcm_info    => $self->ipcm_info,
+            ipc_parent   => $payload->{ipc_parent},
+            ipc_run      => $payload->{ipc_run},
+            ipc_harness  => $payload->{ipc_harness},
+            kill_timeout => $payload->{kill_timeout},
+            spec         => $payload->{spec} // {},
+            (defined $auditor ? (auditor => $auditor) : ()),
+            (defined $payload->{ch_dir} && length $payload->{ch_dir} ? (cwd => $payload->{ch_dir}) : ()),
+        );
+        1;
+    };
+    unless ($ok) {
+        warn "spawn_test: Collector->spawn failed: $@";
+        return undef;
+    }
+    return $handle;
 }
 
 # Test grandchild launch body, factored out of request_handler_spawn_test.
@@ -793,7 +798,22 @@ sub _post_jump_spawn_script {
     require IO::Socket::UNIX;
     require App::Yath2::Spawn::FdPass;
 
-    # Open the CLI's listening socket and receive the three FDs.
+    _spawn_script_install_fds($payload);
+
+    chdir $payload->{cwd} or POSIX::_exit(126);
+    %ENV = %{$payload->{env}};
+
+    $self->_spawn_script_notify_harness($payload);
+
+    local @ARGV = @{$payload->{argv} // []};
+    $0 = $payload->{script_abs};
+
+    POSIX::_exit(_spawn_script_run($payload->{script_abs}));
+}
+
+sub _spawn_script_install_fds {
+    my ($payload) = @_;
+
     my $sock = IO::Socket::UNIX->new(
         Peer => $payload->{sock_path},
         Type => IO::Socket::UNIX::SOCK_STREAM(),
@@ -815,67 +835,62 @@ sub _post_jump_spawn_script {
     POSIX::dup2($fds->[1], 1) or POSIX::_exit(126);
     POSIX::dup2($fds->[2], 2) or POSIX::_exit(126);
     POSIX::close($_) for @$fds;
+}
 
-    chdir $payload->{cwd} or POSIX::_exit(126);
-    %ENV = %{$payload->{env}};
+# The inherited IPC client has pid_check() bound to the PreloadService
+# PID and would croak in the grandchild; open a fresh listen=0
+# connection for a single send_message instead.
+sub _spawn_script_notify_harness {
+    my ($self, $payload) = @_;
 
-    # Tell the harness our pid so it can waitpid us and forward the
-    # exit notification back to the CLI.
-    # We must open a fresh IPC connection here: the inherited client
-    # has pid_check() tied to the PreloadService PID, so using it in
-    # the grandchild would croak.  A short-lived listen=0 connection
-    # is sufficient for a one-shot send_message call.
-    {
-        require IPC::Manager;
-        my $gc_client = IPC::Manager->connect(
-            "spawn-gc-$$",
-            $self->{+IPCM_INFO},
-            listen => 0,
-        );
-        my $ok = eval {
-            $gc_client->send_message($payload->{notify_to}, {
-                kind     => 'script_spawned',
-                pid      => $$,
-                spawn_id => $payload->{spawn_id},
-            });
-            1;
-        };
-        my $err = $@;
-        unless ($ok) {
-            print STDERR "yath spawn grandchild: script_spawned failed: $err\n";
-            POSIX::_exit(126);
-        }
-    }
+    require IPC::Manager;
+    my $gc_client = IPC::Manager->connect(
+        "spawn-gc-$$",
+        $self->{+IPCM_INFO},
+        listen => 0,
+    );
+    my $ok = eval {
+        $gc_client->send_message($payload->{notify_to}, {
+            kind     => 'script_spawned',
+            pid      => $$,
+            spawn_id => $payload->{spawn_id},
+        });
+        1;
+    };
+    return if $ok;
 
-    local @ARGV = @{$payload->{argv} // []};
-    $0 = $payload->{script_abs};
+    print STDERR "yath spawn grandchild: script_spawned failed: $@\n";
+    POSIX::_exit(126);
+}
 
-    # We can reliably catch runtime die() from the script (eval returns
-    # undef + $@) and read failures (do() returns undef + $! set). Compile
-    # errors set $@ but do() does NOT die, AND the script body may contain
-    # its own eval{die} which leaves $@ set on successful return — so we
-    # cannot distinguish "compile failed" from "ran fine with internal
-    # eval" by inspecting $@ post-do. Scripts that need a non-zero exit
-    # for compile failure must use a wrapper or call exit() explicitly.
-    my $exit_code = 0;
+# Runtime die() is observable (eval returns undef + $@) and read
+# failures show up via do() returning undef with $! set. Compile
+# errors leave $@ set without making do() die, and a script may
+# contain its own eval{die} that leaves $@ set on success — so
+# "compile failed" cannot be distinguished from "ran fine with an
+# internal eval" by inspecting $@ post-do. Scripts that need a
+# non-zero exit for compile failure must wrap or exit() themselves.
+sub _spawn_script_run {
+    my ($script_abs) = @_;
+
     my ($rv, $do_io_err);
     my $did = eval {
         local $!;
-        $rv        = do $payload->{script_abs};
+        $rv        = do $script_abs;
         $do_io_err = $!;
         1;
     };
     my $eval_err = $@;
+
     if (!$did) {
         print STDERR "yath spawn: $eval_err\n";
-        $exit_code = 1;
+        return 1;
     }
-    elsif (!defined($rv) && $do_io_err) {
-        print STDERR "yath spawn: cannot read $payload->{script_abs}: $do_io_err\n";
-        $exit_code = 2;
+    if (!defined($rv) && $do_io_err) {
+        print STDERR "yath spawn: cannot read $script_abs: $do_io_err\n";
+        return 2;
     }
-
-    POSIX::_exit($exit_code);
+    return 0;
 }
 
 1;

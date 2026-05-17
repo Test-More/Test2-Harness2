@@ -85,27 +85,34 @@ sub run {
     my $workdir = $settings->workspace->workdir;
 
     # Build + fork the harness. Spawning fires its global resource
-    # services (Resource::Preload included) and blocks until the
-    # service is ready to accept requests, so a startup failure
-    # surfaces here -- before we daemonize -- and the user sees the
-    # diagnostic on the terminal they invoked us from.
+    # services (Resource::Preload included) and blocks until ready,
+    # so a startup failure surfaces here -- before we daemonize -- so
+    # the user sees the diagnostic on their invoking terminal.
     my $spawn = $self->_spawn_harness($workdir);
 
-    # The Spawn handle's DESTROY sends a terminate to the harness;
-    # clear that ownership before any planned detachment so a normal
-    # parent exit doesn't take the daemon down with it.
-    my $detach_spawn = sub {
-        my $ok = eval { $spawn->clear_terminate_on_destroy; 1 };
-        warn "clear_terminate_on_destroy: $@" unless $ok;
-    };
-
-    my $info_path;
     my $writer_pid = $$;
+    my $info_path  = $self->_publish_ipc_or_die($settings, $spawn, $workdir);
     my $cleanup_ipc = sub {
         unlink_ipc_file($info_path, $writer_pid) if defined $info_path;
     };
 
-    my $start_ok = eval {
+    if ($settings->start->foreground) {
+        # Foreground: stay attached, forward signals, wait for the
+        # harness to exit (either through a signal we forwarded or
+        # its own teardown).
+        $self->_run_foreground($spawn, $info_path, $cleanup_ipc);
+        return 0;
+    }
+
+    $self->_detach_into_daemon($spawn, $info_path, $workdir);
+    return 0;    # unreachable: _detach_into_daemon POSIX::_exits
+}
+
+sub _publish_ipc_or_die {
+    my ($self, $settings, $spawn, $workdir) = @_;
+
+    my $info_path;
+    my $ok = eval {
         $info_path = publish_ipc_file(
             command  => 'start',
             settings => $settings,
@@ -114,45 +121,30 @@ sub run {
         );
         1;
     };
-    unless ($start_ok) {
-        my $err = $@;
-        # Best-effort teardown of the harness we just spawned.
-        eval { $spawn->terminate; 1 };
-        eval { $spawn->wait;      1 };
-        die "Failed to publish IPC info file: $err";
-    }
+    return $info_path if $ok;
 
-    if ($settings->start->foreground) {
-        # Foreground mode: stay attached, install signal handlers,
-        # wait for the harness to exit (whether through a signal we
-        # forward, or its own teardown).
-        $self->_run_foreground($spawn, $info_path, $cleanup_ipc);
-        return 0;
-    }
+    my $err = $@;
+    eval { $spawn->terminate; 1 };    # best-effort teardown of the just-spawned harness
+    eval { $spawn->wait;      1 };
+    die "Failed to publish IPC info file: $err";
+}
 
-    # Daemon mode: print the breadcrumb on the terminal, then
-    # detach. The harness service (our child via fork+exec / fork)
-    # is already running; we just need to step out of the way
-    # without taking it down.
+# Daemon-mode: print the breadcrumb, hand the daemon off, then
+# _exit() so Perl's teardown does not unwind scope guards
+# (IPC::Manager bus post_disconnect, Workspace, inherited
+# Scope::Guard destructors) that would tear down workdir contents
+# we just handed to the daemon. Watchdog forks *before* clearing
+# the Spawn destroy hook so a crash here still cleans the IPC info
+# file when the daemon eventually exits.
+sub _detach_into_daemon {
+    my ($self, $spawn, $info_path, $workdir) = @_;
+
     print "started: pid=" . $spawn->pid . " workdir=$workdir ipc=$info_path\n";
 
-    # Detach: tell the harness to drop our pid from its watch_pids
-    # (so our exit does not trigger its shutdown), clear our local
-    # Spawn destructor's terminate hook, fork off a tiny watchdog
-    # to clean up the IPC info file when the daemon eventually goes
-    # away, then _exit so Perl's normal teardown does not unwind
-    # scope guards from IPC::Manager / Workspace that would tear
-    # the daemon's workdir contents down with us.
-    # Watchdog fork before clearing the destroy hook so an early
-    # crash here still cleans up the IPC info file once the daemon
-    # eventually exits.
     $self->_spawn_ipc_watchdog($spawn->pid, $info_path);
 
-    # Clear the Spawn handle's destructor + skip Perl-level cleanup
-    # via POSIX::_exit. Otherwise IPC::Manager's bus post_disconnect
-    # hook + any inherited Scope::Guard destructors would recurse
-    # into the workdir we just handed off to the daemon.
-    $detach_spawn->();
+    my $ok = eval { $spawn->clear_terminate_on_destroy; 1 };
+    warn "clear_terminate_on_destroy: $@" unless $ok;
 
     STDOUT->flush;
     STDERR->flush;

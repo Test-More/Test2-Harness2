@@ -55,12 +55,28 @@ sub init {
 sub do_reload {
     my ($self, $svc) = @_;
 
+    my @candidates = $self->_scan_candidates;
+    return unless @candidates;
+
+    if (!$self->{+_INITIALIZED}) {
+        $self->_snapshot_mtimes(\@candidates);
+        $self->{+_INITIALIZED} = 1;
+        return;
+    }
+
+    $self->_reload_changed($svc, \@candidates);
+    return;
+}
+
+sub _scan_candidates {
+    my ($self) = @_;
+
     my %inc_abs;
     for my $entry (@{$self->_filter_inc}) {
-        my ($key, $abs) = @$entry;
+        my (undef, $abs) = @$entry;
         $inc_abs{$abs} = 1;
     }
-    return unless keys %inc_abs;
+    return () unless keys %inc_abs;
 
     my @candidates;
     for my $dir (@{$self->{+WATCH_PATHS}}) {
@@ -79,23 +95,25 @@ sub do_reload {
             $dir,
         );
     }
+    return @candidates;
+}
 
-    # First tick: just snapshot mtimes so we don't reload everything
-    # the instant we start watching.
-    unless ($self->{+_INITIALIZED}) {
-        for my $abs (@candidates) {
-            my @s = stat($abs);
-            $self->{+MTIMES}{$abs} = $s[9] if @s;
-        }
-        $self->{+_INITIALIZED} = 1;
-        return;
+sub _snapshot_mtimes {
+    my ($self, $files) = @_;
+    for my $abs (@$files) {
+        my @s = stat($abs);
+        $self->{+MTIMES}{$abs} = $s[9] if @s;
     }
+}
+
+sub _reload_changed {
+    my ($self, $svc, $files) = @_;
 
     my $now      = time;
     my $debounce = $self->debounce_secs;
     my $last     = $self->last_reload_at // 0;
 
-    for my $abs (@candidates) {
+    for my $abs (@$files) {
         my @s = stat($abs);
         next unless @s;
         my $mtime = $s[9];
@@ -109,46 +127,40 @@ sub do_reload {
 
         # Debounce: skip if we successfully reloaded too recently.
         # Re-check mtime next tick.
-        if ($last && ($now - $last) < $debounce) {
-            next;
-        }
+        next if $last && ($now - $last) < $debounce;
 
-        $self->before_reload($svc, $abs);
-
-        my ($ok, $err) = $self->_attempt_in_place_reload($abs);
-
-        if (!$ok) {
-            my @churn = $self->find_churn($abs);
-            if (@churn) {
-                my ($cok, $cerr) = $self->_attempt_churn_reload($abs);
-                if ($cok) {
-                    $ok  = 1;
-                    $err = undef;
-                }
-                else {
-                    $err = $cerr // $err;
-                }
-            }
-        }
-
-        if ($ok) {
-            $self->{+MTIMES}{$abs} = $mtime;
-        }
-        else {
-            # Keep prior mtime so a subsequent fix (still differing
-            # from the cached value) triggers another attempt.
-            $self->{+LAST_ERROR} = $err;
-        }
-
-        $self->after_reload($svc, $abs, $ok, $err);
+        $self->_reload_one($svc, $abs, $mtime);
 
         # Refresh "now" / "last" in case multiple files changed in
         # the same tick; we still honor debounce for the next file.
         $now  = time;
         $last = $self->last_reload_at // 0;
     }
+}
 
-    return;
+sub _reload_one {
+    my ($self, $svc, $abs, $mtime) = @_;
+
+    $self->before_reload($svc, $abs);
+
+    my ($ok, $err) = $self->_attempt_in_place_reload($abs);
+
+    if (!$ok && $self->find_churn($abs)) {
+        my ($cok, $cerr) = $self->_attempt_churn_reload($abs);
+        if ($cok) { ($ok, $err) = (1, undef) }
+        else      { $err = $cerr // $err }
+    }
+
+    if ($ok) {
+        $self->{+MTIMES}{$abs} = $mtime;
+    }
+    else {
+        # Keep prior mtime so a subsequent fix (still differing
+        # from the cached value) triggers another attempt.
+        $self->{+LAST_ERROR} = $err;
+    }
+
+    $self->after_reload($svc, $abs, $ok, $err);
 }
 
 1;
