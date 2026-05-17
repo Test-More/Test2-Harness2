@@ -4,70 +4,123 @@ use warnings;
 
 our $VERSION = '2.000013';
 
+use POSIX qw/strftime/;
 use Term::Table();
-use File::Spec();
 
-use List::Util qw/max/;
-use Time::HiRes qw/sleep/;
-
-# XXX TODO: App::Yath2::IPC removed (PR #390) — this command is non-functional
+use App::Yath2::Util::IPC qw/discover_daemons/;
 
 use Role::Tiny::With;
 with 'App::Yath2::Role::Command';
-use Object::HashBase;
+
+use Object::HashBase qw{
+    <args
+    <settings
+};
 
 use Getopt::Yath;
 include_options(
-    'App::Yath2::Options::IPCAll',
     'App::Yath2::Options::Yath',
+    'App::Yath2::Options::Harness',
+    'App::Yath2::Options::IPC',
 );
 
-sub group { 'state' }
+option_group {group => 'list', category => "List Options"} => sub {
+    option all_projects => (
+        type        => 'Bool',
+        default     => 0,
+        description => 'List daemons across all projects, not just this one.',
+    );
 
-sub summary { "List all active local runners, persistent or otherwise" }
-sub cli_args { "" }
+    option all_users => (
+        type        => 'Bool',
+        default     => 0,
+        description => 'List daemons across all users (only meaningful when IPC files are world-readable).',
+    );
+};
+
+sub load_plugins   { 0 }
+sub load_resources { 0 }
+sub load_renderers { 0 }
+
+sub accepts_dot_args   { 0 }
+sub args_include_tests { 0 }
+
+sub group { 'daemon' }
+
+sub summary { "List running yath daemons" }
 
 sub description {
     return <<"    EOT";
-List all active local runners, persistent or otherwise.
+Scan the IPC directories for live `yath start` daemons owned by this
+user, in this project. Use --all-projects or --all-users to widen the
+scope.
     EOT
 }
 
 sub run {
-    # XXX TODO: App::Yath2::IPC is gone (PR #390); reimplment once IPC layer is restored
-    die "ERROR: 'yath list' is not yet functional — App::Yath2::IPC has been removed (PR #390).\n";
-}
-
-sub render_ipc {
     my $self = shift;
-    my ($ipc) = @_;
 
-    $ipc = {%$ipc};
+    local $| = 1;
+    STDERR->autoflush(1);
 
-    $ipc->{address} = File::Spec->abs2rel($ipc->{address}) if $ipc->{address} && -e $ipc->{address};
-    $ipc->{file}    = File::Spec->abs2rel($ipc->{file})    if $ipc->{file}    && -e $ipc->{file};
+    my $settings = $self->{+SETTINGS};
+    my $list_opts = $settings->list;
 
-    delete $ipc->{address} if $ipc->{address} && $ipc->{file} && $ipc->{address} eq $ipc->{file};
-    $ipc->{ipc_file} //= delete $ipc->{file};
+    my $all = discover_daemons(
+        settings => $settings,
+        count    => 'all',
+        ($list_opts->all_projects ? (project => undef) : ()),
+        ($list_opts->all_users    ? (user    => undef) : ()),
+    );
 
-    my $length = 0;
-    my @keys;
-    my %seen;
-    for my $key (qw/ipc_file peer_pid protocol address port/, sort keys %$ipc) {
-        next if $seen{$key}++;
-        next if $key eq 'type';
-        next unless defined $ipc->{$key};
-        push @keys => $key;
-        $length = max($length, length($key));
+    my @rows;
+    for my $rec (@$all) {
+        push @rows => [
+            $rec->{pid}     // '?',
+            $rec->{project} // '?',
+            $rec->{user}    // '?',
+            _fmt_stamp($rec->{created_at}),
+            $rec->{workdir} // '?',
+            $rec->{_path}   // '?',
+        ];
     }
 
-    printf("  \%${length}s: %s\n", $_, $ipc->{$_}) for @keys;
-    print "\n";
+    if (!@rows) {
+        print "No running yath daemons.\n";
+        return 0;
+    }
+
+    my $table = Term::Table->new(
+        header => [qw/PID PROJECT USER STARTED WORKDIR IPC_FILE/],
+        rows   => \@rows,
+    );
+
+    print "$_\n" for $table->render;
+    return 0;
+}
+
+sub _fmt_stamp {
+    my ($epoch) = @_;
+    return '?' unless defined $epoch && $epoch =~ /^\d/;
+    return strftime('%Y-%m-%d %H:%M:%S', localtime($epoch));
 }
 
 1;
 
 __END__
 
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: list only scans IPC info files, no harness machinery is needed.
+
+=head2 _fmt_stamp
+
+Format an epoch timestamp as C<YYYY-MM-DD HH:MM:SS> in local time, or C<?>
+when the value is missing/invalid.
+
 =head1 POD IS AUTO-GENERATED
 
+=cut

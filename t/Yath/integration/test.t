@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: --ext/--exclude-file/--exclude-list/--durations options not implemented";
 __END__

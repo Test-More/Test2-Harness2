@@ -27,7 +27,7 @@ use warnings;
 
 my $x = 1;
 
-# HARNESS-CATEGORY-ISOLATION
+# HARNESS2: category isolation
 PERL
     );
 

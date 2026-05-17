@@ -1,4 +1,4 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 
 skip_all "This test only works under Test2::Harness2" unless $ENV{TEST2_HARNESS_ACTIVE};

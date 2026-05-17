@@ -1,7 +1,7 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 use List::Util qw/min/;
-# HARNESS-JOB-SLOTS 1 3
+# HARNESS2: slots 1 3
 
 skip_all "This test only works under Test2::Harness2" unless $ENV{TEST2_HARNESS_ACTIVE};
 

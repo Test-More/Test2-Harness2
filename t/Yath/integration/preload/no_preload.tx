@@ -1,5 +1,5 @@
 use Test2::V0;
-# HARNESS-NO-PRELOAD
+# HARNESS2: feature.preload @off
 
 is($ENV{T2_HARNESS_STAGE}, undef, "Not running in a preload stage");
 

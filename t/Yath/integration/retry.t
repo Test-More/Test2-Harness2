@@ -1,10 +1,10 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: --retry flag not implemented; --project flag not implemented";
 __END__
 
 use Test2::V0;
-# HARNESS-DURATION-LONG
+# HARNESS2: duration long
 
 use lib 't/lib';
 use Test2::Harness2::Test::Yath qw/yath/;

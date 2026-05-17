@@ -10,7 +10,7 @@ use File::Spec ();
 use Scalar::Util qw/blessed/;
 use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
-use Test2::Harness2::Util qw/parse_exit tinysleep/;
+use Test2::Harness2::Util qw/load_module parse_exit tinysleep/;
 use Test2::Harness2::Util::IPC qw/ipc_default_spawn_args/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use POSIX qw/WNOHANG/;
@@ -50,6 +50,15 @@ use Object::HashBase qw{
     +run_flags
     <collector_grace_secs
     +pending_synth_completions
+    +pending_spawn_requests
+    +pending_preload_spawns
+    +pending_script_spawns
+    +_script_spawn_counter
+    +_script_spawn_exits
+    +resources_awaiting_preload
+    +known_preload_names
+    <preload_spawn_timeout_secs
+    <preload_service_spawn_timeout_secs
     +completed_runs
     +finish_after_initial_run
     +emitter
@@ -148,12 +157,21 @@ sub init {
     $self->{+RUN_PIDS}                  //= {};
     $self->{+RUN_FLAGS}                 //= {};
     $self->{+PENDING_SYNTH_COMPLETIONS} //= {};
-    $self->{+COLLECTOR_GRACE_SECS}      //= DEFAULT_COLLECTOR_GRACE_SECS;
-    $self->{+COMPLETED_RUNS}            //= {};
-    $self->{+WATCH_PIDS}                //= [@{$self->{+PARENT_PIDS}}];
-    $self->{+OWN_PGROUP}                //= 0;
-    $self->{+SUBSCRIBERS}               //= {};
-    $self->{+SUBSCRIBER_RETRY}          //= {};
+    $self->{+PENDING_SPAWN_REQUESTS}     //= {};
+    $self->{+PENDING_PRELOAD_SPAWNS}     //= {};
+    $self->{+PENDING_SCRIPT_SPAWNS}      //= {};
+    $self->{+_SCRIPT_SPAWN_COUNTER}      //= 0;
+    $self->{+_SCRIPT_SPAWN_EXITS}        //= {};
+    $self->{+RESOURCES_AWAITING_PRELOAD} //= {};
+    $self->{+KNOWN_PRELOAD_NAMES}        //= {};
+    $self->{+PRELOAD_SPAWN_TIMEOUT_SECS} //= 30;
+    $self->{+PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS} //= 30;
+    $self->{+COLLECTOR_GRACE_SECS}       //= DEFAULT_COLLECTOR_GRACE_SECS;
+    $self->{+COMPLETED_RUNS}             //= {};
+    $self->{+WATCH_PIDS}                 //= [@{$self->{+PARENT_PIDS}}];
+    $self->{+OWN_PGROUP}                 //= 0;
+    $self->{+SUBSCRIBERS}                //= {};
+    $self->{+SUBSCRIBER_RETRY}           //= {};
 
     # Sequential run-ord allocator: every accepted run gets the next
     # ordinal integer starting at 0. The counter is per harness-process;
@@ -207,6 +225,136 @@ sub _install_in_flight_ref {
     return unless $res && $res->can('set_in_flight_ref');
     $res->set_in_flight_ref(\$self->{+IN_FLIGHT_COUNT});
     return;
+}
+
+#-------------------------------------------------------------------
+# Preload routing.
+#
+# _resolve_preload_for_job($run, $job) walks the job's preload
+# preference list (parsed from `HARNESS2: preload ...` at scan time,
+# default ['<default>']) and returns one of:
+#
+#   (undef, 'no_preload')          -> use the direct-fork path.
+#   ($resource, 'preload')         -> spawn the test via $resource's
+#                                     preload service.
+#   (undef, 'defer')               -> at least one candidate is not yet
+#                                     ready (transient broken / not yet
+#                                     usable); retry on the next
+#                                     scheduler tick.
+#   (undef, 'broken', $first_name) -> list exhausted with no acceptable
+#                                     resolution and nothing
+#                                     defer-eligible; caller routes
+#                                     through broken_resource_behavior.
+#
+# A `<no>` token is the explicit opt-out and always resolves to
+# no_preload, even when earlier candidates were broken or missing
+# (so a user can write `HARNESS2: preload maybe-foo @off` to mean
+# "prefer maybe-foo, otherwise run unpreloaded").
+#
+# A `<default>` token resolves to the per-run default (if one exists
+# for the current run) and falls through to the global default; if
+# neither default is configured, `<default>` resolves to no_preload
+# (its implicit <no> fallback per AI_DOCS/2026-05-10-preload-rework-design.md §6.1).
+#
+# Default determination per scope (cached on first call per harness
+# state; recomputed when the resource list changes):
+#
+#   - per-run default: exactly one Resource::Preload in run scope for
+#     this $run AND it is a role consumer.
+#   - global default: the Resource::Preload named 'default' if it
+#     exists; otherwise the sole global Resource::Preload role
+#     consumer if exactly one is present.
+#-------------------------------------------------------------------
+sub _resolve_preload_for_job {
+    my ($self, $run, $job) = @_;
+
+    my $prefs = $job->test_file->preload_preferences;
+    return (undef, 'no_preload') unless $prefs && @$prefs;
+
+    my $idx = $self->_index_preloads_for_run($run);
+
+    my $deferred = 0;
+    my $first_name;
+
+    for my $entry (@$prefs) {
+        $first_name //= $entry;
+
+        return (undef, 'no_preload') if $entry eq '<no>';
+
+        if ($entry eq '<default>') {
+            my $cand = $idx->{run_default} // $idx->{global_default};
+            return (undef, 'no_preload') unless $cand;    # implicit <no>
+            my $verdict = _classify_preload_state($cand);
+            return ($cand, 'preload') if $verdict eq 'usable';
+            $deferred++                if $verdict eq 'defer';
+            return (undef, 'no_preload') if $verdict eq 'permanent';
+            next;
+        }
+
+        # Bare name: per-run preferred over global.
+        my $cand = $idx->{by_run}{$entry} // $idx->{by_global}{$entry};
+        next unless $cand;    # missing: skip; broken verdict comes from exhaustion
+
+        my $verdict = _classify_preload_state($cand);
+        return ($cand, 'preload') if $verdict eq 'usable';
+        $deferred++              if $verdict eq 'defer';
+        # permanent: keep scanning -- a later <no>/named candidate may accept.
+    }
+
+    return (undef, 'defer') if $deferred;
+    return (undef, 'broken', $first_name // '');
+}
+
+# Build (scope, name) index of preload resources visible to this run.
+# Per-run preloads are only included when their run_id matches.
+sub _index_preloads_for_run {
+    my ($self, $run) = @_;
+
+    my @all = (
+        @{$self->{+RESOURCES} || []},
+        (ref($run) ? @{$run->resources // []} : ()),
+    );
+    my @preloads = grep {
+        blessed($_) && $_->isa('Test2::Harness2::Resource::Preload')
+    } @all;
+
+    my $run_id = ref($run) ? $run->run_id : undef;
+
+    my (%by_global, %by_run, @globals_role, @run_role);
+    my ($global_named_default, $run_named_default);
+
+    for my $r (@preloads) {
+        my $name = $r->name;
+        if ($r->scope eq 'run') {
+            my $rid = ref($r->run) ? $r->run->run_id : undef;
+            next unless defined $run_id && defined $rid && $run_id eq $rid;
+            $by_run{$name}     = $r;
+            push @run_role => $r if $r->is_role_consumer;
+            $run_named_default = $r if $name eq 'default';
+        }
+        else {
+            $by_global{$name}     = $r;
+            push @globals_role => $r if $r->is_role_consumer;
+            $global_named_default = $r if $name eq 'default';
+        }
+    }
+
+    # Default precedence: an explicit `default`-named preload (the
+    # bare-module bucket from `-P Foo`) wins over the "exactly one
+    # role consumer" rule.
+    return {
+        by_global      => \%by_global,
+        by_run         => \%by_run,
+        global_default => $global_named_default // (@globals_role == 1 ? $globals_role[0] : undef),
+        run_default    => $run_named_default    // (@run_role == 1     ? $run_role[0]     : undef),
+    };
+}
+
+sub _classify_preload_state {
+    my ($r) = @_;
+    return 'permanent' if $r->is_permanent_broken;
+    return 'usable'    if $r->is_usable;
+    return 'defer';                  # transient broken OR not yet ready
 }
 
 #-------------------------------------------------------------------
@@ -483,51 +631,39 @@ sub request_handler_queue_test_run {
     return {ok => 0, error => "'files' must be a non-empty arrayref"}
         unless ref($files) eq 'ARRAY' && @$files;
 
-    # Logger options were dropped. Strip them from the payload so the
-    # Run constructor never sees them. Kept as a tidy filter so older
-    # clients passing them don't fail the request.
-    my %run_logger_opts;
-
-    # --set-hash-seed (Phase 7.2): when both the harness and the
-    # incoming run have an explicit seed, they must match. Any
-    # global preload tied to the harness was spawned with the
-    # harness's seed in PERL_HASH_SEED, and a run asking for a
-    # different value cannot reuse those preload processes.
-    #
-    # When the harness has no seed (no global preload was set up
-    # with a fixed seed) we accept any run-level seed: the run
-    # service simply propagates it into PERL_HASH_SEED for that
-    # run's test children. When the run has no opinion we accept
-    # whatever the harness was started with -- the run's children
-    # inherit the harness's seed via the test environment.
-    #
-    # TODO Phase 7.2 follow-up: once a Preload resource exists and
-    # the harness can declare global preloads, tighten this so an
-    # unset-vs-set status mismatch is also rejected (the preload's
-    # hash table is already baked).
-    my $run_seed     = $payload->{hash_seed};
-    my $harness_seed = $self->{+HASH_SEED};
-    if (defined($run_seed) && length $run_seed && defined($harness_seed) && length $harness_seed) {
-        return {ok => 0, error => "--set-hash-seed=$run_seed on the run does not match --set-hash-seed=$harness_seed on the harness; preload was started with seed $harness_seed and cannot be reused"}
-            if $run_seed ne $harness_seed;
+    if (my $err = $self->_validate_run_hash_seed($payload->{hash_seed})) {
+        return {ok => 0, error => $err};
     }
 
-    # Allocate the next run ordinal up-front so we can hand it to
-    # Run->from_files. A caller-supplied run_id is rejected: run ids
-    # are owned by the harness and incoming payload values would
+    # Run ids are owned by the harness; a caller-supplied value would
     # collide with the counter.
     return {ok => 0, error => "'run_id' is allocated by the harness; do not pass it"}
         if defined $payload->{run_id};
 
     my $run_id = $self->{+RUN_ORD_COUNTER}++;
 
+    my ($resources_ok, $resources_or_err) = $self->_rehydrate_run_resources($payload->{resources});
+    return {ok => 0, error => $resources_or_err} unless $resources_ok;
+    my @run_resources = @$resources_or_err;
+
     my $ok = eval {
         my $run = Test2::Harness2::Run->from_files(
             files  => $files,
             run_id => $run_id,
             (defined $payload->{hash_seed} ? (hash_seed => $payload->{hash_seed}) : ()),
-            %run_logger_opts,
+            (defined $payload->{chdir}     ? (chdir     => $payload->{chdir})     : ()),
+            (@run_resources                ? (resources => \@run_resources)       : ()),
         );
+
+        # Per-run Resource::Preload entries arrived with scope='run'
+        # but no Run object yet; finish the link now before the
+        # scheduler reads services() / status() off the resource.
+        for my $r (@run_resources) {
+            next unless $r->can('set_run');
+            next unless eval { $r->scope eq 'run' };
+            eval { $r->set_run($run); 1 };
+        }
+
         push @{$self->{+QUEUE}} => $run;
         $self->_install_in_flight_ref($_) for @{$run->resources // []};
         $self->{+RUN_STATES}->{$run->run_id} = Test2::Harness2::Run::State->new(
@@ -538,21 +674,77 @@ sub request_handler_queue_test_run {
         $self->_scheduler_queue_run($run);
         1;
     };
-    my $err = $@;
-    return {ok => 0, error => "$err"} unless $ok;
+    return {ok => 0, error => "$@"} unless $ok;
 
     my $run = $self->{+QUEUE}->[-1];
 
+    # Flat run_id / queued_at / job_ids alongside the nested run_data:
+    # Renderer::Driver's lifecycle synthesizer reads the flat keys
+    # off the harness facet to build harness_job_queued events that
+    # increment the progress bar's T (todo) counter. run_data is
+    # kept for downstream consumers that still want the full TO_JSON
+    # dump.
     $self->emit_service_event(
-        kind     => 'run_queued',
-        run_data => $run->TO_JSON,
+        kind      => 'run_queued',
+        run_id    => $run->run_id,
+        queued_at => $run->created_at,
+        job_ids   => [map { $_->job_id } @{$run->jobs}],
+        run_data  => $run->TO_JSON,
     );
 
-    # job_queued events are emitted by the run service once it has
-    # started, so the per-job lifecycle stream lives in the run's own
-    # .jsonl and not in the harness's service log.
-
     return {ok => 1, run_id => $run->run_id};
+}
+
+# --set-hash-seed compatibility check. When both the harness and the
+# run carry an explicit seed they must match: any global preload tied
+# to the harness was spawned with the harness's seed in
+# PERL_HASH_SEED, and a run asking for a different value cannot
+# reuse those preload processes. Either side unset is accepted -- the
+# harness's seed propagates to children via env when the run has no
+# opinion, and the run's seed wins in PERL_HASH_SEED when the harness
+# was started without one. Returns an error string when incompatible,
+# or undef when OK.
+sub _validate_run_hash_seed {
+    my ($self, $run_seed) = @_;
+
+    my $harness_seed = $self->{+HASH_SEED};
+    return undef unless defined($run_seed) && length $run_seed;
+    return undef unless defined($harness_seed) && length $harness_seed;
+    return undef if $run_seed eq $harness_seed;
+
+    return "--set-hash-seed=$run_seed on the run does not match "
+        . "--set-hash-seed=$harness_seed on the harness; preload was started "
+        . "with seed $harness_seed and cannot be reused";
+}
+
+# Build per-run Resource instances from the IPC-recipe form:
+# [ [class, @ctor_args], ... ]. Each class gets parse_options applied
+# (when defined) so the constructor sees the same kwargs the harness-
+# global resources do. Returns (1, \@instances) on success, or
+# (0, "error string") on failure.
+sub _rehydrate_run_resources {
+    my ($self, $spec) = @_;
+    return (1, []) unless defined $spec;
+    return (0, "'resources' must be an arrayref") unless ref($spec) eq 'ARRAY';
+
+    my @out;
+    my $ok = eval {
+        for my $entry (@$spec) {
+            die "resources entry must be an arrayref\n"
+                unless ref($entry) eq 'ARRAY';
+            my ($class, @args) = @$entry;
+            die "resources entry missing class\n"
+                unless defined $class && length $class && !ref $class;
+            load_module($class);
+            my @ctor_args = $class->can('parse_options')
+                ? $class->parse_options(@args)
+                : @args;
+            push @out, $class->new(@ctor_args);
+        }
+        1;
+    };
+    return (0, "failed to build per-run resources: $@") unless $ok;
+    return (1, \@out);
 }
 
 sub request_handler_status {
@@ -583,6 +775,30 @@ sub request_handler_status {
 
     my @resources = map { $_->status } @{$self->{+RESOURCES}};
 
+    # Per-service entries (preload + non-preload alike). Surfaces
+    # via_preload for operator visibility — `yath ps` / `yath resources`
+    # read this section to tell preload-mediated services apart from
+    # standalone ones.
+    my @services;
+    for my $info (values %{$self->{+RESOURCE_SERVICES} // {}}) {
+        # Skip entries whose pid is no longer reachable. RESOURCE_SERVICES is
+        # not pruned synchronously when a service dies (the SIGCHLD reaper runs
+        # asynchronously, and a reload of a preload can leave the old pid in
+        # the hash for a tick or two), so without this guard `yath ps` /
+        # `yath resources` would render a row with stale data for a dead pid.
+        next unless defined $info->{pid} && kill 0 => $info->{pid};
+
+        push @services, {
+            pid           => $info->{pid},
+            name          => $info->{name},
+            service_class => $info->{service_class},
+            scope         => $info->{scope},
+            run_id        => (ref($info->{run}) && $info->{run}->can('run_id') ? $info->{run}->run_id : $info->{run}),
+            via_preload   => $info->{via_preload} ? 1 : 0,
+            started_at    => $info->{started_at},
+        };
+    }
+
     return {
         service => {
             name    => $self->{+NAME},
@@ -594,7 +810,73 @@ sub request_handler_status {
         queue     => $queue,
         running   => \@running,
         resources => \@resources,
+        services  => \@services,
     };
+}
+
+# yath reload: enumerate the preload services this harness owns so
+# the client can dispatch reload requests to each one without taking
+# the harness's dispatcher offline. Run-scoped preloads are
+# intentionally skipped; reloading a run-scoped preload mid-run would
+# invalidate the test state it was built for.
+#
+# 'name' in the response is the bus-level peer name the caller addresses
+# over IPC (preload-<n> for global), not the host-side tracking name
+# (which is just <n>). 'preload' is the bare preload name for display.
+sub request_handler_list_preloads {
+    my $self = shift;
+
+    my @out;
+    for my $info (values %{$self->{+RESOURCE_SERVICES} // {}}) {
+        next unless ($info->{service_class} // '') eq 'Test2::Harness2::PreloadService';
+        next unless ($info->{scope}         // '') eq 'global';
+        next unless defined $info->{pid} && kill 0 => $info->{pid};
+
+        my $res        = $info->{resource};
+        my $preload    = (ref($res) && $res->can('name') ? $res->name : ($info->{name} // '?'));
+        my $bus_name   = (ref($res) && $res->can('scope')) ? _preload_peer_name($res) : "preload-$preload";
+
+        push @out => {
+            pid     => $info->{pid},
+            name    => $bus_name,
+            preload => $preload,
+            scope   => $info->{scope},
+        };
+    }
+    return {ok => 1, preloads => \@out};
+}
+
+# yath abort: latch user_abort onto one or all live runs. Pending
+# jobs in those runs flow through the existing aborted-run synth-fail
+# path (see _handle_broken_resource); currently running jobs are left
+# alone (that matches the documented "remove pending tests, leave the
+# runner active" semantics).
+sub request_handler_abort_run {
+    my ($self, $payload, $msg) = @_;
+
+    my $states = $self->{+RUN_STATES} // {};
+
+    my @target_ids;
+    if ($payload->{all}) {
+        @target_ids = sort keys %$states;
+    }
+    elsif (defined $payload->{run_id}) {
+        return {ok => 0, error => "no run with id '$payload->{run_id}'"}
+            unless $states->{$payload->{run_id}};
+        @target_ids = ($payload->{run_id});
+    }
+    else {
+        return {ok => 0, error => 'request must set either run_id or all'};
+    }
+
+    my @aborted;
+    for my $rid (@target_ids) {
+        my $rs = $states->{$rid} or next;
+        next if defined $rs->aborted_reason;    # idempotent
+        $rs->latch_aborted_reason('user_abort');
+        push @aborted, $rid;
+    }
+    return {ok => 1, aborted => \@aborted};
 }
 
 sub request_handler_finish {
@@ -705,6 +987,15 @@ sub run_on_general_message {
     return $self->_handle_resource_state_message($kind, $content)
         if defined $kind && $kind =~ m/^resource_(?:paused|resumed|ready|broken|permanent_broken)$/;
 
+    return $self->_handle_preload_state_message($kind, $content)
+        if defined $kind && $kind =~ m/^preload_(?:ready|broken)$/;
+
+    return $self->_handle_resource_service_started($content)
+        if defined $kind && $kind eq 'resource_service_started';
+
+    return $self->_handle_script_spawned($content)
+        if defined $kind && $kind eq 'script_spawned';
+
     # Per-job lifecycle. After Stage 4 of the RunService flatten the
     # auditor sends test_job_* events to the harness directly (the
     # collector's ipc_run was repointed). The harness owns Run::State
@@ -805,6 +1096,30 @@ sub _handle_test_job_started {
 
     my $run_id = $content->{run_id} // return;
     my $job_id = $content->{job_id} // return;
+
+    # Preload-routed jobs landed a placeholder RUNNING_JOBS entry at
+    # _spawn_via_preload time; the auditor's collector_pid is the
+    # first concrete pid the harness sees for the job. Fill in pid +
+    # register in RUN_PIDS so the rest of the reap / watchdog
+    # plumbing sees the entry the same way it does for direct-spawn
+    # jobs. Drop the matching PENDING_SPAWN_REQUESTS row so the
+    # watchdog forgets about it.
+    my $cur = $self->{+RUNNING_JOBS}->{$job_id};
+    if ($cur && $cur->{awaiting_preload_pid}) {
+        my $cpid = $content->{collector_pid} // $content->{pid};
+        if (defined $cpid) {
+            $cur->{pid}                  = $cpid;
+            delete $cur->{awaiting_preload_pid};
+            $self->_register_run_pid(
+                $run_id, $cpid,
+                kind       => 'collector',
+                job_id     => $job_id,
+                job_try    => $content->{job_try},
+                started_at => $content->{stamp} // time,
+            );
+        }
+        delete $self->{+PENDING_SPAWN_REQUESTS}->{"$run_id\0$job_id"};
+    }
 
     my $rstate = $self->{+RUN_STATES}->{$run_id} //=
         Test2::Harness2::Run::State->new(run_id => $run_id);
@@ -1106,6 +1421,65 @@ sub run_on_peer_delta {
     }
 
     $self->_drain_subscriber_retries;
+    return;
+}
+
+sub _handle_preload_state_message {
+    my ($self, $kind, $content) = @_;
+
+    return unless ref($content) eq 'HASH';
+    my $name  = $content->{preload_name};
+    my $scope = $content->{scope} // 'global';
+    return unless defined $name;
+
+    my $run_id = $content->{run_id};
+
+    # Look in both global resources and every queued run's per-run
+    # resources -- a per-run preload's mark_ready signal otherwise
+    # never lands on its Resource::Preload and the resolver defers
+    # forever.
+    my @candidates = @{$self->{+RESOURCES} // []};
+    for my $run (@{$self->{+QUEUE} // []}) {
+        push @candidates => @{$run->resources // []};
+    }
+
+    for my $res (@candidates) {
+        next unless blessed($res) && $res->isa('Test2::Harness2::Resource::Preload');
+        next unless $res->name eq $name;
+        next unless $res->scope eq $scope;
+        if ($scope eq 'run') {
+            next unless defined $run_id;
+            my $r_run = $res->run;
+            next unless ref($r_run);
+            next unless $r_run->run_id eq $run_id;
+        }
+
+        if ($kind eq 'preload_ready') {
+            # mark_ready is itself permanent_broken-aware: it no-ops
+            # when the resource has been flagged permanent_broken, so
+            # cross-scope reuses of the same preload name can't promote
+            # a sibling resource via a foreign-scope preload_ready.
+            $res->mark_ready;
+        }
+        elsif ($kind eq 'preload_broken') {
+            $res->mark_broken;
+        }
+        last;
+    }
+
+    # Drain any dependent resource services that were queued waiting
+    # for this preload. preload_ready dispatches them through the
+    # preload; permanent preload_broken flushes them to standalone so
+    # they still come up (just unpreloaded). Transient preload_broken
+    # leaves the queue intact so a subsequent preload_ready can still
+    # drain it.
+    if ($kind eq 'preload_ready') {
+        $self->_drain_resources_awaiting_preload($name);
+    }
+    elsif ($kind eq 'preload_broken' && $content->{permanent}) {
+        $self->_fallback_resources_awaiting_preload($name);
+    }
+
     return;
 }
 
@@ -1507,14 +1881,30 @@ sub service_post_hard_stop {
 sub run_on_pid {
     my ($self, $pid, $exit) = @_;
 
-    # Test-collector exit. The harness owns the collector now (Stage 5
-    # of the RunService flatten), so this is the normal reap site.
-    # The auditor's test_job_completed message may have already
-    # arrived before the pid was reaped, in which case nothing more
-    # is needed beyond clearing the per-run pid index. If it has
-    # not, arm a grace timer so the watchdog in run_on_interval can
-    # synthesize completion if the auditor never gets a chance to
-    # speak (collector crash, signal during emit, etc.).
+    return if $self->_handle_test_collector_exit($pid, $exit);
+
+    # Script-spawn handler returns true only when the pid matched a
+    # script-spawn entry definitively. The "race" case stashes the
+    # exit speculatively and falls through to the resource-service
+    # handler in case the pid actually belongs there.
+    return if $self->_handle_script_spawn_exit($pid, $exit);
+
+    # Resource-service exit (the shared host role owns restart-spiral
+    # protection, state flags, and re-invocation). Reparented descendants
+    # that aren't one of ours silently fall through.
+    $self->handle_resource_service_exit($pid, $exit);
+    return;
+}
+
+# Test-collector exit. The harness owns the collector since Stage 5
+# of the RunService flatten, so this is the normal reap site. If
+# test_job_completed arrived first, just clear the per-run pid index;
+# otherwise arm a synth-completion grace entry so run_on_interval can
+# synthesize completion when the auditor never gets to speak (collector
+# crash, signal during emit, etc.). Returns true if handled.
+sub _handle_test_collector_exit {
+    my ($self, $pid, $exit) = @_;
+
     for my $job_id (keys %{$self->{+RUNNING_JOBS} // {}}) {
         my $cur = $self->{+RUNNING_JOBS}->{$job_id};
         next unless $cur->{pid} && $cur->{pid} == $pid;
@@ -1523,20 +1913,14 @@ sub run_on_pid {
         my $run_id = $run->run_id;
         my $flags  = $self->{+RUN_FLAGS}->{$run_id};
 
-        # Already completed (test_job_completed landed before the
-        # reap): forget the per-run pid index entry; let job_release
-        # handle the RUNNING_JOBS / resource-release cleanup as
-        # usual.
         if ($flags && $flags->{completed_job_ids}{$job_id}) {
             $self->_forget_run_pid($run_id, $pid);
-            return;
+            return 1;
         }
 
-        # Not completed yet: arm a synth-completion grace entry.
-        # KEEP RUNNING_JOBS in place; a real test_job_completed
-        # arriving inside the grace window cancels the synth, and
-        # the watchdog reuses the existing RUNNING_JOBS entry to
-        # synthesize a completion + cleanup if the window expires.
+        # Keep RUNNING_JOBS in place: a real test_job_completed inside
+        # the grace window cancels the synth, and the watchdog reuses
+        # this entry to synthesize completion + cleanup if it expires.
         $self->{+PENDING_SYNTH_COMPLETIONS}->{$job_id} = {
             run_id           => $run_id,
             job_id           => $job_id,
@@ -1546,16 +1930,45 @@ sub run_on_pid {
             raw_exit_on_reap => $exit,
         };
 
-        return;
+        return 1;
+    }
+    return 0;
+}
+
+# Script-spawn grandchild exit. IPC::Manager's reap_children
+# (waitpid -1) reaps the grandchild before _poll_script_exits can
+# see it, so we handle the notification here.
+#
+# Two sub-cases:
+#   (a) script_spawned already arrived -> child_pid is set; send
+#       script_exited immediately.
+#   (b) script_spawned races the reap -> child_pid not yet set; stash
+#       the exit in _SCRIPT_SPAWN_EXITS for _handle_script_spawned
+#       to drain. Only stash when *some* pending entry still lacks a
+#       child_pid -- otherwise this pid belongs to something else
+#       (resource service, reparented descendant) and stashing would
+#       leak unboundedly.
+#
+# Returns true when this pid maps to a known script-spawn entry.
+sub _handle_script_spawn_exit {
+    my ($self, $pid, $exit) = @_;
+
+    my $table = $self->{+PENDING_SCRIPT_SPAWNS} // {};
+    my $expecting_unmatched = 0;
+    for my $sid (keys %$table) {
+        my $entry = $table->{$sid};
+        if (defined($entry->{child_pid}) && $entry->{child_pid} == $pid) {
+            $self->_dispatch_script_exited($sid, $entry, $exit);
+            delete $table->{$sid};
+            return 1;
+        }
+        $expecting_unmatched = 1 unless defined $entry->{child_pid};
     }
 
-    # Resource-service exit (handled by the shared host role, which
-    # takes care of restart-spiral protection, state flags, and
-    # re-invocation). Reparented descendants that aren't one of ours
-    # silently fall through.
-    $self->handle_resource_service_exit($pid, $exit);
-
-    return;
+    # Race case: stash speculatively but report "not handled" so the
+    # caller still asks the resource-service handler.
+    $self->{+_SCRIPT_SPAWN_EXITS}->{$pid} = $exit if $expecting_unmatched;
+    return 0;
 }
 
 # Collector-side watchdog: if a collector pid disappeared without
@@ -1565,6 +1978,10 @@ sub run_on_pid {
 # window is seconds-scale.
 sub run_on_interval {
     my $self = shift;
+
+    $self->_age_pending_spawn_requests;
+    $self->_check_pending_preload_spawn_timeouts;
+    $self->_poll_script_exits;
 
     my $pending = $self->{+PENDING_SYNTH_COMPLETIONS};
     return unless $pending && keys %$pending;
@@ -1756,6 +2173,19 @@ sub _scheduler_mark_running {
     return;
 }
 
+# Restore a job to the scheduler's pending queue. Used by the
+# preload-spawn watchdog when an in-flight request times out: the
+# placeholder RUNNING_JOBS entry is dropped and the job has to be
+# eligible for relaunch on the next scheduler tick.
+sub _scheduler_mark_pending {
+    my ($self, $run_id, $job_id) = @_;
+    my $s = $self->{+SCHEDULER}->{$run_id} or return;
+    delete $s->{running}->{$job_id};
+    return if grep { $_ eq $job_id } @{$s->{pending}};
+    push @{$s->{pending}}, $job_id;
+    return;
+}
+
 sub _scheduler_mark_done {
     my ($self, $run_id, $job_id) = @_;
     my $s = $self->{+SCHEDULER}->{$run_id} or return;
@@ -1811,13 +2241,9 @@ sub _try_launch_next_pending {
 
     return 0 unless @{$self->{+QUEUE} // []};
 
-    # Runs are processed serially in the order they were queued.
-    # The scheduler iterates QUEUE (an ordered arrayref) and finds
+    # Runs are processed serially in the order they were queued. Find
     # the first run that is not yet complete from the scheduler's
-    # perspective; that becomes the head run for this tick. Other
-    # queued runs are not even considered until the head run has
-    # drained its own pending+running. We never run a later run
-    # ahead of an earlier one.
+    # perspective; that becomes the head run for this tick.
     my $head_run;
     for my $run (@{$self->{+QUEUE}}) {
         next if $self->_scheduler_run_complete($run->run_id);
@@ -1832,62 +2258,83 @@ sub _try_launch_next_pending {
     # considered for launch we spin up its resource services.
     $self->_ensure_run_service_started($head_run);
 
-    # Iterate the scheduler's own pending list, not $run->pending.
-    # The scheduler's list is the authoritative view of what we
-    # have not yet attempted to launch; $run->pending mirrors
-    # the run service and can lag behind reality.
+    # Iterate the scheduler's own pending list (authoritative view of
+    # what we have not yet attempted), not $run->pending (mirrors run
+    # service and can lag behind).
     for my $job_id (@{$self->_scheduler_pending_for_run($run_id)}) {
         my ($job) = grep { $_->job_id eq $job_id } @{$head_run->jobs};
         next unless $job;
 
-        # Run-level abort state (see _handle_broken_resource):
-        # once a run is aborted, every remaining job takes the
-        # unavailable-action fail path, whether or not that specific
-        # job needed the broken resource. The aborted flag on the
-        # decision distinguishes the original trigger (aborted=0)
-        # from follow-ups swept up by the abort (aborted=1).
-        my ($decision, $arg, %dec_opts);
-        my $rstate = $self->{+RUN_STATES}->{$head_run->run_id};
-        if ($rstate && defined $rstate->aborted_reason) {
-            ($decision, $arg) = ('broken', $rstate->aborted_reason);
-            $dec_opts{aborted} = 1;
-        }
-        else {
-            ($decision, $arg) = $self->_evaluate_resources_for($head_run, $job);
-        }
-
-        if ($decision eq 'skip') {
-            # A resource is healthy but can never grant the slots THIS
-            # job demands (e.g. test declares HARNESS-JOB-SLOTS 8 and
-            # the per-job cap is 4). Route through the unavailable-action
-            # skip launch so the renderer/log show a real skip_all event
-            # with a reason, the run service sees a normal job
-            # completion, and the run can finalize. The skip launch
-            # itself goes through the limiter pool with need=1, so it
-            # may defer if the pool is currently saturated.
-            my $outcome = $self->_launch_unavailable_action_job($head_run, $job, 'skip', $arg);
-            return 1 if $outcome eq 'launched' || $outcome eq 'skip';
-            next;    # 'defer' -- try again next tick
-        }
-
-        if ($decision eq 'broken') {
-            # A needed resource has been permanently broken (or
-            # the run has been aborted wholesale).
-            # broken_resource_behavior decides how the job is
-            # dispatched; the unavailable-action launch shares the
-            # job-limiter pool and may defer if the pool is saturated.
-            my $outcome = $self->_handle_broken_resource($head_run, $job, $arg, %dec_opts);
-            return 1 if $outcome eq 'launched' || $outcome eq 'skip';
-            next;    # 'defer' -- try the next job in this run
-        }
-
-        next if $decision eq 'defer';
-
-        $self->_launch_job($head_run, $job, $arg);
-        return 1;
+        my $outcome = $self->_dispatch_pending_job($head_run, $job);
+        return 1 if $outcome eq 'launched';
+        next;     # 'defer' or 'skipped'
     }
 
     return 0;
+}
+
+# Per-job dispatch decision for _try_launch_next_pending. Returns
+# 'launched' to signal the caller a job was started (and the tick is
+# done), or 'defer' to advance to the next pending job. Encapsulates
+# the run-aborted short-circuit, preload routing, and resource
+# evaluation, plus the unavailable-action / broken-resource branches.
+sub _dispatch_pending_job {
+    my ($self, $run, $job) = @_;
+
+    my ($decision, $arg, %dec_opts);
+    my $preload_resource;
+
+    my $rstate = $self->{+RUN_STATES}->{$run->run_id};
+    if ($rstate && defined $rstate->aborted_reason) {
+        # Run aborted: every remaining job takes the unavailable-action
+        # fail path. aborted=1 distinguishes follow-ups from the
+        # original trigger (aborted=0, set by _handle_broken_resource).
+        ($decision, $arg) = ('broken', $rstate->aborted_reason);
+        $dec_opts{aborted} = 1;
+    }
+    else {
+        # Preload routing runs before the generic resource walk so an
+        # unmet preload preference can short-circuit
+        # _evaluate_resources_for entirely. Resolver returns:
+        #   (undef, 'no_preload')      -> normal direct-fork path
+        #   ($resource, 'preload')     -> spawn via preload service
+        #   (undef, 'defer')           -> retry next tick
+        #   (undef, 'broken', $first)  -> route through broken_resource_behavior
+        my ($pres, $pkind, $pextra) = $self->_resolve_preload_for_job($run, $job);
+        return 'defer' if $pkind eq 'defer';
+
+        if ($pkind eq 'broken') {
+            ($decision, $arg) = ('broken', "preload:$pextra");
+        }
+        else {
+            $preload_resource = $pres;
+            ($decision, $arg) = $self->_evaluate_resources_for($run, $job);
+        }
+    }
+
+    if ($decision eq 'skip') {
+        # Resource is healthy but can never grant the slots THIS job
+        # demands (e.g. test declares `HARNESS2: slots 8` and per-job
+        # cap is 4). Route through the unavailable-action skip launch
+        # so the renderer/log show a real skip_all event. The skip
+        # launch shares the job-limiter pool and may defer when
+        # saturated.
+        my $outcome = $self->_launch_unavailable_action_job($run, $job, 'skip', $arg);
+        return $outcome eq 'launched' || $outcome eq 'skip' ? 'launched' : 'defer';
+    }
+
+    if ($decision eq 'broken') {
+        my $outcome = $self->_handle_broken_resource($run, $job, $arg, %dec_opts);
+        return $outcome eq 'launched' || $outcome eq 'skip' ? 'launched' : 'defer';
+    }
+
+    return 'defer' if $decision eq 'defer';
+
+    $self->_launch_job(
+        $run, $job, $arg,
+        (defined $preload_resource ? (preload_resource => $preload_resource) : ()),
+    );
+    return 'launched';
 }
 
 # Finalize the run if it's complete: snapshot final results from
@@ -2246,76 +2693,47 @@ sub _launch_job {
     my $run_id = $run->run_id;
     my $job_id = $job->job_id;
 
-    # First job of this run -- announce run_started and stamp the
-    # per-run started_at slot so the eventual run_completed +
-    # collector_report event can carry wall-time bracketing.
-    unless ($self->_scheduler_started($run_id)) {
-        $self->emit_service_event(
-            kind     => 'run_started',
-            run_data => {run_id => $run_id},
-        );
-        my $flags = $self->_run_flags($run_id);
-        $flags->{started_at} //= time;
-    }
+    # The resolver hands us the Resource::Preload to route this job
+    # through (when one was requested). Append it to the assigned-
+    # resources list so the standard release-on-cleanup path handles
+    # its assign/release lifecycle (even though Resource::Preload's
+    # assign/release are no-ops).
+    my $preload_resource = delete $opts{preload_resource};
+    $resources = [@$resources, $preload_resource] if defined $preload_resource;
 
-    my $assign_id = gen_uuid();
-    my %env;
-    # Forward T2_HARNESS_INCLUDES from the parent environment to the
-    # spawned test child so callers can inject paths into the child's
-    # @INC without resorting to per-test CLI flags. Mirrors
-    # reference/old2/lib/Test2/Harness2/TestSettings.pm:122.
-    $env{T2_HARNESS_INCLUDES} = $ENV{T2_HARNESS_INCLUDES}
-        if defined $ENV{T2_HARNESS_INCLUDES} && length $ENV{T2_HARNESS_INCLUDES};
+    $self->_announce_run_started_if_first($run_id);
 
-    # --set-hash-seed propagation: Phase 7.1. The run carries the
-    # effective seed value (resolved from the option's autofill or
-    # the user-supplied value at queue-build time). When set, every
-    # test child gets PERL_HASH_SEED so the child interpreter starts
-    # with a deterministic hash seed. When the run does not request
-    # one, the child inherits whatever the parent's PERL_HASH_SEED
-    # already is (which the App-Yath-Script wrapper or the user may
-    # or may not have set).
-    my $hash_seed = $run->hash_seed;
-    $env{PERL_HASH_SEED} = $hash_seed if defined $hash_seed && length $hash_seed;
+    my $assign_id   = gen_uuid();
     my %assign_args = %{$opts{assign_args} // {}};
+    my %env         = $self->_build_launch_env($run);
     for my $res (@$resources) {
         $res->assign(id => $assign_id, job => $job, env => \%env, %assign_args);
     }
 
-    # Spawn the Collector directly. Stage 5 of the RunService flatten:
-    # the harness owns the collector fork, the test process is its
-    # grandchild, and the run service is no longer in the test-launch
-    # path. Reap lands at run_on_pid; auditor sends straight back here.
+    # ch_dir priority: run-level --chdir > per-test ch_dir (Finder) > none.
+    my $ch_dir = $run->chdir // $job->test_file->ch_dir;
+
     my $launch_ok = eval {
-        my $resp = $self->_spawn_collector_for_job(
-            $run, $job,
-            env => \%env,
+        if (defined $preload_resource) {
+            $self->_spawn_via_preload(
+                $run, $job, $preload_resource,
+                env                => \%env,
+                assign_id          => $assign_id,
+                assigned_resources => $resources,
+                (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+                (defined $ch_dir       ? (ch_dir => $ch_dir)       : ()),
+            );
+            $self->_scheduler_mark_running($run_id, $job_id);
+            return 1;
+        }
+
+        $self->_launch_collector_inline(
+            $run, $job, $resources,
+            assign_id => $assign_id,
+            env       => \%env,
             (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+            (defined $ch_dir       ? (ch_dir => $ch_dir)       : ()),
         );
-        die "collector spawn returned no pid"
-            unless ref($resp) eq 'HASH' && $resp->{ok} && $resp->{pid};
-
-        $self->_scheduler_mark_running($run_id, $job_id);
-
-        my $started_at = time;
-        $self->{+RUNNING_JOBS}->{$job_id} = {
-            run                => $run,
-            job                => $job,
-            pid                => $resp->{pid},
-            started_at         => $started_at,
-            assign_id          => $assign_id,
-            assigned_resources => $resources,
-            log_file           => $resp->{log_file},
-        };
-        $self->{+IN_FLIGHT_COUNT}++;
-        $self->_register_run_pid(
-            $run_id, $resp->{pid},
-            kind       => 'collector',
-            job_id     => $job_id,
-            job_try    => $job->job_try,
-            started_at => $started_at,
-        );
-
         1;
     };
     my $launch_err = $@;
@@ -2326,14 +2744,94 @@ sub _launch_job {
         # so _release_job_resources won't reach it on its own.
         for my $res (@$resources) {
             my $rok  = eval { $res->release(id => $assign_id, job => $job); 1 };
-            my $rerr = $@;
-            warn "failed to release resource '" . $res->resource_name . "' after launch failure: $rerr"
+            warn "failed to release resource '" . $res->resource_name . "' after launch failure: $@"
                 unless $rok;
         }
         die $launch_err;
     }
 
     return $job_id;
+}
+
+# First job of this run: emit run_started and stamp started_at.
+# Renderer::Driver's lifecycle synthesizer reads the flat run_id /
+# started_at fields off the harness facet to stamp
+# run_states->{$rid}{started_at}.
+sub _announce_run_started_if_first {
+    my ($self, $run_id) = @_;
+    return if $self->_scheduler_started($run_id);
+
+    my $started_at = time;
+    $self->emit_service_event(
+        kind       => 'run_started',
+        run_id     => $run_id,
+        started_at => $started_at,
+    );
+    $self->_run_flags($run_id)->{started_at} //= $started_at;
+}
+
+# Build the base env hash for a launched test child. Forwards
+# T2_HARNESS_INCLUDES so callers can inject @INC paths without per-test
+# CLI flags. Propagates the run's --set-hash-seed value as
+# PERL_HASH_SEED when present.
+sub _build_launch_env {
+    my ($self, $run) = @_;
+
+    my %env;
+    $env{T2_HARNESS_INCLUDES} = $ENV{T2_HARNESS_INCLUDES}
+        if defined $ENV{T2_HARNESS_INCLUDES} && length $ENV{T2_HARNESS_INCLUDES};
+
+    my $hash_seed = $run->hash_seed;
+    $env{PERL_HASH_SEED} = $hash_seed if defined $hash_seed && length $hash_seed;
+
+    return %env;
+}
+
+# Direct (no-preload) launch path: harness owns the collector fork,
+# the test is its grandchild, and the reap lands at run_on_pid. Calls
+# the inline collector spawn helper, registers the running job, and
+# bumps in-flight bookkeeping. Dies on spawn failure so the caller's
+# resource-rollback path runs.
+sub _launch_collector_inline {
+    my ($self, $run, $job, $resources, %opts) = @_;
+
+    my $run_id    = $run->run_id;
+    my $job_id    = $job->job_id;
+    my $assign_id = delete $opts{assign_id};
+    my $env       = delete $opts{env};
+
+    my $resp = $self->_spawn_collector_for_job(
+        $run, $job,
+        env => $env,
+        (defined $opts{launch} ? (launch => $opts{launch}) : ()),
+        (defined $opts{ch_dir} ? (ch_dir => $opts{ch_dir}) : ()),
+    );
+    die "collector spawn returned no pid"
+        unless ref($resp) eq 'HASH' && $resp->{ok} && $resp->{pid};
+
+    $self->_scheduler_mark_running($run_id, $job_id);
+
+    my $started_at = time;
+    $self->{+RUNNING_JOBS}->{$job_id} = {
+        run                => $run,
+        job                => $job,
+        pid                => $resp->{pid},
+        started_at         => $started_at,
+        assign_id          => $assign_id,
+        assigned_resources => $resources,
+        log_file           => $resp->{log_file},
+    };
+    $self->{+IN_FLIGHT_COUNT}++;
+
+    $self->_register_run_pid(
+        $run_id, $resp->{pid},
+        kind       => 'collector',
+        job_id     => $job_id,
+        job_try    => $job->job_try,
+        started_at => $started_at,
+    );
+
+    return;
 }
 
 # Build the Collector spawn args + invoke Collector->spawn directly,
@@ -2350,6 +2848,7 @@ sub _spawn_collector_for_job {
 
     my $env     = $opts{env} // {};
     my $launch  = $opts{launch};
+    my $ch_dir  = $opts{ch_dir};
     my $auditor = $opts{auditor} // $self->{+TEST_AUDITOR};
 
     my $test_file_abs = $job->test_file_abs;
@@ -2389,6 +2888,7 @@ sub _spawn_collector_for_job {
             new_pgroup   => 1,
             parent_pids  => [$$],
             env_vars     => {T2_FORMATTER => 'Stream2', %$env},
+            (defined $ch_dir && length $ch_dir ? (cwd => $ch_dir) : ()),
             logdir       => $self->{+LOGDIR},
             ipcm_info    => $self->ipcm_info,
             ipc_parent   => $self->{+NAME},
@@ -2411,6 +2911,621 @@ sub _spawn_collector_for_job {
 
     my $pid = $handle->pid;
     return {ok => 1, pid => $pid, log_file => undef};
+}
+
+# Async spawn through a preload service. The preload service owns the
+# fork: pre_fork hook, fork, post_fork hook, second fork, _exit(0) in
+# the middle layer, grandchild runs the test (after Long::Jump +
+# goto::file).
+#
+# Records a placeholder RUNNING_JOBS entry with pid=>undef; the
+# grandchild's auditor lands a test_job_started which the harness's
+# _handle_test_job_started uses to fill in the real pid and register
+# the collector pid in RUN_PIDS. PENDING_SPAWN_REQUESTS tracks the
+# in-flight request for timeout protection (run_on_interval ages them
+# and flips the preload to is_broken if the watchdog fires).
+sub _spawn_via_preload {
+    my ($self, $run, $job, $preload_resource, %opts) = @_;
+
+    my $run_id  = $run->run_id;
+    my $job_id  = $job->job_id;
+    my $job_try = $job->job_try // 1;
+
+    my $test_file_abs = $job->test_file_abs;
+    croak "'test_file' must be absolute"
+        unless File::Spec->file_name_is_absolute($test_file_abs);
+
+    my $now = time;
+    $self->_register_pending_preload_spawn($run, $job, $preload_resource, $now, \%opts);
+
+    my $payload = $self->_build_spawn_test_payload($run, $job, $test_file_abs, \%opts);
+    my $peer    = _preload_peer_name($preload_resource);
+
+    my $send_ok = eval { $self->client->send_message($peer, $payload); 1 };
+    unless ($send_ok) {
+        my $send_err = $@;
+        # Roll back so the caller's launch_failed path (which releases
+        # assigned resources) can take over cleanly.
+        delete $self->{+RUNNING_JOBS}->{$job_id};
+        delete $self->{+PENDING_SPAWN_REQUESTS}->{"$run_id\0$job_id"};
+        croak "Failed to dispatch spawn_test to '$peer': $send_err";
+    }
+
+    return;
+}
+
+sub _register_pending_preload_spawn {
+    my ($self, $run, $job, $preload_resource, $now, $opts) = @_;
+    my $run_id = $run->run_id;
+    my $job_id = $job->job_id;
+
+    $self->{+RUNNING_JOBS}->{$job_id} = {
+        run                  => $run,
+        job                  => $job,
+        pid                  => undef,
+        awaiting_preload_pid => 1,
+        preload_name         => $preload_resource->name,
+        preload_scope        => $preload_resource->scope,
+        started_at           => $now,
+        assign_id            => $opts->{assign_id},
+        assigned_resources   => $opts->{assigned_resources} // [],
+        log_file             => undef,
+    };
+
+    $self->{+PENDING_SPAWN_REQUESTS}->{"$run_id\0$job_id"} = {
+        run_id        => $run_id,
+        job_id        => $job_id,
+        sent_at       => $now,
+        preload_name  => $preload_resource->name,
+        preload_scope => $preload_resource->scope,
+    };
+}
+
+sub _build_spawn_test_payload {
+    my ($self, $run, $job, $test_file_abs, $opts) = @_;
+    my $run_id  = $run->run_id;
+    my $job_id  = $job->job_id;
+    my $job_try = $job->job_try // 1;
+    my $env     = $opts->{env}    // {};
+    my $launch  = $opts->{launch};
+    my $ch_dir  = $opts->{ch_dir};
+
+    my $test_file_spec = Test2::Harness2::TestFile->new(file => $test_file_abs);
+
+    my $queued_at;
+    if (my $rs = $self->{+RUN_STATES}->{$run_id}) {
+        my $r = $rs->results->{$job_id};
+        $queued_at = $r->{queued_at} if $r && defined $r->{queued_at};
+    }
+
+    return {
+        kind          => 'spawn_test',
+        run_id        => $run_id,
+        job_id        => $job_id,
+        job_try       => $job_try,
+        test_file_abs => $test_file_abs,
+        env           => {T2_FORMATTER => 'Stream2', %$env},
+        auditor       => $self->{+TEST_AUDITOR},
+        ipc_parent    => $self->{+NAME},
+        ipc_run       => $self->{+NAME},
+        ipc_harness   => $self->{+NAME},
+        kill_timeout  => $self->{+KILL_TIMEOUT},
+        logdir        => $self->{+LOGDIR},
+        spec          => {
+            %{$test_file_spec->TO_JSON},
+            run_id  => $run_id,
+            job_id  => $job_id,
+            job_try => $job_try,
+            (defined $queued_at ? (queued_at => $queued_at) : ()),
+        },
+        (defined $launch ? (launch => $launch) : ()),
+        (defined $ch_dir && length $ch_dir ? (ch_dir => $ch_dir) : ()),
+    };
+}
+
+# Walk PENDING_SPAWN_REQUESTS; for any entry past
+# preload_spawn_timeout_secs without a matching test_job_started,
+# release the placeholder, flag the preload transient broken, and
+# bounce the job back to pending so the next scheduler tick can
+# re-attempt (either through the same preload once it recovers, or
+# through a fallback path in the preference list).
+sub _age_pending_spawn_requests {
+    my $self = shift;
+
+    my $pending = $self->{+PENDING_SPAWN_REQUESTS};
+    return unless $pending && keys %$pending;
+
+    my $timeout = $self->{+PRELOAD_SPAWN_TIMEOUT_SECS} || 30;
+    my $now     = time;
+
+    for my $key (keys %$pending) {
+        my $entry = $pending->{$key};
+        next if ($now - $entry->{sent_at}) < $timeout;
+
+        my $run_id = $entry->{run_id};
+        my $job_id = $entry->{job_id};
+
+        # If the auditor's test_job_started already populated the
+        # RUNNING_JOBS entry's pid we missed the cleanup; drop the
+        # pending row and move on.
+        my $cur = $self->{+RUNNING_JOBS}->{$job_id};
+        if (!$cur || !$cur->{awaiting_preload_pid}) {
+            delete $pending->{$key};
+            next;
+        }
+
+        warn sprintf(
+            "Test2::Harness2: spawn_test request to preload '%s' (%s scope) for job %s timed out after %ds\n",
+            $entry->{preload_name}, $entry->{preload_scope}, $job_id, $timeout,
+        );
+
+        # Flip the resource to transient broken so the next resolver
+        # call defers or routes elsewhere.
+        for my $res (@{$self->{+RESOURCES} // []}) {
+            next unless blessed($res) && $res->isa('Test2::Harness2::Resource::Preload');
+            next unless $res->name  eq $entry->{preload_name};
+            next unless $res->scope eq $entry->{preload_scope};
+            $res->mark_broken;
+            last;
+        }
+
+        # Release any committed limiters (jobcount etc.) and drop the
+        # placeholder, then return the job to pending so the
+        # scheduler picks it up next tick.
+        $self->_release_job_resources($cur);
+        delete $self->{+RUNNING_JOBS}->{$job_id};
+        $self->_scheduler_mark_pending($run_id, $job_id);
+        delete $pending->{$key};
+    }
+
+    return;
+}
+
+# Derive the bus name the harness uses to talk to a PreloadService
+# instance. Mirrors PreloadService's name derivation: preload-<n> for
+# global, preload-<run_id>-<n> for run scope. Keeping the rule in one
+# place keeps the resolver-side and spawn-side wiring honest.
+sub _preload_peer_name {
+    my ($res) = @_;
+    my $n = $res->name;
+    return "preload-$n" if $res->scope eq 'global';
+    my $rid = $res->run->run_id;
+    return "preload-$rid-$n";
+}
+
+# Deterministic peer name for a resource service spawned via preload.
+# Format mirrors _preload_peer_name: resource-<n> for global scope,
+# resource-<run_id>-<n> for run scope. The harness uses this so the
+# grandchild (which only sees the payload) can register under the
+# expected name without round-tripping through this helper.
+sub _resource_peer_name {
+    my ($self, $entry) = @_;
+    my $n     = $entry->{name};
+    my $scope = $entry->{scope} // 'global';
+    return "resource-$n" if $scope eq 'global';
+    my $rid = $entry->{run};
+    $rid = $rid->run_id if ref($rid) && $rid->can('run_id');
+    return "resource-$n" unless defined $rid && length $rid;
+    return "resource-$rid-$n";
+}
+
+# Throws if the IPC transport in use can't carry SCM_RIGHTS. yath
+# spawn is the only caller; placing the check in the harness lets us
+# fail fast before any client-side socket setup. The check looks at
+# the ipcm_info advertised to clients, which is the same string the
+# harness wrote at startup.
+sub _assert_fdpass_transport {
+    my $self = shift;
+    my $info = $self->ipcm_info // '';
+    return 1 if $info =~ m{IPC::Manager::Client::ConnectionUnix};
+    die "yath spawn requires the ConnectionUnix IPC transport "
+      . "(current ipcm_info: $info)\n";
+}
+
+# Look up a live, global-scope, not-permanent_broken PreloadService
+# whose underlying resource.name matches $pname. Returns the
+# resource_services entry hash or undef. Initial design covers
+# global-scope preloads only; run-scoped reuse is a follow-up.
+sub _find_eligible_preload_service {
+    my ($self, $pname) = @_;
+    return undef unless defined $pname && length $pname;
+
+    for my $info (values %{ $self->{+RESOURCE_SERVICES} // {} }) {
+        next unless ($info->{service_class} // '') eq 'Test2::Harness2::PreloadService';
+        next unless ($info->{scope}         // '') eq 'global';
+        my $res = $info->{resource};
+        next unless ref($res) && $res->can('name');
+        next unless $res->name eq $pname;
+        next if $res->can('is_permanent_broken') && $res->is_permanent_broken;
+        next unless defined $info->{pid} && kill 0 => $info->{pid};
+        return $info;
+    }
+    return undef;
+}
+
+# Send a spawn_service message to the named PreloadService and install
+# a pending entry the resource_service_started handler will finalize.
+# Returns the allocated spawn_id on dispatch success, undef on send
+# failure (caller's _start_service_entry falls back to standalone).
+#
+# Distinct from _spawn_via_preload (which spawns test-job collectors
+# through a PreloadService): this one spawns a *resource service*
+# (e.g. another PreloadService, or any Role::Service implementor) by
+# asking an already-running PreloadService to fork it for us. The
+# split keeps the two payload shapes ('spawn_test' vs 'spawn_service')
+# from sharing state and pending-table semantics.
+sub _spawn_service_via_preload {
+    my ($self, $preload_info, $entry) = @_;
+
+    my $spawn_id  = ++$self->{_PRELOAD_SPAWN_COUNTER};
+    my $peer_name = $self->_resource_peer_name($entry);
+
+    # The resource_services tracking entry keys the service under the
+    # name extracted from its ctor args (e.g. 'myapp' for a
+    # Resource::Preload-spawned PreloadService). That is NOT the IPC
+    # bus name -- PreloadService advertises itself as 'preload-<name>'
+    # (or 'preload-<run_id>-<name>' for run scope). Send to the bus
+    # name, not the tracking name, or the message is rejected as
+    # "not a valid message recipient".
+    my $preload_bus_name = _preload_peer_name($preload_info->{resource});
+
+    $self->{+PENDING_PRELOAD_SPAWNS}->{$spawn_id} = {
+        entry        => $entry,
+        peer_name    => $peer_name,
+        preload_pid  => $preload_info->{pid},
+        preload_name => $preload_bus_name,
+        sent_at      => time,
+    };
+
+    my $client = $self->client;
+    my $ok = eval {
+        $client->send_message($preload_bus_name, {
+            kind      => 'spawn_service',
+            class     => $entry->{service_class},
+            peer_name => $peer_name,
+            ctor_args => do {
+                my $ca = { %{ $entry->{service_args} // {} } };
+                my $wp = $ca->{watch_pids} // [];
+                $wp = [$wp] unless ref($wp) eq 'ARRAY';
+                $ca->{watch_pids} = [ @$wp, $self->pid ];
+                $ca;
+            },
+            notify_to => $self->name,
+            spawn_id  => $spawn_id,
+        });
+        1;
+    };
+    my $err = $@;
+
+    unless ($ok) {
+        delete $self->{+PENDING_PRELOAD_SPAWNS}->{$spawn_id};
+        warn "Test2::Harness2: preload spawn dispatch to '$preload_bus_name' failed: $err\n";
+        return undef;
+    }
+
+    return $spawn_id;
+}
+
+# Handle a 'spawn_script' request from a CLI client. Resolves the
+# requested stage name to a live PreloadService, asserts that the IPC
+# transport can carry file descriptors (ConnectionUnix only), and
+# forwards the payload to that service's bus name so the preload fork
+# can exec the script with the preloaded environment intact.
+#
+# Returns a hashref: { ok => 1, mode => 'preload', spawn_id => N } on
+# success, { ok => 0, error => "..." } on any failure (missing stage,
+# wrong transport, dispatch failure).
+sub request_handler_spawn_script {
+    my ($self, $payload, $msg) = @_;
+
+    for my $f (qw/script_abs env cwd sock_path notify_to/) {
+        return { ok => 0, error => "missing '$f' in spawn_script payload" }
+            unless defined $payload->{$f};
+    }
+
+    my $stage = $payload->{stage};
+    return { ok => 0, error => "'stage' is required" }
+        unless defined $stage && length $stage;
+
+    my $ok = eval { $self->_assert_fdpass_transport; 1 };
+    my $err = $@;
+    return { ok => 0, error => $err } unless $ok;
+
+    my $preload_info = $self->_find_eligible_preload_service($stage);
+    return { ok => 0, error => "no eligible preload stage named '$stage'" }
+        unless $preload_info;
+
+    my $spawn_id = ++$self->{+_SCRIPT_SPAWN_COUNTER};
+    my $bus_name = _preload_peer_name($preload_info->{resource});
+
+    $self->{+PENDING_SCRIPT_SPAWNS}->{$spawn_id} = {
+        notify_to   => $payload->{notify_to},
+        stage       => $stage,
+        preload_pid => $preload_info->{pid},
+        sent_at     => time,
+    };
+
+    my $client  = $self->client;
+    my $sent_ok = eval {
+        $client->send_message($bus_name, {
+            kind       => 'spawn_script',
+            script_abs => $payload->{script_abs},
+            argv       => $payload->{argv} // [],
+            env        => $payload->{env},
+            cwd        => $payload->{cwd},
+            sock_path  => $payload->{sock_path},
+            spawn_id   => $spawn_id,
+            notify_to  => $self->name,
+        });
+        1;
+    };
+    my $send_err = $@;
+
+    unless ($sent_ok) {
+        delete $self->{+PENDING_SCRIPT_SPAWNS}->{$spawn_id};
+        return { ok => 0, error => "dispatch failed: $send_err" };
+    }
+
+    return { ok => 1, mode => 'preload', spawn_id => $spawn_id };
+}
+
+# Finalize a preload-mediated resource spawn. The grandchild's
+# notification carries pid + spawn_id; we look up the pending entry,
+# clear it, and register the new pid in resource_services via
+# track_resource_service. Emits resource_spawn_via_preload for
+# operator visibility.
+sub _handle_resource_service_started {
+    my ($self, $content) = @_;
+
+    return unless $content->{via_preload};
+
+    my $sid = $content->{spawn_id};
+    return unless defined $sid;
+
+    my $pending = delete $self->{+PENDING_PRELOAD_SPAWNS}->{$sid}
+        or return;    # unknown / stale spawn_id
+
+    my $entry = $pending->{entry};
+    my $pid   = $content->{pid};
+
+    my $args_ref = ref($entry->{service_args}) eq 'HASH'
+        ? [%{$entry->{service_args}}]
+        : ($entry->{service_args} // []);
+
+    # Track under the bus peer name ('resource-myappservice') so the
+    # human-facing `yath ps` / `yath resources` output continues to show
+    # the IPC peer name. Carry the raw entry name as `entry_name` so the
+    # restart path (handle_resource_service_exit -> _start_service_entry)
+    # can rebuild the bus name through _resource_peer_name without
+    # double-prefixing into 'resource-resource-myappservice' on every
+    # restart cycle.
+    $self->track_resource_service(
+        pid           => $pid,
+        resource      => $entry->{resource},
+        service_class => $entry->{service_class},
+        service_args  => $args_ref,
+        name          => $pending->{peer_name},
+        entry_name    => $entry->{name},
+        log_path      => $entry->{log_path},
+        scope         => $entry->{scope},
+        (defined $entry->{run} ? (run => $entry->{run}) : ()),
+        started_at    => time,
+        attempts      => $entry->{attempts} // 1,
+        via_preload   => 1,
+    );
+
+    $self->emit_service_event(
+        kind          => 'resource_spawn_via_preload',
+        resource      => (ref($entry->{resource}) && $entry->{resource}->can('resource_name')
+                          ? $entry->{resource}->resource_name : '?'),
+        service_class => $entry->{service_class},
+        name          => $pending->{peer_name},
+        scope         => $entry->{scope} // 'global',
+        preload_name  => $pending->{preload_name},
+        preload_pid   => $pending->{preload_pid},
+        pid           => $pid,
+        spawn_id      => $sid,
+    );
+
+    return;
+}
+
+# Drain the wait-for-preload queue for $pname through
+# _spawn_service_via_preload. Called from _handle_preload_state_message
+# when preload_ready arrives, after the matching Resource::Preload has
+# been flipped to ready. If for some reason the preload is no longer
+# eligible by the time we reach here (raced with permanent_broken,
+# etc.) the entries fall back to standalone with a fallback event.
+sub _drain_resources_awaiting_preload {
+    my ($self, $pname) = @_;
+    return unless defined $pname && length $pname;
+
+    my $queue = delete $self->{+RESOURCES_AWAITING_PRELOAD}->{$pname};
+    return unless ref($queue) eq 'ARRAY' && @$queue;
+
+    my $preload_info = $self->_find_eligible_preload_service($pname);
+    for my $entry (@$queue) {
+        if ($preload_info) {
+            $self->_spawn_service_via_preload($preload_info, $entry);
+        }
+        else {
+            $self->_fallback_single_entry($entry, $pname, 'preload not eligible at drain time');
+        }
+    }
+    return;
+}
+
+# Flush the wait-for-preload queue for $pname through
+# _ipcm_service_standalone. Called when the preload reports
+# permanent_broken: the dependents still come up, just unpreloaded.
+sub _fallback_resources_awaiting_preload {
+    my ($self, $pname) = @_;
+    return unless defined $pname && length $pname;
+
+    my $queue = delete $self->{+RESOURCES_AWAITING_PRELOAD}->{$pname};
+    return unless ref($queue) eq 'ARRAY' && @$queue;
+
+    for my $entry (@$queue) {
+        $self->_fallback_single_entry($entry, $pname, 'preload permanent_broken');
+    }
+    return;
+}
+
+# Helper: emit the fallback event for one queued entry and re-dispatch
+# it through _ipcm_service_standalone. Shared between the drain and
+# fallback paths so the event shape stays consistent.
+sub _fallback_single_entry {
+    my ($self, $entry, $pname, $reason) = @_;
+
+    my $res = $entry->{resource};
+    $self->emit_service_event(
+        kind          => 'resource_spawn_preload_fallback',
+        resource      => (ref($res) && $res->can('resource_name')
+                          ? $res->resource_name : '?'),
+        service_class => $entry->{service_class},
+        name          => $entry->{name},
+        scope         => $entry->{scope} // 'global',
+        preload_name  => $pname,
+        reason        => $reason,
+    );
+
+    my $args = ref($entry->{service_args}) eq 'HASH'
+        ? [%{$entry->{service_args}}]
+        : ($entry->{service_args} // []);
+
+    $self->_ipcm_service_standalone(
+        resource => $res,
+        class    => $entry->{service_class},
+        args     => $args,
+        name     => $entry->{name},
+        log_path => $entry->{log_path},
+        scope    => $entry->{scope} // 'global',
+        (defined $entry->{run} ? (run => $entry->{run}) : ()),
+    );
+
+    return;
+}
+
+# Walk PENDING_PRELOAD_SPAWNS, drop entries older than
+# PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS, and re-dispatch via standalone.
+# Closes the gap where a grandchild fails to start before sending its
+# resource_service_started notification (compile error, fork issue,
+# killed before notify, etc.). Called from run_on_interval each tick.
+sub _check_pending_preload_spawn_timeouts {
+    my $self = shift;
+
+    my $pending  = $self->{+PENDING_PRELOAD_SPAWNS} // {};
+    my $deadline = $self->{+PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS} // 30;
+    my $now      = time;
+
+    for my $sid (keys %$pending) {
+        my $p = $pending->{$sid};
+        next if $now - ($p->{sent_at} // $now) < $deadline;
+
+        delete $pending->{$sid};
+
+        my $entry = $p->{entry};
+        my $res   = $entry->{resource};
+
+        $self->emit_service_event(
+            kind          => 'resource_spawn_preload_timeout',
+            resource      => (ref($res) && $res->can('resource_name') ? $res->resource_name : '?'),
+            service_class => $entry->{service_class},
+            name          => $entry->{name},
+            scope         => $entry->{scope} // 'global',
+            preload_name  => $p->{preload_name},
+            spawn_id      => $sid,
+            reason        => "no notification within ${deadline}s",
+        );
+
+        my $args = ref($entry->{service_args}) eq 'HASH'
+            ? [%{$entry->{service_args}}]
+            : ($entry->{service_args} // []);
+
+        $self->_ipcm_service_standalone(
+            resource => $res,
+            class    => $entry->{service_class},
+            args     => $args,
+            name     => $entry->{name},
+            log_path => $entry->{log_path},
+            scope    => $entry->{scope} // 'global',
+            (defined $entry->{run} ? (run => $entry->{run}) : ()),
+        );
+    }
+
+    return;
+}
+
+# Record the grandchild pid that the preload service sent back after
+# fork()ing the script. The spawn_id ties this notification back to the
+# PENDING_SCRIPT_SPAWNS entry created by _handle_request_spawn_script.
+sub _handle_script_spawned {
+    my ($self, $content) = @_;
+    my $sid = $content->{spawn_id} or return;
+    my $pid = $content->{pid}      or return;
+    my $pending = $self->{+PENDING_SCRIPT_SPAWNS}->{$sid}
+        or return;
+    $pending->{child_pid} = $pid;
+
+    # Race case: the grandchild may have exited and been reaped by
+    # run_on_pid before script_spawned arrived. If so the raw exit
+    # value is sitting in _SCRIPT_SPAWN_EXITS keyed on pid; drain
+    # it and dispatch script_exited immediately.
+    my $exits = $self->{+_SCRIPT_SPAWN_EXITS} // {};
+    if (exists $exits->{$pid}) {
+        my $status = delete $exits->{$pid};
+        my $sent   = $self->_dispatch_script_exited($sid, $pending, $status);
+        delete $self->{+PENDING_SCRIPT_SPAWNS}->{$sid} if $sent;
+    }
+    return;
+}
+
+# Build and send a script_exited notification. Returns true on success,
+# false on send failure (caller may keep the pending entry alive to
+# retry or to avoid leaving the CLI blocked forever on a never-arriving
+# notification).
+sub _dispatch_script_exited {
+    my ($self, $sid, $pending, $status) = @_;
+    my $exit_val = ($status >> 8) & 0xFF;
+    my $sig      = $status & 0x7F;
+    my $client   = $self->client;
+    my $ok = eval {
+        $client->send_message($pending->{notify_to}, {
+            kind       => 'script_exited',
+            spawn_id   => $sid,
+            exit       => $exit_val,
+            signal     => $sig,
+            raw_status => $status,
+        });
+        1;
+    };
+    my $err = $@;
+    warn "yath spawn: script_exited dispatch failed: $err" unless $ok;
+    return $ok ? 1 : 0;
+}
+
+# Defensive backup: in normal operation IPC::Manager's reap_children
+# (waitpid -1) reaps the grandchild and run_on_pid dispatches via
+# _dispatch_script_exited. _poll_script_exits handles the case where
+# that path doesn't fire (test isolation, IPC::Manager version differences).
+sub _poll_script_exits {
+    my $self = shift;
+
+    my $table = $self->{+PENDING_SCRIPT_SPAWNS} // {};
+    for my $sid (keys %$table) {
+        my $entry = $table->{$sid};
+        my $cpid  = $entry->{child_pid};
+        next unless defined $cpid;
+
+        my $reaped = waitpid($cpid, WNOHANG);
+        next if $reaped == 0;     # still running
+        next if $reaped < 0;     # already reaped elsewhere
+
+        my $sent = $self->_dispatch_script_exited($sid, $entry, $?);
+        delete $table->{$sid} if $sent;
+    }
+
+    return;
 }
 
 1;
@@ -2477,6 +3592,214 @@ execution anywhere unintended.
 
 If C<jump_to> is set but no matching setjump is active, C<start()> croaks
 before forking. Without C<jump_to>, C<start()> behaves exactly as before.
+
+=head1 METHODS
+
+This section documents the internal subroutines added by the preload-as-resource
+rework. Most are (internal) helpers invoked by the IPC service loop, the
+scheduler, or the various C<request_handler_*> entry points. They are listed
+here so the implementation reads coherently, not because external callers should
+invoke them.
+
+=head2 Preload resolution
+
+=head2 _resolve_preload_for_job
+
+(internal) For C<($run, $job)>, walks the job's C<preload_preferences> against
+the per-run preload index and returns C<($resource, $kind, $extra)>. C<$kind>
+is one of C<no_preload>, C<preload>, C<defer>, or C<broken>.
+
+=head2 _index_preloads_for_run
+
+(internal) Builds C<{ by_global, by_run, global_default, run_default }> for a
+run, picking out L<Test2::Harness2::Resource::Preload> instances visible to it.
+
+=head2 _classify_preload_state
+
+(internal) Maps a L<Test2::Harness2::Resource::Preload> to one of
+C<permanent>, C<usable>, or C<defer>.
+
+=head2 Run setup
+
+=head2 _validate_run_hash_seed
+
+(internal) Returns an error string if the run's C<--set-hash-seed> conflicts
+with the harness's, or C<undef> when compatible.
+
+=head2 _rehydrate_run_resources
+
+(internal) Constructs per-run L<Test2::Harness2::Resource> instances from the
+IPC-recipe form C<[ [class, @ctor_args], ... ]>. Returns C<(1, \@instances)>
+on success or C<(0, $error)> on failure.
+
+=head2 Request handlers
+
+=head2 request_handler_list_preloads
+
+Returns C<{ ok =E<gt> 1, preloads =E<gt> \@list }> describing every live,
+global-scope L<Test2::Harness2::PreloadService>. Used by C<yath ps> /
+C<yath spawn>.
+
+=head2 request_handler_abort_run
+
+Latches a C<user_abort> reason onto one run (C<run_id>) or all runs (C<all>).
+Pending jobs flow through the existing unavailable-action path; running jobs
+are left alone.
+
+=head2 request_handler_spawn_script
+
+Handles C<yath spawn>: resolves the requested preload stage, asserts the IPC
+transport carries SCM_RIGHTS, and forwards the script's exec payload to the
+matching L<Test2::Harness2::PreloadService>. Returns
+C<{ ok =E<gt> 1, mode =E<gt> 'preload', spawn_id =E<gt> N }> or an error hash.
+
+=head2 IPC message handlers
+
+=head2 _handle_preload_state_message
+
+(internal) Applies C<preload_ready> / C<preload_broken> messages to the
+matching L<Test2::Harness2::Resource::Preload>, then drains or falls back any
+dependent resource services queued under L</_drain_resources_awaiting_preload>
+/ L</_fallback_resources_awaiting_preload>.
+
+=head2 _handle_test_collector_exit
+
+(internal) Bridges a reaped test-collector pid to the run service. Either
+forgets the pid (when the run service has already accepted completion) or
+records a pending synthetic completion the watchdog can flush.
+
+=head2 _handle_script_spawn_exit
+
+(internal) Handles reap of a C<yath spawn> grandchild. Either dispatches
+C<script_exited> immediately, or stashes the raw exit when C<script_spawned>
+hasn't been seen yet (raced ahead of L</_handle_script_spawned>).
+
+=head2 _handle_script_spawned
+
+(internal) Records the grandchild pid sent by the preload service after it
+forked the script, and drains any race-stashed exit from
+L</_handle_script_spawn_exit>.
+
+=head2 _handle_resource_service_started
+
+(internal) Finalizes a preload-mediated resource spawn: registers the new pid
+under the bus peer name and emits C<resource_spawn_via_preload>.
+
+=head2 Scheduler
+
+=head2 _scheduler_mark_pending
+
+(internal) Pushes C<$job_id> back into the run's pending queue and clears it
+from C<running>, used when a deferred / timed-out launch needs to be retried.
+
+=head2 _dispatch_pending_job
+
+(internal) Per-job dispatch decision used by C<_try_launch_next_pending>.
+Combines the run-aborted short-circuit, the preload resolver, and the generic
+resource evaluator, returning C<'launched'>, C<'defer'>, or C<'skipped'>.
+
+=head2 Launch helpers
+
+=head2 _announce_run_started_if_first
+
+(internal) Emits the one-shot C<run_started> service event and stamps
+C<started_at> the first time a run actually launches a job.
+
+=head2 _build_launch_env
+
+(internal) Builds the base C<%env> for a launched test child: forwards
+C<T2_HARNESS_INCLUDES> and propagates the run's hash seed via
+C<PERL_HASH_SEED>.
+
+=head2 _launch_collector_inline
+
+(internal) Direct (no-preload) launch path. Spawns the collector via
+L</_spawn_collector_for_job>, registers the C<RUNNING_JOBS> entry, bumps
+in-flight bookkeeping, and records the collector pid under the run.
+
+=head2 _spawn_via_preload
+
+(internal) Async test-job launch through a preload service. Registers a
+placeholder C<RUNNING_JOBS> entry, sends the C<spawn_test> payload, and arms
+the timeout watchdog (see L</_age_pending_spawn_requests>).
+
+=head2 _register_pending_preload_spawn / _build_spawn_test_payload
+
+(internal) Helpers for L</_spawn_via_preload>: the first installs the
+placeholder and tracking row, the second builds the C<spawn_test> payload sent
+to the preload bus peer.
+
+=head2 _age_pending_spawn_requests
+
+(internal) Per-tick watchdog for in-flight C<spawn_test> requests. Times out
+stale entries, flips the preload to transient broken, releases held resources,
+and returns the job to pending.
+
+=head2 Preload / resource peer naming
+
+=head2 _preload_peer_name / _resource_peer_name
+
+(internal) Deterministic bus names for L<Test2::Harness2::PreloadService>
+peers and preload-spawned resource services. Global scope yields
+C<preload-NAME> / C<resource-NAME>; run scope adds the run id between the
+prefix and the name.
+
+=head2 _assert_fdpass_transport
+
+(internal) Dies unless the configured IPC transport is
+C<IPC::Manager::Client::ConnectionUnix> (the only transport that can carry
+SCM_RIGHTS, which C<yath spawn> needs).
+
+=head2 Preload-spawned resource services
+
+=head2 _find_eligible_preload_service
+
+(internal) Returns the C<resource_services> tracking entry for a live,
+global-scope, not-C<permanent_broken> L<Test2::Harness2::PreloadService>
+whose underlying resource matches C<$pname>, or C<undef>.
+
+=head2 _spawn_service_via_preload
+
+(internal) Sends a C<spawn_service> message to a preload service and records a
+C<PENDING_PRELOAD_SPAWNS> row that L</_handle_resource_service_started>
+finalizes. Returns the allocated spawn id on dispatch success, C<undef> on
+send failure.
+
+=head2 _drain_resources_awaiting_preload
+
+(internal) Drains the wait-for-preload queue for a stage through
+L</_spawn_service_via_preload> once the preload becomes ready. Entries that
+are no longer eligible fall through to L</_fallback_single_entry>.
+
+=head2 _fallback_resources_awaiting_preload
+
+(internal) Flushes the same queue through standalone spawn when the preload
+reports C<permanent_broken>; dependents still come up, just unpreloaded.
+
+=head2 _fallback_single_entry
+
+(internal) Emits the C<resource_spawn_preload_fallback> event and
+re-dispatches one queued entry via C<_ipcm_service_standalone>; shared by both
+the drain and fallback paths.
+
+=head2 _check_pending_preload_spawn_timeouts
+
+(internal) Per-tick watchdog for C<PENDING_PRELOAD_SPAWNS>. Drops entries
+older than C<PRELOAD_SERVICE_SPAWN_TIMEOUT_SECS> and re-dispatches them via
+standalone spawn, emitting C<resource_spawn_preload_timeout>.
+
+=head2 yath spawn exit dispatch
+
+=head2 _dispatch_script_exited
+
+(internal) Sends a C<script_exited> notification to the spawn caller. Returns
+true on success, false on send failure.
+
+=head2 _poll_script_exits
+
+(internal) Defensive backup reaper for C<yath spawn> grandchildren when the
+normal C<run_on_pid> path does not fire. Drives
+L</_dispatch_script_exited> on any C<WNOHANG>-reaped pid.
 
 =head1 SOURCE
 

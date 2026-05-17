@@ -440,4 +440,36 @@ subtest 'retroactive window: slots assigned under 1s count against 4s effective 
     is($r->_in_window_count($eff_win), 0, 'slot aged out at exact 4s boundary');
 };
 
+subtest '_read_meminfo_available does not clobber caller $_' => sub {
+    # Regression test: _read_meminfo_available used `while (<$fh>)` which
+    # writes each line to $_. When status() is called from
+    # `map { $_->status } @{+RESOURCES}` (as request_handler_status does),
+    # the outer $_ is aliased to a live array element and the bare diamond
+    # read replaces the blessed Resource::Throttle with the last meminfo
+    # line read. Symptom: subsequent iterations call ->status on a raw
+    # string and die "Can't locate object method 'status' via package
+    # 'MemAvailable: ... kB'".
+    SKIP: {
+        skip "regression test requires /proc/meminfo (linux only)", 1
+            unless -e '/proc/meminfo';
+
+        my $r = Test2::Harness2::Resource::Throttle->new(
+            cap    => 1,
+            window => 1,
+            bases  => [_ram_basis(100)],
+        );
+
+        my @arr = ($r);
+        # Call _read_meminfo_available indirectly via status() inside a
+        # map block whose $_ is aliased to $arr[0]. If the bug regresses,
+        # $arr[0] becomes a meminfo string after the map runs.
+        my @status = map { $_->status } @arr;
+
+        ok(ref($arr[0]) eq 'Test2::Harness2::Resource::Throttle',
+            'array element still blessed Throttle after map { ->status }')
+            or diag "got: ", (ref($arr[0]) || $arr[0]);
+        ok(ref($status[0]) eq 'HASH', 'status() returned a hashref');
+    }
+};
+
 done_testing;

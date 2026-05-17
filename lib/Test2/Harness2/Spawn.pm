@@ -15,6 +15,7 @@ use Object::HashBase qw{
     <ipcm_info
     <workdir
     <name
+    <listen
     +handle
     <terminate_on_destroy
     +_waited
@@ -41,13 +42,15 @@ sub _build_handle {
     require IPC::Manager;
     require IPC::Manager::Service::Handle;
 
-    # The parent-side spawn handle only sends to the harness service
-    # (sync_request + finish/terminate) and never receives inbound
-    # traffic from arbitrary peers, so it does not need its own
-    # listen socket. Pre-build the client with listen=0 and hand it
-    # to the Service::Handle so its lazy client builder is bypassed.
+    # By default the parent-side spawn handle only sends to the harness
+    # service (sync_request + finish/terminate) and never receives inbound
+    # traffic from arbitrary peers, so it does not need its own listen
+    # socket. Callers that need to receive async messages (e.g. the
+    # spawn command waiting for script_exited) set listen=>1 at
+    # construction time to enable the inbound socket.
     my $handle_name = $self->{+NAME} . '-spawn-' . $$;
-    my $client      = IPC::Manager->connect($handle_name, $self->{+IPCM_INFO}, ipc_default_connect_args());
+    my @connect_args = $self->{+LISTEN} ? () : ipc_default_connect_args();
+    my $client      = IPC::Manager->connect($handle_name, $self->{+IPCM_INFO}, @connect_args);
 
     return IPC::Manager::Service::Handle->new(
         service_name => $self->{+NAME},
@@ -82,6 +85,8 @@ sub queue_test_run {
 }
 
 sub status { $_[0]->_send_request('status') }
+
+sub spawn_script { $_[0]->_send_request('spawn_script', $_[1]) }
 
 # Patterns surfaced by IPC::Manager::Service::Handle::sync_request when the
 # peer is gone.  Both are expected outcomes when the service exits before
@@ -196,6 +201,18 @@ sub terminate {
     $self->wait;    # always reap, even on error
     return $res if $ok;
     die $err;
+}
+
+# Fire-and-forget peer message. Used by clients like `yath reload` to
+# fan a request out to every peer the harness owns without going
+# through the harness's request dispatcher. Returns 1 on enqueue
+# success, 0 (with $@ set) on failure.
+sub broadcast_message {
+    my ($self, $peer, $payload) = @_;
+    my $hdl    = $self->handle;
+    my $client = $hdl->client;
+    my $ok     = eval { $client->send_message($peer, $payload); 1 };
+    return $ok ? 1 : 0;
 }
 
 sub detach {
@@ -342,6 +359,21 @@ Ask the service to finish after its current queue drains.
 =item $res = $spawn->terminate
 
 Send a hard-stop C<Terminate> request and wait for the service to exit.
+
+=item $res = $spawn->spawn_script($payload)
+
+Send a C<spawn_script> request to the harness service and return the
+response. The C<$payload> is a hashref of arguments the spawn service
+recognises (script path, args, env, etc.); the harness forks a worker
+to run the script and the response carries the assigned job/run
+identifiers.
+
+=item $spawn->broadcast_message($peer, $payload)
+
+Send a one-way message to the named peer on the harness's IPC bus. No
+response is expected; returns truthy on successful enqueue, falsy (with
+C<$@> set) on send failure. Used by C<yath reload> and similar fan-out
+clients to address peers other than the harness service itself.
 
 =item $res = $spawn->detach
 

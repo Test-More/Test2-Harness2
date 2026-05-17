@@ -1,10 +1,10 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: exception/timeout edge cases (--et/--pet) and renderer output not aligned";
 __END__
 
 use Test2::V0;
-# HARNESS-DURATION-LONG
+# HARNESS2: duration long
 
 use Test2::API qw/context/;
 use lib 't/lib';

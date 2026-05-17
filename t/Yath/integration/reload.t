@@ -1,10 +1,10 @@
-# HARNESS-CONFLICTS YATH
+# HARNESS2: conflicts yath
 use Test2::V0;
 plan skip_all => "TODO: reload of preloaded modules requires daemon mode (start/watch/stop)";
 __END__
 
 use Test2::V0;
-# HARNESS-DURATION-LONG
+# HARNESS2: duration long
 #use Test2::Plugin::DieOnFail;
 
 use File::Temp qw/tempdir/;

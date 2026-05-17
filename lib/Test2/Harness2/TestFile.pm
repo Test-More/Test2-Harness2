@@ -8,22 +8,8 @@ use Carp qw/croak/;
 use File::Spec ();
 
 use Object::HashBase qw{
-    <absolute <relative
-    <features <switches
-    <category <duration <stage
-    <conflicts
-    <retry <retry_isolated
-    <smoke <isolation
-    <non_perl <is_binary
-    <event_timeout <post_exit_timeout
-    <min_slots <max_slots
-    <meta
-    <ch_dir
-    <comment
+    &Test2::Harness2::Role::TestFile
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::TestFile';
 
 sub init {
     my $self = shift;
@@ -71,12 +57,12 @@ test file for the harness.
 C<Test2::Harness2::TestFile> is the harness-side, B<static> value
 object for one test file. Every attribute is set at construction;
 nothing on this class scans the file, reads its shebang, parses
-C<HARNESS-*> directives, validates C<-f> / C<-x>, mints job_ids,
+C<HARNESS2:> directives, validates C<-f> / C<-x>, mints job_ids,
 or otherwise touches the filesystem. The harness rehydrates these
 objects from log payloads when replaying or analysing runs, where the
 file may not even exist on the local machine.
 
-The producer side -- reading shebangs, parsing C<HARNESS-*>
+The producer side -- reading shebangs, parsing C<HARNESS2:>
 directives, applying CLI overrides, building queue payloads -- lives
 in L<App::Yath2::TestFile>. The harness library does B<not> load
 yath; producers are responsible for handing the harness a fully-built

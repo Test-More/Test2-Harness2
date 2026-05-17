@@ -36,126 +36,156 @@ use App::Yath2::Options::Renderer;
 sub run {
     my ($class, %args) = @_;
 
-    my $settings     = $args{settings}    // croak "'settings' is required";
-    my $harness_pid  = $args{harness_pid};
-    my $log          = $args{log};
-    my $logdir       = $args{logdir};
-
+    my $settings = $args{settings} // croak "'settings' is required";
+    my $log      = $args{log};
+    my $logdir   = $args{logdir};
     croak "'log' or 'logdir' is required"
         unless $log || (defined $logdir && length $logdir);
 
     local $| = 1;
     STDERR->autoflush(1);
 
-    my $om        = App::Yath2::OutputManager->new;
-    my $renderers = App::Yath2::Options::Renderer->init_renderers($settings);
-    $om->add_renderer($_) for @$renderers;
-
+    my $om = $class->_build_output_manager($settings);
     $log //= App::Yath2::Log->new(live => $logdir);
-    my $is_live = $log->can('is_live') ? $log->is_live : 0;
 
-    my %run_states;          # run_id => { queued_at, started_at, job_ids, jobs => { "$jid/$try" => { spec, report } } }
-    my %seen_run_start;      # run_id => 1
-    my %seen_run_end;        # run_id => 1
-    my $synth_queue = [];    # queue of synthesized lifecycle events to dispatch first
+    my $ctx = {
+        class           => $class,
+        om              => $om,
+        log             => $log,
+        is_live         => $log->can('is_live') ? $log->is_live : 0,
+        harness_pid     => $args{harness_pid},
+        stop_run_id     => $args{stop_run_id},
+        grace           => $args{grace} // 10,
+        live_path       => (defined $logdir && length $logdir) ? "$logdir/LIVE" : undef,
+        run_states      => {},
+        seen_run_start  => {},
+        seen_run_end    => {},
+        synth_queue     => [],
+        no_progress_deadline => undef,
+        exit_code       => 0,
+        bail_reason     => undef,
+    };
+    # Sealed mode passes timeout=0 so the iterator returns whatever is
+    # buffered immediately and we exit as soon as the stack drains.
+    # Live mode uses a small positive timeout to amortize syscalls.
+    $ctx->{poll_timeout} = $ctx->{is_live} ? 0.05 : 0;
 
-    # Detection state for the stuck-EOE timeout (live mode only): once
-    # the harness pid disappears (or the LIVE sentinel goes away),
-    # allow $grace seconds of quiescence before bailing out and
-    # reporting an EOE bug. Sealed mode never polls -- the iterator is
-    # walked synchronously and EOE flips true once the readers drain.
-    my $grace            = $args{grace} // 10;
-    my $no_progress_deadline;
-    my $last_event_at    = time;
-    my $live_path        = (defined $logdir && length $logdir) ? "$logdir/LIVE" : undef;
-
-    my $exit_code = 0;
-    my $bail_reason;
-
-    # Poll/timeout cadence depends on mode. Sealed mode passes timeout=0
-    # so the iterator returns whatever is buffered immediately and we
-    # exit as soon as the stack drains. Live mode passes a small
-    # positive timeout to amortize syscall overhead.
-    my $poll_timeout = $is_live ? 0.05 : 0;
-
-    while (1) {
-        # 1. Drain any events synthesized from the previous tick first,
-        #    so lifecycle facets land in front of the next on-disk
-        #    record we surface.
-        while (my $synth = shift @$synth_queue) {
-            $om->dispatch($synth);
-            $last_event_at = time;
-        }
-
-        my $event = $log->event($poll_timeout);
-
-        if ($event) {
-            $last_event_at = time;
-            $no_progress_deadline = undef;
-
-            # Re-run lifecycle synthesis for transition events
-            # before passing the underlying event downstream. The
-            # synthesized lifecycle events are queued up to dispatch
-            # ahead of the next on-disk record.
-            $class->_maybe_synthesize_lifecycle($event, $log, \%run_states, \%seen_run_start, \%seen_run_end, $synth_queue);
-
-            # Pass the on-disk event itself through too, so renderers
-            # that key on lower-level facets (assert/info/control/...)
-            # still see them. Lifecycle synth output sits in front of
-            # this event in the queue.
-            unshift @$synth_queue, $class->_blessed_event($event);
-            next;
-        }
-
-        # No event right now. Check EOE first.
-        if ($log->EOE) {
-            last;
-        }
-
-        # Sealed mode: no polling, no live sentinel. If EOE is false
-        # but no event came back, treat as drained and exit.
-        unless ($is_live) {
-            last;
-        }
-
-        # Detect stuck iterator. If harness pid is gone or the LIVE
-        # sentinel disappeared and EOE is still false, give the iterator
-        # 10 seconds of grace, then bail with a clear error.
-        my $harness_gone = $harness_pid && !kill(0 => $harness_pid);
-        my $live_gone    = defined($live_path) && !-e $live_path;
-        if ($harness_gone || $live_gone) {
-            $no_progress_deadline //= time + $grace;
-            if (time >= $no_progress_deadline) {
-                $bail_reason = $harness_gone
-                    ? "harness pid $harness_pid is gone"
-                    : "LIVE sentinel disappeared";
-                $exit_code = 2;
-                last;
-            }
-        }
-        else {
-            $no_progress_deadline = undef;
-        }
-
-        # Tiny sleep to avoid busy spin when the iterator returned
-        # nothing and EOE is still false.
-        tinysleep(0.05);
-    }
+    $class->_event_loop($ctx);
 
     # Drain anything left in the synth queue post-loop.
-    while (my $synth = shift @$synth_queue) {
+    while (my $synth = shift @{$ctx->{synth_queue}}) {
         $om->dispatch($synth);
     }
 
-    if (defined $bail_reason) {
+    if (defined $ctx->{bail_reason}) {
         print STDERR
-            "ERROR: EOE logic bug -- $bail_reason, no new events, but \$log->EOE still false. Please report this issue.\n";
+            "ERROR: EOE logic bug -- $ctx->{bail_reason}, no new events, but \$log->EOE still false. Please report this issue.\n";
     }
 
     $om->end_of_events;
     $om->finish;
 
-    return $exit_code;
+    return $ctx->{exit_code};
+}
+
+sub _build_output_manager {
+    my ($class, $settings) = @_;
+    my $om        = App::Yath2::OutputManager->new;
+    my $renderers = App::Yath2::Options::Renderer->init_renderers($settings);
+    $om->add_renderer($_) for @$renderers;
+    return $om;
+}
+
+sub _event_loop {
+    my ($class, $ctx) = @_;
+
+    while (1) {
+        # 1. Drain previously-synthesized events first so lifecycle
+        #    facets land in front of the next on-disk record.
+        while (my $synth = shift @{$ctx->{synth_queue}}) {
+            $ctx->{om}->dispatch($synth);
+        }
+
+        my $event = $ctx->{log}->event($ctx->{poll_timeout});
+        if ($event) {
+            $class->_handle_event($ctx, $event);
+            next;
+        }
+
+        last if $ctx->{log}->EOE;
+
+        # Persistent-daemon mode: LIVE sentinel never disappears so
+        # EOE never flips. Exit once the specific run we were
+        # dispatched for has completed + its synth has drained.
+        last if defined $ctx->{stop_run_id}
+             && $ctx->{seen_run_end}{$ctx->{stop_run_id}}
+             && !@{$ctx->{synth_queue}};
+
+        # Sealed mode: no live sentinel; no event + EOE false means
+        # drained.
+        last unless $ctx->{is_live};
+
+        last if $class->_check_stuck_iterator($ctx);
+
+        # Tiny sleep to avoid busy spin when nothing came back but
+        # EOE is still false.
+        tinysleep(0.05);
+    }
+}
+
+sub _handle_event {
+    my ($class, $ctx, $event) = @_;
+    $ctx->{no_progress_deadline} = undef;
+
+    # Persistent-daemon mode: the log carries every run on this
+    # daemon. Skip events tagged with a non-matching run_id. Events
+    # with no run_id (e.g. service_started for the harness) pass
+    # through as expected lifecycle.
+    if (defined $ctx->{stop_run_id}) {
+        my $ev_rid = $class->_event_run_id($event);
+        return if defined $ev_rid && $ev_rid ne $ctx->{stop_run_id};
+    }
+
+    # Re-run lifecycle synthesis for transition events; the synth
+    # output queues up so it dispatches before the underlying event.
+    $class->_maybe_synthesize_lifecycle(
+        $event,
+        $ctx->{log},
+        $ctx->{run_states},
+        $ctx->{seen_run_start},
+        $ctx->{seen_run_end},
+        $ctx->{synth_queue},
+    );
+
+    # Pass the on-disk event itself through too -- renderers that key
+    # on lower-level facets (assert/info/control/...) need to see it.
+    unshift @{$ctx->{synth_queue}}, $class->_blessed_event($event);
+}
+
+# Detect a stuck iterator: when the harness pid is gone (or the LIVE
+# sentinel disappeared) and EOE has not flipped, give the iterator
+# $grace seconds of quiescence, then bail with a clear error.
+# Returns true when the loop should exit.
+sub _check_stuck_iterator {
+    my ($class, $ctx) = @_;
+
+    my $harness_gone = $ctx->{harness_pid} && !kill(0 => $ctx->{harness_pid});
+    my $live_gone    = defined($ctx->{live_path}) && !-e $ctx->{live_path};
+
+    if ($harness_gone || $live_gone) {
+        $ctx->{no_progress_deadline} //= time + $ctx->{grace};
+        if (time >= $ctx->{no_progress_deadline}) {
+            $ctx->{bail_reason} = $harness_gone
+                ? "harness pid $ctx->{harness_pid} is gone"
+                : "LIVE sentinel disappeared";
+            $ctx->{exit_code} = 2;
+            return 1;
+        }
+    }
+    else {
+        $ctx->{no_progress_deadline} = undef;
+    }
+    return 0;
 }
 
 sub _blessed_event {
@@ -164,6 +194,38 @@ sub _blessed_event {
     my %copy = %$event;
     $copy{facet_data} //= {};
     return Test2::Harness2::Event->new(\%copy);
+}
+
+# Extract a run_id from an event by scanning the facets that carry one.
+# Returns undef when no facet identifies a run (e.g. service_started for
+# the harness service, which predates any run). Used by `yath run` to
+# skip events that belong to other runs on a persistent daemon's log.
+sub _event_run_id {
+    my ($class, $event) = @_;
+
+    my $fd = ref($event) eq 'HASH' ? $event->{facet_data}
+           : (blessed($event) ? $event->facet_data : undef);
+    return undef unless ref($fd) eq 'HASH';
+
+    for my $facet (qw{
+        harness
+        harness_run
+        harness_run_queued
+        harness_run_start
+        harness_run_end
+        harness_job_queued
+        harness_job_start
+        harness_job_end
+        harness_job_exit
+        harness_collector_start
+        harness_collector_end
+    }) {
+        my $f = $fd->{$facet};
+        next unless ref($f) eq 'HASH';
+        return $f->{run_id} if defined $f->{run_id};
+    }
+
+    return undef;
 }
 
 # Inspect an on-disk event for a transition signal; on hit, push the
@@ -448,6 +510,67 @@ pass/fail decisions independently. The driver is also reused by
 sealed-mode consumers (replay command) -- pass C<log =E<gt> $log>
 to use a pre-built backend, or C<logdir =E<gt> $dir> to open a
 live workdir.
+
+=head1 METHODS
+
+=over 4
+
+=item $exit = $class->run(%args)
+
+Entry point. Builds an L<App::Yath2::OutputManager>, opens the live
+or sealed log, runs the event loop, drains any pending synthesized
+events, and returns the exit code. C<settings> is required; one of
+C<log> or C<logdir> is required.
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _build_output_manager
+
+Construct the L<App::Yath2::OutputManager> and attach renderers via
+L<App::Yath2::Options::Renderer>.
+
+=item _event_loop
+
+Read events from the log, drain synthesized lifecycle events first,
+detect a stuck iterator via L</_check_stuck_iterator>, and exit on
+EOE / sealed drain / target-run completion.
+
+=item _handle_event
+
+Synthesize lifecycle facets from the on-disk event, then queue the
+event itself behind the synth for dispatch. Skips events whose
+run_id does not match C<stop_run_id> when targeting a single run.
+
+=item _check_stuck_iterator
+
+Detect a stuck iterator: when the harness pid is gone (or the LIVE
+sentinel disappeared) and EOE has not flipped, grant C<grace>
+seconds of quiescence then bail with a clear error. Returns true
+when the loop should exit.
+
+=item _event_run_id
+
+Extract a C<run_id> from an event by scanning the C<harness*>
+facets that carry one. Returns C<undef> when no facet identifies
+a run (e.g. C<service_started>); used to filter events for a
+specific run on a persistent daemon's log.
+
+=item _maybe_synthesize_lifecycle
+
+Inspect an on-disk event for a transition signal; on hit, push the
+corresponding lifecycle facets onto the synth queue, lazy-loading
+per-job spec / report artifacts via L</_job_spec> and L</_job_report>.
+
+=item _blessed_event / _job_spec / _job_report
+
+Internal helpers: ensure the event is a blessed L<Test2::Harness2::Event>,
+and lazily fetch cached per-job spec / report rows keyed by job_id+try.
+
+=back
 
 =head1 SOURCE
 

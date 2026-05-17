@@ -78,6 +78,7 @@ sub job_slots { 1 }
 package Fake::Tests;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
+sub chdir         { undef }
 
 package Fake::Log;
 sub new    { bless {}, $_[0] }

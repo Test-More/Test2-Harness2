@@ -10,28 +10,14 @@ use List::Util qw/any uniq/;
 use Time::HiRes qw/time/;
 
 use Test2::Harness2::Util qw/open_file clean_path/;
+use Test2::Harness2::Util::Directives ();
 use Test2::Util::UUID qw/gen_uuid/;
 
 use Object::HashBase qw{
-    <absolute <relative
     +_scanned +_shbang
-    +features +switches
-    +category +duration +stage
-    +conflicts
-    +retry +retry_isolated
-    <smoke <isolation
-    +non_perl +is_binary
-    +event_timeout +post_exit_timeout
-    +min_slots +max_slots
-    +meta
-    <ch_dir
-    <comment
-
     <input <env_vars <test_args <job_class <queue_args
+    &Test2::Harness2::Role::TestFile
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::TestFile';
 
 # {{{ Construction
 
@@ -224,6 +210,12 @@ sub stage             { $_[0]->scan; $_[0]->{+STAGE} }
 sub min_slots         { $_[0]->scan; $_[0]->{+MIN_SLOTS} }
 sub max_slots         { $_[0]->scan; $_[0]->{+MAX_SLOTS} }
 
+sub preload_preferences {
+    my $self = shift;
+    $self->scan;
+    return $self->{+PRELOAD_PREFERENCES} //= ['<default>'];
+}
+
 # }}} Auto-scanning data accessors
 
 # {{{ Scanning
@@ -248,18 +240,14 @@ sub _scan {
 
     return if $self->{+IS_BINARY};
 
-    # Use the accessor (not the slot) so a non-perl test with a custom
-    # comment char is honoured even if the consumer did not seed the
-    # slot. comment() falls through to the role default ('#') when
-    # nothing has set it. Pitfall #14.
     my $comment = $self->comment // '#';
 
-    my $retry_set;
-    my $job_slots_set;
+    my $parser = Test2::Harness2::Util::Directives->new(comments => [$comment]);
+    my $directives_seen;
+
     my $fh = open_file($self->{+ABSOLUTE});
     for (my $ln = 1; my $line = <$fh>; $ln++) {
         chomp($line);
-        next if $line =~ m/^\s*$/;
 
         if ($ln == 1 && $line =~ m/^#!/) {
             my $shbang = $self->_parse_shbang($line);
@@ -271,137 +259,142 @@ sub _scan {
             }
         }
 
-        # The "this is a generated yath runner test" short-circuit is
-        # a yath concern; previously it lived in the harness's scanner.
-        # It now lives here, in the producer side, where it belongs.
-        # Pitfall #9.
+        next if $line =~ m/^\s*$/;
+
         if ($line =~ m/^\s*#\s*THIS IS A GENERATED YATH RUNNER TEST/) {
             $self->{+FEATURES}{run} = 0;
             next;
         }
 
-        next if $line =~ m/^\s*\Q$comment\E/ && $line !~ m/^\s*\Q$comment\E\s*HARNESS-.+/;
+        if ($line =~ m/^\s*\Q$comment\E\s*HARNESS2:/) {
+            my $ok = eval { $parser->parse_line($line); 1 };
+            unless ($ok) {
+                my $err = $@;
+                warn "Bad HARNESS2 directive at $self->{+ABSOLUTE} line $ln: $err";
+                last;
+            }
+            $directives_seen = 1;
+            next;
+        }
+
+        next if $line =~ m/^\s*\Q$comment\E/;
         next if $line =~ m/^\s*(?:use|require|BEGIN|package)\b/;
-        last unless $line =~ m/^\s*\Q$comment\E\s*HARNESS-(.+)$/;
+        last;
+    }
 
-        my ($dir, $rest) = split /[-\s]+/, $1, 2;
-        $dir = lc($dir);
-        my @args;
-        if ($dir eq 'meta') {
-            if (defined $rest) {
-                @args = split /\s+/,  $rest, 2;
-                @args = split /[-]+/, $rest, 2 if @args == 1;
-                $args[1] =~ s/\s+(?:#.*)?$// if defined $args[1];
-            }
-        }
-        elsif ($rest) {
-            $rest =~ s/\s+(?:#.*)?$//;
-            @args = split /[-\s]+/, $rest;
-        }
+    return unless $directives_seen;
 
-        if ($dir eq 'no') {
-            my $feature = lc(join '_' => @args);
-            if ($feature eq 'retry') {
-                $self->{+RETRY} = 0;
-                $retry_set = 1;
-            }
-            else {
-                $self->{+FEATURES}{$feature} = 0;
-            }
-        }
-        elsif ($dir eq 'yes' || $dir eq 'use') {
-            my $feature = lc(join '_' => @args);
-            $self->{+FEATURES}{$feature} = 1;
-        }
-        elsif ($dir eq 'smoke') {
-            $self->{+FEATURES}{smoke} = 1;
-        }
-        elsif ($dir eq 'retry') {
-            if (@args) {
-                for my $arg (@args) {
-                    if ($arg =~ m/^\d+$/) {
-                        $self->{+RETRY} = int $arg;
-                        $retry_set = 1;
-                    }
-                    elsif ($arg =~ m/^iso/i) {
-                        $self->{+RETRY}          = 1 unless $retry_set;
-                        $self->{+RETRY_ISOLATED} = 1;
-                        $retry_set               = 1;
-                    }
-                    else {
-                        warn "Unknown 'HARNESS-RETRY' argument '$arg' at $self->{+ABSOLUTE} line $ln.\n";
-                    }
-                }
-            }
-            elsif (!$retry_set) {
-                $self->{+RETRY} = 1;
-                $retry_set = 1;
-            }
-        }
-        elsif ($dir eq 'stage') {
-            my ($name) = @args;
-            $self->{+STAGE} = $name;
-        }
-        elsif ($dir eq 'duration' || $dir eq 'dur') {
-            my ($name) = @args;
-            $self->{+DURATION} = lc($name);
-        }
-        elsif ($dir eq 'category' || $dir eq 'cat') {
-            my ($name) = @args;
-            $name = lc($name);
-            if ($name =~ m/^(?:long|medium|short)$/) {
-                $self->{+DURATION} = $name;
-            }
-            else {
-                $self->{+CATEGORY} = $name;
-            }
-        }
-        elsif ($dir eq 'timeout') {
-            my ($type, $num, $extra) = @args;
-            $type = lc($type);
-            $num  = lc($num) if defined $num;
+    my $dirs;
+    my $ok = eval { $dirs = $parser->finish; 1 };
+    unless ($ok) {
+        warn "HARNESS2 parser failure in $self->{+ABSOLUTE}: $@";
+        return;
+    }
 
-            ($type, $num) = ('postexit', $extra)
-                if $type eq 'post' && defined $num && $num eq 'exit';
+    $self->_apply_directives($dirs);
+    return;
+}
 
-            if ($type !~ m/^(?:event|postexit)$/) {
-                warn "'" . uc($type) . "' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at $self->{+ABSOLUTE} line $ln.\n";
-                next;
-            }
+# Map the Directives parser output hash into TestFile slots.
+sub _apply_directives {
+    my ($self, $dirs) = @_;
 
-            if ($type eq 'event') {
-                $self->{+EVENT_TIMEOUT} = $num;
-            }
-            else {
-                $self->{+POST_EXIT_TIMEOUT} = $num;
-            }
+    if (my $list = $dirs->{slots}) {
+        my ($min, $max) = @$list;
+        $self->{+MIN_SLOTS} = $min if defined $min;
+        $self->{+MAX_SLOTS} = defined($max) ? $max : $min;
+    }
+
+    if (my $list = $dirs->{duration}) {
+        $self->{+DURATION} = lc($list->[0]) if defined $list->[0];
+    }
+
+    if (my $list = $dirs->{category}) {
+        my $val = lc($list->[0] // '');
+        if ($val =~ m/^(?:long|medium|short)$/) {
+            $self->{+DURATION} = $val;
         }
-        elsif ($dir eq 'job' && defined $rest && $rest =~ m/slots\s+(\d+)(?:\s+(\d+))?$/i) {
-            # Legacy uses //= against a fresh %headers hash so the first
-            # JOB-SLOTS wins. init() pre-seeds MIN_SLOTS from role
-            # defaults, so a scan-local tracker carries the "first-wins"
-            # semantic.
-            next if $job_slots_set;
-            $self->{+MIN_SLOTS} = $1;
-            $self->{+MAX_SLOTS} = $2 || $1;
-            $job_slots_set      = 1;
+        elsif (length $val) {
+            $self->{+CATEGORY} = $val;
         }
-        elsif ($dir eq 'conflicts') {
-            $self->{+CONFLICTS} ||= [];
-            push @{$self->{+CONFLICTS}} => map { lc($_) } @args;
-            @{$self->{+CONFLICTS}} = uniq @{$self->{+CONFLICTS}};
+    }
+
+    if (my $list = $dirs->{stage}) {
+        $self->{+STAGE} = $list->[0] if defined $list->[0];
+    }
+
+    if (my $list = $dirs->{conflicts}) {
+        my @prev = @{$self->{+CONFLICTS} || []};
+        push @prev, map { lc $_ } @$list;
+        $self->{+CONFLICTS} = [uniq @prev];
+    }
+
+    if (my $list = $dirs->{preload}) {
+        $self->{+PRELOAD_PREFERENCES} = _xlate_preload_list($list);
+    }
+
+    if (my $feat = $dirs->{feature}) {
+        for my $name (keys %$feat) {
+            my $v = $feat->{$name}->[-1];
+            my $key = $name;
+            $key =~ tr/-/_/;
+            $self->{+FEATURES}{$key} = $v ? 1 : 0;
         }
-        elsif ($dir eq 'meta') {
-            my ($key, $val) = @args;
-            $key = lc($key);
-            push @{$self->{+META}{$key}} => $val;
+    }
+
+    if (my $tt = $dirs->{timeout}) {
+        if (my $list = $tt->{event}) {
+            $self->{+EVENT_TIMEOUT} = $list->[-1];
         }
-        else {
-            warn "Unknown harness directive '$dir' at $self->{+ABSOLUTE} line $ln.\n";
+        if (my $list = $tt->{postexit}) {
+            $self->{+POST_EXIT_TIMEOUT} = $list->[-1];
+        }
+    }
+
+    if (my $rt = $dirs->{retry}) {
+        if (defined(my $count = ($rt->{count} // [])->[-1])) {
+            $self->{+RETRY} = int $count;
+        }
+        if (defined(my $iso = ($rt->{isolated} // [])->[-1])) {
+            $self->{+RETRY}          ||= 1 if $iso;
+            $self->{+RETRY_ISOLATED} = $iso ? 1 : 0;
+        }
+    }
+
+    if (my $meta = $dirs->{meta}) {
+        for my $k (keys %$meta) {
+            push @{$self->{+META}{lc $k}}, @{$meta->{$k}};
         }
     }
 
     return;
+}
+
+# Translate the Directives parser's preload value list into the
+# internal preference list used by the harness resolver. Token
+# rules:
+#   - 'default' (from @default expansion) -> '<default>'
+#   - 0         (from @off/@no/@false)    -> '<no>'
+#   - any other string                    -> passthrough
+# Then drop a trailing '<no>' immediately after '<default>' (the
+# '<default>' token already implies the same fallback).
+sub _xlate_preload_list {
+    my ($arr) = @_;
+    my @out;
+    for my $v (@$arr) {
+        if (defined($v) && !ref($v) && $v eq 'default') {
+            push @out, '<default>';
+        }
+        elsif (defined($v) && !ref($v) && $v eq '0') {
+            push @out, '<no>';
+        }
+        else {
+            push @out, $v;
+        }
+    }
+    pop @out
+        if @out >= 2 && $out[-1] eq '<no>' && $out[-2] eq '<default>';
+    return \@out;
 }
 
 sub _parse_shbang {
@@ -548,7 +541,7 @@ App::Yath2::TestFile - Yath-side, scanner-aware TestFile producer.
 =head1 DESCRIPTION
 
 C<App::Yath2::TestFile> is the producer-side TestFile object: it
-scans the file's shebang and C<HARNESS-*> directives, applies CLI
+scans the file's shebang and C<HARNESS2:> directives, applies CLI
 overrides through a setter surface, and builds the runner-queue
 payload. Yath constructs these instances at finder / queue time.
 After scanning + override, instances are typically serialized to a
@@ -611,7 +604,7 @@ Arrayref of extra key/value pairs spliced into the queue payload.
 
 =item $tf->scan
 
-Read the shebang and C<HARNESS-*> directives from the file. Idempotent;
+Read the shebang and C<HARNESS2:> directives from the file. Idempotent;
 results are cached.
 
 =item $tf->set_duration($dur)
@@ -655,6 +648,33 @@ C<Test2::Util::UUID::gen_uuid>; merges caller-supplied env with the
 test file's env (test file wins per key); splices in C<queue_args>
 and C<%inject>. Dies if the test file's C<run> feature is set to a
 falsy value.
+
+=item $arrayref = $tf->preload_preferences
+
+Scanner-aware accessor for the file's preload preference list. Calls
+C<scan> first; returns C<['<default>']> when no preference was
+declared. See L<Test2::Harness2::Role::TestFile/preload_preferences>
+for the value semantics.
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _apply_directives
+
+Map the C<Test2::Harness2::Util::Directives> parser output into the
+appropriate HashBase slots (slots, duration, category, stage,
+conflicts, preload, feature, timeout, retry, meta).
+
+=item _xlate_preload_list
+
+Translate the directive parser's preload value list into the internal
+preference tokens (C<'default'> -E<gt> C<'<default>'>, C<0> -E<gt>
+C<'<no>'>, anything else passes through), and drop a trailing C<'<no>'>
+that immediately follows C<'<default>'> (the default token already
+implies the same fallback).
 
 =back
 

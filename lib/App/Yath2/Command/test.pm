@@ -34,6 +34,8 @@ include_options(
     'App::Yath2::Options::Finder',
     'App::Yath2::Options::IPC',
     'App::Yath2::Options::Log',
+    'App::Yath2::Options::Preload',
+    'App::Yath2::Options::Reloader',
     'App::Yath2::Options::Renderer',
     'App::Yath2::Options::Resource',
     'App::Yath2::Options::Run',
@@ -206,28 +208,43 @@ sub _build_resources {
     my $self = shift;
     my $rg   = $self->{+SETTINGS}->resource;
 
-    my $classes = $rg->classes // {};
-    return () unless keys %$classes;    # --no-resource: unlimited
-
     my @out;
-    for my $mod (sort keys %$classes) {
-        require(mod2file($mod));
-        my @args = @{$classes->{$mod} // []};
 
-        if ($mod eq 'Test2::Harness2::Resource::JobCount' && !@args) {
-            push @out => $mod->new(
-                slots       => $rg->slots,
-                max_per_job => $rg->job_slots,
-            );
-            next;
+    my $classes = $rg->classes // {};
+    if (keys %$classes) {
+        for my $mod (sort keys %$classes) {
+            require(mod2file($mod));
+            my @args = @{$classes->{$mod} // []};
+
+            if ($mod eq 'Test2::Harness2::Resource::JobCount' && !@args) {
+                push @out => $mod->new(
+                    slots       => $rg->slots,
+                    max_per_job => $rg->job_slots,
+                );
+                next;
+            }
+
+            my @ctor_args =
+                  $mod->can('parse_options')
+                ? $mod->parse_options(@args)
+                : @args;
+            push @out => $mod->new(@ctor_args);
         }
-
-        my @ctor_args =
-              $mod->can('parse_options')
-            ? $mod->parse_options(@args)
-            : @args;
-        push @out => $mod->new(@ctor_args);
     }
+
+    # -P / --preload: classify modules into preload groups. Bare
+    # modules collect into one "default" Resource::Preload; modules
+    # consuming Test2::Harness2::Role::Preload each become their own
+    # named Resource::Preload. Tests without an explicit
+    # HARNESS2: preload directive resolve to @default and route
+    # through the default; tests with `HARNESS2: preload @off` bypass
+    # all preloads.
+    require App::Yath2::Preload;
+    for my $args (App::Yath2::Preload::preload_resource_args(settings => $self->{+SETTINGS})) {
+        require Test2::Harness2::Resource::Preload;
+        push @out => Test2::Harness2::Resource::Preload->new(%$args);
+    }
+
     return @out;
 }
 
@@ -273,6 +290,9 @@ sub _queue_run {
     my %queue_args = (files => $files);
     if (my $hash_seed = $settings->tests->set_hash_seed) {
         $queue_args{hash_seed} = $hash_seed if length $hash_seed;
+    }
+    if (my $chdir = $settings->tests->chdir) {
+        $queue_args{chdir} = $chdir if length $chdir;
     }
 
     my $queued = $spawn->queue_test_run(%queue_args);

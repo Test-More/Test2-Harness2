@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000013';
 
 use Test2::API qw/context run_subtest/;
+use Test2::Tools::Basic qw/ok/;
 use Test2::Tools::Compare qw/is/;
 
 use Carp qw/croak/;
@@ -20,9 +21,17 @@ use Test2::Harness2::Util::File::JSONL;
 use Test2::Harness2::Util::IPC qw/start_process swap_io/;
 
 use Importer Importer => 'import';
-our @EXPORT = qw/yath make_example_dir/;
+our @EXPORT    = qw/yath make_example_dir/;
+our @EXPORT_OK = qw/tester_ipc_dir/;
 
 my $pdir = tempdir(CLEANUP => 1);
+
+# Accessor for the shared IPC info-file directory that yath() injects via
+# YATH_IPC_DIR. Tests that bypass yath() (e.g. raw fork+exec of `yath run`)
+# can call this to pin YATH_IPC_DIR in the spawned child, so a `yath start`
+# launched via yath() and a sibling `yath run` launched by exec agree on
+# where to publish/discover the IPC info file.
+sub tester_ipc_dir { return $pdir }
 
 require App::Yath2;
 my $apppath = App::Yath2->app_path;
@@ -115,9 +124,8 @@ sub yath {
 
     print "DEBUG: Command = " . join(" \n" => @cmd) . "\n" if $debug;
 
-#    local %ENV = %ENV;
+    local %ENV = %ENV;
     $ENV{YATH_IPC_DIR} = $pdir;
-    $ENV{YATH_PERSISTENCE_DIR} = $pdir;
     $ENV{YATH_CMD} = $cmd;
     $ENV{NESTED_YATH} = 1;
     $ENV{T2_HARNESS_PROC_PREFIX} = "nested";
@@ -172,7 +180,8 @@ sub yath {
 
     print "DEBUG: Waiting for $pid\n" if $debug;
     waitpid($pid, 0);
-    my $exit = $?;
+    my $raw_status = $?;
+    my $exit = ($raw_status >> 8) & 0xFF;
 
     my (@lines);
     if ($capture) {
@@ -200,7 +209,12 @@ sub yath {
         sub {
             if (defined $exittest) {
                 my $ictx = context(level => 3);
-                is($exit, $exittest, "Exit Value Check");
+                if (ref $exittest eq 'CODE') {
+                    ok($exittest->($exit), "Exit Value Check (coderef)");
+                }
+                else {
+                    is($exit, $exittest, "Exit Value Check");
+                }
                 $ictx->release;
             }
 
@@ -296,7 +310,8 @@ third party components.
 
 =head1 EXPORTS
 
-There are 2 exports from this module.
+C<yath> and C<make_example_dir> are exported by default. C<tester_ipc_dir>
+is exportable on request.
 
 =head2 $result = yath(...)
 
@@ -473,6 +488,15 @@ argument to enable it.
 This will create a temporary directory with 't', 't2', and 'xt' subdirectories
 each of which will contain a single passing test.
 
+=head2 $dir = tester_ipc_dir()
+
+Return the shared IPC info-file directory that L</yath> injects via
+C<YATH_IPC_DIR>. Tests that bypass L</yath> (e.g. raw fork+exec of
+C<yath run>) call this to pin C<YATH_IPC_DIR> in the spawned child,
+so a C<yath start> launched via L</yath> and a sibling C<yath run>
+launched by exec agree on where to publish and discover the IPC
+info file.
+
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
@@ -504,8 +528,3 @@ modify it under the same terms as Perl itself.
 See L<http://dev.perl.org/licenses/>
 
 =cut
-
-=pod
-
-=cut POD NEEDS AUDIT
-

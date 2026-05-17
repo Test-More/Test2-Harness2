@@ -263,8 +263,11 @@ subtest 'queue_test_run emits run_queued only (job_queued moved to run service)'
 
     is(scalar @emitted,   1,            'exactly one event emitted');
     is($emitted[0]{kind}, 'run_queued', 'event is run_queued');
-    ok($emitted[0]{run_data},                'run_queued has run_data');
-    ok(defined $emitted[0]{run_data}{run_id}, 'run_data carries run_id');
+    ok(defined $emitted[0]{run_id},           'run_queued has flat run_id');
+    ok(defined $emitted[0]{queued_at},        'run_queued has flat queued_at');
+    is(ref $emitted[0]{job_ids}, 'ARRAY',     'run_queued has flat job_ids array');
+    is(scalar @{$emitted[0]{job_ids}}, 2,     'job_ids has one entry per file');
+    ok($emitted[0]{run_data},                'run_queued still carries run_data');
     ok($emitted[0]{run_data}{jobs},           'run_data inlines jobs');
 };
 
@@ -496,7 +499,8 @@ subtest 'run_on_all emits run_started for the first job; no job_started' => sub 
     ok(!(grep { $_ eq 'job_queued' } @kinds),  'job_queued NOT emitted (run service owns it)');
 
     my ($rs) = grep { $_->{kind} eq 'run_started' } @emitted;
-    is($rs->{run_data}, {run_id => $h->{queue}[0]->run_id}, 'run_started carries only run_id');
+    is($rs->{run_id},     $h->{queue}[0]->run_id, 'run_started carries run_id flat');
+    ok(defined $rs->{started_at}, 'run_started carries started_at');
 };
 
 subtest 'test_job_completed for the last running job triggers run_ended' => sub {

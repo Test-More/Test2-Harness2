@@ -168,7 +168,7 @@ subtest 'max_per_job clamps test max_slots downward' => sub {
     is($r->available(id => 'd', job => $jmax), 8, '"as many as free" capped at max_per_job');
 };
 
-subtest 'HARNESS-JOB-SLOTS MIN MAX range honoured under cap' => sub {
+subtest 'HARNESS2: slots MIN MAX range honoured under cap' => sub {
     # Range form: test asks for between MIN and MAX slots, takes
     # whatever is free in that window. The per-job cap clamps the
     # MAX side; the MIN side still gates whether the test can run
@@ -188,13 +188,13 @@ subtest 'HARNESS-JOB-SLOTS MIN MAX range honoured under cap' => sub {
     is($r->available(id => 'c', job => $jo), 6, 'range 2..unbounded clamped at cap');
 };
 
-subtest 'HARNESS-JOB-SLOTS MIN MAX with MIN > cap is unsatisfiable' => sub {
+subtest 'HARNESS2: slots MIN MAX with MIN > cap is unsatisfiable' => sub {
     my $r = Test2::Harness2::Resource::JobCount->new(slots => 16, max_per_job => 4);
     my $j = make_job(min_slots => 8, max_slots => 16);
     is($r->available(id => 'x', job => $j), -1, 'range 8..16 with cap 4 -> -1 (MIN exceeds cap)');
 };
 
-subtest 'HARNESS-JOB-SLOTS MIN MAX adapts to free slots within range' => sub {
+subtest 'HARNESS2: slots MIN MAX adapts to free slots within range' => sub {
     # No cap; verify range-vs-free math still works as legacy.
     my $r = Test2::Harness2::Resource::JobCount->new(slots => 8);
     $r->assign(id => 'pre', job => make_job(), env => {});    # used = 1, free = 7

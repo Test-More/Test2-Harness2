@@ -81,6 +81,7 @@ sub extensions { [qw/t t2/] }
 package Fake::Tests2;
 sub new           { bless {}, $_[0] }
 sub set_hash_seed { undef }
+sub chdir         { undef }
 
 package Fake::Log2;
 sub new    { bless {}, $_[0] }

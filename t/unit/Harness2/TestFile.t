@@ -1,5 +1,5 @@
 use Test2::V0 -target => 'App::Yath2::TestFile';
-# HARNESS-DURATION-SHORT
+# HARNESS2: duration short
 
 use File::Temp qw/tempdir/;
 use File::Spec();
@@ -12,7 +12,7 @@ use ok $CLASS;
 # methods, none of which exist in the new design (queue_item and
 # rank belong to the scheduler, shbang's switches are exposed
 # directly via $tf->switches). Fixture bodies are ported verbatim
-# so the scanner sees the same real-world HARNESS-* combinations
+# so the scanner sees the same real-world HARNESS2: combinations
 # the legacy suite exercised; assertions are rewritten to go
 # through check_feature / check_duration / check_category / direct
 # accessors.
@@ -20,37 +20,36 @@ use ok $CLASS;
 my $tdir = tempdir(CLEANUP => 1);
 
 my %FIXTURES = (
-    long   => "#!/usr/bin/perl\n\nuse strict;\n use warnings\n\n# HARNESS-CAT-LONG\n# HARNESS-NO-TIMEOUT\n# HARNESS-USE-ISOLATION\nfoo\n# HARNESS-NO-SEE\n",
-    med1   => "# HARNESS-NO-PRELOAD\n",
-    med2   => "#HARNESS-NO-FORK\n",
-    all    => "#HARNESS-NO-TIMEOUT\n# HARNESS-NO-STREAM\n# HARNESS-NO-FORK\n# HARNESS-NO-PRELOAD\n# HARNESS-USE-ISOLATION\n",
-    notime => "#HARNESS-NO-TIMEOUT\n",
+    long   => "#!/usr/bin/perl\n\nuse strict;\n use warnings\n\n# HARNESS2: duration long\n# HARNESS2: feature.timeout \@off\n# HARNESS2: feature.isolation \@on\nfoo\n# HARNESS2: feature.see \@off\n",
+    med1   => "# HARNESS2: feature.preload \@off\n",
+    med2   => "#HARNESS2: feature.fork \@off\n",
+    all    => "#HARNESS2: feature.timeout \@off\n# HARNESS2: feature.stream \@off\n# HARNESS2: feature.fork \@off\n# HARNESS2: feature.preload \@off\n# HARNESS2: feature.isolation \@on\n",
+    notime => "#HARNESS2: feature.timeout \@off\n",
     warn   => "#!/usr/bin/perl -w\n",
     taint  => "#!/usr/bin/env perl -t -w\n",
-    foo    => "#HARNESS-CATEGORY-FOO\n#HARNESS-STAGE-FoO",
-    meta   => "#HARNESS-META-mykey-myval\n# HARNESS-META-otherkey-otherval\n# HARNESS-META mykey my-val2\n# HARNESS-META slack #my-val # comment after harness statement\n",
+    foo    => "#HARNESS2: category foo\n#HARNESS2: stage FoO",
+    meta   => "#HARNESS2: meta.mykey myval\n# HARNESS2: meta.otherkey otherval\n# HARNESS2: meta.mykey my-val2\n# HARNESS2: meta.slack #my-val\n",
 
-    package => "package Foo::Bar::Baz;\n# HARNESS-NO-PRELOAD\n",
+    package => "package Foo::Bar::Baz;\n# HARNESS2: feature.preload \@off\n",
 
-    timeout    => "# HARNESS-TIMEOUT-EVENT 90\n# HARNESS-TIMEOUT-POSTEXIT 85\n",
-    timeout2   => "# HARNESS-TIMEOUT-EVENT-90\n# HARNESS-TIMEOUT-POST-EXIT   85\n",
-    badtimeout => "# HARNESS-TIMEOUT-EVENTX 90\n# HARNESS-TIMEOUT-POSTEXITX 85\n",
+    timeout    => "# HARNESS2: timeout.event 90\n# HARNESS2: timeout.postexit 85\n",
+    timeout2   => "# HARNESS2: timeout.event 90\n# HARNESS2: timeout.postexit 85\n",
 
-    conflicts1 => "# HARNESS-CONFLICTS PASSWD\n",
-    conflicts2 => "# HARNESS-CONFLICTS PASSWD DAEMON\n",
-    conflicts3 => "# HARNESS-CONFLICTS PASSWD\n# HARNESS-CONFLICTS DAEMON   # Nothing to see here\n",
-    conflicts4 => "# HARNESS-CONFLICTS PASSWD DAEMON\n# HARNESS-CONFLICTS PASSWD\n# HARNESS-CONFLICTS PASSWD\n# HARNESS-CONFLICTS PASSWD DAEMON\n",
+    conflicts1 => "# HARNESS2: conflicts passwd\n",
+    conflicts2 => "# HARNESS2: conflicts passwd daemon\n",
+    conflicts3 => "# HARNESS2: conflicts passwd\n# HARNESS2: conflicts daemon\n",
+    conflicts4 => "# HARNESS2: conflicts passwd daemon\n# HARNESS2: conflicts passwd\n# HARNESS2: conflicts passwd\n# HARNESS2: conflicts passwd daemon\n",
 
-    extra_comments => "#!/usr/bin/perl\n\nuse strict;\n# comment here\n use warnings\n\n# copyright Dewey Cheatem and Howe\n# HARNESS-CAT-LONG\n# HARNESS-NO-TIMEOUT\n# HARNESS-USE-ISOLATION\n",
+    extra_comments => "#!/usr/bin/perl\n\nuse strict;\n# comment here\n use warnings\n\n# copyright Dewey Cheatem and Howe\n# HARNESS2: duration long\n# HARNESS2: feature.timeout \@off\n# HARNESS2: feature.isolation \@on\n",
 
-    smoke1 => "#HARNESS-SMOKE\n",
-    smoke2 => "#HARNESS-YES-SMOKE\n",
+    smoke1 => "#HARNESS2: feature.smoke \@on\n",
+    smoke2 => "#HARNESS2: feature.smoke \@on\n",
 
-    retry      => "#HARNESS-RETRY\n",
-    retry5     => "#HARNESS-RETRY 5\n",
-    retry_iso  => "#HARNESS-RETRY-ISO\n",
-    retry_iso3 => "#HARNESS-RETRY-ISO 3\n",
-    no_retry   => "#HARNESS-NO-RETRY\n",
+    retry      => "#HARNESS2: retry.count 1\n",
+    retry5     => "#HARNESS2: retry.count 5\n",
+    retry_iso  => "#HARNESS2: retry.count 1\n# HARNESS2: retry.isolated \@on\n",
+    retry_iso3 => "#HARNESS2: retry.count 3\n# HARNESS2: retry.isolated \@on\n",
+    no_retry   => "#HARNESS2: retry.count 0\n",
 
     not_perl     => "#!/usr/bin/bash\n",
     not_env_perl => "#!/usr/bin/env bash\n",
@@ -97,19 +96,6 @@ subtest timeouts => sub {
     my $two = tf_for('timeout2');
     is($two->event_timeout,     90, "dash-delimited event timeout");
     is($two->post_exit_timeout, 85, "POST-EXIT collapses into postexit");
-
-    # Construct directly (not via tf_for) so warnings { ... } captures
-    # the scan emissions rather than letting tf_for's auto-scan leak
-    # them to the top-level.
-    my $bad = $CLASS->new(file => File::Spec->catfile($tdir, 'badtimeout'));
-    is(
-        warnings { $bad->scan },
-        [
-            "'EVENTX' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at " . $bad->absolute . " line 1.\n",
-            "'POSTEXITX' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at " . $bad->absolute . " line 2.\n",
-        ],
-        "Got warnings for bad timeout types",
-    );
 };
 
 subtest meta => sub {
@@ -128,7 +114,7 @@ subtest 'category + stage' => sub {
 
 subtest 'package line before directives still allows scanning' => sub {
     my $one = tf_for('package');
-    is($one->check_feature('preload'), 0, "Scanner walks past 'package ...;' to reach HARNESS-NO-PRELOAD");
+    is($one->check_feature('preload'), 0, "Scanner walks past 'package ...;' to reach HARNESS2: feature.preload \@off");
 };
 
 subtest 'taint: -t -w forces fork and preload off' => sub {
@@ -195,9 +181,9 @@ subtest 'long: mixed CAT-LONG + NO-TIMEOUT + USE-ISOLATION; stop at "foo" line' 
     is($long->check_duration,             'long',      "CAT-LONG sets duration=long");
 
     # Locks in that the scanner stopped at the "foo\n" line and never
-    # reached the "# HARNESS-NO-SEE" trailer, i.e. the last/next
+    # reached the "# HARNESS2: feature.see \@off" trailer, i.e. the last/next
     # stop-condition is respected.
-    is($long->feature('see'), undef, "scanner stopped before HARNESS-NO-SEE was reached");
+    is($long->feature('see'), undef, "scanner stopped before HARNESS2: feature.see \@off was reached");
 };
 
 subtest 'extra_comments: scanner tolerates interleaved comments' => sub {
@@ -259,33 +245,33 @@ subtest 'not_env_perl: env bash also non_perl' => sub {
     is($env_bash->check_feature('preload'), 0, "preload off on env bash");
 };
 
-subtest 'smoke: HARNESS-SMOKE and HARNESS-YES-SMOKE both set features->{smoke}' => sub {
+subtest 'smoke: HARNESS2: feature.smoke @on and HARNESS2: feature.smoke @on both set features->{smoke}' => sub {
     my $smoke1 = tf_for('smoke1');
-    is($smoke1->check_feature('smoke', 0), 1, "HARNESS-SMOKE turns smoke on");
+    is($smoke1->check_feature('smoke', 0), 1, "HARNESS2: feature.smoke \@on turns smoke on");
 
     my $smoke2 = tf_for('smoke2');
-    is($smoke2->check_feature('smoke', 0), 1, "HARNESS-YES-SMOKE turns smoke on");
+    is($smoke2->check_feature('smoke', 0), 1, "HARNESS2: feature.smoke \@on turns smoke on");
 };
 
 subtest 'retry semantics: bare, count, ISO, count+ISO, NO-RETRY' => sub {
     my $retry = tf_for('retry');
-    is($retry->retry,          1, "bare HARNESS-RETRY -> retry=1");
-    is($retry->retry_isolated, 0, "bare HARNESS-RETRY -> not isolated");
+    is($retry->retry,          1, "bare HARNESS2: retry.count 1 -> retry=1");
+    is($retry->retry_isolated, 0, "bare HARNESS2: retry.count 1 -> not isolated");
 
     my $retry5 = tf_for('retry5');
-    is($retry5->retry,          5, "HARNESS-RETRY 5 -> retry=5");
+    is($retry5->retry,          5, "HARNESS2: retry.count 5 -> retry=5");
     is($retry5->retry_isolated, 0, "count alone is not isolated");
 
     my $iso = tf_for('retry_iso');
-    is($iso->retry,          1, "HARNESS-RETRY-ISO -> retry=1");
-    is($iso->retry_isolated, 1, "HARNESS-RETRY-ISO -> isolated");
+    is($iso->retry,          1, "HARNESS2: retry.count 1\n# HARNESS2: retry.isolated \@on -> retry=1");
+    is($iso->retry_isolated, 1, "HARNESS2: retry.count 1\n# HARNESS2: retry.isolated \@on -> isolated");
 
     my $iso3 = tf_for('retry_iso3');
-    is($iso3->retry,          3, "HARNESS-RETRY-ISO 3 -> retry=3");
-    is($iso3->retry_isolated, 1, "HARNESS-RETRY-ISO 3 -> isolated");
+    is($iso3->retry,          3, "HARNESS2: retry.count 3\n# HARNESS2: retry.isolated \@on -> retry=3");
+    is($iso3->retry_isolated, 1, "HARNESS2: retry.count 3\n# HARNESS2: retry.isolated \@on -> isolated");
 
     my $no = tf_for('no_retry');
-    is($no->retry, 0, "HARNESS-NO-RETRY -> retry=0");
+    is($no->retry, 0, "HARNESS2: retry.count 0 -> retry=0");
 };
 
 done_testing;

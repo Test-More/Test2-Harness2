@@ -19,7 +19,7 @@ App::Yath2::Converting - Things you may need to change in your tests before you 
 =head1 NON-TAP FORMATTER
 
 By default yath tells any L<Test2> or L<Test::Builder> tests to use
-L<Test2::Formatter::Stream> instead of L<Test2::Formatter::TAP>. This is done
+L<Test2::Formatter::Stream2> instead of L<Test2::Formatter::TAP>. This is done
 in order to make sure as much data as possible makes it to yath, TAP is a lossy
 formater by comparison.
 
@@ -29,13 +29,13 @@ have issues with this.
 
 =head2 SOLUTIONS
 
-=head3 HARNESS-NO-STREAM
+=head3 HARNESS2: feature.stream @off
 
 You can add a harness directive to the top of offending tests that tell the
 harness those specific tests should still use the TAP formatter.
 
     #!/usr/bin/perl
-    # HARNESS-NO-STREAM
+    # HARNESS2: feature.stream @off
     ...
 
 This directive can come after the C<#!> line, and after use statements, but
@@ -55,13 +55,13 @@ that verify specific libraries are not already loaded.
 
 =head2 SOLUTIONS
 
-=head3 HARNESS-NO-PRELOAD
+=head3 HARNESS2: feature.preload @off
 
 You can use this harness directive inside your tests to tell yath not to fork,
 but to instead launch a new perl process to run the test.
 
     #!/usr/bin/perl
-    # HARNESS-NO-PRELOAD
+    # HARNESS2: feature.preload @off
     ...
 
 =head3 --no-fork

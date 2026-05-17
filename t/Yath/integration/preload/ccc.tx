@@ -1,5 +1,5 @@
 use Test2::V0;
-#HARNESS-STAGE-CCC
+# HARNESS2: stage CCC
 
 is($ENV{T2_HARNESS_STAGE}, 'CCC', "Running in stage 'CCC'");
 ok($INC{'CCC.pm'}, "Preloaded CCC");

@@ -42,11 +42,23 @@ use Test2::Harness2::Util::IPC qw/pid_is_running set_procname swap_io ipc_defaul
 # four identity slots above; the trio
 # (spec.jsonl.zst, events.jsonl.zst, report.jsonl.zst) is appended
 # directly to that base dir.
+# `launch_callback` is the authoritative spawn hook for preloaded
+# tests. When set (in lieu of `launch`), the collector's post-fork
+# child invokes the callback in-process -- no exec -- so a
+# Long::Jump out of the callback can unwind back to a setjump
+# anchor in an outer preload service and hand off to goto::file.
+# Tests routed this way retain the parent's preloaded %INC and end
+# up parsed in main with a shallow stack as if perl had been
+# started with the test file directly. Mutually exclusive with
+# `launch`.
 use Object::HashBase qw{
     <type
     <id
     <launch
+    <launch_callback
+    <post_fork_callback
     <new_pgroup
+    <cwd
     <env_vars
     <out_fh
     <err_fh
@@ -159,14 +171,23 @@ sub init {
         $self->{+AUDITOR} = undef;    # re-instantiated in the child
     }
 
-    my $has_launch = defined $self->{+LAUNCH};
-    my $has_stdio  = defined($self->{+OUT_FH}) || defined($self->{+ERR_FH});
+    my $has_launch   = defined $self->{+LAUNCH};
+    my $has_callback = defined $self->{+LAUNCH_CALLBACK};
+    my $has_stdio    = defined($self->{+OUT_FH}) || defined($self->{+ERR_FH});
 
-    croak "Must specify either 'launch' or 'stdout'/'stderr', not both"
-        if $has_launch && $has_stdio;
+    croak "'launch' and 'launch_callback' are mutually exclusive"
+        if $has_launch && $has_callback;
 
-    croak "Must specify either 'launch' or 'stdout'/'stderr'"
-        unless $has_launch || $has_stdio;
+    my $has_any_launch = $has_launch || $has_callback;
+
+    croak "Must specify launch / launch_callback or stdout/stderr, not both"
+        if $has_any_launch && $has_stdio;
+
+    croak "Must specify launch / launch_callback or stdout/stderr"
+        unless $has_any_launch || $has_stdio;
+
+    croak "'launch_callback' must be a code ref"
+        if $has_callback && ref($self->{+LAUNCH_CALLBACK}) ne 'CODE';
 
     # Normalize launch to arrayref
     $self->{+LAUNCH} = [$self->{+LAUNCH}] if $has_launch && !ref($self->{+LAUNCH});
@@ -275,14 +296,21 @@ sub _spawn_collector {
     # Child -- never return from this scope. The Scope::Guard makes a runaway
     # control flow loud (POSIX::_exit(255)) instead of letting the caller's
     # code resume in a process it never expected to touch.
-    my $guard = Scope::Guard->new(sub { POSIX::_exit(255) });
+    #
+    # Stash the guard on $self (not just a my-var) so a deeper fork --
+    # specifically, the test grandchild a launch_callback spawns -- can
+    # dismiss it before calling exit(). Without that, the test child's
+    # `exit(0)` unwinds inherited scopes, fires this guard's DESTROY in
+    # the grandchild process, and POSIX::_exit(255)'s before Test2's END
+    # block + Stream2 formatter finalize get to emit the plan.
+    $self->{_collector_guard} = Scope::Guard->new(sub { POSIX::_exit(255) });
 
     my $ok  = eval { $self->_run_collector(); 1 };
     my $err = $@;
 
     $self->_emit_collector_error("Collector process died: $err") unless $ok;
 
-    $guard->dismiss;
+    $self->{_collector_guard}->dismiss;
     $self->_exit_mirroring_child($ok);
 }
 
@@ -292,6 +320,15 @@ sub _run_collector {
     # Reset CPU-time baseline now that we're in the process that will
     # actually run the collection loop.
     $self->{+_START_TIMES} = [times()];
+
+    # Role::Preload's post_fork hook lands here: this is the first
+    # child of the preload service's spawn, before the collector
+    # forks again for the test grandchild. The callback runs in the
+    # collector process and must be cheap (the collector starts its
+    # auditing loop immediately after).
+    if (my $cb = $self->{+POST_FORK_CALLBACK}) {
+        eval { $cb->($self); 1 } or warn "post_fork_callback failed: $@";
+    }
 
     my ($child_pid, $out_r, $err_r, $started_child) = $self->_setup_child_handles();
     $self->_set_procname($child_pid);
@@ -346,9 +383,10 @@ sub _run_collector {
 sub _setup_child_handles {
     my $self = shift;
 
-    my $started_child = defined($self->{+LAUNCH}) || $self->{+_OWNS_CHILD};
+    my $has_launch = defined($self->{+LAUNCH}) || defined($self->{+LAUNCH_CALLBACK});
+    my $started_child = $has_launch || $self->{+_OWNS_CHILD};
 
-    if (defined $self->{+LAUNCH}) {
+    if ($has_launch) {
         my ($child_pid, $out_r, $err_r) = $self->_launch_child();
         $self->{+CHILD_PID} = $child_pid;
         return ($child_pid, $out_r, $err_r, $started_child);
@@ -1026,6 +1064,9 @@ sub _set_procname {
         my $cmd = ref($self->{+LAUNCH}) ? join(' ', @{$self->{+LAUNCH}}) : $self->{+LAUNCH};
         push @parts => $cmd;
     }
+    elsif ($self->{+LAUNCH_CALLBACK}) {
+        push @parts => 'launch_callback';
+    }
     elsif (defined $self->{+OUT_FH} || defined $self->{+ERR_FH}) {
         my @files;
         if (!ref($self->{+OUT_FH}) && defined $self->{+OUT_FH}) {
@@ -1076,6 +1117,7 @@ sub _launch_child_unix {
     my ($out_r, $out_w, $err_r, $err_w, $orig_stdout, $orig_stderr) = @_;
 
     my $cmd = $self->{+LAUNCH};
+    my $cb  = $self->{+LAUNCH_CALLBACK};
 
     $self->{+_CHILD_FORK_TIMES} = [times()];
     $self->{+_CHILD_FORK_STAMP} = time;
@@ -1098,7 +1140,34 @@ sub _launch_child_unix {
             POSIX::setpgid(0, 0) or warn "setpgid(0,0) failed: $!";
         }
 
+        if (my $child_cwd = $self->{+CWD}) {
+            chdir($child_cwd) or die "Failed to chdir to '$child_cwd': $!";
+        }
+
         my %env = $self->_child_env_overrides;
+        # Jump-out point for preloaded tests. The callback owns
+        # everything that happens next: it inherits the parent
+        # service's preloaded %INC, completes whatever process
+        # reset it needs, and then either Long::Jumps out to a
+        # setjump anchor in the surrounding preload service (the
+        # normal goto::file pathway) or exits directly. If it
+        # returns to us we treat that as a contract violation and
+        # exit non-zero loudly so the failure surfaces in the
+        # collector's log instead of going silent.
+        #
+        # Dismiss the _spawn_collector Scope::Guard before invoking
+        # the callback. The guard's POSIX::_exit(255) destructor
+        # would otherwise fire when the callback eventually exits
+        # via Test2's END finalizer, pre-empting Stream2's plan +
+        # assertion-count flush.
+        if ($cb) {
+            @ENV{keys %env} = values %env;
+            if (my $g = delete $self->{_collector_guard}) { $g->dismiss }
+            $cb->();
+            print STDERR "Test2::Harness2::Collector: launch_callback returned without exiting\n";
+            POSIX::_exit(255);
+        }
+
         local @ENV{keys %env} = values %env;
         exec(@$cmd) or croak "Failed to exec '@$cmd': $!";
     }

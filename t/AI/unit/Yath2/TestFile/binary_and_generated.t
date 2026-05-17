@@ -49,7 +49,7 @@ subtest 'empty file is not binary (-z exemption)' => sub {
 
 subtest 'generated runner sentinel sets features->{run} = 0' => sub {
     # Stage F will tighten the next-vs-last guarantee by appending a
-    # post-sentinel `# HARNESS-*` directive and asserting it took effect
+    # post-sentinel `# HARNESS2:` directive and asserting it took effect
     # (e.g. category / duration). For Stage C the best we can prove is
     # that scan() returns cleanly past the sentinel and _scanned latches.
     my $tf = tf_for(

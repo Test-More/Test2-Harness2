@@ -15,37 +15,12 @@ include_options(
 );
 
 option_group {group => 'runner', category => "Runner Options"} => sub {
-    option preload_early => (
-        type => 'Map',
-        description => 'Preload a module when spawning perl to launch the preload stages, before any other preload.',
-    );
-
-    option preloads => (
-        type  => 'List',
-        alt   => ['preload'],
-        short => 'P',
-
-        description => 'Preload a module before running tests',
-    );
-
-    option preload_retry_delay => (
-        type => 'Scalar',
-        default => 5,
-        description => "Time in seconds to wait before trying to load a preload/stage after a failed attempt",
-    );
-
     option class => (
         name    => 'runner',
         field   => 'class',
         type    => 'Scalar',
 
-        default => sub {
-            my ($opt, $settings) = @_;
-
-            return 'Test2::Harness2::Runner' if IS_WIN32;
-            return 'Test2::Harness2::Runner::Preloading' if @{$settings->runner->preloads // []};
-            return 'Test2::Harness2::Runner';
-        },
+        default => sub { 'Test2::Harness2::Runner' },
 
         mod_adds_options => 1,
         long_examples    => [' MyRunner', ' +Test2::Harness2::Runner::MyRunner'],
@@ -60,48 +35,8 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         description => "When using staged preload, dump the depmap for each stage as json files",
     );
 
-    option reload_in_place => (
-        type        => 'Bool',
-        alt         => ['reload'],
-        default     => 0,
-        description => "Reload modules in-place when possible (Not recommended)",
-    );
-
-    option reloader => (
-        type => 'Auto',
-
-        autofill  => 'Test2::Harness2::Reloader',
-        normalize => sub { fqmod($_[0], 'Test2::Harness2::Reloader') },
-
-        description => "Use a reloader (default Test2::Harness2::Reloader) to detect module changes, and reload stages as necessary.",
-    );
-
-    option restrict_reload => (
-        type => 'AutoList',
-        normalize => sub { clean_path($_[0]) },
-        autofill => sub {
-            my ($opt, $settings) = @_;
-
-            require Getopt::Yath::Settings;
-            my $ts = Getopt::Yath::Settings->new($settings->tests->all);
-
-            return map { clean_path($_) } @{$ts->includes};
-        },
-    );
 };
 
-option_post_process \&runner_post_process;
-
-sub runner_post_process {
-    my ($options, $state) = @_;
-
-    my $settings = $state->{settings};
-    my $runner   = $settings->runner;
-    my $tests    = $settings->tests;
-
-    warn "WARNING: Combining preload and switches will render preloads useless...\n"
-        if @{$runner->preloads // []} && @{$tests->switches // []};
-};
 
 __END__
 
