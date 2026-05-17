@@ -112,27 +112,7 @@ use constant VALID_TYPES => {map { $_ => 1 } qw/Job Run Service/};
 sub init {
     my $self = shift;
 
-    croak "'ipcm_info' is a required attribute"
-        unless defined $self->{+IPCM_INFO};
-
-    croak "'ipc_harness' is a required attribute"
-        unless defined $self->{+IPC_HARNESS};
-
-    my $type = $self->{+TYPE} // croak "'type' is a required attribute (Job/Run/Service)";
-    croak "Invalid type '$type' (want Job/Run/Service)"
-        unless VALID_TYPES->{$type};
-
-    croak "'id' is a required attribute"
-        unless defined $self->{+ID} && length $self->{+ID};
-
-    if ($type eq 'Job') {
-        croak "'run_id' is required for type=Job"
-            unless defined $self->{+RUN_ID};
-        $self->{+JOB_TRY} //= 1;
-    }
-
-    croak "'logdir' is a required attribute"
-        unless defined $self->{+LOGDIR} && length $self->{+LOGDIR};
+    my $type = $self->_init_validate_identity;
 
     # Map spec constructor names to internal attribute names so callers can
     # use the natural names from the spec (stdout, stderr, pid, env) even
@@ -155,21 +135,79 @@ sub init {
     # explicitly (it passes its own bus name in).
     $self->{+BUS_ID} //= $self->_build_collector_bus_id;
 
-    # Validate auditor spec only for Job collectors; auditors are
-    # meaningless for run/service collectors.
-    if ($type eq 'Job' && defined $self->{+AUDITOR}) {
-        my $auditor = $self->{+AUDITOR};
-        if (!blessed($auditor)) {
-            my $class = ref($auditor) eq 'ARRAY' ? $auditor->[0] : $auditor;
-            croak "Auditor spec must be a class name, [class, args], or instance"
-                unless defined $class && !ref($class);
-            load_module($class);
-            croak "Auditor '$class' does not implement Test2::Harness2::Role::Auditor"
-                unless Role::Tiny::does_role($class, 'Test2::Harness2::Role::Auditor');
-        }
-        $self->{+_AUDITOR_SPEC} = $self->{+AUDITOR};
-        $self->{+AUDITOR} = undef;    # re-instantiated in the child
+    $self->_init_validate_auditor($type);
+    $self->_init_validate_launch_and_stdio;
+
+    # Default parser. Always present so the write_phase has a parsed
+    # event to serialize.
+    $self->{+PARSER} //= 'Test2::Harness2::Collector::Parser::IOParser';
+
+    # Load parser class if it's a class name
+    load_module($self->{+PARSER})
+        if defined($self->{+PARSER}) && !ref $self->{+PARSER};
+}
+
+# Validate required identity attributes (ipcm_info, ipc_harness,
+# type, id, run_id-when-Job, logdir) and return the validated type
+# string. Defaults +JOB_TRY when type is Job.
+sub _init_validate_identity {
+    my $self = shift;
+
+    croak "'ipcm_info' is a required attribute"
+        unless defined $self->{+IPCM_INFO};
+
+    croak "'ipc_harness' is a required attribute"
+        unless defined $self->{+IPC_HARNESS};
+
+    my $type = $self->{+TYPE} // croak "'type' is a required attribute (Job/Run/Service)";
+    croak "Invalid type '$type' (want Job/Run/Service)"
+        unless VALID_TYPES->{$type};
+
+    croak "'id' is a required attribute"
+        unless defined $self->{+ID} && length $self->{+ID};
+
+    if ($type eq 'Job') {
+        croak "'run_id' is required for type=Job"
+            unless defined $self->{+RUN_ID};
+        $self->{+JOB_TRY} //= 1;
     }
+
+    croak "'logdir' is a required attribute"
+        unless defined $self->{+LOGDIR} && length $self->{+LOGDIR};
+
+    return $type;
+}
+
+# Validate the +AUDITOR spec for Job collectors (auditors are
+# meaningless for run/service collectors). Loads the auditor class
+# when given by name, stashes the original spec in +_AUDITOR_SPEC,
+# and clears +AUDITOR so the child re-instantiates.
+sub _init_validate_auditor {
+    my $self = shift;
+    my ($type) = @_;
+
+    return unless $type eq 'Job' && defined $self->{+AUDITOR};
+
+    my $auditor = $self->{+AUDITOR};
+    if (!blessed($auditor)) {
+        my $class = ref($auditor) eq 'ARRAY' ? $auditor->[0] : $auditor;
+        croak "Auditor spec must be a class name, [class, args], or instance"
+            unless defined $class && !ref($class);
+        load_module($class);
+        croak "Auditor '$class' does not implement Test2::Harness2::Role::Auditor"
+            unless Role::Tiny::does_role($class, 'Test2::Harness2::Role::Auditor');
+    }
+    $self->{+_AUDITOR_SPEC} = $self->{+AUDITOR};
+    $self->{+AUDITOR} = undef;    # re-instantiated in the child
+
+    return;
+}
+
+# Validate the mutually-exclusive launch / launch_callback / stdio
+# spec triple, normalize +LAUNCH to arrayref form, and open any
+# stdio paths supplied as strings.
+sub _init_validate_launch_and_stdio {
+    my $self = shift;
 
     my $has_launch   = defined $self->{+LAUNCH};
     my $has_callback = defined $self->{+LAUNCH_CALLBACK};
@@ -205,13 +243,7 @@ sub init {
         }
     }
 
-    # Default parser. Always present so the write_phase has a parsed
-    # event to serialize.
-    $self->{+PARSER} //= 'Test2::Harness2::Collector::Parser::IOParser';
-
-    # Load parser class if it's a class name
-    load_module($self->{+PARSER})
-        if defined($self->{+PARSER}) && !ref $self->{+PARSER};
+    return;
 }
 
 # Compute and cache the absolute base dir for this collector.
@@ -733,141 +765,31 @@ sub _run_collection_loop {
     my $parser         = $args{parser};
     my $got_signal_ref = $args{got_signal};
 
-    my $child_exited = 0;
-    my $child_exit   = undef;
-    my $stdout_eof   = defined($out_r) ? 0 : 1;
-    my $stderr_eof   = defined($err_r) ? 0 : 1;
-
-    my $merge_outputs = defined($out_r) && defined($err_r)
-        && refaddr($out_r) && refaddr($err_r)
-        && refaddr($out_r) == refaddr($err_r);
-    $stderr_eof = 1 if $merge_outputs;
-
-    my $cycle  = 0.2;
-    my $sel    = IO::Select->new;
-    my $out_fh = $stdout_eof ? undef : $self->_select_fh($out_r);
-    my $err_fh = $stderr_eof ? undef : $self->_select_fh($err_r);
-    $sel->add($out_fh) if defined $out_fh;
-    $sel->add($err_fh) if defined $err_fh;
-
+    my $state  = $self->_init_collection_state($out_r, $err_r);
+    my $term   = $self->_init_termination_state;
     my $buffer = {seen => {}, saw_event => 0, stdout => [], stderr => []};
-
-    # Termination state machine. Once we decide to take the child
-    # down (caught a signal, parent died, etc.) we send TERM and
-    # record a deadline; subsequent loop iterations keep draining
-    # the pipes so the child can finish whatever multipart write
-    # it was in the middle of. After the deadline the loop sends
-    # KILL. We never block-wait on the child here -- blocking would
-    # let the kernel pipe buffer fill while the child is still
-    # writing, and the resulting truncated multipart at EOF
-    # surfaces to the reader as "Incomplete message received before
-    # EOF" from Atomic::Pipe.
-    my $draining      = 0;
-    my $sent_term     = 0;
-    my $sent_kill     = 0;
-    my $kill_deadline;
-    my $kill_timeout  = $self->{+KILL_TIMEOUT} // 15;
 
     while (1) {
         my $client = $self->{_ipc_client};
         $client->drain_pending if $client && $client->have_pending_sends;
 
-        my $write_sel;
-        if ($client && $client->have_writable_handles) {
-            require IO::Select;
-            my @wh = $client->writable_handles;
-            if (@wh) {
-                $write_sel = IO::Select->new;
-                $write_sel->add(@wh);
-            }
-        }
+        my $write_sel = $self->_build_write_select($client);
 
-        # Cap the select() wait when we're escalating so we don't
-        # oversleep the kill deadline.
-        my $tick = $cycle;
-        if (defined $kill_deadline && !$sent_kill) {
-            my $remaining = $kill_deadline - time;
-            $tick = $remaining if $remaining > 0 && $remaining < $tick;
-            $tick = 0          if $remaining <= 0;
-        }
+        my $tick = $self->_compute_loop_tick($state->{cycle}, $term);
 
-        if ($sel->count || $write_sel) {
+        if ($state->{sel}->count || $write_sel) {
             require IO::Select;
-            IO::Select->select($sel->count ? $sel : undef, $write_sel, undef, $tick);
+            IO::Select->select($state->{sel}->count ? $state->{sel} : undef, $write_sel, undef, $tick);
         }
 
         $client->drain_pending if $client && $client->have_pending_sends;
 
         my $ok = eval {
-            if ($$got_signal_ref && !$draining) {
-                if ($child_pid && $started_child) {
-                    kill('TERM', $child_pid);
-                    $sent_term     = 1;
-                    $kill_deadline = time + $kill_timeout;
-                }
-                $draining = 1;
-            }
+            $self->_check_termination_signals($term, $got_signal_ref, $child_pid, $started_child, $state->{child_exited});
 
-            if (!$draining && $self->{+PARENT_PIDS} && @{$self->{+PARENT_PIDS}}) {
-                my $parent_gone = 0;
-                for my $ppid (@{$self->{+PARENT_PIDS}}) {
-                    unless (pid_is_running($ppid)) {
-                        $parent_gone = 1;
-                        last;
-                    }
-                }
-                if ($parent_gone) {
-                    if ($child_pid && $started_child) {
-                        kill('TERM', $child_pid);
-                        $sent_term     = 1;
-                        $kill_deadline = time + $kill_timeout;
-                    }
-                    $draining = 1;
-                }
-            }
+            $self->_drain_input_handles($state, $out_r, $err_r, $buffer, $parser);
 
-            if ($draining && defined $kill_deadline && !$sent_kill && !$child_exited
-                && $child_pid && $started_child && time >= $kill_deadline)
-            {
-                kill('KILL', $child_pid);
-                $sent_kill = 1;
-            }
-
-            unless ($stdout_eof) {
-                for my $item ($self->_read_handle($out_r)) {
-                    if (!defined $item) {
-                        $stdout_eof = 1;
-                        $sel->remove($out_fh) if defined $out_fh;
-                        last;
-                    }
-                    next unless $parser;
-                    $self->_ingest_item($buffer, 'stdout', $item, $merge_outputs, $parser);
-                }
-            }
-
-            unless ($stderr_eof) {
-                for my $item ($self->_read_handle($err_r)) {
-                    if (!defined $item) {
-                        $stderr_eof = 1;
-                        $sel->remove($err_fh) if defined $err_fh;
-                        last;
-                    }
-                    next unless $parser;
-                    $self->_ingest_item($buffer, 'stderr', $item, $merge_outputs, $parser);
-                }
-            }
-
-            if ($child_pid && $started_child && !$child_exited) {
-                my $rv = waitpid($child_pid, WNOHANG);
-                if ($rv == $child_pid) {
-                    $child_exited = 1;
-                    $child_exit   = $?;
-                }
-            }
-
-            if ($child_pid && !$started_child && !$child_exited) {
-                $child_exited = 1 unless pid_is_running($child_pid);
-            }
+            $self->_poll_child_exit($state, $child_pid, $started_child);
 
             1;
         };
@@ -879,17 +801,204 @@ sub _run_collection_loop {
             last;
         }
 
-        if ($stdout_eof && $stderr_eof) {
-            if ($child_pid && $started_child && !$child_exited) {
+        if ($state->{stdout_eof} && $state->{stderr_eof}) {
+            if ($child_pid && $started_child && !$state->{child_exited}) {
                 my $rv = waitpid($child_pid, 0);
-                $child_exit   = $? if $rv == $child_pid;
-                $child_exited = 1;
+                $state->{child_exit}   = $? if $rv == $child_pid;
+                $state->{child_exited} = 1;
             }
             last;
         }
     }
 
-    return ($buffer, $child_exit);
+    return ($buffer, $state->{child_exit});
+}
+
+# Termination state machine. Once we decide to take the child
+# down (caught a signal, parent died, etc.) we send TERM and
+# record a deadline; subsequent loop iterations keep draining
+# the pipes so the child can finish whatever multipart write
+# it was in the middle of. After the deadline the loop sends
+# KILL. We never block-wait on the child here -- blocking would
+# let the kernel pipe buffer fill while the child is still
+# writing, and the resulting truncated multipart at EOF
+# surfaces to the reader as "Incomplete message received before
+# EOF" from Atomic::Pipe.
+sub _init_termination_state {
+    my $self = shift;
+    return {
+        draining      => 0,
+        sent_term     => 0,
+        sent_kill     => 0,
+        kill_deadline => undef,
+        kill_timeout  => $self->{+KILL_TIMEOUT} // 15,
+    };
+}
+
+# Build the IO::Select set + per-handle bookkeeping for the
+# collection loop. Returns a hashref state container shared with the
+# loop helpers (sel, out_fh, err_fh, stdout_eof, stderr_eof,
+# merge_outputs, cycle, child_exited, child_exit).
+sub _init_collection_state {
+    my $self = shift;
+    my ($out_r, $err_r) = @_;
+
+    my $stdout_eof = defined($out_r) ? 0 : 1;
+    my $stderr_eof = defined($err_r) ? 0 : 1;
+
+    my $merge_outputs = defined($out_r) && defined($err_r)
+        && refaddr($out_r) && refaddr($err_r)
+        && refaddr($out_r) == refaddr($err_r);
+    $stderr_eof = 1 if $merge_outputs;
+
+    my $sel    = IO::Select->new;
+    my $out_fh = $stdout_eof ? undef : $self->_select_fh($out_r);
+    my $err_fh = $stderr_eof ? undef : $self->_select_fh($err_r);
+    $sel->add($out_fh) if defined $out_fh;
+    $sel->add($err_fh) if defined $err_fh;
+
+    return {
+        cycle         => 0.2,
+        sel           => $sel,
+        out_fh        => $out_fh,
+        err_fh        => $err_fh,
+        stdout_eof    => $stdout_eof,
+        stderr_eof    => $stderr_eof,
+        merge_outputs => $merge_outputs,
+        child_exited  => 0,
+        child_exit    => undef,
+    };
+}
+
+# Build an IO::Select for the IPC client's writable handles, or
+# return undef when there is nothing to wait on.
+sub _build_write_select {
+    my $self = shift;
+    my ($client) = @_;
+
+    return undef unless $client && $client->have_writable_handles;
+    my @wh = $client->writable_handles;
+    return undef unless @wh;
+
+    require IO::Select;
+    my $write_sel = IO::Select->new;
+    $write_sel->add(@wh);
+    return $write_sel;
+}
+
+# Cap the select() wait when we're escalating so we don't
+# oversleep the kill deadline.
+sub _compute_loop_tick {
+    my $self = shift;
+    my ($cycle, $term) = @_;
+
+    my $tick = $cycle;
+    if (defined $term->{kill_deadline} && !$term->{sent_kill}) {
+        my $remaining = $term->{kill_deadline} - time;
+        $tick = $remaining if $remaining > 0 && $remaining < $tick;
+        $tick = 0          if $remaining <= 0;
+    }
+    return $tick;
+}
+
+# Inspect signal-handler flag, parent-pids liveness, and the kill
+# deadline; flips state in $term in place and delivers TERM/KILL to
+# the child as appropriate.
+sub _check_termination_signals {
+    my $self = shift;
+    my ($term, $got_signal_ref, $child_pid, $started_child, $child_exited) = @_;
+
+    if ($$got_signal_ref && !$term->{draining}) {
+        if ($child_pid && $started_child) {
+            kill('TERM', $child_pid);
+            $term->{sent_term}     = 1;
+            $term->{kill_deadline} = time + $term->{kill_timeout};
+        }
+        $term->{draining} = 1;
+    }
+
+    if (!$term->{draining} && $self->{+PARENT_PIDS} && @{$self->{+PARENT_PIDS}}) {
+        my $parent_gone = 0;
+        for my $ppid (@{$self->{+PARENT_PIDS}}) {
+            unless (pid_is_running($ppid)) {
+                $parent_gone = 1;
+                last;
+            }
+        }
+        if ($parent_gone) {
+            if ($child_pid && $started_child) {
+                kill('TERM', $child_pid);
+                $term->{sent_term}     = 1;
+                $term->{kill_deadline} = time + $term->{kill_timeout};
+            }
+            $term->{draining} = 1;
+        }
+    }
+
+    if ($term->{draining} && defined $term->{kill_deadline} && !$term->{sent_kill} && !$child_exited
+        && $child_pid && $started_child && time >= $term->{kill_deadline})
+    {
+        kill('KILL', $child_pid);
+        $term->{sent_kill} = 1;
+    }
+
+    return;
+}
+
+# Drain whatever is currently readable from stdout/stderr pipes,
+# updating EOF flags in $state and feeding items to _ingest_item.
+sub _drain_input_handles {
+    my $self = shift;
+    my ($state, $out_r, $err_r, $buffer, $parser) = @_;
+
+    unless ($state->{stdout_eof}) {
+        for my $item ($self->_read_handle($out_r)) {
+            if (!defined $item) {
+                $state->{stdout_eof} = 1;
+                $state->{sel}->remove($state->{out_fh}) if defined $state->{out_fh};
+                last;
+            }
+            next unless $parser;
+            $self->_ingest_item($buffer, 'stdout', $item, $state->{merge_outputs}, $parser);
+        }
+    }
+
+    unless ($state->{stderr_eof}) {
+        for my $item ($self->_read_handle($err_r)) {
+            if (!defined $item) {
+                $state->{stderr_eof} = 1;
+                $state->{sel}->remove($state->{err_fh}) if defined $state->{err_fh};
+                last;
+            }
+            next unless $parser;
+            $self->_ingest_item($buffer, 'stderr', $item, $state->{merge_outputs}, $parser);
+        }
+    }
+
+    return;
+}
+
+# Non-blocking child-status check: WNOHANG for our own forked
+# children, pid_is_running() for cases where someone else owns the
+# child (started_child false). Updates child_exited / child_exit in
+# $state.
+sub _poll_child_exit {
+    my $self = shift;
+    my ($state, $child_pid, $started_child) = @_;
+
+    if ($child_pid && $started_child && !$state->{child_exited}) {
+        my $rv = waitpid($child_pid, WNOHANG);
+        if ($rv == $child_pid) {
+            $state->{child_exited} = 1;
+            $state->{child_exit}   = $?;
+        }
+    }
+
+    if ($child_pid && !$started_child && !$state->{child_exited}) {
+        $state->{child_exited} = 1 unless pid_is_running($child_pid);
+    }
+
+    return;
 }
 
 sub _finalize_collection {

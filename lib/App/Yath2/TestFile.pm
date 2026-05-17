@@ -446,67 +446,88 @@ sub queue_item {
     die "The '$self->{+ABSOLUTE}' test specifies that it should not be run by Test2::Harness.\n"
         unless $self->check_feature(run => 1);
 
-    my $category  = $self->check_category;
-    my $duration  = $self->check_duration;
-    my $stage     = $self->check_stage;
-    my $min_slots = $self->check_min_slots;
-    my $max_slots = $self->check_max_slots;
-
-    my $smoke     = $self->check_feature(smoke     => 0);
-    my $fork      = $self->check_feature(fork      => 1);
-    my $preload   = $self->check_feature(preload   => 1);
-    my $timeout   = $self->check_feature(timeout   => 1);
-    my $stream    = $self->check_feature(stream    => 1);
-    my $io_events = $self->check_feature(io_events => 1);
-
-    my $retry          = $self->retry;
-    my $retry_isolated = $self->retry_isolated;
-
-    my $binary   = $self->{+IS_BINARY} ? 1 : 0;
-    my $non_perl = $self->{+NON_PERL}  ? 1 : 0;
-
-    my $et  = $self->event_timeout;
-    my $pet = $self->post_exit_timeout;
-
-    my $job_class = $self->{+JOB_CLASS};
-    my $input     = $self->{+INPUT};
-    my $test_args = $self->{+TEST_ARGS};
-
-    # env_vars merge: caller's $inject{env_vars} provides the base,
-    # the test file's env_vars layered on top. The test file wins for
-    # any key it defines; everything else from the caller passes
-    # through. Mirrors reference/legacy/.../TestFile.pm:435-439 --
-    # keep this ordering as-is (Pitfall #10).
-    my $env_vars = $self->{+ENV_VARS};
-    if ($env_vars) {
-        my $mix = delete $inject{env_vars};
-        $env_vars = {%$mix, %$env_vars} if $mix;
-    }
+    my $features = $self->_queue_item_features;
+    my $env_vars = $self->_queue_item_merge_env(\%inject);
 
     return {
-        binary    => $binary,
-        category  => $category,
+        binary    => $self->{+IS_BINARY} ? 1 : 0,
+        category  => $self->check_category,
         conflicts => [$self->conflicts_list],
-        duration  => $duration,
+        duration  => $self->check_duration,
         file      => $self->absolute,
         rel_file  => $self->relative,
         job_id    => gen_uuid(),
         job_name  => $job_name,
         run_id    => $run_id,
-        non_perl  => $non_perl,
-        stage     => $stage,
+        non_perl  => $self->{+NON_PERL}  ? 1 : 0,
+        stage     => $self->check_stage,
         stamp     => time,
         switches  => $self->switches,
 
-        use_fork    => $fork,
-        use_preload => $preload,
-        use_stream  => $stream,
-        use_timeout => $timeout,
+        use_fork    => $features->{fork},
+        use_preload => $features->{preload},
+        use_stream  => $features->{stream},
+        use_timeout => $features->{timeout},
 
-        smoke     => $smoke,
-        io_events => $io_events,
+        smoke     => $features->{smoke},
+        io_events => $features->{io_events},
         rank      => $self->rank,
 
+        $self->_queue_item_optional_fields($env_vars),
+
+        @{$self->{+QUEUE_ARGS}},
+
+        %inject,
+    };
+}
+
+# Collect the feature toggle defaults consumed by queue_item.
+sub _queue_item_features {
+    my $self = shift;
+    return {
+        smoke     => $self->check_feature(smoke     => 0),
+        fork      => $self->check_feature(fork      => 1),
+        preload   => $self->check_feature(preload   => 1),
+        timeout   => $self->check_feature(timeout   => 1),
+        stream    => $self->check_feature(stream    => 1),
+        io_events => $self->check_feature(io_events => 1),
+    };
+}
+
+# env_vars merge: caller's $inject{env_vars} provides the base,
+# the test file's env_vars layered on top. The test file wins for
+# any key it defines; everything else from the caller passes
+# through. Mirrors reference/legacy/.../TestFile.pm:435-439 --
+# keep this ordering as-is (Pitfall #10).
+sub _queue_item_merge_env {
+    my $self = shift;
+    my ($inject) = @_;
+
+    my $env_vars = $self->{+ENV_VARS};
+    if ($env_vars) {
+        my $mix = delete $inject->{env_vars};
+        $env_vars = {%$mix, %$env_vars} if $mix;
+    }
+    return $env_vars;
+}
+
+# Build the variable-presence tail of the queue payload (fields only
+# emitted when their value is defined).
+sub _queue_item_optional_fields {
+    my $self = shift;
+    my ($env_vars) = @_;
+
+    my $retry          = $self->retry;
+    my $retry_isolated = $self->retry_isolated;
+    my $et             = $self->event_timeout;
+    my $pet            = $self->post_exit_timeout;
+    my $min_slots      = $self->check_min_slots;
+    my $max_slots      = $self->check_max_slots;
+    my $job_class      = $self->{+JOB_CLASS};
+    my $input          = $self->{+INPUT};
+    my $test_args      = $self->{+TEST_ARGS};
+
+    return (
         defined($input)          ? (input             => $input)          : (),
         defined($env_vars)       ? (env_vars          => $env_vars)       : (),
         defined($test_args)      ? (test_args         => $test_args)      : (),
@@ -517,11 +538,7 @@ sub queue_item {
         defined($pet)            ? (post_exit_timeout => $pet)            : (),
         defined($min_slots)      ? (min_slots         => $min_slots)      : (),
         defined($max_slots)      ? (max_slots         => $max_slots)      : (),
-
-        @{$self->{+QUEUE_ARGS}},
-
-        %inject,
-    };
+    );
 }
 
 # }}} Queue payload (queue_item)
@@ -675,6 +692,22 @@ preference tokens (C<'default'> -E<gt> C<'<default>'>, C<0> -E<gt>
 C<'<no>'>, anything else passes through), and drop a trailing C<'<no>'>
 that immediately follows C<'<default>'> (the default token already
 implies the same fallback).
+
+=item _queue_item_features
+
+Snapshot the C<check_feature> defaults consumed by C<queue_item> into
+a small hashref (smoke / fork / preload / timeout / stream / io_events).
+
+=item _queue_item_merge_env
+
+Merge the caller-supplied C<env_vars> base under the test file's
+C<env_vars> overlay (test file wins per key); returns the resulting
+hashref or undef. Removes C<env_vars> from the caller's inject hash.
+
+=item _queue_item_optional_fields
+
+Return the variable-presence tail of the queue payload as a flat list
+of key/value pairs, emitting each entry only when its value is defined.
 
 =back
 

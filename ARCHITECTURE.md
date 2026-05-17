@@ -2221,6 +2221,18 @@ only when its constructor runs.
 
 See `STYLE_GUIDE.md` for code style conventions.
 
+### Function length: 75 lines max
+
+No subroutine, function, or method anywhere under `lib/` may exceed
+75 lines (sub signature through closing brace, inclusive). When a
+sub grows past that limit, split it into smaller helpers with names
+that describe each step. POD blocks and code comments do not count
+toward the budget; the limit applies to executable Perl only.
+
+This rule is enforceable mechanically — `perl author/find-long-subs`
+walks `lib/**.pm` and reports any sub over the threshold (exits 1
+when any are found, suitable as a CI tripwire).
+
 ### DB layer: codecs at the data layer, canonical values across the role
 
 `App::Yath2::DB` owns every codec and transformation:

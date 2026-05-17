@@ -51,14 +51,7 @@ sub render_event {
     $event = dclone($event);
     my $f  = $event->{facet_data};
 
-    # job_id lives in the harness sub-facet for general (JSONL) events, or
-    # inside the top-level lifecycle facet for synthesised lifecycle events.
-    my $job_id =
-           ($f->{'harness'}         && $f->{'harness'}{'job_id'})
-        // ($f->{'harness_job_start'} && $f->{'harness_job_start'}{'job_id'})
-        // ($f->{'harness_job_end'}   && $f->{'harness_job_end'}{'job_id'})
-        // ($f->{'harness_job_exit'}  && $f->{'harness_job_exit'}{'job_id'})
-        or return;
+    my $job_id = _event_job_id($f) or return;
 
     my $job_try = ($f->{'harness_job_start'} && $f->{'harness_job_start'}{'job_try'})
         // ($f->{'harness'} && $f->{'harness'}{'job_try'})
@@ -73,30 +66,7 @@ sub render_event {
     # At job launch (harness_job_start from the renderer driver) start a new test section.
     # Throw out anything collected for a previous retry of the same job.
     if ( $f->{'harness_job_start'} ) {
-        my $jst      = $f->{'harness_job_start'};
-        my $abs_file = $jst->{'abs_file'} // $jst->{'file'} // $job_id;
-        my $rel_file = $jst->{'rel_file'} // File::Spec->abs2rel($abs_file);
-
-        $self->{'tests'}->{$job_id} = {
-            'name'           => $abs_file,
-            'file'           => _squeaky_clean($rel_file),
-            'job_id'         => $job_id,
-            'job_try'        => $job_try,
-            'job_name'       => $rel_file,
-            'testcase'       => [],
-            'system-out'     => '',
-            'system-err'     => '',
-            'start'          => $stamp,
-            'last_job_start' => $stamp,
-            'testsuite'      => {
-                'errors'   => 0,
-                'failures' => 0,
-                'tests'    => 0,
-                'name'     => _get_testsuite_name($rel_file),
-                'id'       => $job_id,
-            },
-        };
-
+        $self->_start_test_section($f, $job_id, $job_try, $stamp);
         return;
     }
 
@@ -110,153 +80,246 @@ sub render_event {
 
     # We have all the data. Print the XML.
     if ( $f->{'harness_job_end'} ) {
-        $self->close_open_failure_testcase( $test, -1 );
-        $test->{'stop'}                     = $event->{'stamp'};
-        $test->{'testsuite'}->{'time'}      = $test->{'stop'} - $test->{'start'};
-        $test->{'testsuite'}->{'timestamp'} = _timestamp( $test->{'start'} );
+        $self->_handle_job_end($test, $event, $f, $stamp);
+        return;
+    }
 
-        if ( $f->{'errors'} ) {
-            my $test_error_messages = '';
-            my $alternative_error   = '';
-            foreach my $msg ( @{ $f->{'errors'} } ) {
-                next unless $msg->{'from_harness'};
-                next unless ($msg->{'tag'} // '') eq 'REASON';
+    return $self->_handle_plan($test, $f)         if $f->{'plan'};
+    return $self->_handle_job_exit($test, $f)     if $f->{'harness_job_exit'};
+    return $self->_handle_assert($test, $f, $stamp) if $f->{'assert'};
+    return $self->_handle_info($test, $f)         if $f->{'info'} && $test->{'last_failure'};
 
-                my $details = $msg->{details};
-                if ( $details =~ m/^Planned for ([0-9]+) assertions?, but saw ([0-9]+)/ ) {
-                    $test->{'testsuite'}->{'errors'} += abs( $1 - $2 );
-                }
-                if ( $details =~ m/Test script returned error|Assertion failures were encountered|Subtest failures were encountered/ ) {
-                    $alternative_error .= "$details\n";
-                }
-                else {
-                    $test_error_messages .= "$details\n";
-                }
-            }
+    return;
+}
 
-            if ($test_error_messages) {
-                push @{ $test->{'testcase'} }, $self->xml->testcase(
-                    { 'name' => "Test Plan Failure", 'time' => $stamp - $test->{'last_job_start'}, 'classname' => $test->{'testsuite'}->{'name'} },
-                    $self->xml->failure($test_error_messages)
-                );
-            }
+# Record plan facets: skip details go to system-out, count goes to the
+# stashed plan slot.
+sub _handle_plan {
+    my ($self, $test, $f) = @_;
 
-            # We only want to show this alternative error if all of the tests passed but the program still exited non-zero.
-            elsif ( !$test->{'testsuite'}->{'errors'} && $alternative_error ) {
-                $test->{'testsuite'}->{'errors'}++;
-                push @{ $test->{'testcase'} }, $self->xml->testcase(
-                    { 'name' => "Program Ended Unexpectedly", 'time' => $stamp - $test->{'last_job_start'}, 'classname' => $test->{'testsuite'}->{'name'} },
-                    $self->xml->failure($alternative_error)
-                );
-            }
+    if ( $f->{'plan'}->{'skip'} ) {
+        my $skip = $f->{'plan'}->{'details'};
+        $test->{'system-out'} .= "# SKIP $skip\n";
+    }
+    if ( $f->{'plan'}->{'count'} ) {
+        $test->{'plan'} = $f->{'plan'}->{'count'};
+    }
+
+    return;
+}
+
+# Record a non-zero job exit as a testsuite error + capture the details
+# string for the run summary.
+sub _handle_job_exit {
+    my ($self, $test, $f) = @_;
+
+    return unless $f->{'harness_job_exit'}->{'exit'};
+
+    # If we don't see
+    $test->{'testsuite'}->{'errors'}++;
+    $test->{'error-msg'} //= $f->{'harness_job_exit'}->{'details'} . "\n";
+
+    return;
+}
+
+# Append diag info to the in-flight last_failure record so the failure
+# testcase emits with the surrounding diagnostics.
+sub _handle_info {
+    my ($self, $test, $f) = @_;
+
+    foreach my $line ( @{ $f->{'info'} } ) {
+        next unless $line->{'details'};
+        chomp $line->{'details'};
+        $test->{'last_failure'}->{'full_message'} .= "# $line->{details}\n";
+    }
+    return;
+}
+
+# Extract the job_id from an event's facet data. Returns undef when none
+# of the harness sub-facets identify a job.
+sub _event_job_id {
+    my ($f) = @_;
+    return
+           ($f->{'harness'}         && $f->{'harness'}{'job_id'})
+        // ($f->{'harness_job_start'} && $f->{'harness_job_start'}{'job_id'})
+        // ($f->{'harness_job_end'}   && $f->{'harness_job_end'}{'job_id'})
+        // ($f->{'harness_job_exit'}  && $f->{'harness_job_exit'}{'job_id'});
+}
+
+# Initialise the per-job testsuite scaffolding seen on `harness_job_start`.
+sub _start_test_section {
+    my ($self, $f, $job_id, $job_try, $stamp) = @_;
+
+    my $jst      = $f->{'harness_job_start'};
+    my $abs_file = $jst->{'abs_file'} // $jst->{'file'} // $job_id;
+    my $rel_file = $jst->{'rel_file'} // File::Spec->abs2rel($abs_file);
+
+    $self->{'tests'}->{$job_id} = {
+        'name'           => $abs_file,
+        'file'           => _squeaky_clean($rel_file),
+        'job_id'         => $job_id,
+        'job_try'        => $job_try,
+        'job_name'       => $rel_file,
+        'testcase'       => [],
+        'system-out'     => '',
+        'system-err'     => '',
+        'start'          => $stamp,
+        'last_job_start' => $stamp,
+        'testsuite'      => {
+            'errors'   => 0,
+            'failures' => 0,
+            'tests'    => 0,
+            'name'     => _get_testsuite_name($rel_file),
+            'id'       => $job_id,
+        },
+    };
+
+    return;
+}
+
+# Finalise the testsuite when `harness_job_end` arrives: close any pending
+# failure, stamp timing, collate harness REASON errors, and add the tear
+# down testcase.
+sub _handle_job_end {
+    my ($self, $test, $event, $f, $stamp) = @_;
+
+    $self->close_open_failure_testcase( $test, -1 );
+    $test->{'stop'}                     = $event->{'stamp'};
+    $test->{'testsuite'}->{'time'}      = $test->{'stop'} - $test->{'start'};
+    $test->{'testsuite'}->{'timestamp'} = _timestamp( $test->{'start'} );
+
+    if ( $f->{'errors'} ) {
+        $self->_collate_job_end_errors($test, $f, $stamp);
+    }
+
+    push @{ $test->{'testcase'} }, $self->xml->testcase(
+        { 'name' => "Tear down.", 'time' => $stamp - $test->{'last_job_start'}, 'classname' => $test->{'testsuite'}->{'name'} },
+    );
+
+    return;
+}
+
+# Split harness `REASON` errors into "Test Plan Failure" vs the catch-all
+# "Program Ended Unexpectedly" testcases and append whichever applies.
+sub _collate_job_end_errors {
+    my ($self, $test, $f, $stamp) = @_;
+
+    my $test_error_messages = '';
+    my $alternative_error   = '';
+    foreach my $msg ( @{ $f->{'errors'} } ) {
+        next unless $msg->{'from_harness'};
+        next unless ($msg->{'tag'} // '') eq 'REASON';
+
+        my $details = $msg->{details};
+        if ( $details =~ m/^Planned for ([0-9]+) assertions?, but saw ([0-9]+)/ ) {
+            $test->{'testsuite'}->{'errors'} += abs( $1 - $2 );
         }
+        if ( $details =~ m/Test script returned error|Assertion failures were encountered|Subtest failures were encountered/ ) {
+            $alternative_error .= "$details\n";
+        }
+        else {
+            $test_error_messages .= "$details\n";
+        }
+    }
+
+    if ($test_error_messages) {
+        push @{ $test->{'testcase'} }, $self->xml->testcase(
+            { 'name' => "Test Plan Failure", 'time' => $stamp - $test->{'last_job_start'}, 'classname' => $test->{'testsuite'}->{'name'} },
+            $self->xml->failure($test_error_messages)
+        );
+    }
+
+    # We only want to show this alternative error if all of the tests passed but the program still exited non-zero.
+    elsif ( !$test->{'testsuite'}->{'errors'} && $alternative_error ) {
+        $test->{'testsuite'}->{'errors'}++;
+        push @{ $test->{'testcase'} }, $self->xml->testcase(
+            { 'name' => "Program Ended Unexpectedly", 'time' => $stamp - $test->{'last_job_start'}, 'classname' => $test->{'testsuite'}->{'name'} },
+            $self->xml->failure($alternative_error)
+        );
+    }
+
+    return;
+}
+
+# Process an `assert` facet: bump the testcase count, close any pending
+# failure for the prior assert, and dispatch to the TODO / pass / fail
+# rendering paths.
+sub _handle_assert {
+    my ($self, $test, $f, $stamp) = @_;
+
+    # Ignore subtests
+    return if ( $f->{'hubs'} && $f->{'hubs'}->[0]->{'nested'} );
+
+    my $test_num    = $f->{'assert'}->{'number'};
+    $test_num = sprintf "%04d", $test_num if defined $test_num;
+    my $test_name   = _squeaky_clean( $f->{'assert'}->{'details'} // 'UNKNOWN_TEST?' );
+    $test_name = join " - ", grep { defined } $test_num, $test_name;
+    $test->{'testsuite'}->{'tests'}++;
+
+    $self->close_open_failure_testcase( $test, $test_num );
+
+    my $run_time = $stamp - $test->{'last_job_start'};
+    $test->{'last_job_start'} = $stamp;
+
+    if ( $f->{'amnesty'} && grep { ( $_->{'tag'} // '' ) eq 'TODO' } @{ $f->{'amnesty'} } ) {    # All TODO Tests
+        $self->_handle_assert_todo($test, $f, $test_name, $run_time);
+    }
+    elsif ( $f->{'assert'}->{'pass'} ) {    # Passing test
+        push @{ $test->{'testcase'} }, $self->xml->testcase(
+            { 'name' => $test_name, 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} },
+            ""
+        );
+    }
+    else {                                  # Failing Test.
+        $test->{'testsuite'}->{'failures'}++;
+        $test->{'testsuite'}->{'errors'}++;
+
+        my $message = "not ok" . ( $test_name ? " $test_name" : "" );
+
+        # Trap the test information. We can't generate the XML for this test until we get all the diag information.
+        $test->{'last_failure'} = {
+            'test_num'     => $test_num,
+            'test_name'    => $test_name,
+            'time'         => $run_time,
+            'message'      => $message,
+            'full_message' => "$message\n",
+        };
+    }
+
+    return;
+}
+
+# Render an assert that carries a TODO amnesty: failing TODO, passing TODO
+# (allowed) and passing TODO (treated as failure) each emit a different
+# testcase shape.
+sub _handle_assert_todo {
+    my ($self, $test, $f, $test_name, $run_time) = @_;
+
+    if ( !$f->{'assert'}->{'pass'} ) {                                                       # Failing TODO
+        push @{ $test->{'testcase'} }, $self->xml->testcase( { 'name' => "$test_name (TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} }, "" );
+    }
+    elsif ( $self->{'allow_passing_todos'} ) {                                               # junit parsers don't like passing TODO tests. Let's just not tell them about it if $ENV{ALLOW_PASSING_TODOS} is set.
+        push @{ $test->{'testcase'} }, $self->xml->testcase( { 'name' => "$test_name (PASSING TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} }, "" );
+    }
+    else {                                                                                   # Passing TODO (Failure) when not allowed.
+
+        $test->{'testsuite'}->{'failures'}++;
+        $test->{'testsuite'}->{'errors'}++;
+
+        # Grab the first amnesty description that's a TODO message.
+        my ($todo_message) = map { $_->{'details'} } grep { ($_->{'tag'} // '') eq 'TODO' } @{ $f->{'amnesty'} };
 
         push @{ $test->{'testcase'} }, $self->xml->testcase(
-            { 'name' => "Tear down.", 'time' => $stamp - $test->{'last_job_start'}, 'classname' => $test->{'testsuite'}->{'name'} },
+            { 'name' => "$test_name (TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} },
+            $self->xml->error(
+                { 'message' => $todo_message, 'type' => "TodoTestSucceeded" },
+                $self->_cdata("ok $test_name")
+            )
         );
 
-        return;
     }
 
-    if ( $f->{'plan'} ) {
-        if ( $f->{'plan'}->{'skip'} ) {
-            my $skip = $f->{'plan'}->{'details'};
-            $test->{'system-out'} .= "# SKIP $skip\n";
-        }
-        if ( $f->{'plan'}->{'count'} ) {
-            $test->{'plan'} = $f->{'plan'}->{'count'};
-        }
-
-        return;
-    }
-
-    if ( $f->{'harness_job_exit'} ) {
-        return unless $f->{'harness_job_exit'}->{'exit'};
-
-        # If we don't see
-        $test->{'testsuite'}->{'errors'}++;
-        $test->{'error-msg'} //= $f->{'harness_job_exit'}->{'details'} . "\n";
-
-        return;
-    }
-
-    # We just hit an ok/not ok line.
-    if ( $f->{'assert'} ) {
-
-        # Ignore subtests
-        return if ( $f->{'hubs'} && $f->{'hubs'}->[0]->{'nested'} );
-
-        my $test_num    = $f->{'assert'}->{'number'};
-        $test_num = sprintf "%04d", $test_num if defined $test_num;
-        my $test_name   = _squeaky_clean( $f->{'assert'}->{'details'} // 'UNKNOWN_TEST?' );
-        $test_name = join " - ", grep { defined } $test_num, $test_name;
-        $test->{'testsuite'}->{'tests'}++;
-
-        $self->close_open_failure_testcase( $test, $test_num );
-
-        my $run_time = $stamp - $test->{'last_job_start'};
-        $test->{'last_job_start'} = $stamp;
-
-        if ( $f->{'amnesty'} && grep { ( $_->{'tag'} // '' ) eq 'TODO' } @{ $f->{'amnesty'} } ) {    # All TODO Tests
-            if ( !$f->{'assert'}->{'pass'} ) {                                                       # Failing TODO
-                push @{ $test->{'testcase'} }, $self->xml->testcase( { 'name' => "$test_name (TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} }, "" );
-            }
-            elsif ( $self->{'allow_passing_todos'} ) {                                               # junit parsers don't like passing TODO tests. Let's just not tell them about it if $ENV{ALLOW_PASSING_TODOS} is set.
-                push @{ $test->{'testcase'} }, $self->xml->testcase( { 'name' => "$test_name (PASSING TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} }, "" );
-            }
-            else {                                                                                   # Passing TODO (Failure) when not allowed.
-
-                $test->{'testsuite'}->{'failures'}++;
-                $test->{'testsuite'}->{'errors'}++;
-
-                # Grab the first amnesty description that's a TODO message.
-                my ($todo_message) = map { $_->{'details'} } grep { ($_->{'tag'} // '') eq 'TODO' } @{ $f->{'amnesty'} };
-
-                push @{ $test->{'testcase'} }, $self->xml->testcase(
-                    { 'name' => "$test_name (TODO)", 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} },
-                    $self->xml->error(
-                        { 'message' => $todo_message, 'type' => "TodoTestSucceeded" },
-                        $self->_cdata("ok $test_name")
-                    )
-                );
-
-            }
-        }
-        elsif ( $f->{'assert'}->{'pass'} ) {    # Passing test
-            push @{ $test->{'testcase'} }, $self->xml->testcase(
-                { 'name' => $test_name, 'time' => $run_time, 'classname' => $test->{'testsuite'}->{'name'} },
-                ""
-            );
-        }
-        else {                                  # Failing Test.
-            $test->{'testsuite'}->{'failures'}++;
-            $test->{'testsuite'}->{'errors'}++;
-
-            my $message = "not ok" . ( $test_name ? " $test_name" : "" );
-
-            # Trap the test information. We can't generate the XML for this test until we get all the diag information.
-            $test->{'last_failure'} = {
-                'test_num'     => $test_num,
-                'test_name'    => $test_name,
-                'time'         => $run_time,
-                'message'      => $message,
-                'full_message' => "$message\n",
-            };
-        }
-
-        return;
-    }
-
-    # This is diag information. Append it to the last failure.
-    if ( $f->{'info'} && $test->{'last_failure'} ) {
-        foreach my $line ( @{ $f->{'info'} } ) {
-            next unless $line->{'details'};
-            chomp $line->{'details'};
-            $test->{'last_failure'}->{'full_message'} .= "# $line->{details}\n";
-        }
-        return;
-    }
-
+    return;
 }
 
 # This is called when the last run is complete and we're ready to emit the junit file.
@@ -428,6 +491,51 @@ moment and needed to be able to generate JUnit output for.
 
 This is the only method (other than finish) that is called by Test2::Harness2 in order to
 gather the data needed to emit the needed xml.
+
+=item B<_event_job_id($facet_data)>
+
+Extract the job_id from an event's facet data; returns C<undef> when no
+harness sub-facet identifies a job.
+
+=item B<_start_test_section($facet_data, $job_id, $job_try, $stamp)>
+
+Initialise the per-job testsuite scaffolding when C<harness_job_start>
+arrives.
+
+=item B<_handle_job_end($test, $event, $facet_data, $stamp)>
+
+Finalise the testsuite on C<harness_job_end>: close any pending failure,
+stamp timing, collate harness errors, and append the tear-down testcase.
+
+=item B<_collate_job_end_errors($test, $facet_data, $stamp)>
+
+Sort harness C<REASON> errors into the "Test Plan Failure" and
+"Program Ended Unexpectedly" testcases.
+
+=item B<_handle_plan($test, $facet_data)>
+
+Record plan facets: skip details go to system-out, count goes to the
+stashed plan slot.
+
+=item B<_handle_job_exit($test, $facet_data)>
+
+Record a non-zero job exit as a testsuite error and capture the
+details string.
+
+=item B<_handle_info($test, $facet_data)>
+
+Append diag info to the in-flight last_failure record so the failure
+testcase emits with surrounding diagnostics.
+
+=item B<_handle_assert($test, $facet_data, $stamp)>
+
+Dispatch an C<assert> facet to the TODO / pass / fail rendering paths,
+after bumping testcase counts and closing any pending failure.
+
+=item B<_handle_assert_todo($test, $facet_data, $test_name, $run_time)>
+
+Render the three TODO variants (failing TODO, passing TODO allowed,
+passing TODO treated as failure).
 
 =item B<close_open_failure_testcase($test, $new_test_number)>
 

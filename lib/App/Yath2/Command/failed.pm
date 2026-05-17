@@ -53,6 +53,45 @@ sub run {
     my $self = shift;
 
     my $settings = $self->settings;
+
+    my $path = $self->_resolve_log_path;
+    $self->{+LOG} = $path;
+
+    my $log = App::Yath2::Log->new(auto => $path);
+
+    my @runs = $log->runs;
+    die "No runs found in '$path'\n" unless @runs;
+
+    my %by_file = $self->_collect_by_file($log, \@runs);
+
+    my $brief = $settings->failed->brief;
+    my @rows  = $self->_build_failure_rows(\%by_file, $brief);
+
+    return 0 if $brief;
+
+    unless (@rows) {
+        print "\nNo jobs failed!\n";
+        return 0;
+    }
+
+    print "\nThe following jobs failed at least once:\n";
+    print join "\n" => table(
+        collapse => 1,
+        header   => ['Test File', 'Times Run', 'Subtests', 'Succeeded Eventually?'],
+        rows     => \@rows,
+    );
+    print "\n";
+
+    return 0;
+}
+
+# Resolve the LOG path argument, falling back to the latest archive
+# when none is supplied. Validates that the path exists and that no
+# extra arguments follow.
+sub _resolve_log_path {
+    my $self = shift;
+
+    my $settings = $self->settings;
     my $args     = $self->args;
 
     shift @$args if @$args && $args->[0] eq '--';
@@ -70,17 +109,17 @@ sub run {
     die "Log source '$path' does not exist\n" unless -e $path;
     die "extra arguments after LOG\n" if @$args;
 
-    $self->{+LOG} = $path;
+    return $path;
+}
 
-    my $log = App::Yath2::Log->new(auto => $path);
+# Walk every run/job/try in the log and aggregate per-file final
+# states. Each file collects every try's final state we walk via the
+# Log API.
+sub _collect_by_file {
+    my ($self, $log, $runs) = @_;
 
-    my @runs = $log->runs;
-    die "No runs found in '$path'\n" unless @runs;
-
-    # Per-file aggregate. Each file collects every try's final state we
-    # walk via the Log API.
     my %by_file;
-    for my $rid (@runs) {
+    for my $rid (@$runs) {
         for my $jid ($log->jobs($rid)) {
             for my $try ($log->tries($rid, $jid)) {
                 my $arts = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
@@ -104,10 +143,18 @@ sub run {
         }
     }
 
-    my $brief = $settings->failed->brief;
+    return %by_file;
+}
+
+# Turn the per-file aggregate into table rows describing each file
+# that failed at least once. In brief mode, prints the file names
+# directly (only those that never succeeded) and returns an empty list.
+sub _build_failure_rows {
+    my ($self, $by_file, $brief) = @_;
+
     my @rows;
-    for my $rel (sort keys %by_file) {
-        my @ends = sort { ($a->{stamp} // 0) <=> ($b->{stamp} // 0) } @{$by_file{$rel}{ends}};
+    for my $rel (sort keys %$by_file) {
+        my @ends = sort { ($a->{stamp} // 0) <=> ($b->{stamp} // 0) } @{$by_file->{$rel}{ends}};
 
         my $any_fail = grep { $_->{fail} } @ends;
         next unless $any_fail;
@@ -130,22 +177,7 @@ sub run {
         ];
     }
 
-    return 0 if $brief;
-
-    unless (@rows) {
-        print "\nNo jobs failed!\n";
-        return 0;
-    }
-
-    print "\nThe following jobs failed at least once:\n";
-    print join "\n" => table(
-        collapse => 1,
-        header   => ['Test File', 'Times Run', 'Subtests', 'Succeeded Eventually?'],
-        rows     => \@rows,
-    );
-    print "\n";
-
-    return 0;
+    return @rows;
 }
 
 # Collect failing top-level subtest names across every failed try for
@@ -174,6 +206,25 @@ sub _collect_subtest_names {
 1;
 
 __END__
+
+=head1 METHODS
+
+=head2 _resolve_log_path
+
+Resolve the LOG argument (defaulting to the latest archive), validate
+that it exists, and confirm no extra positional arguments follow.
+
+=head2 _collect_by_file
+
+Walk every run/job/try in the log and return a hash keyed by relative
+test file path, with each value carrying the ordered final states for
+that file.
+
+=head2 _build_failure_rows
+
+Convert the per-file aggregate into table rows for files that failed
+at least once. In brief mode prints the failing file names directly
+and returns an empty list.
 
 =head1 POD IS AUTO-GENERATED
 

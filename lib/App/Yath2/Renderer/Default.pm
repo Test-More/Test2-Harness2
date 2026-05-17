@@ -169,41 +169,13 @@ sub write {
         $also_show = $lines if $f->{errors} && @{$f->{errors}};
     }
 
-    my $lines;
-    if (!$self->{+VERBOSE}) {
-        if ($depth) {
-            $lines = [];
-        }
-        else {
-            $lines = $self->build_quiet($f);
-        }
-    }
-    elsif ($depth) {
-        my $tree = $self->render_tree($f, '>');
-        $lines = $self->build_buffered_event($f, $tree);
-
-        if (defined $job_id) {
-            push @{$self->{+_BUFFER}->{$job_id} //= []} => @$lines;
-            return unless $self->{+SHOW_BUFFER} || $self->{+PROGRESS} || $also_show;
-        }
-    }
-    else {
-        my $tree = $self->render_tree($f);
-        $lines = $self->build_event($f, $tree);
-    }
+    my ($lines, $stash_only) = $self->_build_event_lines($f, $depth, $job_id, $also_show);
+    return if $stash_only;
 
     my ($peek) = map { $_->{peek} } grep { $_->{peek} } @{$f->{info} // []};
 
     $should_show ||= $also_show || ($lines && @$lines);
-    unless ($should_show || $self->{+VERBOSE}) {
-        if (my $last = $self->{last_rendered}) {
-            return if time - $last < 0.2;
-            $self->{last_rendered} = time;
-        }
-        else {
-            $self->{last_rendered} = time;
-        }
-    }
+    return if $self->_throttle_quiet_output($should_show);
 
     $self->{+THEME}->free_job_color($job_id) if $job_id && $f->{harness_job_end};
 
@@ -211,14 +183,75 @@ sub write {
     local($\, $,) = (undef, '') if $\ || $,;
 
     my $io = $self->io($job_id);
-    if (my $buffered = delete $self->{+_BUFFERED}) {
-        print $io "\r";
-        print $io "\e[K" unless $buffered eq 'peek';
-    }
+    $self->_clear_buffered_line($io);
 
     if ($also_show) {
         print $io $_, "\n" for @$also_show;
     }
+
+    $self->_emit_lines($io, $f, $lines, $peek, $depth);
+
+    delete $self->{+JOB_IO}->{$job_id} if $job_id && $f->{harness_job_end};
+}
+
+# Build the rendered lines array for an event, honoring verbose / quiet
+# modes and subtest depth. Returns ($lines, $stash_only); when
+# $stash_only is true the caller must return without emitting (the
+# subtest line has been pushed onto the per-job buffer for later).
+sub _build_event_lines {
+    my ($self, $f, $depth, $job_id, $also_show) = @_;
+
+    if (!$self->{+VERBOSE}) {
+        return ($depth ? [] : $self->build_quiet($f), 0);
+    }
+
+    if ($depth) {
+        my $tree  = $self->render_tree($f, '>');
+        my $lines = $self->build_buffered_event($f, $tree);
+
+        if (defined $job_id) {
+            push @{$self->{+_BUFFER}->{$job_id} //= []} => @$lines;
+            return ($lines, 1) unless $self->{+SHOW_BUFFER} || $self->{+PROGRESS} || $also_show;
+        }
+        return ($lines, 0);
+    }
+
+    my $tree = $self->render_tree($f);
+    return ($self->build_event($f, $tree), 0);
+}
+
+# In non-verbose mode, throttle output to at most one render every 200ms
+# unless the event must be shown. Returns true when the caller should
+# skip emitting this event.
+sub _throttle_quiet_output {
+    my ($self, $should_show) = @_;
+    return 0 if $should_show || $self->{+VERBOSE};
+
+    if (my $last = $self->{last_rendered}) {
+        return 1 if time - $last < 0.2;
+        $self->{last_rendered} = time;
+    }
+    else {
+        $self->{last_rendered} = time;
+    }
+    return 0;
+}
+
+# Clear any previously-buffered status / subtest line from the IO handle
+# before writing the next event.
+sub _clear_buffered_line {
+    my ($self, $io) = @_;
+    my $buffered = delete $self->{+_BUFFERED} or return;
+    print $io "\r";
+    print $io "\e[K" unless $buffered eq 'peek';
+    return;
+}
+
+# Emit the rendered lines to the IO handle, branching on peek / quiet /
+# subtest depth to leave the correct buffered-state behind for the next
+# call.
+sub _emit_lines {
+    my ($self, $io, $f, $lines, $peek, $depth) = @_;
 
     if ($peek) {
         my $last = pop(@$lines);
@@ -248,8 +281,7 @@ sub write {
     else {
         print $io $_, "\n" for @$lines;
     }
-
-    delete $self->{+JOB_IO}->{$job_id} if $job_id && $f->{harness_job_end};
+    return;
 }
 
 sub finish {
@@ -607,16 +639,39 @@ sub build_line {
 
     my ($ps, $pe) = @{$theme->get_borders($facet)};
 
+    $tag = _pad_tag($tag);
+
+    my $start = $self->_build_line_prefix($tag, $tree, $ps, $pe, $tcolor, $reset, $theme, $use_color);
+
+    my @out = $self->_split_lines_for_emit($text, $tag, $tree, $ps, $pe, $start, $tcolor, $reset, $use_color, $max);
+
+    unless (@out) {
+        @out = $self->_blob_fallback_lines($start, $text, $tcolor, $reset, $theme, $use_color);
+    }
+
+    return @out;
+}
+
+# Uppercase and center-pad a tag to TAG_WIDTH (truncating if too long).
+sub _pad_tag {
+    my ($tag) = @_;
     $tag = uc($tag);
     my $length = length($tag);
     if ($length > TAG_WIDTH) {
-        $tag = substr($tag, 0, TAG_WIDTH);
+        return substr($tag, 0, TAG_WIDTH);
     }
-    elsif ($length < TAG_WIDTH) {
+    if ($length < TAG_WIDTH) {
         my $pad  = (TAG_WIDTH - $length) / 2;
         my $padl = $pad + (TAG_WIDTH - $length) % 2;
-        $tag = (' ' x $padl) . $tag . (' ' x $pad);
+        return (' ' x $padl) . $tag . (' ' x $pad);
     }
+    return $tag;
+}
+
+# Build the per-line prefix: tag (with borders + colour) plus the tree
+# guide (also coloured when colour is enabled).
+sub _build_line_prefix {
+    my ($self, $tag, $tree, $ps, $pe, $tcolor, $reset, $theme, $use_color) = @_;
 
     my $start;
     if ($use_color) {
@@ -639,14 +694,23 @@ sub build_line {
         }
     }
 
+    return $start;
+}
+
+# Split the event text into per-output lines, wrapping each with the
+# shared prefix and colour. Returns an empty list when any multi-line
+# segment would exceed the terminal width (signal to caller to switch
+# to the blob fallback).
+sub _split_lines_for_emit {
+    my ($self, $text, $tag, $tree, $ps, $pe, $start, $tcolor, $reset, $use_color, $max) = @_;
+
     my @lines = split /[\r\n]/, $text;
     @lines = ($text) unless @lines;
 
     my @out;
     for my $line (@lines) {
         if (@lines > 1 && $max && length("$ps$tag$pe $tree$line") > $max) {
-            @out = ();
-            last;
+            return ();
         }
 
         if ($use_color) {
@@ -656,26 +720,27 @@ sub build_line {
             push @out => "${start}${line}";
         }
     }
-
-    unless (@out) {
-        if ($use_color) {
-            my $blob = $theme->get_term_color(base => 'blob') || '';
-            @out = (
-                "$start${blob}----- START -----$reset",
-                "${tcolor}${text}${reset}",
-                "$start${blob}------ END ------$reset",
-            );
-        }
-        else {
-            @out = (
-                "$start----- START -----",
-                $text,
-                "$start------ END ------",
-            );
-        }
-    }
-
     return @out;
+}
+
+# Render the START/END "blob" framing used for text that does not fit
+# within the terminal width when wrapped line-by-line.
+sub _blob_fallback_lines {
+    my ($self, $start, $text, $tcolor, $reset, $theme, $use_color) = @_;
+
+    if ($use_color) {
+        my $blob = $theme->get_term_color(base => 'blob') || '';
+        return (
+            "$start${blob}----- START -----$reset",
+            "${tcolor}${text}${reset}",
+            "$start${blob}------ END ------$reset",
+        );
+    }
+    return (
+        "$start----- START -----",
+        $text,
+        "$start------ END ------",
+    );
 }
 
 sub render_parent {

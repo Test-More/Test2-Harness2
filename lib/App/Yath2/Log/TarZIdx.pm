@@ -990,18 +990,7 @@ sub extract {
     croak "'runs' and 'exclude_runs' are mutually exclusive"
         if defined $runs && defined $exclude_runs;
 
-    my $include_run = sub {
-        my ($rel) = @_;
-        return 1 unless $rel =~ m{^runs/([^/]+)(?:/|\z)};
-        my $rid = $1;
-        if (defined $runs) {
-            return scalar grep { $_ eq $rid } @$runs;
-        }
-        if (defined $exclude_runs) {
-            return scalar(grep { $_ eq $rid } @$exclude_runs) ? 0 : 1;
-        }
-        return 1;
-    };
+    my $include_run = $self->_make_run_filter($runs, $exclude_runs);
 
     make_path($dir);
     require Test2::Harness2::Util::Zstd;
@@ -1018,73 +1007,107 @@ sub extract {
             next;
         }
 
-        my $entry_inner = $entry->{inner} // 'zstd';
-        # `compressed=>1` keeps the original suffix shape: files that
-        # were already .zst keep the suffix; plaintext sources gain
-        # one (since they are stored zstd-wrapped). `compressed=>0`
-        # always drops to plaintext and strips the .zst suffix.
-        my $out_rel;
-        if ($compressed) {
-            $out_rel = $rel =~ /\.zst\z/ ? $rel : "$rel.zst";
-        }
-        else {
-            $out_rel = $rel;
-        }
-        # `compressed=>1` keeps the original bytes (including the
-        # outer zstd wrap); `compressed=>0` strips one layer and
-        # emits the plaintext.
-        my $out_abs = File::Spec->catfile($dir, $out_rel);
-        my $parent  = dirname($out_abs);
-        make_path($parent) unless -d $parent;
-
-        # Read the stored entry bytes once.
-        open(my $fh, '<', $self->{+PATH}) or croak "open $self->{+PATH}: $!";
-        binmode $fh;
-        seek($fh, $entry->{offset}, SEEK_SET) or croak "seek data: $!";
-        my $stored;
-        read($fh, $stored, $entry->{size}) == $entry->{size}
-            or croak "short data read for '$rel'";
-        close $fh;
-
-        my $inner = $entry->{inner} // 'zstd';
-
-        my $payload;
-        if ($compressed) {
-            # Caller wants the verbatim-suffixed bytes. inner='zstd'
-            # and inner='none' both mean stored is already zstd-shaped.
-            # inner='plain' (compress=0 archive) means stored is
-            # plaintext; compress on the way out so the extracted
-            # *.zst file holds zstd bytes as expected.
-            $payload = $inner eq 'plain' ? $self->zstd_compress($stored) : $stored;
-        }
-        else {
-            $payload = ($inner eq 'none' || $inner eq 'plain')
-                ? $stored
-                : $self->zstd_decompress($stored);
-
-            # When the original source was already .zst (inner=='none')
-            # and the caller asked for plaintext, the file extension
-            # in the archive carries '.zst'. Decompress the payload
-            # and strip the suffix from the output rel-path so the
-            # extracted form is a real plaintext file. The source may
-            # be multi-frame (jsonl.zst is one frame per record), so
-            # walk all frames concatenating decoded payloads.
-            if ($inner eq 'none' && $rel =~ /\.zst\z/) {
-                $payload = _decompress_multi_frame($payload);
-                (my $stripped = $rel) =~ s/\.zst\z//;
-                $out_abs = File::Spec->catfile($dir, $stripped);
-                $parent  = dirname($out_abs);
-                make_path($parent) unless -d $parent;
-            }
-        }
-
-        open(my $out, '>', $out_abs) or croak "open $out_abs: $!";
-        binmode $out;
-        print $out $payload;
-        close $out or croak "close $out_abs: $!";
+        $self->_extract_one_entry($dir, $rel, $entry, $compressed);
     }
 
     return App::Yath2::Log::Directory->new(path => $dir, live => 0);
+}
+
+# Build the include-this-rel-path predicate honoring runs /
+# exclude_runs filters. Returns a coderef that takes a relative path
+# and returns true when the path should be extracted.
+sub _make_run_filter {
+    my ($self, $runs, $exclude_runs) = @_;
+    return sub {
+        my ($rel) = @_;
+        return 1 unless $rel =~ m{^runs/([^/]+)(?:/|\z)};
+        my $rid = $1;
+        if (defined $runs) {
+            return scalar grep { $_ eq $rid } @$runs;
+        }
+        if (defined $exclude_runs) {
+            return scalar(grep { $_ eq $rid } @$exclude_runs) ? 0 : 1;
+        }
+        return 1;
+    };
+}
+
+# Extract one file entry from the archive into the destination
+# directory, honoring the caller's compressed/uncompressed preference.
+sub _extract_one_entry {
+    my ($self, $dir, $rel, $entry, $compressed) = @_;
+
+    # `compressed=>1` keeps the original suffix shape: files that
+    # were already .zst keep the suffix; plaintext sources gain
+    # one (since they are stored zstd-wrapped). `compressed=>0`
+    # always drops to plaintext and strips the .zst suffix.
+    my $out_rel;
+    if ($compressed) {
+        $out_rel = $rel =~ /\.zst\z/ ? $rel : "$rel.zst";
+    }
+    else {
+        $out_rel = $rel;
+    }
+    # `compressed=>1` keeps the original bytes (including the
+    # outer zstd wrap); `compressed=>0` strips one layer and
+    # emits the plaintext.
+    my $out_abs = File::Spec->catfile($dir, $out_rel);
+    my $parent  = dirname($out_abs);
+    make_path($parent) unless -d $parent;
+
+    my $stored = $self->_read_entry_bytes($rel, $entry);
+    my $inner  = $entry->{inner} // 'zstd';
+
+    my $payload;
+    if ($compressed) {
+        # Caller wants the verbatim-suffixed bytes. inner='zstd'
+        # and inner='none' both mean stored is already zstd-shaped.
+        # inner='plain' (compress=0 archive) means stored is
+        # plaintext; compress on the way out so the extracted
+        # *.zst file holds zstd bytes as expected.
+        $payload = $inner eq 'plain' ? $self->zstd_compress($stored) : $stored;
+    }
+    else {
+        $payload = ($inner eq 'none' || $inner eq 'plain')
+            ? $stored
+            : $self->zstd_decompress($stored);
+
+        # When the original source was already .zst (inner=='none')
+        # and the caller asked for plaintext, the file extension
+        # in the archive carries '.zst'. Decompress the payload
+        # and strip the suffix from the output rel-path so the
+        # extracted form is a real plaintext file. The source may
+        # be multi-frame (jsonl.zst is one frame per record), so
+        # walk all frames concatenating decoded payloads.
+        if ($inner eq 'none' && $rel =~ /\.zst\z/) {
+            $payload = _decompress_multi_frame($payload);
+            (my $stripped = $rel) =~ s/\.zst\z//;
+            $out_abs = File::Spec->catfile($dir, $stripped);
+            $parent  = dirname($out_abs);
+            make_path($parent) unless -d $parent;
+        }
+    }
+
+    open(my $out, '>', $out_abs) or croak "open $out_abs: $!";
+    binmode $out;
+    print $out $payload;
+    close $out or croak "close $out_abs: $!";
+}
+
+# Read the stored bytes for a single index entry from the underlying
+# tar.zidx file. Returns the raw stored bytes (zstd-wrapped or
+# plaintext depending on inner).
+sub _read_entry_bytes {
+    my ($self, $rel, $entry) = @_;
+
+    open(my $fh, '<', $self->{+PATH}) or croak "open $self->{+PATH}: $!";
+    binmode $fh;
+    seek($fh, $entry->{offset}, SEEK_SET) or croak "seek data: $!";
+    my $stored;
+    read($fh, $stored, $entry->{size}) == $entry->{size}
+        or croak "short data read for '$rel'";
+    close $fh;
+    return $stored;
 }
 
 # archive($out, %opts).
@@ -1169,7 +1192,55 @@ sub _write_from_directory {
     # any source .zst on the way out so the archive carries plaintext.
     my $compress = exists $opts{compress} ? ($opts{compress} ? 1 : 0) : 1;
 
-    my $include_run = sub {
+    my $include_run = $self->_make_archive_run_filter($runs, $exclude_runs);
+
+    open(my $fh, '>', $tmp) or croak "open $tmp: $!";
+    binmode $fh;
+
+    my ($file_entries, $dir_entries) = $self->_scan_source_tree($abs_src, $include_run);
+
+    my $inline_entries = $self->_collect_inline_entries($opts{extra_files});
+
+    my %index;
+
+    $self->_write_dir_entries($fh, $dir_entries, \%index);
+
+    my @all_files = $self->_combine_file_entries($file_entries, $inline_entries);
+
+    for my $entry (sort { $a->[0] cmp $b->[0] } @all_files) {
+        $self->_write_file_entry($fh, $entry, $compress, \%index);
+    }
+
+    my ($idx_offset, $idx_len) = $self->_write_index_entry($fh, \%index);
+
+    print $fh ("\0" x (BLOCK_SIZE * 2));
+
+    # Capture the offset of the 32-byte zidx footer before writing
+    # it; the YATHFOOT trailer's format_ptr points here.
+    my $zidx_footer_offset = tell $fh;
+    print $fh $self->pack_footer($idx_offset, $idx_len);
+    my $body_size = tell $fh;
+
+    $self->_write_meta_trailer($fh, $opts{meta_json_bytes}, $body_size, $zidx_footer_offset);
+
+    close $fh or croak "close $tmp: $!";
+
+    rename($tmp, $out) or croak "rename $tmp -> $out: $!";
+
+    # Force re-read of the index next time list_files / has_file
+    # / read_file is called.
+    delete $self->{+_INDEX};
+    delete $self->{_layout_cache};
+
+    return $out;
+}
+
+# Build the include-this-rel-path predicate for archive writes. Like
+# _make_run_filter but also skips the LIVE sentinel and only matches
+# numeric run ids.
+sub _make_archive_run_filter {
+    my ($self, $runs, $exclude_runs) = @_;
+    return sub {
         my ($rel) = @_;
         # The LIVE sentinel never goes into archives.
         return 0 if $rel eq 'LIVE';
@@ -1183,9 +1254,13 @@ sub _write_from_directory {
         }
         return 1;
     };
+}
 
-    open(my $fh, '>', $tmp) or croak "open $tmp: $!";
-    binmode $fh;
+# Walk the source tree and collect file / dir entries, honoring the
+# include_run filter. Returns (\@file_entries, \@dir_entries) where
+# each file entry is [rel, abs_path] and each dir entry is a rel path.
+sub _scan_source_tree {
+    my ($self, $abs_src, $include_run) = @_;
 
     my @file_entries;
     my @dir_entries;
@@ -1208,12 +1283,18 @@ sub _write_from_directory {
         $abs_src,
     );
 
-    # Inline content entries (not from disk) injected by the caller.
-    # Used to drop a meta.json into the archive root at seal time
-    # without first writing it back into the source dir. Each entry
-    # is [rel, raw_bytes].
+    return (\@file_entries, \@dir_entries);
+}
+
+# Inline content entries (not from disk) injected by the caller.
+# Used to drop a meta.json into the archive root at seal time
+# without first writing it back into the source dir. Each entry
+# is [rel, raw_bytes]. Returns an arrayref.
+sub _collect_inline_entries {
+    my ($self, $extras) = @_;
+
     my @inline_entries;
-    if (my $extras = $opts{extra_files}) {
+    if ($extras) {
         for my $name (sort keys %$extras) {
             # Filter out anything explicitly named LIVE for safety,
             # though the caller should never ask.
@@ -1221,12 +1302,15 @@ sub _write_from_directory {
             push @inline_entries => [$name, $extras->{$name}];
         }
     }
+    return \@inline_entries;
+}
 
-    my %index;
-
-    # Directory entries land first so the on-disk tar walks
-    # parent-before-children. Empty payloads, typeflag '5'.
-    for my $rel (sort @dir_entries) {
+# Write the directory entries first so the on-disk tar walks
+# parent-before-children. Empty payloads, typeflag '5'. Updates
+# the %index hashref in place.
+sub _write_dir_entries {
+    my ($self, $fh, $dir_entries, $index) = @_;
+    for my $rel (sort @$dir_entries) {
         my $stored = "$rel/";
         my $hdr    = $self->pack_ustar_header(
             $stored, 0,
@@ -1235,7 +1319,7 @@ sub _write_from_directory {
         );
         print $fh $hdr;
         my $data_offset = tell $fh;
-        $index{$rel} = {
+        $index->{$rel} = {
             stored => $stored,
             offset => $data_offset,
             size   => 0,
@@ -1243,89 +1327,111 @@ sub _write_from_directory {
             kind   => 'dir',
         };
     }
+}
 
-    # Combine on-disk file entries with caller-supplied inline ones,
-    # sorted by rel path so the archive's tar order is stable. Inline
-    # entries take precedence: drop any disk entry whose rel matches
-    # an inline name (or its .zst counterpart) so we never write two
-    # entries for the same logical file.
+# Combine on-disk file entries with caller-supplied inline ones.
+# Inline entries take precedence: drop any disk entry whose rel
+# matches an inline name (or its .zst counterpart) so we never write
+# two entries for the same logical file. Returns a list of
+# [rel, kind, src] tuples.
+sub _combine_file_entries {
+    my ($self, $file_entries, $inline_entries) = @_;
+
     my %inline_names;
-    for my $e (@inline_entries) {
+    for my $e (@$inline_entries) {
         $inline_names{$e->[0]} = 1;
         (my $alt = $e->[0]) =~ s/\.zst\z//;
         $inline_names{$alt} = 1;
         $inline_names{"$alt.zst"} = 1;
     }
-    my @disk_kept = grep { !$inline_names{$_->[0]} } @file_entries;
+    my @disk_kept = grep { !$inline_names{$_->[0]} } @$file_entries;
 
-    my @all_files = (
+    return (
         (map { [$_->[0], 'disk',   $_->[1]] } @disk_kept),
-        (map { [$_->[0], 'inline', $_->[1]] } @inline_entries),
+        (map { [$_->[0], 'inline', $_->[1]] } @$inline_entries),
     );
+}
 
-    for my $entry (sort { $a->[0] cmp $b->[0] } @all_files) {
-        my ($rel, $kind, $src) = @$entry;
+# Write a single file entry (either disk or inline) to the tar at
+# $fh, updating the %$index in place.
+sub _write_file_entry {
+    my ($self, $fh, $entry, $compress, $index) = @_;
+    my ($rel, $kind, $src) = @$entry;
 
-        my $raw;
-        if ($kind eq 'disk') {
-            open(my $rfh, '<', $src) or croak "open $src: $!";
-            binmode $rfh;
-            local $/;
-            $raw = <$rfh>;
-            close $rfh;
-        }
-        else {
-            $raw = $src;    # inline bytes, already in-memory
-        }
+    my $raw = $self->_read_entry_source_bytes($kind, $src);
 
-        # Default (compress=1): already-zstd-compressed source files
-        # (the loggers' .json.zst / .jsonl.zst) are stored verbatim
-        # with inner=>'none'; everything else is wrapped in an inner
-        # zstd frame and recorded as inner=>'zstd'.
-        # compress=0: store every body plaintext, decompressing source
-        # .zst inputs first; rel/stored never carry the .zst suffix.
-        my $is_zst = ($rel =~ /\.zst\z/);
-        my ($payload, $stored, $inner);
-        if (!$compress) {
-            $payload = $is_zst ? $self->_decompress_jsonl_bytes($raw) : $raw;
-            ($stored = $rel) =~ s/\.zst\z//;
-            # 'plain' = stored bytes are plaintext (not zstd-wrapped).
-            # Distinct from 'none' which means "stored bytes are the
-            # source's already-zstd-compressed form, untouched".
-            $inner = 'plain';
-            # Rewrite the logical key in the index so readers ask
-            # for "events.jsonl" not "events.jsonl.zst" when looking
-            # up entries.
-            $rel = $stored;
-        }
-        elsif ($is_zst) {
-            $payload = $raw;
-            $stored  = $rel;
-            $inner   = 'none';
-        }
-        else {
-            $payload = $self->zstd_compress($raw);
-            $stored  = "$rel.zst";
-            $inner   = 'zstd';
-        }
+    my ($payload, $stored, $inner, $logical_rel)
+        = $self->_payload_for_entry($rel, $raw, $compress);
 
-        my $hdr = $self->pack_ustar_header($stored, length($payload));
-        print $fh $hdr;
-        my $data_offset = tell $fh;
-        print $fh $payload;
-        my $pad = $self->pad_to_block(length $payload);
-        print $fh ("\0" x $pad) if $pad;
+    my $hdr = $self->pack_ustar_header($stored, length($payload));
+    print $fh $hdr;
+    my $data_offset = tell $fh;
+    print $fh $payload;
+    my $pad = $self->pad_to_block(length $payload);
+    print $fh ("\0" x $pad) if $pad;
 
-        $index{$rel} = {
-            stored => $stored,
-            offset => $data_offset,
-            size   => length $payload,
-            inner  => $inner,
-            kind   => 'file',
-        };
+    $index->{$logical_rel} = {
+        stored => $stored,
+        offset => $data_offset,
+        size   => length $payload,
+        inner  => $inner,
+        kind   => 'file',
+    };
+}
+
+# Slurp the raw bytes for a single entry source. Disk entries are
+# read from $src as a file path; inline entries return $src as-is.
+sub _read_entry_source_bytes {
+    my ($self, $kind, $src) = @_;
+    if ($kind eq 'disk') {
+        open(my $rfh, '<', $src) or croak "open $src: $!";
+        binmode $rfh;
+        local $/;
+        my $raw = <$rfh>;
+        close $rfh;
+        return $raw;
     }
+    return $src;    # inline bytes, already in-memory
+}
 
-    my $idx_json       = encode_json(\%index);
+# Decide the stored payload, stored name, inner kind, and the
+# logical (index-key) rel for a single entry given the compress
+# mode. Returns ($payload, $stored, $inner, $logical_rel).
+sub _payload_for_entry {
+    my ($self, $rel, $raw, $compress) = @_;
+
+    # Default (compress=1): already-zstd-compressed source files
+    # (the loggers' .json.zst / .jsonl.zst) are stored verbatim
+    # with inner=>'none'; everything else is wrapped in an inner
+    # zstd frame and recorded as inner=>'zstd'.
+    # compress=0: store every body plaintext, decompressing source
+    # .zst inputs first; rel/stored never carry the .zst suffix.
+    my $is_zst = ($rel =~ /\.zst\z/);
+    if (!$compress) {
+        my $payload = $is_zst ? $self->_decompress_jsonl_bytes($raw) : $raw;
+        (my $stored = $rel) =~ s/\.zst\z//;
+        # 'plain' = stored bytes are plaintext (not zstd-wrapped).
+        # Distinct from 'none' which means "stored bytes are the
+        # source's already-zstd-compressed form, untouched".
+        # Rewrite the logical key in the index so readers ask
+        # for "events.jsonl" not "events.jsonl.zst" when looking
+        # up entries.
+        return ($payload, $stored, 'plain', $stored);
+    }
+    if ($is_zst) {
+        return ($raw, $rel, 'none', $rel);
+    }
+    my $payload = $self->zstd_compress($raw);
+    return ($payload, "$rel.zst", 'zstd', $rel);
+}
+
+# Write the special __index__.json.zst entry that carries the random-
+# access map. Returns (idx_offset, idx_compressed_length) for use by
+# the zidx footer.
+sub _write_index_entry {
+    my ($self, $fh, $index) = @_;
+
+    my $idx_json       = encode_json($index);
     my $idx_compressed = $self->zstd_compress($idx_json);
     my $idx_hdr        = $self->pack_ustar_header(INDEX_ENTRY_NAME, length($idx_compressed));
     print $fh $idx_hdr;
@@ -1333,18 +1439,16 @@ sub _write_from_directory {
     print $fh $idx_compressed;
     my $pad = $self->pad_to_block(length $idx_compressed);
     print $fh ("\0" x $pad) if $pad;
+    return ($idx_offset, length $idx_compressed);
+}
 
-    print $fh ("\0" x (BLOCK_SIZE * 2));
-
-    # Capture the offset of the 32-byte zidx footer before writing
-    # it; the YATHFOOT trailer's format_ptr points here.
-    my $zidx_footer_offset = tell $fh;
-    print $fh $self->pack_footer($idx_offset, length($idx_compressed));
-    my $body_size = tell $fh;
+# Write the zstd-compressed meta.json blob plus the 64-byte YATHFOOT
+# trailer that the unified footer parser consumes.
+sub _write_meta_trailer {
+    my ($self, $fh, $meta_bytes, $body_size, $zidx_footer_offset) = @_;
 
     require App::Yath2::Log::Footer;
 
-    my $meta_bytes = $opts{meta_json_bytes};
     croak "_write_from_directory: missing meta_json_bytes for YATHFOOT trailer"
         unless defined $meta_bytes && length $meta_bytes;
 
@@ -1365,17 +1469,6 @@ sub _write_from_directory {
         format_ptr  => $zidx_footer_offset,
     );
     print $fh $trailer;
-
-    close $fh or croak "close $tmp: $!";
-
-    rename($tmp, $out) or croak "rename $tmp -> $out: $!";
-
-    # Force re-read of the index next time list_files / has_file
-    # / read_file is called.
-    delete $self->{+_INDEX};
-    delete $self->{_layout_cache};
-
-    return $out;
 }
 
 sub _dir_non_empty {

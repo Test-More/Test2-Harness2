@@ -85,8 +85,40 @@ sub cli_help {
 
     $options //= $self->options;
 
-    my $help = "";
+    my ($help, $cmd, $no_cmd);
+    ($help, $cmd, $cmd_class, $no_cmd) = $self->_cli_help_header($cmd_class);
 
+    my @desc = map { fit_to_width(" ", $_) } split /\n\n/, $cmd_class->description;
+    $help .= join "\n\n" => @desc;
+
+    my $opts = $options->docs('cli', groups => {':{' => '}:'}, group => $params{group}, settings => $settings, color => $self->use_color);
+
+    my $usage = $self->_cli_help_usage($cmd, $cmd_class, $settings);
+
+    my $end = "";
+    if ($settings->yath->help && !$params{group}) {
+        $end = $self->_render_groups(
+            title => 'If the above help output is too much, you can limit it to specific option groups',
+            param => '--help=GROUP_NAME',
+        );
+    }
+
+    my $cmds = "";
+    if ($no_cmd) {
+        $settings->create_group('help');
+        $settings->help->create_option(verbose => 0);
+        my $it = App::Yath2::Command::help->new(settings => $settings);
+        $cmds = $it->command_table;
+    }
+
+    return "${usage}\n${help}\n${opts}\n${end}\n${cmds}";
+}
+
+sub _cli_help_header {
+    my $self = shift;
+    my ($cmd_class) = @_;
+
+    my $help = "";
     my $no_cmd = 0;
     my $cmd = "COMMAND";
     if ($cmd_class) {
@@ -110,29 +142,35 @@ sub cli_help {
         $cmd_class //= 'App::Yath2::Command::help';
     }
 
-    my @desc = map { fit_to_width(" ", $_) } split /\n\n/, $cmd_class->description;
-    $help .= join "\n\n" => @desc;
+    return ($help, $cmd, $cmd_class, $no_cmd);
+}
 
-    my $opts = $options->docs('cli', groups => {':{' => '}:'}, group => $params{group}, settings => $settings, color => $self->use_color);
+sub _cli_help_usage_colors {
+    my $self = shift;
+
+    return {reset => ''} unless $self->use_color;
+
+    return {
+        reset     => color('reset'),
+        usage     => color('bold white'),
+        script    => color('white'),
+        yath_opts => color('cyan'),
+        command   => color('bold green'),
+        cmd_opts  => color('cyan'),
+        '--a'     => color('yellow'),
+        '--b'     => color('yellow'),
+        arguments => color('white'),
+        tests     => color('green'),
+        dot_args  => color('magenta'),
+    };
+}
+
+sub _cli_help_usage {
+    my $self = shift;
+    my ($cmd, $cmd_class, $settings) = @_;
 
     my $script = yath_display_name($settings->yath->script // $0);
-
-    my $colors = {reset => ''};
-    if ($self->use_color) {
-        $colors = {
-            reset     => color('reset'),
-            usage     => color('bold white'),
-            script    => color('white'),
-            yath_opts => color('cyan'),
-            command   => color('bold green'),
-            cmd_opts  => color('cyan'),
-            '--a'     => color('yellow'),
-            '--b'     => color('yellow'),
-            arguments => color('white'),
-            tests     => color('green'),
-            dot_args  => color('magenta'),
-        };
-    }
+    my $colors = $self->_cli_help_usage_colors;
 
     my $parts = {
         usage     => "USAGE:",
@@ -150,23 +188,7 @@ sub cli_help {
     $usage .= ($colors->{'--b'} || '') . $parts->{'--b'} . $colors->{'reset'} if $parts->{'--b'};
     $usage .= " " . ($colors->{'dot_args'} || '') . $parts->{'dot_args'} . $colors->{'reset'} if $parts->{'dot_args'};
 
-    my $end = "";
-    if ($settings->yath->help && !$params{group}) {
-        $end = $self->_render_groups(
-            title => 'If the above help output is too much, you can limit it to specific option groups',
-            param => '--help=GROUP_NAME',
-        );
-    }
-
-    my $cmds = "";
-    if ($no_cmd) {
-        $settings->create_group('help');
-        $settings->help->create_option(verbose => 0);
-        my $it = App::Yath2::Command::help->new(settings => $settings);
-        $cmds = $it->command_table;
-    }
-
-    return "${usage}\n${help}\n${opts}\n${end}\n${cmds}";
+    return $usage;
 }
 
 sub _strip_color {
@@ -391,6 +413,41 @@ sub process_args {
 
     my $argv = $self->argv;
 
+    my @configs = $self->_load_config_files($settings, $argv);
+
+    my $state = $self->_process_global_args($argv);
+
+    my ($cmd, $cmd_class);
+
+    my $stop = $state->{stop};
+    my $remains = $state->{remains} //= [];
+    if ($stop || !@$remains) {
+        ($cmd, $cmd_class, $state) = $self->_resolve_command($state, \@configs);
+    }
+
+    $cmd //= 'do';
+    $cmd_class //= 'App::Yath2::Command::do';
+
+    my ($new_argv, $dot_args) = $self->_split_remaining_args($state);
+    $argv = $new_argv;
+
+    if ($dot_args) {
+        die "'::' cannot be used with the '$cmd' command" unless $cmd_class->accepts_dot_args;
+        $cmd_class->set_dot_args($settings, $dot_args);
+    }
+
+    $self->{argv} = $argv;
+
+    $self->{+ENV_VARS} = $self->{+STATE_ENV};
+    $self->{+OPTION_STATE} = $state;
+
+    $self->_apply_state_modules($settings);
+}
+
+sub _load_config_files {
+    my $self = shift;
+    my ($settings, $argv) = @_;
+
     my @configs;
     for my $attr (qw/config_file user_config_file/) {
         my $file = $settings->yath->$attr or next;
@@ -400,83 +457,96 @@ sub process_args {
         unshift @$argv => $config->global;
     }
 
-    my $state = $self->_process_global_args($argv);
+    return @configs;
+}
 
-    my ($cmd, $cmd_class);
+sub _classify_stop_token {
+    my $self = shift;
+    my ($stop) = @_;
 
-    my $stop = $state->{stop};
-    my $remains = $state->{remains} //= [];
-    if ($stop || !@$remains) {
-        my @cmd_args;
+    my $is_do   = $stop       && $stop eq 'do';
+    my $is_stop = (!$is_do)   && $stop    && ($stop eq '--' || $stop eq '::');
+    my ($is_cmd, $cmd_err);
+    if (!$is_stop && $stop) {
+        ($is_cmd, $cmd_err) = $self->check_command($stop);
+    }
+    my $is_path = $stop       && -e $stop && !($is_do || $is_stop || $is_cmd);
 
-        my $is_do   = $stop       && $stop eq 'do';
-        my $is_stop = (!$is_do)   && $stop    && ($stop eq '--' || $stop eq '::');
-        my ($is_cmd, $cmd_err);
-        if (!$is_stop && $stop) {
-            ($is_cmd, $cmd_err) = $self->check_command($stop);
-        }
-        my $is_path = $stop       && -e $stop && !($is_do || $is_stop || $is_cmd);
-
-        # If $stop looks like an intended command but check_command
-        # reported a real error beyond "module not installed", surface
-        # it instead of silently falling through to the default-command
-        # path. $cmd_err is only set when check_command ran and failed,
-        # so the other "is this a command-shaped token?" flags are
-        # already implied.
-        if ($cmd_err && !$is_do && !$is_path) {
-            my $cmd_file = $stop;
-            $cmd_file =~ s{-}{/}g;
-            $cmd_file = "App/Yath2/Command/$cmd_file.pm";
-            die "Error loading command '$stop':\n$cmd_err"
-                if $cmd_err !~ /Can't locate \Q$cmd_file\E in \@INC/;
-        }
-
-        @cmd_args = @{$state->{skipped}};
-
-        if ($is_do || $is_stop || $is_path || !$is_cmd) {
-            print STDERR "\n** Note: You should use the `do`, `run` or `test` commands, relying on the default behavior when no command is specified is discouraged. **\n\n"
-                unless $is_do;
-
-            push @cmd_args => $stop if $stop && !$is_do && !$is_cmd;
-
-            require App::Yath2::Options::IPC;
-            my $ipc_state = App::Yath2::Options::IPC->options->process_args(
-                [@cmd_args],
-                $self->_groups_and_stops,
-                skip_posts    => 1,
-                skip_non_opts => 1,
-            );
-
-            #require App::Yath2::IPC;
-            #if (App::Yath2::IPC->new(settings => $ipc_state->{settings})->find()) {
-            #    print "Found a persistent runner, defaulting to the 'run' command.\n";
-            #    $cmd = 'run';
-            #}
-            #else {
-            #    print "No persistent runner, defaulting to the 'test' command.\n";
-            #    $cmd = 'test';
-            #}
-        }
-        else {
-            $cmd = $stop;
-        }
-
-        @cmd_args = (
-            (map { $_->command($cmd) } reverse @configs),
-            @cmd_args,
-            @{$state->{remains} // []},
-        );
-
-        $cmd_class = $self->load_command($cmd) if $cmd;
-
-        $state = $self->_process_command_args(\@cmd_args, cmd => $cmd);
+    # If $stop looks like an intended command but check_command
+    # reported a real error beyond "module not installed", surface
+    # it instead of silently falling through to the default-command
+    # path. $cmd_err is only set when check_command ran and failed,
+    # so the other "is this a command-shaped token?" flags are
+    # already implied.
+    if ($cmd_err && !$is_do && !$is_path) {
+        my $cmd_file = $stop;
+        $cmd_file =~ s{-}{/}g;
+        $cmd_file = "App/Yath2/Command/$cmd_file.pm";
+        die "Error loading command '$stop':\n$cmd_err"
+            if $cmd_err !~ /Can't locate \Q$cmd_file\E in \@INC/;
     }
 
-    $cmd //= 'do';
-    $cmd_class //= 'App::Yath2::Command::do';
+    return ($is_do, $is_stop, $is_cmd, $is_path);
+}
 
+sub _resolve_command {
+    my $self = shift;
+    my ($state, $configs) = @_;
+
+    my $stop = $state->{stop};
+    my ($is_do, $is_stop, $is_cmd, $is_path) = $self->_classify_stop_token($stop);
+
+    my @cmd_args = @{$state->{skipped}};
+    my $cmd;
+
+    if ($is_do || $is_stop || $is_path || !$is_cmd) {
+        print STDERR "\n** Note: You should use the `do`, `run` or `test` commands, relying on the default behavior when no command is specified is discouraged. **\n\n"
+            unless $is_do;
+
+        push @cmd_args => $stop if $stop && !$is_do && !$is_cmd;
+
+        require App::Yath2::Options::IPC;
+        my $ipc_state = App::Yath2::Options::IPC->options->process_args(
+            [@cmd_args],
+            $self->_groups_and_stops,
+            skip_posts    => 1,
+            skip_non_opts => 1,
+        );
+
+        #require App::Yath2::IPC;
+        #if (App::Yath2::IPC->new(settings => $ipc_state->{settings})->find()) {
+        #    print "Found a persistent runner, defaulting to the 'run' command.\n";
+        #    $cmd = 'run';
+        #}
+        #else {
+        #    print "No persistent runner, defaulting to the 'test' command.\n";
+        #    $cmd = 'test';
+        #}
+    }
+    else {
+        $cmd = $stop;
+    }
+
+    @cmd_args = (
+        (map { $_->command($cmd) } reverse @$configs),
+        @cmd_args,
+        @{$state->{remains} // []},
+    );
+
+    my $cmd_class = $cmd ? $self->load_command($cmd) : undef;
+
+    my $new_state = $self->_process_command_args(\@cmd_args, cmd => $cmd);
+
+    return ($cmd, $cmd_class, $new_state);
+}
+
+sub _split_remaining_args {
+    my $self = shift;
+    my ($state) = @_;
+
+    my $argv = [@{$state->{skipped}}];
     my $dot_args;
-    $argv = [@{$state->{skipped}}];
+
     if (my $stop = $state->{stop}) {
         if ($stop eq '--') {
             for my $arg (@{$state->{remains}}) {
@@ -496,15 +566,12 @@ sub process_args {
         push @$argv => @{$state->{remains}};
     }
 
-    if ($dot_args) {
-        die "'::' cannot be used with the '$cmd' command" unless $cmd_class->accepts_dot_args;
-        $cmd_class->set_dot_args($settings, $dot_args);
-    }
+    return ($argv, $dot_args);
+}
 
-    $self->{argv} = $argv;
-
-    $self->{+ENV_VARS} = $self->{+STATE_ENV};
-    $self->{+OPTION_STATE} = $state;
+sub _apply_state_modules {
+    my $self = shift;
+    my ($settings) = @_;
 
     for my $module (keys %{$self->{+STATE_MODULES}}) {
         for my $set (['yath', 'plugins', 'App::Yath2::Plugin'], ['renderer', 'classes', 'App::Yath2::Renderer'], ['resource', 'classes', 'App::Yath2::Resource']) {
@@ -786,6 +853,58 @@ App::Yath2 - FIXME
 =head1 EXPORTS
 
 =over 4
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _cli_help_header
+
+Build the C<Command selected: ...> banner used by L</cli_help>, falling
+back to loading L<App::Yath2::Command::help> when no command was given.
+Returns C<($help, $cmd, $cmd_class, $no_cmd)>.
+
+=item _cli_help_usage_colors
+
+Return the hashref of color codes used by the usage line, or a
+C<{ reset =E<gt> '' }> stub when color output is disabled.
+
+=item _cli_help_usage
+
+Assemble the colorized C<USAGE: ...> one-liner from the resolved
+command class and settings.
+
+=item _load_config_files
+
+Open every C<config_file> / C<user_config_file> referenced by the
+settings, push the corresponding L<App::Yath2::ConfigFile> objects,
+and prepend their global args to C<$argv>.
+
+=item _classify_stop_token
+
+Decide whether the parser's stop token represents the C<do> sentinel,
+a true C<-->/C<::> stop, a known command, or an on-disk path; surface
+real load errors for command-shaped tokens.
+
+=item _resolve_command
+
+Pick the command (or fall back to the default-command path), assemble
+the per-command argument list (config command args, skipped globals,
+remaining argv), load the command class, and re-parse the command-scope
+args. Returns C<($cmd, $cmd_class, $state)>.
+
+=item _split_remaining_args
+
+Partition the post-parse remainder into C<$argv> and optional
+C<$dot_args>, honoring the C<-->/C<::> stop semantics.
+
+=item _apply_state_modules
+
+For every module recorded in C<STATE_MODULES>, register it under the
+appropriate settings group (plugins / renderer / resource) and pull
+constructor args from C<args_from_settings()> when supported.
 
 =back
 

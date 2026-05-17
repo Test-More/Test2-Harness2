@@ -61,70 +61,171 @@ sub yath {
 
     my $ctx = context();
 
-    my $cmd = delete $params{cmd} // delete $params{command};
-    my $cli = delete $params{cli} // delete $params{args} // [];
-    my $pre = delete $params{pre} // delete $params{pre_command} // [];
-    my $env = delete $params{env} // {};
-    my $enc = delete $params{encoding};
-    my $prefix = delete $params{prefix};
+    my $p = _yath_extract_params(\%params);
 
-    my $timeout = delete $params{timeout};
-    my $timeout_cb = delete $params{timeout_cb};
-
-    my $subtest  = delete $params{test} // delete $params{tests} // delete $params{subtest};
-    my $exittest = delete $params{exit};
-
-    my $debug   = delete $params{debug}   // 0;
-    my $inc     = delete $params{inc}     // 1;
-    my $capture = delete $params{capture} // 1;
-    my $log     = delete $params{log}     // 0;
-
-    my $no_app_path = delete $params{no_app_path};
-    my $lib = delete $params{lib} // [];
-
-    push @$lib => map { "-I$_" } grep { $_ ne '.' } @INC;
+    push @{$p->{lib}} => map { "-I$_" } grep { $_ ne '.' } @INC;
 
     if (keys %params) {
         croak "Unexpected parameters: " . join (', ', sort keys %params);
     }
 
-    my (@inc, @dev);
-    if ($inc) {
-        my ($pkg, $file) = caller();
-        my $dir = $file;
-        $dir =~ s/\.t2?$//g;
+    my ($wh, $cfile) = _yath_setup_capture($p->{capture});
+    my ($logfile, @log) = _yath_setup_logfile($p->{log}, $p->{debug});
 
-        my $inc = File::Spec->catdir($dir, 'lib');
-        push @dev => "-D$inc" if -d $inc;
+    my @cmd = _yath_build_command($p, \@log);
+
+    print "DEBUG: Command = " . join(" \n" => @cmd) . "\n" if $p->{debug};
+
+    local %ENV = %ENV;
+    _yath_setup_env($p->{cmd}, $p->{env});
+
+    my $pid = _yath_spawn(\@cmd, $p->{capture}, $wh);
+
+    local $SIG{ALRM};
+    _yath_arm_timeout($p, $pid) if $p->{timeout};
+
+    my $our_pid = $$;
+    eval "END{ kill('TERM', \$pid) if \$pid && \$\$ == $our_pid }; 1" or die $@;
+
+    close($wh);
+
+    print "DEBUG: Waiting for $pid\n" if $p->{debug};
+    waitpid($pid, 0);
+    my $raw_status = $?;
+    my $exit = ($raw_status >> 8) & 0xFF;
+
+    my @lines = _yath_read_capture($p->{capture}, $cfile, $p->{encoding}, $p->{debug});
+
+    alarm(0) if $p->{timeout};
+
+    $pid = undef;
+
+    print "DEBUG: Exit: $exit\n" if $p->{debug};
+
+    my $out = {
+        exit => $exit,
+        $p->{capture} ? (output => join('', @lines))                                          : (),
+        $p->{log}     ? (log    => Test2::Harness2::Util::File::JSONL->new(name => $logfile)) : (),
+    };
+
+    _yath_run_subtest($p, $out, \@cmd, $exit) if $p->{subtest} || defined $p->{exittest};
+
+    $ctx->release;
+
+    return $out;
+}
+
+sub _yath_caller_dev_inc {
+    my ($file) = @_;
+    my $dir = $file;
+    $dir =~ s/\.t2?$//g;
+    my $inc = File::Spec->catdir($dir, 'lib');
+    return -d $inc ? ("-D$inc") : ();
+}
+
+sub _yath_build_command {
+    my ($p, $log) = @_;
+
+    my @dev;
+    if ($p->{inc}) {
+        my (undef, $file) = caller(1);
+        push @dev => _yath_caller_dev_inc($file);
     }
 
-    my ($wh, $cfile);
-    if ($capture) {
-        ($wh, $cfile) = tempfile("yath-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.out');
-        $wh->autoflush(1);
-    }
-
-    my (@log, $logfile);
-    if ($log) {
-        my $logdir = tempdir("yathlogs-$$-XXXXXXXX", TMPDIR => 1, CLEANUP => 1);
-        $logfile = File::Spec->catfile($logdir, "run.yath");
-        @log = ('--log-file' => $logfile);
-        print "DEBUG: log file = '$logfile'\n" if $debug;
-    }
-
-    unless ($no_app_path) {
-        push @inc => "-I$apppath" if $cmd =~ m/^(test|start|projects)$/;
+    my @inc;
+    unless ($p->{no_app_path}) {
+        push @inc => "-I$apppath" if $p->{cmd} =~ m/^(test|start|projects)$/;
         push @dev => "-D$apppath";
     }
 
     my @cover = cover();
+    my $yath  = find_yath;
 
-    my $yath = find_yath;
-    my @cmd = ($^X, @$lib, @cover, $yath, @$pre, @dev, $cmd ? ($cmd) : (), @inc, @log, @$cli);
+    return ($^X, @{$p->{lib}}, @cover, $yath, @{$p->{pre}}, @dev, $p->{cmd} ? ($p->{cmd}) : (), @inc, @$log, @{$p->{cli}});
+}
 
-    print "DEBUG: Command = " . join(" \n" => @cmd) . "\n" if $debug;
+sub _yath_spawn {
+    my ($cmd, $capture, $wh) = @_;
 
-    local %ENV = %ENV;
+    return start_process $cmd => sub {
+        # When this test is itself running under an outer yath, that
+        # outer worker sets TMPDIR to a per-worker subdirectory like
+        # /tmp/yath-XXXXXXXX/tmp. The spawned inner yath places its
+        # IPC::Manager unix-socket route under TMPDIR. The sun_path
+        # budget on Linux is only 104 bytes, leaving no room for the
+        # 42-byte hashed peer-id under such a deep route, which makes
+        # the inner harness fail with "Cannot map peer id ... exceeds
+        # available budget". Reset TMPDIR to /tmp here in the spawned
+        # child so the inner yath gets a short route. See
+        # IPC::Manager::Client::ConnectionUnix::max_on_disk_name_length.
+        $ENV{TMPDIR} = '/tmp';
+        return unless $capture;
+        swap_io(\*STDOUT, $wh);
+        swap_io(\*STDERR, $wh);
+    };
+}
+
+sub _yath_arm_timeout {
+    my ($p, $pid) = @_;
+
+    my $timeout_cb = $p->{timeout_cb};
+    $SIG{ALRM} = sub {
+        $timeout_cb->($pid) if $timeout_cb;
+        kill('TERM', $pid);
+    };
+
+    alarm($p->{timeout});
+}
+
+sub _yath_extract_params {
+    my ($params) = @_;
+
+    my %p;
+    $p{cmd}         = delete $params->{cmd} // delete $params->{command};
+    $p{cli}         = delete $params->{cli} // delete $params->{args} // [];
+    $p{pre}         = delete $params->{pre} // delete $params->{pre_command} // [];
+    $p{env}         = delete $params->{env} // {};
+    $p{encoding}    = delete $params->{encoding};
+    $p{prefix}      = delete $params->{prefix};
+    $p{timeout}     = delete $params->{timeout};
+    $p{timeout_cb}  = delete $params->{timeout_cb};
+    $p{subtest}     = delete $params->{test} // delete $params->{tests} // delete $params->{subtest};
+    $p{exittest}    = delete $params->{exit};
+    $p{debug}       = delete $params->{debug}   // 0;
+    $p{inc}         = delete $params->{inc}     // 1;
+    $p{capture}     = delete $params->{capture} // 1;
+    $p{log}         = delete $params->{log}     // 0;
+    $p{no_app_path} = delete $params->{no_app_path};
+    $p{lib}         = delete $params->{lib} // [];
+
+    return \%p;
+}
+
+sub _yath_setup_capture {
+    my ($capture) = @_;
+    return (undef, undef) unless $capture;
+
+    my ($wh, $cfile) = tempfile("yath-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.out');
+    $wh->autoflush(1);
+
+    return ($wh, $cfile);
+}
+
+sub _yath_setup_logfile {
+    my ($log, $debug) = @_;
+    return (undef) unless $log;
+
+    my $logdir = tempdir("yathlogs-$$-XXXXXXXX", TMPDIR => 1, CLEANUP => 1);
+    my $logfile = File::Spec->catfile($logdir, "run.yath");
+    my @log = ('--log-file' => $logfile);
+    print "DEBUG: log file = '$logfile'\n" if $debug;
+
+    return ($logfile, @log);
+}
+
+sub _yath_setup_env {
+    my ($cmd, $env) = @_;
+
     $ENV{YATH_IPC_DIR} = $pdir;
     $ENV{YATH_CMD} = $cmd;
     $ENV{NESTED_YATH} = 1;
@@ -146,64 +247,30 @@ sub yath {
     }
     $ENV{$_} = $env->{$_} for keys %$env;
     $ENV{YATH_COLOR} = 0;
-    my $pid = start_process \@cmd => sub {
-        # When this test is itself running under an outer yath, that
-        # outer worker sets TMPDIR to a per-worker subdirectory like
-        # /tmp/yath-XXXXXXXX/tmp. The spawned inner yath places its
-        # IPC::Manager unix-socket route under TMPDIR. The sun_path
-        # budget on Linux is only 104 bytes, leaving no room for the
-        # 42-byte hashed peer-id under such a deep route, which makes
-        # the inner harness fail with "Cannot map peer id ... exceeds
-        # available budget". Reset TMPDIR to /tmp here in the spawned
-        # child so the inner yath gets a short route. See
-        # IPC::Manager::Client::ConnectionUnix::max_on_disk_name_length.
-        $ENV{TMPDIR} = '/tmp';
-        return unless $capture;
-        swap_io(\*STDOUT, $wh);
-        swap_io(\*STDERR, $wh);
-    };
+}
 
-    local $SIG{ALRM};
-    if ($timeout) {
-        $SIG{ALRM} = sub {
-            $timeout_cb->($pid) if $timeout_cb;
-            kill('TERM', $pid);
-        };
+sub _yath_read_capture {
+    my ($capture, $cfile, $enc, $debug) = @_;
+    return () unless $capture;
 
-        alarm($timeout);
-    }
+    open(my $rh, '<', $cfile) or die "Could not open output file: $!";
+    apply_encoding($rh, $enc) if $enc;
+    my @lines = <$rh>;
+    print map { chomp($_); "DEBUG: > $_\n" } @lines if $debug > 1; ## no critic
 
-    my $our_pid = $$;
-    eval "END{ kill('TERM', \$pid) if \$pid && \$\$ == $our_pid }; 1" or die $@;
+    return @lines;
+}
 
-    close($wh);
+sub _yath_run_subtest {
+    my ($p, $out, $cmd, $exit) = @_;
 
-    print "DEBUG: Waiting for $pid\n" if $debug;
-    waitpid($pid, 0);
-    my $raw_status = $?;
-    my $exit = ($raw_status >> 8) & 0xFF;
+    my $prefix   = $p->{prefix};
+    my $pre      = $p->{pre};
+    my $cli      = $p->{cli};
+    my $subtest  = $p->{subtest};
+    my $exittest = $p->{exittest};
 
-    my (@lines);
-    if ($capture) {
-        open(my $rh, '<', $cfile) or die "Could not open output file: $!";
-        apply_encoding($rh, $enc) if $enc;
-        @lines = <$rh>;
-        print map { chomp($_); "DEBUG: > $_\n" } @lines if $debug > 1; ## no critic
-    }
-
-    alarm(0) if $timeout;
-
-    $pid = undef;
-
-    print "DEBUG: Exit: $exit\n" if $debug;
-
-    my $out = {
-        exit => $exit,
-        $capture ? (output => join('', @lines)) : (),
-        $log ? (log => Test2::Harness2::Util::File::JSONL->new(name => $logfile)) : (),
-    };
-
-    my $name = join(' ', map { length($_) < 30 ? $_ : substr($_, 0, 10) . "[...]" . substr($_, -10) } grep { defined($_) } $prefix, 'yath', @$pre, $cmd ? ($cmd) : (), @$cli);
+    my $name = join(' ', map { length($_) < 30 ? $_ : substr($_, 0, 10) . "[...]" . substr($_, -10) } grep { defined($_) } $prefix, 'yath', @$pre, $p->{cmd} ? ($p->{cmd}) : (), @$cli);
     run_subtest(
         $name,
         sub {
@@ -226,18 +293,14 @@ sub yath {
 
             my $ictx = context(level => 3);
 
-            $ictx->diag("Command = " . join(' ' => grep { defined $_ } @cmd) . "\nExit = $exit\n==== Output ====\n$out->{output}\n========")
+            $ictx->diag("Command = " . join(' ' => grep { defined $_ } @$cmd) . "\nExit = $exit\n==== Output ====\n$out->{output}\n========")
                 unless $ictx->hub->is_passing;
 
             $ictx->release;
         },
         {buffered => 1},
         $out,
-    ) if $subtest || defined $exittest;
-
-    $ctx->release;
-
-    return $out;
+    );
 }
 
 sub _gen_passing_test {
@@ -496,6 +559,65 @@ C<yath run>) call this to pin C<YATH_IPC_DIR> in the spawned child,
 so a C<yath start> launched via L</yath> and a sibling C<yath run>
 launched by exec agree on where to publish and discover the IPC
 info file.
+
+=head2 Private helpers
+
+=over 4
+
+=item _yath_extract_params
+
+Pull the recognized named arguments out of the C<yath()> C<%params>
+hash into a flat C<\%p> structure, applying the same defaults and
+aliases (C<cmd>/C<command>, C<cli>/C<args>, ...) as before.
+
+=item _yath_setup_capture
+
+Allocate the temp output file used to capture child STDOUT/STDERR when
+C<capture> is enabled; returns C<($wh, $cfile)> or C<(undef, undef)>.
+
+=item _yath_setup_logfile
+
+Allocate the temp C<--log-file> path when C<log> is enabled; returns
+C<($logfile, @log_args)> or C<(undef)>.
+
+=item _yath_caller_dev_inc
+
+Derive the per-test C<-D=/path/to/lib> arg from a caller's filename
+(strip C<.t>/C<.t2>, look for a sibling C<lib/> directory).
+
+=item _yath_build_command
+
+Assemble the full child command line (perl, lib args, yath, pre-args,
+dev libs, command, includes, log args, cli args).
+
+=item _yath_setup_env
+
+Mutate C<%ENV> in place to set the C<YATH_*>/C<NESTED_YATH>/
+C<T2_HARNESS_INCLUDES> variables the spawned yath expects. Caller is
+responsible for the C<local %ENV>.
+
+=item _yath_spawn
+
+C<start_process> the child with a post-fork callback that pins
+C<TMPDIR> to C</tmp> and swaps STDOUT/STDERR to the capture handle.
+
+=item _yath_arm_timeout
+
+Install the C<$SIG{ALRM}> handler and C<alarm()> for the configured
+C<timeout>, optionally invoking the user-supplied C<timeout_cb> before
+TERMing the child.
+
+=item _yath_read_capture
+
+Read the captured output file back, applying the requested encoding and
+echoing each line under C<< debug > 1 >>; returns the list of lines.
+
+=item _yath_run_subtest
+
+Emit the C<run_subtest> wrapper around C<exit>/C<test> checks and the
+fail-only command/output diagnostic.
+
+=back
 
 =head1 SOURCE
 

@@ -42,100 +42,124 @@ use Test2::Harness2::Util::JSON qw/encode_json/;
 sub new {
     my ($class, %args) = @_;
 
-    # Auto-detect backend from a single filesystem path: directory
-    # routes to Directory backend; regular file gets type detection
-    # by magic bytes (tar.zidx vs sqlite). Provided so callers that
-    # accept "an arbitrary log path" don't have to dispatch on
-    # -d/-f themselves.
-    if (defined $args{auto}) {
-        croak "auto + live / dir / file / dbh / dsn are mutually exclusive"
-            if defined $args{live} || defined $args{dir} || defined $args{file}
-            || defined $args{dbh}  || defined $args{dsn};
-
-        my $path = delete $args{auto};
-        croak "auto path must be non-empty" unless length $path;
-        croak "auto path '$path' does not exist" unless -e $path;
-        if (-d $path) {
-            return $class->new(dir => $path, %args);
-        }
-        if (-f $path) {
-            return $class->new(file => $path, %args);
-        }
-        croak "auto path '$path' is not a regular file or directory";
-    }
-
-    # Live directory backend.
-    if (defined $args{live}) {
-        croak "live + dir / file / dbh / dsn are mutually exclusive"
-            if defined $args{dir} || defined $args{file} || defined $args{dbh} || defined $args{dsn};
-
-        require App::Yath2::Log::Live;
-        return App::Yath2::Log::Live->new(path => delete $args{live}, %args);
-    }
-
-    # Sealed directory backend.
-    if (defined $args{dir}) {
-        croak "dir + file / dbh / dsn are mutually exclusive"
-            if defined $args{file} || defined $args{dbh} || defined $args{dsn};
-
-        require App::Yath2::Log::Directory;
-        return App::Yath2::Log::Directory->new(path => delete $args{dir}, live => 0, %args);
-    }
-
-    # Single file backend; auto-detect tar.zidx vs sqlite via magic.
-    if (defined $args{file}) {
-        croak "file + dbh / dsn are mutually exclusive"
-            if defined $args{dbh} || defined $args{dsn};
-
-        my $path = delete $args{file};
-        croak "file '$path' does not exist" unless -e $path;
-        croak "file '$path' is a directory; use dir => or live => instead"
-            if -d $path;
-
-        my $kind = $class->detect_file_kind($path);
-        if ($kind eq 'sqlite') {
-            require App::Yath2::DB;
-            require App::Yath2::Log::DB;
-            my $backend = delete $args{backend} // 'sql';
-            my $db = App::Yath2::DB->new(file => $path, backend => $backend);
-
-            # Single-archive sqlite shorthand: pick the singleton archive
-            # when uuid not given; throw on multi-archive ambiguity.
-            my $uuid = delete $args{uuid};
-            unless (defined $uuid) {
-                my @uuids = $db->archives;
-                croak "no archives in this sqlite log" if @uuids == 0;
-                croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
-                    if @uuids > 1;
-                $uuid = $uuids[0];
-            }
-            return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
-        }
-        if ($kind eq 'tar.zidx') {
-            require App::Yath2::Log::TarZIdx;
-            return App::Yath2::Log::TarZIdx->new(path => $path, %args);
-        }
-
-        croak "Unable to identify '$path' as a yath log archive (not sqlite or tar.zidx)";
-    }
-
-    # Database connection forms.
-    if (defined $args{dbh} || defined $args{dsn}) {
-        require App::Yath2::DB;
-        require App::Yath2::Log::DB;
-        my $uuid = delete $args{uuid};
-        my $db = App::Yath2::DB->new(%args);
-        unless (defined $uuid) {
-            my @uuids = $db->archives;
-            croak "no archives in this DB" if @uuids == 0;
-            croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
-                if @uuids > 1;
-            $uuid = $uuids[0];
-        }
-        return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
-    }
+    return $class->_new_auto(\%args) if defined $args{auto};
+    return $class->_new_live(\%args) if defined $args{live};
+    return $class->_new_dir(\%args)  if defined $args{dir};
+    return $class->_new_file(\%args) if defined $args{file};
+    return $class->_new_db(\%args)   if defined $args{dbh} || defined $args{dsn};
 
     croak "App::Yath2::Log->new requires one of: live, dir, file, dbh, dsn";
+}
+
+# Auto-detect backend from a single filesystem path: directory routes
+# to Directory backend; regular file gets type detection by magic
+# bytes (tar.zidx vs sqlite). Provided so callers that accept "an
+# arbitrary log path" don't have to dispatch on -d/-f themselves.
+sub _new_auto {
+    my ($class, $args) = @_;
+
+    croak "auto + live / dir / file / dbh / dsn are mutually exclusive"
+        if defined $args->{live} || defined $args->{dir} || defined $args->{file}
+        || defined $args->{dbh}  || defined $args->{dsn};
+
+    my $path = delete $args->{auto};
+    croak "auto path must be non-empty" unless length $path;
+    croak "auto path '$path' does not exist" unless -e $path;
+    if (-d $path) {
+        return $class->new(dir => $path, %$args);
+    }
+    if (-f $path) {
+        return $class->new(file => $path, %$args);
+    }
+    croak "auto path '$path' is not a regular file or directory";
+}
+
+# Live directory backend dispatch.
+sub _new_live {
+    my ($class, $args) = @_;
+
+    croak "live + dir / file / dbh / dsn are mutually exclusive"
+        if defined $args->{dir} || defined $args->{file} || defined $args->{dbh} || defined $args->{dsn};
+
+    require App::Yath2::Log::Live;
+    return App::Yath2::Log::Live->new(path => delete $args->{live}, %$args);
+}
+
+# Sealed directory backend dispatch.
+sub _new_dir {
+    my ($class, $args) = @_;
+
+    croak "dir + file / dbh / dsn are mutually exclusive"
+        if defined $args->{file} || defined $args->{dbh} || defined $args->{dsn};
+
+    require App::Yath2::Log::Directory;
+    return App::Yath2::Log::Directory->new(path => delete $args->{dir}, live => 0, %$args);
+}
+
+# Single file backend dispatch; auto-detect tar.zidx vs sqlite via
+# magic bytes and delegate to the matching backend.
+sub _new_file {
+    my ($class, $args) = @_;
+
+    croak "file + dbh / dsn are mutually exclusive"
+        if defined $args->{dbh} || defined $args->{dsn};
+
+    my $path = delete $args->{file};
+    croak "file '$path' does not exist" unless -e $path;
+    croak "file '$path' is a directory; use dir => or live => instead"
+        if -d $path;
+
+    my $kind = $class->detect_file_kind($path);
+    return $class->_new_file_sqlite($path, $args) if $kind eq 'sqlite';
+    if ($kind eq 'tar.zidx') {
+        require App::Yath2::Log::TarZIdx;
+        return App::Yath2::Log::TarZIdx->new(path => $path, %$args);
+    }
+
+    croak "Unable to identify '$path' as a yath log archive (not sqlite or tar.zidx)";
+}
+
+# Sqlite file backend dispatch: open the DB, resolve the singleton
+# archive uuid when not provided, throw on multi-archive ambiguity.
+sub _new_file_sqlite {
+    my ($class, $path, $args) = @_;
+
+    require App::Yath2::DB;
+    require App::Yath2::Log::DB;
+    my $backend = delete $args->{backend} // 'sql';
+    my $db = App::Yath2::DB->new(file => $path, backend => $backend);
+
+    # Single-archive sqlite shorthand: pick the singleton archive
+    # when uuid not given; throw on multi-archive ambiguity.
+    my $uuid = delete $args->{uuid};
+    unless (defined $uuid) {
+        my @uuids = $db->archives;
+        croak "no archives in this sqlite log" if @uuids == 0;
+        croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+            if @uuids > 1;
+        $uuid = $uuids[0];
+    }
+    return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
+}
+
+# Database connection forms (dbh / dsn). Opens the DB, resolves the
+# singleton archive uuid when not provided, throws on multi-archive
+# ambiguity.
+sub _new_db {
+    my ($class, $args) = @_;
+
+    require App::Yath2::DB;
+    require App::Yath2::Log::DB;
+    my $uuid = delete $args->{uuid};
+    my $db = App::Yath2::DB->new(%$args);
+    unless (defined $uuid) {
+        my @uuids = $db->archives;
+        croak "no archives in this DB" if @uuids == 0;
+        croak "ambiguous; specify uuid => ... (this DB holds " . scalar(@uuids) . " archives)"
+            if @uuids > 1;
+        $uuid = $uuids[0];
+    }
+    return App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
 }
 
 sub META_FORMAT_VERSION { 1 }

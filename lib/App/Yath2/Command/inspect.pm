@@ -142,8 +142,6 @@ sub _build_report {
 sub _fill_log_report {
     my ($self, $report, $log) = @_;
 
-    my %h;
-
     my $arts;
     my $ok = eval { $arts = $log->artifacts('harness'); 1 };
     unless ($ok) {
@@ -154,6 +152,37 @@ sub _fill_log_report {
         return;
     }
 
+    my $h = $self->_check_harness_entry_point($arts);
+
+    unless ($h->{ok}) {
+        $report->{error} = "harness service entry point invalid: $h->{reason}";
+        $report->{harness} = $h;
+        return;
+    }
+
+    my @runs    = $log->runs;
+    my @globals = $log->services;
+
+    $report->{harness}     = $h;
+    $report->{runs}        = [@runs];
+    $report->{run_count}   = scalar @runs;
+    $report->{globals}     = [@globals];
+    $report->{global_count}= scalar @globals;
+    $report->{valid}       = 1;
+
+    my $meta = $self->_load_meta($log);
+    $report->{meta} = $meta if defined $meta;
+
+    return;
+}
+
+# Inspect the harness service's spec / events artifacts and return a
+# hashref describing their presence, the spec row count, and an C<ok>
+# flag (plus a C<reason> when invalid).
+sub _check_harness_entry_point {
+    my ($self, $arts) = @_;
+
+    my %h;
     my $has_spec   = $arts->exists('spec.jsonl');
     my $has_events = $arts->exists('events.jsonl');
     my $spec_rows  = 0;
@@ -176,48 +205,38 @@ sub _fill_log_report {
         push @missing => 'spec.jsonl has no parseable rows'
             if $has_spec && $spec_rows < 1;
         $h{reason} = join('; ', @missing);
-        $report->{error} = "harness service entry point invalid: $h{reason}";
-        $report->{harness} = \%h;
-        return;
     }
 
-    my @runs    = $log->runs;
-    my @globals = $log->services;
+    return \%h;
+}
 
-    $report->{harness}     = \%h;
-    $report->{runs}        = [@runs];
-    $report->{run_count}   = scalar @runs;
-    $report->{globals}     = [@globals];
-    $report->{global_count}= scalar @globals;
-    $report->{valid}       = 1;
+# Load meta.json for a log, preferring the YATHFOOT trailer on sealed
+# files and falling back to the artifact-handle path. Returns the
+# decoded hashref or undef when no meta can be recovered.
+#
+# Live dirs never have meta.json; sealed archives (tar.zidx + DB)
+# always do. The trailer path extracts meta.json without touching the
+# tar / zidx / SQLite parser; the artifact path serves live
+# directories or older archives without a trailer.
+sub _load_meta {
+    my ($self, $log) = @_;
 
-    # Surface meta.json if present at the archive root. Live dirs
-    # never have one; sealed archives (tar.zidx + DB) always do.
-    # Prefer the YATHFOOT trailer when the source is a sealed file --
-    # extracts meta.json without touching the tar / zidx / SQLite
-    # parser. Falls back to the artifact-handle path for live
-    # directories or older archives without a trailer.
     my $meta_via_footer = $self->_read_meta_via_footer($self->_log_path($log));
-    if (defined $meta_via_footer) {
-        $report->{meta} = $meta_via_footer;
-    }
-    else {
-        my $root = $log->artifacts;
-        if ($root->exists(App::Yath2::Log->META_FILENAME)) {
-            my $bytes;
-            my $ok = eval {
-                $bytes = $root->get(App::Yath2::Log->META_FILENAME);
-                1;
-            };
-            if ($ok) {
-                my $decoded;
-                my $dok = eval { $decoded = decode_json($bytes); 1 };
-                $report->{meta} = $decoded if $dok;
-            }
-        }
-    }
+    return $meta_via_footer if defined $meta_via_footer;
 
-    return;
+    my $root = $log->artifacts;
+    return undef unless $root->exists(App::Yath2::Log->META_FILENAME);
+
+    my $bytes;
+    my $ok = eval {
+        $bytes = $root->get(App::Yath2::Log->META_FILENAME);
+        1;
+    };
+    return undef unless $ok;
+
+    my $decoded;
+    my $dok = eval { $decoded = decode_json($bytes); 1 };
+    return $dok ? $decoded : undef;
 }
 
 # Return the on-disk path of a Log if it has one and is not live;
@@ -273,6 +292,41 @@ sub _fill_sqlite_report {
     my $meta_via_footer = $self->_read_meta_via_footer($path);
     $report->{meta} = $meta_via_footer if defined $meta_via_footer;
 
+    my ($rows, $list_err) = $self->_list_sqlite_archives($path);
+    if (defined $list_err) {
+        $report->{error} = "could not read archive list: $list_err";
+        return;
+    }
+
+    unless (defined $rows && @$rows) {
+        $report->{error}    = "no archives in this DB";
+        $report->{archives} = [];
+        return;
+    }
+
+    my @archives;
+    my $any_invalid = 0;
+    for my $row (@$rows) {
+        my $a = $self->_build_sqlite_archive_entry($path, $row->{archive_uuid});
+        $any_invalid++ unless $a->{valid};
+        push @archives => $a;
+    }
+
+    $report->{archives}      = \@archives;
+    $report->{archive_count} = scalar @archives;
+    $report->{valid}         = $any_invalid ? 0 : 1;
+    $report->{error}       //= "$any_invalid archive(s) failed harness check"
+        if $any_invalid;
+
+    return;
+}
+
+# Open the sqlite file, read its archive rows, and return ($rows,
+# $error). On success $error is undef. On failure $rows is undef and
+# $error is the chomp'd diagnostic.
+sub _list_sqlite_archives {
+    my ($self, $path) = @_;
+
     my $rows;
     my $ok = eval {
         my $dsn = "dbi:SQLite:dbname=$path";
@@ -292,60 +346,47 @@ sub _fill_sqlite_report {
     unless ($ok) {
         my $err = $@;
         chomp $err;
-        $report->{error} = "could not read archive list: $err";
-        return;
+        return (undef, $err);
     }
 
-    unless (defined $rows && @$rows) {
-        $report->{error}    = "no archives in this DB";
-        $report->{archives} = [];
-        return;
+    return ($rows, undef);
+}
+
+# Build a single archive-entry hashref by opening the archive and
+# running the standard log-report fill on it. Open failures are
+# captured into the returned entry's C<error> field so the caller can
+# continue with the remaining archives.
+sub _build_sqlite_archive_entry {
+    my ($self, $path, $uuid) = @_;
+
+    my %a = (uuid => $uuid);
+
+    my $log;
+    my $aok = eval {
+        my $db = App::Yath2::DB->new(file => $path);
+        $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
+        1;
+    };
+    unless ($aok) {
+        my $err = $@;
+        chomp $err;
+        $a{valid} = 0;
+        $a{error} = "could not open archive '$uuid': $err";
+        return \%a;
     }
 
-    my @archives;
-    my $any_invalid = 0;
-    for my $row (@$rows) {
-        my $uuid = $row->{archive_uuid};
-        my %a = (uuid => $uuid);
+    my %sub = ( valid => 0 );
+    $self->_fill_log_report(\%sub, $log);
 
-        my $log;
-        my $aok = eval {
-            my $db = App::Yath2::DB->new(file => $path);
-            $log = App::Yath2::Log::DB->new(db => $db, uuid => $uuid);
-            1;
-        };
-        unless ($aok) {
-            my $err = $@;
-            chomp $err;
-            $a{valid} = 0;
-            $a{error} = "could not open archive '$uuid': $err";
-            $any_invalid++;
-            push @archives => \%a;
-            next;
-        }
+    $a{valid}        = $sub{valid}        ? 1 : 0;
+    $a{harness}      = $sub{harness};
+    $a{runs}         = $sub{runs}         // [];
+    $a{run_count}    = $sub{run_count}    // 0;
+    $a{globals}      = $sub{globals}      // [];
+    $a{global_count} = $sub{global_count} // 0;
+    $a{error}        = $sub{error} if defined $sub{error};
 
-        my %sub = ( valid => 0 );
-        $self->_fill_log_report(\%sub, $log);
-
-        $a{valid}     = $sub{valid}     ? 1 : 0;
-        $a{harness}   = $sub{harness};
-        $a{runs}      = $sub{runs}      // [];
-        $a{run_count} = $sub{run_count} // 0;
-        $a{globals}   = $sub{globals}   // [];
-        $a{global_count} = $sub{global_count} // 0;
-        $a{error}     = $sub{error} if defined $sub{error};
-
-        $any_invalid++ unless $a{valid};
-        push @archives => \%a;
-    }
-
-    $report->{archives}      = \@archives;
-    $report->{archive_count} = scalar @archives;
-    $report->{valid}         = $any_invalid ? 0 : 1;
-    $report->{error}       //= "$any_invalid archive(s) failed harness check"
-        if $any_invalid;
-
-    return;
+    return \%a;
 }
 
 sub _format_human {
@@ -363,15 +404,7 @@ sub _format_human {
 
     $out .= "Valid:    yes\n";
 
-    if (my $m = $r->{meta}) {
-        $out .= sprintf("Archive UUID: %s\n", $m->{archive_uuid}) if defined $m->{archive_uuid};
-        $out .= sprintf("Created at:   %s\n", _format_epoch_iso($m->{created_at})) if defined $m->{created_at};
-        $out .= sprintf("Host:         %s\n", $m->{host})         if defined $m->{host};
-        $out .= sprintf("User:         %s\n", $m->{user})         if defined $m->{user};
-        $out .= sprintf("Git SHA:      %s\n", $m->{git_sha})      if defined $m->{git_sha};
-        $out .= sprintf("Project:      %s\n", $m->{project})      if defined $m->{project};
-        $out .= sprintf("Yath version: %s\n", $m->{yath_version}) if defined $m->{yath_version};
-    }
+    $out .= $self->_format_meta_block($r->{meta}) if $r->{meta};
 
     if (($r->{type} // '') eq 'sqlite' && $r->{archives}) {
         my @arcs = @{$r->{archives}};
@@ -380,14 +413,7 @@ sub _format_human {
         # containers (no footer meta) still get the full list.
         my $skip_list = (@arcs == 1 && $r->{meta});
         unless ($skip_list) {
-            $out .= sprintf("Archives: %d\n", scalar @arcs);
-            for my $a (@arcs) {
-                my $rc = $a->{run_count} // 0;
-                my $tag = $rc == 1 ? "1 run" : "$rc runs";
-                $out .= sprintf("  - %-36s  (%s)\n", $a->{uuid} // '?', $tag);
-                $out .= sprintf("      INVALID: %s\n", $a->{error})
-                    if !$a->{valid} && defined $a->{error};
-            }
+            $out .= $self->_format_archives_list(\@arcs);
             return $out;
         }
         # Single-archive: fall through to harness/runs summary using the
@@ -398,6 +424,51 @@ sub _format_human {
         $r->{globals} //= $a->{globals};
     }
 
+    $out .= $self->_format_harness_summary($r);
+
+    return $out;
+}
+
+# Render the meta.json block as a series of "Label: value" lines, one
+# per defined field.
+sub _format_meta_block {
+    my ($self, $m) = @_;
+
+    my $out = '';
+    $out .= sprintf("Archive UUID: %s\n", $m->{archive_uuid}) if defined $m->{archive_uuid};
+    $out .= sprintf("Created at:   %s\n", _format_epoch_iso($m->{created_at})) if defined $m->{created_at};
+    $out .= sprintf("Host:         %s\n", $m->{host})         if defined $m->{host};
+    $out .= sprintf("User:         %s\n", $m->{user})         if defined $m->{user};
+    $out .= sprintf("Git SHA:      %s\n", $m->{git_sha})      if defined $m->{git_sha};
+    $out .= sprintf("Project:      %s\n", $m->{project})      if defined $m->{project};
+    $out .= sprintf("Yath version: %s\n", $m->{yath_version}) if defined $m->{yath_version};
+
+    return $out;
+}
+
+# Render the multi-archive list shown for SQLite containers, with one
+# line per archive (uuid + run count) and an INVALID note when the
+# archive failed its harness check.
+sub _format_archives_list {
+    my ($self, $arcs) = @_;
+
+    my $out = sprintf("Archives: %d\n", scalar @$arcs);
+    for my $a (@$arcs) {
+        my $rc  = $a->{run_count} // 0;
+        my $tag = $rc == 1 ? "1 run" : "$rc runs";
+        $out .= sprintf("  - %-36s  (%s)\n", $a->{uuid} // '?', $tag);
+        $out .= sprintf("      INVALID: %s\n", $a->{error})
+            if !$a->{valid} && defined $a->{error};
+    }
+
+    return $out;
+}
+
+# Render the Harness / Runs / Globals summary lines for a valid log
+# report (or the single-archive view of a sealed SQLite container).
+sub _format_harness_summary {
+    my ($self, $r) = @_;
+
     my $h = $r->{harness} || {};
     my $spec_rows = $h->{spec_rows} // 0;
     my $row_word  = $spec_rows == 1 ? 'row' : 'rows';
@@ -406,7 +477,8 @@ sub _format_human {
         if $h->{spec_present};
     push @parts => "services/harness/events.jsonl.zst present"
         if $h->{events_present};
-    $out .= sprintf("Harness:  %s\n", join(', ', @parts));
+
+    my $out = sprintf("Harness:  %s\n", join(', ', @parts));
 
     my $runs = $r->{runs} || [];
     if (@$runs) {
@@ -447,5 +519,43 @@ sub _format_epoch_iso {
 1;
 
 __END__
+
+=head1 METHODS
+
+=head2 _check_harness_entry_point
+
+Inspect the harness service's spec / events artifacts and return a
+hashref describing their presence, the spec row count, and an C<ok>
+flag (with a C<reason> when invalid).
+
+=head2 _load_meta
+
+Load C<meta.json> for a log, preferring the YATHFOOT trailer on
+sealed files and falling back to the artifact-handle path.
+
+=head2 _list_sqlite_archives
+
+Open a SQLite log file, query its C<archives> table, and return
+C<($rows, $error)> where exactly one of the two is defined.
+
+=head2 _build_sqlite_archive_entry
+
+Open one archive inside a SQLite container by uuid and run the
+standard log-report fill on it, returning a per-archive hashref.
+
+=head2 _format_meta_block
+
+Render the C<meta.json> block as a series of "Label: value" lines,
+one per defined field.
+
+=head2 _format_archives_list
+
+Render the multi-archive list shown for SQLite containers, with one
+line per archive plus an INVALID note for archives that failed.
+
+=head2 _format_harness_summary
+
+Render the Harness / Runs / Globals summary lines from a valid log
+report.
 
 =head1 POD IS AUTO-GENERATED

@@ -128,6 +128,27 @@ sub zstd_frame_size {
     my $checksum_flag   = ($desc >> 2) & 0x1;
     my $dict_id_flag    = $desc & 0x3;
 
+    $pos = _zstd_skip_frame_header_tail($bytes, $pos, $fcs_flag, $single_segment, $dict_id_flag);
+    return undef unless defined $pos;
+
+    $pos = _zstd_walk_blocks($bytes, $pos);
+    return undef unless defined $pos;
+
+    if ($checksum_flag) {
+        return undef if length($bytes) < $pos + 4;
+        $pos += 4;
+    }
+
+    return $pos;
+}
+
+# _zstd_skip_frame_header_tail($bytes, $pos, $fcs_flag, $single_segment,
+# $dict_id_flag) -- advance past the Window_Descriptor, Dictionary_ID,
+# and Frame_Content_Size fields of a zstd frame header. Returns the
+# updated $pos, or undef if $bytes is too short.
+sub _zstd_skip_frame_header_tail {
+    my ($bytes, $pos, $fcs_flag, $single_segment, $dict_id_flag) = @_;
+
     # Window_Descriptor is absent when single_segment is set.
     if (!$single_segment) {
         return undef if length($bytes) < $pos + 1;
@@ -155,7 +176,15 @@ sub zstd_frame_size {
     return undef if length($bytes) < $pos + $fcs_size;
     $pos += $fcs_size;
 
-    # Walk blocks until Last_Block is set.
+    return $pos;
+}
+
+# _zstd_walk_blocks($bytes, $pos) -- iterate block headers/data until
+# the Last_Block flag is set, returning $pos just past the final
+# block, or undef if $bytes is truncated mid-block.
+sub _zstd_walk_blocks {
+    my ($bytes, $pos) = @_;
+
     while (1) {
         return undef if length($bytes) < $pos + 3;
         my $b0 = ord(substr($bytes, $pos,     1));
@@ -184,11 +213,6 @@ sub zstd_frame_size {
         }
 
         last if $last_block;
-    }
-
-    if ($checksum_flag) {
-        return undef if length($bytes) < $pos + 4;
-        $pos += 4;
     }
 
     return $pos;

@@ -454,62 +454,10 @@ sub event {
     while (1) {
         last unless @$stack;
 
-        # Try to read from the top first; on empty, walk down to
-        # older readers so a parent harness_collector_end can close
-        # a child whose reader is exhausted but still on the stack.
-        my $got;
-        my $owner_idx;
-        my $owner;
-        for (my $i = $#$stack; $i >= 0; $i--) {
-            my $entry = $stack->[$i];
-            my $item;
-            if ($entry->{peeked} && @{$entry->{peeked}}) {
-                $item = shift @{$entry->{peeked}};
-            }
-            else {
-                $item = $entry->{reader}->readline;
-            }
-            if (defined $item) {
-                $got       = $item;
-                $owner     = $entry;
-                $owner_idx = $i;
-                last;
-            }
-        }
+        my ($got, $owner) = $self->_read_next_from_stack($stack);
 
         if (defined $got) {
-            # Process the event.
-            if (my $start = $self->_facet($got, 'harness_collector_start')) {
-                my $cpid = $start->{collector_pid};
-                $self->{+SEEN_STARTS}->{$cpid} = $start if defined $cpid;
-                my $child_base = $self->_base_for_collector_start($start);
-                if (defined $child_base) {
-                    my %args = (base => $child_base, collector_pid => $cpid);
-                    my $type = $start->{type};
-                    if ($type eq 'Job') {
-                        $args{run_id}  = $start->{run_id};
-                        $args{job_id}  = $start->{id};
-                        $args{job_try} = $start->{job_try} // 0;
-                    }
-                    elsif ($type eq 'Run') {
-                        $args{run_id} = $start->{id};
-                    }
-                    elsif ($type eq 'Service') {
-                        $args{service} = $start->{service_name} // $start->{id};
-                        $args{run_id}  = $start->{run_id} if defined $start->{run_id};
-                    }
-                    push @$stack => $self->_open_artifact_reader(%args);
-                }
-                return $self->_inject_identifiers($got, $owner->{ident});
-            }
-
-            if (my $end = $self->_facet($got, 'harness_collector_end')) {
-                my $cpid = $end->{collector_pid};
-                $self->{+CLOSED_STARTS}->{$cpid} = 1 if defined $cpid;
-                return $self->_inject_identifiers($got, $owner->{ident});
-            }
-
-            return $self->_inject_identifiers($got, $owner->{ident});
+            return $self->_process_event($got, $owner, $stack);
         }
 
         # No reader produced a record. Pop top entries that are now
@@ -543,6 +491,79 @@ sub event {
     }
 
     return undef;
+}
+
+# Try to read one record from the iterator stack. Walks from top down
+# so a parent harness_collector_end can close a child whose reader is
+# exhausted but still on the stack. Returns (record, owner_entry) or
+# an empty list when no reader has a record available.
+sub _read_next_from_stack {
+    my ($self, $stack) = @_;
+
+    for (my $i = $#$stack; $i >= 0; $i--) {
+        my $entry = $stack->[$i];
+        my $item;
+        if ($entry->{peeked} && @{$entry->{peeked}}) {
+            $item = shift @{$entry->{peeked}};
+        }
+        else {
+            $item = $entry->{reader}->readline;
+        }
+        if (defined $item) {
+            return ($item, $entry);
+        }
+    }
+    return ();
+}
+
+# Process one freshly-read event: track collector_start / _end
+# bookkeeping (and push a nested reader on _start) and return the
+# event with owner identifiers injected.
+sub _process_event {
+    my ($self, $got, $owner, $stack) = @_;
+
+    if (my $start = $self->_facet($got, 'harness_collector_start')) {
+        my $cpid = $start->{collector_pid};
+        $self->{+SEEN_STARTS}->{$cpid} = $start if defined $cpid;
+        my $child_base = $self->_base_for_collector_start($start);
+        if (defined $child_base) {
+            push @$stack => $self->_open_artifact_reader(
+                $self->_child_reader_args($start, $cpid, $child_base),
+            );
+        }
+        return $self->_inject_identifiers($got, $owner->{ident});
+    }
+
+    if (my $end = $self->_facet($got, 'harness_collector_end')) {
+        my $cpid = $end->{collector_pid};
+        $self->{+CLOSED_STARTS}->{$cpid} = 1 if defined $cpid;
+        return $self->_inject_identifiers($got, $owner->{ident});
+    }
+
+    return $self->_inject_identifiers($got, $owner->{ident});
+}
+
+# Build the keyword arglist for _open_artifact_reader from a
+# harness_collector_start payload. Routes Job / Run / Service types
+# to their respective identifier shapes.
+sub _child_reader_args {
+    my ($self, $start, $cpid, $child_base) = @_;
+
+    my %args = (base => $child_base, collector_pid => $cpid);
+    my $type = $start->{type};
+    if ($type eq 'Job') {
+        $args{run_id}  = $start->{run_id};
+        $args{job_id}  = $start->{id};
+        $args{job_try} = $start->{job_try} // 0;
+    }
+    elsif ($type eq 'Run') {
+        $args{run_id} = $start->{id};
+    }
+    elsif ($type eq 'Service') {
+        $args{service} = $start->{service_name} // $start->{id};
+        $args{run_id}  = $start->{run_id} if defined $start->{run_id};
+    }
+    return %args;
 }
 
 # Top-of-stack reader: is it closed (sealed: always once drained;

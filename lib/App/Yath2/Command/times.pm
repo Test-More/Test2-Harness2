@@ -64,27 +64,10 @@ sub run {
 
     my $args = $self->args;
 
-    shift @$args if @$args && $args->[0] eq '--';
-
-    my $path = shift @$args;
-    unless (defined $path && length $path) {
-        $path = App::Yath2::Log->find_latest($self->{+SETTINGS});
-        print STDERR "yath times: using latest archive: $path\n"
-            if defined $path && length $path;
-    }
-    die "You must specify a log archive or directory\n"
-        unless defined $path && length $path;
-    die "Log source '$path' does not exist\n" unless -e $path;
+    my $path = $self->_resolve_log_path($args);
     $self->{+LOG} = $path;
 
-    my %seen;
-    my @fields;
-    for my $field (@$args, @FIELDS) {
-        $field = lc($field);
-        next if $seen{$field}++;
-        die "'$field' is not a valid field\n" unless $FIELDS{$field};
-        push @fields => $field;
-    }
+    my @fields = $self->_resolve_sort_fields($args);
     $self->{+FIELDS} = \@fields;
 
     my $log = App::Yath2::Log->new(auto => $path);
@@ -92,29 +75,7 @@ sub run {
     my @runs = $log->runs;
     die "No runs found in '$path'\n" unless @runs;
 
-    my @jobs;
-    for my $rid (@runs) {
-        for my $jid ($log->jobs($rid)) {
-            my $try = $log->last_try($rid, $jid);
-            next unless defined $try;
-
-            my $arts   = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
-            my $spec   = $arts->spec_iter->first // {};
-            my $report = $arts->report_iter->last // {};
-
-            my $file = $spec->{relative} // $spec->{absolute};
-            next unless defined $file;
-
-            my $start = $spec->{started_at};
-            my $stop  = $report->{ended_at};
-            next unless defined $start && defined $stop;
-
-            my $total = $stop - $start;
-            next unless $total >= 0;
-
-            push @jobs => {file => $file, time => {total => $total}};
-        }
-    }
+    my @jobs = $self->_collect_job_times($log, \@runs);
 
     my @rows;
     my $totals = {file => 'TOTAL', total => 0};
@@ -139,6 +100,78 @@ sub run {
     print "$_\n" for $table->render;
 
     return 0;
+}
+
+# Resolve the LOG path from the head of @$args, falling back to the
+# latest archive when none is supplied. Strips a leading '--' and
+# validates the path exists.
+sub _resolve_log_path {
+    my ($self, $args) = @_;
+
+    shift @$args if @$args && $args->[0] eq '--';
+
+    my $path = shift @$args;
+    unless (defined $path && length $path) {
+        $path = App::Yath2::Log->find_latest($self->{+SETTINGS});
+        print STDERR "yath times: using latest archive: $path\n"
+            if defined $path && length $path;
+    }
+    die "You must specify a log archive or directory\n"
+        unless defined $path && length $path;
+    die "Log source '$path' does not exist\n" unless -e $path;
+
+    return $path;
+}
+
+# Build the dedup'd sort-field list from the remaining positional
+# arguments followed by the default @FIELDS. Dies on unknown fields.
+sub _resolve_sort_fields {
+    my ($self, $args) = @_;
+
+    my %seen;
+    my @fields;
+    for my $field (@$args, @FIELDS) {
+        $field = lc($field);
+        next if $seen{$field}++;
+        die "'$field' is not a valid field\n" unless $FIELDS{$field};
+        push @fields => $field;
+    }
+
+    return @fields;
+}
+
+# Walk every run's jobs and produce {file, time => {total => ...}}
+# records from each job's last-try spec / report pair. Jobs missing
+# file, started_at, ended_at, or yielding a negative duration are
+# skipped.
+sub _collect_job_times {
+    my ($self, $log, $runs) = @_;
+
+    my @jobs;
+    for my $rid (@$runs) {
+        for my $jid ($log->jobs($rid)) {
+            my $try = $log->last_try($rid, $jid);
+            next unless defined $try;
+
+            my $arts   = $log->artifacts({run_id => $rid, job_id => $jid, job_try => $try});
+            my $spec   = $arts->spec_iter->first // {};
+            my $report = $arts->report_iter->last // {};
+
+            my $file = $spec->{relative} // $spec->{absolute};
+            next unless defined $file;
+
+            my $start = $spec->{started_at};
+            my $stop  = $report->{ended_at};
+            next unless defined $start && defined $stop;
+
+            my $total = $stop - $start;
+            next unless $total >= 0;
+
+            push @jobs => {file => $file, time => {total => $total}};
+        }
+    }
+
+    return @jobs;
 }
 
 sub build_row {
@@ -178,6 +211,24 @@ sub sort_compare {
 1;
 
 __END__
+
+=head1 METHODS
+
+=head2 _resolve_log_path
+
+Resolve the LOG argument from the head of C<@$args> (defaulting to
+the latest archive) and validate that the path exists.
+
+=head2 _resolve_sort_fields
+
+Build a dedup'd ordered list of sort fields from the remaining
+positional arguments followed by the defaults; dies on unknown
+fields.
+
+=head2 _collect_job_times
+
+Walk every run's last try per job and produce per-test duration
+records derived from each try's spec / report final states.
 
 =head1 POD IS AUTO-GENERATED
 

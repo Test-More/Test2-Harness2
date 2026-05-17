@@ -87,77 +87,96 @@ sub _connect_dbh {
 
     my $flavor = $self->flavor;
 
-    my $dsn   = $self->{+DSN};
+    my $dsn   = $self->_resolve_or_build_dsn;
     my $user  = $self->{+USER};
     my $pass  = $self->{+PASS};
     my $attrs = $self->{+ATTRS} || {};
 
-    if (!defined $dsn) {
-        my $file = $self->{+FILE};
-        croak "no file or dsn provided" unless defined $file;
-
-        # File path implies sqlite. Make the parent dir on the fly so
-        # callers can pass a path under a non-existent tempdir.
-        if (!-e $file) {
-            my $par = dirname($file);
-            make_path($par) if length $par && !-d $par;
-        }
-
-        $dsn = "dbi:SQLite:dbname=$file";
-        $self->{+DSN} = $dsn;
-    }
-
-    if ($flavor eq 'sqlite') {
-        my $dbh = DBI->connect($dsn, $user, $pass, {
-            RaiseError     => 1,
-            PrintError     => 0,
-            AutoCommit     => 1,
-            sqlite_unicode => 1,
-            %$attrs,
-        }) or croak "DBI->connect $dsn: $DBI::errstr";
-
-        # Open-time PRAGMAs (per share/schema/SCHEMA.md §8).
-        $dbh->do('PRAGMA journal_mode = WAL');
-        $dbh->do('PRAGMA synchronous = NORMAL');
-        $dbh->do('PRAGMA busy_timeout = 5000');
-        $dbh->do('PRAGMA foreign_keys = ON');
-        $dbh->do('PRAGMA temp_store = MEMORY');
-
-        return $dbh;
-    }
-
-    if ($flavor eq 'postgres') {
-        my $ok = eval { require DBD::Pg; 1 };
-        my $err = $@;
-        croak "install DBD::Pg to use the postgres backend: $err" unless $ok;
-
-        my $dbh = DBI->connect($dsn, $user, $pass, {
-            RaiseError     => 1,
-            PrintError     => 0,
-            AutoCommit     => 1,
-            pg_enable_utf8 => 1,
-            %$attrs,
-        }) or croak "DBI->connect $dsn: $DBI::errstr";
-
-        return $dbh;
-    }
-
-    if ($flavor eq 'mariadb' || $flavor eq 'mysql') {
-        my $ok = eval { require DBD::MariaDB; 1 };
-        my $err = $@;
-        croak "install DBD::MariaDB to use the $flavor backend: $err" unless $ok;
-
-        my $dbh = DBI->connect($dsn, $user, $pass, {
-            RaiseError => 1,
-            PrintError => 0,
-            AutoCommit => 1,
-            %$attrs,
-        }) or croak "DBI->connect $dsn: $DBI::errstr";
-
-        return $dbh;
-    }
+    return $self->_connect_sqlite($dsn, $user, $pass, $attrs)        if $flavor eq 'sqlite';
+    return $self->_connect_postgres($dsn, $user, $pass, $attrs)      if $flavor eq 'postgres';
+    return $self->_connect_mysql_family($flavor, $dsn, $user, $pass, $attrs)
+        if $flavor eq 'mariadb' || $flavor eq 'mysql';
 
     croak "unsupported SQL backend flavor: $flavor";
+}
+
+# Return the configured DSN or, when only +FILE was supplied, derive a
+# sqlite DSN (and stash it in +DSN). Croaks when neither is available.
+sub _resolve_or_build_dsn {
+    my $self = shift;
+    my $dsn = $self->{+DSN};
+    return $dsn if defined $dsn;
+
+    my $file = $self->{+FILE};
+    croak "no file or dsn provided" unless defined $file;
+
+    # File path implies sqlite. Make the parent dir on the fly so
+    # callers can pass a path under a non-existent tempdir.
+    if (!-e $file) {
+        my $par = dirname($file);
+        make_path($par) if length $par && !-d $par;
+    }
+
+    $dsn = "dbi:SQLite:dbname=$file";
+    $self->{+DSN} = $dsn;
+    return $dsn;
+}
+
+# Open a sqlite DBI handle and apply the open-time PRAGMAs that the
+# schema relies on.
+sub _connect_sqlite {
+    my ($self, $dsn, $user, $pass, $attrs) = @_;
+    my $dbh = DBI->connect($dsn, $user, $pass, {
+        RaiseError     => 1,
+        PrintError     => 0,
+        AutoCommit     => 1,
+        sqlite_unicode => 1,
+        %$attrs,
+    }) or croak "DBI->connect $dsn: $DBI::errstr";
+
+    # Open-time PRAGMAs (per share/schema/SCHEMA.md §8).
+    $dbh->do('PRAGMA journal_mode = WAL');
+    $dbh->do('PRAGMA synchronous = NORMAL');
+    $dbh->do('PRAGMA busy_timeout = 5000');
+    $dbh->do('PRAGMA foreign_keys = ON');
+    $dbh->do('PRAGMA temp_store = MEMORY');
+
+    return $dbh;
+}
+
+# Open a postgres DBI handle (requires DBD::Pg).
+sub _connect_postgres {
+    my ($self, $dsn, $user, $pass, $attrs) = @_;
+    my $ok = eval { require DBD::Pg; 1 };
+    my $err = $@;
+    croak "install DBD::Pg to use the postgres backend: $err" unless $ok;
+
+    my $dbh = DBI->connect($dsn, $user, $pass, {
+        RaiseError     => 1,
+        PrintError     => 0,
+        AutoCommit     => 1,
+        pg_enable_utf8 => 1,
+        %$attrs,
+    }) or croak "DBI->connect $dsn: $DBI::errstr";
+
+    return $dbh;
+}
+
+# Open a MySQL / MariaDB DBI handle (requires DBD::MariaDB).
+sub _connect_mysql_family {
+    my ($self, $flavor, $dsn, $user, $pass, $attrs) = @_;
+    my $ok = eval { require DBD::MariaDB; 1 };
+    my $err = $@;
+    croak "install DBD::MariaDB to use the $flavor backend: $err" unless $ok;
+
+    my $dbh = DBI->connect($dsn, $user, $pass, {
+        RaiseError => 1,
+        PrintError => 0,
+        AutoCommit => 1,
+        %$attrs,
+    }) or croak "DBI->connect $dsn: $DBI::errstr";
+
+    return $dbh;
 }
 
 # Apply per-flavor session state on a fresh connection. Currently only

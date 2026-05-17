@@ -303,6 +303,24 @@ sub add_rerun_to_search {
     my $mode_hash = $self->{+RERUN_MODES};
     my $modes = [ keys %$mode_hash ];
 
+    my ($grabbed, $data) = $self->_grab_rerun_from_plugins($plugins, $rerun, $modes, $mode_hash);
+
+    $data = $self->_load_rerun_from_log($rerun) unless $grabbed;
+
+    my @add = $self->_filter_rerun_entries($data, $mode_hash);
+
+    unless (@add) {
+        print "No files found to rerun.\n";
+        exit 0;
+    }
+
+    push @$search => @add;
+}
+
+sub _grab_rerun_from_plugins {
+    my $self = shift;
+    my ($plugins, $rerun, $modes, $mode_hash) = @_;
+
     my ($grabbed, $data);
     for my $p ($self->get_capable_plugins(grab_rerun => [@{$self->{+RERUN_PLUGINS} // []}, @$plugins])) {
         ($grabbed, $data) = $p->grab_rerun($rerun, modes => $modes, mode_hash => $mode_hash, settings => $self->settings);
@@ -316,47 +334,63 @@ sub add_rerun_to_search {
         last if $grabbed;
     }
 
-    unless ($grabbed) {
-        if ($rerun eq '1') {
-            $rerun = first { -e $_ } qw{ ./lastlog.jsonl ./lastlog.jsonl.bz2 ./lastlog.jsonl.gz };
+    return ($grabbed, $data);
+}
 
-            die "Could not find a lastlog.jsonl(.bz2|.gz) file for re-running, you may need to provide a full path to --rerun=... or --rerun-failed=..."
-                unless $rerun;
-        }
+sub _load_rerun_from_log {
+    my $self = shift;
+    my ($rerun) = @_;
 
-        die "Could not find anything to rerun.\n" if $rerun eq '-1';
-        die "'$rerun' is not a valid log file, and no plugin intercepted it.\n" unless -f $rerun;
+    if ($rerun eq '1') {
+        $rerun = first { -e $_ } qw{ ./lastlog.jsonl ./lastlog.jsonl.bz2 ./lastlog.jsonl.gz };
 
-        my $stream = Test2::Harness2::Util::File::JSONL->new(name => $rerun, skip_bad_decode => 1);
-
-        my %files;
-        while (1) {
-            my @events = $stream->poll(max => 1000) or last;
-
-            for my $event (@events) {
-                my $f = $event->{facet_data} or next;
-
-                for my $type (qw/seen queued start end/) {
-                    my $field = $type eq 'seen' ? "harness_job" : "harness_job_$type";
-
-                    my $data = $f->{$field} or next;
-
-                    my $file = $data->{rel_file} // $data->{run_file} // $data->{file} // $data->{abs_file};
-                    next unless $file;
-
-                    my $ref = $files{$file} //= {};
-                    $ref->{$type}++;
-
-                    $ref->{$data->{fail} ? 'fail' : 'pass'}++ if $type eq 'end';
-                    $ref->{retry}++                           if $data->{is_try};
-                }
-            }
-        }
-
-        $data = \%files;
+        die "Could not find a lastlog.jsonl(.bz2|.gz) file for re-running, you may need to provide a full path to --rerun=... or --rerun-failed=..."
+            unless $rerun;
     }
 
-    my @add = map { $data->{$_}->{add} // $_ } grep {
+    die "Could not find anything to rerun.\n" if $rerun eq '-1';
+    die "'$rerun' is not a valid log file, and no plugin intercepted it.\n" unless -f $rerun;
+
+    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $rerun, skip_bad_decode => 1);
+
+    my %files;
+    while (1) {
+        my @events = $stream->poll(max => 1000) or last;
+
+        for my $event (@events) {
+            my $f = $event->{facet_data} or next;
+            $self->_accumulate_rerun_event($f, \%files);
+        }
+    }
+
+    return \%files;
+}
+
+sub _accumulate_rerun_event {
+    my $self = shift;
+    my ($facet_data, $files) = @_;
+
+    for my $type (qw/seen queued start end/) {
+        my $field = $type eq 'seen' ? "harness_job" : "harness_job_$type";
+
+        my $data = $facet_data->{$field} or next;
+
+        my $file = $data->{rel_file} // $data->{run_file} // $data->{file} // $data->{abs_file};
+        next unless $file;
+
+        my $ref = $files->{$file} //= {};
+        $ref->{$type}++;
+
+        $ref->{$data->{fail} ? 'fail' : 'pass'}++ if $type eq 'end';
+        $ref->{retry}++                           if $data->{is_try};
+    }
+}
+
+sub _filter_rerun_entries {
+    my $self = shift;
+    my ($data, $mode_hash) = @_;
+
+    return map { $data->{$_}->{add} // $_ } grep {
         my $entry = $data->{$_};
 
         my $keep = $mode_hash->{all} ? 1 : 0;
@@ -367,13 +401,6 @@ sub add_rerun_to_search {
 
         $keep
     } sort keys %$data;
-
-    unless (@add) {
-        print "No files found to rerun.\n";
-        exit 0;
-    }
-
-    push @$search => @add;
 }
 
 sub add_changed_to_search {
@@ -436,32 +463,7 @@ sub changes_from_diff {
     my $self = shift;
     my ($type, $data) = @_;
 
-    my $next;
-    if ($type eq 'lines') {
-        $next = sub { shift @$data };
-    }
-    elsif ($type eq 'diff') {
-        my $lines = [split /\n/, $data];
-        $next = sub { shift @$lines };
-    }
-    elsif ($type eq 'file') {
-        die "'$data' is not a valid diff file.\n" unless -f $data;
-        open(my $fh, '<', $data) or die "Could not open diff file '$data': $!";
-        $next = sub {
-            my $line = <$fh>;
-            close($fh) unless defined $line;
-            return $line;
-        };
-    }
-    elsif ($type eq 'line_sub') {
-        $next = $data;
-    }
-    elsif ($type eq 'handle') {
-        $next = sub { scalar <$data> };
-    }
-    else {
-        die "Invalid diff type '$type'";
-    }
+    my $next = $self->_diff_line_iterator($type, $data);
 
     my %changed;
 
@@ -543,6 +545,36 @@ sub changes_from_diff {
     return map {([$_ => sort keys %{$changed{$_}}])} sort keys %changed;
 }
 
+sub _diff_line_iterator {
+    my $self = shift;
+    my ($type, $data) = @_;
+
+    if ($type eq 'lines') {
+        return sub { shift @$data };
+    }
+    elsif ($type eq 'diff') {
+        my $lines = [split /\n/, $data];
+        return sub { shift @$lines };
+    }
+    elsif ($type eq 'file') {
+        die "'$data' is not a valid diff file.\n" unless -f $data;
+        open(my $fh, '<', $data) or die "Could not open diff file '$data': $!";
+        return sub {
+            my $line = <$fh>;
+            close($fh) unless defined $line;
+            return $line;
+        };
+    }
+    elsif ($type eq 'line_sub') {
+        return $data;
+    }
+    elsif ($type eq 'handle') {
+        return sub { scalar <$data> };
+    }
+
+    die "Invalid diff type '$type'";
+}
+
 sub find_multi_project_files {
     my $self = shift;
     my ($plugins) = @_;
@@ -608,127 +640,151 @@ sub find_project_files {
     my (%seen, @tests, @dirs);
 
     for my $item (@$search) {
-        my ($path, $test_params);
-
-        if (ref $item) {
-            ($path, $test_params) = @$item;
-        }
-        else {
-            my ($type, $data);
-            ($path, $type, $data) = split /(:<|:@|:=)/, $item, 2;
-            if ($type && $data) {
-                $test_params = {};
-                if ($type eq ':<') {
-                    $test_params->{stdin} = $data;
-                }
-                elsif ($type eq ':@') {
-                    $test_params->{argv} = decode_json($data);
-                }
-                elsif ($type eq ':=') {
-                    $test_params->{env} = decode_json($data);
-                }
-            }
-        }
-
-        push @dirs => $path and next if -d $path;
-
-        unless(-f $path) {
-            my ($actual, $args) = split /=/, $path, 2;
-            if (-f $actual) {
-                $path = $actual;
-                $test_params = {%{$test_params // {}}, argv => [quotewords('\s+', 0, $args)]};
-            }
-            else {
-                die "'$path' is not a valid file or directory.\n" if @$input;
-                next;
-            }
-        }
-
-        $path = clean_path($path, 0);
-        $seen{$path}++;
-
-        my $test;
-        unless (first { $test = $_->claim_file($path, $settings, from => 'listed') } @$plugins) {
-            $test = App::Yath2::TestFile->new(file => $path);
-        }
-
-        if (my @exclude = $self->exclude_file($test)) {
-            if (@$input) {
-                print STDERR "File '$path' was listed on the command line, but has been exluded for the following reasons:\n";
-                print STDERR "  $_\n" for @exclude;
-            }
-
-            next;
-        }
-
-        if ($test_params) {
-            $test->set_input($test_params->{stdin})    if $test_params->{stdin};
-            $test->set_test_args($test_params->{argv}) if $test_params->{argv};
-            $test->set_env_vars($test_params->{env})   if $test_params->{env};
-        }
-
-        push @tests => $test;
+        $self->_collect_search_item($item, $input, $plugins, $settings, \%seen, \@tests, \@dirs);
     }
 
-    if (@dirs) {
-        require File::Find;
-        File::Find::find(
-            {
-                no_chdir => 1,
-                wanted   => sub {
-                    no warnings 'once';
+    $self->_collect_dir_tests(\@dirs, $plugins, $settings, \%seen, \@tests) if @dirs;
 
-                    my $file = clean_path($File::Find::name, 0);
-
-                    return if $seen{$file}++;
-                    return unless -f $file;
-
-                    my $test;
-                    unless(first { $test = $_->claim_file($file, $settings, from => 'search') } @$plugins) {
-                        for my $ext (@{$self->extensions}) {
-                            next unless m/\.\Q$ext\E$/;
-
-                            $test = App::Yath2::TestFile->new(file => $file);
-
-                            last;
-                        }
-                    }
-
-                    return unless $test;
-                    return unless $self->include_file($test);
-                    push @tests => $test;
-                },
-            },
-            @dirs
-        );
-    }
-
-    my $durations;
-    my $test_count = @tests;
-    my $threshold = $self->durations_threshold // 0;
-    if ($test_count >= $threshold) {
-        my $start = time;
-        $durations = $self->duration_data($plugins, $settings, [map { $_->relative } @tests]);
-        my $end = time;
-        if ($durations && keys %$durations) {
-            printf("Fetched duration data (Took %0.2f seconds)\n", $end - $start);
-            for my $test (@tests) {
-                my $rel = $test->relative;
-                $test->set_duration($durations->{$rel}) if $durations->{$rel};
-            }
-        }
-    }
+    my $durations = $self->_apply_durations(\@tests, $plugins, $settings);
 
     $_->munge_files(\@tests, $settings) for @$plugins;
 
+    return $self->_sort_found_tests(\@tests, $durations);
+}
+
+sub _parse_search_item {
+    my $self = shift;
+    my ($item) = @_;
+
+    return @$item if ref $item;
+
+    my ($path, $type, $data) = split /(:<|:@|:=)/, $item, 2;
+    return ($path, undef) unless $type && $data;
+
+    my $test_params = {};
+    if    ($type eq ':<') { $test_params->{stdin} = $data }
+    elsif ($type eq ':@') { $test_params->{argv}  = decode_json($data) }
+    elsif ($type eq ':=') { $test_params->{env}   = decode_json($data) }
+
+    return ($path, $test_params);
+}
+
+sub _collect_search_item {
+    my $self = shift;
+    my ($item, $input, $plugins, $settings, $seen, $tests, $dirs) = @_;
+
+    my ($path, $test_params) = $self->_parse_search_item($item);
+
+    push @$dirs => $path and return if -d $path;
+
+    unless (-f $path) {
+        my ($actual, $args) = split /=/, $path, 2;
+        if (-f $actual) {
+            $path = $actual;
+            $test_params = {%{$test_params // {}}, argv => [quotewords('\s+', 0, $args)]};
+        }
+        else {
+            die "'$path' is not a valid file or directory.\n" if @$input;
+            return;
+        }
+    }
+
+    $path = clean_path($path, 0);
+    $seen->{$path}++;
+
+    my $test;
+    unless (first { $test = $_->claim_file($path, $settings, from => 'listed') } @$plugins) {
+        $test = App::Yath2::TestFile->new(file => $path);
+    }
+
+    if (my @exclude = $self->exclude_file($test)) {
+        if (@$input) {
+            print STDERR "File '$path' was listed on the command line, but has been exluded for the following reasons:\n";
+            print STDERR "  $_\n" for @exclude;
+        }
+
+        return;
+    }
+
+    if ($test_params) {
+        $test->set_input($test_params->{stdin})    if $test_params->{stdin};
+        $test->set_test_args($test_params->{argv}) if $test_params->{argv};
+        $test->set_env_vars($test_params->{env})   if $test_params->{env};
+    }
+
+    push @$tests => $test;
+}
+
+sub _collect_dir_tests {
+    my $self = shift;
+    my ($dirs, $plugins, $settings, $seen, $tests) = @_;
+
+    require File::Find;
+    File::Find::find(
+        {
+            no_chdir => 1,
+            wanted   => sub {
+                no warnings 'once';
+
+                my $file = clean_path($File::Find::name, 0);
+
+                return if $seen->{$file}++;
+                return unless -f $file;
+
+                my $test;
+                unless (first { $test = $_->claim_file($file, $settings, from => 'search') } @$plugins) {
+                    for my $ext (@{$self->extensions}) {
+                        next unless m/\.\Q$ext\E$/;
+
+                        $test = App::Yath2::TestFile->new(file => $file);
+
+                        last;
+                    }
+                }
+
+                return unless $test;
+                return unless $self->include_file($test);
+                push @$tests => $test;
+            },
+        },
+        @$dirs,
+    );
+}
+
+sub _apply_durations {
+    my $self = shift;
+    my ($tests, $plugins, $settings) = @_;
+
+    my $test_count = @$tests;
+    my $threshold  = $self->durations_threshold // 0;
+    return undef unless $test_count >= $threshold;
+
+    my $start = time;
+    my $durations = $self->duration_data($plugins, $settings, [map { $_->relative } @$tests]);
+    my $end = time;
+    if ($durations && keys %$durations) {
+        printf("Fetched duration data (Took %0.2f seconds)\n", $end - $start);
+        for my $test (@$tests) {
+            my $rel = $test->relative;
+            $test->set_duration($durations->{$rel}) if $durations->{$rel};
+        }
+    }
+
+    return $durations;
+}
+
+sub _sort_found_tests {
+    my $self = shift;
+    my ($tests, $durations) = @_;
+
     my @out;
     if ($durations && $durations->{sorted}) {
-        my %all_tests = map { ($_->relative() => $_) } @tests;
+        my %all_tests = map { ($_->relative() => $_) } @$tests;
         push @out => delete($all_tests{$_}) for @{$durations->{sorted}};
         push @out => map { $a->rank <=> $b->rank || $a->absolute cmp $b->absolute } values %all_tests;
     }
     else {
-        @out = sort { $a->rank <=> $b->rank || $a->absolute cmp $b->absolute } @tests;
+        @out = sort { $a->rank <=> $b->rank || $a->absolute cmp $b->absolute } @$tests;
     }
 
     return \@out;
@@ -921,6 +977,71 @@ See L<App::Yath2::Options::Finder> for up to date documentation on these.
 =item $finder->search
 
 =item $finder->extensions
+
+=back
+
+=head2 Private helpers
+
+=over 4
+
+=item _grab_rerun_from_plugins
+
+Iterate the rerun-capable plugins for C<add_rerun_to_search>, returning
+the first C<($grabbed, $data)> pair produced. Exits 0 with a notice if a
+plugin grabs but returns no files.
+
+=item _load_rerun_from_log
+
+Fallback for C<add_rerun_to_search> when no plugin claims the rerun
+argument: resolve C<1>/C<-1>/path semantics and stream the JSONL log
+into a per-file results hashref.
+
+=item _accumulate_rerun_event
+
+Update the per-file rerun results hashref from a single event's facet
+data, tracking seen/queued/start/end counts and the pass/fail/retry
+flags used by the mode filter.
+
+=item _filter_rerun_entries
+
+Apply C<--rerun-modes> filtering to the per-file results hashref and
+return the list of files (or plugin-provided C<< $entry->{add} >>
+replacements) to push onto the search list.
+
+=item _diff_line_iterator
+
+Return a C<< sub { ... } >> that yields successive lines of the diff
+input for C<changes_from_diff>, normalizing the C<lines>/C<diff>/C<file>/
+C<line_sub>/C<handle> source types into one interface.
+
+=item _parse_search_item
+
+Decode a single search entry from C<find_project_files> into
+C<($path, $test_params)>, handling both arrayref entries and the
+C<:< / :@ / :=> stdin/argv/env suffix syntax.
+
+=item _collect_search_item
+
+Process one search entry: classify it as a directory or file, build the
+L<App::Yath2::TestFile>, apply per-entry exclusion reporting, and push
+the result into the appropriate accumulator.
+
+=item _collect_dir_tests
+
+Walk every collected directory with C<File::Find>, claim each candidate
+file via the plugins (or fall back to the configured extensions), and
+append accepted tests to the working list.
+
+=item _apply_durations
+
+Fetch and apply duration data when the test count meets the configured
+threshold, annotating each test with its duration and returning the
+durations hashref (or undef).
+
+=item _sort_found_tests
+
+Final ordering for C<find_project_files>: honor a durations-supplied
+C<sorted> list first, then fall back to a rank/path sort.
 
 =back
 

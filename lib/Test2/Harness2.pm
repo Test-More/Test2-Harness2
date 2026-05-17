@@ -121,6 +121,29 @@ sub init {
     my $wd = $self->{+WORKDIR} // croak "'workdir' is a required attribute";
     croak "workdir '$wd' does not exist or is not a directory" unless -d $wd;
 
+    $self->_init_logdir($wd);
+
+    $self->_init_default_slots;
+
+    $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
+    croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
+        unless BROKEN_BEHAVIORS->{$self->{+BROKEN_RESOURCE_BEHAVIOR}};
+
+    $self->_init_resources;
+
+    $self->_strip_legacy_logger_slots;
+
+    # The test auditor default is still set here: a run-complete
+    # pass/fail verdict is useless without it.
+    $self->{+TEST_AUDITOR} //= 'Test2::Harness2::Collector::Auditor::Test';
+}
+
+# Resolve, validate, and create the logdir (and its services/
+# subdirectory) under the harness workdir. Sets +LOGDIR in place.
+sub _init_logdir {
+    my $self = shift;
+    my ($wd) = @_;
+
     # logdir defaults to 'logs' under the workdir. A caller-supplied
     # relative path is resolved under the workdir; an absolute path is
     # used verbatim (File::Spec handles non-unix absolute shapes like
@@ -142,6 +165,15 @@ sub init {
     }
 
     make_path("$logdir/services");
+
+    return;
+}
+
+# Populate the harness's scalar/hash/array slots with their default
+# values. Mass-defaulter; keeps init() short by collecting every slot
+# whose default does not depend on validation.
+sub _init_default_slots {
+    my $self = shift;
 
     $self->{+NAME}                      //= 'harness';
     $self->{+JOB_ID}                    //= gen_uuid();
@@ -180,27 +212,23 @@ sub init {
     # (e.g. accepted-then-purged runs).
     $self->{+RUN_ORD_COUNTER} //= 1;
 
-    $self->{+BROKEN_RESOURCE_BEHAVIOR} //= 'skip';
-    croak "invalid broken_resource_behavior '$self->{+BROKEN_RESOURCE_BEHAVIOR}' (want skip, fail, or abort)"
-        unless BROKEN_BEHAVIORS->{$self->{+BROKEN_RESOURCE_BEHAVIOR}};
+    return;
+}
 
-    $self->_init_resources;
-
-    # Loggers / observers were removed; the collector now writes its
-    # own spec/events/report files directly. Constructor args named
-    # `loggers`, `service_loggers`, `test_loggers`, `extend_loggers`,
-    # and `extend_test_loggers` are silently swallowed so legacy
-    # callers do not crash, but they have no effect on the on-disk
-    # layout.
+# Loggers / observers were removed; the collector now writes its
+# own spec/events/report files directly. Constructor args named
+# `loggers`, `service_loggers`, `test_loggers`, `extend_loggers`,
+# and `extend_test_loggers` are silently swallowed so legacy
+# callers do not crash, but they have no effect on the on-disk
+# layout.
+sub _strip_legacy_logger_slots {
+    my $self = shift;
     delete $self->{loggers};
     delete $self->{service_loggers};
     delete $self->{test_loggers};
     delete $self->{extend_loggers};
     delete $self->{extend_test_loggers};
-
-    # The test auditor default is still set here: a run-complete
-    # pass/fail verdict is useless without it.
-    $self->{+TEST_AUDITOR} //= 'Test2::Harness2::Collector::Auditor::Test';
+    return;
 }
 
 sub _init_resources {
@@ -3620,6 +3648,26 @@ run, picking out L<Test2::Harness2::Resource::Preload> instances visible to it.
 C<permanent>, C<usable>, or C<defer>.
 
 =head2 Run setup
+
+=head2 _init_logdir
+
+(internal) Resolves the harness's C<logdir> relative to the workdir
+(absolute paths are used verbatim), refuses to clobber a non-empty
+existing directory, and creates the C<services/> subdirectory.
+
+=head2 _init_default_slots
+
+(internal) Mass-defaulter for the harness's scalar/hash/array slots
+(name, job_id, queue, scheduler, pending-* maps, etc.). Keeps
+L</init> short by collecting every slot whose default does not
+depend on validation.
+
+=head2 _strip_legacy_logger_slots
+
+(internal) Deletes the legacy C<loggers> / C<service_loggers> /
+C<test_loggers> / C<extend_loggers> / C<extend_test_loggers>
+constructor args so old callers do not crash; the collector now
+writes its on-disk artifacts directly.
 
 =head2 _validate_run_hash_seed
 

@@ -71,35 +71,13 @@ sub run {
 
     die "Cannot combine --dev, --shell, and/or --daemon.\n" if ($dev && $daemon) || ($dev && $shell) || ($shell && $daemon);
 
-    if ($daemon) {
-        my $pid = fork // die "Could not fork";
-        exit(0) if $pid;
-
-        POSIX::setsid();
-        setpgrp(0, 0);
-
-        $pid = fork // die "Could not fork";
-        exit(0) if $pid;
-
-        open(STDOUT, '>>', '/dev/null');
-        open(STDERR, '>>', '/dev/null');
-    }
+    $self->_daemonize if $daemon;
 
     my $config = $self->{+CONFIG} = schema_config_from_settings($settings, ephemeral => $ephemeral);
 
-    my $qdb_params = {
-        single_user => $settings->server->single_user // 0,
-        single_run  => $settings->server->single_run  // 0,
-        no_upload   => $settings->server->no_upload   // 0,
-        email       => $settings->server->email       // undef,
-    };
+    my $server = $self->{+SERVER} = $self->_start_server($config);
 
-    my $server = $self->{+SERVER} = App::Yath2UI::Server->new(schema_config => $config, $settings->webserver->all, qdb_params => $qdb_params);
-    $server->start_server;
-
-    my $user = $config->schema->resultset('User')->create({username => $ENV{USER}, password => 'password', realname => $ENV{USER}});
-    my $api_key = $config->schema->resultset('ApiKey')->create({value => format_uuid_for_db(gen_uuid()), user_id => $user->user_id, name => "ephemeral"});
-    $ENV{YATH_API_KEY} = $api_key->value;
+    $self->_provision_api_key($config);
 
     my $done = 0;
     $SIG{TERM} = sub { $done++; print "Caught SIGTERM shutting down...\n" unless $daemon; $SIG{TERM} = 'DEFAULT' };
@@ -119,19 +97,7 @@ sub run {
         system($ENV{SHELL});
     }
     else {
-        SERVER_LOOP: until ($done) {
-            if ($dev && !$daemon) {
-                $ENV{T2_HARNESS_SERVER_DEV} = 1;
-
-                unless(eval { $done = $self->shell($pid); 1 }) {
-                    warn $@;
-                    $done = 1;
-                }
-            }
-            else {
-                sleep 1;
-            }
-        }
+        $self->_server_main_loop($pid, $dev, $daemon, \$done);
     }
 
     if ($pid == $$) {
@@ -142,6 +108,80 @@ sub run {
     }
 
     return 0;
+}
+
+# Detach from the controlling terminal via the standard double-fork
+# dance and redirect stdio to /dev/null.
+sub _daemonize {
+    my $self = shift;
+
+    my $pid = fork // die "Could not fork";
+    exit(0) if $pid;
+
+    POSIX::setsid();
+    setpgrp(0, 0);
+
+    $pid = fork // die "Could not fork";
+    exit(0) if $pid;
+
+    open(STDOUT, '>>', '/dev/null');
+    open(STDERR, '>>', '/dev/null');
+
+    return;
+}
+
+# Build and start the App::Yath2UI::Server, passing through the
+# webserver options plus the single_user / single_run / no_upload /
+# email knobs from --server options.
+sub _start_server {
+    my ($self, $config) = @_;
+    my $settings = $self->settings;
+
+    my $qdb_params = {
+        single_user => $settings->server->single_user // 0,
+        single_run  => $settings->server->single_run  // 0,
+        no_upload   => $settings->server->no_upload   // 0,
+        email       => $settings->server->email       // undef,
+    };
+
+    my $server = App::Yath2UI::Server->new(schema_config => $config, $settings->webserver->all, qdb_params => $qdb_params);
+    $server->start_server;
+
+    return $server;
+}
+
+# Create an ephemeral user + API key record and expose the key value
+# via YATH_API_KEY for child processes / shells.
+sub _provision_api_key {
+    my ($self, $config) = @_;
+
+    my $user    = $config->schema->resultset('User')->create({username => $ENV{USER}, password => 'password', realname => $ENV{USER}});
+    my $api_key = $config->schema->resultset('ApiKey')->create({value => format_uuid_for_db(gen_uuid()), user_id => $user->user_id, name => "ephemeral"});
+    $ENV{YATH_API_KEY} = $api_key->value;
+
+    return;
+}
+
+# Idle loop for the foreground / dev modes: either run the developer
+# shell or sleep until a signal handler flips $$done_ref.
+sub _server_main_loop {
+    my ($self, $pid, $dev, $daemon, $done_ref) = @_;
+
+    SERVER_LOOP: until ($$done_ref) {
+        if ($dev && !$daemon) {
+            $ENV{T2_HARNESS_SERVER_DEV} = 1;
+
+            unless(eval { $$done_ref = $self->shell($pid); 1 }) {
+                warn $@;
+                $$done_ref = 1;
+            }
+        }
+        else {
+            sleep 1;
+        }
+    }
+
+    return;
 }
 
 
@@ -375,6 +415,29 @@ sub shell_load {
 1;
 
 __END__
+
+=head1 METHODS
+
+=head2 _daemonize
+
+Detach from the controlling terminal with the standard double-fork
+dance and redirect stdio to F</dev/null>.
+
+=head2 _start_server
+
+Construct the L<App::Yath2UI::Server> instance with the webserver
+options plus the C<single_user> / C<single_run> / C<no_upload> /
+C<email> knobs from C<--server> options, and start it.
+
+=head2 _provision_api_key
+
+Create an ephemeral user and API key, and expose the key value via
+C<$ENV{YATH_API_KEY}>.
+
+=head2 _server_main_loop
+
+Idle loop for foreground and dev modes: either run the developer
+shell or sleep until a signal handler flips the shared done flag.
 
 =head1 POD IS AUTO-GENERATED
 

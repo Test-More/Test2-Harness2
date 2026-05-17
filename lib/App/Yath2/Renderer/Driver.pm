@@ -244,41 +244,7 @@ sub _maybe_synthesize_lifecycle {
     my $kind = $h->{kind} // '';
 
     if ($kind eq 'run_queued') {
-        my $rid = $h->{run_id};
-        return unless defined $rid;
-
-        my $rs = $run_states->{$rid} //= {jobs => {}};
-        $rs->{queued_at} = $h->{queued_at};
-        $rs->{job_ids}   = ref($h->{job_ids}) eq 'ARRAY' ? [@{$h->{job_ids}}] : [];
-
-        unless ($seen_run_start->{$rid}++) {
-            push @$synth_queue, Test2::Harness2::Event->new({
-                facet_data => {
-                    harness_run => {
-                        run_id     => $rid,
-                        (defined $h->{queued_at} ? (created_at => $h->{queued_at}) : ()),
-                        pending    => [@{$rs->{job_ids}}],
-                        running    => [],
-                        done       => [],
-                    },
-                },
-            });
-        }
-
-        for my $jid (@{$rs->{job_ids}}) {
-            my $spec = _job_spec($log, $rid, $jid, 0, $rs);
-            push @$synth_queue, Test2::Harness2::Event->new({
-                facet_data => {
-                    harness_job_queued => {
-                        job_id   => $jid,
-                        file     => $spec->{abs_file} // $spec->{rel_file},
-                        abs_file => $spec->{abs_file},
-                        rel_file => $spec->{rel_file},
-                        stamp    => $spec->{queued_at} // $h->{queued_at},
-                    },
-                },
-            });
-        }
+        $class->_synth_run_queued($h, $log, $run_states, $seen_run_start, $synth_queue);
         return;
     }
 
@@ -290,128 +256,206 @@ sub _maybe_synthesize_lifecycle {
     }
 
     if ($kind eq 'job_started') {
-        my $info = $h->{job_info} // {};
-        my $rid  = $info->{run_id} // $h->{run_id};
-        my $jid  = $info->{job_id};
-        my $try  = $info->{job_try} // 1;
-        return unless defined $rid && defined $jid;
-
-        my $rs   = $run_states->{$rid} //= {jobs => {}};
-        my $spec = _job_spec($log, $rid, $jid, $try, $rs);
-        my $stamp = $h->{stamp} // $spec->{started_at} // time;
-
-        push @$synth_queue, Test2::Harness2::Event->new({
-            facet_data => {
-                harness_job_start => {
-                    job_id   => $jid,
-                    file     => $spec->{abs_file} // $spec->{rel_file},
-                    abs_file => $spec->{abs_file},
-                    rel_file => $spec->{rel_file},
-                    stamp    => $stamp,
-                    details  => "Launched " . ($spec->{rel_file} // $jid) . " as job $jid.",
-                },
-            },
-        });
+        $class->_synth_job_started($h, $log, $run_states, $synth_queue);
         return;
     }
 
     if ($kind eq 'job_completed') {
-        my $info = $h->{job_info} // {};
-        my $rid  = $info->{run_id} // $h->{run_id};
-        my $jid  = $info->{job_id};
-        my $try  = $info->{job_try} // 1;
-        return unless defined $rid && defined $jid;
-
-        my $rs     = $run_states->{$rid} //= {jobs => {}};
-        my $spec   = _job_spec($log, $rid, $jid, $try, $rs);
-        my $report = _job_report($log, $rid, $jid, $try, $rs);
-        my $stamp  = $h->{stamp} // $report->{ended_at} // time;
-        my $pass   = exists $h->{pass} ? ($h->{pass} ? 1 : 0)
-                   : ($report->{pass}  ? 1 : 0);
-
-        my %end_facet = (
-            job_id   => $jid,
-            file     => $spec->{abs_file} // $spec->{rel_file},
-            abs_file => $spec->{abs_file},
-            rel_file => $spec->{rel_file},
-            fail     => $pass ? 0 : 1,
-            stamp    => $stamp,
-        );
-        $end_facet{exit}  = $report->{exit}         if defined $report->{exit};
-        $end_facet{codes} = $report->{exit_decoded} if defined $report->{exit_decoded};
-        $end_facet{times} = $report->{times}        if defined $report->{times};
-
-        my %exit_facet = (job_id => $jid, stamp => $stamp);
-        $exit_facet{exit}  = $report->{exit}         if defined $report->{exit};
-        $exit_facet{codes} = $report->{exit_decoded} if defined $report->{exit_decoded};
-
-        push @$synth_queue, Test2::Harness2::Event->new({
-            facet_data => {
-                harness_job_end  => \%end_facet,
-                harness_job_exit => \%exit_facet,
-            },
-        });
+        $class->_synth_job_completed($h, $log, $run_states, $synth_queue);
         return;
     }
 
     if (defined $h->{run_completed}) {
-        my $rc = $h->{run_completed};
-        my $rid = $rc->{run_id} // $h->{run_id};
-        return unless defined $rid;
-
-        return if $seen_run_end->{$rid}++;
-
-        my $cr = $fd->{collector_report} // $h->{collector_report} // {};
-        my %re = (
-            run_id     => $rid,
-            pass       => exists $cr->{pass} ? ($cr->{pass} ? 1 : 0) : 1,
-            pass_count => $cr->{passed_jobs} // 0,
-            fail_count => $cr->{failed_jobs} // 0,
-            stamp      => $rc->{stamp} // time,
-        );
-        $re{wall_time} = $cr->{ended_at} - $cr->{started_at}
-            if defined $cr->{ended_at} && defined $cr->{started_at};
-
-        # Aggregate per-job timing from the cached report rows. Renderer
-        # used to read this off the run service's run_mutation snapshot;
-        # since that channel is gone, we walk whatever per-job reports
-        # we cached during the run.
-        my $rs = $run_states->{$rid} // {};
-        if (my $jobs = $rs->{jobs}) {
-            my @cpu_agg     = (0, 0, 0, 0);
-            my $have_times  = 0;
-            my $cum_job_wall = 0;
-            my $have_wall    = 0;
-            for my $key (keys %$jobs) {
-                my $rep = $jobs->{$key}{report} // {};
-                if (my $t = $rep->{child_times}) {
-                    $cpu_agg[$_] += $t->[$_] for 0 .. 3;
-                    $have_times = 1;
-                }
-                if (defined(my $w = $rep->{child_wall})) {
-                    $cum_job_wall += $w;
-                    $have_wall = 1;
-                }
-            }
-
-            $re{cumulative_job_time} = $cum_job_wall if $have_wall;
-            if ($have_times && defined $re{wall_time} && $re{wall_time} > 0) {
-                my $cpu_total = $cpu_agg[0] + $cpu_agg[1] + $cpu_agg[2] + $cpu_agg[3];
-                $re{cpu_times} = \@cpu_agg;
-                $re{cpu_total} = $cpu_total;
-                $re{cpu_usage} = int($cpu_total / $re{wall_time} * 100);
-            }
-        }
-
-        push @$synth_queue, Test2::Harness2::Event->new({
-            facet_data => {
-                harness_run_end => \%re,
-                harness_run     => {run_id => $rid},
-            },
-        });
+        $class->_synth_run_completed($h, $fd, $run_states, $seen_run_end, $synth_queue);
         return;
     }
 
+    return;
+}
+
+# Handle a `run_queued` transition: record per-run state, emit the
+# initial harness_run lifecycle facet (once per run) and a
+# harness_job_queued facet for every job listed in the queue.
+sub _synth_run_queued {
+    my ($class, $h, $log, $run_states, $seen_run_start, $synth_queue) = @_;
+
+    my $rid = $h->{run_id};
+    return unless defined $rid;
+
+    my $rs = $run_states->{$rid} //= {jobs => {}};
+    $rs->{queued_at} = $h->{queued_at};
+    $rs->{job_ids}   = ref($h->{job_ids}) eq 'ARRAY' ? [@{$h->{job_ids}}] : [];
+
+    unless ($seen_run_start->{$rid}++) {
+        push @$synth_queue, Test2::Harness2::Event->new({
+            facet_data => {
+                harness_run => {
+                    run_id     => $rid,
+                    (defined $h->{queued_at} ? (created_at => $h->{queued_at}) : ()),
+                    pending    => [@{$rs->{job_ids}}],
+                    running    => [],
+                    done       => [],
+                },
+            },
+        });
+    }
+
+    for my $jid (@{$rs->{job_ids}}) {
+        my $spec = _job_spec($log, $rid, $jid, 0, $rs);
+        push @$synth_queue, Test2::Harness2::Event->new({
+            facet_data => {
+                harness_job_queued => {
+                    job_id   => $jid,
+                    file     => $spec->{abs_file} // $spec->{rel_file},
+                    abs_file => $spec->{abs_file},
+                    rel_file => $spec->{rel_file},
+                    stamp    => $spec->{queued_at} // $h->{queued_at},
+                },
+            },
+        });
+    }
+    return;
+}
+
+# Handle a `job_started` transition: emit the harness_job_start
+# lifecycle facet, using the cached per-job spec for file paths.
+sub _synth_job_started {
+    my ($class, $h, $log, $run_states, $synth_queue) = @_;
+
+    my $info = $h->{job_info} // {};
+    my $rid  = $info->{run_id} // $h->{run_id};
+    my $jid  = $info->{job_id};
+    my $try  = $info->{job_try} // 1;
+    return unless defined $rid && defined $jid;
+
+    my $rs   = $run_states->{$rid} //= {jobs => {}};
+    my $spec = _job_spec($log, $rid, $jid, $try, $rs);
+    my $stamp = $h->{stamp} // $spec->{started_at} // time;
+
+    push @$synth_queue, Test2::Harness2::Event->new({
+        facet_data => {
+            harness_job_start => {
+                job_id   => $jid,
+                file     => $spec->{abs_file} // $spec->{rel_file},
+                abs_file => $spec->{abs_file},
+                rel_file => $spec->{rel_file},
+                stamp    => $stamp,
+                details  => "Launched " . ($spec->{rel_file} // $jid) . " as job $jid.",
+            },
+        },
+    });
+    return;
+}
+
+# Handle a `job_completed` transition: emit paired harness_job_end and
+# harness_job_exit facets, drawing exit info from the per-job report.
+sub _synth_job_completed {
+    my ($class, $h, $log, $run_states, $synth_queue) = @_;
+
+    my $info = $h->{job_info} // {};
+    my $rid  = $info->{run_id} // $h->{run_id};
+    my $jid  = $info->{job_id};
+    my $try  = $info->{job_try} // 1;
+    return unless defined $rid && defined $jid;
+
+    my $rs     = $run_states->{$rid} //= {jobs => {}};
+    my $spec   = _job_spec($log, $rid, $jid, $try, $rs);
+    my $report = _job_report($log, $rid, $jid, $try, $rs);
+    my $stamp  = $h->{stamp} // $report->{ended_at} // time;
+    my $pass   = exists $h->{pass} ? ($h->{pass} ? 1 : 0)
+               : ($report->{pass}  ? 1 : 0);
+
+    my %end_facet = (
+        job_id   => $jid,
+        file     => $spec->{abs_file} // $spec->{rel_file},
+        abs_file => $spec->{abs_file},
+        rel_file => $spec->{rel_file},
+        fail     => $pass ? 0 : 1,
+        stamp    => $stamp,
+    );
+    $end_facet{exit}  = $report->{exit}         if defined $report->{exit};
+    $end_facet{codes} = $report->{exit_decoded} if defined $report->{exit_decoded};
+    $end_facet{times} = $report->{times}        if defined $report->{times};
+
+    my %exit_facet = (job_id => $jid, stamp => $stamp);
+    $exit_facet{exit}  = $report->{exit}         if defined $report->{exit};
+    $exit_facet{codes} = $report->{exit_decoded} if defined $report->{exit_decoded};
+
+    push @$synth_queue, Test2::Harness2::Event->new({
+        facet_data => {
+            harness_job_end  => \%end_facet,
+            harness_job_exit => \%exit_facet,
+        },
+    });
+    return;
+}
+
+# Handle a `run_completed` transition: emit harness_run_end (once per
+# run) with aggregated pass/fail counts, wall time, and CPU/wall
+# rollups computed from cached per-job reports.
+sub _synth_run_completed {
+    my ($class, $h, $fd, $run_states, $seen_run_end, $synth_queue) = @_;
+
+    my $rc = $h->{run_completed};
+    my $rid = $rc->{run_id} // $h->{run_id};
+    return unless defined $rid;
+
+    return if $seen_run_end->{$rid}++;
+
+    my $cr = $fd->{collector_report} // $h->{collector_report} // {};
+    my %re = (
+        run_id     => $rid,
+        pass       => exists $cr->{pass} ? ($cr->{pass} ? 1 : 0) : 1,
+        pass_count => $cr->{passed_jobs} // 0,
+        fail_count => $cr->{failed_jobs} // 0,
+        stamp      => $rc->{stamp} // time,
+    );
+    $re{wall_time} = $cr->{ended_at} - $cr->{started_at}
+        if defined $cr->{ended_at} && defined $cr->{started_at};
+
+    _aggregate_run_timing(\%re, $run_states->{$rid});
+
+    push @$synth_queue, Test2::Harness2::Event->new({
+        facet_data => {
+            harness_run_end => \%re,
+            harness_run     => {run_id => $rid},
+        },
+    });
+    return;
+}
+
+# Aggregate per-job timing from the cached report rows. Renderer used
+# to read this off the run service's run_mutation snapshot; since that
+# channel is gone, we walk whatever per-job reports we cached during
+# the run.
+sub _aggregate_run_timing {
+    my ($re, $rs) = @_;
+    $rs //= {};
+    my $jobs = $rs->{jobs} or return;
+
+    my @cpu_agg     = (0, 0, 0, 0);
+    my $have_times  = 0;
+    my $cum_job_wall = 0;
+    my $have_wall    = 0;
+    for my $key (keys %$jobs) {
+        my $rep = $jobs->{$key}{report} // {};
+        if (my $t = $rep->{child_times}) {
+            $cpu_agg[$_] += $t->[$_] for 0 .. 3;
+            $have_times = 1;
+        }
+        if (defined(my $w = $rep->{child_wall})) {
+            $cum_job_wall += $w;
+            $have_wall = 1;
+        }
+    }
+
+    $re->{cumulative_job_time} = $cum_job_wall if $have_wall;
+    if ($have_times && defined $re->{wall_time} && $re->{wall_time} > 0) {
+        my $cpu_total = $cpu_agg[0] + $cpu_agg[1] + $cpu_agg[2] + $cpu_agg[3];
+        $re->{cpu_times} = \@cpu_agg;
+        $re->{cpu_total} = $cpu_total;
+        $re->{cpu_usage} = int($cpu_total / $re->{wall_time} * 100);
+    }
     return;
 }
 
@@ -564,6 +608,32 @@ specific run on a persistent daemon's log.
 Inspect an on-disk event for a transition signal; on hit, push the
 corresponding lifecycle facets onto the synth queue, lazy-loading
 per-job spec / report artifacts via L</_job_spec> and L</_job_report>.
+
+=item _synth_run_queued
+
+Emit the initial C<harness_run> facet (once per run) and a
+C<harness_job_queued> facet for every job in the queue.
+
+=item _synth_job_started
+
+Emit a C<harness_job_start> facet for a started job, using the cached
+per-job spec for file paths.
+
+=item _synth_job_completed
+
+Emit paired C<harness_job_end> / C<harness_job_exit> facets, drawing
+exit info from the per-job report.
+
+=item _synth_run_completed
+
+Emit C<harness_run_end> (once per run) with aggregated pass/fail
+counts, wall time and CPU/wall rollups.
+
+=item _aggregate_run_timing
+
+Walk the cached per-job reports and populate
+C<cumulative_job_time> / C<cpu_times> / C<cpu_total> / C<cpu_usage>
+on the C<harness_run_end> facet under construction.
 
 =item _blessed_event / _job_spec / _job_report
 

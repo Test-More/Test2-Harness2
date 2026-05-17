@@ -594,126 +594,212 @@ sub _parse_artifact_path {
     my @parts = split m{/}, $rel;
     return undef unless @parts;
 
-    my ($scope_kind, $scope_id);
-    my ($run_ord, $job_ord, $try_ord, $service_name);
-    my $b = $self->{+BACKEND};
-
-    if ($parts[0] eq 'services') {
-        return undef unless @parts >= 2;
-        $service_name = $parts[1];
-        $scope_kind = 'service';
-        if ($create) {
-            $scope_id = $b->ensure_service_row($aid, $service_name, undef);
-        }
-        else {
-            $scope_id = $b->service_id_for_name($aid, $service_name, undef);
-        }
-        return undef unless defined $scope_id;
-        splice(@parts, 0, 2);
-    }
-    elsif ($parts[0] eq 'runs') {
-        return undef unless @parts >= 2;
-        $run_ord = $parts[1];
-        return undef unless $run_ord =~ /^\d+\z/;
-
-        if (@parts == 2) {
-            $scope_kind = 'run';
-            if ($create) {
-                $scope_id = $self->_ensure_run_id($aid, $run_ord);
-            }
-            else {
-                $scope_id = $b->run_exists($aid, $run_ord)
-                    ? $b->run_id_for_ord($aid, $run_ord)
-                    : undef;
-            }
-            return undef unless defined $scope_id;
-            splice(@parts, 0, 2);
-        }
-        elsif ($parts[2] eq 'services') {
-            return undef unless @parts >= 4;
-            $service_name = $parts[3];
-            $scope_kind = 'service';
-            if ($create) {
-                my $rid = $self->_ensure_run_id($aid, $run_ord);
-                $scope_id = $b->ensure_service_row($aid, $service_name, $rid);
-            }
-            else {
-                $scope_id = $b->service_id_for_name($aid, $service_name, $run_ord);
-            }
-            return undef unless defined $scope_id;
-            splice(@parts, 0, 4);
-        }
-        elsif ($parts[2] eq 'jobs') {
-            return undef unless @parts >= 5;
-            $job_ord = $parts[3];
-            $try_ord = $parts[4];
-            return undef unless $job_ord =~ /^\d+\z/ && $try_ord =~ /^\d+\z/;
-            $scope_kind = 'job_try';
-            if ($create) {
-                $scope_id = $self->_ensure_job_try_id($aid, $run_ord, $job_ord, $try_ord);
-            }
-            else {
-                return undef unless $b->run_exists($aid, $run_ord);
-                my $rid = $b->run_id_for_ord($aid, $run_ord);
-                return undef unless $b->job_exists($aid, $rid, $job_ord);
-                my $jid = $b->job_id_for_ord($aid, $rid, $job_ord);
-                return undef unless $b->try_exists($jid, $try_ord);
-                $scope_id = $b->try_id_for_ord($jid, $try_ord);
-            }
-            return undef unless defined $scope_id;
-            splice(@parts, 0, 5);
-        }
-        else {
-            $scope_kind = 'run';
-            if ($create) {
-                $scope_id = $self->_ensure_run_id($aid, $run_ord);
-            }
-            else {
-                $scope_id = $b->run_exists($aid, $run_ord)
-                    ? $b->run_id_for_ord($aid, $run_ord)
-                    : undef;
-            }
-            return undef unless defined $scope_id;
-            splice(@parts, 0, 2);
-        }
-    }
-    else {
-        # Archive-root artifact (e.g. meta.json).
-        $scope_kind = 'archive';
-        $scope_id = $aid;
-    }
+    my $scope = $self->_resolve_artifact_scope($aid, \@parts, $create);
+    return undef unless $scope;
 
     return undef unless @parts;
 
     my $remaining = join('/', @parts);
+    return $self->_build_artifact_info($scope, $remaining);
+}
+
+# Consume scope-defining leading path components from @parts (in place)
+# and return a hashref describing the resolved scope, or undef on
+# unresolvable lookups.
+sub _resolve_artifact_scope {
+    my ($self, $aid, $parts, $create) = @_;
+
+    if ($parts->[0] eq 'services') {
+        return $self->_resolve_global_service_scope($aid, $parts, $create);
+    }
+    elsif ($parts->[0] eq 'runs') {
+        return $self->_resolve_run_scope($aid, $parts, $create);
+    }
+
+    # Archive-root artifact (e.g. meta.json).
+    return {
+        scope_kind   => 'archive',
+        scope_id     => $aid,
+        run_ord      => undef,
+        job_ord      => undef,
+        try_ord      => undef,
+        service_name => undef,
+    };
+}
+
+# Resolve the global-services scope (no enclosing run). Consumes the
+# leading "services/<name>" pair from @$parts.
+sub _resolve_global_service_scope {
+    my ($self, $aid, $parts, $create) = @_;
+    my $b = $self->{+BACKEND};
+
+    return undef unless @$parts >= 2;
+    my $service_name = $parts->[1];
+    my $scope_id = $create
+        ? $b->ensure_service_row($aid, $service_name, undef)
+        : $b->service_id_for_name($aid, $service_name, undef);
+    return undef unless defined $scope_id;
+    splice(@$parts, 0, 2);
+
+    return {
+        scope_kind   => 'service',
+        scope_id     => $scope_id,
+        run_ord      => undef,
+        job_ord      => undef,
+        try_ord      => undef,
+        service_name => $service_name,
+    };
+}
+
+# Resolve scopes nested under "runs/<ord>/...". Dispatches to the
+# run-itself, run-scoped service, or job-try scope helpers.
+sub _resolve_run_scope {
+    my ($self, $aid, $parts, $create) = @_;
+
+    return undef unless @$parts >= 2;
+    my $run_ord = $parts->[1];
+    return undef unless $run_ord =~ /^\d+\z/;
+
+    if (@$parts == 2) {
+        return $self->_resolve_run_only_scope($aid, $parts, $create, $run_ord);
+    }
+    elsif ($parts->[2] eq 'services') {
+        return $self->_resolve_run_service_scope($aid, $parts, $create, $run_ord);
+    }
+    elsif ($parts->[2] eq 'jobs') {
+        return $self->_resolve_job_try_scope($aid, $parts, $create, $run_ord);
+    }
+
+    return $self->_resolve_run_only_scope($aid, $parts, $create, $run_ord);
+}
+
+# Resolve a bare run scope ("runs/<ord>" with arbitrary sub-path).
+# Consumes the leading two path components.
+sub _resolve_run_only_scope {
+    my ($self, $aid, $parts, $create, $run_ord) = @_;
+    my $b = $self->{+BACKEND};
+
+    my $scope_id;
+    if ($create) {
+        $scope_id = $self->_ensure_run_id($aid, $run_ord);
+    }
+    else {
+        $scope_id = $b->run_exists($aid, $run_ord)
+            ? $b->run_id_for_ord($aid, $run_ord)
+            : undef;
+    }
+    return undef unless defined $scope_id;
+    splice(@$parts, 0, 2);
+
+    return {
+        scope_kind   => 'run',
+        scope_id     => $scope_id,
+        run_ord      => $run_ord,
+        job_ord      => undef,
+        try_ord      => undef,
+        service_name => undef,
+    };
+}
+
+# Resolve a run-scoped service ("runs/<ord>/services/<name>"). Consumes
+# four leading path components.
+sub _resolve_run_service_scope {
+    my ($self, $aid, $parts, $create, $run_ord) = @_;
+    my $b = $self->{+BACKEND};
+
+    return undef unless @$parts >= 4;
+    my $service_name = $parts->[3];
+    my $scope_id;
+    if ($create) {
+        my $rid = $self->_ensure_run_id($aid, $run_ord);
+        $scope_id = $b->ensure_service_row($aid, $service_name, $rid);
+    }
+    else {
+        $scope_id = $b->service_id_for_name($aid, $service_name, $run_ord);
+    }
+    return undef unless defined $scope_id;
+    splice(@$parts, 0, 4);
+
+    return {
+        scope_kind   => 'service',
+        scope_id     => $scope_id,
+        run_ord      => $run_ord,
+        job_ord      => undef,
+        try_ord      => undef,
+        service_name => $service_name,
+    };
+}
+
+# Resolve a job-try scope ("runs/<ord>/jobs/<job>/<try>"). Consumes
+# five leading path components.
+sub _resolve_job_try_scope {
+    my ($self, $aid, $parts, $create, $run_ord) = @_;
+    my $b = $self->{+BACKEND};
+
+    return undef unless @$parts >= 5;
+    my $job_ord = $parts->[3];
+    my $try_ord = $parts->[4];
+    return undef unless $job_ord =~ /^\d+\z/ && $try_ord =~ /^\d+\z/;
+
+    my $scope_id;
+    if ($create) {
+        $scope_id = $self->_ensure_job_try_id($aid, $run_ord, $job_ord, $try_ord);
+    }
+    else {
+        return undef unless $b->run_exists($aid, $run_ord);
+        my $rid = $b->run_id_for_ord($aid, $run_ord);
+        return undef unless $b->job_exists($aid, $rid, $job_ord);
+        my $jid = $b->job_id_for_ord($aid, $rid, $job_ord);
+        return undef unless $b->try_exists($jid, $try_ord);
+        $scope_id = $b->try_id_for_ord($jid, $try_ord);
+    }
+    return undef unless defined $scope_id;
+    splice(@$parts, 0, 5);
+
+    return {
+        scope_kind   => 'job_try',
+        scope_id     => $scope_id,
+        run_ord      => $run_ord,
+        job_ord      => $job_ord,
+        try_ord      => $try_ord,
+        service_name => undef,
+    };
+}
+
+# Build the final artifact descriptor hash from a resolved scope plus
+# the remaining path (events/spec/state/report, attachments/*, or
+# arbitrary file).
+sub _build_artifact_info {
+    my ($self, $scope, $remaining) = @_;
+
+    my %scope_ords = (
+        run_ord => $scope->{run_ord},
+        job_ord => $scope->{job_ord},
+        try_ord => $scope->{try_ord},
+        service => $scope->{service_name},
+    );
 
     if ($remaining =~ m{^(events|spec|state|report)\.jsonl(\.zst)?\z}) {
         return {
-            scope_kind    => $scope_kind,
-            scope_id      => $scope_id,
+            scope_kind    => $scope->{scope_kind},
+            scope_id      => $scope->{scope_id},
             artifact_kind => $1,
             format        => 'jsonl',
             name          => undef,
             is_zst        => $2 ? 1 : 0,
-            scope_ords    => {
-                run_ord => $run_ord, job_ord => $job_ord, try_ord => $try_ord,
-                service => $service_name,
-            },
+            scope_ords    => \%scope_ords,
         };
     }
 
     if ($remaining =~ m{^attachments/(.+?)(\.zst)?\z}) {
         return {
-            scope_kind    => $scope_kind,
-            scope_id      => $scope_id,
+            scope_kind    => $scope->{scope_kind},
+            scope_id      => $scope->{scope_id},
             artifact_kind => 'attachment',
             format        => _format_for_name($1),
             name          => $1,
             is_zst        => $2 ? 1 : 0,
-            scope_ords    => {
-                run_ord => $run_ord, job_ord => $job_ord, try_ord => $try_ord,
-                service => $service_name,
-            },
+            scope_ords    => \%scope_ords,
         };
     }
 
@@ -722,16 +808,13 @@ sub _parse_artifact_path {
         : ($remaining, 0);
 
     return {
-        scope_kind    => $scope_kind,
-        scope_id      => $scope_id,
+        scope_kind    => $scope->{scope_kind},
+        scope_id      => $scope->{scope_id},
         artifact_kind => 'arbitrary',
         format        => _format_for_name($base_name),
         name          => $base_name,
         is_zst        => $is_zst,
-        scope_ords    => {
-            run_ord => $run_ord, job_ord => $job_ord, try_ord => $try_ord,
-            service => $service_name,
-        },
+        scope_ords    => \%scope_ords,
     };
 }
 
@@ -1337,23 +1420,22 @@ sub extract {
     require App::Yath2::Log;
     require App::Yath2::Log::Directory;
 
+    $self->_extract_artifact_rows($aid, $dir, $compressed, $runs, $exclude_runs);
+    $self->_extract_meta_json($canon, $dir, $compressed);
+    $self->_extract_virtual_files($aid, $dir, $compressed, $runs, $exclude_runs);
+
+    return App::Yath2::Log::Directory->new(path => $dir, live => 0);
+}
+
+# Walk the artifact rows for an archive and write each one to disk
+# (compressed or plain depending on $compressed) honoring run filters.
+sub _extract_artifact_rows {
+    my ($self, $aid, $dir, $compressed, $runs, $exclude_runs) = @_;
     my $b = $self->{+BACKEND};
     my $rows = $b->artifact_rows_for_archive($aid, with_payload => 1);
 
     for my $row (@$rows) {
-        my $rord;
-        if    (defined $row->{run_id})                                  { $rord = $row->{run_ord}; }
-        elsif (defined $row->{service_id} && defined $row->{s_run_ord}) { $rord = $row->{s_run_ord}; }
-        elsif (defined $row->{job_try_id})                              { $rord = $row->{j_run_ord}; }
-
-        if (defined $rord) {
-            if (defined $runs) {
-                next unless grep { $_ eq $rord } @$runs;
-            }
-            elsif (defined $exclude_runs) {
-                next if grep { $_ eq $rord } @$exclude_runs;
-            }
-        }
+        next unless $self->_artifact_row_passes_run_filter($row, $runs, $exclude_runs);
 
         my $base = $b->_base_for_artifact_row($row);
         next unless defined $base;
@@ -1362,40 +1444,85 @@ sub extract {
 
         my $rel = length $base ? "$base/$stem" : $stem;
 
-        my $payload = $row->{payload};
-        my $stored_compressed = $row->{compressed} ? 1 : 0;
-
-        my ($out_rel, $out_bytes);
-        if ($compressed) {
-            $out_rel   = "$rel.zst";
-            $out_bytes = $stored_compressed ? $payload : $self->_compress_blob($payload);
-        }
-        else {
-            $out_rel   = $rel;
-            $out_bytes = $stored_compressed
-                ? $self->_decompress_jsonl_bytes($payload)
-                : $payload;
-        }
-
+        my ($out_rel, $out_bytes) = $self->_extract_payload_for_row($row, $rel, $compressed);
         $self->_write_extract_file($dir, $out_rel, $out_bytes);
     }
+}
 
-    # meta.json reconstructed from archives row + meta_extras.
-    {
-        my $rec = $self->meta($canon);
-        if ($rec) {
-            my $bytes = App::Yath2::Log->encode_archive_meta($rec);
-            my $out_rel = $compressed ? 'meta.json.zst' : 'meta.json';
-            my $out_bytes = $compressed ? $self->_compress_blob($bytes) : $bytes;
-            $self->_write_extract_file($dir, $out_rel, $out_bytes);
-        }
+# Decide whether an artifact row should be written given the optional
+# include/exclude run-ord filters.
+sub _artifact_row_passes_run_filter {
+    my ($self, $row, $runs, $exclude_runs) = @_;
+
+    my $rord;
+    if    (defined $row->{run_id})                                  { $rord = $row->{run_ord}; }
+    elsif (defined $row->{service_id} && defined $row->{s_run_ord}) { $rord = $row->{s_run_ord}; }
+    elsif (defined $row->{job_try_id})                              { $rord = $row->{j_run_ord}; }
+
+    return 1 unless defined $rord;
+
+    if (defined $runs) {
+        return (grep { $_ eq $rord } @$runs) ? 1 : 0;
+    }
+    elsif (defined $exclude_runs) {
+        return (grep { $_ eq $rord } @$exclude_runs) ? 0 : 1;
     }
 
-    # Materialize the virtual spec/report (and per-job-try state) files
-    # that list_files advertises. Reconstructed from typed columns at
-    # write time so the extracted directory matches a standard yath log
-    # tree.
+    return 1;
+}
+
+# Compute the on-disk relative path and byte payload for an artifact
+# row given the requested output compression mode.
+sub _extract_payload_for_row {
+    my ($self, $row, $rel, $compressed) = @_;
+
+    my $payload = $row->{payload};
+    my $stored_compressed = $row->{compressed} ? 1 : 0;
+
+    if ($compressed) {
+        my $out_bytes = $stored_compressed ? $payload : $self->_compress_blob($payload);
+        return ("$rel.zst", $out_bytes);
+    }
+
+    my $out_bytes = $stored_compressed
+        ? $self->_decompress_jsonl_bytes($payload)
+        : $payload;
+    return ($rel, $out_bytes);
+}
+
+# Reconstruct meta.json from the archives row + meta_extras and write
+# it (compressed when requested) at the archive root.
+sub _extract_meta_json {
+    my ($self, $canon, $dir, $compressed) = @_;
+    my $rec = $self->meta($canon);
+    return unless $rec;
+    my $bytes = App::Yath2::Log->encode_archive_meta($rec);
+    my $out_rel = $compressed ? 'meta.json.zst' : 'meta.json';
+    my $out_bytes = $compressed ? $self->_compress_blob($bytes) : $bytes;
+    $self->_write_extract_file($dir, $out_rel, $out_bytes);
+}
+
+# Materialize the virtual spec/report (and per-job-try state) files
+# that list_files advertises. Reconstructed from typed columns at write
+# time so the extracted directory matches a standard yath log tree.
+sub _extract_virtual_files {
+    my ($self, $aid, $dir, $compressed, $runs, $exclude_runs) = @_;
+
     require Test2::Harness2::LogLayout;
+
+    my @virtuals = $self->_collect_virtual_files($aid, $runs, $exclude_runs);
+
+    for my $v (@virtuals) {
+        my ($dir_rel, $kind, $scope, $sid) = @$v;
+        $self->_write_virtual_file($aid, $dir, $compressed, $dir_rel, $kind, $scope, $sid);
+    }
+}
+
+# Walk service / run / job-try rows for an archive and return the list
+# of [dir_rel, kind, scope, sid] tuples that need to be materialized.
+sub _collect_virtual_files {
+    my ($self, $aid, $runs, $exclude_runs) = @_;
+    my $b = $self->{+BACKEND};
 
     my @virtuals;
 
@@ -1436,33 +1563,37 @@ sub extract {
         }
     }
 
-    for my $v (@virtuals) {
-        my ($dir_rel, $kind, $scope, $sid) = @$v;
-        my $records
-            = $kind eq 'spec'   ? $self->_reconstruct_spec_records($aid, $scope, $sid)
-            : $kind eq 'report' ? $self->_reconstruct_report_records($aid, $scope, $sid)
-            : $kind eq 'state'  ? $self->_reconstruct_state_records($aid, $scope, $sid)
-            : undef;
-        $records ||= [];
+    return @virtuals;
+}
 
-        my $plain = '';
-        for my $rec (@$records) {
-            $plain .= encode_json($rec) . "\n";
-        }
+# Reconstruct one virtual jsonl artifact (spec/report/state) from typed
+# columns and write it to the extract directory in the requested
+# compression mode.
+sub _write_virtual_file {
+    my ($self, $aid, $dir, $compressed, $dir_rel, $kind, $scope, $sid) = @_;
 
-        my $out_rel = "$dir_rel/$kind.jsonl";
-        my $out_bytes;
-        if ($compressed) {
-            $out_rel .= '.zst';
-            $out_bytes = $self->_compress_blob($plain);
-        }
-        else {
-            $out_bytes = $plain;
-        }
-        $self->_write_extract_file($dir, $out_rel, $out_bytes);
+    my $records
+        = $kind eq 'spec'   ? $self->_reconstruct_spec_records($aid, $scope, $sid)
+        : $kind eq 'report' ? $self->_reconstruct_report_records($aid, $scope, $sid)
+        : $kind eq 'state'  ? $self->_reconstruct_state_records($aid, $scope, $sid)
+        : undef;
+    $records ||= [];
+
+    my $plain = '';
+    for my $rec (@$records) {
+        $plain .= encode_json($rec) . "\n";
     }
 
-    return App::Yath2::Log::Directory->new(path => $dir, live => 0);
+    my $out_rel = "$dir_rel/$kind.jsonl";
+    my $out_bytes;
+    if ($compressed) {
+        $out_rel .= '.zst';
+        $out_bytes = $self->_compress_blob($plain);
+    }
+    else {
+        $out_bytes = $plain;
+    }
+    $self->_write_extract_file($dir, $out_rel, $out_bytes);
 }
 
 sub _write_extract_file {
@@ -1607,7 +1738,39 @@ sub _insert_body {
     # test_file_id from spec.jsonl when minting jobs rows (NOT NULL).
     $self->{+_INSERT_SOURCE} = $source;
 
-    # Build archive row.
+    my $aid = $self->_create_archive_from_meta($meta);
+
+    my @files = $self->_source_artifact_files($source);
+    my ($seen_logical, $ordered) = $self->_dedupe_logical_artifacts(\@files);
+
+    for my $logical (@$ordered) {
+        my $rel = $seen_logical->{$logical};
+
+        next unless $self->_insert_rel_passes_run_filter($rel, $runs, $exclude_runs);
+
+        my $info = $self->_parse_artifact_path($aid, $rel, create => 1);
+        next unless $info;
+        next unless defined $info->{artifact_kind};
+
+        $self->_insert_artifact_row($source, $aid, $rel, $info, $compress);
+    }
+
+    delete $self->{+_INSERT_SOURCE};
+
+    # Populate summary rows from the source's spec.jsonl / report.jsonl
+    # walks. Without these the DB is unusable for everything but raw
+    # artifact retrieval.
+    $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
+
+    return $aid;
+}
+
+# Split meta hash into promoted/extras keys and create the archives
+# row, returning the archive_id.
+sub _create_archive_from_meta {
+    my ($self, $meta) = @_;
+    my $b = $self->{+BACKEND};
+
     my %meta_extras;
     my %promoted;
     {
@@ -1618,7 +1781,7 @@ sub _insert_body {
         }
     }
 
-    my $aid = $b->archive_create({
+    return $b->archive_create({
         archive_uuid    => $meta->{archive_uuid},
         archive_version => $App::Yath2::Log::VERSION,
         sealed_at       => $b->db_format_datetime($meta->{created_at}),
@@ -1629,20 +1792,26 @@ sub _insert_body {
         yath_version    => $meta->{yath_version},
         meta_extras     => %meta_extras ? \%meta_extras : undef,
     });
+}
 
-    # Walk source list_files; insert artifact rows.
-    my @files;
-    if ($source->can('list_files')) {
-        @files = $source->list_files;
-    }
-    else {
-        croak "source log does not support list_files";
-    }
+# Return the source's list_files contents (or croak if the source does
+# not support list_files).
+sub _source_artifact_files {
+    my ($self, $source) = @_;
+    croak "source log does not support list_files"
+        unless $source->can('list_files');
+    return $source->list_files;
+}
 
-    # De-dup .zst vs plain probes for the same logical artifact.
+# Walk the raw file list and produce (1) a logical=>rel map preferring
+# .zst variants and (2) an ordered logical-name list with duplicates
+# stripped, skipping artifacts that are reconstructed from typed cols.
+sub _dedupe_logical_artifacts {
+    my ($self, $files) = @_;
+
     my %seen_logical;
     my @ordered;
-    for my $rel (@files) {
+    for my $rel (@$files) {
         next if $rel eq 'LIVE';
         next if $rel eq 'meta.json' || $rel eq 'meta.json.zst';
         # spec/report/state.jsonl on run/service/job_try are reconstructed
@@ -1659,70 +1828,67 @@ sub _insert_body {
     }
     my %emitted;
     my @final = grep { !$emitted{$_}++ } @ordered;
+    return (\%seen_logical, \@final);
+}
 
-    for my $logical (@final) {
-        my $rel = $seen_logical{$logical};
+# Apply run include/exclude filters when the artifact rel is rooted at
+# runs/<ord>/...; archive-root and global-service artifacts always pass.
+sub _insert_rel_passes_run_filter {
+    my ($self, $rel, $runs, $exclude_runs) = @_;
+    return 1 unless $rel =~ m{^runs/(\d+)/};
+    my $rid = $1;
+    if (defined $runs) {
+        return (grep { $_ eq $rid } @$runs) ? 1 : 0;
+    }
+    elsif (defined $exclude_runs) {
+        return (grep { $_ eq $rid } @$exclude_runs) ? 0 : 1;
+    }
+    return 1;
+}
 
-        if ($rel =~ m{^runs/(\d+)/}) {
-            my $rid = $1;
-            if (defined $runs) {
-                next unless grep { $_ eq $rid } @$runs;
-            }
-            elsif (defined $exclude_runs) {
-                next if grep { $_ eq $rid } @$exclude_runs;
-            }
-        }
+# Read the source artifact, reshape its bytes for the requested storage
+# compression mode, compute row_count for events artifacts, then create
+# the artifacts row.
+sub _insert_artifact_row {
+    my ($self, $source, $aid, $rel, $info, $compress) = @_;
+    my $b = $self->{+BACKEND};
 
-        my $info = $self->_parse_artifact_path($aid, $rel, create => 1);
-        next unless $info;
-        next unless defined $info->{artifact_kind};
+    my ($exists, $src_is_zst) = $source->_artifact_exists($rel);
+    return unless $exists;
 
-        my ($exists, $src_is_zst) = $source->_artifact_exists($rel);
-        next unless $exists;
+    my $raw = $source->_artifact_read($rel);
 
-        my $raw = $source->_artifact_read($rel);
-
-        my ($stored_compressed, $stored_bytes);
-        if ($compress) {
-            $stored_compressed = $src_is_zst ? 1 : 0;
-            $stored_bytes      = $raw;
-        }
-        else {
-            $stored_compressed = 0;
-            $stored_bytes      = $src_is_zst
-                ? $self->_decompress_jsonl_bytes($raw)
-                : $raw;
-        }
-
-        my $fk = _scope_fk_values($info->{scope_kind}, $info->{scope_id});
-        my $row_count;
-        if ($info->{artifact_kind} eq 'events') {
-            $row_count = $self->_events_row_count_for_payload($stored_bytes, $stored_compressed);
-        }
-        $b->artifact_create({
-            archive_id    => $aid,
-            run_id        => $fk->{run_id},
-            service_id    => $fk->{service_id},
-            job_try_id    => $fk->{job_try_id},
-            artifact_kind => $info->{artifact_kind},
-            format        => $info->{format},
-            name          => $info->{name},
-            compressed    => $stored_compressed,
-            row_count     => $row_count,
-            payload       => $stored_bytes,
-            created_at    => $b->db_now,
-            sealed        => 1,
-        });
+    my ($stored_compressed, $stored_bytes);
+    if ($compress) {
+        $stored_compressed = $src_is_zst ? 1 : 0;
+        $stored_bytes      = $raw;
+    }
+    else {
+        $stored_compressed = 0;
+        $stored_bytes      = $src_is_zst
+            ? $self->_decompress_jsonl_bytes($raw)
+            : $raw;
     }
 
-    delete $self->{+_INSERT_SOURCE};
-
-    # Populate summary rows from the source's spec.jsonl / report.jsonl
-    # walks. Without these the DB is unusable for everything but raw
-    # artifact retrieval.
-    $self->_populate_summary_rows($source, $aid, $runs, $exclude_runs, $project_id);
-
-    return $aid;
+    my $fk = _scope_fk_values($info->{scope_kind}, $info->{scope_id});
+    my $row_count;
+    if ($info->{artifact_kind} eq 'events') {
+        $row_count = $self->_events_row_count_for_payload($stored_bytes, $stored_compressed);
+    }
+    $b->artifact_create({
+        archive_id    => $aid,
+        run_id        => $fk->{run_id},
+        service_id    => $fk->{service_id},
+        job_try_id    => $fk->{job_try_id},
+        artifact_kind => $info->{artifact_kind},
+        format        => $info->{format},
+        name          => $info->{name},
+        compressed    => $stored_compressed,
+        row_count     => $row_count,
+        payload       => $stored_bytes,
+        created_at    => $b->db_now,
+        sealed        => 1,
+    });
 }
 
 # ---------------------------------------------------------------------------
@@ -2039,94 +2205,99 @@ sub _populate_summary_rows {
 sub _populate_run_row {
     my ($self, $source, $aid, $run_ord, $project_id) = @_;
     my $b = $self->{+BACKEND};
-    my $dbh = $self->dbh;
 
     my $artifact = eval { $source->artifacts($run_ord) } or return;
     my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
     my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
 
-    my %spec_promoted   = map { $_ => 1 } @_RUNS_SPEC_PROMOTED;
-    my %report_promoted = map { $_ => 1 } @_RUNS_REPORT_PROMOTED;
-    my %aggregated      = map { $_ => 1 } @_RUNS_AGGREGATED;
+    my %aggregated = map { $_ => 1 } @_RUNS_AGGREGATED;
 
-    my (%spec_typed, %spec_extras);
-    if (ref($spec) eq 'HASH') {
-        for my $k (sort keys %$spec) {
-            next if $aggregated{$k};
-            if ($spec_promoted{$k}) { $spec_typed{$k} = $spec->{$k}; }
-            else                    { $spec_extras{$k} = $spec->{$k}; }
-        }
-    }
+    my ($spec_typed, $spec_extras)
+        = $self->_split_promoted($spec, \@_RUNS_SPEC_PROMOTED, \%aggregated);
+    my ($report_typed, $state_extras)
+        = $self->_split_promoted($report, \@_RUNS_REPORT_PROMOTED, \%aggregated);
 
-    my (%report_typed, %state_extras);
-    if (ref($report) eq 'HASH') {
-        for my $k (sort keys %$report) {
-            next if $aggregated{$k};
-            if ($report_promoted{$k}) { $report_typed{$k} = $report->{$k}; }
-            else                      { $state_extras{$k} = $report->{$k}; }
-        }
-    }
+    my %set = $self->_build_run_set_fields($spec_typed, $report_typed, $spec_extras, $state_extras, $report, $project_id);
 
-    my $times = exists $report_typed{times}       ? $report_typed{times}
-              : exists $spec_typed{times}         ? $spec_typed{times}
-              : undef;
-    my $child_times = exists $report_typed{child_times} ? $report_typed{child_times}
-                    : exists $spec_typed{child_times}   ? $spec_typed{child_times}
-                    : undef;
-    my $child_wall = exists $report_typed{child_wall} ? $report_typed{child_wall}
-                   : exists $spec_typed{child_wall}   ? $spec_typed{child_wall}
-                   : undef;
-
-    my $times_json       = ref($times)       ? $self->_encode_json($times)       : $times;
-    my $child_times_json = ref($child_times) ? $self->_encode_json($child_times) : $child_times;
-
-    my $spec_extras_json  = %spec_extras  ? $self->_encode_json(\%spec_extras)  : undef;
-    my $state_extras_json = %state_extras ? $self->_encode_json(\%state_extras) : undef;
-
-    my %set;
-    $set{started_at}   = $self->{+BACKEND}->db_format_datetime($spec_typed{started_at}) if defined $spec_typed{started_at};
-    $set{ended_at}     = $self->{+BACKEND}->db_format_datetime($report_typed{ended_at}) if defined $report_typed{ended_at};
-    $set{exit}         = $report_typed{exit}                           if defined $report_typed{exit};
-    $set{exit_decoded} = $self->_encode_json($report_typed{exit_decoded})
-        if defined $report_typed{exit_decoded};
-    $set{pass}         = $report_typed{pass} ? 1 : 0                   if exists  $report_typed{pass};
-    $set{total_jobs}   = $report_typed{total_jobs}                     if defined $report_typed{total_jobs};
-    $set{passed_jobs}  = $report_typed{passed_jobs}                    if defined $report_typed{passed_jobs};
-    $set{failed_jobs}  = $report_typed{failed_jobs}                    if defined $report_typed{failed_jobs};
-    $set{aborted_jobs} = $report_typed{aborted_jobs}                   if defined $report_typed{aborted_jobs};
-    $set{times}        = $times_json                                   if defined $times_json;
-    $set{child_times}  = $child_times_json                             if defined $child_times_json;
-    $set{child_wall}   = $child_wall                                   if defined $child_wall;
-    $set{spec_extras}  = $spec_extras_json                             if defined $spec_extras_json;
-    $set{state_extras} = $state_extras_json                            if defined $state_extras_json;
-    $set{status}       = (ref($report) eq 'HASH' && defined $report->{ended_at}) ? 'completed' : 'incomplete';
-    $set{project_id}   = $project_id                                   if defined $project_id;
-
-    if (defined $spec_typed{run_uuid}) {
+    if (defined $spec_typed->{run_uuid}) {
         # The runs.run_uuid column needs the per-flavor bind (BINARY(16)
         # for MySQL etc). Route through the backend's _uuid_to_db helper
         # if available. For DBIC we keep the canonical hex string and
         # let DBIC's column_info handle it.
-        my $bcan_to_db = $b->can('_uuid_to_db') ? $b->_uuid_to_db($spec_typed{run_uuid})
-                       : $spec_typed{run_uuid};
+        my $bcan_to_db = $b->can('_uuid_to_db') ? $b->_uuid_to_db($spec_typed->{run_uuid})
+                       : $spec_typed->{run_uuid};
         $set{run_uuid} = $bcan_to_db;
     }
 
     $self->_update_row('runs', \%set, {archive_id => $aid, run_ord => $run_ord});
 }
 
+# Partition a spec/report row's keys into a typed hash (keys in
+# @$promoted) and an extras hash (anything else), skipping aggregated
+# keys entirely. Returns ($typed, $extras) as hashrefs.
+sub _split_promoted {
+    my ($self, $row, $promoted, $aggregated) = @_;
+    my (%typed, %extras);
+    return (\%typed, \%extras) unless ref($row) eq 'HASH';
+
+    my %prom_keys = map { $_ => 1 } @$promoted;
+    for my $k (sort keys %$row) {
+        next if $aggregated && $aggregated->{$k};
+        if ($prom_keys{$k}) { $typed{$k} = $row->{$k}; }
+        else                { $extras{$k} = $row->{$k}; }
+    }
+    return (\%typed, \%extras);
+}
+
+# Build the SET-clause column map for a runs row from the partitioned
+# spec/report data plus the project_id.
+sub _build_run_set_fields {
+    my ($self, $spec_typed, $report_typed, $spec_extras, $state_extras, $report, $project_id) = @_;
+    my $b = $self->{+BACKEND};
+
+    my $times = exists $report_typed->{times}       ? $report_typed->{times}
+              : exists $spec_typed->{times}         ? $spec_typed->{times}
+              : undef;
+    my $child_times = exists $report_typed->{child_times} ? $report_typed->{child_times}
+                    : exists $spec_typed->{child_times}   ? $spec_typed->{child_times}
+                    : undef;
+    my $child_wall = exists $report_typed->{child_wall} ? $report_typed->{child_wall}
+                   : exists $spec_typed->{child_wall}   ? $spec_typed->{child_wall}
+                   : undef;
+
+    my $times_json       = ref($times)       ? $self->_encode_json($times)       : $times;
+    my $child_times_json = ref($child_times) ? $self->_encode_json($child_times) : $child_times;
+
+    my $spec_extras_json  = %$spec_extras  ? $self->_encode_json($spec_extras)  : undef;
+    my $state_extras_json = %$state_extras ? $self->_encode_json($state_extras) : undef;
+
+    my %set;
+    $set{started_at}   = $b->db_format_datetime($spec_typed->{started_at}) if defined $spec_typed->{started_at};
+    $set{ended_at}     = $b->db_format_datetime($report_typed->{ended_at}) if defined $report_typed->{ended_at};
+    $set{exit}         = $report_typed->{exit}                          if defined $report_typed->{exit};
+    $set{exit_decoded} = $self->_encode_json($report_typed->{exit_decoded})
+        if defined $report_typed->{exit_decoded};
+    $set{pass}         = $report_typed->{pass} ? 1 : 0                  if exists  $report_typed->{pass};
+    $set{total_jobs}   = $report_typed->{total_jobs}                    if defined $report_typed->{total_jobs};
+    $set{passed_jobs}  = $report_typed->{passed_jobs}                   if defined $report_typed->{passed_jobs};
+    $set{failed_jobs}  = $report_typed->{failed_jobs}                   if defined $report_typed->{failed_jobs};
+    $set{aborted_jobs} = $report_typed->{aborted_jobs}                  if defined $report_typed->{aborted_jobs};
+    $set{times}        = $times_json                                    if defined $times_json;
+    $set{child_times}  = $child_times_json                              if defined $child_times_json;
+    $set{child_wall}   = $child_wall                                    if defined $child_wall;
+    $set{spec_extras}  = $spec_extras_json                              if defined $spec_extras_json;
+    $set{state_extras} = $state_extras_json                             if defined $state_extras_json;
+    $set{status}       = (ref($report) eq 'HASH' && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+    $set{project_id}   = $project_id                                    if defined $project_id;
+
+    return %set;
+}
+
 sub _populate_service_lifetimes {
     my ($self, $source, $aid, $name, $run_ord) = @_;
     my $b = $self->{+BACKEND};
 
-    my $artifact;
-    if (defined $run_ord) {
-        $artifact = eval { $source->artifacts($run_ord, $name) };
-    }
-    else {
-        $artifact = eval { $source->artifacts($name) }
-                 || eval { $source->artifacts({service => $name}) };
-    }
+    my $artifact = $self->_resolve_service_artifact($source, $name, $run_ord);
     return unless $artifact;
 
     my $specs   = $self->_read_all_jsonl_rows($artifact, 'spec.jsonl');
@@ -2135,81 +2306,89 @@ sub _populate_service_lifetimes {
     my $rid = defined $run_ord ? $self->_ensure_run_id($aid, $run_ord) : undef;
     my $sid = $b->ensure_service_row($aid, $name, $rid);
 
-    # Promote `role` from the first spec row that carries one.
+    $self->_promote_service_role($sid, $specs);
+
+    my $count = (scalar @$specs > scalar @$reports) ? scalar @$specs : scalar @$reports;
+    return unless $count;
+
+    for (my $i = 0; $i < $count; $i++) {
+        my $fields = $self->_build_service_lifetime_fields($specs->[$i], $reports->[$i], $i);
+        $b->service_lifetime_create($sid, $fields);
+    }
+
+    return;
+}
+
+# Resolve the per-service artifacts handle, tolerating both run-scoped
+# and global service shapes.
+sub _resolve_service_artifact {
+    my ($self, $source, $name, $run_ord) = @_;
+    if (defined $run_ord) {
+        return eval { $source->artifacts($run_ord, $name) };
+    }
+    return eval { $source->artifacts($name) }
+        || eval { $source->artifacts({service => $name}) };
+}
+
+# Update the services row's role column from the first spec entry that
+# carries a role value. No-op when no spec row has one.
+sub _promote_service_role {
+    my ($self, $sid, $specs) = @_;
     for my $spec (@$specs) {
         next unless ref($spec) eq 'HASH';
         next unless defined $spec->{role};
         $self->_update_row('services', {role => $spec->{role}}, {service_id => $sid});
         last;
     }
+}
 
-    my $count = (scalar @$specs > scalar @$reports) ? scalar @$specs : scalar @$reports;
-    return unless $count;
+# Build the field hashref for one service_lifetime row from the i-th
+# spec/report pair.
+sub _build_service_lifetime_fields {
+    my ($self, $spec, $report, $i) = @_;
+    my $b = $self->{+BACKEND};
 
-    my %spec_promoted   = map { $_ => 1 } @_SVC_SPEC_PROMOTED;
-    my %report_promoted = map { $_ => 1 } @_SVC_REPORT_PROMOTED;
+    my ($spec_typed, $spec_extras)
+        = $self->_split_promoted($spec, \@_SVC_SPEC_PROMOTED, undef);
+    my ($report_typed, $state_extras)
+        = $self->_split_promoted($report, \@_SVC_REPORT_PROMOTED, undef);
 
-    for (my $i = 0; $i < $count; $i++) {
-        my $spec   = $specs->[$i];
-        my $report = $reports->[$i];
+    my $times = exists $report_typed->{times}       ? $report_typed->{times}
+              : exists $spec_typed->{times}         ? $spec_typed->{times}
+              : undef;
+    my $child_times = exists $report_typed->{child_times} ? $report_typed->{child_times}
+                    : exists $spec_typed->{child_times}   ? $spec_typed->{child_times}
+                    : undef;
+    my $child_wall = exists $report_typed->{child_wall} ? $report_typed->{child_wall}
+                   : exists $spec_typed->{child_wall}   ? $spec_typed->{child_wall}
+                   : undef;
 
-        my (%spec_typed, %spec_extras);
-        if (ref($spec) eq 'HASH') {
-            for my $k (sort keys %$spec) {
-                if ($spec_promoted{$k}) { $spec_typed{$k} = $spec->{$k}; }
-                else                    { $spec_extras{$k} = $spec->{$k}; }
-            }
-        }
+    my $status = (ref($report) eq 'HASH' && defined $report->{ended_at})
+        ? 'completed' : 'running';
 
-        my (%report_typed, %state_extras);
-        if (ref($report) eq 'HASH') {
-            for my $k (sort keys %$report) {
-                if ($report_promoted{$k}) { $report_typed{$k} = $report->{$k}; }
-                else                      { $state_extras{$k} = $report->{$k}; }
-            }
-        }
+    my %fields = (
+        lifetime_ord => $i + 1,
+        status       => $status,
+        type         => $spec_typed->{type},
+        id           => $spec_typed->{id},
+        service_name => $spec_typed->{service_name},
+        stage_name   => $spec_typed->{stage_name},
+        started_at   => $b->db_format_datetime($spec_typed->{started_at}),
+        ended_at     => $b->db_format_datetime($report_typed->{ended_at}),
+        exit         => $report_typed->{exit},
+        child_wall   => $child_wall,
+    );
+    $fields{exit_decoded} = $report_typed->{exit_decoded} if exists $report_typed->{exit_decoded};
+    $fields{times}        = $times                       if defined $times;
+    $fields{child_times}  = $child_times                 if defined $child_times;
+    $fields{spec_extras}  = $spec_extras                 if %$spec_extras;
+    $fields{state_extras} = $state_extras                if %$state_extras;
 
-        my $times = exists $report_typed{times}       ? $report_typed{times}
-                  : exists $spec_typed{times}         ? $spec_typed{times}
-                  : undef;
-        my $child_times = exists $report_typed{child_times} ? $report_typed{child_times}
-                        : exists $spec_typed{child_times}   ? $spec_typed{child_times}
-                        : undef;
-        my $child_wall = exists $report_typed{child_wall} ? $report_typed{child_wall}
-                       : exists $spec_typed{child_wall}   ? $spec_typed{child_wall}
-                       : undef;
-
-        my $status = (ref($report) eq 'HASH' && defined $report->{ended_at})
-            ? 'completed' : 'running';
-
-        my %fields = (
-            lifetime_ord => $i + 1,
-            status       => $status,
-            type         => $spec_typed{type},
-            id           => $spec_typed{id},
-            service_name => $spec_typed{service_name},
-            stage_name   => $spec_typed{stage_name},
-            started_at   => $self->{+BACKEND}->db_format_datetime($spec_typed{started_at}),
-            ended_at     => $self->{+BACKEND}->db_format_datetime($report_typed{ended_at}),
-            exit         => $report_typed{exit},
-            child_wall   => $child_wall,
-        );
-        $fields{exit_decoded} = $report_typed{exit_decoded} if exists $report_typed{exit_decoded};
-        $fields{times}        = $times                      if defined $times;
-        $fields{child_times}  = $child_times                if defined $child_times;
-        $fields{spec_extras}  = \%spec_extras               if %spec_extras;
-        $fields{state_extras} = \%state_extras              if %state_extras;
-
-        $b->service_lifetime_create($sid, \%fields);
-    }
-
-    return;
+    return \%fields;
 }
 
 sub _populate_job_rows {
     my ($self, $source, $aid, $run_ord, $job_ord) = @_;
-    my $b = $self->{+BACKEND};
-    my $dbh = $self->dbh;
 
     my @tries = $source->can('tries') ? $source->tries($run_ord, $job_ord) : ();
     return unless @tries;
@@ -2217,80 +2396,15 @@ sub _populate_job_rows {
     my $job_db_id;
     my ($latest_try_ord, $latest_pass, $latest_status, $latest_spec);
 
-    my %spec_promoted   = map { $_ => 1 } @_JOB_TRIES_SPEC_PROMOTED;
-    my %report_promoted = map { $_ => 1 } @_JOB_TRIES_REPORT_PROMOTED;
-    my %aggregated      = map { $_ => 1 } @_JOB_TRIES_AGGREGATED;
-
     for my $try_ord (@tries) {
         my $artifact = eval { $source->artifacts($run_ord, $job_ord, $try_ord) } or next;
         my $spec   = $self->_read_first_jsonl_row($artifact, 'spec.jsonl');
         my $report = $self->_read_first_jsonl_row($artifact, 'report.jsonl');
 
         my $jtid = $self->_ensure_job_try_id($aid, $run_ord, $job_ord, $try_ord);
-        $job_db_id //= do {
-            my ($x) = $dbh->selectrow_array(
-                q{SELECT job_id FROM job_tries WHERE job_try_id = ?},
-                undef, $jtid,
-            );
-            $x;
-        };
+        $job_db_id //= $self->_job_id_for_try($jtid);
 
-        my (%spec_typed, %spec_extras);
-        if (ref($spec) eq 'HASH') {
-            for my $k (sort keys %$spec) {
-                next if $aggregated{$k};
-                if ($spec_promoted{$k}) { $spec_typed{$k} = $spec->{$k}; }
-                else                    { $spec_extras{$k} = $spec->{$k}; }
-            }
-        }
-
-        my (%report_typed, %state_extras);
-        if (ref($report) eq 'HASH') {
-            for my $k (sort keys %$report) {
-                next if $aggregated{$k};
-                if ($report_promoted{$k}) { $report_typed{$k} = $report->{$k}; }
-                else                      { $state_extras{$k} = $report->{$k}; }
-            }
-        }
-
-        my $times = exists $report_typed{times}       ? $report_typed{times}
-                  : exists $spec_typed{times}         ? $spec_typed{times}
-                  : undef;
-        my $child_times = exists $report_typed{child_times} ? $report_typed{child_times}
-                        : exists $spec_typed{child_times}   ? $spec_typed{child_times}
-                        : undef;
-        my $child_wall = exists $report_typed{child_wall} ? $report_typed{child_wall}
-                       : exists $spec_typed{child_wall}   ? $spec_typed{child_wall}
-                       : undef;
-
-        my $times_json       = ref($times)       ? $self->_encode_json($times)       : $times;
-        my $child_times_json = ref($child_times) ? $self->_encode_json($child_times) : $child_times;
-        my $plan_json        = ref($report_typed{plan}) ? $self->_encode_json($report_typed{plan}) : $report_typed{plan};
-        my $halt_json        = ref($report_typed{halt}) ? $self->_encode_json($report_typed{halt}) : $report_typed{halt};
-
-        my $spec_extras_json  = %spec_extras  ? $self->_encode_json(\%spec_extras)  : undef;
-        my $state_extras_json = %state_extras ? $self->_encode_json(\%state_extras) : undef;
-
-        my %set;
-        $set{queued_at}       = $self->{+BACKEND}->db_format_datetime($spec_typed{queued_at})  if defined $spec_typed{queued_at};
-        $set{started_at}      = $self->{+BACKEND}->db_format_datetime($spec_typed{started_at}) if defined $spec_typed{started_at};
-        $set{ended_at}        = $self->{+BACKEND}->db_format_datetime($report_typed{ended_at}) if defined $report_typed{ended_at};
-        $set{exit}            = $report_typed{exit}                        if defined $report_typed{exit};
-        $set{exit_decoded}    = $self->_encode_json($report_typed{exit_decoded})
-            if defined $report_typed{exit_decoded};
-        $set{pass}            = $report_typed{pass} ? 1 : 0                if exists  $report_typed{pass};
-        $set{pass_count}      = $report_typed{pass_count}                  if defined $report_typed{pass_count};
-        $set{fail_count}      = $report_typed{fail_count}                  if defined $report_typed{fail_count};
-        $set{assertion_count} = $report_typed{assertion_count}             if defined $report_typed{assertion_count};
-        $set{plan}            = $plan_json                                 if defined $plan_json;
-        $set{halt}            = $halt_json                                 if defined $halt_json;
-        $set{times}           = $times_json                                if defined $times_json;
-        $set{child_times}     = $child_times_json                          if defined $child_times_json;
-        $set{child_wall}      = $child_wall                                if defined $child_wall;
-        $set{spec_extras}     = $spec_extras_json                          if defined $spec_extras_json;
-        $set{state_extras}    = $state_extras_json                         if defined $state_extras_json;
-        $set{status}          = (ref($report) eq 'HASH' && defined $report->{ended_at}) ? 'completed' : 'incomplete';
-
+        my %set = $self->_build_job_try_set_fields($spec, $report);
         $self->_update_row('job_tries', \%set, {job_try_id => $jtid});
 
         if (!defined $latest_try_ord || $try_ord > $latest_try_ord) {
@@ -2300,24 +2414,106 @@ sub _populate_job_rows {
             $latest_spec    = $spec;
         }
 
-        if ($report && ref($report->{subtests}) eq 'ARRAY') {
-            my $sti = 0;
-            for my $st (@{$report->{subtests}}) {
-                next unless ref($st) eq 'HASH';
-                my $name = $st->{name} // '';
-                next unless length $name;
-                $b->subtest_create($jtid, {
-                    name       => $name,
-                    pass       => $st->{pass} ? 1 : 0,
-                    count_pass => $st->{count_pass},
-                    count_fail => $st->{count_fail},
-                    ord        => $sti++,
-                });
-            }
-        }
+        $self->_insert_subtest_rows($jtid, $report);
     }
 
     return unless defined $job_db_id;
+
+    $self->_finalize_job_row($job_db_id, $latest_spec, $latest_pass, $latest_status, scalar @tries);
+
+    return;
+}
+
+# Look up the parent jobs.job_id for a job_tries.job_try_id. Used once
+# per call (memoized via //= by the caller).
+sub _job_id_for_try {
+    my ($self, $jtid) = @_;
+    my ($x) = $self->dbh->selectrow_array(
+        q{SELECT job_id FROM job_tries WHERE job_try_id = ?},
+        undef, $jtid,
+    );
+    return $x;
+}
+
+# Build the SET-clause column map for a job_tries row from this try's
+# spec / report rows.
+sub _build_job_try_set_fields {
+    my ($self, $spec, $report) = @_;
+    my $b = $self->{+BACKEND};
+
+    my %aggregated = map { $_ => 1 } @_JOB_TRIES_AGGREGATED;
+
+    my ($spec_typed, $spec_extras)
+        = $self->_split_promoted($spec, \@_JOB_TRIES_SPEC_PROMOTED, \%aggregated);
+    my ($report_typed, $state_extras)
+        = $self->_split_promoted($report, \@_JOB_TRIES_REPORT_PROMOTED, \%aggregated);
+
+    my $times = exists $report_typed->{times}       ? $report_typed->{times}
+              : exists $spec_typed->{times}         ? $spec_typed->{times}
+              : undef;
+    my $child_times = exists $report_typed->{child_times} ? $report_typed->{child_times}
+                    : exists $spec_typed->{child_times}   ? $spec_typed->{child_times}
+                    : undef;
+    my $child_wall = exists $report_typed->{child_wall} ? $report_typed->{child_wall}
+                   : exists $spec_typed->{child_wall}   ? $spec_typed->{child_wall}
+                   : undef;
+
+    my $times_json       = ref($times)       ? $self->_encode_json($times)       : $times;
+    my $child_times_json = ref($child_times) ? $self->_encode_json($child_times) : $child_times;
+    my $plan_json        = ref($report_typed->{plan}) ? $self->_encode_json($report_typed->{plan}) : $report_typed->{plan};
+    my $halt_json        = ref($report_typed->{halt}) ? $self->_encode_json($report_typed->{halt}) : $report_typed->{halt};
+
+    my $spec_extras_json  = %$spec_extras  ? $self->_encode_json($spec_extras)  : undef;
+    my $state_extras_json = %$state_extras ? $self->_encode_json($state_extras) : undef;
+
+    my %set;
+    $set{queued_at}       = $b->db_format_datetime($spec_typed->{queued_at})  if defined $spec_typed->{queued_at};
+    $set{started_at}      = $b->db_format_datetime($spec_typed->{started_at}) if defined $spec_typed->{started_at};
+    $set{ended_at}        = $b->db_format_datetime($report_typed->{ended_at}) if defined $report_typed->{ended_at};
+    $set{exit}            = $report_typed->{exit}                        if defined $report_typed->{exit};
+    $set{exit_decoded}    = $self->_encode_json($report_typed->{exit_decoded})
+        if defined $report_typed->{exit_decoded};
+    $set{pass}            = $report_typed->{pass} ? 1 : 0                if exists  $report_typed->{pass};
+    $set{pass_count}      = $report_typed->{pass_count}                  if defined $report_typed->{pass_count};
+    $set{fail_count}      = $report_typed->{fail_count}                  if defined $report_typed->{fail_count};
+    $set{assertion_count} = $report_typed->{assertion_count}             if defined $report_typed->{assertion_count};
+    $set{plan}            = $plan_json                                   if defined $plan_json;
+    $set{halt}            = $halt_json                                   if defined $halt_json;
+    $set{times}           = $times_json                                  if defined $times_json;
+    $set{child_times}     = $child_times_json                            if defined $child_times_json;
+    $set{child_wall}      = $child_wall                                  if defined $child_wall;
+    $set{spec_extras}     = $spec_extras_json                            if defined $spec_extras_json;
+    $set{state_extras}    = $state_extras_json                           if defined $state_extras_json;
+    $set{status}          = (ref($report) eq 'HASH' && defined $report->{ended_at}) ? 'completed' : 'incomplete';
+
+    return %set;
+}
+
+# Walk a report's subtests array (if any) and create one subtests row
+# per named entry on this job_try.
+sub _insert_subtest_rows {
+    my ($self, $jtid, $report) = @_;
+    my $b = $self->{+BACKEND};
+    return unless $report && ref($report->{subtests}) eq 'ARRAY';
+    my $sti = 0;
+    for my $st (@{$report->{subtests}}) {
+        next unless ref($st) eq 'HASH';
+        my $name = $st->{name} // '';
+        next unless length $name;
+        $b->subtest_create($jtid, {
+            name       => $name,
+            pass       => $st->{pass} ? 1 : 0,
+            count_pass => $st->{count_pass},
+            count_fail => $st->{count_fail},
+            ord        => $sti++,
+        });
+    }
+}
+
+# Roll the latest-try summary into the jobs row and (when there is a
+# spec) populate the job_specs row.
+sub _finalize_job_row {
+    my ($self, $job_db_id, $latest_spec, $latest_pass, $latest_status, $retry_count) = @_;
 
     my $test_file_id;
     if (ref($latest_spec) eq 'HASH' && defined $latest_spec->{relative}) {
@@ -2333,14 +2529,12 @@ sub _populate_job_rows {
     $job_set{test_file_id} = $test_file_id    if defined $test_file_id;
     $job_set{pass}         = $latest_pass     if defined $latest_pass;
     $job_set{status}       = $latest_status   if defined $latest_status;
-    $job_set{retry_count}  = scalar @tries;
+    $job_set{retry_count}  = $retry_count;
 
     $self->_update_row('jobs', \%job_set, {job_id => $job_db_id});
 
     $self->_populate_job_spec($job_db_id, $test_file_id, $latest_spec)
         if ref($latest_spec) eq 'HASH';
-
-    return;
 }
 
 sub _populate_job_spec {

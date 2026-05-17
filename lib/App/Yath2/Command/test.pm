@@ -118,6 +118,19 @@ sub run {
     my $log_pass   = $renderer_exit == 0;
     my $final_pass = ($ipc_pass && $log_pass) ? 1 : 0;
 
+    $self->_write_archive($logdir);
+    $self->_cleanup_workdir($workdir);
+
+    return $final_pass ? 0 : 1;
+}
+
+# Resolve format/compression settings, write the run's archive to its
+# destination, and update the last-log symlink. Dies on an unknown
+# format setting.
+sub _write_archive {
+    my ($self, $logdir) = @_;
+    my $settings = $self->{+SETTINGS};
+
     my $archive = $self->_resolve_archive_path;
     my $format  = lc($settings->log->format // 'tar');
     $format = 'tar.zidx' if $format eq 'tar';
@@ -134,17 +147,27 @@ sub run {
     print "Wrote archive: $archive\n";
     App::Yath2::Log->update_last_log_symlink($archive);
 
-    if (!$settings->workspace->keep_dirs) {
-        remove_tree($workdir, {error => \my $rm_errors});
-        if ($rm_errors && @$rm_errors) {
-            for my $e (@$rm_errors) {
-                my ($file, $msg) = %$e;
-                warn "Could not remove '$file': $msg\n";
-            }
+    return;
+}
+
+# Remove the per-invocation workdir unless --keep-dirs was given. Any
+# per-entry removal failures are surfaced as warnings rather than
+# escalated, so a partial cleanup does not mask the run's exit code.
+sub _cleanup_workdir {
+    my ($self, $workdir) = @_;
+    my $settings = $self->{+SETTINGS};
+
+    return if $settings->workspace->keep_dirs;
+
+    remove_tree($workdir, {error => \my $rm_errors});
+    if ($rm_errors && @$rm_errors) {
+        for my $e (@$rm_errors) {
+            my ($file, $msg) = %$e;
+            warn "Could not remove '$file': $msg\n";
         }
     }
 
-    return $final_pass ? 0 : 1;
+    return;
 }
 
 # Walk @args expanding directories via --extensions / -E filter.
@@ -369,13 +392,14 @@ sub _reap_renderer {
 sub _drive_ipc_loop {
     my ($self, $spawn, $run_id, $renderer_pid) = @_;
 
-    my $ipc_pass         = 1;
-    my $seen_run_end     = 0;
-    my $seen_harness_end = 0;
-
-    my $harness_pid = $spawn->pid;
-    my $harness_dead_at;
-    my $harness_grace_sec = 10;
+    my $state = {
+        ipc_pass         => 1,
+        seen_run_end     => 0,
+        seen_harness_end => 0,
+        harness_pid      => $spawn->pid,
+        harness_dead_at  => undef,
+        harness_grace    => 10,
+    };
 
     my $ipc = $spawn->handle;
 
@@ -392,68 +416,82 @@ sub _drive_ipc_loop {
         }
 
         for my $msg ($ipc->messages) {
-            my $content = $msg->content;
-            next unless ref($content) eq 'HASH';
-
-            # State broadcasts: { type=>'state', item=>'run', run_id=>$id, state=>$run_data }
-            my $is_run_state = ($content->{type} // '') eq 'state' && ($content->{item} // '') eq 'run';
-            if ($is_run_state) {
-                my $rd = $content->{state};
-                next unless ref($rd) eq 'HASH';
-
-                # Pass/fail detection: explicit pass field or computed
-                # from results when the snapshot reports complete.
-                if (defined $rd->{pass}) {
-                    $ipc_pass = 0 unless $rd->{pass};
-                }
-                else {
-                    # No pass key (still running) -- look at any
-                    # completed jobs for a fail signal.
-                    my $results = ref($rd->{results}) eq 'HASH' ? $rd->{results} : {};
-                    for my $jid (keys %$results) {
-                        my $jr = $results->{$jid};
-                        next          unless ref($jr) eq 'HASH';
-                        next          unless defined $jr->{completed_at};
-                        $ipc_pass = 0 unless $jr->{pass};
-                    }
-                }
-
-                # The run is complete when its scheduler has no
-                # pending and no running jobs left. The run_data
-                # snapshot mirrors Run::State, which carries those
-                # arrays. (No top-level 'state' field is sent over
-                # the wire today.)
-                my $pen          = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
-                my $run          = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
-                my $have_results = ref($rd->{results}) eq 'HASH' && %{$rd->{results}};
-                if ($pen == 0 && $run == 0 && $have_results) {
-                    $seen_run_end = 1;
-                }
-                next;
-            }
-
-            # The harness-side reflection of collector_start / collector_end
-            # is dispatched only as a service event in the harness's
-            # log; over IPC, only run_state_update flows. Nothing else
-            # to do for us here.
+            $self->_process_ipc_message($msg, $state);
         }
 
-        last if $seen_run_end;
+        last if $state->{seen_run_end};
 
         # If the harness pid has gone, give it a short window for any
         # final inbound state message, then bail.
-        if ($harness_pid && !kill(0 => $harness_pid)) {
-            $harness_dead_at //= time;
-            $seen_harness_end = 1;
-            last if (time - $harness_dead_at) >= $harness_grace_sec;
+        if ($state->{harness_pid} && !kill(0 => $state->{harness_pid})) {
+            $state->{harness_dead_at} //= time;
+            $state->{seen_harness_end} = 1;
+            last if (time - $state->{harness_dead_at}) >= $state->{harness_grace};
         }
 
-        last if $renderer_gone && $harness_dead_at;
+        last if $renderer_gone && $state->{harness_dead_at};
 
         tinysleep(0.05);
     }
 
-    return ($ipc_pass, $seen_harness_end);
+    return ($state->{ipc_pass}, $state->{seen_harness_end});
+}
+
+# Inspect a single inbound IPC message, updating $state's pass and
+# completion flags as run_state_update broadcasts arrive. Non-state
+# messages (e.g. harness-side reflections) are ignored: over IPC only
+# run_state_update is meaningful here.
+sub _process_ipc_message {
+    my ($self, $msg, $state) = @_;
+
+    my $content = $msg->content;
+    return unless ref($content) eq 'HASH';
+
+    # State broadcasts: { type=>'state', item=>'run', run_id=>$id, state=>$run_data }
+    my $is_run_state = ($content->{type} // '') eq 'state' && ($content->{item} // '') eq 'run';
+    return unless $is_run_state;
+
+    my $rd = $content->{state};
+    return unless ref($rd) eq 'HASH';
+
+    $self->_update_pass_from_run_data($rd, $state);
+
+    # The run is complete when its scheduler has no pending and no
+    # running jobs left. The run_data snapshot mirrors Run::State,
+    # which carries those arrays. (No top-level 'state' field is sent
+    # over the wire today.)
+    my $pen          = ref($rd->{pending}) eq 'ARRAY' ? scalar @{$rd->{pending}} : 1;
+    my $run          = ref($rd->{running}) eq 'ARRAY' ? scalar @{$rd->{running}} : 1;
+    my $have_results = ref($rd->{results}) eq 'HASH' && %{$rd->{results}};
+    if ($pen == 0 && $run == 0 && $have_results) {
+        $state->{seen_run_end} = 1;
+    }
+
+    return;
+}
+
+# Update $state->{ipc_pass} from a run_data snapshot. Uses the explicit
+# pass field when present; otherwise inspects completed results for a
+# fail signal so still-running runs can flip to failing as jobs finish.
+sub _update_pass_from_run_data {
+    my ($self, $rd, $state) = @_;
+
+    if (defined $rd->{pass}) {
+        $state->{ipc_pass} = 0 unless $rd->{pass};
+        return;
+    }
+
+    # No pass key (still running) -- look at any completed jobs for a
+    # fail signal.
+    my $results = ref($rd->{results}) eq 'HASH' ? $rd->{results} : {};
+    for my $jid (keys %$results) {
+        my $jr = $results->{$jid};
+        next unless ref($jr) eq 'HASH';
+        next unless defined $jr->{completed_at};
+        $state->{ipc_pass} = 0 unless $jr->{pass};
+    }
+
+    return;
 }
 
 # Unsubscribe + drain pending messages while the harness is still
@@ -514,5 +552,29 @@ sub _resolve_archive_path {
 1;
 
 __END__
+
+=head1 METHODS
+
+=head2 _write_archive
+
+Resolve format/compression settings, write the run's archive to its
+destination directory, and update the last-log symlink.
+
+=head2 _cleanup_workdir
+
+Remove the per-invocation workdir unless C<--keep-dirs> was given;
+warn rather than die on per-entry removal failures.
+
+=head2 _process_ipc_message
+
+Inspect a single inbound IPC message, updating the loop state's
+pass and completion flags when a C<run_state_update> broadcast
+arrives.
+
+=head2 _update_pass_from_run_data
+
+Update the loop state's C<ipc_pass> flag from a run-data snapshot,
+preferring the explicit pass field and falling back to scanning
+completed job results.
 
 =head1 POD IS AUTO-GENERATED

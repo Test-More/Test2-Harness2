@@ -232,55 +232,92 @@ sub perform_hard_stop {
             $pids{$_} //= {} for list_direct_children($$);
         }
 
-        my (@fresh, @to_kill, $unignored);
-        for my $pid (keys %pids) {
-            my $state = $pids{$pid};
-            next if $state->{IGNORE};
-
-            $unignored++;
-
-            if (my $f_ts = $state->{$first_sig}) {
-                if (my $k_ts = $state->{KILL}) {
-                    $state->{IGNORE} = 1
-                        if (time - $k_ts) >= $grace;
-                    $unignored-- if $state->{IGNORE};
-                }
-                elsif ((time - $f_ts) >= $grace) {
-                    push @to_kill => $pid;
-                }
-            }
-            else {
-                push @fresh => $pid;
-            }
-        }
+        my ($fresh, $to_kill, $unignored)
+            = $self->_classify_hard_stop_pids(\%pids, $first_sig, $grace);
 
         last unless $unignored;
 
-        if (@fresh) {
-            kill($first_sig => @fresh);
-            my $now = time;
-            $pids{$_}{$first_sig} = $now for @fresh;
-        }
-        if (@to_kill) {
-            kill(KILL => @to_kill);
-            my $now = time;
-            $pids{$_}{KILL} = $now for @to_kill;
-        }
+        $self->_send_hard_stop_signals(\%pids, $fresh, $to_kill, $first_sig);
 
-        my $reaped = 0;
-        while (my $pid = waitpid(-1, WNOHANG)) {
-            last if $pid < 1;
-            delete $pids{$pid};
-            $self->service_on_reaped($pid);
-            $reaped = 1;
-        }
+        my $reaped = $self->_reap_hard_stop_pids(\%pids);
 
-        tinysleep(0.05) unless $reaped || @fresh || @to_kill;
+        tinysleep(0.05) unless $reaped || @$fresh || @$to_kill;
     }
 
     $self->service_post_hard_stop;
 
     return;
+}
+
+# Walk %pids and partition into pids that have not yet been signalled
+# ($fresh), pids whose first-sig grace has expired and need KILL
+# ($to_kill), and the count of still-active (non-ignored) entries.
+# Marks entries whose KILL grace has expired as IGNORE in-place.
+sub _classify_hard_stop_pids {
+    my $self = shift;
+    my ($pids, $first_sig, $grace) = @_;
+
+    my (@fresh, @to_kill, $unignored);
+    for my $pid (keys %$pids) {
+        my $state = $pids->{$pid};
+        next if $state->{IGNORE};
+
+        $unignored++;
+
+        if (my $f_ts = $state->{$first_sig}) {
+            if (my $k_ts = $state->{KILL}) {
+                $state->{IGNORE} = 1
+                    if (time - $k_ts) >= $grace;
+                $unignored-- if $state->{IGNORE};
+            }
+            elsif ((time - $f_ts) >= $grace) {
+                push @to_kill => $pid;
+            }
+        }
+        else {
+            push @fresh => $pid;
+        }
+    }
+
+    return (\@fresh, \@to_kill, $unignored);
+}
+
+# Deliver the first signal to new pids and KILL to escalated pids,
+# stamping the current time into the per-pid state map so the next
+# tick can compute grace windows.
+sub _send_hard_stop_signals {
+    my $self = shift;
+    my ($pids, $fresh, $to_kill, $first_sig) = @_;
+
+    if (@$fresh) {
+        kill($first_sig => @$fresh);
+        my $now = time;
+        $pids->{$_}{$first_sig} = $now for @$fresh;
+    }
+    if (@$to_kill) {
+        kill(KILL => @$to_kill);
+        my $now = time;
+        $pids->{$_}{KILL} = $now for @$to_kill;
+    }
+
+    return;
+}
+
+# Drain WNOHANG reaps for any tracked pid, removing them from %pids
+# and firing service_on_reaped per pid. Returns true if anything was
+# reaped this pass.
+sub _reap_hard_stop_pids {
+    my $self = shift;
+    my ($pids) = @_;
+
+    my $reaped = 0;
+    while (my $pid = waitpid(-1, WNOHANG)) {
+        last if $pid < 1;
+        delete $pids->{$pid};
+        $self->service_on_reaped($pid);
+        $reaped = 1;
+    }
+    return $reaped;
 }
 
 1;
@@ -475,6 +512,13 @@ Default handler that calls C<perform_hard_stop> and returns C<< {ok
 TERM-then-KILL escalator. Sets the consumer's C<state> slot to
 C<terminating>, calls the optional pre/on-reaped/post hooks, and
 drives the loop documented inline in the source.
+
+The escalator loop body delegates to three private helpers:
+C<_classify_hard_stop_pids> partitions tracked pids into fresh /
+to-kill / still-active counts; C<_send_hard_stop_signals> delivers
+the first signal or escalates to KILL and stamps the per-pid state;
+C<_reap_hard_stop_pids> drains WNOHANG reaps and fires the
+C<service_on_reaped> hook.
 
 =item orig_io, pid, set_pid
 

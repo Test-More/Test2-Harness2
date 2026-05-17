@@ -112,6 +112,26 @@ sub render_event {
     $f->{harness} = {%$event};
     delete $f->{harness}->{facet_data};
 
+    $self->_annotate_run_facets($f);
+
+    if ($f->{harness_job_start}) {
+        $self->_annotate_job_start($f);
+    }
+
+    if ($f->{harness_job_end}) {
+        $self->_annotate_job_end($f);
+    }
+
+    my $num = $f->{assert} && $f->{assert}->{number} ? $f->{assert}->{number} : undef;
+
+    $self->{+FORMATTER}->write($event, $num, $f);
+}
+
+# Inject RUN INFO and RUN FLD info entries when the corresponding
+# show_* flags are set and the relevant harness_run* facets are present.
+sub _annotate_run_facets {
+    my ($self, $f) = @_;
+
     if ($self->{+SHOW_RUN_INFO} && $f->{harness_run}) {
         my $run = $f->{harness_run};
 
@@ -132,66 +152,78 @@ sub render_event {
         }
     }
 
-    if ($f->{harness_job_start}) {
-        my $jst = $f->{harness_job_start};
+    return;
+}
 
-        $f->{harness}->{job_id} ||= $jst->{job_id};
+# On harness_job_start: copy the job_id into the harness facet (so
+# downstream code sees it) and add LAUNCH / JOB INFO info entries
+# under the corresponding show_* flags.
+sub _annotate_job_start {
+    my ($self, $f) = @_;
 
-        if ($self->{+SHOW_JOB_LAUNCH}) {
-            push @{$f->{info}} => {
-                tag       => 'LAUNCH',
-                debug     => 0,
-                important => 1,
-                details   => $jst->{rel_file} // $jst->{abs_file} // $jst->{job_id},
-            };
-        }
+    my $jst = $f->{harness_job_start};
 
-        if ($self->{+SHOW_JOB_INFO}) {
-            push @{$f->{info}} => {
-                tag     => 'JOB INFO',
-                details => encode_pretty_json($jst),
-            };
+    $f->{harness}->{job_id} ||= $jst->{job_id};
+
+    if ($self->{+SHOW_JOB_LAUNCH}) {
+        push @{$f->{info}} => {
+            tag       => 'LAUNCH',
+            debug     => 0,
+            important => 1,
+            details   => $jst->{rel_file} // $jst->{abs_file} // $jst->{job_id},
+        };
+    }
+
+    if ($self->{+SHOW_JOB_INFO}) {
+        push @{$f->{info}} => {
+            tag     => 'JOB INFO',
+            details => encode_pretty_json($jst),
+        };
+    }
+
+    return;
+}
+
+# On harness_job_end: copy job_id into the harness facet, optionally
+# promote TIME info entries to "important", and prepend the result tag
+# (PASSED / FAILED / SKIPPED / TO RETRY) when SHOW_JOB_END is set.
+sub _annotate_job_end {
+    my ($self, $f) = @_;
+
+    my $je    = $f->{harness_job_end};
+    my $skip  = $je->{skip};
+    my $fail  = $je->{fail};
+    my $file  = $je->{file};
+    my $retry = $je->{retry};
+
+    my $job_id = $f->{harness}->{job_id} ||= $je->{job_id};
+
+    # Make the times important if they were requested
+    if ($self->show_times && $f->{info}) {
+        for my $info (@{$f->{info}}) {
+            next unless $info->{tag} eq 'TIME';
+            $info->{important} = 1;
         }
     }
 
-    if ($f->{harness_job_end}) {
-        my $je    = $f->{harness_job_end};
-        my $skip  = $je->{skip};
-        my $fail  = $je->{fail};
-        my $file  = $je->{file};
-        my $retry = $je->{retry};
+    if ($self->{+SHOW_JOB_END}) {
+        my $name = File::Spec->abs2rel($file);
+        $name .= "  -  $skip" if $skip;
 
-        my $job_id = $f->{harness}->{job_id} ||= $je->{job_id};
+        my $tag = 'PASSED';
+        $tag = 'SKIPPED'  if $skip;
+        $tag = 'FAILED'   if $fail;
+        $tag = 'TO RETRY' if $retry;
 
-        # Make the times important if they were requested
-        if ($self->show_times && $f->{info}) {
-            for my $info (@{$f->{info}}) {
-                next unless $info->{tag} eq 'TIME';
-                $info->{important} = 1;
-            }
-        }
-
-        if ($self->{+SHOW_JOB_END}) {
-            my $name = File::Spec->abs2rel($file);
-            $name .= "  -  $skip" if $skip;
-
-            my $tag = 'PASSED';
-            $tag = 'SKIPPED'  if $skip;
-            $tag = 'FAILED'   if $fail;
-            $tag = 'TO RETRY' if $retry;
-
-            unshift @{$f->{info}} => {
-                tag       => $tag,
-                debug     => $fail,
-                important => 1,
-                details   => $name,
-            };
-        }
+        unshift @{$f->{info}} => {
+            tag       => $tag,
+            debug     => $fail,
+            important => 1,
+            details   => $name,
+        };
     }
 
-    my $num = $f->{assert} && $f->{assert}->{number} ? $f->{assert}->{number} : undef;
-
-    $self->{+FORMATTER}->write($event, $num, $f);
+    return;
 }
 
 sub TO_JSON {
