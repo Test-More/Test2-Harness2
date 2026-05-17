@@ -73,7 +73,6 @@ specific one, or --latest to pick the newest when multiple match.
     EOT
 }
 
-# Function too long, break it up
 sub run {
     my $self = shift;
 
@@ -204,30 +203,12 @@ sub _queue_run {
 # Currently the only resource shape that genuinely belongs per-run
 # is Resource::Preload with scope='run'; ship those and nothing else.
 sub _build_resource_specs {
-    my $self     = shift;
-    my $settings = $self->{+SETTINGS};
+    my $self = shift;
 
+    require App::Yath2::Preload;
     my @out;
-
-    my $preload = eval { $settings->preload };
-    my $modules = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
-    if ($modules && @$modules) {
-        require App::Yath2::Options::Preload;
-        require App::Yath2::Options::Reloader;
-        my $reloader_backend = eval { $settings->reloader->backend };
-        my $reloader_class = App::Yath2::Options::Reloader::resolve_reloader_class($reloader_backend);
-        for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
-            # yath run owns a per-run preload by definition: it lives
-            # only for the duration of this queued run, not for the
-            # whole daemon lifetime. The harness binds the Run object
-            # after rehydration via Resource::Preload::set_run.
-            push @out => [
-                'Test2::Harness2::Resource::Preload',
-                %$group,
-                scope => 'run',
-                (defined $reloader_class ? (reloader_class => $reloader_class) : ()),
-            ];
-        }
+    for my $args (App::Yath2::Preload::preload_resource_args(settings => $self->{+SETTINGS}, scope => 'run')) {
+        push @out => ['Test2::Harness2::Resource::Preload', %$args];
     }
 
     return @out;
@@ -271,7 +252,6 @@ sub _reap_renderer {
     return $? >> 8;
 }
 
-# Function too long, break it up
 # Same flow as App::Yath2::Command::test::_drive_ipc_loop -- watch
 # state broadcasts for pass/fail signals, plus poll run_results so a
 # run that completed before our subscribe took effect still resolves.

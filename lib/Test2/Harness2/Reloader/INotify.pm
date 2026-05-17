@@ -80,7 +80,6 @@ sub init {
     $self->{+INOTIFY} = $inotify;
 }
 
-# Too long break it up
 sub do_reload {
     my ($self, $svc) = @_;
 

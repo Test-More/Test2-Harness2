@@ -3,7 +3,7 @@ use warnings;
 
 use Test2::V0;
 
-use App::Yath2::Options::Preload qw/classify_preload_modules/;
+use App::Yath2::Preload qw/classify_preload_modules/;
 
 # --- empty / undef input ---
 is([classify_preload_modules()],   [], 'empty input returns nothing');

@@ -70,7 +70,6 @@ service pid, run_id, job_id, test file, age.
     EOT
 }
 
-# This function is too long, break it up
 sub run {
     my $self = shift;
 

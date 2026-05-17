@@ -71,7 +71,6 @@ current terminal.
     EOT
 }
 
-# Function too long, break it up
 sub run {
     my $self = shift;
 
@@ -211,21 +210,10 @@ sub _build_resources {
         }
     }
 
-    my $settings = $self->{+SETTINGS};
-    my $preload  = eval { $settings->preload };
-    my $modules  = $preload && eval { $preload->check_option('modules') } ? $preload->modules : undef;
-    if ($modules && @$modules) {
+    require App::Yath2::Preload;
+    for my $args (App::Yath2::Preload::preload_resource_args(settings => $self->{+SETTINGS})) {
         require Test2::Harness2::Resource::Preload;
-        require App::Yath2::Options::Preload;
-        require App::Yath2::Options::Reloader;
-        my $reloader_backend = eval { $settings->reloader->backend };
-        my $reloader_class = App::Yath2::Options::Reloader::resolve_reloader_class($reloader_backend);
-        for my $group (App::Yath2::Options::Preload::classify_preload_modules($modules)) {
-            push @out => Test2::Harness2::Resource::Preload->new(
-                %$group,
-                (defined $reloader_class ? (reloader_class => $reloader_class) : ()),
-            );
-        }
+        push @out => Test2::Harness2::Resource::Preload->new(%$args);
     }
 
     return @out;

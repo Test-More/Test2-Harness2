@@ -52,7 +52,6 @@ sub init {
         unless ref($self->{+WATCH_PATHS}) eq 'ARRAY';
 }
 
-# Function too long, break it up
 sub do_reload {
     my ($self, $svc) = @_;
 

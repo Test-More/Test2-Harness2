@@ -58,7 +58,6 @@ the active resource services.
     EOT
 }
 
-# Function too long, break it up
 sub run {
     my $self = shift;
 

@@ -30,7 +30,6 @@ BEGIN {
 }
 
 our @EXPORT_OK = qw{
-    is_generated_test_pl
     find_yath
     share_dir share_file
     paged_print
@@ -102,21 +101,6 @@ sub find_yath {
     }
 
     die "Could not find yath in Config paths";
-}
-
-sub is_generated_test_pl {
-    my ($file) = @_;
-
-    open(my $fh, '<', $file) or die "Could not open '$file': $!";
-
-    my $count = 0;
-    while (my $line = <$fh>) {
-        last if $count++ > 5;
-        next unless $line =~ m/^# THIS IS A GENERATED YATH RUNNER TEST$/;
-        return 1;
-    }
-
-    return 0;
 }
 
 1;

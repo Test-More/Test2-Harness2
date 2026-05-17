@@ -36,7 +36,6 @@ sub _open_listener {
     return $sock;
 }
 
-# Function too long, break it up
 # run_spawn(%opts):
 #   spawn   => Test2::Harness2::Spawn instance (already constructed)
 #   stage   => stage name string

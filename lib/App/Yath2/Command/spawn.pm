@@ -70,7 +70,6 @@ include_options(
     'App::Yath2::Options::Yath',
 );
 
-# Function is too long, break it up
 sub run {
     my $self = shift;
     my $settings = $self->{+SETTINGS};

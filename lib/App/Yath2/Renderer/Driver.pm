@@ -33,7 +33,6 @@ use App::Yath2::Options::Renderer;
 # (keyed by "<jid>/<try>") so artifact lookups happen at most once
 # per job per try regardless of how many transition events arrive.
 
-# Function too long, break it up
 sub run {
     my ($class, %args) = @_;
 
