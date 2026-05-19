@@ -13,6 +13,7 @@ our @EXPORT_OK = qw{
     pid_is_running
     set_procname
     start_process
+    parse_exit
     swap_io
     list_direct_children
     atomic_pipe_compression_args
@@ -34,8 +35,8 @@ the harness.
 
 A bag of process-helper functions used by the collector and other
 harness processes for cross-process work: liveness checks, process-
-name annotation, file-descriptor swapping, child-pid enumeration, and
-the Atomic::Pipe compression defaults.
+name annotation, file-descriptor swapping, child-pid enumeration,
+wait-status decoding, and the Atomic::Pipe compression defaults.
 
 Despite the module name, this is the process-helper bag, not anything
 related to the legacy C<IPC::Manager> stack.
@@ -148,6 +149,47 @@ sub start_process {
     { no warnings; exec(@$cmd) }
     print STDERR "Failed to exec " . join(' ', @$cmd) . ": $!\n";
     exit(255);
+}
+
+=over 4
+
+=item parse_exit
+
+=item $codes = parse_exit($wstat)
+
+Decode a wait-status integer (typically C<$?>) into a hashref:
+
+=over 4
+
+=item C<sig> -- low 7 bits (signal number, or 0)
+
+=item C<err> -- upper bits shifted right 8 (exit code)
+
+=item C<dmp> -- bit 7 (core-dump flag)
+
+=item C<all> -- the original raw value
+
+=back
+
+Croaks if C<$wstat> is undefined.
+
+=back
+
+=cut
+
+sub parse_exit {
+    my ($exit) = @_;
+    croak "an exit value is required" unless defined $exit;
+
+    my $sig = $exit & 127;
+    my $dmp = $exit & 128;
+
+    return {
+        sig => $sig,
+        err => ($exit >> 8),
+        dmp => $dmp,
+        all => $exit,
+    };
 }
 
 =over 4

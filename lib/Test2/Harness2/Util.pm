@@ -27,7 +27,6 @@ our @EXPORT_OK = qw{
     maybe_read_file
     mod2file
     open_file
-    parse_exit
     read_file
     render_duration
     unlock_file
@@ -48,14 +47,13 @@ Test2::Harness2::Util - Small shared utility functions used across the harness.
 
 A grab-bag of helpers used across L<Test2::Harness2>: module-name handling,
 filesystem reads and writes (including atomic replace), advisory locking,
-encoding application, exit-status decoding, and Test2 facet-data helpers.
+encoding application, and Test2 facet-data helpers.
 
 =head1 SYNOPSIS
 
-    use Test2::Harness2::Util qw/mod2file parse_exit hub_truth/;
+    use Test2::Harness2::Util qw/mod2file hub_truth/;
 
     my $file  = mod2file('Foo::Bar');         # 'Foo/Bar.pm'
-    my $codes = parse_exit($?);               # { sig, err, dmp, all }
     my $hub   = hub_truth($facet_data);
 
 =head1 EXPORTS
@@ -152,47 +150,6 @@ sub mod2file {
     $file =~ s{::}{/}g;
     $file .= ".pm";
     return $file;
-}
-
-=over 4
-
-=item parse_exit
-
-=item $codes = parse_exit($wstat)
-
-Decode a wait-status integer (typically C<$?>) into a hashref:
-
-=over 4
-
-=item C<sig> -- low 7 bits (signal number, or 0)
-
-=item C<err> -- upper bits shifted right 8 (exit code)
-
-=item C<dmp> -- bit 7 (core-dump flag)
-
-=item C<all> -- the original raw value
-
-=back
-
-Croaks if C<$wstat> is undefined.
-
-=back
-
-=cut
-
-sub parse_exit {
-    my ($exit) = @_;
-    croak "an exit value is required" unless defined $exit;
-
-    my $sig = $exit & 127;
-    my $dmp = $exit & 128;
-
-    return {
-        sig => $sig,
-        err => ($exit >> 8),
-        dmp => $dmp,
-        all => $exit,
-    };
 }
 
 =over 4

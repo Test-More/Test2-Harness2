@@ -4,6 +4,7 @@ use Test2::Harness2::Util::IPC qw{
     pid_is_running
     set_procname
     start_process
+    parse_exit
     swap_io
     list_direct_children
     atomic_pipe_compression_args
@@ -38,6 +39,14 @@ subtest start_process_validation => sub {
     like(dies { start_process(undef) },     qr/cmd is required/);
     like(dies { start_process([]) },        qr/cmd is required/);
     like(dies { start_process([undef]) },   qr/undefined values/);
+};
+
+subtest parse_exit => sub {
+    is(parse_exit(0),   {sig => 0,  err => 0, dmp => 0,   all => 0});
+    is(parse_exit(256), {sig => 0,  err => 1, dmp => 0,   all => 256});
+    is(parse_exit(15),  {sig => 15, err => 0, dmp => 0,   all => 15});
+    is(parse_exit(143), {sig => 15, err => 0, dmp => 128, all => 143});
+    like(dies { parse_exit(undef) }, qr/exit value is required/);
 };
 
 subtest swap_io => sub {

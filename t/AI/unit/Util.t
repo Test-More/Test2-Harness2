@@ -15,7 +15,6 @@ use Test2::Harness2::Util qw{
     maybe_read_file
     mod2file
     open_file
-    parse_exit
     read_file
     unlock_file
     write_file
@@ -28,14 +27,6 @@ subtest mod2file => sub {
     is(mod2file('Foo::Bar::Baz'),  'Foo/Bar/Baz.pm');
     is(mod2file('Foo'),            'Foo.pm');
     like(dies { mod2file(undef) }, qr/No module name provided/);
-};
-
-subtest parse_exit => sub {
-    is(parse_exit(0),   {sig => 0, err => 0,   dmp => 0,   all => 0});
-    is(parse_exit(256), {sig => 0, err => 1,   dmp => 0,   all => 256});
-    is(parse_exit(15),  {sig => 15, err => 0,  dmp => 0,   all => 15});
-    is(parse_exit(143), {sig => 15, err => 0,  dmp => 128, all => 143});
-    like(dies { parse_exit(undef) }, qr/exit value is required/);
 };
 
 subtest hub_truth => sub {
