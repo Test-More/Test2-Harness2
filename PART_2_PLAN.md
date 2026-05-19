@@ -98,7 +98,13 @@ so they do not get lost as the canonical docs evolve.
 > Append bullets here as Part-1 work uncovers Part-2-shaped items.
 > Format: `- **<short label>.** <one or two sentence note.>`
 
-*(empty — fill in as Part 1 progresses)*
+- **Util audit / pruning sweep.** Stage 1 ported the full
+  `Test2::Harness2::Util*` surface from `reference/old3`. Once Part 2
+  is far enough along that every realistic consumer exists, audit
+  every exported function in `Test2::Harness2::Util`,
+  `Util::JSON`, `Util::Zstd`, `Util::IPC`, `Util::EventEmitter`,
+  `Util::FileMonitor`, and `Util::JSONL::Reader` for actual call
+  sites and prune anything no consumer reaches.
 
 ---
 
