@@ -139,7 +139,7 @@ sub hub_truth {
 =item $path = mod2file($module_name)
 
 Convert a module name (C<Foo::Bar::Baz>) to its C<%INC>-style relative
-path (C<Foo/Bar/Baz.pm>). Confesses if the module name is undefined.
+path (C<Foo/Bar/Baz.pm>). Confesses if the module name is empty.
 
 =back
 
