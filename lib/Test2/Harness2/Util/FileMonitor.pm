@@ -75,14 +75,20 @@ file has new content for you right now."
 
 =over 4
 
+=item file
+
 =item file (required when C<static> is false)
 
 The absolute path to the file being monitored.
+
+=item delegate
 
 =item delegate (optional)
 
 An arbitrary object returned in place of C<1> on every truthy
 L</changed> / L</await_change> result.
+
+=item static
 
 =item static (optional, default false)
 
@@ -108,12 +114,18 @@ sub init {
 
 =cut
 
+=over 4
+
+=item changed
+
 =item $delegate_or_bool = $f->changed
 
 Returns C<$delegate> when the file has changed since the previous
 call (or this is the first call) and a delegate was set, C<1> when
 no delegate was set, and C<0> when the file has not changed. Never
 blocks. The initial call always reports a change.
+
+=back
 
 =cut
 
@@ -123,11 +135,17 @@ sub changed {
     return $self->_check(record => 1);
 }
 
+=over 4
+
+=item peek_changed
+
 =item $delegate_or_bool = $f->peek_changed
 
 Same shape as L</changed>, but does B<not> ack a pending change.
 Repeated C<peek_changed> calls return the same truthy value until a
 real L</changed> call acks it.
+
+=back
 
 =cut
 
@@ -136,6 +154,10 @@ sub peek_changed {
     return $self->_static_check(record => 0) if $self->{+STATIC};
     return $self->_check(record => 0);
 }
+
+=over 4
+
+=item await_change
 
 =item $delegate_or_bool = $f->await_change
 
@@ -147,6 +169,8 @@ on a change; returns C<0> on timeout. Uses L<Linux::Inotify2> when
 available, otherwise a small-sleep poll via
 L<Time::HiRes/sleep>, which returns early on signal interruption so
 SIGCHLD / SIGTERM break the wait promptly.
+
+=back
 
 =cut
 
@@ -165,9 +189,15 @@ sub await_change {
     return $self->_await_change_poll($deadline);
 }
 
+=over 4
+
+=item delegate
+
 =item $delegate = $f->delegate
 
 Returns the delegate object passed to the constructor, or C<undef>.
+
+=back
 
 =cut
 

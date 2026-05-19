@@ -80,10 +80,16 @@ sub init {
 
 =cut
 
+=over 4
+
+=item as_json
+
 =item $json = $e->as_json
 
 JSON-encoded form of the event. Cached on the event so subsequent
 calls return the same string.
+
+=back
 
 =cut
 
@@ -92,11 +98,17 @@ sub as_json {
     return $self->{+_JSON} //= encode_json($self);
 }
 
+=over 4
+
+=item clear_json_cache
+
 =item $e->clear_json_cache
 
 Drop the cached JSON encoding. Callers that mutate the event after
 constructing it must call this so a downstream encoder does not
 return the stale string.
+
+=back
 
 =cut
 
@@ -106,11 +118,17 @@ sub clear_json_cache {
     return;
 }
 
+=over 4
+
+=item TO_JSON
+
 =item $hashref = $e->TO_JSON
 
 Hashref form used by L<Cpanel::JSON::XS>'s C<convert_blessed>. Drops
 the cached JSON string and strips empty facets (C<{}> / C<[]>) from
 C<facet_data> at serialization time.
+
+=back
 
 =cut
 

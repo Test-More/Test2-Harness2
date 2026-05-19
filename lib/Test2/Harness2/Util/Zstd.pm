@@ -72,9 +72,15 @@ long as a frame fits in C<PIPE_BUF> (4 KiB on Linux).
 
 =cut
 
+=over 4
+
+=item compress_blob
+
 =item compress_blob($bytes) :Bytes
 
 One-shot compress.
+
+=back
 
 =cut
 
@@ -83,9 +89,15 @@ sub compress_blob {
     return Compress::Zstd::compress($bytes);
 }
 
+=over 4
+
+=item decompress_blob
+
 =item decompress_blob($bytes) :Bytes
 
 Symmetric one-shot decompress. Croaks on malformed input.
+
+=back
 
 =cut
 
@@ -96,10 +108,16 @@ sub decompress_blob {
     return $out;
 }
 
+=over 4
+
+=item compress_file_atomic
+
 =item compress_file_atomic($path, $bytes) :Path
 
 Compress C<$bytes> as one zstd frame, write to a sibling tempfile in
 the same directory, then atomic-rename to C<$path>.
+
+=back
 
 =cut
 
@@ -123,9 +141,15 @@ sub compress_file_atomic {
     return $path;
 }
 
+=over 4
+
+=item decompress_file
+
 =item decompress_file($path) :Bytes
 
 Read C<$path>, decompress, return the plaintext.
+
+=back
 
 =cut
 
@@ -141,10 +165,16 @@ sub decompress_file {
     return decompress_blob($bytes);
 }
 
+=over 4
+
+=item open_zstd_writer
+
 =item $w = open_zstd_writer($path) :Object
 
 Return a L<Test2::Harness2::Util::Zstd::Writer> that appends one
 self-contained zstd frame per C<print> / C<say> call.
+
+=back
 
 =cut
 
@@ -154,10 +184,16 @@ sub open_zstd_writer {
     return Test2::Harness2::Util::Zstd::Writer->_open($path);
 }
 
+=over 4
+
+=item open_zstd_reader
+
 =item $r = open_zstd_reader($path) :Object
 
 Return a L<Test2::Harness2::Util::Zstd::Reader> whose
 C<< ->readline >> yields one decoded frame at a time.
+
+=back
 
 =cut
 
@@ -167,11 +203,17 @@ sub open_zstd_reader {
     return Test2::Harness2::Util::Zstd::Reader->_open($path);
 }
 
+=over 4
+
+=item open_zstd_reader_fh
+
 =item $r = open_zstd_reader_fh($fh) :Object
 
 Same as L</open_zstd_reader> but takes a pre-opened, seekable file
 handle (including a scalar-fh opened against an in-memory zstd-framed
 byte string).
+
+=back
 
 =cut
 
@@ -181,6 +223,10 @@ sub open_zstd_reader_fh {
     return Test2::Harness2::Util::Zstd::Reader->_open_fh($fh);
 }
 
+=over 4
+
+=item zstd_frame_size
+
 =item $size = zstd_frame_size($bytes)
 
 Return the on-disk byte length of the first zstd frame in C<$bytes>,
@@ -188,6 +234,8 @@ or C<undef> if C<$bytes> does not yet contain a complete frame.
 Implements RFC 8878 frame_header parsing so consumers can find frame
 boundaries without scanning for magic (which can race on partial
 writes).
+
+=back
 
 =cut
 

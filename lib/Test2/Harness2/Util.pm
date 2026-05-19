@@ -64,12 +64,18 @@ All exports are optional and must be requested explicitly.
 
 =cut
 
+=over 4
+
+=item apply_encoding
+
 =item apply_encoding($fh, $encoding)
 
 Apply C<$encoding> to C<$fh> via C<binmode>. Returns immediately when
 C<$encoding> is false. Uses C<:utf8> for any C<utf-?8> spelling to avoid the
 thread segfault from C<:encoding(utf8)>; any other encoding goes through
 C<:encoding($encoding)>.
+
+=back
 
 =cut
 
@@ -81,12 +87,18 @@ sub apply_encoding {
     binmode($fh, ":encoding($enc)");
 }
 
+=over 4
+
+=item close_file
+
 =item close_file($fh)
 
 =item close_file($fh, $name)
 
 Wrap C<close()> with a clearer diagnostic. The optional C<$name> is
 included in the error when close fails.
+
+=back
 
 =cut
 
@@ -97,12 +109,18 @@ sub close_file {
     confess "Could not close file '$name': $!";
 }
 
+=over 4
+
+=item hub_truth
+
 =item $facet = hub_truth($facet_data)
 
 Return the authoritative hub/trace facet from a Test2 facet-data hash.
 Prefers C<< $facet_data->{hubs}->[0] >> when present, falls back to
 C<< $facet_data->{trace} >>, and returns an empty hashref if neither
 is populated.
+
+=back
 
 =cut
 
@@ -114,10 +132,16 @@ sub hub_truth {
     return {};
 }
 
+=over 4
+
+=item mod2file
+
 =item $path = mod2file($module_name)
 
 Convert a module name (C<Foo::Bar::Baz>) to its C<%INC>-style relative
 path (C<Foo/Bar/Baz.pm>). Confesses if the module name is undefined.
+
+=back
 
 =cut
 
@@ -129,6 +153,10 @@ sub mod2file {
     $file .= ".pm";
     return $file;
 }
+
+=over 4
+
+=item parse_exit
 
 =item $codes = parse_exit($wstat)
 
@@ -148,6 +176,8 @@ Decode a wait-status integer (typically C<$?>) into a hashref:
 
 Croaks if C<$wstat> is undefined.
 
+=back
+
 =cut
 
 sub parse_exit {
@@ -165,6 +195,10 @@ sub parse_exit {
     };
 }
 
+=over 4
+
+=item clean_path
+
 =item $abs = clean_path($path)
 
 =item $abs = clean_path($path, $absolute)
@@ -174,6 +208,8 @@ default) the path is first run through L<Cwd/realpath> to resolve
 symlinks, then through L<< File::Spec/rel2abs >>. Pass a false
 C<$absolute> to skip the C<realpath> step. Confesses when C<$path>
 is empty.
+
+=back
 
 =cut
 
@@ -188,12 +224,18 @@ sub clean_path {
     return File::Spec->rel2abs($path);
 }
 
+=over 4
+
+=item load_module
+
 =item $name = load_module($module_name)
 
 Load C<$module_name> via C<require>, idempotently. Short-circuits when
 C<%INC> already records the file or the package stash is populated.
 Returns the module name on success; propagates the underlying
 C<require> exception on failure.
+
+=back
 
 =cut
 
@@ -211,6 +253,10 @@ sub load_module {
     require $file;
     return $name;
 }
+
+=over 4
+
+=item fqmod
 
 =item $mod = fqmod($input, $prefix)
 
@@ -236,6 +282,8 @@ the module. Only legal with a single prefix.
 
 Dies with a multi-line diagnostic listing each candidate when no
 prefix resolves.
+
+=back
 
 =cut
 
@@ -276,6 +324,10 @@ sub fqmod {
     die "Could not locate a module matching '$input' at $caller[1] line $caller[2], the following were checked:\n" . join("\n", map { " * $_: $tried{$_}" } sort keys %tried) . "\n";
 }
 
+=over 4
+
+=item find_libraries
+
 =item $modules = find_libraries($search)
 
 =item $modules = find_libraries($search, @paths)
@@ -286,6 +338,8 @@ pattern; a C<*> segment is a wildcard at that level. Returns a
 hashref mapping each discovered module name to its file path relative
 to the matching search root. Nested C<@INC> entries are not
 double-traversed.
+
+=back
 
 =cut
 
@@ -366,6 +420,10 @@ my %COMPRESSION = (
     gz  => {module => 'IO::Uncompress::Gunzip',  errors => \$IO::Uncompress::Gunzip::GunzipError},
 );
 
+=over 4
+
+=item open_file
+
 =item $fh = open_file($path)
 
 =item $fh = open_file($path, $mode)
@@ -380,6 +438,8 @@ pass C<< no_decompress => 1 >> to disable that, or C<< ext => 'gz' >>
 carry the usual extension.
 
 Confesses on failure.
+
+=back
 
 =cut
 
@@ -411,12 +471,18 @@ sub open_file {
     return $fh;
 }
 
+=over 4
+
+=item maybe_open_file
+
 =item $fh = maybe_open_file($path)
 
 =item $fh = maybe_open_file($path, $mode)
 
 Like L</open_file>, but returns C<undef> when C<$path> is not a
 regular file instead of raising an exception.
+
+=back
 
 =cut
 
@@ -426,10 +492,16 @@ sub maybe_open_file {
     return open_file($file, $mode);
 }
 
+=over 4
+
+=item read_file
+
 =item $content = read_file($path, %open_opts)
 
 Slurp C<$path> in full. Extra options are passed through to
 L</open_file>. Dies on I/O failure.
+
+=back
 
 =cut
 
@@ -444,10 +516,16 @@ sub read_file {
     return $out;
 }
 
+=over 4
+
+=item maybe_read_file
+
 =item $content = maybe_read_file($path)
 
 Like L</read_file>, but returns C<undef> when C<$path> is not a
 regular file.
+
+=back
 
 =cut
 
@@ -457,10 +535,16 @@ sub maybe_read_file {
     return read_file($file);
 }
 
+=over 4
+
+=item write_file
+
 =item write_file($path, @content)
 
 Open C<$path> for write, print C<@content>, and close. Dies on I/O
 failure. For crash-safe writes use L</write_file_atomic>.
+
+=back
 
 =cut
 
@@ -474,6 +558,10 @@ sub write_file {
     return @content;
 }
 
+=over 4
+
+=item lock_file
+
 =item $fh = lock_file($path_or_fh)
 
 =item $fh = lock_file($path, $mode)
@@ -483,6 +571,8 @@ either a filename (opened in C<< '>>' >> mode unless C<$mode> is
 supplied) or an already-open handle. Retries up to 20 times on
 C<EINTR>/C<ERESTART>. Returns the locked handle; pair with
 L</unlock_file> (or close the handle) to release.
+
+=back
 
 =cut
 
@@ -507,10 +597,16 @@ sub lock_file {
     return $fh;
 }
 
+=over 4
+
+=item unlock_file
+
 =item unlock_file($fh)
 
 Release an advisory lock acquired via L</lock_file>. Retries on
 C<EINTR>/C<ERESTART> the same way as acquisition.
+
+=back
 
 =cut
 
@@ -526,12 +622,18 @@ sub unlock_file {
     return $fh;
 }
 
+=over 4
+
+=item write_file_atomic
+
 =item write_file_atomic($path, @content)
 
 Write C<@content> to C<$path> atomically: writes to C<"$path.pend">
 first, then C<do_rename()>s it over the target under a signal mask so
 an interrupt cannot leave a half-written file in place. Dies on I/O
 failure; the pending file is removed on error.
+
+=back
 
 =cut
 
@@ -554,12 +656,18 @@ sub write_file_atomic {
     return @content;
 }
 
+=over 4
+
+=item write_file_atomic_mode
+
 =item write_file_atomic_mode($path, $mode, @content)
 
 L</write_file_atomic> with explicit POSIX mode bits on the result
 file. The mode is enforced by C<sysopen>ing the pending file under
 C<umask 0> and then C<chmod>ing it before the rename, so the final
 file has exactly C<$mode> regardless of the caller's umask.
+
+=back
 
 =cut
 

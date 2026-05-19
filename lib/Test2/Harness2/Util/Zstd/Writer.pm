@@ -57,10 +57,16 @@ sub _open {
 
 =cut
 
+=over 4
+
+=item print
+
 =item $w->print(@list)
 
 Compresses the concatenation of C<@list> as one zstd frame and
 appends it. Returns C<1> on success, croaks on failure.
+
+=back
 
 =cut
 
@@ -71,10 +77,16 @@ sub print {
     return $self->_emit_frame($frame);
 }
 
+=over 4
+
+=item say
+
 =item $w->say(@list)
 
 Same as L</print> but appends a trailing C<"\n"> to C<@list> before
 compressing, so the decompressed payload is a complete line.
+
+=back
 
 =cut
 
@@ -83,6 +95,10 @@ sub say {
     return $self->print(@_, "\n");
 }
 
+=over 4
+
+=item print_raw_frame
+
 =item $w->print_raw_frame($frame)
 
 Append a fully-formed zstd frame to the file without re-compressing.
@@ -90,6 +106,8 @@ The caller is responsible for ensuring the frame was produced with a
 matching level so a reader can decode it. Used by callers that
 already hold a compressed frame (e.g. the collector caches the
 on-wire frame from L<Atomic::Pipe>).
+
+=back
 
 =cut
 
@@ -100,9 +118,15 @@ sub print_raw_frame {
     return $self->_emit_frame($frame);
 }
 
+=over 4
+
+=item close
+
 =item $w->close
 
 Close the underlying file handle. Called automatically on C<DESTROY>.
+
+=back
 
 =cut
 

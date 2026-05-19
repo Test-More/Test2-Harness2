@@ -96,14 +96,20 @@ sub init {
 
 =cut
 
+=over 4
+
+=item std
+
 =item $emitter = Test2::Harness2::Util::EventEmitter->std
 
 Process-wide cached emitter for the default STDOUT/STDERR pair. The
-first call instantiates it via L</new> with no arguments; every
+first call instantiates it via C<new> with no arguments; every
 subsequent call returns that instance. Fork-safe: the cache is keyed
 on C<$$>, and after a fork the child's first C<std> call sees the
 stale pid and rebuilds from its own (possibly redirected)
 STDOUT/STDERR.
+
+=back
 
 =cut
 
@@ -119,12 +125,18 @@ STDOUT/STDERR.
     }
 }
 
+=over 4
+
+=item emit_event
+
 =item $event_id = $emitter->emit_event(%fields)
 
 Build a harness-facet event, encode it as JSON, write it to
 L</stdout_pipe>, and optionally write the STDERR sync marker to
 L</stderr_pipe>. C<%fields> are merged into the C<harness> facet.
 Returns the UUID assigned to the event.
+
+=back
 
 =cut
 
@@ -140,11 +152,17 @@ sub emit_event {
     return $self->emit_raw($event);
 }
 
+=over 4
+
+=item emit_raw
+
 =item $event_id = $emitter->emit_raw($event_hashref)
 
 Write a pre-built event hashref as-is: encode to JSON, write the
 burst to L</stdout_pipe>, and -- if L</stderr_pipe> is set -- write
 C<{"event_id":"..."}> to it. Returns the wire-level event id.
+
+=back
 
 =cut
 

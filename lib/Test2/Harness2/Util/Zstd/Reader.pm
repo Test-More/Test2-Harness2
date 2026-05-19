@@ -34,8 +34,8 @@ C<readline> call -- usable as a tail-style reader on a live
 append-safe file.
 
 Construct via L<Test2::Harness2::Util::Zstd/open_zstd_reader> or
-L</open_zstd_reader_fh>; this class is not meant to be instantiated
-directly.
+L<Test2::Harness2::Util::Zstd/open_zstd_reader_fh>; this class is
+not meant to be instantiated directly.
 
 =head1 SYNOPSIS
 
@@ -80,11 +80,17 @@ sub _open_fh {
 
 =cut
 
+=over 4
+
+=item readline
+
 =item $record = $r->readline
 
 Return the decoded payload of the next zstd frame, or C<undef> when
 no complete frame is available. Producers control whether records
 carry trailing newlines; this reader adds and strips nothing.
+
+=back
 
 =cut
 
@@ -100,9 +106,15 @@ sub readline {
     return undef;
 }
 
+=over 4
+
+=item close
+
 =item $r->close
 
 Close the underlying file handle. Called automatically on C<DESTROY>.
+
+=back
 
 =cut
 

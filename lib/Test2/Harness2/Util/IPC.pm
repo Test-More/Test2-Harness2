@@ -62,10 +62,16 @@ related to the legacy C<IPC::Manager> stack.
 
 =cut
 
+=over 4
+
+=item pid_is_running
+
 =item $bool_or_neg = pid_is_running($pid)
 
 Returns C<1> if C<$pid> is running and we own it, C<0> if it is gone,
 and C<-1> if it is running but owned by someone else.
+
+=back
 
 =cut
 
@@ -81,12 +87,18 @@ sub pid_is_running {
     return -1;
 }
 
+=over 4
+
+=item set_procname
+
 =item set_procname(%params)
 
 Set C<$0> with an optional C<prefix> (default C<Test2-Harness2>,
 overridable via the C<T2_HARNESS2_PROC_PREFIX> env var). Pass
 C<< set => [...] >> to replace the body, or C<< append => [...] >> to
 append to the current C<$0>.
+
+=back
 
 =cut
 
@@ -107,12 +119,18 @@ sub set_procname {
     $0 = $name;
 }
 
+=over 4
+
+=item start_process
+
 =item $pid = start_process(\@cmd, \&post_fork)
 
 Fork and C<exec> C<\@cmd> in the child. The optional C<\&post_fork>
 runs in the child just before C<exec>. Returns the child pid in the
 parent. The child writes a diagnostic to STDERR and exits 255 on
 exec failure.
+
+=back
 
 =cut
 
@@ -132,10 +150,16 @@ sub start_process {
     exit(255);
 }
 
+=over 4
+
+=item swap_io
+
 =item swap_io($fh, $to)
 
 Reopen C<$fh> as a duplicate of C<$to> while preserving its file
 descriptor number. Croaks if the resulting fd does not match.
+
+=back
 
 =cut
 
@@ -151,6 +175,10 @@ sub swap_io {
         if fileno($fh) != $orig_fd;
 }
 
+=over 4
+
+=item list_direct_children
+
 =item @pids = list_direct_children($parent)
 
 Return the pids that are direct children of C<$parent>. Prefers
@@ -164,6 +192,8 @@ subreaper needs to reach reparented descendants. Not a hot-path
 helper -- procfs walks and C<ps> are reserved for shutdown / one-off
 calls.
 
+=back
+
 =cut
 
 sub list_direct_children {
@@ -173,6 +203,10 @@ sub list_direct_children {
     return _list_direct_children_ps($parent);
 }
 
+=over 4
+
+=item atomic_pipe_compression_args
+
 =item %args = atomic_pipe_compression_args()
 
 Return the default kwargs for L<Atomic::Pipe> constructors: zstd
@@ -180,6 +214,8 @@ compression on the framed write paths, plus C<keep_compressed> so
 readers can stash the on-wire compressed bytes alongside the
 decompressed payload (the collector caches the frame so a downstream
 zstd logger can write it verbatim).
+
+=back
 
 =cut
 
@@ -190,12 +226,18 @@ sub atomic_pipe_compression_args {
     );
 }
 
+=over 4
+
+=item apply_atomic_pipe_compression
+
 =item apply_atomic_pipe_compression($pipe)
 
 Configure compression on an existing L<Atomic::Pipe> instance to
 match L</atomic_pipe_compression_args>. Used by wrappers that
 construct via C<from_fh> / C<from_fd>, which do not accept
 constructor-time compression kwargs. Idempotent.
+
+=back
 
 =cut
 

@@ -115,10 +115,16 @@ sub _init_source {
 
 =cut
 
+=over 4
+
+=item read_lines
+
 =item @items = $r->read_lines
 
 Drain every record that has arrived since the previous call. Returns
 decoded JSON records as a list. Torn / partial input is held back.
+
+=back
 
 =cut
 
@@ -132,9 +138,15 @@ sub read_lines {
     return @out;
 }
 
+=over 4
+
+=item readline
+
 =item $item = $r->readline
 
 Return one decoded record, or C<undef> when none is buffered.
+
+=back
 
 =cut
 
@@ -146,10 +158,16 @@ sub readline {
     return shift @{$self->{buffer}};
 }
 
+=over 4
+
+=item exists
+
 =item $bool = $r->exists
 
 True when the underlying path exists, or when the reader was
 constructed from an in-memory / pre-opened source.
+
+=back
 
 =cut
 
@@ -159,10 +177,16 @@ sub exists {
     return -e $self->{path} ? 1 : 0;
 }
 
+=over 4
+
+=item close
+
 =item $r->close
 
 Close the underlying file handle / zstd reader. Called automatically
 on C<DESTROY>.
+
+=back
 
 =cut
 
