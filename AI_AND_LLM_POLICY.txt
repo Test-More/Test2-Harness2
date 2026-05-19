@@ -9,7 +9,8 @@ TL;DR:
     in small chunks that are easy for a human to digest.
 
     No 'vibe' coded contributions where no human understands what was produced
-    or how it works will be accepted.
+    or how it works will be accepted. Such things are fine for rapid
+    experimentation, just not final product.
 
 Can developers use AI/LLM tools to contribute to Test2-Harness?
 

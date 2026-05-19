@@ -1,0 +1,32 @@
+{
+   "__test_file_class__" : "Test2::Harness2::TestFile",
+   "absolute" : "/home/exodist/projects/Test2/Test2-Harness/t/AI/unit/Harness2/Role/Collector/Observer.t",
+   "category" : null,
+   "ch_dir" : null,
+   "comment" : "#",
+   "conflicts" : [],
+   "duration" : null,
+   "event_timeout" : null,
+   "exit" : {
+      "all" : 0,
+      "dmp" : 0,
+      "err" : 0,
+      "sig" : 0
+   },
+   "features" : {},
+   "file" : "/home/exodist/projects/Test2/Test2-Harness/t/AI/unit/Harness2/Role/Collector/Observer.t",
+   "is_binary" : 0,
+   "isolation" : 0,
+   "max_slots" : null,
+   "meta" : {},
+   "min_slots" : 1,
+   "non_perl" : 0,
+   "pass" : 1,
+   "post_exit_timeout" : null,
+   "relative" : "t/AI/unit/Harness2/Role/Collector/Observer.t",
+   "retry" : 0,
+   "retry_isolated" : 0,
+   "smoke" : 0,
+   "stage" : null,
+   "switches" : []
+}

@@ -1,23 +1,29 @@
 # Test2::Harness2 Architecture
 
 This document is the single authoritative description of the yath 2.0
-rewrite: the process tree, the IPC protocol, the collector and logger
-pipelines, the preload-as-resource model, and the module layout that
-implements it all. Any stage in `PLAN` that touches the harness
-service, a run service, a resource service, a preload service, a
-test-job collector, an artifact-producing logger, or a renderer must
-honour what is described here.
+rewrite. It supersedes every earlier `ARCHITECTURE.md` under
+`reference/`. Companion documents:
 
-It is organised in two parts:
+- `STYLE_GUIDE.md` — code style rules.
+- `AGENTS.md` — repository-wide agent / contributor guidance.
+- `PART_1_PLAN.md` — stage-by-stage backlog for the `Test2::Harness2`
+  namespace (this document's scope).
+- `PART_2_PLAN.md` — scaffold for the future `App::Yath2` namespace
+  work; not in scope for Part 1.
 
-- **Part I — Specification (§1–§15).** Protocol, topology, and
-  lifecycle semantics. Process-independent: describes *what* the
-  system does and *how* the pieces talk to each other.
-- **Part II — Implementation map (§16–§26).** Code-level
-  reference: namespaces, module responsibilities, on-disk layout,
-  utility helpers, conventions, and the test suite.
+The rewrite is split into two parts:
 
-Companion: `PLAN` — stage-by-stage implementation backlog.
+- **Part 1 — `Test2::Harness2`.** The harness library plus
+  `Test2::Formatter::Stream2`. Library API only; no `App::Yath2`
+  callers, no command-line interface. This document specifies Part 1.
+- **Part 2 — `App::Yath2`.** The user-facing `yath` command, options
+  layer, renderer driver, output pipeline, persistent-daemon command
+  set, log archive / extract / database backends. To be specified
+  later (see `PART_2_PLAN.md`).
+
+The two parts share a distribution but the harness library must remain
+usable without any `App::Yath2*` module loaded — see §3 (Dependency
+contract).
 
 ---
 
@@ -25,3406 +31,1327 @@ Companion: `PLAN` — stage-by-stage implementation backlog.
 
 ## 1. Terminology
 
-- **Command** — the user-facing `yath …` process. `yath test`, `yath start`,
-  `yath run` are all commands. Commands are the root of the process tree.
-- **Harness service** — the `Test2::Harness2` service process. Exactly one
-  per harness invocation. Owns scheduling, global resources, run services.
-- **Run service** — `Test2::Harness2::RunService`. One per queued run.
-  Owns run-scoped resources, test-job scheduling within the run, and
-  per-run aggregation.
-- **Resource service** — service wrapping a `Test2::Harness2::Role::Resource`
-  that chose to run out-of-process. May be global (spawned by the harness)
-  or run-scoped (spawned by a run service).
-- **Preload resource** — a `Test2::Harness2::Role::Resource` implementation
-  that, when active, runs out-of-process and spawns a preload service
-  subtree. Preload is **just another resource** — it can be attached
-  to the harness as a global resource, or to a specific run as a
-  run-scoped resource, exactly like any other resource type.
-- **Preload service** — the root preload service that a preload
-  resource starts. Inside, it forks a tree of **preload stage**
-  services; every node in the tree is a service. See §10.
-- **Test-job collector** — `Test2::Harness2::Collector` in its test-job
-  role. Interposes on a test process's stdio, parses events, runs an
-  auditor, runs configured loggers. Every test job has one.
-- **Service collector** — a `Test2::Harness2::Collector` in interpose-on-
-  service-process mode. Every service above runs under its own interpose
-  collector. Service collectors do not have an auditor. They do have
-  loggers when the harness is configured for them.
-- **IPC identity** — the name a process registers on the `IPC::Manager`
-  bus. Uniquely addresses a sender/receiver.
-- **Artifact** — anything a logger produces: a file path, a database row,
-  a POST to an HTTP endpoint, etc. Artifacts are discoverable via IPC
-  announcements.
-- **Event** — a framed structured record flowing through a collector's
-  parser pipeline. Test processes emit events via Stream2. Services
-  emit events via a direct framed write to their own stdout (see §7).
+- **Harness handle** — a live `Test2::Harness2` object. Owns the
+  database connection, the `.t2h2` discovery file on the filesystem,
+  and the API used to start runners, queue runs, query state, and
+  attach to an existing instance. There is no separate harness service
+  process: the harness *is* the database plus the helper services it
+  spawns on demand.
+- **Database** — the SQLite (or, eventually, PostgreSQL / MySQL /
+  MariaDB / Percona) backend that holds every piece of state about
+  runners, runs, jobs, services, collectors, artifacts, and requests.
+  All inter-process state flows through the database. There is no
+  IPC bus, no message broker, no `IPC::Manager`.
+- **.t2h2 file** — for the default SQLite mode this is the SQLite
+  database file itself. For non-SQLite backends it is a JSON sidecar
+  describing how to connect to the real database. Either way it is
+  the discovery artifact other commands look for.
+- **Runner** — a row in the `runners` table created by
+  `$harness->new_runner`. Owns a set of services (notably the
+  scheduler) and zero or more runs. A runner can be finalized,
+  signaling "no more runs are coming".
+- **Service** — a long-lived process consuming
+  `Test2::Harness2::Role::Service`. Spends its life in a poll loop
+  that reads work from the database and writes results back. The
+  scheduler, every resource service, every launcher, and every preload
+  root are services.
+- **Scheduler** — `Test2::Harness2::Scheduler`. Exactly one per
+  runner. Drives run + job execution: claims queued runs, evaluates
+  resources, hands each job to a launcher via the `launches` table,
+  reaps results.
+- **Launcher** — a service consuming
+  `Test2::Harness2::Role::Launcher` (which itself consumes
+  `Role::Service`). Each launcher process polls the `launches` table
+  for rows addressed to it and starts the requested process. There
+  are several launcher implementations (`Default`, `ForkExec`,
+  `Win32`, `Preload`). A launcher may optionally expose a Unix
+  socket for `spawn` operations.
+- **Collector** — `Test2::Harness2::Collector`. A child process the
+  launcher creates to wrap a *collected* process. Reads the collected
+  process's stdout / stderr through `Atomic::Pipe`s in mixed-data
+  mode, runs the bytes through a parser → optional auditor →
+  recorder pipeline, and finalizes the collector row in the database
+  when the collected process exits. Every test job and every service
+  process is wrapped by a collector. Spawns are not.
+- **Spawn** — a detached process produced by the spawn entry point of
+  a preload launcher (eventually surfaced as `yath spawn`). Spawns
+  do **not** get a collector; they double-fork and are intended to
+  emulate "just running the command", inheriting the preload state
+  but otherwise behaving like a normal foreground process.
+- **Parser** — consumes the bytes the collector reads from the
+  collected process. Two kinds of bytes coexist on the same pipe:
+  raw text and structured event bursts framed by `Atomic::Pipe`'s
+  mixed-data-mode burst API. The parser produces
+  `Test2::Harness2::Event` objects.
+- **Auditor** — optional parser-tap that watches the event stream,
+  injects synthetic events when needed, and tracks pass/fail state.
+  Only test-job collectors have an auditor; service collectors do
+  not.
+- **Recorder** — the sink of the event pipeline. Writes events,
+  records the collector's exit code, records state transitions
+  emitted by the auditor, and is responsible for handling external
+  artifacts (screenshots, etc.). The default recorder is the
+  `DB` recorder (writes to disk + the database). A `Files` recorder
+  exists for development and tests of the collector in isolation.
+- **Resource** — a class consuming
+  `Test2::Harness2::Role::Resource`. Resources mediate access to
+  things tests need (CPU slots, memory, temp directories, preloads,
+  etc.). Some resources are pure in-process state owned by the
+  scheduler; others need a backing service process to manage real
+  out-of-process state. Resources are configured per runner
+  (`start_scheduler(resources => ...)`) and per run
+  (`queue_run(resources => ...)`).
+- **Project** — the unit a run is scoped to. Currently a freeform
+  string (for development `t2h2` is fine); auto-detection by
+  `App::Yath2` is Part 2 scope. Stored in `projects.name`.
 
-## 2. Process topology & IPC parentage
-
-```
-command process  (yath test / yath start / yath run …)
- └── harness service  (interposed by its service collector)
-      ├── global resource services   (each interposed by a service collector)
-      │    └── a Preload resource (if configured as global) is just
-      │        another global resource service here; it in turn spawns
-      │        a preload service subtree — see §10.
-      ├── run service  (interposed by a service collector)
-      │    ├── run-scoped resource services   (each interposed)
-      │    │    └── a Preload resource (if configured as run-scoped)
-      │    │        is just another run-scoped resource service here;
-      │    │        same preload service subtree.
-      │    └── test-job collectors   (interpose their test process)   — the direct path when the test does not need a preload stage; otherwise a preload stage spawns the test-job collector itself.
-      └── (repeat run service subtree per concurrent run)
-```
-
-Preloads are never a separate entity alongside resources; they **are**
-resources that happen to bring a service subtree with them. Anywhere
-below that says "preload resource", treat it as "a resource service
-whose resource class is a preload".
-
-Every collector has **three** IPC identities it may need to send to:
-
-| Key                | Meaning                                                   | Who it points at                                      |
-|--------------------|-----------------------------------------------------------|-------------------------------------------------------|
-| `ipc_harness`      | Canonical harness service bus name                        | Always the harness (passed down, never hardcoded)     |
-| `ipc_run`          | Run service bus name for the collector's run (if any)     | The run service = `run_id`                            |
-| `ipc_parent`       | The immediate parent service that spawned this collector  | Usually the run service; a preload stage when preloads; the command's handle for the harness's own service collector |
-
-Notes:
-
-- `ipc_parent` always points at the parent **service**, never at a
-  collector. Collectors do not receive IPC; only services do.
-- Without preloads, `ipc_parent` and `ipc_run` are the same bus name for
-  a test-job collector. With preloads, `ipc_parent` points at the preload
-  stage that forked the test; `ipc_run` still points at the run service.
-- The harness service is the top of the tree. Its `ipc_parent` is the
-  command process's handle identity (see §3). Its `ipc_run` is
-  undefined; its `ipc_harness` is itself.
-- Resource services and preload services follow the same rules: their
-  collectors know about `ipc_harness`, know about `ipc_run` when the
-  resource/preload is run-scoped, and have `ipc_parent` pointing at
-  whichever service spawned them (harness for globals; run for run-scoped).
-
-## 3. Command ↔ harness handshake
-
-1. The command initialises `IPC::Manager` **before** constructing the
-   harness. The command's IPC identity is `<command-name>-<pid>` —
-   e.g. `yath-test-12345`, `yath-start-12345`, `yath-run-12345`.
-2. The command creates the workdir (see §11) and hands it, along with
-   `ipcm_info` and (optionally) a configured logs directory name and
-   harness service name, into the harness constructor.
-3. The command spawns the harness. Spawning returns a handle whose IPC
-   identity is the command's bus name. The harness accepts this as its
-   own `ipc_parent`. The harness's interpose collector also uses this
-   identity as its `ipc_parent`.
-4. The command uses the handle to send requests (queue run, stop after
-   queued, status, run_status, etc.) and to receive IPC events that
-   the harness forwards to it.
-5. The command is reachable on the IPC bus under its `<command>-<pid>`
-   identity. That identity is how the harness addresses it for
-   unsolicited messages (artifact announcements forwarded up, aggregate
-   results from the run, final pass/fail summary, etc.).
-
-The harness **does not vivify its own IPC bus.** If `ipcm_info` is
-missing from construction, construction fails.
-
-## 4. Run queueing and lifecycle
-
-Runs can be queued via two channels:
-
-- **At construction**, as a `runs => [ {files => [...], …}, … ]` list
-  passed to the harness constructor. The harness enqueues these in
-  order at startup before accepting IPC.
-- **Via IPC**, as a `queue_run` (or `queue_test_run`) request from the
-  command to the harness. The response carries the `run_id`.
-
-### "No more runs are coming" signal
-
-Two equivalent forms, pick the one that fits the context:
-
-- **Construction flag**: `finish_after_queued => 1` (or the previously
-  equivalent `finish_after_initial_run`; rename during the upcoming
-  refactor). Effect: once every run queued at construction completes,
-  the harness enters `finishing` state. No IPC response (there's no
-  channel at construction time).
-- **IPC request**: `finish_after_queued` kind, sent from the command
-  to the harness. Harness acks immediately with `{ok => 1}`. Effect:
-  the harness enters `finishing` state once the currently-queued set
-  drains.
-
-If a command queues a new run AFTER a `finish_after_queued` signal has
-been processed, the harness rejects the queue request with an
-informative error. The signal is one-way; to submit more runs, the
-caller must spawn a new harness.
-
-## 5. IPC communication rules
-
-### 5.1 Service ↔ service
-
-Services can exchange either **messages** (fire-and-forget) or
-**requests** (synchronous, response expected):
-
-- **Informational messages** are fire-and-forget. Use when the sender
-  must not block. Artifact announcements, test-job-complete
-  notifications from run→harness, per-run aggregate results at run
-  end, etc.
-- **Important operational requests** use requests with an ack + a
-  timeout. Starting a test is the canonical example: harness sends
-  `launch_job` to the run service (or to a preload stage), expects
-  an ack within a bounded time.
-
-### 5.2 Timeout handling for operational requests
-
-If an operational request times out (the ack never arrives in time):
-
-1. The sender marks the operation as **deferred** (e.g. the harness
-   puts the job back into its scheduling pool).
-2. It retries after a back-off interval, with a fresh request.
-3. **Reconciliation on late ack / late start notification:** if a
-   late confirmation arrives *after* the sender has already deferred
-   — for example, the run service sends a `test_process_start`
-   notification (the test actually did start, the ack was just
-   slow) — the sender:
-   - Logs an IPC warning so the root cause (slow bus, noisy peer,
-     dropped packet) can be investigated.
-   - Marks the target as **started** regardless; the world is already
-     in that state and it would be worse to launch a duplicate.
-
-This makes the system tolerant of transient bus problems without
-inventing phantom tests or hanging on a single slow ack.
-
-### 5.3 Collector → service
-
-- Collectors only **send** messages. They never receive.
-- Collectors only send **messages** (not requests). Nothing the
-  collector does should depend on receiving a response; its lifecycle
-  is independent of the service layer's availability.
-- Collectors send upward — to `ipc_parent`, `ipc_run`, or
-  `ipc_harness` — never downward to whatever the collector is
-  monitoring.
-- **A collector must not outlive the service that spawned it.** Send
-  failures (including EPIPE / "Disconnected pipe") are genuine
-  errors: they indicate either a shutdown ordering bug or a crashed
-  peer. They should surface as warnings so the underlying problem
-  can be investigated, not be silently suppressed.
-
-### 5.4 IPC identity rules
-
-**Maximum length.** IDs on the IPC-Manager bus are limited to
-varchar(512) on some transport protocols; every identity defined
-in this document must stay well under that cap. Implementations
-should refuse to register identities longer than 512 characters.
-
-- **Services need purpose-shaped identities.** Run services use the
-  `run_id` directly as their bus name. Resource services derive
-  their name from the resource class and the service method that
-  started them (see §9). The harness uses `harness` **by default**
-  but that name is passed through from the command — downstream
-  clients must not hardcode it.
-- **Collectors are addressed by the service they interpose.** The
-  canonical format is:
-    - `collector:<service_name>` for a collector attached to a
-      service that is not itself run-scoped (harness, global
-      resources, global-scope preload stages).
-    - `collector:<service_name>:<run_id>` for a collector attached
-      to a service that lives under a specific run (the run
-      service's own collector, run-scoped resource-service
-      collectors, run-scoped preload stage collectors, test-job
-      collectors launched under a run).
-  The `<service_name>` is the same name the interposed service
-  registered on the bus. This makes the collector's identity
-  self-describing ("I'm the collector for service X, in run Y")
-  without needing a separate lookup.
-- Preload stage services use `<stage_name>` when the stage belongs
-  to a global preload, and `<stage_name>:<run_id>` when the stage
-  belongs to a run's preload. This disambiguates a per-run override
-  of a global stage name. Their collectors follow the
-  `collector:<stage_name>` / `collector:<stage_name>:<run_id>`
-  convention above.
-
-## 6. Event framing and the service echo-to-collector contract
-
-### 6.1 How a collector sees its child's output
-
-Collectors interpose on their child process's stdout and stderr by
-replacing those handles with **mixed-mode `Atomic::Pipe`s**.
-Mixed-mode means the same pipe carries two kinds of traffic:
-
-- **Raw text** — ordinary `print`, `warn`, or `printf` output from
-  the child. The collector's parser turns it into STDOUT / STDERR
-  events.
-- **Framed event bursts** — structured events written through the
-  Atomic::Pipe's data-burst API. The collector's parser decodes
-  each burst into an event directly (no line-parsing).
-
-Both kinds coexist cleanly on the same pipe, so a child that
-mostly prints text but occasionally wants to emit a structured
-event does not need a second channel.
-
-**STDOUT event bursts are always paired with a STDERR sync
-burst.** Every time the producer emits an event on STDOUT it also
-writes a small sync record on STDERR so the collector can
-synchronise the two streams and keep interleaved raw STDOUT /
-STDERR output in the same relative order as the events. This is
-the same contract `Test2::Formatter::Stream2` already honours for
-test processes; it applies equally to service event emission.
-
-### 6.2 Who emits events
-
-- **Test processes** use `Test2::Formatter::Stream2`. The test-job
-  collector sets `T2_FORMATTER=Stream2` in the test's environment;
-  `Test2::API` then uses Stream2 to write each `Test2::Event`
-  through the pipe's burst API in the shared frame format.
-- **Services** (harness, run, resource, preload) do **not** use
-  Stream2. Stream2 is Test2-framework-specific and only belongs
-  inside a test process. Services emit events via a small
-  service-side helper library that calls the same Atomic::Pipe
-  burst API with the same on-wire frame. The library is the
-  recommended wrapper around "open my stdout and stderr as
-  mixed-mode Atomic::Pipe write ends, hand me events, I frame
-  and burst them — and drop the sync marker on stderr for each
-  stdout event so the collector can order everything correctly."
-- The **wire frame is identical** between Stream2 and the service
-  emitter so a single collector parser consumes both. Only the
-  producer is different.
-
-### 6.3 Every service echoes its received IPC as an event
-
-**Every service** — not only the run service — echoes every IPC
-message it receives into its own stdout as a framed event burst
-(using the service emitter library from §6.2). The service's
-interpose collector then parses the burst through the same
-pipeline test-job collectors use, and the event flows out through
-that collector's loggers, auditors (test-only, N/A here), and
-upward-facing announcements.
-
-The event envelope places the echoed-IPC information **inside the
-`harness` facet**, not as a top-level facet:
-
-- **Recognised kinds** (the ones defined in this document) get a
-  kind-specific slot under `harness`. Examples:
-  - `{ harness => { test_job_started   => { run_id, job_id, job_try, pid, started_at } } }`
-  - `{ harness => { test_job_completed => { run_id, job_id, job_try, pass, exit, started_at, ended_at } } }`
-  - `{ harness => { collector_artifacts => { collector_id, loggers => {...} } } }` (see §8)
-  - `{ harness => { run_complete => { run_id, pass_count, fail_count, duration, jobs => [...] } } }`
-- **Unrecognised kinds** — messages the service received but does
-  not have a registered slot for — go under `ipc_received` on the
-  same facet: `{ harness => { ipc_received => \%original_payload } }`.
-  Every incoming IPC is observable in the log, even when its
-  `kind` is not one this document defines.
-
-Keeping the harness-produced observations under the `harness`
-facet mirrors how per-job events carry their harness metadata
-inside a `harness` facet already, so a single consumer can ask
-"what harness-layer information is in this event?" without
-juggling multiple top-level keys.
-
-## 7. Lifecycle messages
-
-These are the named kinds all services need to recognise and
-facet-decode when received. The "From → To" column describes the
-direct IPC path.
-
-| Kind                        | From              | To            | Shape                                                |
-|-----------------------------|-------------------|---------------|------------------------------------------------------|
-| `collector_started`         | any collector     | `ipc_parent`  | run_id?, job_id, collector_id, stamp                 |
-| `collector_artifacts`       | any collector     | `ipc_run` if set, else `ipc_harness` | `loggers => { Class => [ {instance_1_artifacts}, {instance_2_artifacts}, … ] }` |
-| `collector_exiting`         | any collector     | `ipc_parent`  | run_id?, job_id, exit, stamp                         |
-| `test_job_started`          | test-job collector| `ipc_run`     | run_id, job_id, job_try, started_at, pid             |
-| `test_job_completed`        | test-job collector| `ipc_run`     | run_id, job_id, job_try, pass, exit, started_at, ended_at |
-| `test_job_completed`        | run service       | `ipc_harness` | same shape, forwarded — so the harness scheduler can free resources and the command's IPC stream has both per-run and global views |
-| `run_started`               | run service       | `ipc_harness` | run_id, started_at                                   |
-| `run_complete`              | run service       | `ipc_harness` | run_id, pass_count, fail_count, duration, [{job_id, pass, exit, started_at, ended_at}, …] |
-| `launch_job` (request)      | harness           | run or stage  | run_id, job_id, job_try, test_file, env, loggers, auditor |
-| `launched_job`              | run or stage      | harness       | run_id, job_id, job_try, pid — the post-launch notification; name mirrors the `launch_job` request that prompted it. May arrive after a launch_job ack timeout; see §5.2 |
-
-Forwarding rule for `test_job_completed`:
-
-1. Test-job collector sends to its run service.
-2. Run service echoes the received IPC into its own event stream
-   (see §6) so its log reflects the message.
-3. Run service forwards the same payload to the harness.
-4. Harness echoes the received IPC into its own event stream.
-
-This keeps the "all state flows via IPC" invariant while also giving
-the harness scheduler the per-job completion signal it uses to free
-resources and advance scheduling.
-
-### Collector ID
-
-Every collector identifies itself via the `collector:<service_name>`
-/ `collector:<service_name>:<run_id>` convention defined in §5.4.
-That identity appears as the `collector_id` field on lifecycle
-messages so receiving services can correlate `collector_started`,
-`collector_artifacts`, and `collector_exiting` from the same
-collector without any separate lookup.
-
-## 8. Artifact announcements
-
-### 8.1 Shape
+## 2. Process topology
 
 ```
-{
-  kind    => 'collector_artifacts',
-  run_id  => $run_id,                        # optional (omit when the collector is global)
-  job_id  => $job_id,                        # always present
-  loggers => {
-      'Test2::Harness2::Collector::Logger::JSONL' => [
-          { output_file => '/abs/path/harness.jsonl' },
-      ],
-      'App::Yath2::Logger::SomeOther' => [
-          { output_file => '/abs/path/other-0.log' },
-          { output_file => '/abs/path/other-1.log' },  # two instances of the same class
-      ],
-      'App::Yath2::Logger::DB' => [
-          { uri => 'postgres://.../runs/42' },          # not all artifacts are files
-      ],
-  },
-}
+caller process (test runner script, `yath …` command later)
+ └── Test2::Harness2 handle (in-process; no daemon)
+      ├── scheduler service       (collector ↔ scheduler ↔ DB)
+      │    ├── resource services  (one per resource that declares it needs a service)
+      │    ├── launcher services  (Default / ForkExec / Win32 / Preload)
+      │    │    └── collector ↔ test process    (per job)
+      │    └── (preload processes, when a Preload launcher is in use)
+      │         └── collector ↔ test process    (per job launched from a preload)
+      └── …
 ```
 
-- Outer hash keys are **logger classes**.
-- Values are **arrays** of per-instance artifact hashes; a collector
-  may have multiple instances of the same logger class with different
-  configuration, so the key is one-to-many.
-- Each artifact hash is free-form but must identify the artifact
-  uniquely enough for a consumer to locate it. Common fields:
-  `output_file`, `uri`, `table`, `topic`, etc.
-
-### 8.2 Timing
-
-- A `collector_artifacts` message is sent **at startup**, after the
-  collector has instantiated all its loggers and each logger has
-  resolved its final locators (opened its file, established its DB
-  connection, …).
-- If a logger produces a **new** artifact mid-run (rotation, a
-  per-retry file, a lazily-created uploader), the collector re-sends
-  a `collector_artifacts` message listing the new artifact(s). The
-  receiving service treats successive announcements as additive,
-  not replacing — each announcement is "here are additional
-  artifacts I now own."
-
-### 8.3 Routing
-
-Artifact announcements do **not** travel up through
-`ipc_parent` — the intermediate parent (a preload stage, a
-resource service) has no use for them and wouldn't know what to
-do with the payload. Every `collector_artifacts` message is
-addressed directly at the aggregator that actually needs it:
-
-- If the collector has an `ipc_run` (i.e. it is associated with a
-  run — test-job, run-scoped resource, any preload stage inside a
-  run-scoped preload tree, the run service's own interpose
-  collector) → send to `ipc_run`. The run service then forwards
-  an aggregated view to the harness at run end (see `run_complete`
-  in §7).
-- Otherwise (no run context — harness's own interpose collector,
-  global resource services, any preload stage inside a **global**
-  preload tree) → send to `ipc_harness`.
-
-This is a direct point-to-point announcement, not a tree walk.
-The preload propagation rules of §10 concern lifecycle signals
-(child stage exiting, subtree pruning); artifact announcements
-short-circuit straight to the aggregator.
-
-The goal: **every announcement made by any collector anywhere in
-the tree lands at either the run service (when run-scoped) or the
-harness (when global), once.** Renderers only query those two
-services (see §13), so those two must see everything.
-
-## 9. Resources and resource-supporting services
-
-### 9.1 What a resource is
-
-A **resource** is a class that consumes
-`Test2::Harness2::Role::Resource`. The role's concrete obligations
-(`available`, `assign`, `release`, `status`) are pure in-process
-methods — they answer questions ("is there a slot free?"), they
-mutate the resource's own state ("mark this slot taken"), and
-they return lightweight structured answers. Nothing about the
-role itself requires a service to exist. `JobCount` is the
-canonical example: it runs entirely inside the harness's memory,
-with no out-of-process helper.
-
-A resource may be **global** (installed on the harness) or
-**run-scoped** (installed on a specific run). That scope is not a
-property of the class — it is a property of where the resource
-instance is attached. The same resource class can be used in
-either scope.
-
-### 9.2 When a resource needs services
-
-Some resources cannot answer `available` / `assign` / `release`
-from a bare process. A database-connection resource, for
-example, needs an actual database to hand out connections to; a
-shared-job-slots resource needs a coordinator process reachable
-by every harness sharing the slot pool. For these cases, a
-resource class declares one or more **service methods**:
-methods on the resource named `service_<name>_start` (matched
-by `Role::Resource::service_methods`). Each `service_*_start`
-method is the starter for a distinct service the resource needs.
-
-A resource with zero `service_*_start` methods (`JobCount`) needs
-no services at all and lives entirely inside its host. A resource
-with N `service_*_start` methods spawns N distinct services when
-it is attached.
-
-### 9.3 Services are started *for* the resource, not as the resource
-
-The services spawned by a resource are **not the resource**. The
-resource class still lives in the host process (harness for
-global resources, run service for run-scoped resources). The
-services it declares are helper processes that exist solely to
-support the resource's in-process API. When the resource's
-`assign` method needs to reach out to "its" database, it talks
-to the database service it started via IPC.
-
-This is why §2 talks about "resource services" as an optional
-extra subtree underneath a resource — not as a mandatory
-wrapper around every resource. Most resources do not spawn any
-services.
-
-### 9.4 Where the services live
-
-The host of a resource-supporting service is the same host as the
-resource itself:
-
-- **Global resources** — the harness calls the resource's
-  `service_*_start` methods via the `ResourceServiceHost` role.
-  The spawned services have the harness as their `ipc_parent`
-  and no `ipc_run`. Their collectors are
-  `collector:<service_name>`. Artifacts route to `ipc_harness`
-  (no `ipc_run`).
-- **Run-scoped resources** — the run service calls the
-  resource's `service_*_start` methods the same way. Spawned
-  services have the run service as their `ipc_parent` and
-  `ipc_run = run_id`. Their collectors are
-  `collector:<service_name>:<run_id>`. Artifacts route to
-  `ipc_run`.
-
-The `service_name` passed to the service at construction is
-derived from the `service_*_start` method name (the
-`Role::ResourceServiceHost::_resource_service_name_from_method`
-helper in the existing tree: `service_foo_start` → `foo`). A
-resource may override this if it needs a specific well-known
-identity.
-
-### 9.5 Teardown
-
-When a resource is released — globally when the harness shuts
-down, per-run when the run completes — the resource's
-`teardown` method runs. Services the resource started are
-expected to exit in response; the host reaps them via the normal
-service-shutdown path. A resource service that declines to exit
-is terminated by the host's shutdown escalator.
-
-**Escalation signals are platform-dependent.** On POSIX the
-escalator is TERM then KILL. On Windows and similar platforms
-where TERM is not a reliable shutdown signal, the escalator is
-INT then KILL. Every place in this document that names the
-TERM → KILL sequence — kill-of-last-resort on a stuck
-collector, per-test-process timeout escalation, preload stage
-pruning, etc. — follows the same platform substitution:
-TERM on POSIX, INT on Windows, KILL last on both.
-
-## 10. Preloads (as a resource)
-
-A preload is a `Test2::Harness2::Role::Resource` implementation
-like any other — see §9. Its distinguishing feature is that it
-declares a `service_preload_start` method (by whatever name; the
-exact method name is an implementation detail of the resource
-class). That single service method starts the **preload root
-service**, which is the entry point to the stage tree described
-below.
-
-The scope of a preload follows the resource scope rules from §9:
-
-- **Global preload** — attached to the harness; the harness is
-  the root preload service's `ipc_parent`; no `ipc_run`; the
-  root service and every stage below it run with `ipc_harness`
-  pointing at the harness.
-- **Run-scoped preload** — attached to a specific run; the run
-  service is the root preload service's `ipc_parent`;
-  `ipc_run = run_id` for the root and every stage below it.
-
-The preload **resource itself** stays in the host process
-(harness or run service) just like any other resource. The
-preload root service and its stage tree are the out-of-process
-helpers the resource needs to actually serve "start a test in a
-preloaded state" — the resource delegates to them when its
-`assign` is called.
-
-### 10.1 Tree shape
-
-A preload resource's stage tree looks like:
-
-```
-preload-root service        # from the resource; loads the base modules
-├── stage A service         # loads more, on top of root
-│   ├── stage A.1 service   # loads even more, on top of A
-│   └── stage A.2 service
-└── stage B service
-    └── stage B.1 service
-```
-
-Every node in the tree is its own service in its own process.
-Stages are forked from their parent after the parent has finished
-loading; a child stage starts with its parent's preloaded module
-set intact.
-
-The root preload service is the resource service; its **parent
-service** is determined by the resource's scope — the harness for
-a global preload, the run service for a run-scoped preload.
-Stages below the root have the stage one level up as their parent
-service (IPC `ipc_parent`).
-
-### 10.1.1 BEGIN-block bootstrap (why the root must be fresh)
-
-The root preload service must be a **fresh process** started from
-inside a `BEGIN` block — no other Perl code may have executed
-before that point in the root's process, and every module the
-preload is supposed to cache must be loaded inside that `BEGIN`.
-This is not an aesthetic choice; it is load-bearing for how tests
-execute out of a preload stage:
-
-1. The `BEGIN` block declares a `Long::Jump` point at the top
-   of its body.
-2. Inside that `BEGIN`, the requested modules are `use`d /
-   `require`d so they end up in `%INC` in the root's process.
-3. When a test needs to run out of this stage, the preload stage
-   forks. In the forked child, the preload framework triggers the
-   `Long::Jump` back up to the `BEGIN`'s top and uses
-   `goto::file` to substitute the test script for the body of
-   the `BEGIN`. The child process then runs the test's code as
-   if the test had been started normally, but with every
-   preloaded module already present in `%INC`.
-4. Because the `BEGIN` is the only place execution has reached
-   in the fresh root, there is no before-`BEGIN` state to roll
-   back; `Long::Jump` + `goto::file` cleanly replace the
-   preload body with the test body.
-
-Child stages (stage A, stage A.1, …) inherit the root's
-preloaded module set through a normal `fork`; they do **not**
-need their own fresh-process `BEGIN` bootstrap because their
-starting state already contains the parent stage's modules. Each
-child stage may do additional loading in the usual way after the
-fork. The "fresh + BEGIN + Long::Jump + goto::file" requirement
-applies only to the root.
-
-The existing implementation in `reference/old2/lib/` is the reference for
-this mechanism — specifically where it uses `goto::file` to
-swap in a test script from a preload point. The new preload
-resource must preserve those semantics even as the surrounding
-service framework is modernised.
-
-#### IPC-Manager's exec path is how you get a fresh root process
-
-`IPC::Manager` exposes an `exec` parameter on the service spawn
-API specifically so a service can be started in a freshly
-`exec`'d process (not a `fork` that inherits Perl state from
-its parent). The preload root service uses this to get the
-"fresh process" §10.1.1 requires:
-
-    my $handle = ipcm_service(
-        ...
-        exec => { cmd => \@inc_flags },   # <-- triggers exec path
-    );
-
-When `exec` is present, `ipcm_service` spawns the service by
-`fork` + `exec` rather than `fork` alone, handing the child
-process's argv via `cmd`. The preload resource supplies the
-`@inc_flags` (plus the perl binary, the script to run, and any
-other startup arguments) so the new process starts with
-nothing already loaded, then the preload's top-level `BEGIN`
-block runs the preload recipe inside that clean process.
-
-Child stages do not use the `exec` path. They are forked from
-their parent stage (which is already in the post-`BEGIN`
-state) and inherit `%INC` in the normal way.
-
-### 10.2 Stage names and IPC identity
-
-Stage names are **unique within a single preload tree**. Because a
-harness can run a global preload tree and one or more run-scoped
-preload trees concurrently, names collide across trees. The IPC
-identity therefore encodes the scope:
-
-- `<stage_name>` for a stage in a **global** preload (no run_id
-  context).
-- `<stage_name>:<run_id>` for a stage in a **run-scoped** preload.
-
-The root preload service uses the same naming with a canonical
-placeholder stage name (e.g. `preload-root`) when no explicit name
-was supplied by the resource.
-
-### 10.3 IPC identity inherited by stage collectors
-
-Every preload stage service has its own interpose collector, and
-that collector inherits `ipc_harness` from its parent and
-`ipc_run` from its scope:
-
-- **Global preload**: every stage's `ipc_run` is undefined; its
-  `ipc_harness` is the canonical harness identity.
-- **Run-scoped preload**: every stage's `ipc_run` is the run's
-  `run_id`; its `ipc_harness` is the harness identity.
-- Every stage's `ipc_parent` is the service one level up in the
-  preload tree (the root for direct children of root; the next
-  stage up otherwise).
-
-### 10.4 Launching a test from a preload stage
-
-When the harness schedules a test that should run under preload
-stage S, the harness sends a `launch_job` request to S (not to
-the run service). S forks a child to run the test, but the
-test's collector and test process are **detached from S's
-process tree** on purpose: S must be free to exit or be
-reloaded at any time without killing tests it already
-launched.
-
-The detachment pattern is a three-process dance:
-
-1. S forks a short-lived **intermediary** child (call it I).
-2. I forks again, producing the **collector + test**
-   sub-process. The collector is the direct parent of the
-   test process (it forks the test itself as part of its
-   normal `spawn` flow).
-3. I exits immediately. The collector + test pair are
-   reparented away from S — to `init` on platforms without
-   `ChildSubReaper`, or to the nearest subreaper in the tree
-   when `ChildSubReaper` support is available.
-
-#### Who reaps the detached collector
-
-The answer depends on whether the preload is run-scoped or
-global, because the nearest subreaper up the tree differs:
-
-- **Run-scoped preload**: the run service is a subreaper. On
-  `ChildSubReaper` platforms, the detached collector
-  reparents to the run service; the run service `waitpid`-
-  reaps when the collector exits. On platforms without
-  `ChildSubReaper`, the run service polls + kills but cannot
-  reap.
-- **Global preload**: the preload tree lives under the
-  harness, not under any run service, so the nearest
-  subreaper above the detached collector is the **harness**
-  (not the run). On `ChildSubReaper` platforms, the harness
-  reaps the detached collector. The run service is still the
-  collector's **monitor** (see below) — but not its reaper.
-
-Either way, the detached collector's IPC identities are:
-
-- `ipc_parent` = **the run service**. Detachment moved the
-  collector out of S's process subtree, and the run service
-  is the service that owns run-scoped test tracking — so
-  `ipc_parent` for purposes of collector lifecycle messages
-  (§7) is always the run service, regardless of who reaps.
-- `ipc_run` = the run's `run_id`.
-- `ipc_harness` = the canonical harness identity.
-
-#### `launched_job` tells the run which pid to watch
-
-Immediately after the detached collector comes up, it sends a
-`launched_job` message to the run service carrying its own pid.
-The run service records that pid so it can:
-
-- Track the collector's liveness by polling the pid.
-- Kill the collector if the run is aborted early, or if the
-  test overruns its timeout (see below) — on any platform,
-  with or without `ChildSubReaper`. Killing does not require
-  being the reaper; the run signals the pid and waits for it
-  to disappear.
-- Reap the collector when it exits, **only** when the run is
-  the collector's direct parent or subreaper (i.e. run-scoped
-  preload). For global-preload detached tests the harness
-  reaps; the run observes the pid going away via its own
-  polling rather than via `waitpid`.
-
-#### Timeouts live in the collector, not in the run
-
-Per-test-process timeouts are owned by the **collector**, not
-by the run service. The collector has direct oversight of the
-test process (it is the test's parent); it is the right place
-to arm a timer, noticing a hang, and escalate (TERM → grace →
-KILL) when the test overruns.
-
-The run service's role around timeouts is limited to: forced
-kill-of-last-resort if the collector itself has become
-unresponsive. The run service notices an unresponsive
-collector via pid polling + message silence; if it decides
-the collector is stuck, it kills the collector's pid. The
-collector's own timeout machinery is expected to be the
-first line of defence; the run's kill is a fallback.
-
-#### Test-job collectors monitor the run, not the preload
-
-The collector polls the **run service's pid** and watches the
-run's IPC identity. If either signal indicates the run is
-gone (pid disappeared, IPC identity deregistered), the
-collector:
-
-1. Terminates its test process cleanly if it can (TERM →
-   grace → KILL).
-2. Terminates itself.
-
-**The collector does not monitor the preload stage** it was
-spawned from — once detachment is complete the stage has no
-authority over the collector's lifetime, and the whole
-point of detachment is that the stage can disappear freely.
-Monitoring the stage would re-entangle the lifetimes we
-specifically went to trouble to separate.
-
-#### Summary of routing and lifecycle
-
-- `test_job_started`, `test_job_completed`, `launched_job`,
-  `collector_started`, `collector_exiting`, artifact
-  announcements: all go to `ipc_run` or `ipc_harness` per
-  the general rules of §7 and §8.3.
-- The preload stage S is only involved in the **launch**:
-  after the intermediary exits and the collector announces
-  itself to the run service, S's role is done. S can exit,
-  be pruned, or be reloaded without disturbing the running
-  test.
-
-Run-scoped preloads are the typical case. Global preloads are
-the same mechanism but with the harness as the subreaper of
-the detached tests; the run service still monitors the
-collector on behalf of the run that asked for the test.
-
-### 10.5 Reload
-
-Reloading a preload has **two avenues**, and the preload
-resource picks between them based on whether the changed
-modules can be reloaded in place:
-
-1. **In-place reload** (preferred when possible). Each stage
-   watches the files in its own `%INC` for changes via a
-   `Test2::Harness2::Role::ChangeWatcher` consumer (see
-   §10.5.0). When a watched file changes and the preload's
-   reload policy says it is safely reloadable, the stage
-   re-reads the file into its already-running process using
-   the normal module-reload path. No process restart, no
-   subtree prune, no affect on already-launched tests. This
-   is by far the common case — edits to a pure-data config
-   module, a leaf library with no XS or package globals, etc.
-2. **Branch pruning** (fallback). Used when in-place reload
-   is not possible — the changed module has XS, has Moose
-   metaclass state, uses `use constant` values other code
-   has already captured at load time, or the preload
-   policy simply refuses to attempt it. Pruning kills the
-   affected stage's subtree and re-forks it fresh, exactly
-   as described below.
-
-The resource is responsible for deciding which avenue applies.
-Each consumer of the preload role may implement any reload
-policy it wants; the important architectural constraint is
-that branch pruning is the fallback, not the default.
-
-### 10.5.0 `Role::ChangeWatcher` and its implementations
-
-Every preload stage is responsible for watching the files
-in its `%INC` for changes. A role named
-`Test2::Harness2::Role::ChangeWatcher` (or similar — pick
-the name that reads best) declares the shared interface.
-Two initial implementations ship:
-
-- **Inotify** — uses `Linux::Inotify2` when it is available.
-  Events are delivered by the kernel; cheap to watch many
-  files.
-- **Mtime fallback** — used when `Linux::Inotify2` is not
-  available. Records the mtime of each file in `%INC` and
-  compares against the current mtime on each check. More
-  expensive than the inotify path but portable.
-
-Reference implementations of the watcher + reload logic
-already exist in `reference/old2/lib/` and should be the starting
-point for the new role's implementations. The new code
-only needs to surface the behaviour behind the
-`ChangeWatcher` role interface so the preload resource can
-pick whichever watcher implementation applies on the
-current platform.
-
-### 10.5.1 Branch pruning (the fallback path)
-
-When in-place reload cannot apply, a preload reload is
-modelled as **pruning a branch**:
-
-1. The reload target is a stage S.
-2. All of S's descendants in the preload tree are terminated.
-3. S itself is terminated.
-4. **Tests S already launched are not affected.** They detach
-   from S at launch time (§10.4), so pruning S leaves the
-   collector + test pair running under the run service's
-   supervision. The tests complete on their own timeline; the
-   run service reaps their collectors and records their
-   verdicts regardless of what is happening in the preload
-   tree.
-5. S's parent (or the root) re-forks S. Re-forking S rebuilds
-   the entire subtree by running S's original preload recipe
-   again.
-6. Any NEW tests that would have launched out of S (or a
-   descendant of S) while S is down are deferred. The preload
-   resource reports S (and its descendants) as "down" to the
-   scheduler; the scheduler holds those tests. When the new S
-   announces itself ready, the resource flips the stage state
-   back to "up" and the scheduler releases the held tests.
-
-Propagation of "I'm going away" through the killed subtree
-uses the normal `collector_exiting` signal path from each
-stage's collector up to its parent stage. The parent learns a
-child is gone via `collector_exiting` (or by reaping the
-child's pid, whichever comes first) and initiates the re-fork.
-
-#### 10.5.2 "Stage gone" implies "descendants gone"
-
-When a parent stage observes that one of its direct children
-has exited (via `collector_exiting`, via pid reap, or via a
-liveness check), it assumes **every descendant stage below the
-gone child is also gone**. Descendants do not need to send
-their own `collector_exiting` up through the tree for the
-parent to accept the whole subtree as down; they cannot
-outlive their parent stage's process. This cuts redundant
-signalling and makes the "stage up/down" accounting snap to
-the branch boundary instantly.
-
-#### 10.5.3 Stages self-terminate when their parent goes away
-
-Every preload stage watches its parent's liveness on two axes:
-
-- **Parent pid**: each stage knows its parent stage's pid and
-  polls / reaps-notifies to catch the parent going away. On
-  platforms with `ChildSubReaper` this is straightforward
-  (`waitpid`/`WNOHANG`); on others the stage polls with
-  `kill 0, $parent_pid`.
-- **Parent IPC active status**: if the parent's identity stops
-  responding on the bus (e.g. its service has deregistered),
-  the stage treats that as "parent is gone" as well.
-
-On either signal, the stage **terminates itself** cleanly. Its
-own children repeat the cascade. This makes pruning by killing
-a single mid-tree stage safe — the whole branch below it unwinds
-without central coordination.
-
-#### 10.5.4 PID monitoring catches hard failures
-
-The preload resource (and every stage service that has
-children) keeps each child's pid under active monitoring. If a
-child dies so hard it cannot send its own `collector_exiting`
-(segfault, SIGKILL from the OOM killer, `POSIX::_exit` before
-the collector can flush) the pid monitor detects the absence
-and the parent reacts:
-
-- For the resource-level monitor: flip the affected stage (and,
-  per §10.5.2, its descendants) to "down"; schedule a restart
-  of the stage per §10.5.1.
-- For the stage-level monitor: propagate the pid-gone signal
-  through the same channels a `collector_exiting` would have
-  produced.
-
-### 10.5.5 Stage up/down state is the scheduler's input
-
-The preload resource keeps a table of `stage_name` → `up` /
-`down` / `restarting`. The scheduler consults this table when
-deciding whether a given test (which may require a specific
-stage) can launch right now:
-
-- If the target stage is **up**, normal path: send `launch_job`
-  to the stage.
-- If the target stage is **down** or **restarting**, the test is
-  held. When the stage flips back to **up**, held tests are
-  released in submission order.
-- A stage flip to **down** also implies that any tests waiting
-  on any of its descendants are still held — the restart will
-  rebuild the whole subtree.
-
-#### How the resource decides a stage's state
-
-The preload resource maintains each stage's state by combining
-three signals:
-
-1. **Explicit lifecycle messages from the stage.** Every stage
-   sends an `up` (or `ready`) message when its preload recipe
-   has finished and it is prepared to accept `launch_job`
-   requests. Every stage sends a `down` message when it is
-   about to exit cleanly. These messages go to whichever
-   service owns the preload — the **harness** for a global
-   preload, the owning **run service** for a run-scoped
-   preload — so the preload resource (which lives in that
-   same host) can consume them.
-2. **IPC peer availability.** The resource checks whether the
-   stage's IPC identity still responds on the bus. An
-   identity that has deregistered is a strong signal the
-   stage is gone, even if no `down` message arrived.
-3. **PID + message history.** The resource records the pid
-   the stage was running under at the time of its most
-   recent `up`. On each health check it verifies the pid
-   still matches and that the `up` has not been followed by
-   a `down`. A pid that no longer matches (process died and
-   was replaced), or an `up` with no known pid trail, is
-   treated as "stage down" regardless of what the bus says.
-
-Together these three signals keep the resource's view
-truthful even when a stage fails so hard it cannot send a
-`down` message. Explicit lifecycle messages are the fast,
-cheap path; the other two are fallbacks that catch hard
-failures.
-
-### 10.6 Lifecycle propagation guarantee
-
-Because stages form a tree of services, each stage needs to know
-when its children come and go. The rule is just the general
-rule from §5 and §7 applied recursively:
-
-- A stage's collector sends `collector_started`, `collector_exiting`
-  to its `ipc_parent` — i.e. the stage above it.
-- That parent stage echoes the received IPC into its own collector
-  as an event (per §6), so its own collector's logger chain sees
-  the subtree's shape, and so further-up aggregators observing the
-  parent see an accurate picture.
-- Artifact announcements from anywhere in the tree do **not** use
-  this path — they short-circuit to `ipc_run` / `ipc_harness` per
-  §8.3.
-- "I'm going away" can also reach the parent via pid monitoring
-  (§10.5.3) when the orderly IPC path is unavailable.
-
-The guarantee we need is narrow: **every collector_started /
-collector_exiting message from any stage lands at its parent
-stage, no matter how deep the tree, either via IPC or via pid
-reap.** That's what keeps the subtree-supervision and stage
-up/down picture coherent; artifact correctness is handled by
-the direct-to-aggregator routing elsewhere.
-
-## 11. Workdir and logdir
-
-There are exactly two cases:
-
-### 11.1 Any command that starts a harness creates a workdir
-
-If a command starts its own harness service, it is
-responsible for creating the workdir and passing it to the
-harness at construction. The harness does not vivify its own
-workdir — missing a workdir at construction is a fatal error.
-
-- Workdirs are temporary: `File::Temp::tempdir('yath2-$$-XXXXXX',
-  TMPDIR => 1)`. The default TMPDIR is `/tmp`.
-- The default logs directory name is `logs`; this is also a
-  construction arg (the full path becomes
-  `$workdir/$logdir_name`).
-- Cleanup is the responsibility of whichever process created
-  the workdir, and runs once the command (or daemon) observes
-  the harness process has exited. For a short-lived command
-  (`yath test` running standalone, `yath run` running
-  standalone) this is the command itself. For `yath start`,
-  the daemon process is the parent of the harness service
-  process; the daemon creates the workdir, hands it in, and
-  cleans it up when it observes the harness has exited. The
-  harness service itself never cleans up the workdir.
-
-### 11.2 Any command that does not start a harness does not create a workdir
-
-A command that does not need a harness at all, or that
-attaches to a harness someone else already started, does not
-create a workdir. If it needs to know where to look for
-artifacts or what the harness's workdir / logdir paths are,
-it asks the harness over IPC via the handle it already holds:
-
-- `get_workdir` → returns the absolute path of the harness's
-  workdir and the configured logs directory name.
-
-In the attached case the workdir's lifecycle belongs to
-whichever process created it; the attached command does not
-own it.
-
-### 11.3 General rule
-
-Commands must not assume a workdir path based on any
-convention — even for their own short-lived harness, the
-exact path is the return of `File::Temp::tempdir`. The
-harness's `get_workdir` (or the status response) is always
-the authoritative source for any consumer that needs to know
-the actual path.
-
-## 12. Logger defaults and behaviour
-
-### 12.1 Harness default: no loggers, no assumptions
-
-The harness itself **does not install any loggers by default**
-and makes no assumptions about what the command driving it
-wants. Tests still run, every IPC lifecycle message described
-above still flows, and the harness still aggregates per-job
-pass/fail via `test_job_completed` — the IPC path alone is
-enough for a command to exit with the correct status without
-any logger producing any file.
-
-Which loggers to enable is the **command's** responsibility, not
-the harness's. `yath test`, `yath run`, `yath start`, etc. each
-decide — based on the user's command-line options — which
-loggers to attach to which collectors, and pass that list to
-the harness at construction (or in per-run settings). The
-harness applies them; it does not pick.
-
-### 12.2 `yath test` early-development default
-
-During early development of the rewrite, `yath test` enables two
-loggers on every collector (service collectors, resource
-collectors, test-job collectors) as a placeholder default:
-
-- `Test2::Harness2::Collector::Logger::JSONL`
-- `Test2::Harness2::Collector::Logger::JSON`
-
-These give the command enough on-disk artifact to feed a renderer
-and exercise the artifact plumbing end to end.
-
-This default is a **stopgap, not the final behaviour.** In the
-real `yath test`, the set of active loggers is derived from
-command-line argument combinations (verbose / quiet / qvf,
-`--no-log`, explicit `--logger=Foo`, `--archive`, etc.). Until
-the argument layer lands, the two-logger default stands in as a
-known-good configuration to test against.
-
-### 12.3 Collector input the loggers write about
-
-Every collector (service or test-job) accepts:
-- framed event bursts on its stdout (from Stream2 in test
-  processes, from the service event emitter in service
-  processes), each paired with the STDERR sync marker described
-  in §6.1 so the collector can order events against interleaved
-  raw output;
-- raw stdout / stderr output (tests and services may print
-  outside the event frame; the collector's parser wraps such
-  output in `STDOUT`/`STDERR`-tagged events).
-
-**TAP is a test-collector-only input.** Test-job collectors
-recognise direct TAP output as a graceful fallback for older
-or external producers (a test that uses `Test::More` without
-switching to the Stream2 formatter, say), and their parser
-turns TAP lines into Test2 events. **Service collectors do
-not parse TAP** — a service that prints a line that happens
-to look like TAP is just regular stdout / stderr output as
-far as its collector is concerned, and ends up wrapped in a
-`STDOUT` / `STDERR` event like any other raw output.
-
-### 12.4 Logger pipeline
-
-Inside a **test-job collector**:
-
-```
-test process stdout/stderr
-  → parser   (frames → events; TAP lines → events; raw lines → STDOUT/STDERR events)
-  → auditor  (tracks pass/fail, counts, duration — ONLY on test-job collectors)
-  → loggers  (each active logger sees the event stream in order)
-```
-
-Inside a **service collector** (harness, run, resource, preload):
-
-```
-service stdout/stderr
-  → parser   (frames → events; raw lines → STDOUT/STDERR events; TAP is NOT recognised)
-  → loggers  (no auditor — service collectors don't have verdicts)
-```
-
-## 13. Artifacts and the output pipeline
-
-Events produced by tests flow through collectors into on-disk
-artifacts (JSONL files). The **output pipeline** in the command
-process reads those artifacts, filters the event stream
-per-renderer, and delivers events to one or more renderers that
-format and emit output.
-
-The pipeline has three distinct stages:
-
-```
-ArtifactLayer  (TBD — dispatches every event, no mode filtering)
-    │
-    ▼
-OutputManager
-    │  (groups renderers by filter chain; each chain runs once)
-    ├─► [Filter chain A] ──► Renderer A  (e.g. Default TUI)
-    │                   └──► Renderer B  (same chain, one run)
-    └─► [Filter chain B] ──► Renderer C  (e.g. DB / JUnit)
-```
-
-### 13.0 ArtifactLayer — reading and replaying
-
-**Not yet implemented.** `App::Yath2::ArtifactLayer` will bridge
-the harness and the `OutputManager`. It learns when individual
-jobs complete, reads the corresponding per-job JSONL artifacts
-from disk, and dispatches every event it finds via
-`$output_manager->dispatch($event)`.
-
-**The ArtifactLayer makes no filtering decisions.** It does not
-know or care which renderers are active or what modes they
-operate in. When a job JSONL file exists it is replayed in full;
-when no JSONL exists a synthesised `test_job_completed` event
-is dispatched as a fallback so renderers can still print a
-summary. A final synthesised `run_complete` event is dispatched
-after all jobs are done.
-
-The preferred mechanism for learning when jobs complete is a
-subscription to the harness event stream (§6.3). Until §6.3
-lands a polling approach over IPC is an acceptable interim
-implementation.
-
-### 13.1 Harness IPC requests the ArtifactLayer uses
-
-These are requests the harness answers; the **command** (not the
-renderer or the OutputManager) is the caller.
-
-- `list_global_artifacts` → artifacts for every non-run-scoped
-  collector (harness collector, global resource-service
-  collectors, global preload stage collectors).
-- `list_run_artifacts(run_id => $id)` → artifacts for every
-  collector associated with that run.
-
-### 13.2 OutputManager — shared filter chains, multiple renderers
-
-`App::Yath2::OutputManager` holds
-an ordered list of pipelines. Each pipeline owns a filter chain
-and a list of one or more renderers that share it.
-
-**Building a pipeline.** When `add_renderer($renderer)` is
-called the manager calls `$renderer->desired_filters` to obtain
-an ordered list of filter class names or pre-built instances. A
-pipeline key is derived from the spec list (class names
-contribute their name; pre-built instances contribute their
-stringified address). If an existing pipeline has an identical
-key the renderer is appended to it — the chain runs only once
-per event for all renderers in that group. Otherwise a new
-pipeline is created. `start()` is called on the renderer
-immediately at registration.
-
-```
-$manager->add_renderer($r1);   # desired_filters => ('Filter::Verbose')
-$manager->add_renderer($r2);   # desired_filters => ('Filter::Verbose')
-# result: one pipeline, key='Filter::Verbose', renderers=[$r1,$r2]
-
-$manager->add_renderer($r3);   # desired_filters => ('Filter::Quiet')
-# result: second pipeline, key='Filter::Quiet', renderers=[$r3]
-```
-
-**Dispatching an event.** For each pipeline, the manager runs
-the filter chain once. If the event survives, it is handed to
-every renderer in that pipeline's renderer list:
-
-```
-for my $pipeline (@pipelines) {
-    my $ev = $event;
-    for my $f (@{$pipeline->{filters}}) {
-        $ev = $f->filter_event($ev);
-        last unless defined $ev;
-    }
-    next unless defined $ev;
-    $_->render_event($ev) for @{$pipeline->{renderers}};
-}
-```
-
-**Lifecycle.** `start()` fires on each renderer at `add_renderer`
-time. `finish()` fires on all renderers when the `OutputManager`
-is destroyed (via `DESTROY`) or when `finish()` is called
-explicitly; a guard prevents double-firing. `signal` and
-`end_of_events` are forwarded to every renderer. Filters are
-not involved in lifecycle.
-
-### 13.3 Filters — per-event pass / drop
-
-A filter is a lightweight stateless (or minimally stateful)
-object that inspects one event at a time and returns either the
-(possibly transformed) event or `undef` to drop it.
-
-**Interface** (`App::Yath2::Filter` base class):
-
-```perl
-# Returns $event to pass it downstream, undef to drop it.
-sub filter_event { croak "override me" }
-```
-
-Filters are declared by renderers, not by the command. The
-renderer reads its settings (log level, verbosity, etc.) in its
-constructor and returns the appropriate filter list from
-`desired_filters`. A renderer with no opinion returns `()`.
-
-**Built-in filters:**
-
-- `App::Yath2::Filter::Verbose` — passes events that carry
-  meaningful displayable content (assertions, diagnostics, plan,
-  errors, job/run summaries). Drops pure framework-housekeeping
-  events that carry no user-visible output.
-- `App::Yath2::Filter::Quiet` — passes only job-level and
-  run-level summary events (`test_job_completed`,
-  `run_complete`). Drops individual test assertions and
-  diagnostics.
-
-**QVF note.** "Quiet-verbose-on-failure" buffering — hold all
-of a job's events and flush only if the job fails — is a
-stateful operation that requires knowing when a job ends. This
-is handled upstream in the `ArtifactLayer` or a dedicated
-command-level component, **not** in the filter layer. Filters
-are for stateless (or near-stateless) event selection only.
-
-### 13.4 Renderers — format and emit
-
-A renderer receives a pre-filtered event stream and is
-responsible only for **formatting** that stream and **writing**
-it to its destination (STDOUT, a file, a database, a web
-service, etc.).
-
-Renderers **must not** make filtering decisions themselves —
-that separation is what makes renderers composable with
-different filter chains without modification.
-
-**Base class** (`App::Yath2::Renderer`):
-
-```perl
-sub desired_filters { () }          # override to declare filter chain
-sub render_event { croak "override" }
-sub start        { }
-sub finish       { }
-sub signal       { }
-sub end_of_events { }
-sub is_async     { 0 }
-```
-
-### 13.5 Why this split
-
-- **ArtifactLayer** (TBD) is dumb about renderers: it just reads
-  and dispatches. Adding a new renderer never requires touching
-  the artifact layer.
-- **OutputManager** is dumb about what filters and renderers do:
-  it just runs each chain once and fans out. Adding a new filter
-  or renderer never requires touching the manager.
-- **Filters** are independent modules: the same `Quiet` filter
-  can be used by the Default TUI renderer, a JUnit renderer, or
-  a custom renderer. Renderers with identical filter chains
-  automatically share a single chain run.
-- **Renderers** are dumb about filtering: they only format and
-  emit. They are trivial to write and test in isolation.
-- **QVF** is kept out of the filter layer intentionally: its
-  buffering semantics belong upstream where full job context is
-  available.
-
-## 14. Scheduler
-
-The harness is the scheduler. It decides when a run should start
-(based on global resource availability) and when a test inside a
-run should start (based on the run's resource availability and
-job-count limiters).
-
-When the harness decides to launch a test:
-
-1. It picks the target service. Normally this is the run service.
-   If the test requires a specific preload stage, the target is
-   that stage instead.
-2. It sends a `launch_job` request (not a message — a request,
-   because losing this would mean losing the test).
-3. It sets a timeout on the request. The timeout is
-   **configurable** and lives in the run's data (one of the
-   per-run settings). When unset the default is **5 seconds**.
-   A future CLI option will expose this to the user; until then
-   callers pass it via the run-data construction arg.
-4. On timeout:
-   - Mark the job deferred.
-   - Retry after the same configured interval.
-   - If a late `launched_job` arrives for this job (the target
-     did actually start it but the ack was slow), reconcile:
-     warn once (IPC diagnostic), mark the job started (not
-     deferred), and do not launch it again. See §5.2.
-
-Per-job resource assignment happens on the harness before the
-request is sent; the target service (run service or preload
-stage) only performs the launch and reports back. When the
-target is a preload stage, launch is the detached-fork flow from
-§10.4; the resulting collector's `launched_job` still addresses
-the harness the same way.
-
-### 14.1 Unavailable-action launches
-
-When a job cannot be run because a needed resource is unavailable
-— either the resource is permanently broken, or the resource is
-healthy but can never grant THIS specific job (e.g. the test
-declares `HARNESS-JOB-SLOTS 8` but the per-job cap is 4) — the
-scheduler does not silently drop the job. Instead it routes the
-job through an **unavailable-action launch**: a real Collector
-launch of a `perl -e ...` one-liner that either calls `skip_all`
-or `die`, with the resource name baked into the reason string.
-
-The two unavailable-action kinds are `skip` and `fail`. For the
-permanent-broken case, the choice is governed by the harness-
-level `broken_resource_behavior` attribute (`skip`, `fail`, or
-`abort`; `abort` runs the `fail` kind for every remaining job in
-the run). For the cap-exceeds-min case, the kind is always
-`skip`. Either way the launch goes through the normal Collector
-path so loggers, auditor, and on-disk artifacts look the same as
-they would for a real test that called `skip_all` or died.
-
-The launch consults every resource that reports `needed(job => $job)`
-and is not `is_permanent_broken`, requesting `need=1` from each. It
-may defer if any of those resources is saturated. Resources that
-genuinely should not participate in unavailable-action launches opt
-out via `needed`. If the resource set yields no viable launcher at
-all, the unavailable-action launch is itself skipped and the run
-finalizes.
-
-> *Naming note:* this concept used to be called the "synthetic
-> skip / synthetic fail" path internally. The word "synthetic"
-> is reserved for event fabrication on the auditor side
-> (subtest-start announcements, plan/count mismatches, etc., see
-> §20); the resource-side fabrication is "unavailable action".
-
-## 15. Error handling & ready semantics
-
-- Services wait for each other via `IPC::Manager::Service::Handle`'s
-  `ready(N)`. A collector does the same when its parent is a
-  service spawned concurrently (see the existing `_ipc_handle`
-  warmup path).
-- A service whose `ipc_harness` is undefined (the harness itself)
-  does not try to send `ipc_harness`-destined messages; those
-  would be self-addressed and are no-ops.
-- Any send failure from a collector — including EPIPE / "Disconnected
-  pipe" — warns. Collectors should shut down before the services
-  they depend on; a broken pipe indicates that invariant was
-  violated and wants investigation, not suppression.
-- Shutdown ordering: a service's interpose collector is the service's
-  peer, not a child that survives it; the service waits for all of
-  its children's collectors to cleanly report `collector_exiting`
-  and exit before tearing down its own collector.
-
----
-
-# Part II — Implementation map
-
-## 16. Scope and responsibilities
-
-### Test2::Harness2
-
-The `Test2::Harness2` namespace is the primary harness runtime. Its job
-is to spin up the services and resources needed for tests to execute,
-run them, capture their output and final results, and clean up so no
-process lingers afterward.
-
-The harness operates on **runs**. A run is an ordered collection of
-tests submitted as a single unit of work. The harness:
-
-- Accepts runs via construction args or via IPC requests from the
-  command process (see §4).
-- May run **multiple runs concurrently**, each under its own run
-  service; the topology diagram in §2 shows the run-service subtree
-  repeated per concurrent run. `yath test` submits one run at a
-  time; `yath start`-driven daemons can be driven to process
-  several.
-- Schedules tests within and across runs based on global resource
-  availability, per-run resource requirements, job-count limiters,
-  and any scheduling metadata (duration, smoke vs. non-smoke, etc.)
-  attached to the tests.
-- Manages services, preloads (as resources), resources, and loggers
-  as specified by the caller.
-- Tracks every process in each subtree and guarantees nothing
-  survives the service that owned it (see §18 — Invariants 1 and 2).
-
-By the time a run reaches the harness, most decisions are already
-made. The caller has declared which preloads, resources, and loggers
-each test needs, which formatters to use, and which tests belong to
-which run. The harness does not revisit those inputs — its only
-scheduling decision is **when** to run each test under the
-scheduler's constraints.
-
-## 17. Namespaces and dependency contract
-
-`Test2-Harness2` is a single distribution carrying **five top-level
-namespaces**, each with its own responsibility:
-
-| Namespace                  | Responsibility                                                                                                                                                                                                                                                                                                                                  |
-|----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `Test2::Harness2`          | The primary harness runtime. Spins up services and resources, executes runs, captures output and results, cleans up processes. Described above.                                                                                                                                                                                                |
-| `Test2::Formatter::Stream2` | The in-test Test2 formatter that serialises events over atomic pipes to the collector. Lives outside the `Test2::Harness2` namespace because it loads inside test processes. See §21.                                                                                                                                                          |
-| `App::Yath2`               | The new application layer. Built on `App::Yath::Script` and `Getopt::Yath`. Turns user input (`yath ...` commands, config files) into requests to start or utilise `Test2::Harness2` services. Handles test discovery, deciding which loggers to attach, assembling runs, starting and stopping harness services, the artifact-reading layer that feeds renderers (see §13), and log create / extract utilities. |
-| `App::Yath2::DB`             | Optional. Defines how to store and reference logs of runs in a database.                                                                                                                                                                                                                                                                        |
-| `App::Yath2::UI`             | Optional. A web interface over an `App::Yath2::DB` database.                                                                                                                                                                                                                                                                                      |
-
-There is no separate `yath2` command. The single `yath` script ships
-in the `App-Yath-Script` distribution — not a legacy artefact, but a
-shared launcher used by both the legacy `Test2-Harness` distribution
-(driving `App::Yath`) and this `Test2-Harness2` distribution (driving
-`App::Yath2`). It inspects what the user invoked and dispatches to the
-appropriate code path.
-
-### Namespace dependency contract
-
-Even though all five namespaces live in this single distribution, the
-internal dependencies between them are strictly one-way:
+Key invariants:
+
+- **No central message bus.** All state flows through the database.
+  Services do not talk to each other directly; they poll the DB,
+  process work, write responses to the DB. The only IPC primitive is
+  `SIGUSR1`, used purely as an early-wake hint to break a service
+  out of a sleep when there is known new work in the DB. On platforms
+  where `SIGUSR1` is unsupported the harness still works — wake-up
+  just falls back to the next poll-cycle sleep expiry.
+- **No long-lived harness daemon.** The `Test2::Harness2` object lives
+  in the caller's process. The scheduler, launchers, resource
+  services, and preload services are independent processes; they
+  outlive the constructing caller only when explicitly daemonized.
+- **Every collected process is wrapped by exactly one collector.**
+  The collector is the collected process's direct parent (fork+exec
+  on POSIX, `system(1, ...)` on Windows). Collectors do not
+  double-fork; their parent launcher waits for them and reaps them.
+- **Spawns are the only un-collected processes.** Their lifetime is
+  controlled by the requester, not by the harness.
+
+## 3. Namespaces and dependency contract
+
+`Test2-Harness2` ships several top-level namespaces; the rewrite uses
+only the first two:
+
+| Namespace                   | Scope                                                                                                                          |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------|
+| `Test2::Harness2`           | The library. Database, schema, scheduler, services, collectors, launchers, resources, preloads, recorders. Specified here.    |
+| `Test2::Formatter::Stream2` | In-test Test2 formatter that serializes events over `Atomic::Pipe` to its test-job collector. Lives outside `Test2::Harness2` because it loads inside test processes. Copied wholesale from `reference/old3`. |
+| `App::Yath2`                | User-facing CLI, options layer, persistent daemons, render output pipeline. **Part 2 scope.** Not loaded by `Test2::Harness2`. |
+
+Hard rules:
 
 - `Test2::Harness2` **must not** `use`, `require`, or otherwise
   name-reach into any `App::Yath2*` namespace. Classes or objects
-  from those namespaces are accepted only when the caller passes them
-  in as construction or runtime arguments — at which point the harness
-  treats them as opaque Perl objects, not as `App::Yath2*` specifically.
-- `App::Yath2`, `App::Yath2::DB`, and `App::Yath2::UI` may freely depend
-  on `Test2::Harness2` classes. The harness is their platform.
-- Dependencies of `Test2::Harness2`, `Test2::Formatter::Stream2`, and
-  `App::Yath2` may be hard-required by the distribution. Nothing
-  about the core harness or the new application layer needs to be
-  optional on the CPAN-dep side.
-- `App::Yath2::DB` and `App::Yath2::UI` are optional at runtime. Running
-  `yath` against the `App::Yath2` code path without DB or UI support
-  must work. Modules in those two namespaces must not throw
-  exceptions about missing dependencies unless the user's
-  configuration or command-line options explicitly request a DB or
-  UI feature. Any CPAN dep that exists solely for `App::Yath2::DB` or
-  `App::Yath2::UI` must be marked optional (Suggests / Recommends) in
-  `dist.ini` / the generated `cpanfile`.
+  from those namespaces are accepted only when the caller passes
+  them in as constructor or runtime arguments — at which point the
+  harness treats them as opaque Perl objects. Dynamic loading is
+  acceptable only when driven by user-provided options that
+  explicitly request `App::Yath2*` functionality.
+- `App::Yath2` may freely depend on `Test2::Harness2`. The harness
+  is its platform.
 
-This contract keeps the harness usable as a library from contexts
-that have nothing to do with `App::Yath2` — custom runners, CI
-integrations, and the harness's own test suite.
+All run state, log artifacts, and per-job data live in the runner's
+database from the moment they are produced — see §4. There is no
+separate "log artifact" namespace and no DB-as-archive layer to bolt
+on later; the database *is* the archive.
 
-### Reference trees
+## 4. The database is the source of truth
 
-The repo also carries three reference trees that are **not** part of
-the shipped distribution:
+There is exactly one place where state lives: the runner's database.
+Every service is a database client. Cross-process communication is
+"write a row, expect another process to notice it and write a row in
+response". The database is what gives the system its consistency
+guarantees, durability, and crash-recovery story; nothing else.
 
-| Path                  | Origin                              | Status                  |
-|-----------------------|-------------------------------------|-------------------------|
-| `reference/legacy/`   | `yath` 1.0 source                   | Read-only reference     |
-| `reference/old2/`     | First 2.0 attempt (mostly complete) | Donor code, read-only   |
-| `reference/botched/`  | Failed refactor                     | Read-only reference     |
+Default backend: SQLite. The schema is written so that
+PostgreSQL / MySQL / MariaDB / Percona work as well; the SQL files
+under `share/schema/<flavor>.sql` are kept in lock-step. SQLite is
+the only flavor the harness ever starts on its own; the others are
+discovered via DSN (with `DBIx::QuickDB` available for ephemeral test
+setups). See §16 for the rebuild from `reference/old3`'s schema.
 
-Code is copied wholesale out of these trees as the rewrite catches up;
-nothing in `lib/` should `use` anything from them.
+### 4.1 The `.t2h2` discovery file
 
-## 18. Process model invariants
-
-§2 defines the topology and IPC parentage. Two invariants govern
-the tree and must be honoured by every shutdown path.
-
-### Invariant 1 — no survivors on hard stop
-
-When any service is terminated (by `terminate` request, fatal signal,
-abnormal exit, or crash), every descendant of that service must be
-killed and reaped before the service exits. The harness is
-responsible for its subtree; each run service is responsible for
-its own subtree; each preload stage is responsible for its own
-children (but not for tests it detached per §10.4).
-
-Mechanism: a two-layer process-group discipline.
-
-- Each **service** calls `POSIX::setpgid(0, 0)` on `run_on_start`,
-  taking ownership of its own pgroup. Its direct child processes
-  inherit that pgroup.
-- Each **test process** calls `POSIX::setpgid(0, 0)` again post-fork
-  / pre-exec when its collector was constructed with
-  `new_pgroup => 1`. This puts the test in its own fresh pgroup so a
-  test doing `kill 'TERM', 0` cannot reach the harness or run
-  service.
-
-Hard-stop sweep (`Test2::Harness2::Role::Service::perform_hard_stop`
-and equivalents):
-
-1. Set state to `terminating` and clear any in-flight queue.
-2. Build a per-pid signal-state map seeded from the service's
-   tracked children.
-3. On each iteration: re-enumerate direct children (subreaper case),
-   send the first signal (`TERM` on POSIX, `INT` on Windows) to
-   fresh pids, escalate to `KILL` once `kill_timeout` has elapsed
-   without exit, reap with `waitpid(-1, WNOHANG)`, and sleep briefly
-   only if no work happened.
-4. Exit the loop when every tracked pid is either reaped or has been
-   past its `KILL` deadline long enough to be considered
-   unreachable.
-
-The service signals **by pid**, not by pgroup, to avoid signalling
-itself. Signal-name substitution on Windows (INT for TERM) is per
-§9.5.
-
-### Invariant 2 — nothing survives its parent
-
-If a service process dies for any reason — including SIGKILL — every
-direct descendant of that service must terminate without help from
-the service's signal handlers (which may never run).
-
-Mechanism: every long-lived process a service spawns monitors the
-pid(s) it depends on. When a watched pid disappears, the monitor
-self-terminates and cleans up its own subtree.
-
-The exact dependency tree follows §2:
-
-- **Service collectors** watch the service they interpose; if that
-  service's pid is gone the collector self-terminates.
-- **Test-job collectors** watch the run service's pid (and the run
-  service's IPC identity on the bus) — **not** the service that
-  spawned the collector (which might be a preload stage). See
-  §10.4: a detached test-job collector's parent service (the
-  preload stage) can be pruned at any time without affecting the
-  test; the collector tracks the run instead.
-- **Preload stages** watch their direct parent stage (via pid and
-  via parent IPC identity); on either signal they self-terminate
-  and their own children repeat the cascade. See §10.5.3.
-- **Services spawned by the command** (harness service) watch the
-  command process's pid via the handle identity the command
-  registered on the IPC bus; the detach request removes the
-  caller's pid from the service's watch list.
-
-`detach` flows down the chain: the command sends a `detach` IPC
-request to the service, which removes the command's pid from its
-watch list so the service stays up when the command exits.
-
-### Subreaping
-
-On Linux, when the optional `Test2::Harness2::ChildSubReaper` module
-is installed, each service enables `PR_SET_CHILD_SUBREAPER` on
-`run_on_start` so any descendant that gets orphaned (a test that
-double-forks then exits its parent) reparents to the service rather
-than to `init(1)`. That makes the orphan visible to
-`waitpid(-1, ...)` and to `list_direct_children($$)` so the
-hard-stop sweep can actually reach it.
-
-Subreaping matters especially for **global preloads** (see §10.4):
-detached test-job collectors spawned under a global preload
-reparent to the harness (the nearest subreaper above the preload
-subtree); the run service still monitors them but the harness reaps
-them.
-
-Without the `ChildSubReaper` module the harness still works; orphans
-that the run service or the harness needs to monitor fall back to
-`kill 0, $pid` polling and signal-based cleanup instead of
-`waitpid`, per §10.4.
-
-## 19. Top-Level Service: `Test2::Harness2`
-
-A single object that consumes `IPC::Manager::Role::Service` and runs
-an event loop over an IPC bus. The full source lives in
-`lib/Test2/Harness2.pm`.
-
-### Workdir ownership
-
-Per §11, the command that starts the harness creates the workdir
-and passes it in at construction. The harness does not vivify its
-own workdir — missing a workdir is a fatal error. Commands that
-attach to an existing harness do not create a workdir; they ask
-the harness for its workdir path via IPC.
-
-Workdir is a `File::Temp::tempdir('yath2-$$-XXXXXX', TMPDIR => 1)`
-temporary directory. The creating command (or for `yath start`, the
-parent yath daemon process) owns cleanup once the harness has
-exited.
-
-### On-disk layout
-
-When loggers are configured (they are not installed by default —
-see §12.1), the default JSONL + JSON pair that `yath test` uses as
-an early-development stopgap produces this layout:
+Every running harness leaves a discovery file in the user's system
+temporary directory. The default name is:
 
 ```
-$workdir/
-  logs/
-    services/
-      <name>/
-        events.jsonl        service-lifecycle event stream (default name=harness)
-        state.json          service JSON snapshot (init fields + final verdict)
-    runs/
-      <run_id>.json         per-run JSON snapshot (Logger::JSON on the run-service collector; see note below)
-      <run_id>/
-        services/
-          <svc-name>/
-            events.jsonl    per-run-service event stream
-        <job_id>/
-          0.jsonl           per-test event stream
-          0.json            per-test JSON snapshot (init + exit + pass/fail)
+${SYSTEM_TMPDIR}/${USER}-${PROJECT}-${PID}.t2h2
 ```
 
-`logs/runs/` and its subdirectories are created lazily as runs and
-jobs dispatch.
+Two forms:
 
-**The harness installs no loggers by default.** Everything above
-appears only when the command (or caller) supplies a logger
-configuration that produces those artifacts. `yath test` currently
-supplies a JSONL + JSON pair on every collector as a placeholder
-while the CLI-arg-driven logger-selection layer is being built; see
-§12.2.
+- **Default mode (SQLite).** The `.t2h2` file *is* the SQLite
+  database. Open it directly via `DBD::SQLite`.
+- **Non-default mode** (Postgres, MariaDB, MySQL, Percona, or an
+  externally hosted SQLite). The `.t2h2` file is a JSON document
+  describing how to connect (DSN, username, etc.) plus the harness's
+  pid, started timestamp, project, and user. Opening it dispatches
+  to the real database.
 
-The per-run `<run_id>.json` sidecar is now produced by a
-`Logger::JSON` attached to the run service's own collector. The
-run service emits a `run_mutation` event carrying the full
-`Run->TO_JSON` payload on every state change; the JSON logger
-caches the most recent snapshot and writes it atomically at
-shutdown. There is no longer a direct file write from the
-harness, so the "functional state flows via IPC, not files" rule
-(see §13.0) holds end-to-end. See §19 of `AI_DOCS/2026-04-23-run-service-aggregation.md`.
+The `.t2h2` file is cleaned up when the harness exits cleanly.
+Discovery code (e.g. `App::Yath2` in Part 2) is responsible for
+also cleaning up stale `.t2h2` files whose pid no longer exists
+when it scans the directory.
 
-## 20. Collector Subsystem
+### 4.2 The handle API
 
-The collector lives in `lib/Test2/Harness2/Collector.pm` (largest module in
-the tree). It owns the parent/child fork that captures another process's
-output and routes it through a parser → auditor → logger pipeline.
+```perl
+# Create a new SQLite-backed harness. .t2h2 file is created.
+my $h = Test2::Harness2->new;
 
-### Three construction interfaces
+# Attach to an existing harness.
+my $h = Test2::Harness2->connect($dsn_or_path);
 
-Every interface forks; the parent becomes the long-lived collector, the
-child either runs the launched program or returns to the caller.
+# Spin up a runner (inserts a row into `runners`).
+my $r = $h->new_runner;
 
-| Interface | Constructor key | What it does                                                                 |
-|-----------|-----------------|------------------------------------------------------------------------------|
-| **A**     | `launch => ...` | Open new pipes for stdout/stderr, fork+exec the launched program in the child. The parent reads the pipes. Captures the child's exit code via `waitpid`. Default for `yath_collector` and the harness service. |
-| **B**     | `stdout => $fh`, `stderr => $fh`, `pid => $pid` | Read pre-existing handles for a process the caller already started. Cannot capture exit code; designed to consult IPC for exit later (placeholder comment in code). |
-| **C**     | `stdout => $path`, `stderr => $path`, `pid => undef` | Read regular files (or fifos). Completes on EOF. Used to replay output without a live process. |
+# Start the scheduler service for that runner.
+my $s = $r->start_scheduler(
+    resources => [
+        [$resource_class, \%resource_settings],
+        ...
+    ],
+    launchers => [
+        [$launcher_class, $launcher_name, \%launcher_settings],
+        ...
+    ],
+);
 
-`Atomic::Pipe` is used in interfaces A and B (mixed-data mode); interface C
-uses `Collector::FileLineReader` (an adapter that exposes the same
-`read_lines`/`get_line_burst_or_data` shape over a regular filehandle).
+# Queue a run. Returns a Run object the caller can refresh and inspect.
+my $run = $s->queue_run(
+    jobs      => [ {...}, {...} ],
+    resources => [...],          # adds to / overrides per-runner resources for this run
+    launchers => [...],          # adds to / overrides per-runner launchers for this run
+    env       => { ... },        # env applied to all jobs in this run
+);
 
-### `interpose` — fork that returns to the caller
+# Block until no more runs will be queued; the scheduler shuts down
+# when its queue drains.
+$r->finish;
 
-Class method used by **every service** in the harness tree
-(harness, run services, resource services, preload stage services)
-to wrap its own stdout and stderr with a collector. The parent
-becomes a collector that reads the redirected stdout/stderr and
-runs them through its parser + loggers pipeline; it never returns.
-The child returns from `interpose` with stdout/stderr remapped to
-atomic pipes and continues executing the caller's code — i.e.
-becomes the service process proper.
+# Pull result.
+$run->refresh;
+return $run->result;
+```
 
-Optional `jump_to`/`jump_payload` parameters unwind the call stack
-to a `Long::Jump::setjump` target before continuing. The preload
-root service relies on this to land in its top-level `BEGIN`
-block for the `goto::file` swap described in §10.1.1.
+### 4.3 Generic row API
 
-Service collectors created via `interpose` have no auditor (see
-the pipeline diagram above); only test-job collectors do.
+Every database table has a corresponding row object with two
+mandatory methods:
 
-### Parent ↔ child split
+- `$row->save` — write any changed fields back to the row.
+- `$row->refresh` — re-fetch the row and update fields in place.
 
-After fork:
+The harness handle exposes generic fetch/insert helpers:
 
-- **Parent** returns a `Collector::Handle` (just a pid + exit-code slot)
-  and, in non-interpose modes, then runs `_run_collector` which never
-  returns — it `_exit`s when the child finishes.
-- **Child** either `exec`s the launch program, or (for interpose)
-  continues with the caller's code.
+- `$h->fetch($table, %where)` → one row object.
+- `$h->fetch_all($table, %where)` → list of row objects.
+- `$h->insert($table, \%row1, \%row2, …)` → list of newly-inserted
+  row objects. Implementations must optimize multi-row inserts —
+  fast bulk insertion is required, not optional.
 
-The handle exposes `is_done` (non-blocking) and `wait` (blocking) so the
-service loop and other parents can poll completion without owning a heavy
-collector object.
+Implementation: hand-written SQL on raw `DBI`, optionally aided by
+`SQL::Abstract`. **No `DBIx::Class`.**
 
-### The event pipeline
+Collectors and auditors **never** touch the database directly. Every
+write a collector or auditor needs to make goes through its
+**recorder** (see §5.7). The recorder is the only object in the
+collector pipeline allowed to own a `DBI` handle. This keeps the
+`Files` recorder a viable swap-in for development and tests — if
+collectors or auditors reached past the recorder to write SQL, the
+non-DB recorder would be useless.
 
-Two pipeline shapes, depending on collector role. Both consume the
-same framed-event-burst-plus-raw-text protocol on stdout (see §21
-and §6.1), but the parser's behaviour and the presence or absence
-of an auditor differ.
+The recorder itself may use raw SQL on its own `DBI` handle for
+performance; it does not need to go through the row-object layer
+for hot paths (event-stream writes, state transitions, exit
+recording). Bulk inserts inside the recorder are expected to use
+the same multi-row insert pattern the row-object layer uses.
+
+## 5. Collector subsystem
+
+### 5.1 Topology
+
+```
+launcher process                    (or any service that needs to collect a process)
+   |
+   | fork                           (launcher forks)
+   v
+collector process
+   |  build mixed-data Atomic::Pipes for STDOUT and STDERR
+   |  fork
+   v                               .---------------------.
+collector parent (collector loop)  | collector child     |
+   |                               | replace IO with pipes
+   |                               | exec / run sub
+   |                               | (or goto::file for preloads)
+   |                               `---------------------'
+```
+
+The launcher fork is a single fork (no double-fork). The launcher
+keeps the collector's pid in its tracking state. When the collector
+exits the launcher reaps it (via `waitpid`) and notifies the
+scheduler — see §8.
+
+### 5.2 Entry point
+
+```perl
+my $pid = fork // die "fork: $!";
+return if $pid;          # parent (the spawning service / launcher) returns
+
+# In the collector process:
+require Test2::Harness2::Collector;
+Test2::Harness2::Collector->start(
+    exec      => \@argv,               # one of:
+    run       => sub { ... },          #   exec OR run sub
+    parser    => 'Test2::Harness2::Collector::Parser::...',
+    auditor   => 'Test2::Harness2::Collector::Auditor::...',  # optional
+    recorder  => 'Test2::Harness2::Collector::Recorder::...',
+);
+
+# Should not be reached.
+exit 0;
+```
+
+`start` does the rest:
+
+1. Inserts the collector row in the `collectors` table with
+   `pid` = our own pid, `watched` filled in once the collected
+   process is forked, `start time` = now, and `type` = `service`,
+   `test job`, etc. Insertion goes through the recorder so the
+   `Files` recorder can do the equivalent for tests-without-a-DB.
+2. Creates the mixed-mode `Atomic::Pipe`s for STDOUT and STDERR.
+3. Forks. In the child, replaces STDOUT / STDERR with the pipes,
+   then either `exec`s `@exec` or `goto`-style invokes the `run`
+   sub.
+4. In the collector parent, runs the event pipeline (parser →
+   optional auditor → recorder) over the pipes until the collected
+   child exits.
+5. Waits on the child to collect its exit code. Stamps `stop time`
+   and `exit code` on the collector row via the recorder.
+6. Sets `finalized` on the collector row (also via the recorder) so
+   downstream readers know the row is closed. Exits 0.
+
+**Test-job process groups.** When the collected process is a test
+job (i.e. `type = 'test job'`), the child calls
+`POSIX::setpgid(0, 0)` post-fork / pre-`exec` (or pre-`goto::file`
+in the preload case) to enter a **fresh process group of its own**.
+The collector itself stays in its parent launcher's process group.
+This isolates the test: a test that does `kill 'TERM', 0` (or
+otherwise signals its own process group) reaches only its own
+descendants, never the collector, launcher, scheduler, or any
+other part of the harness tree. Service collectors and their
+collected services do not get this treatment — they stay in the
+launcher's group so a deliberate sweep can reach them.
+
+### 5.3 Pipe protocol
+
+Stdout and stderr are wrapped by `Atomic::Pipe` in mixed-data mode.
+On the same pipe both:
+
+- **Raw text** — anything the collected process writes via `print`,
+  `warn`, `printf`, etc.
+- **Framed event bursts** — atomic message bursts written through
+  the `write_message` API. The wire format is shared between
+  `Test2::Formatter::Stream2` (used inside test processes) and
+  anything else that wants to emit structured events.
+- **Zstd-compressed bursts** are first-class. `Atomic::Pipe` exposes
+  the bytes both compressed and decompressed; the recorder may
+  pass through the still-compressed form when writing
+  `events.jsonl.zst` (frame-per-line), avoiding a recompression
+  hop. Refer to the `Atomic::Pipe` source under
+  `~/projects/Atomic-Pipe` for the wire details and zstd handling.
+
+STDOUT bursts are paired with a small **sync record** on STDERR
+(also via `write_message`). The collector uses the sync record to
+keep interleaved raw STDOUT / STDERR output ordered correctly
+against the events that bracket it.
+
+There is **no cross-kind FIFO guarantee** between a raw `print` and
+a `write_message` on the same fd from the same producer (a known
+property of pipe scheduling — see `reference/old3` Addendum A for
+the long-form analysis). Producers must not rely on it. In normal
+use the pacing of test output makes the race invisible; tests that
+deliberately interleave both kinds in a tight loop need to insert
+their own pacing or use a dedicated pipe for one of the streams.
+
+### 5.4 Event pipeline
 
 **Test-job collector:**
 
 ```
-test process stdout/stderr
-  → Parser   (framed bursts → events; TAP lines → events; raw lines → STDOUT/STDERR events)
-  → Auditor  (tracks pass/fail, counts, duration — test-job only)
-  → Loggers  (each active logger sees the event stream in order)
+collected stdout / stderr
+  → Parser    (frames → events; TAP lines → events; raw lines → STDOUT/STDERR events)
+  → Auditor   (pass/fail, plan / count reconciliation, synthetic events)
+  → Recorder  (writes events; updates state; handles attachments)
 ```
 
-**Service collector** (harness, run, resource, preload stage):
+**Service collector:**
 
 ```
-service stdout/stderr
-  → Parser   (framed bursts → events; raw lines → STDOUT/STDERR events; TAP is NOT recognised)
-  → Loggers  (no auditor — service collectors don't have verdicts)
+service stdout / stderr
+  → Parser    (frames → events; raw lines → STDOUT/STDERR events; TAP not recognized)
+  → Recorder  (writes events; no auditor)
 ```
 
-Per §12.3: **TAP is a test-collector-only input.** Service
-collectors do not parse TAP; lines that happen to look like TAP
-are treated as regular STDOUT/STDERR.
-
-#### Parsers
-
-Live under `lib/Test2/Harness2/Collector/Parser/`. They turn raw lines
-and message bursts into `Test2::Harness2::Event` objects and stamp
-every event with the `harness` facet (`event_id`, `stamp`). Parsers
-do **not** stamp `run_id` / `job_id` / `job_try` onto events — that
-provenance is carried by the log's on-disk path (when loggers are
-configured) and by the service-level events that bracket each job
-(`test_job_started`, `test_job_completed`; see §7).
-
-- `IOParser` — base. Wraps each line in `from_stream` + `info` facets.
-  No protocol parsing.
-- `IOParser::Stream` — base + delegates to `TapParser` to recognise
-  TAP, falling back to base behaviour on non-TAP lines. Used only in
-  test-job collectors.
-- `TapParser` — stateless regex-based recogniser for TAP constructs
-  (`ok`/`not ok`, plans, comments, subtest open/close, `bail out`).
-  Not used in service collectors.
-
-#### Auditors (test-job only)
-
-`Test2::Harness2::Collector::Auditor::Test` consumes the
-`Test2::Harness2::Role::Auditor` role. It tracks assertions, plans,
-nested subtests (recursively, by spawning sub-auditors), errors, halt
-status, and the child's exit code. It may emit synthetic events for
-subtest announcements, plan/count mismatches, and recovery from
-malformed TAP. `pass()` / `pass_count()` / `fail_count()` query its
-verdict at any time; these are the values the test-job collector
-includes in its `collector_exiting` message to `ipc_harness` (see §7).
-
-Service collectors have **no auditor**. See §12.4.
-
-#### Loggers
-
-Implement `Test2::Harness2::Role::Collector::Logger`. The role
-supplies default no-op implementations of all lifecycle hooks; a
-logger only needs to override what it cares about.
-
-| Hook                       | When                                               |
-|----------------------------|----------------------------------------------------|
-| `startup($collector)`      | Once, at child-side init                           |
-| `log_event($event)`        | Per event, only if `log_events()` returns true     |
-| `failing(1)`               | Once, when auditor flips passing → failing (test-job only) |
-| `shutdown($collector)`     | Once, at child-side teardown                       |
-| `metadata()`               | Return a hashref describing this logger instance's artifacts (`output_file`, `uri`, `table`, etc.) or `undef` to opt out. Gathered into the `collector_artifacts` IPC message (see §8). |
-| `set_process_info(...)`    | Pass `run_id`/`job_id`/`job_try`/pid in            |
-| `set_ipcm_info(...)`       | Hand over the IPC connection info                  |
-| `set_auditor($auditor)`    | Give the logger access to the auditor (test-job only) |
-| `set_loggers_lookup(...)`  | Sibling-logger map for cross-references            |
-| `depends_on()`             | Names of other loggers that must be present        |
-
-Provided loggers (artifact-producing only — the
-`Test2::Harness2::Role::Collector::Logger` role is reserved for
-classes that produce observable artifacts; see §12 and the
-drift-2 correction in `PLAN`):
-
-- **`Logger::JSONL`** — writes one JSON-encoded event per line to a
-  file. `metadata` reports `{output_file => $path}` for file-backed
-  instances. See §8.1 for the wider per-logger-class artifact shape.
-- **`Logger::JSON`** — snapshot logger. At `startup` writes the
-  collector's `source` (its owner object's `TO_JSON`) to a `.json`
-  file via `Util::JSON::write_json_file_atomic`. At `shutdown`
-  atomically rewrites that same file with the original fields
-  merged with the parsed child `exit` status (test-job collectors)
-  or the service's final-state fields (service collectors) and,
-  when an auditor is attached, the `pass`/`fail` verdict.
-  `metadata` reports `{output_file => $path}`. Does not subscribe
-  to events (`log_events` returns false). Requires a `spec`
-  attribute at construction (spec-less `Logger::JSON` was
-  disallowed as part of the drift correction; see `PLAN`'s
-  "Drift 1" description).
-
-The previous in-tree loggers `Logger::IPCNotify` and
-`Logger::TestState` have been **removed** — see `PLAN`'s "Drift 2"
-correction. Their role was to emit IPC messages that pretended to
-be artifacts, which entangled functional control flow with
-logger configuration. The functionality now lives on the collector
-directly (collectors send `test_job_completed` and the related
-lifecycle messages to their `ipc_run` / `ipc_harness` per §7),
-with no logger in the path.
-
-#### Artifact announcements (`collector_artifacts`)
-
-Once every logger has completed `startup`, the collector calls
-`metadata` on each one and gathers the non-`undef` results keyed by
-class (multiple instances of the same class accumulate into an
-arrayref). The collector sends a single `collector_artifacts` IPC
-message with the gathered payload directly to:
-
-- `ipc_run` if the collector has one (test-job, run-scoped resource,
-  run-scoped preload stage, run service's own collector), or
-- `ipc_harness` otherwise (harness's own collector, global resource,
-  global-scope preload stage).
-
-Artifact messages do **not** traverse `ipc_parent`. See §8 for the
-complete routing rules, payload shape, and re-announcement policy.
-
-### Spec normalisation, lazy instantiation
-
-Loggers and auditors are passed as **specs** — class name, `[class,
-%args]`, or pre-built instance. The parent normalises specs (loads
-classes, checks `DOES()`, resolves `depends_on`) without constructing
-them, so the parent process never opens a logger's file handle or IPC
-socket. The child instantiates everything inside `_init_event_sinks`
-once it owns the descriptors.
-
-### IPC identities at collector construction
-
-Per §2 and §5.4, every collector carries three IPC identities:
-
-- `ipc_harness` — the canonical harness service bus name. Always
-  required; passed down from the service the collector interposes.
-- `ipc_run` — the run's bus name (`run_id`) when the collector is
-  associated with a run. Unset for the harness's own collector,
-  global resource-service collectors, and global-scope preload
-  stage collectors.
-- `ipc_parent` — the immediate parent service that spawned the
-  collector. Always the run service for a test-job collector (even
-  when launched via a preload stage — see §10.4); the harness for
-  its own interpose collector's top-of-tree case may be undef or
-  the command's handle identity.
-
-Additionally, every `Collector` family class requires `ipcm_info` to
-be present at construction (an `undef` value is allowed but must be
-passed explicitly) so callers cannot silently default away the IPC
-connection.
-
-Collectors register on the IPC bus under
-`collector:<service_name>` or `collector:<service_name>:<run_id>` —
-see §5.4. The identity is self-describing; no separate lookup is
-needed to tell which service a given collector belongs to.
-
-### Stream-ordering buffer
-
-The collector's stream-ordering logic applies to every producer that
-uses the event-burst protocol — test processes (via `Stream2`) and
-services (via `Util::EventEmitter`). Both producers send:
-
-- **stdout**: framed JSON event bursts (atomic) plus any plain
-  stdout the process prints itself.
-- **stderr**: short JSON sync markers (`{"event_id": "..."}`)
-  followed by any plain stderr.
-
-The sync-marker rule is mandatory: every event on STDOUT is paired
-with a sync marker on STDERR so the collector can order stderr
-text against the events that bracket it. See §6.1 for the on-wire
-contract.
-
-The collector buffers each side until both have produced the
-matching sync `event_id`, then flushes in order — so stdout/stderr
-lines appear interleaved correctly relative to the events that
-bracket them. For processes that never emit JSON (plain text
-only), the collector flushes eagerly to avoid stalls.
-
-### IO loop discipline
-
-`_run_collector`'s main `while` loop drives reads through `IO::Select` so
-the collector parks when both pipes are idle, instead of busy-spinning on
-non-blocking reads. The select timeout (~0.2s) bounds how long the loop
-waits before re-checking parent pids and `waitpid(WNOHANG)` on the child.
-`Atomic::Pipe` and `FileLineReader` both return `undef` synchronously
-when nothing is ready, so without the `select` the outer loop would burn
-a CPU core whenever the upstream sat idle; the `select` is what converts
-"nothing ready" into a parked wait.
-
-### Signal handling
-
-Installed in `_run_collector`, scoped via `local`:
-
-- `__WARN__` — collector-side warnings are routed through the parser +
-  loggers so they end up in the same JSONL log as the test's events.
-- `USR1`, `USR2`, `HUP`, `PIPE` — ignored. Tests may use these for their
-  own coordination; the collector must survive them.
-- `TERM`, `INT`, `QUIT` — set a `$got_signal` latch. The main loop breaks
-  after draining remaining output, then `_perform_hard_stop`-style cleanup
-  kills the child child and finishes writing the log.
-
-### Exit code mirroring
-
-The collector's own exit code carries one of three signals:
-
-1. **255** if the collector itself failed.
-2. **The launched child's `wait()` status** (interface A) — including
-   re-raising the same signal the child died from, so the collector's
-   exit faithfully mirrors the child. The collector exposes this
-   `child_exit` as a public attribute so downstream loggers (notably
-   `Logger::JSON`) can read it at shutdown.
-3. **The auditor's verdict** (1 fail / 0 pass) when no live child exit is
-   available (interface B, interface C).
-
-## 21. The In-Test Formatter: `Test2::Formatter::Stream2`
-
-Lives at `lib/Test2/Formatter/Stream2.pm` (outside the `Test2::Harness2`
-namespace because it loads inside test processes).
-
-Tests opt in via `T2_FORMATTER=Stream2` (the harness service sets this in
-the per-job env when launching). Stream2:
-
-1. Wraps the test's STDOUT (and STDERR, when separate) as `Atomic::Pipe`s
-   in `mixed_data_mode`. The collector child is on the other side of those
-   pipes already.
-2. Builds a `Test2::Harness2::Util::EventEmitter` over the STDOUT pipe.
-3. For each event Test2 hands it: extracts facet data, assigns a
-   `stream_id`/`event_id`, and calls `EventEmitter->emit_raw($event)` —
-   which JSON-encodes and `write_message`s the event as an atomic burst,
-   then writes the matching tiny `{"event_id":"..."}` sync to STDERR (when
-   STDERR is separate) so the collector can keep stderr text ordered
-   against events.
-4. Detects when `Test::Builder`'s stdout/stderr/todo handles have been
-   swapped (legacy capture pattern) and routes those events through TB's
-   TAP formatter instead — preserving compatibility with old TB-driven
-   tests that intercept output.
-
-`T2_HARNESS2_PIPE_COUNT` is set to 1 (merged) or 2 (separate) so Stream2
-knows whether STDERR is its own pipe.
-
-## 22. Utility Layer
-
-### `Test2::Harness2::Util`
-
-Small bag of shared helpers: `mod2file`, `apply_encoding` (UTF-8-safe
-`binmode` wrapper that avoids known thread bugs), `hub_truth` (extract the
-canonical hub/trace facet from a facet_data hash), `parse_exit` (decode
-`waitpid` status into `{sig, err, dmp, all}`), and `write_file_atomic`
-(write-to-tempfile-then-`rename` for any string payload — the base of
-the JSON snapshot writer).
-
-### `Test2::Harness2::Util::EventEmitter`
-
-Standalone JSON-event writer that does **not** depend on Test2::API
-or Stream2. Used by **every service** in the harness tree
-(harness, run services, resource services, preload stage
-services) to emit structured events onto its own stdout, using
-the same atomic-pipe protocol that `Test2::Formatter::Stream2`
-uses from inside test processes. The wire format is identical so
-the collector's parser consumes either without caring which
-producer wrote the bytes.
-
-Service responsibilities (per §6.2):
-
-- Open STDOUT and STDERR as mixed-mode `Atomic::Pipe`s.
-- For each event the service produces, burst the event on STDOUT
-  and drop the matching `{"event_id": "..."}` sync marker on
-  STDERR.
-- Echo every IPC message the service receives into its own
-  stdout as an event (facet under `harness` — see §6.3).
-
-UUID generation and `event_id` consistency between the top-level
-field and the `harness` facet are guaranteed at emit time. The
-emitter does **not** stamp `run_id` / `job_id` / `job_try` — that
-provenance comes from the event payload's fields and from the
-log-file path when loggers are active.
-
-Test processes do not use `Util::EventEmitter`; they use
-`Test2::Formatter::Stream2` (see §21). Stream2 is not used
-inside services.
-
-### `Test2::Harness2::Util::IPC`
-
-Low-level process helpers used by the collector and the harness's
-hard-stop path:
-
-- `pid_is_running($pid)` — 1 (running, ours), 0 (gone), -1 (running, not
-  ours).
-- `set_procname(...)` — annotate `$0` so `ps` shows what each collector is
-  doing (e.g. `Test2-Harness2-Collector - <pid>`).
-- `swap_io($fh, $to)` — redirect a handle to another fd while preserving
-  the original fd number.
-- **`list_direct_children($parent)`** — enumerate the immediate children
-  of `$parent`. On Linux/FreeBSD/DragonFlyBSD prefers `/proc/<pid>/status`
-  (parsing `PPid:` or positional field 3); falls back to
-  `ps -A -o pid= -o ppid=` elsewhere. Used by `_perform_hard_stop` to
-  reach reparented descendants when subreaping is on; pgroups do not
-  follow reparenting, so this enumeration is what makes the
-  subreaper-orphan cleanup actually fire.
-
-### `Test2::Harness2::Util::JSON`
-
-Thin `Cpanel::JSON::XS` wrapper configured for the project's needs:
-UTF-8, `convert_blessed`, `allow_nonref`. Exports `encode_json`,
-`encode_pretty_json` (canonical sort for human-facing files),
-`decode_json`, file-level `encode_json_file` / `decode_json_file`,
-`write_json_file_atomic($path, \%data)` (pretty-printed atomic write
-via `Util::write_file_atomic` — used by `Logger::JSON` for every
-snapshot file it owns), and `json_true` / `json_false` boolean
-values.
-
-### `Test2::Harness2::Event`
-
-The single event class everything emits. `Object::HashBase` attributes:
-`facet_data`, `stream_id`, `event_id` (required), `stamp`. `as_json`
-caches the encoded form; `TO_JSON` deep-copies `facet_data` to avoid
-serialisation surprises.
-
-### `App::Yath2::Role::Log`
-
-The Log API contract. Every log backend (`Log::Live`,
-`Log::Directory`, `Log::TarZIdx`, `Log::DB`) consumes this role,
-which makes the Log surface uniform across backends:
-listing (`services` / `runs` / `jobs` / `tries` / `has_*`),
-file enumeration (`list_files`, `artifacts`),
-the depth-first event walker (`event` / `events` / `EOE` / `reset`),
-format / IO (`extract` / `archive` / `insert`, `absolute_path`),
-and status (`is_live` / `static`). `App::Yath2::Log::Artifact`
-calls back into its log only through Role::Log methods — there is
-no private per-backend artifact API.
-
-### `App::Yath2::DB`
-
-The data layer that owns codecs (UUID 36-char-hex round-trip,
-JSON column shape, datetime parse / format, payload zstd handling)
-and every transformation above the row layer (spec.jsonl bytes from
-typed columns, report.jsonl bytes, meta.json record from
-`archives` row plus `meta_extras`, depth-first event walking).
-Backends (`App::Yath2::DB::SQL`, `App::Yath2::DB::DBIC`) supply
-row-level primitives only and exchange canonical Perl values with
-this layer; flavor encoding lives at the bind site, not at the
-data layer.
-
-## 23. On-disk wire formats
-
-### Atomic-pipe message format (formatter / EventEmitter → collector)
-
-`Atomic::Pipe` in mixed-data mode interleaves two kinds of payloads on
-the same pipe without corruption:
-
-- **Plain text lines** — anything the test or service prints with normal
-  `print`/`say`. Read by the collector as `[line => $text]`.
-- **JSON message bursts** — written via `write_message`, read by the
-  collector as `[message => $decoded]`. Each is a single Test2 event
-  hashref.
-
-### Per-test logs (`logs/runs/<run_id>/<job_id>/0.{jsonl,json}`)
-
-Produced when (and only when) the `Logger::JSONL` and `Logger::JSON`
-pair is attached to a test-job collector. Those loggers are **not**
-installed by default; the artifacts exist only because a caller
-(today: the `yath test` early-development default — see §12.2)
-configured them.
-
-- `0.jsonl` — one JSON-encoded `Test2::Harness2::Event` per line.
-  Every event carries the `harness` facet with `event_id` and
-  `stamp`. `run_id` / `job_id` / `job_try` are **not** stamped
-  onto events; they come from the file path and from the bracketing
-  `test_job_started` / `test_job_completed` service-level events
-  (see §7).
-- `0.json` — a single JSON document written by `Logger::JSON`. At
-  the collector's `startup` it contains the source object's
-  `TO_JSON` snapshot (for a per-test collector, the `Run::Job`
-  fields). At `shutdown` it is atomically rewritten with those same
-  fields plus `exit` (parsed from `child_exit`) and, when an
-  auditor is attached, `pass` (0/1). **Not** load-bearing for
-  functional state (see §13.0): callers query pass/fail via IPC,
-  not by reading this file.
-
-### Per-run snapshot (`logs/runs/<run_id>.json`)
-
-Written by a `Logger::JSON` attached to the run service's own
-collector (§19), not by the harness. The run service emits a
-`run_mutation` harness event carrying the full `Run->TO_JSON`
-payload on every state change (initial broadcast at
-`service_on_start`, then each `_handle_test_job_*` transition,
-final broadcast at `run_on_cleanup`). The JSON logger consumes
-those events (`log_events = 1`), caches the most recent
-`run_data` payload, and atomically rewrites the sidecar at
-collector shutdown — stamped with the collector's `exit` and the
-auditor's `pass` if either is available.
-
-This artifact is **not** load-bearing for functional state
-(see §13.0): callers query authoritative run state from the run
-service via IPC. The sidecar exists for after-the-fact inspection
-and renderer replay.
-
-### Per-run-service logs (`logs/runs/<run_id>/services/<name>/<leaf>.<ext>`)
-
-Same JSONL / JSON shape as per-test logs, but the events are the
-run-scoped service's own lifecycle records. Each service gets its
-own `services/<name>/` directory; per-logger leaves land inside
-(`events.jsonl` from `Logger::JSONL`, `state.json` from
-`Logger::JSON`). The directory itself is the run-scoped service
-existence signal -- `Log::services($run_id)` walks the
-immediate children of `runs/<run>/services/`. Produced when a
-`Logger::JSONL` / `Logger::JSON` is attached to the service's
-collector (not by default).
-
-### Service logs (`logs/services/<name>/<leaf>.<ext>`)
-
-Same shape; events are the harness-scoped service's own lifecycle
-records (§19). They carry the service's `job_id` (set at
-construction) and no `run_id` — per-run and per-job IDs ride
-inside the event payload's `run_data` / `job_info` fields instead.
-Each service has its own `services/<name>/` directory; per-logger
-leaves are `events.jsonl` (from `Logger::JSONL`) and `state.json`
-(from `Logger::JSON`). The directory itself is the
-harness-scoped service existence signal --
-`Log::services()` walks the immediate children of
-`services/`. Produced only when `Logger::JSONL` / `Logger::JSON`
-are attached to the service collector.
-
-### IPC requests
-
-Synchronous request/response over `IPC::Manager`. The Spawn handle
-wraps each call as `{ request => $name, ...payload }`. Dispatch on
-the service side is `request_handler_<name>`; unknown names return
-`{ ok => 0, error => "unknown request '<name>'" }`. Responses are
-plain hashrefs returned by the handler.
-
-Important request kinds are defined in Part I:
-
-- `queue_run` / `queue_test_run`, `finish_after_queued`, `status`,
-  `run_status`, `get_workdir`, `list_global_artifacts`,
-  `list_run_artifacts`, `get_run_status` — see §3, §4, §11.2, §13.1.
-- `launch_job` — harness → run service or preload stage, with a
-  configurable retry timeout (default 5 s; see §14).
-
-### IPC general messages
-
-Asynchronous fire-and-forget. The canonical list of message kinds,
-their payload shape, and their routing is in §7. The ones defined
-there are:
-
-- `collector_started` / `collector_exiting` — collector lifecycle
-  signals to `ipc_parent` (and `ipc_harness` for the detailed
-  exit payload).
-- `collector_artifacts` — direct to `ipc_run` if set, else
-  `ipc_harness` (see §8).
-- `test_job_started` / `test_job_completed` / `launched_job` —
-  test-job lifecycle to `ipc_run`.
-- `run_started` / `run_complete` — run lifecycle, run service to
-  `ipc_harness`.
-
-Every service echoes received IPC into its own collector as a
-framed event burst (see §6.3). The facet shape is
-`{ harness => { <kind> => { ... } } }` for recognised kinds;
-`{ harness => { ipc_received => \%payload } }` for unrecognised.
-
-The previous kinds `job_complete_notify` and `loggers_ready` have
-been removed — see `PLAN`'s "Drift 2" correction.
-
-## 24. External Dependencies
-
-The shipped runtime depends on a small set of foundational modules from
-the same author/ecosystem:
-
-| Module                            | Role                                                   |
-|-----------------------------------|--------------------------------------------------------|
-| `IPC::Manager`                    | Service framework, role, transport, message envelopes  |
-| `Atomic::Pipe`                    | Mixed-data pipes for formatter ↔ collector             |
-| `Object::HashBase`                | Object/attribute base class for everything             |
-| `Role::Tiny` / `Role::Tiny::With` | Role composition                                       |
-| `Long::Jump`                      | Stack-clearing jump for `start(jump_to => ...)`        |
-| `Test2::Util::UUID`               | UUID generation                                        |
-| `Cpanel::JSON::XS`                | JSON                                                   |
-| `Test2::API` and friends          | The Test2 event model the harness consumes             |
-| `App::Yath::Script`, `Getopt::Yath` | Used by the `App::Yath2` namespace                   |
-
-Optional dependencies, gated by `HAS_*` constants and loaded lazily:
-
-| Module                            | Platform   | Used for                                              |
-|-----------------------------------|------------|-------------------------------------------------------|
-| `Test2::Harness2::ChildSubReaper` | Linux      | `PR_SET_CHILD_SUBREAPER` for orphan reparenting       |
-| `Win32::Job` (or `Win32::Process`) | Windows   | Job-object isolation when collector wants `new_pgroup` |
-
-DB / UI optional deps:
-
-| Module          | Required by                  | Notes                                       |
-|-----------------|------------------------------|---------------------------------------------|
-| `DBI`           | `App::Yath2::DB::SQL`        | Required when any DB backend is opened.     |
-| `DBD::SQLite`   | sqlite-flavor `DB::SQL`      | Per-flavor; lazy-loaded on demand.          |
-| `DBD::Pg`       | postgres-flavor `DB::SQL`    | Per-flavor; lazy-loaded on demand.          |
-| `DBD::mysql`    | mysql-flavor `DB::SQL`       | Per-flavor; lazy-loaded on demand.          |
-| `DBD::MariaDB`  | mariadb-flavor `DB::SQL`     | Per-flavor; lazy-loaded on demand.          |
-| `DBIx::Class`   | `App::Yath2::DB::DBIC`       | Optional. Lazy-loaded only when a caller    |
-|                 |                              | constructs the DBIC backend.                |
-| `Compress::Zstd`| `App::Yath2::Log::*`         | Required (compressed JSONL artifacts).      |
-
-The **`cpanfile`** in the repo is generated from `dist.ini` and
-includes some leftovers from `yath` 1.0 as well as deps used only by
-the `App::Yath2::DB` / `App::Yath2::UI` namespaces (DBI, DBIx::Class::*,
-Plack, Email, XML, etc.). The DB / UI deps must be marked optional
-per the namespace dependency contract in §17; deps used by
-`Test2::Harness2`, `Test2::Formatter::Stream2`, or `App::Yath2` may
-remain hard requirements. `App::Yath2::DB::SQL` requires `DBI`
-(plus the appropriate `DBD::*` for the flavor in use);
-`App::Yath2::DB::DBIC` additionally requires `DBIx::Class`, lazy-loaded
-only when its constructor runs.
-
-## 25. Coding Conventions
-
-See `STYLE_GUIDE.md` for code style conventions.
-
-### Function length: 75 lines max
-
-No subroutine, function, or method anywhere under `lib/` may exceed
-75 lines (sub signature through closing brace, inclusive). When a
-sub grows past that limit, split it into smaller helpers with names
-that describe each step. POD blocks and code comments do not count
-toward the budget; the limit applies to executable Perl only.
-
-This rule is enforceable mechanically — `perl author/find-long-subs`
-walks `lib/**.pm` and reports any sub over the threshold (exits 1
-when any are found, suitable as a CI tripwire).
-
-### DB layer: codecs at the data layer, canonical values across the role
-
-`App::Yath2::DB` owns every codec and transformation:
-UUID 36-char-lowercase-hex round-trip, JSON column shape (decoded
-Perl refs), datetime parse / format (ISO-8601 strings), payload
-zstd handling, spec / report / meta.json reconstruction. Backends
-(`App::Yath2::DB::SQL`, `App::Yath2::DB::DBIC`) speak only canonical
-Perl values: UUIDs as 36-char lowercase hex strings, JSON columns
-as decoded refs, datetimes as ISO-8601 strings, payloads as raw
-bytes (zstd-encoded if `compressed=1`), booleans as 0/1. Per-flavor
-encode/decode happens at the bind site inside the backend; the data
-layer never sees flavor-native shapes.
-
-Adding a new backend means implementing the `Role::DB::Backend`
-primitive contract end-to-end; no transformation logic is needed
-because every transformation already lives on `App::Yath2::DB`.
-
-## 26. Test Suite
-
-`t/unit/` (or `t/AI/unit/` for AI-authored tests) holds focused tests
-for individual modules (`Collector.t`, `Auditor/Test.t`, parsers,
-loggers, run/job, util/IPC, util/JSON, formatters, etc.).
-`t/integration/` (or `t/AI/integration/`) holds end-to-end tests that
-exercise the service through `start()` or `spawn()`:
-
-- `harness2_start.t` — single-process service start path.
-- `harness2_spawn.t` — daemon spawn path with `Spawn` handle.
-- `harness2_lifecycle.t` — terminate/finish/detach behaviours, both
-  invariants.
-
-Canonical runner is `perl -Ilib scripts/yath test -D -j24 [files...]`.
-Verbose runs drop `-j24`.
-
-### Authorship layout
-
-`t/` is partitioned by who originally wrote the test:
-
-- **`t/AI/`** — tests generated entirely by AI live here, in any
-  subdirectory layout that mirrors the rest of `t/`.
-- **All other `t/` locations** — reserved for tests originally written
-  by humans. AI may modify these tests later as long as they remain
-  clear and readable.
-- Tests copied into `t/` from `reference/old2/` or `reference/legacy/` count as
-  human-authored (those trees were originally authored by humans) and
-  do **not** need to live under `t/AI/`.
-
-The split lets reviewers know what level of human design went into a
-test up front, without changing how the suite is run.
-
----
-
-## Addendum A — `Atomic::Pipe` mixed_data_mode cross-kind FIFO (GH#389)
-
-*Recorded 2026-04-25. Investigated as part of GH#389.*
-
-### Conclusion: Outcome B — documented non-guarantee
-
-`Atomic::Pipe` in `mixed_data_mode` does **not** guarantee FIFO ordering
-between plain-line writes (via `print $fh "...\n"`) and `write_message`
-calls on the same pipe fd, even when both come from the same process.
-
-The upstream POD (as of v0.022) says at the top of the `DESCRIPTION`
-section:
-
-> "message order is not guaranteed when messages are sent from multiple
-> processes or threads. Though all messages from any given thread/process
-> should be in order."
-
-This guarantee covers only **message-to-message** ordering from the same
-writer. It makes no statement about the relative arrival order of a raw
-`print` vs a `write_message` call issued immediately afterward from the
-same writer process. Under kernel scheduler pressure on slow CI (observed
-on containerized Perl 5.14–5.26 matrix jobs), the `write_message` burst
-can land at the reader before the `print` line that was issued first on
-the same fd.
-
-This is not a bug in `Atomic::Pipe`; it is a consequence of how `print`
-and `write_message` interact with the kernel's pipe buffer: `print` issues
-a single unframed write (possibly split across multiple system calls for
-large payloads), while `write_message` sends one or more precisely-sized
-atomic chunks with framing headers. Under load, the scheduler may interleave
-their delivery.
-
-### Impact
-
-The race is visible only on the **STDOUT pipe** — the pipe that carries
-both plain text and event bursts from the same child process. The STDERR
-pipe carries only sync markers written exclusively via `write_message`, so
-it is not affected.
-
-### What the Collector's read loop does (3B-3 finding)
-
-The Collector's `_ingest_item` buffers items per-stream in arrival order
-(insertion into `@{$buffer->{$stream}}`). It does **not** re-sort within a
-stream; it trusts that `get_line_burst_or_data()` returns items in write
-order. The sync-marker system (§6.1) ensures that STDOUT items and STDERR
-items are flushed together correctly, but it cannot reorder items already
-delivered out of sequence within the STDOUT stream. The `sleep 0.01`
-workaround in `t/AI/unit/Collector/burst_sync.t` is therefore the active
-mitigation for this race in the test suite.
-
-### Constraints on producers (see also `EventEmitter.pm` POD)
-
-Because the ordering gap is a kernel-level property, producer code must not
-assume that a `print` issued immediately before a `write_message` on the
-same pipe fd will arrive at the reader in that order. In practice this is
-only a problem in testing, where a contrived script interleaves both kinds
-in a tight loop. In production, the test formatter (`Stream2`) writes one
-`write_message` burst per Test2 event and any surrounding `print` output
-is produced by the test itself — not by the harness — so the interleaving
-is coarser and the pacing is sufficient.
-
-If a future producer needs strict cross-kind ordering guarantees, the
-correct approach is a separate pipe for each kind (one for plain text, one
-for event bursts), not a sleep or retry. Do not add sequencing fields to
-the JSON payload: that would change the wire format and add overhead to
-every event.
-
----
-
-## Remaining follow-ups
-
-Tracked here so the refactor catches them — not blockers to this
-spec:
-
-- **Service event emitter helper library** (§6.2). The on-wire
-  frame is shared with Stream2 and the STDOUT / STDERR sync
-  contract is the same; the service-side helper library
-  implementing that contract still needs to land. Shape: a thin
-  wrapper that opens STDOUT / STDERR as mixed-mode
-  `Atomic::Pipe`s, accepts structured events, emits an event
-  burst on STDOUT, and drops the paired sync record on STDERR.
-- **Command-side artifact-to-renderer layer** (§13). Not yet
-  implemented. The `OutputManager`, filter classes, and renderer
-  base are in place and ready to receive events from whatever
-  event source is built here.
-- **CLI surfacing of the `launch_job` retry interval** (§14).
-  The value lives in run data with a 5 s default today. A
-  future CLI flag needs to be added when the options layer
-  grows to support it.
-
-
-
-## Addendum: zstd-compressed log artifacts (2026-04-25)
-
-This addendum covers the zstd-loggers change. Full spec:
-`docs/superpowers/plans/2026-04-25-zstd-loggers-spec.md` (gitignored
-local plan); commits on the `zstd-loggers` branch; durable summary at
-`AI_DOCS/2026-04-25-zstd-loggers.md`.
-
-### Architectural mandate
-
-Every text file written under `workdir/logs/` is zstd-compressed.
-Plaintext text files in the live logdir are not allowed.
-Pre-compressed binary content (images, video, audio, etc.) is out of
-scope -- producers store it verbatim.
-
-This is enforced by `t/AI/integration/logdir_all_zstd.t`, which walks
-`$logdir` post-run and asserts every regular file ends in `.zst` or
-sniffs as a known binary content type. Future producers landing new
-binary types add to that test's allowlist.
-
-### File extensions and shapes
-
-| Live logdir path                   | On-disk shape                                   |
-|------------------------------------|-------------------------------------------------|
-| `$logdir/.../*.json.zst`           | One zstd frame per snapshot (whole-file rewrite). |
-| `$logdir/.../*.jsonl.zst`          | Multi-frame: one self-contained zstd frame per jsonl line, append-safe. |
-
-The `.jsonl.zst` shape is the load-bearing one for live tail. Each
-line is its own frame, so concurrent writers can append safely as
-long as a frame fits in `PIPE_BUF` (4 KiB on Linux). Readers tail
-new frames as they land via `Test2::Harness2::Util::Zstd`'s
-`open_zstd_reader`.
-
-### No custom dictionary
-
-All loggers, readers, and the tar.zidx codec use plain
-`Compress::Zstd` calls with the library's default settings.
-
-### Single archive format: `tar.zidx`
-
-The multi-format archive support (`tar`, `tar.gz`, `tar.bz2`, `zip`,
-`7z`) was deleted with this spec. `tar.zidx` is the single in-tree
-archive format yath produces or reads. Tar manipulation is pure Perl
-(hand-rolled ustar packing); zstd is via `Compress::Zstd` (hard
-prereq). Normal write / read flow never spawns an external process.
-
-The `tar.zidx` reader and writer live in a single consolidated
-module at `lib/App/Yath2/Log/TarZIdx.pm`. Per-entry index
-entries gain an `inner` field (`"zstd"` for plaintext sources
-wrapped in an inner zstd frame, `"none"` for already-`.zst` source
-files stored verbatim).
-
-### Dual-mode reader contract
-
-Live logdirs are uniformly compressed; extracted trees are
-plaintext. The file-reader classes split into base (plaintext) and
-`::Zstd` subclass (compressed):
-
-* `Test2::Harness2::Util::File::JSON` -- plaintext, used by
-  extracted output and tests.
-* `Test2::Harness2::Util::File::JSON::Zstd` -- subclass, used by
-  the live logger and any consumer reading `.json.zst`.
-* `Test2::Harness2::Util::File::JSONL` -- plaintext.
-* `Test2::Harness2::Util::File::JSONL::Zstd` -- subclass.
-
-Logger and streamer code picks which to instantiate based on the
-file path's `.zst` suffix. The plaintext base classes never see
-compressed bytes; the `::Zstd` subclasses never see plaintext.
-
-### `Compress::Zstd` is a hard prereq
-
-Promoted from develop-only to a hard runtime requirement. The
-project no longer has a `zstd`/`unzstd` binary fallback for
-compress / decompress; compressed log artifacts depend on the
-in-process module. The codebase never spawns a zstd process.
-
-### `yath extract` + `--no-decompress`
-
-`yath extract` is two-pass. First, every member of the archive is
-written to disk verbatim. Second, every `.zst` file in the extracted
-tree is decompressed in-place: the plaintext lands at the
-`.zst`-stripped sibling and the original is removed. The result is
-a logdir-shaped tree of plaintext files. `--no-decompress` skips
-the second pass and preserves the byte-for-byte archive contents
-for debugging or training-input pipelines.
-
-## Addendum: full_audit refactor (2026-04-29)
-
-See `AI_DOCS/2026-04-29-full-audit-refactor.md` for the full
-record. Headline deviations from the rest of this document:
-
-### `App::Yath2::Log::Format` is gone
-
-Format detection collapses to a `-d` test on the path. The
-catalogue indirection only made sense when there were multiple
-archive formats; tar.zidx is the only one yath produces. The
-`TAR_ZIDX_MAGIC` / `TAR_ZIDX_FOOTER_LEN` constants live in
-`Log::TarZIdx`. `viable()` and `default_writer_format()` no
-longer exist.
-
-### Loggers identify themselves by class name, not `file_ext`
-
-The `file_ext` requirement on `Test2::Harness2::Role::Collector::Logger`
-is dropped. An artifact with extension `.xyz` is produced by
-`Test2::Harness2::Collector::Logger::XYZ` (also tried as `Xyz` and
-`xyz`). `Log` resolves the class on demand per ext and
-caches the result.
-
-### `artifacts.json[.zst]` manifest is dropped
-
-`Test2::Harness2::_write_artifacts_manifest` and the per-run
-counterpart in `RunService` are removed. The on-disk manifest is
-no longer a thing. `Log::artifacts` and `iter_artifacts`
-walk `list_files()` and dispatch by extension. `manifest_drift()`
-is gone.
-
-### Existence of runs / jobs / services is keyed on directory
-### presence
-
-`runs()`, `jobs()`, and `services()` report every immediate child
-directory of `runs/`, `runs/<run>/tests/`, and `services/`
-respectively (and the equivalent run-scoped path for services).
-The directory itself is the existence signal -- empty
-`runs/<id>/`, `runs/<id>/tests/<job>/`, and
-`services/<name>/` directories all count. The previous
-`spec.json[.zst]` marker check and the `include_empty` option are
-gone. `Log` gains a `list_dirs()` backend method; the
-Directory backend walks the filesystem, the TarZIdx backend reads
-explicit directory entries from the index and additionally derives
-parent-of-file paths so older archives still report their
-implied shape. The TarZIdx writer records every source directory
-as a typeflag-`'5'` index entry so empty directories survive
-archive -> extract.
-
-Loggers write to `services/<name>/<leaf>.<ext>` (and the
-run-scoped `runs/<run>/services/<name>/<leaf>.<ext>`); the
-per-logger leaf is the producer's class basename role
-(`Logger::JSONL` -> `events.jsonl`, `Logger::JSON` ->
-`state.json`).
-
-### `spec.json` is logger-written
-
-`RunService` no longer calls `_write_run_spec` directly. Instead,
-`service_on_start` emits a new harness event:
-
-    kind     => 'run_queued'
-    run_data => $run->TO_JSON
-
-`Test2::Harness2::Collector::Logger::JSON` handles the event by
-writing `runs/<run_id>/spec.json.zst`, gated on `is_run`.
-
-### `App::Yath2::Log::Role::ChangeWatch` is gone
-
-Replaced by a `static` flag on `FileMonitor` and on the
-`Log` base class. `Artifact` no longer carries change-watch
-methods; instead it exposes `->watch` returning a fresh
-`FileMonitor` with the artifact as the delegate. `Log`
-gains `watch_artifact($logical)` as a one-liner shortcut.
-
-### `Test2::Harness2::Util::CwdIndex` is gone
-
-Replaced by `./last_log.yath` (an unconditional symlink the test
-command writes after every archive) plus
-`App::Yath2::Log->find_latest($settings)` (canonical no-arg
-discovery: symlink first, else glob `${TMPDIR}/${project}-${user}-*.yath`
-sorted by stamp + hi-res mtime tiebreak; refuses to glob when
-project resolves to `__UNKNOWN__`).
-
-### Project name fallback chain
-
-`App::Yath2::Options::Yath` post-processes `--project` when not
-explicitly set: rc-file dir basename, then walk up cwd looking for
-`.git`/`.svn`/`.cvs`/`lib`/`t` (stops one step before `$HOME` or
-`/`), then cwd basename, finally the literal `__UNKNOWN__`.
-
-### IPC info filename / archive filename
-
-Both shapes change from `yath-${type}-...` / `yath-${stamp}-${pid}.yath`
-to a project-prefixed form:
-
-    IPC:     ${project}-${user}-${command}-${stamp}-yath-${pid}-ipc.json
-    archive: ${project}-${user}-${stamp}-${pid}.yath
-
-`publish_ipc_file` takes `command =>` instead of `type =>`;
-`find_ipc_files` filters by `command =>`. The `nonce`/`persistent`
-type tag is gone from the JSON payload too.
-
-### `Options::Logging` -> `Options::Log`
-
-The user-facing log archive destination options live in
-`App::Yath2::Options::Log` (group `log`, category
-"Log Options"). `Renderer::Logger`'s separate `logging`
-group is unrelated and unaffected.
-
-### `Util::Zstd::Writer->say` embeds the newline in the frame
-
-`Logger::JSONL` writes via `->say`, which compresses
-`payload + "\n"` together. Decompressing concatenated frames
-yields valid jsonl directly; `yath extract` no longer reinserts
-newlines between records. The cached-compressed-frame fast path
-on `Logger::JSONL` is dropped (the cache held bare bytes with no
-newline).
-
-### `new_log_refactor` M2 step 4+5 — Single Collector class, no Logger / Observer
-
-The `Test2::Harness2::Collector::Test`, `Test2::Harness2::Collector::Service`,
-`Test2::Harness2::Collector::Logger::JSONL`,
-`Test2::Harness2::Collector::Logger::JSON`,
-`Test2::Harness2::Role::Collector::Logger`,
-`Test2::Harness2::Role::Collector::Observer`, and
-`Test2::Harness2::Collector::Observer::TestObserver` modules are gone.
-Their roles collapse to:
-
-- A single `Test2::Harness2::Collector` class that takes
-  `type => 'Job' | 'Run' | 'Service'` plus an `id` slot. The
-  collector writes its `spec.jsonl.zst`, `events.jsonl.zst`, and
-  `report.jsonl.zst` files directly under its base directory
-  (computed by `Test2::Harness2::LogLayout::collector_base_dir`).
-  No more logger plugin slots; no more observer chain.
-
-- Test-job collectors carry an `Auditor::Test` instance that has
-  absorbed every IPC duty `TestObserver` used to perform:
-  `test_job_started` (from `startup`), `test_job_diagnosing` /
-  `test_job_failing` (from `audit_event` on the relevant transitions),
-  and `test_job_completed` + `job_release` (from `shutdown`).
-
-- Run and service collectors are dumb pass-throughs: parser →
-  write_phase. No auditor.
-
-The pipeline is now strictly:
-
-    parser -> [Auditor::Test on type=Job] -> write_phase
-
-The on-disk layout uses `runs/<id>/jobs/<id>/<try>/` (was
-`runs/<id>/tests/<id>/<try>/`).
-
-#### Rev-2 insight: who owns the state matters
-
-This refactor was prompted by the observation that the previous
-design conflated event-source with state-owner. **Tests are state
-producers**: their state lives entirely in the events streamed out
-of the test process and is reconstructed by an Auditor sitting next
-to the test-job collector. That justifies an Auditor for test-job
-collectors and lets the Auditor emit the IPC transition messages.
-
-**Runs and services act on state**: their state lives in the run
-service / global service process itself, not in the collector that
-just observes its stdout/stderr. So those collectors are dumb
-pass-throughs, and the IPC transition events for runs (run_failing,
-run_completed, etc.) are emitted by the run service directly into
-its own outgoing event stream — the run collector writes them to
-`runs/<id>/events.jsonl.zst` like any other event.
-
-The earlier design's `parent_io` and Observer-managed-state
-machinery was an attempt to put state-tracking next to every
-collector regardless of where the state actually lived. The new
-shape mirrors the ownership model directly.
-
-#### What follow-up steps still cover
-
-- M2 step 6 wires up `collector_start` / `collector_end` IPC so a
-  parent service can ingest the lifecycle of every child collector
-  it spawns into its own events stream.
-- M2 step 7 extracts base64-encoded attachments out of events into
-  `<base>/attachments/<filename>` during the write phase.
-- M2 step 10 rewrites the reader side (`App::Yath2::Log` and
-  subclasses) for the new layout. Until that lands, the reader
-  surface is intentionally broken; tests under `t/AI/unit/Log/`,
-  `t/AI/unit/Streamer/`, and several `t/AI/integration/*` files
-  carry an environment-gated `skip_all` until step 10 reworks them.
-
-### `new_log_refactor` rev-2 — collector pipeline + Log reader
-
-This addendum collects the rev-2 amendments that landed across M2
-of `new_log_refactor`. It supersedes any earlier section that
-described the old `LogArchive` / `Logger` / `Observer` shape.
-
-#### State producers vs state consumers
-
-The single design rule that drove every other decision in the
-branch:
-
-- **Tests are state producers.** The state of a running test lives
-  in the events the test process emits. There is no other source
-  of truth; an Auditor sitting next to the test-job collector
-  reconstructs the state from that stream. So:
-  - The test-job collector carries an `Auditor::Test` instance.
-  - The auditor handles all upward-facing IPC for the test
-    (test_job_started / test_job_diagnosing / test_job_failing /
-    test_job_completed / job_release).
-  - There is no separate `TestObserver`; its IPC duties moved
-    into the auditor.
-
-- **Runs and services act on state.** Their state lives in the
-  run service / global service process itself, not in the
-  collector that observes the service's stdout/stderr. So:
-  - Run / Service collectors are dumb pass-throughs. No auditor.
-  - State-transition events (`run_failing`, `run_completed`,
-    harness-level transitions) are emitted by the service process
-    directly into its own outgoing events stream. The run
-    collector simply writes them to
-    `runs/<id>/events.jsonl.zst`.
-
-The earlier rev's `parent_io` machinery and the separate
-`TestObserver` were attempts to attach state-tracking to every
-collector regardless of where the state actually lived. The new
-shape mirrors the ownership model.
-
-#### Collector pipeline
-
-A single `Test2::Harness2::Collector` class. No subclasses, no
-plugin slots for loggers or observers. Construction takes the
-identity (`type` + `id` + `run_id` + `job_try`) and a `logdir`;
-the collector writes its trio of files
-(`spec.jsonl.zst`, `events.jsonl.zst`, `report.jsonl.zst`)
-directly under its base directory (computed by
-`Test2::Harness2::LogLayout::collector_base_dir`).
-
-Pipeline:
-
-    parser -> [Auditor::Test on type=Job] -> write_phase
-
-`parser` ingests stdout / stderr (TAP, structured events, etc.)
-into structured event objects. `write_phase` decodes any
-`harness_attachment` facets, writes them to
-`<base>/attachments/<filename>`, replaces the in-event payload
-with a path reference, and appends the (possibly auditor-emitted)
-event to `events.jsonl.zst`.
-
-`spec.jsonl.zst` gets exactly one row at startup describing the
-collected thing (its identity, command line, env, etc.).
-`report.jsonl.zst` gets exactly one row at shutdown describing
-the final state (exit code, pass/fail summary for tests, peer
-state for services). `report.jsonl.zst` replaces the previous
-rev's `state.json`.
-
-#### `collector_start` / `collector_end` IPC
-
-When a collector starts, it sends a `collector_start` IPC message
-to its parent service; when its child has exited and the audit /
-write phase has flushed, it sends a `collector_end`. The parent
-service translates each into an event in its own outgoing events
-stream:
-
-- `harness_collector_start` carries the new collector's identity
-  (type, id, run_id, job_try, collector_pid) and is what the
-  reader's depth-first iterator pivots on to push a child reader
-  onto its stack.
-- `harness_collector_end` carries the matching `collector_pid`
-  plus the child's exit info / final state hash. The reader pops
-  the corresponding child reader from its stack on this event.
-
-Because the reflection happens in the parent service, every
-collector's lifecycle is recorded as ordinary events in a single
-service's `events.jsonl.zst`. There is no separate collector
-metadata file and no parallel IPC channel for "what files this
-collector produced".
-
-#### On-disk layout
-
-Per `Test2::Harness2::LogLayout`:
-
-    services/<name>/                          global services
-    runs/<run_id>/                            run collector
-    runs/<run_id>/services/<name>/            run-scoped services
-    runs/<run_id>/jobs/<job_id>/<job_try>/    per-job per-try
-
-Each base directory holds:
-
-    spec.jsonl.zst        one-row, written at startup
-    events.jsonl.zst      append-only, one or more rows
-    report.jsonl.zst      one-row, written at shutdown
-    attachments/<file>    optional, per write_phase decode
-
-At the log root:
-
-    LIVE                  sentinel: present while the harness is
-                          running, removed on clean shutdown,
-                          absent on crash.
-
-Run and job identifiers are sequential ord ints scoped to the
-archive (per amendment K1 / step 26). UUIDs are kept only as
-logical archive identifiers (DB `archives.archive_uuid` etc.).
-
-#### `App::Yath2::Log` reader API
-
-`App::Yath2::Log->new(...)` is a pure dispatcher. Backend by
-argument shape:
-
-| arg                 | backend                            |
-| ------------------- | ---------------------------------- |
-| `live => $dir`      | `App::Yath2::Log::Live`            |
-| `dir  => $dir`      | `App::Yath2::Log::Directory`       |
-| `file => $f`        | `Log::TarZIdx` or `App::Yath2::`   |
-|                     | `Log::DB` (auto-detected by magic  |
-|                     | bytes; the latter wraps a sqlite-  |
-|                     | flavor `Role::DB::Backend` doer)   |
-| `dbh  => ...`       | `App::Yath2::Log::DB`              |
-| `dsn  => ...`       | `App::Yath2::Log::DB`              |
-
-`App::Yath2::Log::DB` is a thin Role::Log consumer: it pins itself
-to one `(db, archive_uuid)` pair and delegates every Role::Log
-method to the backend-agnostic data class `App::Yath2::DB`.
-`App::Yath2::DB` in turn talks to a `Role::DB::Backend` doer
-(`App::Yath2::DB::SQL` by default, `App::Yath2::DB::DBIC` when
-`backend => 'dbic'`). The DB flavor is derived from the DSN / dbh;
-the `backend =>` selector picks SQL vs DBIC. See "DB backend
-selection" below.
-
-Magic-byte detection: SQLite magic (`'SQLite format 3\\0'`,
-header) wins first, then the tar.zidx footer marker
-(`'YZIDXv1\\0'`, last 32 bytes). Anything else is rejected with a
-hard error.
-
-Every backend exposes the same surface:
-
-- **Listing**: `services` / `runs` / `jobs` / `tries` /
-  `last_try` / `has_run` / `has_job` / `has_try` / `has_service`.
-- **Artifacts factory**: `artifacts(...)` returns a
-  `App::Yath2::Log::Artifact` handle. Positional forms — `()`,
-  `($svc)`, `($run)`, `($run, $svc)`, `($run, $job)`,
-  `($run, $job, $try)` — plus a hashref form
-  `({service => ..., run_id => ..., job_id => ..., job_try => ...})`.
-  Service names cannot start with a digit so the positional
-  disambiguator is unambiguous.
-- **Per-artifact API** on the handle: `events` / `events_zst` /
-  `events_iter`; `spec` / `spec_zst` / `spec_iter`;
-  `report` / `report_zst` / `report_iter`; `attachment(name)`;
-  `attachments`; `exists($file)`; `get($file, %opts)`;
-  `save($file, $content, %opts)`.
-- **Depth-first event iterator**: `event($timeout)`, `events()`,
-  `EOE`, `reset`. Starts at
-  `services/harness/events.jsonl.zst`; pushes a child reader on
-  every `harness_collector_start`; pops on the matching
-  `harness_collector_end`.
-- **Path-aware identifier injection**: events surfaced by the
-  iterator get `harness.run_id` / `job_id` / `job_try` /
-  `service_name` injected based on which on-disk file they came
-  from. This is the read-side replacement for the old writer-side
-  identifier mirroring.
-
-DB-backed access is split into two layers: a backend-agnostic
-data class (`App::Yath2::DB`) that owns every codec, transformation,
-and reconstruction, and a `Role::DB::Backend` doer that supplies
-row-level primitives only. Two backends consume the role:
-
-- `App::Yath2::DB::SQL` — single class, raw DBI. Flavor branches
-  live inside individual methods (UUID bind, bytea, MariaDB-vs-MySQL
-  detection, etc.) rather than in per-flavor subclasses.
-- `App::Yath2::DB::DBIC` — single class wrapping a
-  `DBIx::Class::Schema` subclass with hand-written Result classes.
-  Flavor handled by DBIC storage detection plus a small
-  `flavor_override` slot for DBD::MariaDB-vs-MySQL disambiguation.
-
-Both backends use the SAME schema files: bootstrap is always
-SQL-file-driven via the role's `bootstrap_schema`, which reads
-`share/schema/<flavor>.sql`. DBIC's `deploy()` is never called.
-Backends speak canonical Perl values only — UUIDs as 36-char
-lowercase hex, JSON columns as decoded refs, datetimes as
-ISO-8601 strings, payloads as raw bytes. Per-flavor encode/decode
-on bind/fetch is the backend's job; codec logic and reconstruction
-live entirely on `App::Yath2::DB`.
-
-`App::Yath2::Log::DB` is a thin Role::Log consumer pinned to one
-`(db, archive_uuid)` pair; every Role::Log method one-lines
-through `$self->db->$method($self->{uuid}, ...)`. The `archives`
-table makes multi-archive the universal model: a "single sqlite
-.yath" is just N=1 in the same table.
-
-#### DB backend selection
-
-Two implementations of `App::Yath2::Role::DB::Backend` are
-available:
-
-- **`backend => 'sql'`** (default): `App::Yath2::DB::SQL`. Emits
-  SQL directly via DBI. This is what yath itself uses for
-  read/write traffic.
-
-- **`backend => 'dbic'`**: `App::Yath2::DB::DBIC`, a single class
-  wrapping a `DBIx::Class::Schema` subclass with hand-written
-  Result classes. Targeted at downstream consumers (e.g.
-  `App::Yath2::UI`) that want ResultSet-shaped access.
-
-Both consume the same role; functional behavior is identical and
-both produce/consume canonical row hashrefs. Bootstrap is always
-driven by `share/schema/$flavor.sql` -- DBIC's `deploy()` is never
-called. The Log::DB proxy delegates blindly to `App::Yath2::DB`,
-which in turn calls whichever backend was selected; backend
-selection is invisible above the DB layer.
-
-Pick a backend at construction:
-
-    my $db  = App::Yath2::DB->open(file => $path);                  # sql
-    my $db  = App::Yath2::DB->open(file => $path, backend => 'dbic');
-    my $log = App::Yath2::Log::DB->new(db => $db, uuid => $u);
-
-The `*_uuid_string` shadow columns are MySQL-only schema furniture
-populated by `BEFORE INSERT` / `BEFORE UPDATE` triggers
-(`SET NEW.<col>_uuid_string = BIN_TO_UUID(NEW.<col>_uuid)`). DBIC
-Result classes do NOT model these columns; both the Internal and
-DBIC backends read/write only the binary UUID column, and the
-trigger keeps the human-readable shadow in sync. The schema parity
-test (`t/AI/unit/DB/DBIC/schema_parity.t`) anchors on
-`share/schema/sqlite.sql`, so the shadow doesn't appear there at
-all.
-
-#### LIVE sentinel — disambiguating live vs sealed
-
-The harness collector writes `LIVE` at the log root on startup
-and removes it on clean shutdown. The reader uses its presence to
-decide live vs sealed when both modes are otherwise possible:
-
-- `App::Yath2::Log::Live` (a thin subclass forcing `live=1`) and
-  `App::Yath2::Log::Directory` with `live=0` already pick the
-  mode from the constructor.
-- The iterator's `_top_is_done` and `end_of_events` checks fall
-  back to "LIVE absent" as the last-resort liveness signal so
-  that a crashed harness that left the sentinel-removal step
-  un-run does not stall the iterator forever.
-
-`extract` and `archive` skip the sentinel when packaging.
-
-#### `inspect` command (M2 step 21)
-
-`yath inspect <path>` is the one entry point that intentionally
-does *not* construct a full `Log` object up front: for a
-multi-archive sqlite file the constructor would refuse to pick a
-default, so `inspect` opens the DB directly to enumerate
-`archives` rows and validates each archive in a fresh `Sqlite`
-instance scoped by `uuid`. For tar.zidx files and directories the
-single-archive form is used.
-
-Validation: `services/harness/spec.jsonl(.zst)` exists and has at
-least one parseable row; `services/harness/events.jsonl(.zst)`
-exists. No deeper checking.
-
-`--json` produces a machine-readable report (single hash for
-single-archive logs, with an `archives` arrayref for sqlite
-multi-archive).
-
-#### Plaintext archive mode (`compress => 0`)
-
-Every backend's archive entry point accepts `compress => 0`,
-producing an archive whose bodies are stored as plaintext
-instead of zstd-wrapped. tar.zidx adds a third value for the
-per-entry `inner` field: `'plain'` (versus `'zstd'` and
-`'none'` which both mean "stored bytes are zstd-shaped").
-Plaintext archives are bigger but trivially greppable. CLI:
-`yath test --no-log-compress` and `yath archive --no-log-compress`.
-
-#### Module map (current)
-
-    App::Yath2::Role::Log                Log API role; consumed by
-                                         every Log backend. Required
-                                         methods: services / runs /
-                                         jobs / tries / has_*,
-                                         list_files, artifacts,
-                                         event/events/EOE/reset,
-                                         extract / archive / insert,
-                                         absolute_path, is_live /
-                                         static.
-    App::Yath2::Log                      dispatcher
-    App::Yath2::Log::Live                live workdir backend;
-                                         consumes Role::Log
-    App::Yath2::Log::Directory           sealed dir backend; consumes
-                                         Role::Log
-    App::Yath2::Log::TarZIdx             tar.zidx archive backend;
-                                         consumes Role::Log
-    App::Yath2::Log::DB                  thin Role::Log consumer
-                                         pinned to (db, archive_uuid);
-                                         every method delegates to
-                                         App::Yath2::DB.
-    App::Yath2::DB                       backend-agnostic data class;
-                                         owns codecs (UUID/JSON/
-                                         datetime/payload), all
-                                         transformations, archive-
-                                         shaped read/write API,
-                                         spec/report/meta.json
-                                         reconstruction, depth-first
-                                         event walker, and the
-                                         insert / extract / archive_to
-                                         orchestrators.
-    App::Yath2::Role::DB::Backend        backend primitive contract:
-                                         row-level archive_*, run_*,
-                                         service_*, job_*, try_*,
-                                         artifact_*, ensure_* writes,
-                                         job_spec / service_lifetime /
-                                         subtest readers + writers,
-                                         mark_sealed. Provides a
-                                         concrete bootstrap_schema
-                                         that reads
-                                         share/schema/$flavor.sql.
-                                         Backends speak canonical
-                                         Perl values only.
-    App::Yath2::DB::SQL                  raw-DBI backend (single class,
-                                         flavor-aware methods).
-                                         Replaces the retired
-                                         App::Yath2::DB::Internal*
-                                         tree.
-    App::Yath2::DB::DBIC                 DBIx::Class backend (single
-                                         class). Optional: requires
-                                         DBIx::Class, lazy loaded.
-    App::Yath2::DB::DBIC::Schema         DBIx::Class::Schema subclass.
-    App::Yath2::DB::DBIC::Result::*      hand-written Result classes;
-                                         UUID columns only -- no
-                                         *_uuid_string.
-    App::Yath2::Log::Artifact            per-collector handle (file-
-                                         shaped public surface).
-    App::Yath2::Log::Iterator::JSONL     per-file iterator
-    App::Yath2::Command::inspect         `yath inspect <path>`
-
-    Test2::Harness2::Collector           single collector class
-    Test2::Harness2::Collector::Auditor::Test
-                                         test auditor + IPC
-    Test2::Harness2::LogLayout           path templates
-
-Removed (rev-2): `Test2::Harness2::Collector::Test`,
-`Test2::Harness2::Collector::Service`,
-`Test2::Harness2::Collector::Logger::JSONL`,
-`Test2::Harness2::Collector::Logger::JSON`,
-`Test2::Harness2::Role::Collector::Logger`,
-`Test2::Harness2::Role::Collector::Observer`,
-`Test2::Harness2::Collector::Observer::TestObserver`,
-`App::Yath2::LogArchive` (renamed `App::Yath2::Log`).
-
-Removed (DB rebuild 2026-05): the entire
-`App::Yath2::DB::Internal*` tree (`Internal.pm`, `Internal::Sqlite`,
-`Internal::Postgres`, `Internal::MariaDB`, `Internal::MySQL`).
-Codec / transformation logic and the per-flavor subclass split are
-both gone; the SQL backend is one class with flavor branches inside
-individual methods, and codecs live on `App::Yath2::DB`. See
-`AI_DOCS/2026-05-08-yath-db-rebuild.md` for the full rationale.
-
-The previously-planned `App::Yath2DB` namespace was renamed to
-`App::Yath2::DB` before either was implemented.
-
-## Addendum: schema redesign — spec/report promoted, projects/test_files breakout (2026-05-07)
-
-This addendum covers the DB schema redesign that landed on
-`new_log_refactor` after the rev-2 collector / reader work above.
-Full spec: `AI_DOCS/2026-05-07-schema-redesign.md`. Decisions captured
-in `SCHEMA_REDESIGN_DECISIONS.md` (worktree root, kept as the living
-source-of-truth doc).
-
-Key changes (DB backend only; tar.zidx and directory backends are
-untouched):
-
-- **Spec / report content promoted from artifact rows to typed
-  columns.** `runs`, `job_tries`, and `service_lifetimes` gain typed
-  columns covering every promoted spec/report key, plus `spec_extras`
-  and/or `state_extras` JSON BLOB catch-alls for unmapped keys. The
-  `runs.spec` / `runs.state` / `job_tries.spec` / `job_tries.state` /
-  `services.spec` / `services.state` BLOBs are dropped. Spec / report
-  artifact rows in `artifacts` are dropped, and the
-  `artifacts.artifact_kind` CHECK narrows from
-  `('events','state','spec','report','attachment','arbitrary')` to
-  `('events','attachment','arbitrary')`.
-
-- **`meta.json` content promoted.** `archives` gains typed columns
-  for `host`, `user`, `git_sha`, `project`, `yath_version`,
-  `sealed_at` (= `meta.created_at`), plus `meta_extras` JSON BLOB.
-  The `meta.json` arbitrary artifact row is dropped for the DB
-  backend. Reconstruction via `Log::Artifact->root.get('meta.json')`
-  is unchanged.
-
-- **New tables:** `projects(project_id, name UNIQUE)`;
-  `test_files(test_file_id, project_id, file)` UNIQUE(project_id,
-  file); `job_specs(job_spec_id, job_id, test_file_id, ...)`
-  UNIQUE(job_id) — per-job snapshot of TestFile content;
-  `service_lifetimes(service_lifetime_id, service_id, lifetime_ord,
-  ...)` UNIQUE(service_id, lifetime_ord). FKs:
-  `runs.project_id`, `jobs.test_file_id NOT NULL`,
-  `job_specs.job_id`, `service_lifetimes.service_id`.
-
-- **`services` reduces to identity only** (`name`, `role`, `run_id`).
-  Lifecycle (status, started_at, ended_at, exit, times, spec/report
-  extras) moves to `service_lifetimes`, which is multi-row per
-  service to support restarts.
-
-- **`archive_version` replaces `format_version` + `schema_version`.**
-  Single `archives.archive_version TEXT` column carries
-  `$App::Yath2::Log::VERSION` at write. Class accessor
-  `App::Yath2::Log->last_breaking_version` returns the floor
-  (`'2.000011'` initially); the read path refuses archives below it
-  with a clean error. Bumped manually on breaking changes; no
-  auto-migration.
-
-- **Atomic insert + duplicate-archive rejection.**
-  `DB->insert($source)` does a pre-flight `archive_uuid` uniqueness
-  check (clean error on re-import), then wraps the entire population
-  pass in `begin_work` / `commit` / `rollback`. No partial archives.
-
-- **Reader API surface unchanged.** `Artifact->spec_iter` /
-  `->report_iter` / `root->get('meta.json')` continue to work the
-  same way; for DB backends they now reconstruct on demand from
-  typed columns + extras (and JOIN test_files / job_specs / subtests
-  / job_tries to rebuild aggregated children). Tar / Directory /
-  Live backends still store the JSONL files on disk and are
-  unaffected. `events.jsonl.zst` remains stored as artifact bytes
-  (no events table; out of scope).
-
-- **Producer-side flattening:** `Test2::Harness2::TestFile` drops the
-  redundant `file` slot (deriving `absolute` and `relative` on init);
-  `RunService::request_handler_launch_job` flattens
-  `test_file => {...}` into the spec row root. Producer JSON keys
-  now match column names exactly, removing any need for a rename map
-  at insert time.
-
-- **All four flavors moved in lock-step.** Every DDL change touched
-  `share/schema/{sqlite,mariadb,mysql,postgres}.sql` in the same
-  commit.
-
-## Addendum: unified YATHFOOT trailer for sealed archives (2026-05-07)
-
-This addendum covers the trailer added to sealed `.yath` files so
-that external tools can read `meta.json` without parsing tar / zidx
-or SQLite internals. Full spec: `AI_DOCS/2026-05-07-yath-footer.md`.
-
-Key changes:
-
-- **64-byte `YATHFOOT` trailer at the end of every sealed `.yath`
-  file.** Carries head magic (`YATHFOOT`), tail magic
-  (`YATHTAIL`), trailer version, flags (bit0 =
-  `FLAG_META_COMPRESSED`), 4-byte format-id (`'TAR\0'` or
-  `'SQL\0'`), `meta_offset` / `meta_size` / `meta_crc32`,
-  `body_size`, and a backend-specific `format_ptr` (tar: zidx
-  footer offset; sqlite: 0). All multi-byte fields little-endian.
-
-- **Meta payload is `meta.json` bytes, optionally
-  zstd-compressed.** Compression is the default and is recorded in
-  the trailer flags. Trailer + payload together form the tail
-  region: a reader does `seek(-64, SEEK_END)`, unpacks the
-  trailer, then reads `meta_size` bytes at `meta_offset`.
-
-- **Single public reader API: `App::Yath2::Log::Footer`.**
-  Exports `has_footer`, `read_footer_from_path`,
-  `read_meta_from_path`, the `FORMAT_ID_TAR` / `FORMAT_ID_SQL`
-  constants, and `FLAG_META_COMPRESSED`. Backends call
-  `append_meta` (also exported) to write.
-
-- **tar.zidx integration.** Writer appends the trailer after the
-  existing 32-byte zidx footer; trailer's `format_ptr` records the
-  zidx footer offset. The reader consults `format_ptr` instead of
-  the legacy "last 32 bytes" rule. The tar archive's
-  `meta.json.zst` member at offset 0 is retained -- the trailer
-  carries a redundant copy. Acceptable: trailer shape stays
-  uniform across formats and `tar -xf` users still get a
-  recognizable meta artifact.
-
-- **SQLite single-archive integration.** `seal => 1` on
-  `Log::DB::insert` triggers the append after the transaction
-  commits. Trailer placed past `page_count * page_size`; SQLite
-  ignores trailing bytes so `sqlite3` and raw `DBI` continue to
-  work unmodified (verified empirically including
-  `PRAGMA integrity_check`). The in-memory Log instance flags
-  itself sealed and refuses further inserts. Multi-archive SQLite
-  containers do NOT get a trailer.
-
-- **`yath inspect` prefers the trailer.** When the inspect target
-  is a sealed file-backed archive, `meta.json` is read via
-  `App::Yath2::Log::Footer::read_meta_from_path` rather than the
-  artifact-handle path. Live directories and (hypothetical)
-  trailer-less archives fall back to `root->get('meta.json')`.
-
-- **`last_breaking_version` bumped to `2.000012`.** Archives
-  produced before this pass (no trailer) are refused on read.
-  Re-stamping is a manual-tools concern handled later if needed.
-
-- **Integration tests.** `t/AI/integration/footer_round_trip_tar.t`
-  and `.../footer_round_trip_sqlite.t` build synthetic archives
-  end-to-end and verify both yath's own readers and the system
-  `tar` / `sqlite3` CLIs can recover meta and enumerate the
-  archive past the trailer. Each test skips its CLI block cleanly
-  when the corresponding tool is not on PATH.
-
-## Architecture revision: DB rebuild (2026-05)
-
-This addendum records the structural rebuild of the DB-backed log
-layer. Full rationale, phase plan, salvage / discard decisions,
-risk register, and acceptance criteria are in
-`AI_DOCS/2026-05-08-yath-db-rebuild.md`.
-
-One-line summary: codec and transformation logic moved out of
-per-flavor SQL subclasses into a single backend-agnostic data class
-(`App::Yath2::DB`); backends are now skinny row-level primitives
-(`App::Yath2::DB::SQL`, `App::Yath2::DB::DBIC`) that exchange
-canonical Perl values with the data layer.
-
-What changed in shape:
-
-- **Deleted:** the entire `App::Yath2::DB::Internal*` tree
-  (`Internal.pm` + `Internal::Sqlite` / `Internal::Postgres` /
-  `Internal::MariaDB` / `Internal::MySQL`). Per-flavor codecs +
-  raw SQL + insert orchestration no longer live in four parallel
-  subclasses. The DBIC backend's BEGIN-block delegation forwarder
-  into `Internal` is gone with it.
-- **Added:** `App::Yath2::Role::Log` — a formal Log API contract
-  consumed by `Log::Live`, `Log::Directory`, `Log::TarZIdx`, and
-  `Log::DB`. `App::Yath2::Log::Artifact` no longer calls private
-  `_artifact_*` methods on a per-backend log; everything flows
-  through Role::Log.
-- **Added:** `App::Yath2::DB` (data layer) — codecs, all
-  transformations (spec/report/meta.json reconstruction), the
-  archive-shaped read/write surface, the depth-first event walker,
-  and the `insert` / `extract` / `archive_to` orchestrators.
-- **Added:** `App::Yath2::DB::SQL` — single class, raw DBI,
-  flavor branches inside individual methods (UUID bind, bytea,
-  MariaDB-vs-MySQL detection). Replaces the four `Internal::*`
-  flavor subclasses.
-- **Reshaped:** `App::Yath2::DB::DBIC` is still a single class but
-  now consumes the same `Role::DB::Backend` primitive contract as
-  `DB::SQL` and never delegates back to a `Internal::*` helper.
-- **Reshaped:** `App::Yath2::Log::DB` is ~80 LoC of Role::Log
-  delegation: every method one-lines through
-  `$self->db->$method($self->{uuid}, ...)`.
-
-Backend selection: `backend => 'sql'` (default) or
-`backend => 'dbic'`. The previous `backend => 'internal'` value is
-gone; callers must use `'sql'`.
-
-The schema (`share/schema/*.sql` + `App::Yath2::DB::DBIC::Schema` +
-Result classes) is unchanged. The on-disk layout is unchanged.
-The reader API on `App::Yath2::Log` is unchanged. Everything
-above the data layer (IPC, collector, harness, renderer) is
-untouched — the DB rebuild is below the IPC waterline.
-
-Done-criteria from the rebuild plan (`AI_DOCS/2026-05-08-yath-db-rebuild.md`
-§11) all hold at merge: full t/ suite passes, no
-`App::Yath2::DB::Internal` references in `lib/`, `t/`, or `share/`,
-both new roles consumed by their backends, `yath` CLI smoke runs
-end-to-end against fixture archives.
-
-The earlier namespace-split design doc
-(`AI_DOCS/2026-05-08-yath-db-namespace.md`) is superseded by the
-rebuild doc; the architecture it described was replaced rather
-than extended.
-
-# Addendum — RunService removed (2026-05-10)
-
-Spec sections describing `Test2::Harness2::RunService` (the
-per-run supervisor process, `run-$run_id` IPC bus, `launch_job`
-sync request, `run_state_update` mirror channel, the per-run
-event stream at `runs/<id>/services/run.jsonl`) are obsolete as
-of the `flatten-run-service` branch. The full reasoning lives in
-`AI_DOCS/2026-05-10-flatten-run-service.md`; this is the binding
-deviation note required by CLAUDE.md.
-
-What changed:
-
-- One service process per harness invocation. The harness is the
-  single subreaper for everything spawned for the run (collectors
-  + per-run resource services). Test processes are grandchildren
-  of the harness (Harness → Collector → test).
-- The `run-$run_id` IPC bus is gone. The `launch_job` sync request
-  is gone — the harness's `_launch_job` calls
-  `_spawn_collector_for_job` directly.
-- Run::State lives only on the harness, mutated in-process by the
-  test_job_started / diagnosing / failing / completed handlers
-  that moved off RunService. The `run_state_update` IPC channel
-  no longer exists; subscribers receive snapshot broadcasts in
-  `_broadcast_run_state` after every state mutation.
-- The auditor's `_send_to_run` (auditor → ipc_run) targets the
-  harness bus now. Job-collector lifecycle (collector_start /
-  collector_end) is reflected into the harness's services log
-  via `_handle_collector_start` / `_handle_collector_end`.
-- Per-run resource services (the host-role's `scope=run` path)
-  are spawned by the harness and tracked in the new RUN_PIDS
-  map keyed by run_id. Per-run teardown is `_kill_run($rid,
-  'TERM')` then `_await_run_exit`. The role gained
-  `_resource_service_tracked` / `_forgotten` notification hooks
-  so the harness mirrors role-managed registrations into
-  RUN_PIDS without duplicating the role's tracking.
-- The Run-type collector that wrote `runs/<id>/{spec,events,
-  report}.jsonl` is gone. The harness writes those files
-  directly (`_write_run_spec` at run start;
-  `_write_run_report` at finalize). `events.jsonl` is an empty
-  placeholder; nothing emits a `harness_collector_start` of
-  `type=Run` anymore so the log walker does not try to descend
-  into it.
-- The collector watchdog (synth completion when a test pid exits
-  before `test_job_completed` arrives) lives on the harness in
-  `run_on_interval`, reading the per-run flags map (RUN_FLAGS).
-  Grace window is configurable via the new
-  `collector_grace_secs` constructor arg (default 10s).
-
-Multi-run support: each run still gets its own `Run::State`
-entry in `RUN_STATES` and its own pid bucket in `RUN_PIDS`.
-Concurrent runs require only lifting the queue-head-only
-restriction in `_try_launch_next_pending`; resources are
-already evaluated globally + per-run on every dispatch.
-
-Net delta: ~1500 lines removed across `lib/Test2/Harness2/RunService.pm`,
-`t/AI/unit/Harness2/RunService.t`, the `t/AI/unit/Harness2/RunService/`
-subtree, and the harness's run-service plumbing. The full t/AI
-suite runs ~28% faster end-to-end on a `-j16` warm box, almost
-entirely from removing the per-job `launch_job` IPC roundtrip.
-
-This addendum supersedes any spec text in this document that
-describes:
-
-- `Test2::Harness2::RunService` as a separate process
-- The `run-$run_id` IPC bus or any `ipc_run` value pointing at it
-- The `launch_job` request/response IPC pair
-- The `run_state_update` IPC mirror channel
-- The per-run `runs/<id>/services/run.jsonl` event stream
-- Sections of the lifecycle/topology pages that draw a separate
-  per-run service subtree (specifically Part I §2, §6.4, §7's
-  run-service rows, and the lifecycle table in §10's preload-as-
-  resource discussion where it cross-references run-service
-  ownership)
-
-Those sections will be rewritten in place when the next round of
-spec maintenance touches them; until then, treat this addendum as
-authoritative where it conflicts.
-
-# Addendum — Preload rework progress (2026-05-11)
-
-This addendum tracks the user-visible changes that landed on
-`preload_rework` (incomplete phase 3; phases 1, 1.5, and 2 are
-substantively done). Subsequent phases will append below.
-
-## Daemon-mode commands
-
-The harness now supports a long-lived daemon split from the test
-client:
-
-- `yath start [--workdir DIR] [--foreground] [-P MOD ...]` — spawns
-  a Test2::Harness2 service, daemonizes, prints
-  `started: pid=N workdir=DIR ipc=PATH`. Without `--workdir` a
-  temp workdir is created under the system tempdir. The IPC info
-  file lands in the *original* system tempdir (captured before
-  yath rewrites TMPDIR for the workspace), so sibling commands
-  can discover it.
-- `yath run [--workdir DIR | --ipc-file PATH | --latest] [-j N]
-  [-P MOD ...] [--chdir DIR] FILE-OR-DIR ...` — queues a run on a
-  running daemon. Auto-discovers a single matching daemon in this
-  project root for this user when no locator is given. Streams
-  events through the same renderer Driver that `yath test` uses,
-  printing the final "Yath Result Summary" once the queued run
-  completes. Exits with the run's pass/fail aggregate.
-- `yath stop [--workdir | --ipc-file | --latest | --all]
-  [--timeout SECS]` — graceful shutdown via Spawn->terminate
-  (SIGTERM fallback), wait for exit + IPC info cleanup.
-- `yath kill [...]  [--signal NAME]` — hard signal (default
-  SIGKILL). Same locator set as `yath stop`.
-- `yath status [--workdir | --ipc-file | --latest]` — connect to
-  one daemon and print service identity, queue + in-flight jobs,
-  and the active resource services (with status info).
-- `yath list [--all-projects] [--all-users]` — table of running
-  daemons. By default scoped to this user/project.
-
-Shared discovery (`App::Yath2::Util::IPC::discover_daemons`) backs
-run/stop/kill/status/list. It scans `--ipc-dir-order` directories,
-matches by `command` (`start`), filters by project + user, and
-returns one or many records depending on the caller's `count` /
-`latest` / `all` knobs. `yath run --workdir DIR` matches the record
-whose `workdir` field equals DIR regardless of where the IPC info
-file landed (system tmp vs workdir/tmp).
-
-## Per-run resources
-
-`yath run`'s `-j`, `-P`, `--chdir`, `--slots-per-job`, etc. now ship
-as per-run resources. The recipe is a serializable spec
-(`[[class, key => value, ...], ...]`) that the harness rehydrates
-into Resource instances on the other side of the IPC, attaches to
-the new Run via Run::resources, and binds back to the Run for
-per-run Resource::Preload entries via the new
-`Resource::Preload::set_run` setter (init now accepts `scope='run'`
-without `run` so the IPC round-trip works).
-
-Two harness-side scans were broadened from "globals only" to
-include `$run->resources`:
-
-- `_resolve_preload_for_job` — otherwise a per-run preload was
-  invisible to the resolver and the test launched without it.
-- `_handle_preload_state_message` — otherwise the per-run preload's
-  `preload_ready` / `preload_broken` signal never reached its
-  Resource::Preload and the resource stayed not-usable forever.
-
-The resolver's "per-run default" rule also accepts a per-run preload
-literally named `default`, so `yath run -P SomeMod` routes through
-the bare-module bucket without the user having to add a
-`HARNESS-PRELOAD:` directive.
-
-## Role::Preload + Role::Reloader
-
-`Test2::Harness2::Role::Preload` is the consumer contract for
-"complex" preloads: name (required), modules (optional), do_preload
-(default = sequential require of modules), and pre_fork/post_fork/
-pre_launch lifecycle hooks (all no-op defaults). PreloadService now
-dispatches these hooks at the right positions in its spawn pipeline
-(pre_fork in the service before fork, post_fork in the collector
-process via the new Collector `post_fork_callback`, pre_launch in
-the test grandchild just before the Long::Jump). Anonymous `-P Mod`
-bundles still route through the default `Resource::Preload` named
-`default`; modules consuming Role::Preload split out into their
-own named preload via `App::Yath2::Options::Preload::classify_preload_modules`.
-
-`Test2::Harness2::Role::Reloader` is the consumer contract for the
-reloader subsystem: watch_paths + do_reload (required) with optional
-debounce_secs / before_reload / after_reload hooks.
-
-Concrete backends:
-
-- `Reloader::Common` — base class with the in-place / churn / restart
-  primitives. `_attempt_in_place_reload` clears the typeglob CODE
-  slots in the target stash via `undef *{"${mod}::${sym}"}` (the
-  `delete $stash->{$sym}` form leaves the CODE slot live), then
-  delete-then-re-`require`s the file. On a `require` failure the
-  abs / file / inc_key entries in %INC are restored to the absolute
-  path so the next reloader tick still sees the file as a candidate
-  and can retry once the source is fixed. `_attempt_churn_reload`
-  parses `HARNESS-CHURN-START` / `HARNESS-CHURN-STOP` markers,
-  scopes the symbol-table sweep to subs declared in that range, and
-  evals just that fragment so unrelated subs in the file survive
-  the reload. `request_restart` signals the harness with
-  `preload_restarting` and exec's a fresh copy of the service.
-- `Reloader::HiResStat` — `Time::HiRes::stat`-based mtime polling.
-  Walks `_filter_inc`'d candidate %INC entries each tick; the very
-  first tick is a pure snapshot (no reloads) so an existing dirty
-  mtime at startup does not retrigger every monitored file.
-- `Reloader::INotify` — `Linux::Inotify2`-based event-driven
-  backend. Non-blocking poll per tick, recursively watches every
-  directory under `watch_paths`, drains accumulated events into
-  the same candidate-file pipeline as HiResStat.
-
-PreloadService wiring: after `do_preload` runs the service constructs
-its reloader via `reloader_class` + `reloader_args` (passed in from
-the `Resource::Preload` spec) and ticks it from the IPC manager's
-`run_on_interval`. `_send_preload_state` emits `preload_broken` on
-the `!defined -> defined` edge of `last_error` and `preload_ready`
-on the reverse edge, so the harness keeps a current view of whether
-the preload is usable. The `--reloader=mstat|inotify|none` CLI
-option (`App::Yath2::Options::Reloader`) selects the backend; default
-is `none`. Resource::Preload merges the resolved reloader class into
-every preload group built from `-P MOD` / `--preload`.
-
-## Renderer Driver in persistent-daemon mode
-
-`App::Yath2::Renderer::Driver` accepts a `stop_run_id` argument.
-When set, the driver loop exits once that run's `harness_run_end`
-has been dispatched and the synth queue drained (instead of
-blocking forever waiting for the daemon's LIVE sentinel to
-disappear). The Driver also filters out events tagged with a
-different run_id when `stop_run_id` is set, so a second `yath run`
-on the same daemon does not double-count events from earlier runs.
-
-## TO_JSON safety
-
-`Test2::Harness2::Run::TO_JSON` strips the live RESOURCES slot
-before encoding; otherwise emit_service_event would die trying to
-JSON-encode blessed Resource instances on the daemon's run_queued
-event.
+Per the rule from `reference/old3` §12.3: **TAP is a test-collector-only
+input.** Service collectors do not parse TAP; lines that resemble
+TAP are wrapped in `STDOUT` / `STDERR` events like any other raw
+output.
+
+### 5.5 Parsers
+
+Live under `lib/Test2/Harness2/Collector/Parser/`. They consume the
+bytes the collector reads and emit `Test2::Harness2::Event` objects.
+Initial set, ported and renamed from `reference/old3`:
+
+- `Test2::Harness2::Collector::Role::Parser` — the role.
+- `Test2::Harness2::Collector::Parser::IOParser` — base. Wraps each
+  raw line in `from_stream` + `info` facets; decodes message bursts
+  directly into events.
+- `Test2::Harness2::Collector::Parser::TAPParser` — subclass of
+  `IOParser` that additionally recognizes TAP and converts TAP
+  lines to events. Used only inside test-job collectors.
+
+Parsers do not stamp `run_id` / `job_id` / `job_try` onto events —
+that provenance is carried by the surrounding collector row and the
+parent service rows.
+
+### 5.6 Auditors
+
+`Test2::Harness2::Collector::Auditor::Test` consumes
+`Test2::Harness2::Collector::Role::Auditor`. Responsibilities:
+
+- Track assertions, plans, nested subtests (recursively), errors,
+  halt status, the child's exit code.
+- Emit synthetic events for subtest announcements, plan / count
+  mismatches, and recoveries from malformed TAP.
+- Drive state transitions on the recorder. The recorder exposes a
+  state-transition method (see §5.7) that the auditor calls when
+  the job moves between meaningful states (`starting` → `running`
+  → `diagnosing` / `failing` → `completed`, etc.).
+
+Only test-job collectors install an auditor. Service collectors run
+without one.
+
+### 5.7 Recorders
+
+Recorders consume `Test2::Harness2::Collector::Role::Recorder` and
+form the sink of the event pipeline. **The recorder is the only
+object in the collector pipeline that may touch the database.**
+Parsers, auditors, and the collector core itself must route every
+write through one of the recorder methods below. The recorder is
+free to use raw SQL on its own `DBI` handle for performance; nobody
+else gets that handle.
+
+The role surface:
+
+- `record_event($event)` — append the event to the event stream.
+  May fast-path the compressed-bytes form when the parser hands the
+  recorder a pre-encoded `zst` frame.
+- `record_state($state, $extra)` — called by the auditor when the
+  collected process transitions between states.
+- `record_exit($exit)` — called when the collected process exits.
+- `record_artifact(\%spec)` — called when an event implies an
+  external artifact (a screenshot file, etc.) needs to be tracked.
+- `finalize` — called at the very end. Closes any open files,
+  finalizes the database row, etc. Recorders are responsible for
+  setting the `finalized` column on their collector row through
+  this method.
+
+Two recorders ship in Part 1:
+
+- `Test2::Harness2::Collector::Recorder::Files` — simple, no
+  database. Writes:
+  - `events.jsonl` — JSONL event stream, one event per line.
+  - `state.jsonl` — JSONL stream of state transitions.
+  - `exit` — single file holding the exit code.
+  Used by the development collector helper script (`t/scripts/collector`)
+  and by integration tests that exercise the collector without a DB.
+- `Test2::Harness2::Collector::Recorder::DB` — production recorder.
+  Writes:
+  - The `collectors` row (insert at startup; update with `stop
+    time`, `exit code`, `finalized` at the end).
+  - `events.jsonl.zst` on disk at `${workdir}/events/<UUID>.jsonl.zst`.
+    One self-contained zstd frame per event for live-tail support;
+    multiple compressed bursts coming off the pipe pass through to
+    the file without recompression. The UUID exists only to give the
+    file a unique name; it does not need to be referenced after the
+    artifact lands in the database.
+  - An `artifacts` row pointing at the events file via `local_path`
+    (the full path including the UUID).
+    When the collector finishes the recorder reads the events file
+    back into the `content` column, clears `local_path`, and
+    **unlinks the on-disk file**. The UUID is discarded.
+  - Additional `artifacts` rows for any external file the auditor
+    or parser flagged (screenshots, etc.); same `local_path` →
+    `content` migration policy. External files the user supplies a
+    permanent path for are kept in `local_path` and not migrated;
+    that is a per-artifact recorder decision.
+  - State transition rows in the appropriate table (`job_tries`
+    state, `service_state` for services).
+
+### 5.8 Signals and errors
+
+Collectors install signal handlers for `SIGTERM`, `SIGINT`,
+`SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGHUP`, `SIGPIPE`:
+
+- `SIGUSR1` / `SIGUSR2` / `SIGHUP` / `SIGPIPE` — ignored. Tests
+  use these for their own coordination; the collector must survive
+  them.
+- `SIGTERM` / `SIGINT` / `SIGQUIT` — forwarded to the collected
+  process. The collector itself does **not** exit on these. It
+  keeps draining the pipes and finalizing; the collected process
+  exiting is what ends the collector.
+
+Collectors work hard to keep going on errors:
+
+- Every recoverable exception is caught (`my $ok = eval { ...; 1 }`
+  per `STYLE_GUIDE.md`). Two things happen on a caught exception:
+  print the error to the *real* STDERR (saved before the redirect
+  in §5.2) and insert a synthetic error event into the event
+  stream via the recorder. The collector then continues.
+- Collectors exit 0 unless they fail internally before they have
+  done their job. If they catch an unrecoverable error in their
+  own bookkeeping they exit non-zero, mirroring exit codes per
+  `reference/old3` §20: 255 on collector-side failure, otherwise
+  the collected child's `wait` status.
+
+### 5.9 Development helper script
+
+For early development (before the launcher subsystem is in place),
+ship a `t/scripts/collector` script that wraps the entry point:
+
+```
+t/scripts/collector <Parser::Class> <Recorder::Class> [<Auditor::Class>] -- <CMD> <ARGS...>
+```
+
+It reads the class names, builds the entry-point call, and lets the
+test exercise the collector end-to-end against a synthetic child.
+The `Files` recorder is the typical recorder for this script.
+
+## 6. Service framework
+
+`Test2::Harness2::Role::Service` defines the contract for every
+long-lived helper process in the harness tree (scheduler, launchers,
+resource services, preload services).
+
+### 6.1 The poll loop
+
+A service is a loop. Each iteration:
+
+1. Check the service's termination flag (a column on its
+   `service_state` row, or on its dedicated service-table row).
+   Exit cleanly if it is set.
+2. Read whatever the service is interested in from the database
+   (incoming `requests` rows, new `launches` rows, etc.).
+3. Process whatever work was found, writing responses back to the
+   database.
+4. If anything was done this iteration, immediately loop again
+   (non-blocking).
+5. If nothing was done, sleep with backoff before the next
+   iteration: `0.05s`, `0.1s`, `0.5s`, then `1s` as the maximum.
+   Any iteration that did work resets the backoff. The sleep is
+   interruptible by `SIGUSR1` — see §6.2. Any other process that
+   knows it has just written work this service needs can signal
+   the service's pid (read from `services.pid` / `launchers.pid`)
+   to wake it immediately. Use `Time::HiRes::sleep` for the sleep
+   itself — it returns early on signal so the wake-up actually
+   takes effect.
+
+This pacing is deliberate. Continuous polling with no sleep would
+hammer the database; long sleeps add latency. The backoff plus the
+SIGUSR1 wake-up is the balance.
+
+### 6.2 SIGUSR1 wake-ups
+
+On platforms where it is supported, services install a no-op
+`SIGUSR1` handler. Other processes that have just written work into
+the database can send `SIGUSR1` to a service's pid (read from
+`services.pid` for plain services, `launchers.pid` for launchers)
+to interrupt its sleep early. The service's next iteration sees the
+new work without waiting for the backoff to expire.
+
+`SIGUSR1` is an optimization, not a contract. On platforms that
+don't support signals (some Win32 contexts) the harness still
+works; the sleep simply expires on its own schedule.
+
+### 6.3 Service state and requests
+
+Two tables drive service behavior:
+
+- `service_state` — every service writes a new row whenever its
+  status changes (`starting`, `up`, `down`, `stopping`, `stopped`,
+  `broken`). The most-recent row for a given `service_id` is the
+  current state. `content` is a JSON column the service uses to
+  publish state to readers (notably resources publish their
+  availability picture here).
+- `requests` — one row per request directed at a service.
+  `service_id` identifies the addressee, `payload` is the request
+  body, `response` is the answer, `completed` is set when the
+  service has finished. If the service has nothing meaningful to
+  return, `response` stays null but `completed` is still set so the
+  requester can confirm completion.
+
+Requests are deleted by the requester after it reads the response,
+unless a per-service flag asks the service to keep history. In the
+keep-history mode the request row is preserved and `finalized` is
+set after the response is read.
+
+### 6.4 Service collectors
+
+Every service runs under its own collector. The collector's parser
++ recorder do for the service what they do for tests: capture every
+byte of stdout / stderr the service prints, produce events, and
+record them. Service collectors run without an auditor.
+
+A service does not have to emit structured events. If it just
+prints diagnostic text, the parser wraps each line as a
+`STDOUT` / `STDERR` event and the recorder captures it. Services
+that want to emit structured events use the same wire frame as
+`Stream2` (the service-side helper from `reference/old3`'s
+`Util::EventEmitter`, ported into the new tree).
+
+The collector outlives its service: when the service exits, the
+collector finalizes and exits too. The launcher that started the
+service reaps the collector.
+
+## 7. Launchers
+
+`Test2::Harness2::Role::Launcher` consumes `Role::Service` and adds
+launch-specific behavior: poll the `launches` table for rows
+addressed to this launcher and start the requested process.
+
+### 7.1 Common contract
+
+Every launcher:
+
+- Has a row in `launchers` and is identified by `name`. The
+  scheduler addresses launchers by `launcher_id`.
+- Polls the `launches` table for unstarted rows targeting its
+  `launcher_id`. On finding one it:
+  1. Starts the process via the launcher-specific mechanism.
+  2. Sets `launches.started` to the current timestamp.
+  3. Tracks the started child for reaping (collectors don't
+     double-fork, so the launcher is the direct parent of every
+     collector it starts).
+- Reaps exited collectors. When a collector exits the launcher
+  optionally sends `SIGUSR1` to the scheduler service so it
+  notices the completion immediately. The collector itself has
+  already finalized its `collectors` row through its recorder;
+  the launcher's job is just reaping the OS process.
+- On termination, refuses new launches and reaps remaining
+  collectors before exiting.
+
+### 7.2 Implementations
+
+- `Test2::Harness2::Launcher::ForkExec` — POSIX. Uses
+  `fork` + `exec` to start the collector. The collector then
+  forks once more for the collected process per §5.1.
+- `Test2::Harness2::Launcher::Win32` — Windows. Same lifecycle as
+  `ForkExec` but uses the `system(1, ...)` window trick to start
+  the collector. The collector uses the same trick for its
+  collected child.
+- `Test2::Harness2::Launcher::Default` — picks the right
+  implementation for the current platform. Creates an in-process
+  instance of `ForkExec` or `Win32` and **delegates to it**.
+  Does not start a separate process for the delegate; the
+  `Default` launcher's process *is* the actual launcher process,
+  it just decides at startup which strategy to use.
+- `Test2::Harness2::Launcher::Preload` — preload-aware launcher.
+  See §10.
+
+Every launcher is constructible as a fresh process so the harness
+can start them via standard exec rather than baking them into the
+parent's address space. The canonical recipe:
+
+```
+perl -MTest2::Harness2::Launcher::ForkExec=start -e '1;'
+```
+
+The `start` import sets up an `INIT`-or-similar hook that calls
+`Test2::Harness2::Launcher::ForkExec->start`. Equivalent recipes
+exist for the other launchers. A shipping helper wraps this so the
+scheduler can run, e.g.:
+
+```perl
+open(my $fh, '|-', $^X, '-MTest2::Harness2::Launcher::Preload=start', '-e', '1;')
+    or die "Failed to start preload launcher: $!";
+print $fh encode_json($preload_specification);
+close $fh;
+```
+
+### 7.3 Spawn capability
+
+Preload launchers optionally support a `spawn` operation. A
+launcher that advertises spawn support sets
+`launchers.spawn_socket` to the absolute path of a Unix socket it
+listens on. The protocol on that socket is the spawn protocol:
+
+- The requester connects and sends a spawn spec.
+- The launcher forks the requested process (under the preloaded
+  state, no collector) and wires:
+  - The new process's STDOUT and STDERR to the requester's
+    STDOUT / STDERR.
+  - The requester's STDIN to the new process's STDIN.
+- The launcher forwards signals from the requester to the spawned
+  child.
+- The spawned child's exit code becomes the requester's exit code.
+
+Spawns are double-forked into a new process group so they outlive
+the launcher's connection handler. They do not get a collector
+and do not appear in `collectors`. They exist so commands like
+`yath spawn` (Part 2) can run a single command with the preload's
+in-memory advantage without paying for the full test-job framing.
+
+## 8. Scheduler
+
+`Test2::Harness2::Scheduler` is a service. There is exactly one
+scheduler per runner; its row in `services` has `name = 'scheduler'`,
+`runner_id = $runner_id`, and `run_id IS NULL` (the scheduler is
+global to the runner, not per-run).
+
+### 8.1 Responsibilities
+
+- Watch the `runs` table for queued runs that belong to its runner.
+  A run is "queued" when its row exists but `started` is null.
+- For each runnable run, evaluate resources. The scheduler owns the
+  canonical in-process resource objects (see §9); it asks each
+  resource whether the run can proceed, what slots it can grant,
+  etc.
+- Walk `jobs` for the run, choose the next job to launch based on
+  resource availability, and decide which launcher should handle
+  it.
+- Insert a row into `launches` targeting the chosen launcher. The
+  launcher picks it up on its next poll (and is woken via SIGUSR1
+  where supported).
+- Update `runs.passed`, `runs.failed`, `runs.result` in real time
+  as `job_tries` complete. Set `runs.started` / `runs.finished`
+  appropriately.
+- When `runs.abort` is set, stop dispatching further jobs for that
+  run and terminate any in-flight jobs by setting a terminate flag
+  on their collectors via the recorder's state path.
+- Exit when the runner is finalized and the queue is empty.
+
+For the first iteration the scheduler executes runs sequentially
+(`yath test`-style) — one run at a time, one job at a time inside
+that run. Concurrency support arrives in a later stage.
+
+### 8.2 Resource assignment
+
+For every job the scheduler:
+
+1. Asks each configured resource `needed($job)` and
+   `available()`. If the job needs a resource that is not
+   available it is deferred.
+2. Calls `assign($job)` on each granting resource to take its
+   slot(s).
+3. Emits the launch row with the resource bindings attached.
+4. On completion, calls `release($job)` on each resource the job
+   was using.
+
+Resources backed by services publish their state to the scheduler
+via `service_state.content`. The scheduler's resource object reads
+that JSON to decide availability without having to wait on a
+synchronous request.
+
+### 8.3 Unavailable-action launches
+
+When a job cannot run because a needed resource is permanently
+broken, or because the job's declared minimum exceeds what any
+resource can ever grant, the scheduler does not silently drop the
+job. Instead it queues an **unavailable-action launch**: a real
+collector launch of a tiny Perl one-liner that either
+`Test2::skip_all`s or `die`s with a reason string naming the
+resource. The resulting `job_tries` row carries the same shape
+real failures do, so renderers and downstream consumers see a
+uniform stream.
+
+The two unavailable-action kinds are `skip` and `fail`. The kind
+is chosen per resource policy (`broken_resource_behavior`:
+`skip`, `fail`, or `abort` — where `abort` switches the rest of
+the run to `fail`-everything mode).
+
+**Unavailable-action launches always go through the `Default`
+launcher**, never through a preload or any other specialized
+launcher. The point is to record a deterministic skip / fail
+regardless of what state the rest of the launch fleet is in: a
+broken preload, a saturated specialized launcher, or a resource
+that knocked out the launcher the job would normally have used
+must not also knock out the unavailable-action path.
+
+If the `Default` launcher itself is broken or unreachable, that is
+a **critical, runner-ending failure.** The scheduler cannot record
+its verdicts, so the runner aborts: mark the run `abort`, fail every
+remaining `job_tries` row with a synthetic "default launcher
+unavailable" error via the recorder pathway, finalize the runner,
+and exit. Do not silently swallow this — the operator needs to see
+that the runner died because its fallback launcher was unusable.
+
+## 9. Resources
+
+`Test2::Harness2::Role::Resource` defines what every resource must
+implement. The role surface:
+
+- `needed($self, $job)` — does this job need this resource? Returns
+  the quantity requested (or `0` / falsy for "no").
+- `available($self, $job, $need)` — given the current state, can
+  this resource grant `$need` units to `$job` right now?
+- `assign($self, $job, $need)` — take the requested units; record
+  the binding.
+- `release($self, $job)` — give the units back.
+- `status($self)` — return a hashref describing the resource's
+  current state. Used in two places:
+  - As the JSON payload that the resource service (if any) writes
+    into `service_state.content`.
+  - As the response of the `status` request the harness handle
+    exposes.
+
+A resource may declare one or more **service methods** named
+`service_<name>_start`. Each such method returns a starter for a
+service the resource needs (e.g. a database connection coordinator,
+a shared-job-slot tracker). A resource with no `service_*_start`
+methods (e.g. `JobCount`) runs entirely inside the scheduler
+process. A resource with N such methods spawns N services when
+attached.
+
+Services started for a resource are not the resource. The resource
+object stays in the scheduler. The service it spawned is a helper
+that publishes state through `service_state.content`, and the
+resource object reads that state to answer its in-process
+questions.
+
+### 9.1 Ported resources
+
+From `reference/old3`:
+
+- `Test2::Harness2::Resource::JobCount`
+- `Test2::Harness2::Resource::CPU`
+- `Test2::Harness2::Resource::Memory`
+- `Test2::Harness2::Resource::Disk`
+- `Test2::Harness2::Resource::PipeLimits`
+- `Test2::Harness2::Resource::UnixLimits`
+- `Test2::Harness2::Resource::Throttle`
+- `Test2::Harness2::Resource::Preload` (treated separately — see §10)
+
+### 9.2 TempDir resource
+
+A resource that creates a fresh temporary directory per assigned
+job and exports it as `TMPDIR` (and friends) in the job's
+environment. On release it removes the directory.
+
+`TempDir` is enabled by default. The eventual `App::Yath2` CLI will
+expose a `--no-resource=TempDir` (or similarly-named) flag to opt
+out; until that flag exists the harness API accepts an explicit
+opt-out from the caller.
+
+This replaces the legacy "harness rewrites `$ENV{TMPDIR}`" behavior
+described in earlier iterations.
+
+## 10. Preloads
+
+A preload is a Perl process that loads a set of modules during a
+`BEGIN` block, then forks fresh test processes from that loaded
+state. It exists to amortize per-test startup cost (loading Moose,
+DBIx::Class, the app under test, etc.) across many test runs.
+
+Preloads are a launcher type (see `Launcher::Preload`) **and** a
+resource type (see `Resource::Preload`):
+
+- The **resource** owns scheduling decisions: which tests prefer
+  which preload, when each preload is up/down, when to skip vs
+  defer when a preload is broken.
+- The **launcher** owns execution: starting the preload process and
+  launching tests out of it.
+
+### 10.1 Shape — flat, not staged
+
+Each preload is **one process**. No tree, no parent / child stages,
+no chained `%INC` inheritance. A runner may have **multiple
+preloads** configured (e.g. one preloading Moose, another preloading
+a heavy app harness), each running independently in its own
+process; they do not build on each other.
+
+```
+launcher process
+├── preload P1 (one process, BEGIN-bootstrapped)
+├── preload P2 (one process, BEGIN-bootstrapped)
+└── preload P3 (...)
+```
+
+Earlier rewrite attempts (and `reference/old3`) modeled preloads as
+a tree of "stages" where a child stage inherited its parent's
+loaded modules via fork. That functionality is **deliberately
+removed** from the new design. If a use case really needs the
+loaded-module set of preload A *plus* the loaded-module set of
+preload B, the user defines a third preload C that loads both. Each
+preload stands alone.
+
+Each preload registers itself in `services` (and gets a corresponding
+launcher row in `launchers`) with a unique name. Tests requesting a
+specific preload route to the launcher row whose `spec` identifies
+that preload by name.
+
+### 10.2 BEGIN-block bootstrap
+
+Each preload process must be a **fresh process**, started by exec —
+not by fork — so that no Perl state has been initialised before the
+preload's own `BEGIN`. The `BEGIN` does three things:
+
+1. Declares a `Long::Jump::setjump` target at the top of the
+   block.
+2. Loads (`use` / `require`) every module the preload is
+   configured for.
+3. Enters the launcher's poll loop (in the same `BEGIN`).
+
+When a test needs to run out of this preload, the launcher forks.
+In the forked child it:
+
+1. Long-jumps back to the top of the `BEGIN`.
+2. Resets process state (`$0`, signal handlers, ENV slots that
+   should not leak, etc.).
+3. Uses `goto::file` to substitute the test script for the
+   `BEGIN`'s body.
+
+The result is a Perl process that behaves as if the test had been
+started normally — but with every preloaded module already in
+`%INC`.
+
+The three Perl tricks above — `Long::Jump`, `goto::file`, and
+process state cleanup — are **load-bearing**. If implementation
+gets stuck on any of them, **stop and discuss**. Replacing any of
+them with `do $file`, an `eval`-of-source, or similar workaround
+breaks the preload's semantics in subtle ways and is not an
+acceptable shortcut.
+
+### 10.3 Launching a test from a preload
+
+When a test should run under preload P, the scheduler queues a
+`launches` row addressed to P's launcher row. P's process:
+
+1. Receives the launch via its poll loop.
+2. Forks. The fork target is the `Long::Jump` / `goto::file`
+   dance from §10.2.
+3. The newly forked process is the **collector** for the test
+   job. It in turn forks the test process per §5.1, with the
+   preload's `%INC` carried into the test via the goto target.
+
+The collector behaves exactly like a collector for a non-preloaded
+test would: it parses, audits, records. The launcher reaps the
+collector on exit.
+
+There is no detachment / double-fork dance and no separate
+"intermediary" process. The collector is a direct child of P, which
+is a direct child of the launcher. When P goes away (reload, crash)
+the collectors P already started are still P's children and P's
+shutdown path is responsible for reaping them.
+
+### 10.4 Reload (later stage)
+
+Reload functionality lands in a later Part-1 stage (see
+`PART_1_PLAN.md`). The expected shape:
+
+- Each preload watches the files in its `%INC` for changes (via
+  inotify when available, mtime fallback otherwise — both ported
+  from `reference/old3`).
+- On a change that is safe to apply in place (pure-Perl modules
+  with no XS state, no metaclass surgery), the preload reloads
+  the module in its already-running process. Moose-aware reload
+  is required.
+- When in-place reload is not possible the preload `exec`s a
+  fresh copy of itself so the next test starts from a clean
+  preload again.
+
+Scheduler integration: the preload resource publishes per-preload
+up/down/restarting state through `service_state.content`. The
+scheduler holds tests targeted at a preload that is down until the
+state flips back to up.
+
+### 10.5 Persistent runner (later stage)
+
+The "persistent runner" model (eventually exposed as `yath start` /
+`yath run` in Part 2) is also a later Part-1 stage:
+
+- The harness keeps running after the original caller exits.
+- Other processes discover the running harness via the `.t2h2`
+  file (see §4.1).
+- The harness cleans up its own `.t2h2` file on exit. The discovery
+  scan additionally cleans up stale `.t2h2` files whose pids no
+  longer exist.
+
+## 11. TestFile and directives
+
+`Test2::Harness2::TestFile` is the unit of "thing we will run as a
+test". Ported from `reference/old3` along with its directives
+library (`Test2::Harness2::Util::Directives`). Responsibilities:
+
+- Scan a test file for `HARNESS-*` directives (job slots, conflicts,
+  preload requirements, retry policy, timeout overrides, smoke
+  flagging, etc.).
+- Expose those directives to the scheduler so it can decide what to
+  launch where.
+- Carry the test file's relative path, project association, and
+  derived attributes (binary, shebang, retry policy, etc.).
+
+The scheduler turns each TestFile into one or more `jobs` rows when
+a run is queued.
+
+## 12. Utilities (port from `reference/old3`)
+
+The following utility modules are required for Part 1 and should be
+ported (and renamed where necessary) from `reference/old3/lib/`:
+
+- `Test2::Harness2::Util` — `mod2file`, `apply_encoding`,
+  `hub_truth`, `parse_exit`, `write_file`, `write_file_atomic`,
+  and the other helpers documented in `STYLE_GUIDE.md`. Do
+  **not** port `tinysleep` — `Time::HiRes::sleep` is the sub-
+  second sleep primitive (see `STYLE_GUIDE.md`).
+- `Test2::Harness2::Util::JSON` — `Cpanel::JSON::XS` wrapper
+  with the project's defaults (`encode_json`, `decode_json`,
+  `encode_pretty_json`, file-level helpers,
+  `write_json_file_atomic`, `json_true` / `json_false`).
+- `Test2::Harness2::Util::Zstd` — zstd reader / writer for the
+  one-frame-per-line `.jsonl.zst` shape used by the DB recorder.
+- `Test2::Harness2::Util::JSONL::Reader` — line-oriented JSONL
+  reader used by tooling that reads the on-disk event stream.
+- `Test2::Harness2::Util::IPC` — process helpers
+  (`pid_is_running`, `set_procname`, `swap_io`,
+  `list_direct_children`).
+- `Test2::Harness2::Util::Directives` — directive parser.
+- `Test2::Harness2::Util::EventEmitter` — service-side event
+  emitter library that mirrors `Stream2`'s wire format on
+  `Atomic::Pipe`. Used by services that want to emit structured
+  events.
+- `Test2::Harness2::Util::FileMonitor` — file change watcher used
+  by the reload subsystem.
+- `Test2::Harness2::Event` — the single event class everything
+  emits.
+
+`Test2::Formatter::Stream2` is copied wholesale from
+`reference/old3` (no rename, no rewrite).
+
+## 13. Database schema
+
+The schema lives at `share/schema/<flavor>.sql` for each flavor we
+support: `sqlite`, `mariadb`, `mysql`, `postgres`, `percona`. All
+flavors move together; a DDL change touches every file in the same
+commit.
+
+### 13.1 Type conventions
+
+- **UUIDs.** Use Test2::Util::UUID (which loads `UUID.pm`) to
+  generate UUIDs in Perl. These are v7, so no bit-reordering for
+  index locality is needed. Use the database's native UUID type
+  where available; otherwise `BINARY(16)` plus a `uuid_string`
+  shadow column populated automatically via a `BEFORE INSERT` /
+  `BEFORE UPDATE` trigger (so the human-readable form is always
+  current without an application-level write).
+- **JSON.** Use `JSONB` or `JSON` columns where the flavor
+  supports them. Fall back to `TEXT` storing JSON-encoded strings
+  on flavors that don't.
+- **Binary blobs.** `BLOB` / `BYTEA` for `artifacts.content`.
+- **Indexes.** Index aggressively. The harness writes events as a
+  single artifact blob per collector (not row-per-event), so the
+  write path is infrequent, batch-shaped, and not the bottleneck.
+  Reads — querying past runs, filtering jobs, walking artifacts —
+  are the dominant access pattern, especially once Part 2's
+  read-side tooling lands. Optimise for read-time joins and
+  lookups; do not skip an index because of insert cost.
+
+### 13.2 Tables
+
+The set below is the working baseline; columns may grow as
+implementation proceeds. Every table backs a row object per §4.3.
+
+**users**
+- `name`
+- `email`
+
+**hosts**
+- `name` — system hostname.
+
+**instances** — one row per harness instance; in SQLite mode there
+is exactly one entry per database file.
+- `instance_uuid`
+- `host_id` → `hosts`
+- `user_id` → `users`
+- `started` — timestamp
+- `finished` — timestamp (nullable)
+- `meta` — JSON
+- `finalized` — timestamp set once no further runs will be
+  accepted; nullable.
+
+**runners**
+- `instance_id` → `instances`
+- `pid`
+- `started`
+- `finished` (nullable)
+- `finalized` (nullable; mirrors `instances.finalized` shape)
+
+**projects**
+- `name`
+
+**versions**
+- `version`
+- `project_id` → `projects`
+
+**hosts**, **users**, **projects**, **versions** are
+deduplicated-by-natural-key.
+
+**collectors** — one row per collector process.
+- `runner_id` → `runners`
+- `name` — unique per runner
+- `pid` — collector's own pid
+- `watched` — pid of the collected process (nullable until forked)
+- `type` — `service`, `test job`, etc.
+- `start time` — when the collected process started
+- `stop time` — when the collected process stopped (nullable)
+- `exit code` — exit code from the collected process (nullable)
+- `finalized` — timestamp the collector finished its bookkeeping;
+  set by the recorder.
+
+**artifacts** — files produced by collectors.
+- `collector_id` → `collectors`
+- `filename`
+- `content` — binary payload (nullable)
+- `local_path` — absolute path to the on-disk content (nullable)
+- Invariant: exactly one of `content` / `local_path` is non-null
+  at any time. Recorder moves payloads from `local_path` to
+  `content` when the collector finalizes.
+
+**services**
+- `collector_id` → `collectors`
+- `runner_id` → `runners`
+- `run_id` → `runs` (nullable; null for runner-global services)
+- `name` — unique per `(runner_id, run_id)`; e.g. `scheduler`.
+- `class` — Perl class implementing the service.
+- `pid` — the service process's pid. Populated by the service on
+  start so other processes can send it `SIGUSR1` to break its
+  poll-loop sleep (see §6.1, §6.2). Cleared / left to go stale on
+  clean shutdown; readers must treat a non-running pid as "no
+  wake-up available, fall through to next poll".
+
+**service_state** — append-only, most-recent row wins.
+- `service_id` → `services`
+- `stamp` — timestamp
+- `status` — enum: `starting`, `up`, `down`, `stopping`,
+  `stopped`, `broken`.
+- `content` — JSON; service-managed publication of state. The
+  primary channel a resource service uses to publish "what slots
+  are available" to its scheduler-side resource object.
+
+**requests**
+- `service_id` → `services`
+- `requested` — when the request was inserted
+- `completed` — when the service finished handling (nullable until
+  done)
+- `finalized` — when the requester has acknowledged the response
+  (nullable; some requests are deleted on ack instead — see §6.3)
+- `payload` — JSON
+- `response` — JSON (nullable)
+
+**runs**
+- `run_uuid`
+- `runner_id` → `runners`
+- `project_id` → `projects`
+- `version_id` → `versions`
+- `user_id` → `users`
+- `run_ord` — integer, unique per runner; orders runs.
+- `started` (nullable until scheduler claims the run)
+- `finished` (nullable until run completes)
+- `result` (nullable bool; true if all jobs passed, false if any
+  failed)
+- `passed` — int
+- `failed` — int
+- `meta` — JSON
+- `abort` — bool; setting this asks the scheduler to terminate
+  in-flight jobs and stop dispatching new ones for this run.
+
+**test_files**
+- `relative` — path relative to project root
+- `project_id` → `projects`
+
+**jobs**
+- `run_id` → `runs`
+- `test_file_id` → `test_files`
+- `spec` — JSON; full launch spec (env, args, directives, etc.).
+
+**job_tries**
+- `job_id` → `jobs`
+- `try_ord` — try number, starting at 1.
+- `started` (nullable)
+- `finished` (nullable)
+- `collector_id` → `collectors`
+- `result` (nullable bool)
+- `passed` — assertion count
+- `failed` — assertion count
+- `subtests` — top-level subtest count
+- `subtests_passed`
+- `subtests_failed`
+
+**launchers**
+- `name`
+- `class` — Perl class
+- `spec` — JSON; construction spec
+- `runner_id` → `runners`
+- `run_id` → `runs` (nullable; null for global launchers, set for
+  run-scoped launchers)
+- `collector_id` → `collectors`
+- `pid` — the launcher process's pid. Same role as `services.pid`:
+  the scheduler signals it with `SIGUSR1` after inserting a new
+  `launches` row so the launcher wakes immediately instead of
+  waiting out its backoff.
+- `spawn_socket` — Unix socket path when the launcher supports
+  `spawn` (see §7.3); nullable.
+
+**launches**
+- `launcher_id` → `launchers`
+- `job_id` → `jobs`
+- `requested` — when the row was added by the scheduler
+- `started` — when the launcher started the process (nullable)
+
+### 13.3 Existing reference schema
+
+`reference/old3/share/schema/` already contains a `sqlite.sql`,
+`mariadb.sql`, `mysql.sql`, `postgres.sql`, and a `SCHEMA.md` write-up
+that explains rationale for many design decisions. Treat the
+reference SQL as a starting point. Where the new schema deviates
+(notably: services / state / requests model is new; the `artifacts`
+table replaces the old logging artefacts; the IPC-Manager log
+filenames are gone), follow this document.
+
+## 14. Recorder + artifacts pipeline
+
+While a collector is live, the DB recorder writes the in-progress
+event stream to a single file at
+`${workdir}/events/<UUID>.jsonl.zst`. The UUID exists only to give
+the file a unique name; nothing else uses it after the run. The
+file uses the one-self-contained-zstd-frame-per-line layout so
+other readers can tail it via `Test2::Harness2::Util::Zstd`.
+
+The `artifacts` row points at that file via `local_path` (full
+path including the UUID). When the collector exits, its recorder:
+
+1. Reads the file contents into the row's `content` column.
+2. Clears `local_path` on the row.
+3. Unlinks the on-disk file.
+
+Once finalized the row carries the full event stream without any
+external path dependency; the database is self-contained.
+
+Artifacts other than the primary events file (screenshots, debug
+captures, etc.) follow the same `local_path` → `content` migration
+pattern by default. A recorder may choose to leave a particular
+artifact in `local_path` (e.g. a permanent on-disk path the user
+supplied explicitly) — that is a per-artifact decision.
+
+## 15. Workdir
+
+The harness creates a temporary working directory at construction:
+
+```
+File::Temp::tempdir('t2h2-$$-XXXXXX', TMPDIR => 1)
+```
+
+The workdir holds **exactly two** things:
+
+1. **In-progress events files**, at
+   `${workdir}/events/<UUID>.jsonl.zst`, one per active collector.
+   Each file is unlinked as soon as its content has been migrated
+   into the corresponding `artifacts` row (see §14).
+2. **Test-job temp directories**, allocated by
+   `Test2::Harness2::Resource::TempDir` (see §9.2). One sub-dir per
+   running test job; each is removed when the resource releases.
+
+Nothing else lives here. No `logs/`, no per-service log tree, no
+per-run snapshots, no archive manifests. Everything else is in the
+database. The harness handle owns the workdir and removes it on
+clean shutdown; whatever stragglers remain (unmigrated event files
+on a crash, leaked TempDir directories) get removed with it.
+
+A future stage may grow per-runner workdir overrides for the
+persistent-daemon use case; that lands when the persistent runner
+work does (see §10.5).
+
+## 16. What is **not** in scope for Part 1
+
+The following all belong to Part 2 (`PART_2_PLAN.md`):
+
+- The `yath` command, its options layer, persistent-daemon command
+  set (`yath start`, `yath run`, `yath stop`, `yath kill`,
+  `yath status`, `yath list`, `yath inspect`, `yath spawn`,
+  `yath archive`, `yath extract`).
+- The output pipeline (ArtifactLayer, OutputManager, filters,
+  renderers).
+- Any read-side tooling on top of the database (querying past runs,
+  rendering archived logs, etc.). The database holds everything;
+  Part 2 is what shows it to users.
+- Project auto-detection (walking up looking for `.git`, dist
+  metadata, etc.).
+- Anything else in the `App::Yath2` namespace.
+
+If Part-1 work surfaces a question or design choice that affects
+Part 2, note it in `PART_2_PLAN.md` rather than expanding scope
+here.
+
+## 17. What this rewrite drops from the previous attempts
+
+For anyone reading `reference/old3`'s ARCHITECTURE.md, these are the
+deliberate departures:
+
+- **`IPC::Manager` is gone.** No bus, no per-service IPC identities,
+  no command↔harness handshake, no message routing rules. All
+  inter-process communication is the database.
+- **No harness service.** `Test2::Harness2` is a library handle; the
+  scheduler is what plays the "long-lived process" role, and only
+  when explicitly started.
+- **No run service.** The scheduler tracks per-run state directly in
+  the `runs` / `jobs` / `job_tries` tables; there is no separate
+  per-run process. (`reference/old3`'s last addendum had already
+  removed `RunService`; the new design never reintroduces it.)
+- **No `IPC::Manager`-style collector detachment.** Test-job
+  collectors are direct children of their launcher (or of a preload
+  stage that is itself a direct child of the launcher). Reaping is
+  by the parent launcher / stage.
+- **No `ipc_run` / `ipc_parent` / `ipc_harness` triplet.** Collectors
+  identify themselves via their `collectors` row; everything else
+  is read from the database.
+- **No artifact-announcement IPC.** The recorder writes the
+  `artifacts` row directly when it has the artifact's coordinates.
+- **No bus-based event echo.** Services that want to log their own
+  IPC activity just record events; the recorder takes care of the
+  rest.
+- **No detached-collector preload dance.** A test launched by a
+  preload is collected by a collector that is itself a child of
+  the preload process. Restarting a preload waits for its in-flight
+  tests rather than detaching them.
+- **No preload stage tree.** Preloads no longer chain. Each preload
+  is one process; multiple preloads run independently and do not
+  inherit each other's `%INC`. The "stage A.1 → stage A → root"
+  hierarchy in `reference/old3` is gone.
+
+When porting code from `reference/old3` (parsers, auditor,
+resources, directives, utilities), strip every `IPC::Manager`,
+`ipc_parent`, `ipc_run`, `ipc_harness`, `ipcm_info`, and related
+plumbing. Replace per-collector IPC announcements with recorder
+calls. Replace per-service IPC handlers with database polling.
+
+## 18. Project name in development
+
+Until `App::Yath2`'s auto-detection lands, the `project` field in
+the database can be populated with a static placeholder — `t2h2`
+works for development and tests. Auto-detection (walking up for
+`.git`, `dist.ini`, `META.json`, `Makefile.PL`, etc.) is Part 2
+scope.

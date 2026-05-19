@@ -12,6 +12,30 @@
 
 =over 4
 
+=item $ret = foo($input)
+
+=back
+
+=head1 METHODS
+
+=head1 PUBLIC
+
+=over 4
+
+=item $ret = $class->foo($input)
+
+=item $ret = $inst->foo($input)
+
+=back
+
+=head1 PRIVATE
+
+=over 4
+
+=item $ret = $class->foo($input)
+
+=item $ret = $inst->foo($input)
+
 =back
 
 =head1 SOURCE

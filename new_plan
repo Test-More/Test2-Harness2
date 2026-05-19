@@ -1,0 +1,540 @@
+This rewrite is using a completely new infrastructure, with some elements to be copied from the reference implementations.
+
+Overview:
+
+We will adopt the collector system, there is an implementation in reference/old2, and also in reference/old3.
+
+Every process started for the Test2::Harness2 namespace will be run through a collector.
+
+A collector is a process that starts a child process with its stdour and stderr redirected to pipes that the collector reads from. Atomic::Pipe with zstd compression is used for sending atomic message (events) directly from the collected process to the collector over the stdout pipe with a sync message also sent on the stderr pipe (atomically) to help keep the pipes in sync. The collected process also sends regular output over the STDOUT and STDERR pipes which are muxed with the atomic messages. This is done via mized-message-mode on Atomic::Pipe
+
+Read the Atomic::Pipe code in ~/projects/Atomic-Pipe to answer questions about how it works, how it does zstd compression, preserving zstd form of messages when needed.
+
+Read the 2 old2 and old3 reference implementations for previosu Collector iterations.
+
+New collector implementation will adopt the following:
+
+We start a collector process, then code like this:
+
+    my $pid = fork // die "Could not fork: $!"
+    return if $pid; # Parent process returns
+
+    # In collector process
+    require Test2::Harness2::Collector;
+    Test2::Harness2::Collector->start(
+        exec => \@EXEC, # Option to start a collected process by fork+exec (or system(1, ...) on windows)
+        run  => sub { ... }, # Option to instead start the collected process by running a subroutine
+        parser => 'Test2::Harness2::Collector::Parser::...', # Required
+        auditor => 'Test2::Harness2::Collector::Auditor::...', # Optional
+        recorder => 'Test2::Harness2::Collector::Recorder::...', # Required
+    );
+
+    # Should not be able to reach this
+
+The collector will create the pipes and fork:
+    In the child: replace IO with the pipes, then run the exec or the subroutine
+    In the collector: Start listening to the pipes
+        Messages -> parser -(as events)-> [auditor] -> recorder
+        Messages are read as or converted to events by the parser, events can then optionally be processed by the auditor, which may inject its own events, then the events go to the recorder for final handling.
+
+The collector also waits on the collected process to collect its exit code. Once the child process has exited the collector will also exit, after all events ahve been handled. The collector exits 0 unless it encounters an internal error. Collectors should work very hard to catch any exceptions and report them (print to real STDERR, and insert an event into the event stream), but continue. They should intercept all signals, pass them along to the collected process but keep going waiting for the collected process to finish.
+
+There are 3 types of process Test2::Harness2 may start, 'Services', 'Test Jobs', and 'Spawns', the first 2 are collected using collectors, the third is not and will be explained later. Services have no auditor, test jobs have an auditor.
+
+The recorder object will accept the event stream and "record" it, possibly to a file, possibly to a database, possibly both. It also has a method that gets called to record the exit code, and the auditor can call a method on the recorder to record state transitions (to be defined later).
+
+For initial development and testing we can add a t/script/collector script: collector Parser::Class Recorder::Class [Auditor::Class] -- EXEC COMMAND PARAMS
+And we can have a temporary recorder class that writes everything to files (an events.jsonl file, a state.jsonl file, and an exit file)
+
+The recorder will also need to watch for events that include files like screenshots and handle them.
+
+We want to mostly copy the parsers and auditor from the reference/old3 implementations.
+
+-------------------
+
+Test2::Harness2 is a handle around the database and interface to starting services.
+
+First iteration will use SQLite3, but we will keep things such that other databases can easily be used eventually.
+
+For initial development we will asusme a new sqlite3 database will be created every time the harness is started.
+
+Interface:
+
+    my $h = Test2::Harness2->new();
+
+start() begins by creating the db, this also serves as the file used for IPC discovery:
+
+    ${SYSTEM_TMPDIR}/${USER}-${PROJECT}-${PID}.t2h2 - An SQLite database  (In the future this may not be created if given a DSN for another database)
+
+It also adds a row to the 'runners' table.
+
+Test2::Harness2 will not longer be a service/process on its own.
+
+Alternatively instead of calling start one can use ->connect($dsn or $sqlite_file) to get a handle on an existing database/instance.
+
+This handle can then be used to start/stop services, queue runs, cancel runs, query state, etc.
+
+So for a proper usable instance one might:
+
+    # Creates SQLite database (or connects to existing one if one is passed in)
+    my $h = Test2::Harness2->new();
+
+    # Inserts runner row, not finalized (still able to accept runs)
+    my $r = $h->new_runner();
+
+    # this will fail if the runner is already finalized
+    # Scheduler is a service, only 1 scheduler can be present per runner, service name 'scheduler'
+    my $s = $r->start_scheduler(
+        resources => [
+            [$resource_class, \%resource_settings],
+            ...
+        ],
+
+        launchers => [
+            [$launcher_class, $launcher_name, \%launcher_settings],
+            ...
+        ],
+    );
+
+    # Error if scheduler is finalized
+    my $run = $s->queue_run(
+        jobs => [
+            {...},
+            {...},
+        ],
+
+        resources => [
+            [$resource_class, \%resource_settings],
+            ...
+        ],
+
+        launchers => [
+            [$launcher_class, $launcher_name, \%launcher_settings],
+            ...
+        ],
+
+        env => {...}, # Env vars for all jobs
+    );
+
+    $r->finish(); # blocking, tells the scheduler no more runs are comming so it closes itself when done with runs in queue
+
+    $run->refresh;
+    return $run->result;
+
+Tables(more columns will be needed, this schema is incomplete):
+
+    users:
+        - name
+        - email
+
+    hosts:
+        - name      -- system hostname
+
+    instances: Table for each instance, initially in our sqlite databases there will only ever be one entry, the one for the Test2::Harness2 instance..
+        - instance_uuid -- uuid for the instance
+        - host_id       -- link to the hosts table
+        - user_id       -- link to the users table
+        - started       -- timestamp
+        - finished      -- timestamp
+        - meta          -- JSON
+        - finalized     -- timestamp, set if we know nothing else is going to be scheduled so things should wrap up and exit when they have nothing left to do, null before then.
+
+    collectors: Row added when collector starts, exit code and stop time set by collector when the process it monitors exits
+        - runner_id     -- links to runners table
+        - name          -- Name of the collector (unique per runner)
+        - pid           -- PID of the collector
+        - watched       -- PID of the process being collected
+        - type          -- (service, test job, etc)
+        - start time    -- Time the collected process started
+        - stop time     -- Time the collected process stopped
+        - exit code     -- Exit code from the collected process once it terminates
+        - finalized     -- timestamp, defined when we know the collector process is done, null before then
+
+    artifacts: Files produced by collectors, like events.jsonl.zst, screenshots, etc.
+        - collector_id  -- Collector artifact is assoicated with
+        - filename      -- name of the file
+        - content       -- content payload  (if not in a file on disk)
+        - local_path    -- local path to file content (if not in 'content' field)
+        -- Must set either 'content' or 'local_path' not both.
+
+    services:
+        - collector_id  -- link to collectors table
+        - runner_id     -- link to runners table
+        - run_id        -- link to run_id table, null for global services
+        - name          -- unique per runner_id + run_id, example 'Scheduler'
+        - class         -- perl class implementing the service
+
+    service_state:  Each service adds a row upon state change, when querying state always find most recently inserted
+        - service_id
+        - stamp         -- timestamp
+        - status        -- enum ('starting', 'up', 'down', 'stopping', 'stopped', 'broken')
+        - content       -- json,  This will mainly be used for resource-services to convey a state that is used when assigning resources from the service.
+
+    requests:
+        - service_id
+        - requested     -- timestamp of the request
+        - completed     -- timestamp of the response (or when completed even if no response)
+        - finalized     -- timestamp of the response (or when completed even if no response)
+        - payload       -- json
+        - response      -- json
+
+    projects:
+        - name
+
+    versions:
+        - version
+        - project_id
+
+    runs: Each 'run' that gets queued/executed gets a row
+        - run_uuid      -- uuid for the run
+        - runner_id     -- Link to Runner table
+        - project_id    -- Link to the projects table
+        - version_id    -- Link to the versions table
+        - user_id       -- Link to the users table
+        - run_ord       -- Runs are ordered, give them an ord integer. Unique per runner_id
+        - started       -- timestamp, undef until the run has been started (used/set by scheduler)
+        - finished      -- timestamp, undef until the run has completed (used/set by scheduler)
+        - result        -- Bool, undef if not completed, true if all jobs passed, false if any jobs failed
+        - passed        -- Int, number of jobs that passed
+        - failed        -- Int, number of jobs that failed
+        - meta          -- JSON
+        - abort         -- bool, when set to true the scheduler should notice and stop requesting launches of further jobs and should terminate in-flight ones (via collector terminate flag)
+
+    test_files:
+        - relative      -- Relative path to test from project root
+        - project_id    -- Link to projects table
+
+    jobs: All info needed to launch the job
+        - run_id        -- Link to Run table
+        - test_file_id  -- Link to test_files table
+        - spec          -- json
+
+    job_tries: All state for a specific try at running the job
+        - job_id
+        - try_ord           -- Try number, starting at 1
+        - started           -- timestamp, undef until the job has been started (used/set by scheduler)
+        - finished          -- timestamp, undef until the job has completed (used/set by scheduler)
+        - collector_id      -- link to the collectors table
+        - result            -- Bool, undef if not completed, true if all jobs passed, false if any jobs failed
+        - passed            -- Count of passed assertions
+        - failed            -- Count of failed assertions
+        - subtests          -- Count of top-level subtests
+        - subtests_passed   -- Count of top-level subtests that passed
+        - subtests_failed   -- Count of top-level subtests that failed
+
+    launchers: Processes that are capable of launching test jobs (preloads, default launcher)
+        - name              -- Launcher name
+        - class             -- perl class implementing the launcher
+        - spec              -- json, specification for launcher construction
+        - runner_id         -- Link to the runners table, required
+        - run_id            -- Link to the runs table, null for a global launcher, set for a run-associated launcher
+        - collector_id      -- Link to the collector process
+        - spawn_socket      -- Set to a path to a unix socket if the launcher supports 'spawn' functionality
+
+    launches: Scheduler adds a row heret to schedule a job or spawn (see `yath spawn`)
+        - launcher_id       -- Launcher that should handle the request
+        - job_id            -- Job to launch
+        - requested         -- Time the row was added
+        - started           -- Time the launcher started the process
+
+service_state.content and service_state.status are NOT managed by scheduler,
+they are managed by each service, they are the info the service wishes to
+convey, single-writer is service, many consumers. This is also how resource
+services convey state to the resource classes in the scheduler.  General state
+from Resource Service -> Resource object in scheduler via service_state.info
+Other communication is resource object in scheduler process sending requests to
+the resource service via the requests table
+
+Requests can be deleted when the requestor reads the response (even when null,
+so long as completed is set) unless there is a flag set to keep a record of
+requets and responses, in which case 'finalized' is set instead of deleting the
+row.
+
+Scheduler updates run row for passed/failed/etc in realtime, and when run completes
+
+Add indexes where useful or necessary.
+
+-------------------
+
+Concepts and roles:
+
+Object::HashBase should be used for all objects, it is used to define attributes, constants for hash access.
+Role::Tiny should be used for all roles.
+Role::Tiny and Object::HashBase can be used together, Object::HashBase can be used inside roles, and can be used to consume roles that use Object::HashBase
+
+Test2::Harness2::Collector                      - Starts a child process, reaps it, watches, parses and records stdout/stderr and events. For test jobs it also audits them
+Test2::Harness2::Collector::Role::Parser        - Role parsers must implement
+Test2::Harness2::Collector::Role::Auditor       - Role auditors must implement
+Test2::Harness2::Collector::Role::Recorder      - Role recorders must implement
+Test2::Harness2::Collector::Parser::IOParser    - Basic IO parser that turns STDERR and STDOUT into events, and also reads events sent as bursts over the Atomic::Pipe system
+Test2::Harness2::Collector::Parser::TAPParser   - Subclass of IOParser that also parses TAP from STDOUT/STDERR
+Test2::Harness2::Collector::Auditor::Test       - Auditor for test output
+Test2::Harness2::Collector::Recorder::Files     - Simple example recorder mainly used to test the collector
+Test2::Harness2::Collector::Recorder::DB        - Recorder used in actual runs that updates state in the database and writes events to an events.jsonl.zst that is listed in the db by filename, then when test is done the collector moves the content of the file to the db.
+
+Test2::Harness2::Role::Service - Processes that have a main loop in which they
+handle requests and get work done. The loop should iterate non-blocking as long
+as there is work to do. When a loop completes with nothing to do it should
+sleep to avoid busy work. To avoid hammering the database there should be a
+backoff when there is nothing to do, so the sleep should be 0.05s, 0.1s, 0.5s,
+then 1s being the longest between iterations. Services should also implement a
+SIGUSR1 no-op handler so that SIGUSR1 can be sent by other processes to wake
+them early when they are sleeping.
+
+Test2::Harness2::Role::Launcher - Processes that start and wait for 'launches'
+rows they need to act on, they set the 'started' stamp on the row when they
+start it.Launchers will start and in a loop wait for something to launch
+(launches table) and launch it. How they launch it is launcher specific. This
+role also consumes the Test2::Harness2::Role::Service role.
+
+Test2::Harness2::Launcher::ForkExec - Launch using fork+exec to start the collector, then the collector uses fork+exec to start the test process
+Test2::Harness2::Launcher::Win32    - Launch using system(1, ...) window trick to start collector, collector uses same to start the test process
+Test2::Harness2::Launcher::Default  - Default launcher, creates an instance of one of the 2 above (depending on environment) and delegates to it. Note that it delegates to the in-process object, it does not start a new process for the delegate launcher.
+Test2::Harness2::Launcher::Preload  - The launcher process will run entirly in BEGIN with a Long::Jump to be able to return to the BEGIN, when a launch is requested it forks, uses Long::Jump to return to the begin then starts the collector which starts the child, the child then cleans up the process state and uses goto::file to swap in the test file code. See preloads in all reference/ implementations. it is CRITICAL that Long::Jump, goto::file and process cleanup happen, we cannot skip these or replace them with `do $file` or anything else. If implementation gets stuck and skipping one is considered STOP and discuss.
+
+Launchers start test jobs with a collector for each test job, spawns (yath
+spawn) do not get collectors. spawn's are disconnected (double fork, new
+process group). Test process collectors DO NOT double-fork, launchers reap the
+collector processes when they exit.
+
+Collectors must update their row to populate the 'finalized' column before they
+exit. This, like all db writes from the collector, must be done via the
+recorder interface, allowing the 'Files' recorder to take alternate action for
+testability without a database.
+
+Preloads will do their loop in a BEGIN block and preload things, then use
+goto::file and Long::Jump and state reset. See reference/ implementations.
+
+Launcher classes (and/or role) must make it easier to start them, examples:
+    perl -e 'use My::Launcher; My::Launcher->start'
+    perl -e 'use Test2::Harness2::Launcher::Preload(); use Long::Jump(); BEGIN { my $out = Long::Jump::setjump(preload => sub { Test2::Harness2::Launcher::Preload->start }; ...; require goto::file; goto::file->import($out->{test_File}); Test2::Harness2::Launcher::Preload->reset_process_state; }'
+or even easier, wrap it so you can do:
+    open(my $fh, '|-', $^X, '-MTest2::Harness2::Launcher::Preload=start', '-e' => '1;') or die "$!"
+    print $fh encode_json($preload_specification);
+    close($fh);
+or similar. Point is easy to start launchers as fresh processes.
+
+Run state and scheduler state lives in the runs and job tables.
+
+-------------------
+
+The default collector-recorder will write events to a events.json.zst file,
+each line is zst compressed, we can copy the zst implementation from
+reference/old3. Also we can in many cases write through the caches zst form of
+events that came over the Atomic::Pipe in compressed form. Exit code will be
+recorded to the collector row in the database. Auditor will use state changes
+to update the job_try row. Also an artifact entry will be created pointing at
+the events.jsonl.zst file. When the collector is done it will use the recorder
+to copy the content of the events.jsonl.zst file to the 'content' column of the
+artifact table and remove the local_path column data.
+
+Resource info is passed into start_scheduler() and queue_run(). Scheduler
+manages resources, has the canonical instances, uses available() assing(), etc.
+
+We will want to port over all the resource classes in reference/old3
+
+Replacement temp dirs for tests (Setting the TMPDIR variable, etc) will become
+a resource, it is always available, a directory is created and assigned to the
+test, the directory is deleted upon release. No service is needed for the
+resource.
+
+A service process is simple, a loop that continually checks for requests in the
+requests table that are for it, it then handles the requests and updated the
+row with a response. requests that have no meaningful response may have the
+response left null, but completed will be populated. Services also check their
+'terminated' status on each loop and exit if it gets set. Services will also
+implement a SIGUSR1 handler (on supported platforms, on unsupported platforms
+this is skipped, it is an optimization, not a requirement). This signal is only
+used to iterrupt sleeps when we know there is work to be done. The services
+need to loop and check the database each time, we do not want to hammer the
+database by pinging it ever loop with no sleeps, but we also do not want added
+latency of sleeping when there is work to be done. On supported platforms other
+processes that add rquests or set the termination flag can also send sigusr1 to
+services to interrupt the sleep so it knows it has work to do and can query the
+db. Services will usually have actions to take on every "tick".
+
+
+Each table should get a simple object to represent it with the following methods:
+ * $o->save       - Update any changed fields
+ * $o->refresh    - Re-fetch row and update fields with changes
+
+The Test2::Harness2 object should provide the following methods to get/create the objects:
+ * $o = $h->fetch(table => %WHERE)
+ * @os = $h->fetch_all(table => %WHERE)
+ * @os = $h->insert(table => \%ROW1, \%ROW2, ...)
+
+We do not want to depend on DBIx::Class, so this should be implemented with SQL
+on DBI directly. Insert should be written to be very efficient.
+
+Collectors and auditors can use SQL directly on their DBH handles, they do not
+need to go through the Test2::Harness2 modules API. Optimize for performance.
+
+There should be a launcher role that also consumes the service role. Collectors
+spawned by the launcher should NOT reparent or double-fork, they should habdle
+the collector exiting and send siguser1 (where supported) to the scheduler
+service after updating the collector row to show is is sealed.
+
+-------------------
+
+Another note on how preload launcher works
+
+Preload launcher process starts, here is some pseudo-code, but nearly all of this is already implemented properly, favor how Collectors currently work over how my pseudo-code implements it.  But the collector reaps the test job process that spawns from it. Prelad spawns collector which spawns test job.
+    use Test2::Harness2::Collector();
+    use goto::file();
+    my $action;
+    BEGIN {
+        preload modules ...
+    
+        $action = sub { exit(0) };
+    
+        my $got = long jump {
+            service loop
+                if launch
+                    my $pid = fork
+                    next if $pid
+                    do long-jump - launch
+        }
+    
+        return unless $got == launch;
+    
+        my ($stdout_r, $stdout_w) = Atomic::Pipe....
+        my ($stderr_r, $stderr_w) = Atomic::Pipe....
+    
+        my $pid = fork // die;
+        if ($pid) { # Collecter
+            $action = sub {
+                close($stdout_w)
+                close($stderr_w)
+                my $c = Test2::Harness2::Collector->...(stdout_pipe => $stdout_r, stderr_pipe => $stderr_r)
+                $c->collect();
+            };
+
+            return;
+        }
+        else {
+            close($stdout_r)
+            close($stderr_r)
+
+            # replace STDOUT and STDERR with the pipes
+            # Clean up state, $0, etc
+
+            goto::file->import(test_file)
+        }
+    }
+    
+    $action->();
+    exit(0);
+
+-------------------
+
+Other implementations automatically replace $ENV{TMPDIR} with a new temp dir. We still want this functionality, but it should be implemented as a resource class. This resource should be enabled by default unless --no-resource is provided (once we are implementing the yath side again)
+
+-------------------
+
+Stages of development
+
+
+Note that reference/old3 is the most recent implementation, and has a lot of
+what we want, but it alsl is based on an architecture that uses IPC::Manager
+which we do not want to copy. IPC::Manager resulted in an extremely bulky and
+complicated IPC system we do not want to replicate.
+
+Part 1: Test2::Harness2
+
+Do not touch App::Yath namespace at all for this part.
+
+OK to write temporary scripts in scripts/ for verifying functionality. Also OK
+to write helper script in t/scripts for tests to use.
+
+Constantly be aware of things in refernece/old3/lib/Test2/Harness2/Util** and bring the back in when/if useful.
+
+NEVER modify reference/*  you can copy from it, and modify the copies, but never modify the files unde reference/
+
+Each stage should start with asking me questions, then implement, then asking me to review. Top level items are stages, items under it are notes for the stage
+
+Note STYLE_GUIDE.md when taking these actions, specially the notes about eval which agents frequently forget.
+ * Implement the Collector role and namespace and child namespaces (Parsers, Auditor, Files recorder, stub out the DB recorder
+    * Requires porting the zstd libraries and logic from reference/old3
+    * Need jsonl and zstd readers/writers
+    * Port json utils
+    * port file utils like write_file, write_file_atomic, etc.
+    * the reference/old2 collector implementation is simpler and does not have the IPC mess that old3 does.
+    * copy as-is Test2::Formatter::Stream2
+    * port the Test2::Harness2::Event class
+ * Implement the schema files, put them in share/schema/*.sql, implement for PostgreSQL, MariaDB, SQLite, Percona, and MySQL flavors.
+    * UUID native type where possible, binary(16) when uuid is not supported with a uuid_string field to store the string form, updated/inserted automatically via a trigger when it is missing, this is to help humans.
+    * JSONB or JSON types when available, fallback to string
+    * artifacts store binary data
+ * Implement Test2::Harness2 Database access/orm
+    * Database accessors and methods
+    * Child namsepace for each table with database accessors and methods
+    * Do NOT use DBIx::Class, we do not want to depend on it
+    * OK to use SQL::Abstract
+ * Implement ability to use databases other than the default .t2h2 sqlite database
+    * Still write .t2h2 file, but as json file with info about the process, it is here for discovering runners
+    * use DBIx::QuickDB for databases
+    * Reference how reference/old3 looks for database versions in ~/dbs
+    * Also ability to connect to established DB instead of starting one on the fly with DBIx::QuickDB
+ * Implement simple Launchers
+    * Default
+    * ForkExec
+    * Win32 - implement, but may not be testable
+ * Implement scheduler and related Test2::Harness2 methods/interface
+    * Port the TestFile roles, classes, and structure from reference/old3
+        * And the new Directives library from reference/old3
+    * Ability to queue a run in the database
+    * Scheduler find it, and executes it and all jobs for it (1 at a time for first pass)
+    * run completes and is fully in the database with all fields properly populated
+ * Resources
+    * port all resources from reference/old3 implementation
+    * add TempDir resource to replace $TMPDIR with a test specific temp dir that the resource creates, assigns, and cleans up on release
+ * Preload launcher
+    * Ability to preload a module like Moose, then launch a test that verifies Moose is already loaded
+ * Preload 'spawn' functionality
+    * Preloads that optionally allow spawn functionality should open a unix socket that a process can use to request a spawn
+    * No collector
+    * Should be able to connect IO between the process requesting the spawn and the spanwed child.
+        * Child stderr and stdout go to requestors stderr/stdout
+        * requestor stdinn goes to child process stdin
+        * signal forwarding from requestor to child
+        * exit code for child is exit code for requestor
+        * Basically emulates just starting a process normally except that it benefits from the preload in-memory.
+ * Persistent runner (for `yath start` and `yath run` functionality we implement later)
+    * Discovered via the .t2h2 files
+    * .t2h2 gets cleaned up when harness exits
+    * discover also cleans up any .t2h2 files that are leftover despite a harness exit.
+ * Reload functionality
+    * Preload watches for loaded perl modules to change, reloads them when they do
+    * Moose-aware so Moose classes reload properly
+    * exec to restart itself in-process if it needs a fresh preload start
+ * Audit reference/* for anything missing that belongs in the Test2::Harness2 namespace (ignore App::Yath* namespaces for now)
+ * Final touch-ups
+
+When these are all done we will move on to specing out the App::Yath2 phase.
+
+-------------------
+
+Architectural notes:
+
+ * Test2::V0 for test library
+ * DBIx::QuickDB for ephemeral database functionality in testing and temporary databases for running yath (except SQLite which we do directly)
+ * ~/dbs/* for multiple installed db versions for testing
+ * DO NOT USE IPC::Manager, DO NOT emulate how code used to use it in reference/old3, delete any architecture notes that say it should be used.
+ * use Test2::Util::UUID (and UUID.pm under the hood, require it) for UUIDS, generate in perl not is DB. These are V7 uuids, so re-ordering bits for optimal db insert is not needed.
+ * Project uses Dist::Zilla, reference the dzil.ini in reference/old3, but dependencies there are no longer accurate.
+
+Always look to reference/old3 first to answer questions, but if the answer
+deviates from architectural requirements or other info in the current
+implementation stop and ask for clarification. Also look at reference/old2 and
+reference/legacy for input, but never accept those solutions if they conflcit
+with instructionsin STYLE_GUIDE.md, AGENTS.md or ARCHITECTURE.md in the main
+project directory.
+
+-------------------
+
+For the Test2::Harness2 namespace phase 'project' can be populated as a random
+string, or just 't2h2' for our testing purposes. Eventually the project will be
+auto-detected by the App::Yath2 namespace, or specified by users. Detection
+will look at the directory that has the .git, check for a dist.zilla, a
+meta.yml or meta.json, makefile.PL, etc trying to identify the project
+

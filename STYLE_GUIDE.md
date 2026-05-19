@@ -11,6 +11,10 @@ not here.
 - Use `Object::HashBase` for object attributes.
 - Use `Role::Tiny` / `Role::Tiny::With` for roles.
 - Use `parent` for inheritance, not `base`.
+- `Object::HashBase` and `Role::Tiny` compose. `Object::HashBase` may
+  be used inside roles, and may be used by classes that consume roles
+  built with `Object::HashBase`. Don't reach for a heavier framework
+  to get around a perceived incompatibility — there isn't one.
 
 ## Error handling
 
@@ -42,27 +46,22 @@ not here.
 
 ## Sub-second sleeps
 
-Three primitives, picked by purpose. Never use 4-arg `select` directly.
+Use **`Time::HiRes::sleep($secs)`** for every sub-second sleep —
+poll cycles, backoff sleeps, anywhere the busy / idle loop needs
+to wait a fraction of a second. `Time::HiRes::sleep` returns early
+on signal interruption (`EINTR`), which is the behavior we want:
+a `SIGUSR1` wake-up from another process must break the sleep
+immediately so the loop can pick up the new work.
 
-- **`Test2::Harness2::Util::tinysleep($secs)`** — default for busy loops,
-  poll cycles, and any sleep where the caller expects to react promptly
-  to a signal. `tinysleep` is implemented over 4-arg `select(undef, undef,
-  undef, $secs)`, which returns early on `EINTR` and does **not** resume
-  the remaining sleep. That is the desired behavior for code that
-  cooperates with signal-driven shutdown / SIGCHLD reaping / wakeups.
-  Almost every sleep in this codebase should be `tinysleep`.
+Earlier docs claimed `Time::HiRes::sleep` retried internally on
+`EINTR` and would silently swallow signals; that was wrong. It
+wakes on signal like `sleep`/`usleep` do. There is no need for a
+`tinysleep` helper or a 4-arg `select` workaround — just call
+`Time::HiRes::sleep` directly.
 
-- **`Time::HiRes::sleep($secs)`** — only when the code genuinely needs
-  to guarantee a minimum elapsed wall-clock duration. `Time::HiRes::sleep`
-  retries internally on `EINTR` and so will silently swallow signals to
-  meet the requested duration. Use this for timing-sensitive paths
-  (rate limiters, "wait at least N seconds before retrying a backoff",
-  etc.) where signal interruption would produce a wrong result. Document
-  the reason at the call site.
-
-- **4-arg `select(undef, undef, undef, $secs)`** — never use directly.
-  If you need its semantics, use `tinysleep`. Existing direct uses are
-  bugs to fix during cleanup passes.
+Do not use 4-arg `select(undef, undef, undef, $secs)` as a sleep
+primitive. If you find existing code doing it, replace with
+`Time::HiRes::sleep`.
 
 ## Conditionals
 
@@ -100,6 +99,32 @@ Three primitives, picked by purpose. Never use 4-arg `select` directly.
 
 - Named subroutines (ones defined in a package namespace, not anonymous subs or subs assigned to a variable) in a module that defines an object class must be methods, not functions. Named subroutines are only allowed to be functions when the module is not an object class — e.g. a utility/export module or a plain `.pl` script. Imported named subs (e.g. from `use Carp qw/croak/`) stay as functions; this rule applies only to subs defined in the module itself.
 
+## Testing libraries
+
+- Use `Test2::V0` as the test library for everything new under `t/`.
+  Avoid `Test::More` and `Test::Simple` in new code; existing `t/`
+  imports may stay as they are until touched.
+
+## UUIDs
+
+- Generate UUIDs in Perl, not in the database. Use
+  `Test2::Util::UUID` (which loads `UUID.pm` under the hood).
+- These are v7 UUIDs. Do not reorder bits for index locality —
+  v7 already orders by time-of-generation.
+
+## Databases
+
+- Hand-written SQL via `DBI` for the harness's row layer.
+  `SQL::Abstract` is fine where it helps.
+- **Do not use `DBIx::Class`.** Hand-written SQL on `DBI` is the
+  whole story for the harness's row layer.
+- Default backend is SQLite via `DBD::SQLite`. For non-default
+  flavors and ephemeral testing setups, use `DBIx::QuickDB` and
+  point it at the installations under `~/dbs/` when available.
+- The schema lives at `share/schema/<flavor>.sql`. All flavors move
+  together: a DDL change touches every flavor file in the same
+  commit.
+
 ## File organization
 
 - One Perl namespace per file. A package `Foo::Bar::Baz` lives in
@@ -111,6 +136,16 @@ Three primitives, picked by purpose. Never use 4-arg `select` directly.
   patterns) — those are not "namespaces deserving their own package".
   When in doubt, a `package` declaration that includes any `sub`
   definitions or attributes should be in its own file.
+
+- **POD layout dictates the outer ordering of subs**, and the
+  ordering rules below apply **within** each POD section, not
+  across the whole file. Subs in the `EXPORTS` POD group come
+  before subs in the `PUBLIC METHODS` POD group, which come before
+  subs in the `PRIVATE METHODS` POD group (per the POD section
+  rules above). Within each of those groups, then apply the rules
+  below — 1-line subs near the top of the group, longer subs after,
+  optional folds for related logic. Do not reorder across POD
+  groups to put a 1-liner first when that breaks the POD layout.
 
 - In general, 1-line methods or functions:
 
@@ -142,3 +177,105 @@ Three primitives, picked by purpose. Never use 4-arg `select` directly.
 
   # }}} This is where the doohickey is implemented
   ```
+
+## Module size
+
+- No single `.pm` file should exceed **1000 lines** of code. Lines
+  of code includes blank lines and comments but **excludes POD**
+  (everything between `=pod` / `=head*` and `=cut`, and everything
+  after `__END__`).
+- When a module crosses 1000 lines, **flag it for human review**
+  rather than silently splitting it. The likely action is to break
+  it into multiple modules; the human decides where the seams go.
+- Do not work around the rule by stuffing logic into long POD or
+  another file via `do`/`require` tricks. The rule exists to keep
+  modules comprehensible, not to be gamed.
+
+## Subroutine size
+
+- No subroutine should exceed **75 lines** (sub signature through
+  closing brace, inclusive). POD blocks and code comments inside a
+  sub do not count toward the limit; the limit applies to executable
+  Perl only.
+- When a sub crosses 75 lines, break it up into smaller helpers with
+  names that describe each step.
+- **Narrow exception:** some low-level operations — packed-binary
+  encoders, hex / bit-twiddling, table-driven dispatch where every
+  branch is a one-liner — read worse when split. If breaking up
+  genuinely does more harm than good, keep it and add a short
+  comment explaining why. Do not invoke the exception as a default;
+  if you're not sure, split.
+
+## Comments
+
+- Default: **no comment.** Code with well-named identifiers
+  documents itself; an extra sentence saying what the next line
+  already says is noise.
+- Add a comment only when it adds **significant** value: a
+  non-obvious *why*, a hidden constraint, a subtle invariant, a
+  workaround for a specific bug, behavior that would surprise a
+  future reader.
+- Never write the obvious:
+
+  ```perl
+  # BAD — comment restates the code:
+  # Return 1
+  return 1;
+  ```
+
+- Keep comments brief. Multi-paragraph comment blocks are almost
+  never warranted; if a topic needs that much explanation it
+  probably belongs in POD or `ARCHITECTURE.md`.
+- Comments may reference `ARCHITECTURE.md` or `STYLE_GUIDE.md`
+  (both tracked, both authoritative). Comments **should not**
+  reference `AI_DOCS/*` or other markdown files; if a rule from
+  one of those documents matters here, restate the rule in the
+  comment instead.
+
+## POD
+
+Every shipped `.pm` file must have POD documentation. Start from
+the repository `template.pod` and remove the sections that are not
+relevant to the module being documented.
+
+### Section placement
+
+The `template.pod` sections split into three placement groups:
+
+- **Top of file** (before `package`-level code begins to do real
+  work, or grouped together at the top after `use` statements):
+  - `NAME`
+  - `DESCRIPTION`
+  - `SYNOPSIS`
+
+- **Inline with code** (POD block immediately above the relevant
+  sub / export):
+  - `EXPORTS` — POD lives above each exported function.
+  - `PUBLIC METHODS` — POD lives above each public method.
+  - `PRIVATE METHODS` — POD lives above each private method
+    (leading-underscore convention).
+
+  The section names above are still the headings the POD uses —
+  the inline blocks are pieces of those sections, ordered by code
+  appearance.
+
+- **End of file**, under an `__END__` marker:
+  - `SOURCE`
+  - `MAINTAINERS`
+  - `AUTHORS`
+  - `COPYRIGHT`
+  - any other tail sections the template carries.
+
+### POD style
+
+- Be brief. POD should describe behavior the reader can't infer
+  from the signature in one or two sentences. Avoid retelling the
+  whole module in prose.
+- Don't repeat yourself. If the same explanation applies to several
+  methods, put it in `DESCRIPTION` once and let the per-method POD
+  stay short.
+- POD **must not** reference any `.md` document — not
+  `ARCHITECTURE.md`, not `STYLE_GUIDE.md`, not `AI_DOCS/*`, not
+  this file. Users read POD; they cannot read internal docs.
+  Restate the relevant rule or behavior in plain prose if it
+  matters.
