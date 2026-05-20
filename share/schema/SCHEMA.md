@@ -131,6 +131,8 @@ never both.
 - `status` — `'pending'` / `'running'` / `'complete'` / `'broken'`
   / `'canceled'`. Scheduler reads `'canceled'` as the signal to stop
   dispatching new jobs and terminate in-flight ones.
+- `has_coverage` — boolean; true when this run produced coverage
+  rows. Pre-filter for coverage queries without a join.
 
 ### services
 - `collector_id` → `collectors`
@@ -207,6 +209,26 @@ request / response and fire-and-forget notifications.
 The `launches(launcher_id, started)` index is the one the launcher's poll
 loop walks each tick: rows whose `started` is null and whose `launcher_id`
 matches.
+
+### coverage
+Per-coverage-run snapshot keyed by source file. See `ARCHITECTURE.md`
+§13.2 for the payload shape and the canonical queries.
+
+- `run_id` → `runs` (`ON DELETE CASCADE`).
+- `project_id` → `projects` (`ON DELETE CASCADE`) — denormalized for
+  the project+source_file lookup index.
+- `source_file` — covered file path.
+- `stamp` — hi-res timestamp.
+- `payload` — JSON. `subs`: map of sub-name → list of
+  `"test_file[#subtest]"` strings. `file_level`: tests that touched the
+  file but no specific sub. `meta`: producer info.
+- Unique on `(run_id, source_file)`.
+
+Most runs do not produce coverage. The harness writes coverage rows
+only when a coverage-producing plugin (`Test2::Plugin::Cover` /
+`Devel::Cover` driver / etc.) was active for the run. Each such run
+writes a *complete* snapshot so the run remains useful on its own
+even if other runs are pruned. No dedup across runs.
 
 ## Index strategy
 

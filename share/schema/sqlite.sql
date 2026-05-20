@@ -134,9 +134,10 @@ CREATE TABLE runs (
     result      INTEGER,
     passed      INTEGER NOT NULL DEFAULT 0,
     failed      INTEGER NOT NULL DEFAULT 0,
-    meta        TEXT,
-    status      TEXT    NOT NULL DEFAULT 'pending'
+    meta         TEXT,
+    status       TEXT    NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
+    has_coverage INTEGER NOT NULL DEFAULT 0,
     UNIQUE(run_uuid),
     UNIQUE(runner_id, run_ord)
 );
@@ -255,3 +256,16 @@ CREATE TABLE launches (
 
 CREATE INDEX launches_launcher_idx ON launches(launcher_id, started);
 CREATE INDEX launches_job_idx      ON launches(job_id);
+
+CREATE TABLE coverage (
+    coverage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    project_id  INTEGER NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    source_file TEXT    NOT NULL,
+    stamp       REAL    NOT NULL,
+    payload     TEXT    NOT NULL,
+    UNIQUE(run_id, source_file)
+);
+
+CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp DESC);
+CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);

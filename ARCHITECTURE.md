@@ -1318,6 +1318,9 @@ deduplicated-by-natural-key.
   `canceled` (user / tooling asked the scheduler to stop). The
   scheduler reads `status='canceled'` as the cue to terminate
   in-flight jobs and stop dispatching for this run.
+- `has_coverage` — boolean. True when at least one `coverage` row
+  is associated with this run. Lets queries pre-filter coverage-
+  producing runs cheaply without a join.
 
 **test_files**
 - `relative` — path relative to project root
@@ -1375,6 +1378,56 @@ deduplicated-by-natural-key.
 - `job_id` → `jobs`
 - `requested` — when the row was added by the scheduler
 - `started` — when the launcher started the process (nullable)
+
+**coverage** — per-coverage-run snapshot keyed by source file.
+Coverage data ships on events (the `coverage` facet) when a
+producer plugin (`Test2::Plugin::Cover` or similar) is active.
+Most runs do NOT produce coverage; only designated runs (nightly,
+opt-in) do. Each such run writes a **complete** snapshot — one
+row per source file with coverage data. The full snapshot is
+deliberate: if every other run is pruned, this run's rows still
+give a complete picture.
+- `run_id` → `runs` (`ON DELETE CASCADE`)
+- `project_id` → `projects` — denormalized for index efficiency
+- `source_file` — the covered file's path
+- `stamp` — hi-res timestamp; used for "latest coverage for X"
+  ordering and for "merge several runs, most-recent wins on
+  duplicates" queries
+- `payload` — JSON. Shape:
+  ```
+  {
+    "subs": {
+      "Foo::bar":  ["t/01-foo.t", "t/baz.t#nested-subtest"],
+      "Foo::frob": ["t/01-foo.t"]
+    },
+    "file_level": ["t/00-load.t"],
+    "meta": { "managers": ["Devel::Cover"] }
+  }
+  ```
+- Unique on `(run_id, source_file)`.
+
+The matching `runs.has_coverage` boolean lets callers find
+coverage-producing runs without a join.
+
+Typical queries:
+
+- **Tests for changed source `lib/Foo.pm` (latest):**
+  ```sql
+  SELECT payload FROM coverage
+  WHERE project_id = ? AND source_file = 'lib/Foo.pm'
+  ORDER BY stamp DESC LIMIT 1;
+  ```
+- **Merge several partial coverage runs (most-recent wins per
+  source file):**
+  ```sql
+  WITH ranked AS (
+    SELECT c.*, ROW_NUMBER() OVER (
+      PARTITION BY source_file ORDER BY stamp DESC
+    ) AS rn
+    FROM coverage c WHERE c.run_id IN (?, ?, ?)
+  )
+  SELECT source_file, payload FROM ranked WHERE rn = 1;
+  ```
 
 ### 13.3 Existing reference schema
 
