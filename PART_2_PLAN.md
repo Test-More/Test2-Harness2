@@ -136,6 +136,48 @@ so they do not get lost as the canonical docs evolve.
     that on separately (likely in the launcher, not the
     collector).
 
+- **VCS context auto-detection.** Stage 4 added a `vcs_info` table
+  (project_id, branch, revision, dirty) and a nullable
+  `runs.vcs_info_id`. `Test2::Harness2` does NOT detect VCS state;
+  whoever queues the run fills the row. Part 2's `yath run` /
+  `yath test` paths need a small helper that runs
+  `git rev-parse HEAD`, `git symbolic-ref HEAD`, and a clean-tree
+  check (`git status --porcelain`), looks up or creates the matching
+  `vcs_info` row, and stamps `runs.vcs_info_id` before queueing.
+  Equivalent helpers for `hg` / `fossil` welcome but not required;
+  callers can always supply the values themselves.
+
+- **Coverage queries on `yath`.** Stage 4 added the `coverage` table
+  (one row per `(coverage-producing-run, source_file)` with a JSON
+  payload of subs → tests). Two Part-2 surfaces consume it:
+  - `yath cover stats` — coverage summary: % files covered, %
+    subs covered, untested files / subs. Aggregates over the
+    latest coverage row per source file for a given
+    `(project, version|vcs_info)` filter, or merges several runs
+    "most recent wins per source" via the windowed query
+    documented in `ARCHITECTURE.md` §13.2.
+  - `yath cover select <changed-source-paths...>` — given the
+    set of changed files (or specific subs), return the list of
+    test files that exercise them. Looks up the latest coverage
+    row per source file, unions the test sets from the JSON
+    payload. `yath test --by-coverage` runs only those tests.
+  Fallback policy ("use latest coverage, unless it's broken, then
+  walk back N runs") is a Part-2 query-time concern; the storage
+  layer just keeps per-run rows.
+
+- **Coverage producer plugin.** The coverage data ships on events
+  via the `coverage` facet. Part-2 needs the plugin that hooks
+  `Devel::Cover` (or equivalent) into a running test and emits the
+  facet. Reference: `reference/legacy/lib/Test2/Harness/Log/CoverageAggregator.pm`
+  (aggregator only; producer side lived in legacy
+  `Test2::Plugin::Cover`-style plugins).
+
+- **Resources producer plugin + viewer.** Same shape as coverage:
+  a producer plugin emits `facet_data.resource` samples; the
+  recorder writes them to the `resources` table; a `yath` command
+  renders the timeseries. Part 2 owns both the plugin and the
+  viewer; Part 1 provides storage only.
+
 ---
 
 ## Open questions to revisit when speccing Part 2
