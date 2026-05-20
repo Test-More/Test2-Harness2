@@ -21,10 +21,10 @@ use Test2::Harness2::Util::IPC qw/
 use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Event;
 
-use constant DEFAULT_KILL_TIMEOUT   => 5;
-use constant DEFAULT_ORPHAN_TIMEOUT => 30;
-use constant DEFAULT_FLUSH_INTERVAL => 0.25;
-use constant SELECT_TIMEOUT         => 0.1;
+use constant DEFAULT_KILL_TIMEOUT      => 5;
+use constant DEFAULT_ORPHAN_TIMEOUT    => 30;
+use constant DEFAULT_FLUSH_INTERVAL    => 0.25;
+use constant FALLBACK_SELECT_TIMEOUT   => 1.0;
 
 my @FORWARDED_SIGNALS = qw/TERM INT QUIT/;
 my @IGNORED_SIGNALS   = qw/USR1 USR2 HUP PIPE/;
@@ -228,7 +228,7 @@ sub _run_parent {
         if $self->{+BUFFERING};
 
     while ($sel->count) {
-        my @ready = $sel->can_read(SELECT_TIMEOUT);
+        my @ready = $sel->can_read($self->_select_timeout);
 
         my $activity = 0;
         if (@ready) {
@@ -256,6 +256,33 @@ sub _run_parent {
     $self->_flush_buffer;
 
     return;
+}
+
+sub _select_timeout {
+    my $self = shift;
+
+    my @candidates;
+    push @candidates, $self->{+FLUSH_INTERVAL}
+        if $self->{+BUFFER} && $self->{+FLUSH_INTERVAL};
+
+    if (defined $self->{+WAIT_STATUS}) {
+        push @candidates, $self->{+ORPHAN_TIMEOUT} if $self->{+ORPHAN_TIMEOUT};
+    }
+    else {
+        if ($self->{+IS_TEST_JOB} && !$self->{+KILL_STATE}) {
+            push @candidates, $self->{+SILENCE_TIMEOUT}  if $self->{+SILENCE_TIMEOUT};
+            push @candidates, $self->{+LIFETIME_TIMEOUT} if $self->{+LIFETIME_TIMEOUT};
+        }
+        push @candidates, DEFAULT_KILL_TIMEOUT if $self->{+KILL_STATE};
+    }
+
+    return FALLBACK_SELECT_TIMEOUT unless @candidates;
+
+    my $min = $candidates[0];
+    for my $v (@candidates[1 .. $#candidates]) {
+        $min = $v if $v < $min;
+    }
+    return $min;
 }
 
 sub _periodic_flush {
