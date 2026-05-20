@@ -52,7 +52,6 @@ use Object::HashBase qw{
     -timed_out
     -kill_state
     -buffer
-    -child_guard
 };
 
 sub start {
@@ -102,20 +101,28 @@ sub run_collector {
         $out_r->close;
         $err_r->close;
 
-        # Guard makes any escape from this scope loud: an uncaught
-        # exception in the run sub, or any code path that reaches the
-        # bottom without calling exec, forces _exit(255) rather than
-        # letting the caller's code resume in a process it never
-        # expected to enter. Stashed on $self so the preload Long::Jump
-        # path (which needs to unwind to a setjump anchor in the
-        # parent preload service) can `dismiss` it before jumping.
-        $self->{+CHILD_GUARD} = Scope::Guard::guard(sub { POSIX::_exit(255) });
+        # Lexical guard. Any escape from this scope without explicit
+        # dismissal — uncaught exception, Long::Jump out of the run sub,
+        # plain fallthrough — drops the lexical's refcount, fires
+        # DESTROY, and forces _exit(255) rather than letting the
+        # caller's code resume in a process it never expected to enter.
+        # The guard MUST be lexical: stashing it on $self would keep
+        # the refcount alive until $self goes away (i.e. never, until
+        # process exit) and the guard would never fire.
+        #
+        # The guard is passed into _run_child so the preload Long::Jump
+        # path (which needs to unwind to a setjump anchor in the parent
+        # preload service) can call ->dismiss before jumping.
+        my $child_guard = Scope::Guard::guard(sub {
+            print STDERR "Child process escaped collector scope!\n";
+            POSIX::_exit(255);
+        });
 
-        my $ok  = eval { $self->_run_child($out_w, $err_w); 1 };
+        my $ok  = eval { $self->_run_child($child_guard,$out_w, $err_w); 1 };
         my $err = $@;
         warn "Collector child died: $err\n" unless $ok;
 
-        $self->{+CHILD_GUARD}->dismiss;
+        $child_guard->dismiss;
         POSIX::_exit($ok ? 0 : 255);
     }
 
@@ -171,7 +178,7 @@ sub _coerce_auditor {
 }
 
 sub _run_child {
-    my ($self, $out_w, $err_w) = @_;
+    my ($self, $guard, $out_w, $err_w) = @_;
 
     $out_w->blocking(1);
     $err_w->blocking(1);
@@ -190,7 +197,7 @@ sub _run_child {
         CORE::exec(@$exec) or die "exec(@$exec) failed: $!";
     }
 
-    $self->{+RUN}->($self->{+CHILD_GUARD});
+    $self->{+RUN}->($guard);
     return;
 }
 
