@@ -26,8 +26,11 @@ sub _run_driver {
         '--dir',      $dir,
         '--parser',   $opts{parser}   || 'Test2::Harness2::Collector::Parser::IOParser',
         '--recorder', $opts{recorder} || 'Test2::Harness2::Collector::Recorder::Files',
-        ($opts{auditor}        ? ('--auditor',        $opts{auditor})        : ()),
-        (defined $opts{orphan_timeout} ? ('--orphan-timeout', $opts{orphan_timeout}) : ()),
+        ($opts{auditor} ? ('--auditor', $opts{auditor}) : ()),
+        ($opts{type}    ? ('--type',    $opts{type})    : ()),
+        (defined $opts{orphan_timeout}   ? ('--orphan-timeout',   $opts{orphan_timeout})   : ()),
+        (defined $opts{silence_timeout}  ? ('--silence-timeout',  $opts{silence_timeout})  : ()),
+        (defined $opts{lifetime_timeout} ? ('--lifetime-timeout', $opts{lifetime_timeout}) : ()),
         '--',
         @{$opts{exec}},
     );
@@ -158,6 +161,91 @@ PERL
 
     my ($info) = grep { $_->{tag} eq 'ORPHAN' } @{ $orphan_event->{facet_data}{info} // [] };
     ok($info, 'ORPHAN info facet attached');
+};
+
+subtest silence_timeout_kills_quiet_test => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    # Test prints once, then sleeps long enough that the silence
+    # timeout fires before sleep returns.
+    my $script = 'print "alive\n"; STDOUT->flush; sleep 30; exit 0;';
+
+    my $started = time();
+    _run_driver(
+        dir             => $dir,
+        exec            => [$^X, '-e', $script],
+        silence_timeout => 1,
+    );
+    my $elapsed = time() - $started;
+
+    ok($elapsed < 10, "collector killed the test before sleep returned (elapsed ${elapsed}s)")
+        or diag "expected < 10s, got ${elapsed}s";
+
+    my ($exit_line) = _slurp_lines(File::Spec->catfile($dir, 'exit'));
+    my $wait_status = $exit_line + 0;
+    ok(($wait_status & 0x7f), "child wait-status carries a signal (raw=${wait_status})");
+
+    ok(-e File::Spec->catfile($dir, 'timed_out'), 'timed_out marker present');
+    my ($marker) = _slurp_lines(File::Spec->catfile($dir, 'timed_out'));
+    like($marker, qr/^silence /, 'marker identifies kind=silence');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+    my ($t_event) = grep { ($_->{facet_data}{harness_timeout} // {})->{kind} } @events;
+    ok($t_event, 'harness_timeout event recorded');
+    is($t_event->{facet_data}{harness_timeout}{kind}, 'silence', 'event carries kind=silence');
+
+    my @errors = map { @{ $_->{facet_data}{errors} // [] } } @events;
+    ok((grep { $_->{tag} eq 'TIMEOUT' && $_->{fail} } @errors), 'TIMEOUT fail-error attached');
+};
+
+subtest lifetime_timeout_kills_chatty_test => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    # Test that never goes silent: prints frequently for a long time.
+    # Silence timeout would not save us; only lifetime does.
+    my $script = 'use Time::HiRes qw/sleep/;'
+        . ' STDOUT->autoflush(1); for (1..100) { print "tick $_\n"; sleep 0.1 }';
+
+    my $started = time();
+    _run_driver(
+        dir              => $dir,
+        exec             => [$^X, '-e', $script],
+        lifetime_timeout => 1,
+    );
+    my $elapsed = time() - $started;
+
+    ok($elapsed < 8, "collector killed chatty test before its loop finished (elapsed ${elapsed}s)")
+        or diag "expected < 8s, got ${elapsed}s";
+
+    my ($exit_line) = _slurp_lines(File::Spec->catfile($dir, 'exit'));
+    my $wait_status = $exit_line + 0;
+    ok(($wait_status & 0x7f), "child wait-status carries a signal (raw=${wait_status})");
+
+    ok(-e File::Spec->catfile($dir, 'timed_out'), 'timed_out marker present');
+    my ($marker) = _slurp_lines(File::Spec->catfile($dir, 'timed_out'));
+    like($marker, qr/^lifetime /, 'marker identifies kind=lifetime');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+    my ($t_event) = grep { ($_->{facet_data}{harness_timeout} // {})->{kind} } @events;
+    is($t_event->{facet_data}{harness_timeout}{kind}, 'lifetime', 'event carries kind=lifetime');
+};
+
+subtest silence_timeout_ignored_for_services => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    # 'service' type — silence timeout must be ignored. Long sleep
+    # with no output: should NOT be killed.
+    my $script = 'print "starting\n"; STDOUT->flush; sleep 2; exit 0;';
+
+    my $status = _run_driver(
+        dir             => $dir,
+        type            => 'service',
+        silence_timeout => 1,
+        exec            => [$^X, '-e', $script],
+    );
+
+    is(($status >> 8), 0, 'service ran to completion despite silence');
+    ok(!-e File::Spec->catfile($dir, 'timed_out'), 'no timed_out marker for service');
 };
 
 subtest no_orphan_marker_on_clean_run => sub {

@@ -503,7 +503,53 @@ Two recorders ship in Part 1:
   - State transition rows in the appropriate table (`job_tries`
     state, `service_state` for services).
 
-### 5.8 Orphaned pipes and post-exit timeout
+### 5.8 Timeouts
+
+The collector enforces three independent timeouts. All three are
+configurable per `start()` call; passing `0` disables a given
+timeout. `silence_timeout` and `lifetime_timeout` apply to **test
+jobs only** (`type => 'test job'`); service collectors ignore them.
+
+**Silence timeout** (`silence_timeout`, default `0`). While the
+collected process is still running, the collector tracks the gap
+since the last byte arrived on either pipe. When that gap reaches
+the limit, the collector:
+
+1. Emits a synthetic event into the stream with the shape
+
+   ```
+   facet_data => {
+       harness_timeout => { kind => 'silence', limit_seconds => $N, delta_seconds => $d, stamp => $t },
+       errors          => [{ tag => 'TIMEOUT', fail => 1, from_harness => 1, details => '...' }],
+       info            => [{ tag => 'TIMEOUT', debug => 1, important => 1, details => '...' }],
+   }
+   ```
+
+   The `fail => 1` error makes the auditor turn the run into a
+   failure.
+
+2. Sends `SIGTERM` to the collected process. If the child has not
+   exited after the standard kill-grace
+   (`DEFAULT_KILL_TIMEOUT` = 5s), the collector sends `SIGKILL`.
+   The kill state machine runs *inside* the IO loop — the collector
+   keeps draining pipes while waiting for the child to die, so the
+   child's final output is not lost to a blocked pipe.
+
+3. Calls `record_exit($status, { timed_out => 'silence' })` so the
+   recorder can flag the condition independently of the synthetic
+   error event (a database consumer should be able to distinguish a
+   timeout-induced failure from an in-test failure without scanning
+   the event stream).
+
+**Lifetime timeout** (`lifetime_timeout`, default `0`). Same event
+and kill behavior as the silence timeout, but triggered by total
+runtime rather than idle time. Useful as an outer guard for tests
+that livelock while still printing output. The recorder receives
+`timed_out => 'lifetime'`. No previous version of yath had this;
+silence/post-exit have legacy analogues but a hard runtime cap is
+new.
+
+**Orphan timeout** (`orphan_timeout`, default `30`).
 
 The collector cannot rely on its child closing its pipes when it
 exits. A test (or a service) may fork further processes that inherit
@@ -554,6 +600,12 @@ but applies it from the runner against the test's process group
 rather than from a per-process collector, and uses it to kill the
 descendants rather than to drop a flag. The behavior here is more
 conservative: detect, annotate, move on.
+
+The silence timeout is the analogue of legacy `--event-timeout`
+(same `check_timeouts` code path). The lifetime timeout has no
+legacy analogue; it is new in `Test2::Harness2`. All three timeouts
+will be exposed via the future yath CLI and, eventually, via
+in-test directives — see `PART_2_PLAN.md`.
 
 ### 5.9 Signals and errors
 
@@ -1256,6 +1308,14 @@ deduplicated-by-natural-key.
   process but its pipes stayed open past the orphan-timeout (a
   descendant inherited the pipe and outlived the parent). Diagnostic
   only — does not change pass/fail. See §5.8.
+- `timed_out` — short string. `'silence'` when the collector killed
+  the test for going quiet past the silence-timeout; `'lifetime'`
+  when it killed the test for exceeding its maximum lifetime;
+  `NULL` / empty otherwise. The synthetic `TIMEOUT` error event in
+  the stream already drives pass/fail through the auditor — this
+  column exists so consumers can distinguish a timeout-induced
+  failure from an in-test failure without scanning the event
+  stream. See §5.8.
 
 **launchers**
 - `name`

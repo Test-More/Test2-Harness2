@@ -94,6 +94,13 @@ sub record_exit {
         close($ofh) or die "Failed to close $marker: $!";
     }
 
+    if ($info && $info->{timed_out}) {
+        my $marker = $self->_path('timed_out');
+        open(my $tfh, '>', $marker) or die "Failed to write $marker: $!";
+        print {$tfh} $info->{timed_out}, " ", time(), "\n";
+        close($tfh) or die "Failed to close $marker: $!";
+    }
+
     return;
 }
 
@@ -176,6 +183,13 @@ collector flagged the run as orphaned (collected process exited but
 its pipes stayed open past the orphan-timeout). Absent when the run
 was not orphaned.
 
+=item F<timed_out>
+
+Single-line C<"$kind $stamp"> (e.g. C<"silence 1715890432.12">).
+Written by L</record_exit> when the collector forcibly killed the
+collected test job because it hit the silence or lifetime timeout.
+Absent when no timeout fired.
+
 =item F<artifacts.jsonl>
 
 JSON-encoded artifact spec per line. Written only when the auditor or
@@ -242,6 +256,12 @@ If C<%info> has a true C<orphaned> flag, additionally writes an
 F<orphaned> marker file (single-line hi-res timestamp). The marker's
 presence is the on-disk equivalent of the C<orphaned> column on a
 database-backed recorder's job-try row.
+
+If C<%info> has a non-zero C<timed_out> value, additionally writes a
+F<timed_out> marker file holding C<"$kind $stamp"> (e.g.
+C<"silence 1715890432.12">). The marker's presence is the on-disk
+equivalent of the C<timed_out> column on a database-backed
+recorder's job-try row.
 
 =item $r->record_artifact(\%spec)
 

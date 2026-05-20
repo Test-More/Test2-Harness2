@@ -86,6 +86,17 @@ consumers (the row layer's job-try record, etc.) can flag the
 condition. The flag is informational; it does not turn a pass into
 a fail.
 
+=item timed_out => $kind
+
+C<'silence'> when the collector killed the test for going quiet past
+the silence-timeout; C<'lifetime'> when it killed the test for
+exceeding its maximum lifetime; C<0> / absent when no timeout fired.
+The recorder surfaces this to downstream consumers. Pass / fail of
+the run is already conveyed by the synthetic C<TIMEOUT> error event
+in the stream, which the auditor turns into a failure — this flag
+exists so queries against the recorded run can distinguish a
+timeout-induced failure from an in-test failure.
+
 =back
 
 =item $recorder->record_artifact(\%spec)

@@ -42,6 +42,9 @@ sub start {
         ? $args{orphan_timeout}
         : DEFAULT_ORPHAN_TIMEOUT;
 
+    my $silence_timeout  = $args{silence_timeout}  // 0;
+    my $lifetime_timeout = $args{lifetime_timeout} // 0;
+
     croak "exec or run must be supplied" unless $exec || $run;
     croak "exec and run are mutually exclusive" if $exec && $run;
 
@@ -69,14 +72,16 @@ sub start {
     my %parent_out;
     my $ok = eval {
         %parent_out = $class->_run_parent(
-            child_pid      => $child,
-            out_pipe       => $out_r,
-            err_pipe       => $err_r,
-            parser         => $parser,
-            auditor        => $auditor,
-            recorder       => $recorder,
-            type           => $type,
-            orphan_timeout => $orphan_timeout,
+            child_pid        => $child,
+            out_pipe         => $out_r,
+            err_pipe         => $err_r,
+            parser           => $parser,
+            auditor          => $auditor,
+            recorder         => $recorder,
+            type             => $type,
+            orphan_timeout   => $orphan_timeout,
+            silence_timeout  => $silence_timeout,
+            lifetime_timeout => $lifetime_timeout,
         );
         1;
     };
@@ -102,6 +107,7 @@ sub start {
         auditor     => $auditor,
         ok          => $ok,
         orphaned    => $parent_out{orphaned} ? 1 : 0,
+        timed_out   => $parent_out{timed_out} || 0,
     );
 
     return $ok ? ($status >> 8) : 255;
@@ -150,13 +156,18 @@ sub _run_child {
 sub _run_parent {
     my ($class, %args) = @_;
 
-    my $child          = $args{child_pid};
-    my $out            = $args{out_pipe};
-    my $err            = $args{err_pipe};
-    my $parser         = $args{parser};
-    my $auditor        = $args{auditor};
-    my $rec            = $args{recorder};
-    my $orphan_timeout = $args{orphan_timeout};
+    my $child            = $args{child_pid};
+    my $out              = $args{out_pipe};
+    my $err              = $args{err_pipe};
+    my $parser           = $args{parser};
+    my $auditor          = $args{auditor};
+    my $rec              = $args{recorder};
+    my $type             = $args{type};
+    my $orphan_timeout   = $args{orphan_timeout};
+    my $silence_timeout  = $args{silence_timeout};
+    my $lifetime_timeout = $args{lifetime_timeout};
+
+    my $is_test_job = (defined $type && $type eq 'test job') ? 1 : 0;
 
     apply_atomic_pipe_compression($out);
     apply_atomic_pipe_compression($err);
@@ -174,9 +185,12 @@ sub _run_parent {
     );
     my %by_fh = ($out->rh => $pipes{out}, $err->rh => $pipes{err});
 
+    my $start_time    = time;
+    my $last_activity = $start_time;
     my $wait_status;
-    my $last_activity = time;
-    my $orphaned      = 0;
+    my $orphaned    = 0;
+    my $timed_out   = 0;
+    my $kill_state;
 
     while ($sel->count) {
         my @ready = $sel->can_read(SELECT_TIMEOUT);
@@ -205,6 +219,40 @@ sub _run_parent {
             }
         }
 
+        if ($is_test_job && !defined $wait_status && !$kill_state) {
+            if ($silence_timeout && (time - $last_activity) >= $silence_timeout) {
+                $timed_out = 'silence';
+                $class->_emit_timeout_event(
+                    kind    => 'silence',
+                    limit   => $silence_timeout,
+                    delta   => time - $last_activity,
+                    auditor => $auditor,
+                    rec     => $rec,
+                );
+                kill 'TERM', $child;
+                $kill_state = {sig => 'TERM', stamp => time};
+            }
+            elsif ($lifetime_timeout && (time - $start_time) >= $lifetime_timeout) {
+                $timed_out = 'lifetime';
+                $class->_emit_timeout_event(
+                    kind    => 'lifetime',
+                    limit   => $lifetime_timeout,
+                    delta   => time - $start_time,
+                    auditor => $auditor,
+                    rec     => $rec,
+                );
+                kill 'TERM', $child;
+                $kill_state = {sig => 'TERM', stamp => time};
+            }
+        }
+
+        if ($kill_state && $kill_state->{sig} eq 'TERM' && !defined $wait_status) {
+            if (time - $kill_state->{stamp} >= DEFAULT_KILL_TIMEOUT) {
+                kill 'KILL', $child;
+                $kill_state = {sig => 'KILL', stamp => time};
+            }
+        }
+
         if (defined $wait_status && $orphan_timeout && $sel->count) {
             if (time - $last_activity >= $orphan_timeout) {
                 $orphaned = 1;
@@ -221,7 +269,11 @@ sub _run_parent {
 
     $class->_drain_pipes(\%pipes, $sel, $parser, $auditor, $rec);
 
-    return (wait_status => $wait_status, orphaned => $orphaned);
+    return (
+        wait_status => $wait_status,
+        orphaned    => $orphaned,
+        timed_out   => $timed_out,
+    );
 }
 
 sub _drain_pipes {
@@ -255,6 +307,51 @@ sub _drain_one_pipe {
         $count++;
         $class->_handle_pipe_record($stream, $type, $data, \%extra, $parser, $auditor, $rec);
     }
+}
+
+sub _emit_timeout_event {
+    my ($class, %args) = @_;
+
+    my $kind    = $args{kind};
+    my $limit   = $args{limit};
+    my $delta   = sprintf('%.2f', $args{delta});
+    my $auditor = $args{auditor};
+    my $rec     = $args{rec};
+
+    my %reasons = (
+        silence => "Test produced no output on STDOUT or STDERR for ${limit}s "
+            . "(waited ${delta}s); the collector terminated it. "
+            . "Increase or disable the silence timeout for slow tests.",
+        lifetime => "Test exceeded its maximum lifetime of ${limit}s "
+            . "(ran ${delta}s); the collector terminated it. "
+            . "Increase or disable the lifetime timeout for long-running tests.",
+    );
+
+    my $event = Test2::Harness2::Event->new(
+        facet_data => {
+            harness_timeout => {
+                kind          => $kind,
+                limit_seconds => $limit + 0,
+                delta_seconds => $args{delta} + 0,
+                stamp         => time,
+            },
+            errors => [{
+                tag          => 'TIMEOUT',
+                fail         => 1,
+                from_harness => 1,
+                details      => "A $kind timeout occurred after ${delta}s; the collector is killing the test.",
+            }],
+            info => [{
+                tag       => 'TIMEOUT',
+                debug     => 1,
+                important => 1,
+                details   => $reasons{$kind},
+            }],
+        },
+    );
+
+    $class->_dispatch_event($event, $auditor, $rec);
+    return;
 }
 
 sub _emit_orphan_event {
@@ -357,13 +454,20 @@ sub _safe_kill {
 
 sub _finalize {
     my ($class, %args) = @_;
-    my $rec      = $args{recorder};
-    my $auditor  = $args{auditor};
-    my $status   = $args{wait_status};
-    my $orphaned = $args{orphaned} ? 1 : 0;
+    my $rec       = $args{recorder};
+    my $auditor   = $args{auditor};
+    my $status    = $args{wait_status};
+    my $orphaned  = $args{orphaned} ? 1 : 0;
+    my $timed_out = $args{timed_out} || 0;
 
     if ($rec) {
-        my $ok = eval { $rec->record_exit($status, {orphaned => $orphaned}); 1 };
+        my $ok = eval {
+            $rec->record_exit($status, {
+                orphaned  => $orphaned,
+                timed_out => $timed_out,
+            });
+            1;
+        };
         warn "record_exit failed: $@\n" unless $ok;
     }
 
@@ -502,6 +606,29 @@ the collected process's wait status.
 
 Default: C<30>. C<0> disables the check (the collector then waits
 indefinitely for both pipes to hit EOF).
+
+=item silence_timeout => $seconds
+
+Test-job only. Maximum interval (in seconds) the collector will
+tolerate with no output on either pipe while the collected process
+is still running. When the gap reaches the limit, the collector
+emits a synthetic C<TIMEOUT> error event into the stream (which the
+auditor turns into a failure), sends C<SIGTERM> to the child, and
+escalates to C<SIGKILL> after the standard kill-grace if the child
+does not exit. Service collectors ignore the setting.
+
+Default: C<0> (disabled). Callers (the future yath CLI; per-test
+directives once a metadata layer exists) supply their own default.
+
+=item lifetime_timeout => $seconds
+
+Test-job only. Maximum total runtime the collector will allow,
+regardless of whether the test is still producing output. Same
+event / kill behavior as C<silence_timeout> once it fires. Service
+collectors ignore the setting.
+
+Default: C<0> (disabled). Useful as an outer guard for tests that
+livelock while still printing.
 
 =back
 

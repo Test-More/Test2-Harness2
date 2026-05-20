@@ -95,6 +95,28 @@ subtest record_exit_without_orphaned_skips_marker => sub {
     ok(!-e File::Spec->catfile($dir, 'orphaned'), 'no orphaned marker when flag absent / false');
 };
 
+subtest record_exit_timed_out_writes_marker => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $r   = Test2::Harness2::Collector::Recorder::Files->new(dir => $dir);
+
+    $r->record_exit(0, {timed_out => 'silence'});
+
+    ok(-e File::Spec->catfile($dir, 'timed_out'), 'timed_out marker written');
+    my ($line) = _read_lines(File::Spec->catfile($dir, 'timed_out'));
+    like($line, qr/^silence \d/, 'marker holds kind + timestamp');
+};
+
+subtest record_exit_without_timed_out_skips_marker => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $r   = Test2::Harness2::Collector::Recorder::Files->new(dir => $dir);
+
+    $r->record_exit(0);
+    $r->record_exit(0, {});
+    $r->record_exit(0, {timed_out => 0});
+
+    ok(!-e File::Spec->catfile($dir, 'timed_out'), 'no timed_out marker when flag absent / false');
+};
+
 subtest finalize_blocks_further_writes => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $r   = Test2::Harness2::Collector::Recorder::Files->new(dir => $dir);
