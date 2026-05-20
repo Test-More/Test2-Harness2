@@ -5,28 +5,34 @@ Companion to the per-flavor SQL files in this directory:
 - `sqlite.sql` — default backend; SQLite 3.45+.
 - `postgres.sql` — PostgreSQL; uses native `UUID` / `JSONB` / `BYTEA`.
 - `mysql.sql` — MySQL 8.0+ (older versions parse and ignore `CHECK`
-  constraints; application enforces the same invariants).
-- `mariadb.sql` — identical shape to `mysql.sql`.
-- `percona.sql` — identical shape to `mysql.sql`.
+  constraints; application enforces the same invariants). UUID
+  columns are `BINARY(16)` with a `CHAR(36)` shadow populated by
+  triggers.
+- `mariadb.sql` — MariaDB 10.7+. Uses the native `UUID` type (added
+  in 10.7, Feb 2022); no shadow column, no triggers.
+- `percona.sql` — Percona Server (MySQL fork). Same UUID shape as
+  `mysql.sql`.
 
 All flavors carry the same set of tables and columns; type and constraint
 syntax differ. A DDL change touches every flavor in the same commit.
 
 ## Type conventions
 
-| Concept    | sqlite                  | postgres                | mysql / mariadb / percona |
-|------------|-------------------------|-------------------------|---------------------------|
-| PK         | `INTEGER PRIMARY KEY AUTOINCREMENT` | `BIGSERIAL` | `BIGINT UNSIGNED AUTO_INCREMENT` |
-| UUID       | `TEXT COLLATE BINARY`   | `UUID`                  | `BINARY(16)` + `CHAR(36)` shadow populated by triggers |
-| JSON       | `TEXT`                  | `JSONB`                 | `JSON`                    |
-| Timestamp  | `REAL` (epoch seconds, hi-res) | `DOUBLE PRECISION` | `DOUBLE` |
-| Boolean    | `INTEGER` 0 / 1         | `BOOLEAN`               | `BOOLEAN`                 |
-| Binary     | `BLOB`                  | `BYTEA`                 | `LONGBLOB`                |
+| Concept    | sqlite                  | postgres                | mariadb         | mysql / percona |
+|------------|-------------------------|-------------------------|-----------------|-----------------|
+| PK         | `INTEGER PRIMARY KEY AUTOINCREMENT` | `BIGSERIAL` | `BIGINT UNSIGNED AUTO_INCREMENT` | `BIGINT UNSIGNED AUTO_INCREMENT` |
+| UUID       | `TEXT COLLATE BINARY`   | `UUID`                  | `UUID`          | `BINARY(16)` + `CHAR(36)` shadow populated by triggers |
+| JSON       | `TEXT`                  | `JSONB`                 | `JSON`          | `JSON`          |
+| Timestamp  | `REAL` (epoch seconds, hi-res) | `DOUBLE PRECISION` | `DOUBLE`     | `DOUBLE`        |
+| Boolean    | `INTEGER` 0 / 1         | `BOOLEAN`               | `BOOLEAN`       | `BOOLEAN`       |
+| Binary     | `BLOB`                  | `BYTEA`                 | `LONGBLOB`      | `LONGBLOB`      |
 
 UUIDs are generated in Perl (v7) via `Test2::Util::UUID`. The database
-never generates them. On MySQL-family backends a shadow `<thing>_uuid_string`
-column is kept in sync by `BEFORE INSERT` / `BEFORE UPDATE` triggers so
-human-readable UUIDs are always available without an application write.
+never generates them. On MySQL and Percona a shadow
+`<thing>_uuid_string` column is kept in sync by `BEFORE INSERT` /
+`BEFORE UPDATE` triggers so human-readable UUIDs are always available
+without an application write. PostgreSQL and MariaDB use the native
+`UUID` type and need neither the shadow column nor the triggers.
 
 Timestamps store fractional seconds since the epoch — the value
 `Time::HiRes::time()` returns. No SQL defaults; the application stamps every
