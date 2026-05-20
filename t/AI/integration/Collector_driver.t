@@ -31,6 +31,8 @@ sub _run_driver {
         (defined $opts{orphan_timeout}   ? ('--orphan-timeout',   $opts{orphan_timeout})   : ()),
         (defined $opts{silence_timeout}  ? ('--silence-timeout',  $opts{silence_timeout})  : ()),
         (defined $opts{lifetime_timeout} ? ('--lifetime-timeout', $opts{lifetime_timeout}) : ()),
+        (defined $opts{buffering}        ? ($opts{buffering} ? '--buffering' : '--no-buffering') : ()),
+        (defined $opts{flush_interval}   ? ('--flush-interval',   $opts{flush_interval})   : ()),
         '--',
         @{$opts{exec}},
     );
@@ -283,6 +285,59 @@ subtest sync_pairs_stdout_event_with_stderr_marker => sub {
 
     my @assertions = grep { $_->{facet_data}{assert} } @events;
     ok(scalar(@assertions) >= 1, 'structured assertion captured');
+};
+
+subtest buffering_disabled_passes_through_immediately => sub {
+    my $dir    = tempdir(CLEANUP => 1);
+    my $status = _run_driver(
+        dir       => $dir,
+        buffering => 0,
+        exec      => [$^X, '-E', 'say "hello"; warn "bye\n"'],
+    );
+    is(($status >> 8), 0, 'collector clean exit');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+    my ($stdout) = grep { ($_->{facet_data}{from_stream}{source} // '') eq 'STDOUT' } @events;
+    my ($stderr) = grep { ($_->{facet_data}{from_stream}{source} // '') eq 'STDERR' } @events;
+    ok($stdout, 'STDOUT line dispatched in direct mode');
+    ok($stderr, 'STDERR line dispatched in direct mode');
+};
+
+subtest flush_interval_releases_long_paused_output => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    # Emit a structured event so saw_event flips, then go silent on
+    # structured events for ~2s while still printing raw STDERR
+    # diagnostics. With the periodic flush, those diag lines must
+    # reach the recorder before the next structured event.
+    my $script = <<'PERL';
+$ENV{T2_FORMATTER} = "Stream2";
+use Test2::Tools::Basic qw/ok done_testing/;
+STDOUT->autoflush(1); STDERR->autoflush(1);
+ok(1, "first");
+print STDERR "mid-pause-diag\n";
+sleep 2;
+ok(1, "second");
+done_testing();
+PERL
+
+    my $started = time();
+    my $status  = _run_driver(
+        dir            => $dir,
+        parser         => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor        => 'Test2::Harness2::Collector::Auditor::Test',
+        flush_interval => 0.25,
+        exec           => [$^X, '-Ilib', '-e', $script],
+    );
+    my $elapsed = time() - $started;
+    is(($status >> 8), 0, 'collector clean exit') or diag "elapsed ${elapsed}s";
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+    my ($diag) = grep {
+        my $info = $_->{facet_data}{info} // [];
+        grep { ($_->{details} // '') =~ /mid-pause-diag/ } @$info;
+    } @events;
+    ok($diag, 'paused STDERR diag reached the recorder via the periodic flush');
 };
 
 subtest no_orphan_marker_on_clean_run => sub {

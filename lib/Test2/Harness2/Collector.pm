@@ -23,6 +23,7 @@ use Test2::Harness2::Event;
 
 use constant DEFAULT_KILL_TIMEOUT   => 5;
 use constant DEFAULT_ORPHAN_TIMEOUT => 30;
+use constant DEFAULT_FLUSH_INTERVAL => 0.25;
 use constant SELECT_TIMEOUT         => 0.1;
 
 my @FORWARDED_SIGNALS = qw/TERM INT QUIT/;
@@ -38,6 +39,8 @@ use Object::HashBase qw{
     <orphan_timeout
     <silence_timeout
     <lifetime_timeout
+    <buffering
+    <flush_interval
     -is_test_job
     -child_pid
     -out_pipe
@@ -47,6 +50,7 @@ use Object::HashBase qw{
     -sel
     -start_time
     -last_activity
+    -last_flush
     -wait_status
     -orphaned
     -timed_out
@@ -72,6 +76,8 @@ sub init {
     $self->{+ORPHAN_TIMEOUT}   //= DEFAULT_ORPHAN_TIMEOUT;
     $self->{+SILENCE_TIMEOUT}  //= 0;
     $self->{+LIFETIME_TIMEOUT} //= 0;
+    $self->{+BUFFERING}        //= 1;
+    $self->{+FLUSH_INTERVAL}   //= DEFAULT_FLUSH_INTERVAL;
 
     $self->{+RECORDER} = $self->_coerce_object($self->{+RECORDER}, 'recorder');
     $self->{+PARSER}   = $self->_coerce_object($self->{+PARSER},   'parser');
@@ -106,7 +112,7 @@ sub run_collector {
             POSIX::_exit(255);
         });
 
-        my $ok  = eval { $self->_run_child($child_guard,$out_w, $err_w); 1 };
+        my $ok  = eval { $self->_run_child($child_guard, $out_w, $err_w); 1 };
         my $err = $@;
         warn "Collector child died: $err\n" unless $ok;
 
@@ -217,7 +223,9 @@ sub _run_parent {
 
     $self->{+START_TIME}    = time;
     $self->{+LAST_ACTIVITY} = $self->{+START_TIME};
-    $self->{+BUFFER}        = {seen => {}, saw_event => 0, stdout => [], stderr => []};
+    $self->{+LAST_FLUSH}    = $self->{+START_TIME};
+    $self->{+BUFFER}        = {seen => {}, saw_event => 0, stdout => [], stderr => []}
+        if $self->{+BUFFERING};
 
     while ($sel->count) {
         my @ready = $sel->can_read(SELECT_TIMEOUT);
@@ -236,6 +244,7 @@ sub _run_parent {
 
         $self->{+LAST_ACTIVITY} = time if $activity;
 
+        $self->_periodic_flush;
         $self->_poll_child;
         $self->_check_test_job_timeouts;
         $self->_escalate_kill;
@@ -246,6 +255,18 @@ sub _run_parent {
     $self->_drain_pipes;
     $self->_flush_buffer;
 
+    return;
+}
+
+sub _periodic_flush {
+    my $self = shift;
+
+    return unless $self->{+FLUSH_INTERVAL};
+    my $buf = $self->{+BUFFER} or return;
+    return if (time - $self->{+LAST_FLUSH}) < $self->{+FLUSH_INTERVAL};
+    return unless @{$buf->{stdout}} || @{$buf->{stderr}};
+
+    $self->_flush_buffer;
     return;
 }
 
@@ -451,6 +472,9 @@ sub _emit_orphan_event {
 sub _handle_pipe_record {
     my ($self, $stream, $type, $data, $extra) = @_;
 
+    return $self->_handle_direct($stream, $type, $data, $extra)
+        unless $self->{+BUFFER};
+
     my $buf   = $self->{+BUFFER};
     my $stamp = time;
 
@@ -496,6 +520,41 @@ sub _handle_pipe_record {
     return;
 }
 
+sub _handle_direct {
+    my ($self, $stream, $type, $data, $extra) = @_;
+
+    my $parser = $self->{+PARSER};
+
+    if ($type eq 'line') {
+        chomp $data;
+        my $event = $parser->parse_io(stream => $stream, line => $data);
+        $self->_dispatch_event($event) if $event;
+        return;
+    }
+
+    if ($type eq 'burst' || $type eq 'message') {
+        # Buffering disabled — stderr sync markers have no pairing
+        # role left, drop them.
+        return if $stream eq 'stderr';
+
+        my $decoded = eval { decode_json($data) };
+        unless ($decoded) {
+            warn "decode_json failed on $stream burst\n";
+            return;
+        }
+
+        my $event = $parser->parse_io(
+            stream => $stream,
+            event  => $decoded,
+            (defined $extra->{compressed} ? (compressed => $extra->{compressed}) : ()),
+        );
+        $self->_dispatch_event($event) if $event;
+        return;
+    }
+
+    return;
+}
+
 sub _flush_buffer {
     my ($self, %params) = @_;
 
@@ -529,6 +588,8 @@ sub _flush_buffer {
             }
         }
     }
+
+    $self->{+LAST_FLUSH} = time;
     return;
 }
 
@@ -562,19 +623,8 @@ sub _safe_kill {
     kill 'TERM', $child;
     my $deadline = time + DEFAULT_KILL_TIMEOUT;
     while (time < $deadline) {
-        my $done = waitpid($child, WNOHANG);
-        if ($done == $child) {
-            $self->{+WAIT_STATUS} //= $?;
-            return;
-        }
-        if ($done != 0) {
-            # -1: child already reaped or never existed. Either way we
-            # have nothing left to wait on. On Windows pseudo-process
-            # ids are negative, so a `> 0` check would miss a real
-            # reap there.
-            $self->{+WAIT_STATUS} //= 0;
-            return;
-        }
+        $self->_poll_child;
+        return if defined $self->{+WAIT_STATUS};
         sleep 0.05;
     }
     kill 'KILL', $child;
@@ -784,6 +834,32 @@ collectors ignore the setting.
 
 Default: C<0> (disabled). Useful as an outer guard for tests that
 livelock while still printing.
+
+=item buffering => $bool
+
+When true (the default), the collector buffers per-stream entries
+and uses the STDOUT-event / STDERR-sync-marker pairing described in
+C<ARCHITECTURE.md> §5.3 to keep raw STDOUT / STDERR output ordered
+correctly against the structured events that bracket it. When
+false, every record dispatches immediately; STDERR sync markers are
+dropped (they have no pairing role left), and raw output appears in
+strict pipe-arrival order with no cross-pipe re-ordering. Disable
+when the consumer cares more about live-tail latency than about
+interleaving consistency.
+
+Default: C<1> (buffering on).
+
+=item flush_interval => $seconds
+
+Maximum time the collector will hold buffered records before
+forcing a flush, even when no event-pair has arrived to trigger a
+natural sync flush. Prevents raw output from being hidden during
+long pauses between structured events (a test that prints raw
+diagnostics for a long time between assertions, etc.). Ignored when
+C<buffering> is false.
+
+Default: C<0.25> (250 ms). C<0> disables the periodic flush;
+buffered records then wait indefinitely for an event-pair.
 
 =back
 

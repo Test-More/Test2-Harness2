@@ -377,7 +377,15 @@ On the same pipe both:
 STDOUT bursts are paired with a small **sync record** on STDERR
 (also via `write_message`). The collector uses the sync record to
 keep interleaved raw STDOUT / STDERR output ordered correctly
-against the events that bracket it.
+against the events that bracket it. Buffering is configurable per
+`start()` call (`buffering => 0` disables it for live-tail-priority
+callers, in which case STDERR sync markers are dropped and raw
+output is dispatched in strict pipe-arrival order). A
+`flush_interval` (default `0.25s`, `0` disables) caps how long
+buffered records may sit waiting for an event-pair: when the
+interval elapses with items pending, the collector force-flushes
+so a long quiet stretch between structured events does not hide
+raw output indefinitely.
 
 There is **no cross-kind FIFO guarantee** between a raw `print` and
 a `write_message` on the same fd from the same producer (a known
