@@ -1321,6 +1321,9 @@ deduplicated-by-natural-key.
 - `has_coverage` — boolean. True when at least one `coverage` row
   is associated with this run. Lets queries pre-filter coverage-
   producing runs cheaply without a join.
+- `has_resources` — boolean. True when at least one `resources` row
+  is associated with this run. Same role as `has_coverage` for the
+  resources stream.
 
 **test_files**
 - `relative` — path relative to project root
@@ -1427,6 +1430,33 @@ Typical queries:
     FROM coverage c WHERE c.run_id IN (?, ?, ?)
   )
   SELECT source_file, payload FROM ranked WHERE rn = 1;
+  ```
+
+**resources** — per-sample telemetry rows. Resource events ship on
+the event stream (`facet_data.resource`) when a producer plugin
+(CPU sampler, memory sampler, custom resource) is active. Most
+runs do not produce resources; runs that do write one row per
+sample.
+- `run_id` → `runs` (`ON DELETE CASCADE`)
+- `type` — short identifier (`'cpu'`, `'memory'`, custom names).
+- `stamp` — hi-res timestamp of the sample.
+- `payload` — JSON; producer-defined shape.
+- Indexed by `(run_id, type, stamp)` so reads of a single
+  timeseries (one resource type within one run) are sequential.
+
+The matching `runs.has_resources` boolean lets callers find
+resource-producing runs without a join.
+
+Typical queries:
+
+- **CPU timeline for a run:**
+  ```sql
+  SELECT stamp, payload FROM resources
+  WHERE run_id = ? AND type = 'cpu' ORDER BY stamp;
+  ```
+- **All resource types present in a run:**
+  ```sql
+  SELECT DISTINCT type FROM resources WHERE run_id = ?;
   ```
 
 ### 13.3 Existing reference schema

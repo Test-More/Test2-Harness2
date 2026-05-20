@@ -148,6 +148,7 @@ CREATE TABLE runs (
     status            VARCHAR(32) NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     has_coverage      BOOLEAN NOT NULL DEFAULT FALSE,
+    has_resources     BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE KEY runs_uuid_unique (run_uuid),
     UNIQUE KEY runs_runner_ord_unique (runner_id, run_ord),
     CONSTRAINT runs_runner_fk  FOREIGN KEY (runner_id)  REFERENCES runners(runner_id)  ON DELETE CASCADE,
@@ -302,3 +303,14 @@ CREATE TABLE coverage (
 
 CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp);
 CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);
+
+CREATE TABLE resources (
+    resource_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    run_id      BIGINT UNSIGNED NOT NULL,
+    type        VARCHAR(64) NOT NULL,
+    stamp       DOUBLE NOT NULL,
+    payload     JSON NOT NULL,
+    CONSTRAINT resources_run_fk FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX resources_run_type_stamp_idx ON resources(run_id, type, stamp);

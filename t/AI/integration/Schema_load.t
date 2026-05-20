@@ -14,7 +14,7 @@ my @EXPECTED_TABLES = qw/
     runs services service_state requests
     test_files jobs job_tries
     launchers launches
-    coverage
+    coverage resources
 /;
 
 sub _load_schema {

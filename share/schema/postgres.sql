@@ -121,10 +121,11 @@ CREATE TABLE runs (
     result      BOOLEAN,
     passed      BIGINT           NOT NULL DEFAULT 0,
     failed      BIGINT           NOT NULL DEFAULT 0,
-    meta         JSONB,
-    status       TEXT             NOT NULL DEFAULT 'pending'
+    meta          JSONB,
+    status        TEXT             NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
-    has_coverage BOOLEAN          NOT NULL DEFAULT FALSE,
+    has_coverage  BOOLEAN          NOT NULL DEFAULT FALSE,
+    has_resources BOOLEAN          NOT NULL DEFAULT FALSE,
     UNIQUE(run_uuid),
     UNIQUE(runner_id, run_ord)
 );
@@ -256,3 +257,13 @@ CREATE TABLE coverage (
 
 CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp DESC);
 CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);
+
+CREATE TABLE resources (
+    resource_id BIGSERIAL        PRIMARY KEY,
+    run_id      BIGINT           NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    type        TEXT             NOT NULL,
+    stamp       DOUBLE PRECISION NOT NULL,
+    payload     JSONB            NOT NULL
+);
+
+CREATE INDEX resources_run_type_stamp_idx ON resources(run_id, type, stamp);

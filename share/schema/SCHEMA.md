@@ -133,6 +133,8 @@ never both.
   dispatching new jobs and terminate in-flight ones.
 - `has_coverage` — boolean; true when this run produced coverage
   rows. Pre-filter for coverage queries without a join.
+- `has_resources` — boolean; same as has_coverage but for
+  resource-sample rows.
 
 ### services
 - `collector_id` → `collectors`
@@ -229,6 +231,18 @@ only when a coverage-producing plugin (`Test2::Plugin::Cover` /
 `Devel::Cover` driver / etc.) was active for the run. Each such run
 writes a *complete* snapshot so the run remains useful on its own
 even if other runs are pruned. No dedup across runs.
+
+### resources
+Per-sample telemetry rows. Resource events ship on the event stream
+(`facet_data.resource`) when a producer plugin (CPU sampler, memory
+sampler, custom resource) is active.
+
+- `run_id` → `runs` (`ON DELETE CASCADE`).
+- `type` — short identifier (`'cpu'`, `'memory'`, etc.).
+- `stamp` — hi-res timestamp.
+- `payload` — JSON; producer-defined shape.
+- Indexed by `(run_id, type, stamp)` for sequential single-timeseries
+  reads.
 
 ## Index strategy
 
