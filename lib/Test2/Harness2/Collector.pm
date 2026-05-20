@@ -67,8 +67,7 @@ sub init {
     croak "exec or run must be supplied" unless $self->{+EXEC} || $self->{+RUN};
     croak "exec and run are mutually exclusive" if $self->{+EXEC} && $self->{+RUN};
 
-    $self->{+ORPHAN_TIMEOUT} = DEFAULT_ORPHAN_TIMEOUT
-        unless exists $self->{+ORPHAN_TIMEOUT};
+    $self->{+ORPHAN_TIMEOUT}   //= DEFAULT_ORPHAN_TIMEOUT;
     $self->{+SILENCE_TIMEOUT}  //= 0;
     $self->{+LIFETIME_TIMEOUT} //= 0;
 
