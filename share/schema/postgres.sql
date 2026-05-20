@@ -41,6 +41,17 @@ CREATE TABLE versions (
 
 CREATE INDEX versions_project_idx ON versions(project_id);
 
+CREATE TABLE vcs_info (
+    vcs_info_id BIGSERIAL PRIMARY KEY,
+    project_id  BIGINT    NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    branch      TEXT      NOT NULL,
+    revision    TEXT      NOT NULL,
+    dirty       BOOLEAN   NOT NULL DEFAULT FALSE,
+    UNIQUE(project_id, branch, revision, dirty)
+);
+
+CREATE INDEX vcs_info_project_idx ON vcs_info(project_id);
+
 CREATE TABLE instances (
     instance_id     BIGSERIAL        PRIMARY KEY,
     instance_uuid   UUID             NOT NULL,
@@ -102,6 +113,7 @@ CREATE TABLE runs (
     runner_id   BIGINT           NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
     project_id  BIGINT           NOT NULL REFERENCES projects(project_id),
     version_id  BIGINT                    REFERENCES versions(version_id),
+    vcs_info_id BIGINT                    REFERENCES vcs_info(vcs_info_id),
     user_id     BIGINT           NOT NULL REFERENCES users(user_id),
     run_ord     BIGINT           NOT NULL,
     started     DOUBLE PRECISION,
@@ -117,7 +129,8 @@ CREATE TABLE runs (
 
 CREATE INDEX runs_runner_idx  ON runs(runner_id);
 CREATE INDEX runs_project_idx ON runs(project_id);
-CREATE INDEX runs_version_idx ON runs(version_id);
+CREATE INDEX runs_version_idx  ON runs(version_id);
+CREATE INDEX runs_vcs_info_idx ON runs(vcs_info_id);
 CREATE INDEX runs_user_idx    ON runs(user_id);
 CREATE INDEX runs_result_idx  ON runs(result);
 

@@ -9,7 +9,7 @@ $schema_dir = File::Spec->rel2abs($schema_dir);
 ok(-d $schema_dir, "schema dir exists: $schema_dir");
 
 my @EXPECTED_TABLES = qw/
-    users hosts projects versions
+    users hosts projects versions vcs_info
     instances runners collectors artifacts
     runs services service_state requests
     test_files jobs job_tries

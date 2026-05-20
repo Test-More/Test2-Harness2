@@ -55,8 +55,23 @@ keys reference these.
 
 ### versions
 - `project_id` → `projects`
-- `version` — free-form version string (git SHA, semver tag, etc.).
+- `version` — free-form released-version string (semver tag, tarball
+  version, etc.). Used for runs against shipped releases.
 - Unique on `(project_id, version)`.
+
+### vcs_info
+VCS context for runs done during development (no release tag). A run
+may reference a `version_id`, a `vcs_info_id`, both, or neither.
+
+- `project_id` → `projects`
+- `branch` — caller-supplied branch / ref label.
+- `revision` — caller-supplied sha / hash / rev string. VCS-agnostic.
+- `dirty` — boolean; true when the working tree differed from the
+  committed `revision` when the run was queued.
+- Unique on `(project_id, branch, revision, dirty)` — clean and
+  dirty rows for the same revision are distinct.
+- `Test2::Harness2` does not auto-detect VCS context; the queueing
+  tool (`yath`, CI, etc.) fills these fields.
 
 `users`, `hosts`, `projects`, and `versions` are deduplicated by natural key.
 
@@ -104,7 +119,8 @@ never both.
 - `run_uuid` — v7 UUID (unique).
 - `runner_id` → `runners`
 - `project_id` → `projects`
-- `version_id` → `versions` (nullable)
+- `version_id` → `versions` (nullable; release context)
+- `vcs_info_id` → `vcs_info` (nullable; dev context)
 - `user_id` → `users`
 - `run_ord` — integer ordering of runs under a runner. Unique on
   `(runner_id, run_ord)`.

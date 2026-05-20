@@ -54,6 +54,17 @@ CREATE TABLE versions (
 
 CREATE INDEX versions_project_idx ON versions(project_id);
 
+CREATE TABLE vcs_info (
+    vcs_info_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    branch      TEXT    NOT NULL,
+    revision    TEXT    NOT NULL,
+    dirty       INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(project_id, branch, revision, dirty)
+);
+
+CREATE INDEX vcs_info_project_idx ON vcs_info(project_id);
+
 CREATE TABLE instances (
     instance_id     INTEGER PRIMARY KEY AUTOINCREMENT,
     instance_uuid   TEXT    NOT NULL COLLATE BINARY,
@@ -115,6 +126,7 @@ CREATE TABLE runs (
     runner_id   INTEGER NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
     project_id  INTEGER NOT NULL REFERENCES projects(project_id),
     version_id  INTEGER          REFERENCES versions(version_id),
+    vcs_info_id INTEGER          REFERENCES vcs_info(vcs_info_id),
     user_id     INTEGER NOT NULL REFERENCES users(user_id),
     run_ord     INTEGER NOT NULL,
     started     REAL,
@@ -130,7 +142,8 @@ CREATE TABLE runs (
 
 CREATE INDEX runs_runner_idx  ON runs(runner_id);
 CREATE INDEX runs_project_idx ON runs(project_id);
-CREATE INDEX runs_version_idx ON runs(version_id);
+CREATE INDEX runs_version_idx  ON runs(version_id);
+CREATE INDEX runs_vcs_info_idx ON runs(vcs_info_id);
 CREATE INDEX runs_user_idx    ON runs(user_id);
 CREATE INDEX runs_result_idx  ON runs(result);
 

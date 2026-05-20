@@ -58,6 +58,19 @@ CREATE TABLE versions (
 
 CREATE INDEX versions_project_idx ON versions(project_id);
 
+CREATE TABLE vcs_info (
+    vcs_info_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    project_id  BIGINT UNSIGNED NOT NULL,
+    branch      VARCHAR(255) NOT NULL,
+    revision    VARCHAR(64)  NOT NULL,
+    dirty       BOOLEAN NOT NULL DEFAULT FALSE,
+    UNIQUE KEY vcs_info_unique (project_id, branch, revision, dirty),
+    CONSTRAINT vcs_info_project_fk FOREIGN KEY (project_id)
+        REFERENCES projects(project_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX vcs_info_project_idx ON vcs_info(project_id);
+
 CREATE TABLE instances (
     instance_id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     instance_uuid        BINARY(16) NOT NULL,
@@ -145,6 +158,7 @@ CREATE TABLE runs (
     runner_id         BIGINT UNSIGNED NOT NULL,
     project_id        BIGINT UNSIGNED NOT NULL,
     version_id        BIGINT UNSIGNED,
+    vcs_info_id       BIGINT UNSIGNED,
     user_id           BIGINT UNSIGNED NOT NULL,
     run_ord           BIGINT NOT NULL,
     started           DOUBLE,
@@ -156,15 +170,17 @@ CREATE TABLE runs (
     abort             BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE KEY runs_uuid_unique (run_uuid),
     UNIQUE KEY runs_runner_ord_unique (runner_id, run_ord),
-    CONSTRAINT runs_runner_fk  FOREIGN KEY (runner_id)  REFERENCES runners(runner_id)  ON DELETE CASCADE,
-    CONSTRAINT runs_project_fk FOREIGN KEY (project_id) REFERENCES projects(project_id),
-    CONSTRAINT runs_version_fk FOREIGN KEY (version_id) REFERENCES versions(version_id),
-    CONSTRAINT runs_user_fk    FOREIGN KEY (user_id)    REFERENCES users(user_id)
+    CONSTRAINT runs_runner_fk   FOREIGN KEY (runner_id)   REFERENCES runners(runner_id)   ON DELETE CASCADE,
+    CONSTRAINT runs_project_fk  FOREIGN KEY (project_id)  REFERENCES projects(project_id),
+    CONSTRAINT runs_version_fk  FOREIGN KEY (version_id)  REFERENCES versions(version_id),
+    CONSTRAINT runs_vcs_info_fk FOREIGN KEY (vcs_info_id) REFERENCES vcs_info(vcs_info_id),
+    CONSTRAINT runs_user_fk     FOREIGN KEY (user_id)     REFERENCES users(user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE INDEX runs_runner_idx  ON runs(runner_id);
-CREATE INDEX runs_project_idx ON runs(project_id);
-CREATE INDEX runs_version_idx ON runs(version_id);
+CREATE INDEX runs_runner_idx   ON runs(runner_id);
+CREATE INDEX runs_project_idx  ON runs(project_id);
+CREATE INDEX runs_version_idx  ON runs(version_id);
+CREATE INDEX runs_vcs_info_idx ON runs(vcs_info_id);
 CREATE INDEX runs_user_idx    ON runs(user_id);
 CREATE INDEX runs_result_idx  ON runs(result);
 

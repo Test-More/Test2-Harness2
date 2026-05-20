@@ -1225,6 +1225,23 @@ is exactly one entry per database file.
 - `version`
 - `project_id` → `projects`
 
+**vcs_info** — VCS context for runs done during development (no
+release tag). Optional companion to `versions`. A run may reference
+a `version_id` (release tarball), a `vcs_info_id` (dev work), both
+(a dev run that happens to land on a tagged commit), or neither (no
+version context supplied).
+- `project_id` → `projects`
+- `branch` — caller-supplied branch / ref label (free-form string).
+- `revision` — caller-supplied sha / hash / rev string. VCS-agnostic.
+- `dirty` — boolean. True when the working tree differed from the
+  committed `revision` at the moment the run was queued. The dirty
+  and clean rows for the same `(project, branch, revision)` are
+  distinct rows; clients querying "what's the latest clean coverage
+  for revision X?" can filter on `dirty = FALSE`.
+- The harness does not auto-detect this; the queueing tooling
+  (`yath` / CI / whatever) fills these fields. `Test2::Harness2`
+  treats them as opaque labels.
+
 **hosts**, **users**, **projects**, **versions** are
 deduplicated-by-natural-key.
 
@@ -1284,7 +1301,8 @@ deduplicated-by-natural-key.
 - `run_uuid`
 - `runner_id` → `runners`
 - `project_id` → `projects`
-- `version_id` → `versions`
+- `version_id` → `versions` (nullable; release context)
+- `vcs_info_id` → `vcs_info` (nullable; dev context)
 - `user_id` → `users`
 - `run_ord` — integer, unique per runner; orders runs.
 - `started` (nullable until scheduler claims the run)
