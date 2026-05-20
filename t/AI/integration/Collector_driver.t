@@ -89,19 +89,19 @@ subtest tap_parser_with_auditor_passing => sub {
     is($exit_line, '0');
 };
 
-subtest non_zero_exit_propagates => sub {
+subtest non_zero_exit_recorded => sub {
     my $dir    = tempdir(CLEANUP => 1);
     my $status = _run_driver(
         dir  => $dir,
         exec => [$^X, '-e', 'exit 3'],
     );
-    is(($status >> 8), 3, 'collector mirrors child exit=3');
+    is(($status >> 8), 0, 'collector exits 0 even when child exits non-zero');
 
     my ($exit_line) = _slurp_lines(File::Spec->catfile($dir, 'exit'));
     ok($exit_line, 'exit file populated');
 
     my $wait = $exit_line + 0;
-    is(($wait >> 8), 3, 'exit file holds wait-status with exit=3');
+    is(($wait >> 8), 3, 'exit file holds child wait-status with exit=3');
 };
 
 subtest failing_tap_test => sub {
@@ -116,7 +116,7 @@ subtest failing_tap_test => sub {
 '$ENV{T2_FORMATTER}="Stream2"; use Test2::Tools::Basic qw/ok done_testing/; ok(1, "pass"); ok(0, "fail"); done_testing();',
         ],
     );
-    isnt(($status >> 8), 0, 'failing test exits non-zero');
+    is(($status >> 8), 0, 'collector itself exits 0 regardless of test outcome');
 
     my @states = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'state.jsonl'));
     my @kinds  = map { $_->{state} } @states;
@@ -246,6 +246,43 @@ subtest silence_timeout_ignored_for_services => sub {
 
     is(($status >> 8), 0, 'service ran to completion despite silence');
     ok(!-e File::Spec->catfile($dir, 'timed_out'), 'no timed_out marker for service');
+};
+
+subtest sync_pairs_stdout_event_with_stderr_marker => sub {
+    my $dir    = tempdir(CLEANUP => 1);
+    my $status = _run_driver(
+        dir     => $dir,
+        parser  => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor => 'Test2::Harness2::Collector::Auditor::Test',
+        exec    => [
+            $^X, '-Ilib',
+            '-e',
+'$ENV{T2_FORMATTER}="Stream2"; STDOUT->autoflush(1); STDERR->autoflush(1);'
+                . ' print STDERR "diag-before\n";'
+                . ' use Test2::Tools::Basic qw/ok done_testing/;'
+                . ' ok(1, "structured"); print STDOUT "raw-after\n";'
+                . ' done_testing();',
+        ],
+    );
+    is(($status >> 8), 0, 'collector clean exit');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+
+    # event_id is stripped from recorded events (parse_io does that).
+    # What we verify here is that no event written to the stream is a
+    # bare {"event_id":...} sync marker — that confirms the collector
+    # consumed STDERR sync markers rather than passing them through as
+    # structured STDERR events.
+    my @stderr_sync_leakage = grep {
+        my $fd = $_->{facet_data} // {};
+        my @keys = keys %$fd;
+        @keys == 0;
+    } @events;
+    is(scalar(@stderr_sync_leakage), 0, 'no bare sync-marker events leaked into the stream')
+        or note(explain(\@events));
+
+    my @assertions = grep { $_->{facet_data}{assert} } @events;
+    ok(scalar(@assertions) >= 1, 'structured assertion captured');
 };
 
 subtest no_orphan_marker_on_clean_run => sub {

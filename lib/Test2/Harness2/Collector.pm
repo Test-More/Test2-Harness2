@@ -11,6 +11,7 @@ use IO::Handle;
 use IO::Select;
 use Time::HiRes qw/sleep time/;
 use Atomic::Pipe;
+use Scope::Guard ();
 
 use Test2::Harness2::Util::IPC qw/
     swap_io
@@ -50,6 +51,8 @@ use Object::HashBase qw{
     -orphaned
     -timed_out
     -kill_state
+    -buffer
+    -child_guard
 };
 
 sub start {
@@ -96,10 +99,24 @@ sub run_collector {
     my $child = fork // die "fork: $!";
 
     if ($child == 0) {
-        # If the child throws an exception we can break out of this conditional and cause the child to assume the role of collector. Protect against that. There is one valid case of breaking out of this conditional, that is the Long::Jump codepath that preloads will take, all others MUST NOT escape this conditional scope. Probably use both eval and Scope::Guard to protect it, but pass the guard object into the chld sub (when sub is used instead of exec) so that the logic there can dismiss the guard if it does decide to Long::Jump.
-        # Should probably also close the pipe readers in this process at this point.
-        $self->_run_child($out_w, $err_w);
-        exit 255;
+        $out_r->close;
+        $err_r->close;
+
+        # Guard makes any escape from this scope loud: an uncaught
+        # exception in the run sub, or any code path that reaches the
+        # bottom without calling exec, forces _exit(255) rather than
+        # letting the caller's code resume in a process it never
+        # expected to enter. Stashed on $self so the preload Long::Jump
+        # path (which needs to unwind to a setjump anchor in the
+        # parent preload service) can `dismiss` it before jumping.
+        $self->{+CHILD_GUARD} = Scope::Guard::guard(sub { POSIX::_exit(255) });
+
+        my $ok  = eval { $self->_run_child($out_w, $err_w); 1 };
+        my $err = $@;
+        warn "Collector child died: $err\n" unless $ok;
+
+        $self->{+CHILD_GUARD}->dismiss;
+        POSIX::_exit($ok ? 0 : 255);
     }
 
     $out_w->close;
@@ -131,10 +148,7 @@ sub run_collector {
 
     $self->_finalize($ok);
 
-    # Collector should return/exit 0 unless it had an internal error ($ok is
-    # false), we do not propogate the childs exit to our own. Internal error
-    # should mean exit 255, that is correct.
-    return $ok ? ($status >> 8) : 255;
+    return $ok ? 0 : 255;
 }
 
 sub _coerce_object {
@@ -148,8 +162,10 @@ sub _coerce_object {
 sub _coerce_auditor {
     my ($self, $thing, $recorder) = @_;
     return undef unless defined $thing;
-    # If this is already blessed we should still be sure it has the rigth recorder with a call to set_recorder or similar.
-    return $thing if blessed($thing);
+    if (blessed($thing)) {
+        $thing->set_recorder($recorder) if $recorder && $thing->can('set_recorder');
+        return $thing;
+    }
     return $thing->new(recorder => $recorder) if !ref($thing);
     croak "'auditor' must be a class name or an object, not a " . ref($thing);
 }
@@ -174,11 +190,8 @@ sub _run_child {
         CORE::exec(@$exec) or die "exec(@$exec) failed: $!";
     }
 
-    # For non-exec paths can we set the atomic compression here in case one of the run paths fails to do it? is it idempotent?
-
-    # Should pass through scope guard from earlier comment
-    $self->{+RUN}->();
-    exit 0;
+    $self->{+RUN}->($self->{+CHILD_GUARD});
+    return;
 }
 
 sub _run_parent {
@@ -209,8 +222,8 @@ sub _run_parent {
 
     $self->{+START_TIME}    = time;
     $self->{+LAST_ACTIVITY} = $self->{+START_TIME};
+    $self->{+BUFFER}        = {seen => {}, saw_event => 0, stdout => [], stderr => []};
 
-    # It does not look liek we currently honor the sync behavior in ARCHITECTURE.md §5.3, fix that.
     while ($sel->count) {
         my @ready = $sel->can_read(SELECT_TIMEOUT);
 
@@ -236,6 +249,7 @@ sub _run_parent {
     }
 
     $self->_drain_pipes;
+    $self->_flush_buffer;
 
     return;
 }
@@ -244,12 +258,19 @@ sub _poll_child {
     my $self = shift;
     return if defined $self->{+WAIT_STATUS};
 
-    # On windows PIDS can be negative, this needs correction.
-    my $r = waitpid($self->{+CHILD_PID}, WNOHANG);
-    if ($r > 0) {
+    my $child = $self->{+CHILD_PID};
+    my $r     = waitpid($child, WNOHANG);
+
+    return if $r == 0;
+
+    if ($r == $child) {
         $self->{+WAIT_STATUS} = $?;
     }
-    elsif ($r == -1) {
+    else {
+        # waitpid returned -1 (no such child) — already reaped or never
+        # existed. On Windows pseudo-process pids are negative so this
+        # branch is reached on both "child gone" and the pid==-1 corner
+        # case; treat the child as done either way.
         $self->{+WAIT_STATUS} = 0;
     }
     return;
@@ -394,6 +415,7 @@ sub _emit_timeout_event {
         },
     );
 
+    $self->_flush_buffer;
     $self->_dispatch_event($event);
     return;
 }
@@ -426,6 +448,7 @@ sub _emit_orphan_event {
         },
     );
 
+    $self->_flush_buffer;
     $self->_dispatch_event($event);
     return;
 }
@@ -433,31 +456,84 @@ sub _emit_orphan_event {
 sub _handle_pipe_record {
     my ($self, $stream, $type, $data, $extra) = @_;
 
-    my $parser = $self->{+PARSER};
+    my $buf   = $self->{+BUFFER};
+    my $stamp = time;
+
+    if ($type eq 'burst' || $type eq 'message') {
+        my $decoded = eval { decode_json($data) };
+        unless ($decoded) {
+            warn "decode_json failed on $stream burst\n";
+            return;
+        }
+
+        push @{$buf->{$stream}}, [$stamp, message => $decoded, $extra->{compressed}];
+
+        my $event_id = (ref($decoded) eq 'HASH') ? $decoded->{event_id} : undef;
+        return unless defined $event_id;
+
+        $buf->{saw_event} = 1;
+
+        # Each emission writes the full event on STDOUT and a tiny
+        # {"event_id":"..."} sync marker on STDERR. Once we have seen
+        # both halves of the pair, we can drain everything queued up to
+        # (and including) that event in stream-order: stderr first
+        # (raw STDERR lines, then the sync marker), then stdout (raw
+        # STDOUT lines, then the event itself). Cross-pipe FIFO is not
+        # otherwise guaranteed; the sync marker is what gives us a
+        # consistent flush point.
+        if (++$buf->{seen}{$event_id} >= 2) {
+            $self->_flush_buffer(to => $event_id);
+        }
+        return;
+    }
 
     if ($type eq 'line') {
         chomp $data;
-        my $event = $parser->parse_io(stream => $stream, line => $data) or return;
-        $self->_dispatch_event($event);
+        push @{$buf->{$stream}}, [$stamp, line => $data];
+
+        # Before any structured event has been seen there is nothing
+        # to pair raw lines against — flush immediately so they reach
+        # the recorder in arrival order.
+        $self->_flush_buffer unless $buf->{saw_event};
         return;
     }
 
-    if ($type eq 'burst' || $type eq 'message') {
-        return if $stream eq 'stderr';
+    return;
+}
 
-        my $decoded = eval { decode_json($data) };
-        return unless $decoded;
+sub _flush_buffer {
+    my ($self, %params) = @_;
 
-        my $event = $parser->parse_io(
-            stream => $stream,
-            event  => $decoded,
-            (defined $extra->{compressed} ? (compressed => $extra->{compressed}) : ()),
-        ) or return;
+    my $buf    = $self->{+BUFFER} or return;
+    my $parser = $self->{+PARSER};
+    my $to     = $params{to};
 
-        $self->_dispatch_event($event);
-        return;
+    for my $stream (qw/stderr stdout/) {
+        my $queue = $buf->{$stream};
+        while (my $entry = shift @$queue) {
+            my ($stamp, $kind, $val, $compressed) = @$entry;
+
+            if ($kind eq 'message') {
+                if ($stream eq 'stdout') {
+                    my $event = $parser->parse_io(
+                        stream => $stream,
+                        event  => $val,
+                        (defined $compressed ? (compressed => $compressed) : ()),
+                    );
+                    $self->_dispatch_event($event) if $event;
+                }
+
+                if (ref($val) eq 'HASH' && defined(my $eid = $val->{event_id})) {
+                    delete $buf->{seen}{$eid};
+                    last if defined($to) && $eid eq $to;
+                }
+            }
+            else {
+                my $event = $parser->parse_io(stream => $stream, line => $val);
+                $self->_dispatch_event($event) if $event;
+            }
+        }
     }
-
     return;
 }
 
@@ -492,8 +568,16 @@ sub _safe_kill {
     my $deadline = time + DEFAULT_KILL_TIMEOUT;
     while (time < $deadline) {
         my $done = waitpid($child, WNOHANG);
-        if ($done > 0) {
+        if ($done == $child) {
             $self->{+WAIT_STATUS} //= $?;
+            return;
+        }
+        if ($done != 0) {
+            # -1: child already reaped or never existed. Either way we
+            # have nothing left to wait on. On Windows pseudo-process
+            # ids are negative, so a `> 0` check would miss a real
+            # reap there.
+            $self->{+WAIT_STATUS} //= 0;
             return;
         }
         sleep 0.05;
@@ -574,8 +658,12 @@ subtest announcements and TAP recovery, and drives state transitions
 through the recorder. The recorder is the only object in the pipeline
 allowed to own external state (files or a database handle).
 
-The collector exits with the child's decoded exit code on success, or
-C<255> if it itself failed before the pipeline finished.
+The collector returns C<0> when the pipeline finished cleanly,
+regardless of the collected process's own exit status. The collected
+process's pass/fail signal lives in the event stream (auditor +
+recorder), not in the collector's return value. The collector returns
+C<255> only when it itself failed internally before the pipeline could
+finish.
 
 =head1 SYNOPSIS
 
@@ -607,8 +695,9 @@ the object themselves and drive it directly.
 =item $exit = Test2::Harness2::Collector->start(%args)
 
 Convenience constructor + driver: C<< $class->new(%args)->run_collector >>.
-Returns the decoded exit code of the collected process on success,
-C<255> on collector-side failure.
+Returns C<0> on a clean run (the collected process's own exit status
+is recorded into the event stream, not returned here) or C<255> on
+collector-side failure.
 
 =item $self = Test2::Harness2::Collector->new(%args)
 

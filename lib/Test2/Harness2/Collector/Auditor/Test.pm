@@ -12,7 +12,7 @@ use Test2::Harness2::Util::IPC qw/parse_exit/;
 use Test2::Harness2::Event;
 
 use Object::HashBase qw{
-    <recorder
+    recorder
     -assertion_count
     -exit
     -plan

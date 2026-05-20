@@ -588,10 +588,12 @@ quiet interval reaches the configured **orphan-timeout** (default
    orphan descendants — they are left to be cleaned up by whatever
    process group / launcher policy is in effect higher up.
 
-The orphan condition is a diagnostic, not a failure. The collector's
-own exit code still mirrors the collected process's decoded wait
-status. The orphan timeout is configurable per `start()` call
-(`orphan_timeout => $seconds`); `0` disables the check.
+The orphan condition is a diagnostic, not a failure. The collector
+itself returns `0` regardless — the collected process's pass/fail
+signal lives in the event stream (auditor + recorder), not in the
+collector's exit code. The orphan timeout is configurable per
+`start()` call (`orphan_timeout => $seconds`); `0` disables the
+check.
 
 The reference implementation (`reference/legacy`) has the conceptual
 analogue — `--post-exit-timeout`, see
@@ -627,11 +629,11 @@ Collectors work hard to keep going on errors:
   print the error to the *real* STDERR (saved before the redirect
   in §5.2) and insert a synthetic error event into the event
   stream via the recorder. The collector then continues.
-- Collectors exit 0 unless they fail internally before they have
-  done their job. If they catch an unrecoverable error in their
-  own bookkeeping they exit non-zero, mirroring exit codes per
-  `reference/old3` §20: 255 on collector-side failure, otherwise
-  the collected child's `wait` status.
+- Collectors exit `0` whenever the pipeline finished cleanly,
+  regardless of the collected process's own exit status — that
+  status is recorded into the event stream, not propagated to the
+  collector's exit code. Collectors exit `255` only when they
+  themselves fail internally before they could finish their job.
 
 ### 5.10 Development helper script
 
