@@ -101,18 +101,6 @@ sub run_collector {
         $out_r->close;
         $err_r->close;
 
-        # Lexical guard. Any escape from this scope without explicit
-        # dismissal — uncaught exception, Long::Jump out of the run sub,
-        # plain fallthrough — drops the lexical's refcount, fires
-        # DESTROY, and forces _exit(255) rather than letting the
-        # caller's code resume in a process it never expected to enter.
-        # The guard MUST be lexical: stashing it on $self would keep
-        # the refcount alive until $self goes away (i.e. never, until
-        # process exit) and the guard would never fire.
-        #
-        # The guard is passed into _run_child so the preload Long::Jump
-        # path (which needs to unwind to a setjump anchor in the parent
-        # preload service) can call ->dismiss before jumping.
         my $child_guard = Scope::Guard::guard(sub {
             print STDERR "Child process escaped collector scope!\n";
             POSIX::_exit(255);
