@@ -1171,7 +1171,11 @@ commit.
   where available; otherwise `BINARY(16)` plus a `uuid_string`
   shadow column populated automatically via a `BEFORE INSERT` /
   `BEFORE UPDATE` trigger (so the human-readable form is always
-  current without an application-level write).
+  current without an application-level write). Current mapping:
+  PostgreSQL and MariaDB use the native `UUID` type (MariaDB ≥
+  10.7, which is the supported floor); MySQL and Percona use the
+  `BINARY(16)` + shadow + trigger form; SQLite stores the canonical
+  36-char string directly.
 - **JSON.** Use `JSONB` or `JSON` columns where the flavor
   supports them. Fall back to `TEXT` storing JSON-encoded strings
   on flavors that don't.

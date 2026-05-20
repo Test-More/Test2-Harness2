@@ -1,29 +1,24 @@
 -- Test2::Harness2 MariaDB schema.
 --
--- Shaped identically to mysql.sql: MariaDB is wire-compatible enough
--- with MySQL that the same DDL works on both. Kept as a separate file
--- so a flavor-specific tweak in one does not silently affect the
--- other.
+-- Diverges from mysql.sql / percona.sql in one place: MariaDB has a
+-- native UUID type (since 10.7, Feb 2022) that stores a 128-bit value
+-- in a fixed 16-byte slot and renders it as the canonical 36-char
+-- string on read. MySQL and Percona never added the type, so they
+-- still use BINARY(16) + a shadow CHAR(36) maintained by triggers.
 --
 -- Conventions:
 --   * Surrogate PK on every table: `<table>_id BIGINT UNSIGNED
 --     NOT NULL AUTO_INCREMENT PRIMARY KEY`.
---   * UUIDs are stored as BINARY(16). Each UUID column has a shadow
---     `<thing>_uuid_string CHAR(36)` column populated automatically by
---     BEFORE INSERT / BEFORE UPDATE triggers, so the canonical
---     human-readable form is always current without an application-
---     level write. UUIDs are generated in Perl (v7) via
---     Test2::Util::UUID; never in the database.
+--   * UUID columns use the native UUID type. UUIDs are generated in
+--     Perl (v7) via Test2::Util::UUID; never in the database.
 --   * JSON columns use the native JSON type.
 --   * Timestamps are DOUBLE (fractional seconds since the epoch,
 --     matching Time::HiRes::time()).
 --   * Booleans use BOOLEAN (TINYINT(1) alias).
 --   * Binary blobs are LONGBLOB.
---   * MySQL 8.0.16+ honors CHECK constraints; older versions parse and
---     ignore them. Application code enforces the same invariants either
---     way.
---   * Engine: InnoDB. Charset: utf8mb4 / utf8mb4_bin (BINARY collation
---     on UUID-shadow columns; case-sensitive identifiers).
+--   * Engine: InnoDB. Charset: utf8mb4.
+--
+-- Minimum MariaDB version: 10.7.
 
 SET default_storage_engine = InnoDB;
 
@@ -60,15 +55,14 @@ CREATE TABLE versions (
 CREATE INDEX versions_project_idx ON versions(project_id);
 
 CREATE TABLE instances (
-    instance_id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    instance_uuid        BINARY(16) NOT NULL,
-    instance_uuid_string CHAR(36) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
-    host_id              BIGINT UNSIGNED NOT NULL,
-    user_id              BIGINT UNSIGNED NOT NULL,
-    started              DOUBLE NOT NULL,
-    finished             DOUBLE,
-    meta                 JSON,
-    finalized            DOUBLE,
+    instance_id   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    instance_uuid UUID NOT NULL,
+    host_id       BIGINT UNSIGNED NOT NULL,
+    user_id       BIGINT UNSIGNED NOT NULL,
+    started       DOUBLE NOT NULL,
+    finished      DOUBLE,
+    meta          JSON,
+    finalized     DOUBLE,
     UNIQUE KEY instances_uuid_unique (instance_uuid),
     CONSTRAINT instances_host_fk FOREIGN KEY (host_id) REFERENCES hosts(host_id),
     CONSTRAINT instances_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id)
@@ -76,22 +70,6 @@ CREATE TABLE instances (
 
 CREATE INDEX instances_host_idx ON instances(host_id);
 CREATE INDEX instances_user_idx ON instances(user_id);
-
-CREATE TRIGGER instances_uuid_string_bi BEFORE INSERT ON instances FOR EACH ROW
-    SET NEW.instance_uuid_string = LOWER(CONCAT(
-        HEX(SUBSTRING(NEW.instance_uuid, 1, 4)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 5, 2)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 7, 2)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 9, 2)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 11, 6))));
-
-CREATE TRIGGER instances_uuid_string_bu BEFORE UPDATE ON instances FOR EACH ROW
-    SET NEW.instance_uuid_string = LOWER(CONCAT(
-        HEX(SUBSTRING(NEW.instance_uuid, 1, 4)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 5, 2)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 7, 2)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 9, 2)), '-',
-        HEX(SUBSTRING(NEW.instance_uuid, 11, 6))));
 
 CREATE TABLE runners (
     runner_id   BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -141,8 +119,7 @@ CREATE INDEX artifacts_filename_idx  ON artifacts(filename);
 
 CREATE TABLE runs (
     run_id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    run_uuid          BINARY(16) NOT NULL,
-    run_uuid_string   CHAR(36) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    run_uuid          UUID NOT NULL,
     runner_id         BIGINT UNSIGNED NOT NULL,
     project_id        BIGINT UNSIGNED NOT NULL,
     version_id        BIGINT UNSIGNED,
@@ -168,22 +145,6 @@ CREATE INDEX runs_project_idx ON runs(project_id);
 CREATE INDEX runs_version_idx ON runs(version_id);
 CREATE INDEX runs_user_idx    ON runs(user_id);
 CREATE INDEX runs_result_idx  ON runs(result);
-
-CREATE TRIGGER runs_uuid_string_bi BEFORE INSERT ON runs FOR EACH ROW
-    SET NEW.run_uuid_string = LOWER(CONCAT(
-        HEX(SUBSTRING(NEW.run_uuid, 1, 4)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 5, 2)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 7, 2)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 9, 2)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 11, 6))));
-
-CREATE TRIGGER runs_uuid_string_bu BEFORE UPDATE ON runs FOR EACH ROW
-    SET NEW.run_uuid_string = LOWER(CONCAT(
-        HEX(SUBSTRING(NEW.run_uuid, 1, 4)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 5, 2)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 7, 2)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 9, 2)), '-',
-        HEX(SUBSTRING(NEW.run_uuid, 11, 6))));
 
 CREATE TABLE services (
     service_id      BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

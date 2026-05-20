@@ -82,6 +82,27 @@ sub _smoke_mysql_uuid_trigger {
     );
 }
 
+sub _smoke_mariadb_uuid_native {
+    my ($dbh) = @_;
+
+    $dbh->do("INSERT INTO hosts (name) VALUES ('h1')");
+    my ($host_id) = $dbh->selectrow_array("SELECT host_id FROM hosts WHERE name = 'h1'");
+
+    $dbh->do("INSERT INTO users (name, email) VALUES ('bob', 'bob\@example.com')");
+    my ($user_id) = $dbh->selectrow_array("SELECT user_id FROM users WHERE name = 'bob'");
+
+    my $uuid = '01020304-0506-7708-90ab-cdef12345678';
+    $dbh->do(
+        "INSERT INTO instances (instance_uuid, host_id, user_id, started) VALUES (?, ?, ?, ?)",
+        undef, $uuid, $host_id, $user_id, 12345.6,
+    );
+
+    my ($got) = $dbh->selectrow_array(
+        "SELECT instance_uuid FROM instances WHERE host_id = ?", undef, $host_id,
+    );
+    is($got, $uuid, 'MariaDB native UUID column round-trips canonical 36-char string');
+}
+
 subtest sqlite => sub {
     require DBIx::QuickDB;
     my $db  = DBIx::QuickDB->build_db('sqlite_smoke', {driver => 'SQLite'});
@@ -124,8 +145,8 @@ for my $flavor (
         _load_schema($dbh, File::Spec->catfile($schema_dir, $flavor->{file}));
         _verify_tables($dbh, $flavor->{list});
         _smoke_insert_users($dbh);
-        _smoke_mysql_uuid_trigger($dbh)
-            if $flavor->{driver} =~ /^(MySQL|MariaDB|Percona)$/;
+        _smoke_mysql_uuid_trigger($dbh)  if $flavor->{driver} =~ /^(MySQL|Percona)$/;
+        _smoke_mariadb_uuid_native($dbh) if $flavor->{driver} eq 'MariaDB';
 
         $dbh->disconnect;
     };
