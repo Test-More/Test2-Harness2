@@ -96,6 +96,8 @@ sub run_collector {
     my $child = fork // die "fork: $!";
 
     if ($child == 0) {
+        # If the child throws an exception we can break out of this conditional and cause the child to assume the role of collector. Protect against that. There is one valid case of breaking out of this conditional, that is the Long::Jump codepath that preloads will take, all others MUST NOT escape this conditional scope. Probably use both eval and Scope::Guard to protect it, but pass the guard object into the chld sub (when sub is used instead of exec) so that the logic there can dismiss the guard if it does decide to Long::Jump.
+        # Should probably also close the pipe readers in this process at this point.
         $self->_run_child($out_w, $err_w);
         exit 255;
     }
@@ -129,6 +131,9 @@ sub run_collector {
 
     $self->_finalize($ok);
 
+    # Collector should return/exit 0 unless it had an internal error ($ok is
+    # false), we do not propogate the childs exit to our own. Internal error
+    # should mean exit 255, that is correct.
     return $ok ? ($status >> 8) : 255;
 }
 
@@ -143,6 +148,7 @@ sub _coerce_object {
 sub _coerce_auditor {
     my ($self, $thing, $recorder) = @_;
     return undef unless defined $thing;
+    # If this is already blessed we should still be sure it has the rigth recorder with a call to set_recorder or similar.
     return $thing if blessed($thing);
     return $thing->new(recorder => $recorder) if !ref($thing);
     croak "'auditor' must be a class name or an object, not a " . ref($thing);
@@ -168,6 +174,9 @@ sub _run_child {
         CORE::exec(@$exec) or die "exec(@$exec) failed: $!";
     }
 
+    # For non-exec paths can we set the atomic compression here in case one of the run paths fails to do it? is it idempotent?
+
+    # Should pass through scope guard from earlier comment
     $self->{+RUN}->();
     exit 0;
 }
@@ -201,6 +210,7 @@ sub _run_parent {
     $self->{+START_TIME}    = time;
     $self->{+LAST_ACTIVITY} = $self->{+START_TIME};
 
+    # It does not look liek we currently honor the sync behavior in ARCHITECTURE.md §5.3, fix that.
     while ($sel->count) {
         my @ready = $sel->can_read(SELECT_TIMEOUT);
 
@@ -234,6 +244,7 @@ sub _poll_child {
     my $self = shift;
     return if defined $self->{+WAIT_STATUS};
 
+    # On windows PIDS can be negative, this needs correction.
     my $r = waitpid($self->{+CHILD_PID}, WNOHANG);
     if ($r > 0) {
         $self->{+WAIT_STATUS} = $?;
@@ -253,13 +264,15 @@ sub _check_test_job_timeouts {
 
     my $now = time;
 
-    if ($self->{+SILENCE_TIMEOUT} && ($now - $self->{+LAST_ACTIVITY}) >= $self->{+SILENCE_TIMEOUT}) {
-        $self->_trip_timeout(silence => $now - $self->{+LAST_ACTIVITY});
+    my $activity_delta = $now - $self->{+LAST_ACTIVITY};
+    if ($self->{+SILENCE_TIMEOUT} && $activity_delta >= $self->{+SILENCE_TIMEOUT}) {
+        $self->_trip_timeout(silence => $activity_delta);
         return;
     }
 
-    if ($self->{+LIFETIME_TIMEOUT} && ($now - $self->{+START_TIME}) >= $self->{+LIFETIME_TIMEOUT}) {
-        $self->_trip_timeout(lifetime => $now - $self->{+START_TIME});
+    my $lifetime_delta = $now - $self->{+START_TIME};
+    if ($self->{+LIFETIME_TIMEOUT} && $lifetime_delta >= $self->{+LIFETIME_TIMEOUT}) {
+        $self->_trip_timeout(lifetime => $lifetime_delta);
         return;
     }
 
