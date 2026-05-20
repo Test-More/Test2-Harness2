@@ -51,7 +51,7 @@ sub drain {
     while (1) {
         my ($type, $data) = $pipe->get_line_burst_or_data;
         last unless defined $type;
-        push @msgs, [$type, $data];
+        push @msgs => [$type, $data];
     }
     return @msgs;
 }

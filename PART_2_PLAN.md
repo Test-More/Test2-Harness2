@@ -106,6 +106,36 @@ so they do not get lost as the canonical docs evolve.
   `Util::FileMonitor`, and `Util::JSONL::Reader` for actual call
   sites and prune anything no consumer reaches.
 
+- **Collector timeout CLI flags + in-test directives.** Stage 3
+  added three timeouts to `Test2::Harness2::Collector->start` —
+  `orphan_timeout` (default `30s`), `silence_timeout` (default `0`,
+  off), and `lifetime_timeout` (default `0`, off). See
+  `ARCHITECTURE.md` §5.8. Part 2 work:
+
+  - Expose all three via CLI flags on `yath`. Legacy spells the
+    nearest analogues `--event-timeout` (matches silence) and
+    `--post-exit-timeout` (matches orphan); see
+    `reference/legacy/lib/App/Yath/Options/Runner.pm`. There is no
+    legacy analogue for `lifetime_timeout` — it is new.
+  - Decide Part-2 CLI defaults. Part 1 ships zero defaults for the
+    test-job timeouts on purpose: callers (and ultimately the CLI)
+    own the policy. Legacy used 60 / 15 for event / post-exit, and
+    those are a reasonable starting point.
+  - Wire per-test directive overrides. Legacy reads
+    `# HARNESS-NO-TIMEOUT`, `# HARNESS-TIMEOUT-EVENT N`, and
+    `# HARNESS-TIMEOUT-POSTEXIT N` from the test file header
+    (`reference/legacy/lib/Test2/Harness/TestFile.pm`). The Part-2
+    test-file metadata layer needs the equivalent — including a
+    new `HARNESS-TIMEOUT-LIFETIME N` directive — and must thread
+    those values into the collector call site so individual tests
+    can lengthen or disable any of the three timeouts.
+  - Note that legacy `--post-exit-timeout` kills the orphan
+    descendants from the runner; the Part-1 orphan timeout only
+    flags the condition and exits the collector. If Part 2 wants
+    the legacy "kill the orphan tree" behavior it has to layer
+    that on separately (likely in the launcher, not the
+    collector).
+
 ---
 
 ## Open questions to revisit when speccing Part 2

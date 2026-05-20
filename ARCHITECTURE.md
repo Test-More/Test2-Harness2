@@ -377,7 +377,15 @@ On the same pipe both:
 STDOUT bursts are paired with a small **sync record** on STDERR
 (also via `write_message`). The collector uses the sync record to
 keep interleaved raw STDOUT / STDERR output ordered correctly
-against the events that bracket it.
+against the events that bracket it. Buffering is configurable per
+`start()` call (`buffering => 0` disables it for live-tail-priority
+callers, in which case STDERR sync markers are dropped and raw
+output is dispatched in strict pipe-arrival order). A
+`flush_interval` (default `0.25s`, `0` disables) caps how long
+buffered records may sit waiting for an event-pair: when the
+interval elapses with items pending, the collector force-flushes
+so a long quiet stretch between structured events does not hide
+raw output indefinitely.
 
 There is **no cross-kind FIFO guarantee** between a raw `print` and
 a `write_message` on the same fd from the same producer (a known
@@ -503,7 +511,113 @@ Two recorders ship in Part 1:
   - State transition rows in the appropriate table (`job_tries`
     state, `service_state` for services).
 
-### 5.8 Signals and errors
+### 5.8 Timeouts
+
+The collector enforces three independent timeouts. All three are
+configurable per `start()` call; passing `0` disables a given
+timeout. `silence_timeout` and `lifetime_timeout` apply to **test
+jobs only** (`type => 'test job'`); service collectors ignore them.
+
+**Silence timeout** (`silence_timeout`, default `0`). While the
+collected process is still running, the collector tracks the gap
+since the last byte arrived on either pipe. When that gap reaches
+the limit, the collector:
+
+1. Emits a synthetic event into the stream with the shape
+
+   ```
+   facet_data => {
+       harness_timeout => { kind => 'silence', limit_seconds => $N, delta_seconds => $d, stamp => $t },
+       errors          => [{ tag => 'TIMEOUT', fail => 1, from_harness => 1, details => '...' }],
+       info            => [{ tag => 'TIMEOUT', debug => 1, important => 1, details => '...' }],
+   }
+   ```
+
+   The `fail => 1` error makes the auditor turn the run into a
+   failure.
+
+2. Sends `SIGTERM` to the collected process. If the child has not
+   exited after the standard kill-grace
+   (`DEFAULT_KILL_TIMEOUT` = 5s), the collector sends `SIGKILL`.
+   The kill state machine runs *inside* the IO loop — the collector
+   keeps draining pipes while waiting for the child to die, so the
+   child's final output is not lost to a blocked pipe.
+
+3. Calls `record_exit($status, { timed_out => 'silence' })` so the
+   recorder can flag the condition independently of the synthetic
+   error event (a database consumer should be able to distinguish a
+   timeout-induced failure from an in-test failure without scanning
+   the event stream).
+
+**Lifetime timeout** (`lifetime_timeout`, default `0`). Same event
+and kill behavior as the silence timeout, but triggered by total
+runtime rather than idle time. Useful as an outer guard for tests
+that livelock while still printing output. The recorder receives
+`timed_out => 'lifetime'`. No previous version of yath had this;
+silence/post-exit have legacy analogues but a hard runtime cap is
+new.
+
+**Orphan timeout** (`orphan_timeout`, default `30`).
+
+The collector cannot rely on its child closing its pipes when it
+exits. A test (or a service) may fork further processes that inherit
+STDOUT / STDERR and outlive the original child; those descendants
+keep the pipes open after the child has been reaped. If the collector
+waits for EOF in that case it waits forever.
+
+To handle this, the collector polls `waitpid($child, WNOHANG)` inside
+its select loop. Once the child has been reaped, the collector tracks
+how long it has been since any byte arrived on either pipe. If that
+quiet interval reaches the configured **orphan-timeout** (default
+`30s`), the collector:
+
+1. Emits a synthetic event into the stream:
+
+   ```
+   facet_data => {
+       harness_orphan => {
+           stamp         => <hi-res time>,
+           quiet_seconds => <timeout used>,
+           wait_status   => <reaped status>,
+       },
+       info => [{ tag => 'ORPHAN', debug => 1, details => '...' }],
+   }
+   ```
+
+   The event flows through the auditor (if present) and the recorder
+   like any other event.
+
+2. Calls `record_exit($status, { orphaned => 1 })` so the recorder
+   can surface the condition. The `Files` recorder writes an
+   `orphaned` marker file alongside `exit`; the DB recorder sets the
+   `job_tries.orphaned` boolean.
+
+3. Exits the IO loop. The collector itself **does not** kill the
+   orphan descendants — they are left to be cleaned up by whatever
+   process group / launcher policy is in effect higher up.
+
+The orphan condition is a diagnostic, not a failure. The collector
+itself returns `0` regardless — the collected process's pass/fail
+signal lives in the event stream (auditor + recorder), not in the
+collector's exit code. The orphan timeout is configurable per
+`start()` call (`orphan_timeout => $seconds`); `0` disables the
+check.
+
+The reference implementation (`reference/legacy`) has the conceptual
+analogue — `--post-exit-timeout`, see
+`reference/legacy/lib/Test2/Harness/Runner.pm:152` `check_timeouts` —
+but applies it from the runner against the test's process group
+rather than from a per-process collector, and uses it to kill the
+descendants rather than to drop a flag. The behavior here is more
+conservative: detect, annotate, move on.
+
+The silence timeout is the analogue of legacy `--event-timeout`
+(same `check_timeouts` code path). The lifetime timeout has no
+legacy analogue; it is new in `Test2::Harness2`. All three timeouts
+will be exposed via the future yath CLI and, eventually, via
+in-test directives — see `PART_2_PLAN.md`.
+
+### 5.9 Signals and errors
 
 Collectors install signal handlers for `SIGTERM`, `SIGINT`,
 `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGHUP`, `SIGPIPE`:
@@ -523,13 +637,13 @@ Collectors work hard to keep going on errors:
   print the error to the *real* STDERR (saved before the redirect
   in §5.2) and insert a synthetic error event into the event
   stream via the recorder. The collector then continues.
-- Collectors exit 0 unless they fail internally before they have
-  done their job. If they catch an unrecoverable error in their
-  own bookkeeping they exit non-zero, mirroring exit codes per
-  `reference/old3` §20: 255 on collector-side failure, otherwise
-  the collected child's `wait` status.
+- Collectors exit `0` whenever the pipeline finished cleanly,
+  regardless of the collected process's own exit status — that
+  status is recorded into the event stream, not propagated to the
+  collector's exit code. Collectors exit `255` only when they
+  themselves fail internally before they could finish their job.
 
-### 5.9 Development helper script
+### 5.10 Development helper script
 
 For early development (before the launcher subsystem is in place),
 ship a `t/scripts/collector` script that wraps the entry point:
@@ -1200,6 +1314,18 @@ deduplicated-by-natural-key.
 - `subtests` — top-level subtest count
 - `subtests_passed`
 - `subtests_failed`
+- `orphaned` — boolean. True when the collector reaped the collected
+  process but its pipes stayed open past the orphan-timeout (a
+  descendant inherited the pipe and outlived the parent). Diagnostic
+  only — does not change pass/fail. See §5.8.
+- `timed_out` — short string. `'silence'` when the collector killed
+  the test for going quiet past the silence-timeout; `'lifetime'`
+  when it killed the test for exceeding its maximum lifetime;
+  `NULL` / empty otherwise. The synthetic `TIMEOUT` error event in
+  the stream already drives pass/fail through the auditor — this
+  column exists so consumers can distinguish a timeout-induced
+  failure from an in-test failure without scanning the event
+  stream. See §5.8.
 
 **launchers**
 - `name`
