@@ -91,6 +91,136 @@ subtest tap_parser_with_auditor_passing => sub {
     is($exit_line, '0');
 };
 
+subtest nested_subtests_buffered => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    my $script = <<'PERL';
+$ENV{T2_FORMATTER} = "Stream2";
+use Test2::V0;
+subtest outer => sub {
+    ok(1, "outer-1");
+    subtest inner => sub {
+        ok(1, "inner-1");
+        ok(1, "inner-2");
+    };
+    ok(1, "outer-2");
+};
+ok(1, "top");
+done_testing;
+PERL
+
+    my $status = _run_driver(
+        dir     => $dir,
+        parser  => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor => 'Test2::Harness2::Collector::Auditor::Test',
+        exec    => [$^X, '-Ilib', '-e', $script],
+    );
+    is(($status >> 8), 0, 'collector clean exit');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+
+    my @parents = grep { $_->{facet_data}{parent} && $_->{facet_data}{parent}{children} } @events;
+    is(scalar(@parents), 2, 'two subtest parent events with children (outer + inner)')
+        or note(explain([map { $_->{facet_data}{assert} } @parents]));
+
+    my ($outer) = grep {
+        ($_->{facet_data}{assert} // {})->{details} && $_->{facet_data}{assert}{details} eq 'outer'
+    } @parents;
+    my ($inner) = grep {
+        ($_->{facet_data}{assert} // {})->{details} && $_->{facet_data}{assert}{details} eq 'inner'
+    } @parents;
+    ok($outer, 'outer subtest assertion present');
+    ok($inner, 'inner subtest assertion present');
+
+    my @states = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'state.jsonl'));
+    my @kinds  = map { $_->{state} } @states;
+    is($kinds[-1], 'completed', 'final state is completed');
+    ok(!(grep { $_ eq 'failing' } @kinds), 'no failing transitions for an all-pass nested run');
+};
+
+subtest nested_subtests_streamed => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    my $script = <<'PERL';
+$ENV{T2_FORMATTER} = "Stream2";
+use Test2::V0;
+use Test2::API qw/run_subtest/;
+run_subtest('outer', sub {
+    ok(1, "outer-1");
+    run_subtest('inner', sub {
+        ok(1, "inner-1");
+        ok(1, "inner-2");
+    }, { buffered => 0 });
+    ok(1, "outer-2");
+}, { buffered => 0 });
+ok(1, "top");
+done_testing;
+PERL
+
+    my $status = _run_driver(
+        dir     => $dir,
+        parser  => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor => 'Test2::Harness2::Collector::Auditor::Test',
+        exec    => [$^X, '-Ilib', '-e', $script],
+    );
+    is(($status >> 8), 0, 'collector clean exit');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+
+    # Auditor normalizes the streamed shape: subtest_end events get
+    # rewritten into the buffered shape (parent.children attached)
+    # before reaching the recorder. Same shape as the buffered test
+    # above is the contract.
+    my @parents = grep { $_->{facet_data}{parent} && $_->{facet_data}{parent}{children} } @events;
+    is(scalar(@parents), 2, 'streamed subtests normalized into parent+children shape')
+        or note(explain([map { $_->{facet_data}{assert} } @parents]));
+
+    my ($outer) = grep {
+        ($_->{facet_data}{assert} // {})->{details} && $_->{facet_data}{assert}{details} eq 'outer'
+    } @parents;
+    my ($inner) = grep {
+        ($_->{facet_data}{assert} // {})->{details} && $_->{facet_data}{assert}{details} eq 'inner'
+    } @parents;
+    ok($outer, 'outer subtest assertion present after normalization');
+    ok($inner, 'inner subtest assertion present after normalization');
+
+    my @states = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'state.jsonl'));
+    my @kinds  = map { $_->{state} } @states;
+    is($kinds[-1], 'completed', 'final state is completed');
+    ok(!(grep { $_ eq 'failing' } @kinds), 'no failing transitions for an all-pass streamed run');
+};
+
+subtest nested_subtests_failure_propagates => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    my $script = <<'PERL';
+$ENV{T2_FORMATTER} = "Stream2";
+use Test2::V0;
+subtest outer => sub {
+    ok(1, "outer-1");
+    subtest inner => sub {
+        ok(1, "inner-1");
+        ok(0, "inner-FAIL");
+    };
+    ok(1, "outer-2");
+};
+done_testing;
+PERL
+
+    my $status = _run_driver(
+        dir     => $dir,
+        parser  => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor => 'Test2::Harness2::Collector::Auditor::Test',
+        exec    => [$^X, '-Ilib', '-e', $script],
+    );
+    is(($status >> 8), 0, 'collector itself exits 0 regardless of nested failure');
+
+    my @states = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'state.jsonl'));
+    my @kinds  = map { $_->{state} } @states;
+    ok((grep { $_ eq 'failing' } @kinds), 'failing state recorded for nested-subtest failure')
+        or note(explain(\@kinds));
+};
+
 subtest non_zero_exit_recorded => sub {
     my $dir    = tempdir(CLEANUP => 1);
     my $status = _run_driver(
