@@ -1,0 +1,104 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+use FindBin ();
+use File::Spec ();
+use Getopt::Long qw/GetOptionsFromArray :config require_order/;
+
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'lib');
+
+use Test2::Harness2::Collector;
+
+my %opts = (
+    parser   => 'Test2::Harness2::Collector::Parser::IOParser',
+    recorder => 'Test2::Harness2::Collector::Recorder::Files',
+    auditor  => undef,
+    dir      => undef,
+    type     => 'test job',
+);
+
+my @argv = @ARGV;
+GetOptionsFromArray(
+    \@argv,
+    'parser=s'   => \$opts{parser},
+    'recorder=s' => \$opts{recorder},
+    'auditor=s'  => \$opts{auditor},
+    'dir=s'      => \$opts{dir},
+    'type=s'     => \$opts{type},
+    'help|h'     => sub { _usage(); exit 0 },
+) or do { _usage(); exit 2 };
+
+if (@argv && $argv[0] eq '--') { shift @argv }
+
+unless (@argv) {
+    print STDERR "No command specified.\n";
+    _usage();
+    exit 2;
+}
+
+my $parser   = _load_and_build($opts{parser});
+my $recorder = _build_recorder($opts{recorder}, $opts{dir});
+my $auditor;
+if ($opts{auditor}) {
+    _load_class($opts{auditor});
+    $auditor = $opts{auditor}->new(recorder => $recorder);
+}
+
+my $code = Test2::Harness2::Collector->start(
+    type     => $opts{type},
+    exec     => [@argv],
+    parser   => $parser,
+    recorder => $recorder,
+    auditor  => $auditor,
+);
+
+exit $code;
+
+sub _load_class {
+    my ($class) = @_;
+    (my $file = $class) =~ s{::}{/}g;
+    require "$file.pm";
+    return;
+}
+
+sub _load_and_build {
+    my ($class) = @_;
+    _load_class($class);
+    return $class->new;
+}
+
+sub _build_recorder {
+    my ($class, $dir) = @_;
+    _load_class($class);
+
+    if ($class eq 'Test2::Harness2::Collector::Recorder::Files') {
+        die "--dir is required for Recorder::Files\n" unless defined $dir;
+        return $class->new(dir => $dir);
+    }
+
+    return $class->new;
+}
+
+sub _usage {
+    print STDERR <<'USAGE';
+Usage: t/scripts/collector [options] -- <command> [args...]
+
+Options:
+    --parser   CLASS   Parser class (default: Parser::IOParser)
+    --recorder CLASS   Recorder class (default: Recorder::Files)
+    --auditor  CLASS   Auditor class (optional)
+    --dir      PATH    Output directory (required for Recorder::Files)
+    --type     STR     Collector type, e.g. 'test job' or 'service'
+                        (default: 'test job')
+    -h, --help         Show this message
+
+Example:
+    t/scripts/collector \\
+        --parser   Test2::Harness2::Collector::Parser::TAPParser \\
+        --auditor  Test2::Harness2::Collector::Auditor::Test \\
+        --dir      /tmp/collected/ \\
+        -- perl t/foo.t
+USAGE
+    return;
+}
