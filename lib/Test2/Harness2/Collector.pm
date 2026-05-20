@@ -27,26 +27,63 @@ use constant SELECT_TIMEOUT         => 0.1;
 my @FORWARDED_SIGNALS = qw/TERM INT QUIT/;
 my @IGNORED_SIGNALS   = qw/USR1 USR2 HUP PIPE/;
 
+use Object::HashBase qw{
+    <type
+    <exec
+    <run
+    <parser
+    <recorder
+    <auditor
+    <orphan_timeout
+    <silence_timeout
+    <lifetime_timeout
+    -is_test_job
+    -child_pid
+    -out_pipe
+    -err_pipe
+    -pipes
+    -by_fh
+    -sel
+    -start_time
+    -last_activity
+    -wait_status
+    -orphaned
+    -timed_out
+    -kill_state
+};
+
 sub start {
     my $class = shift;
-    my %args  = @_;
+    my $self  = $class->new(@_);
+    return $self->run_collector;
+}
 
-    my $type     = $args{type} // 'test job';
-    my $exec     = $args{exec};
-    my $run      = $args{run};
-    my $parser   = $class->_coerce_object($args{parser},   'parser');
-    my $recorder = $class->_coerce_object($args{recorder}, 'recorder');
-    my $auditor  = $class->_coerce_auditor($args{auditor}, $recorder);
+sub init {
+    my $self = shift;
 
-    my $orphan_timeout = exists $args{orphan_timeout}
-        ? $args{orphan_timeout}
-        : DEFAULT_ORPHAN_TIMEOUT;
+    $self->{+TYPE}        //= 'test job';
+    $self->{+IS_TEST_JOB} = ($self->{+TYPE} eq 'test job') ? 1 : 0;
 
-    my $silence_timeout  = $args{silence_timeout}  // 0;
-    my $lifetime_timeout = $args{lifetime_timeout} // 0;
+    croak "exec or run must be supplied" unless $self->{+EXEC} || $self->{+RUN};
+    croak "exec and run are mutually exclusive" if $self->{+EXEC} && $self->{+RUN};
 
-    croak "exec or run must be supplied" unless $exec || $run;
-    croak "exec and run are mutually exclusive" if $exec && $run;
+    $self->{+ORPHAN_TIMEOUT} = DEFAULT_ORPHAN_TIMEOUT
+        unless exists $self->{+ORPHAN_TIMEOUT};
+    $self->{+SILENCE_TIMEOUT}  //= 0;
+    $self->{+LIFETIME_TIMEOUT} //= 0;
+
+    $self->{+RECORDER} = $self->_coerce_object($self->{+RECORDER}, 'recorder');
+    $self->{+PARSER}   = $self->_coerce_object($self->{+PARSER},   'parser');
+    $self->{+AUDITOR}  = $self->_coerce_auditor($self->{+AUDITOR}, $self->{+RECORDER});
+
+    $self->{+ORPHANED}  = 0;
+    $self->{+TIMED_OUT} = 0;
+
+    return;
+}
+
+sub run_collector {
+    my $self = shift;
 
     my ($out_r, $out_w) = Atomic::Pipe->pair(
         mixed_data_mode => 1,
@@ -60,61 +97,44 @@ sub start {
     my $child = fork // die "fork: $!";
 
     if ($child == 0) {
-        $class->_run_child($out_w, $err_w, $type, $exec, $run);
+        $self->_run_child($out_w, $err_w);
         exit 255;
     }
 
     $out_w->close;
     $err_w->close;
 
-    $auditor->startup if $auditor;
+    $self->{+CHILD_PID} = $child;
+    $self->{+OUT_PIPE}  = $out_r;
+    $self->{+ERR_PIPE}  = $err_r;
 
-    my %parent_out;
-    my $ok = eval {
-        %parent_out = $class->_run_parent(
-            child_pid        => $child,
-            out_pipe         => $out_r,
-            err_pipe         => $err_r,
-            parser           => $parser,
-            auditor          => $auditor,
-            recorder         => $recorder,
-            type             => $type,
-            orphan_timeout   => $orphan_timeout,
-            silence_timeout  => $silence_timeout,
-            lifetime_timeout => $lifetime_timeout,
-        );
-        1;
-    };
+    $self->{+AUDITOR}->startup if $self->{+AUDITOR};
+
+    my $ok  = eval { $self->_run_parent; 1 };
     my $err = $@;
 
     if (!$ok) {
         warn "Collector failed: $err\n";
-        $class->_safe_kill($child);
+        $self->_safe_kill;
     }
 
     my $status;
-    if (defined $parent_out{wait_status}) {
-        $status = $parent_out{wait_status};
+    if (defined $self->{+WAIT_STATUS}) {
+        $status = $self->{+WAIT_STATUS};
     }
     else {
         waitpid($child, 0);
         $status = $?;
+        $self->{+WAIT_STATUS} = $status;
     }
 
-    $class->_finalize(
-        wait_status => $status,
-        recorder    => $recorder,
-        auditor     => $auditor,
-        ok          => $ok,
-        orphaned    => $parent_out{orphaned} ? 1 : 0,
-        timed_out   => $parent_out{timed_out} || 0,
-    );
+    $self->_finalize($ok);
 
     return $ok ? ($status >> 8) : 255;
 }
 
 sub _coerce_object {
-    my ($class, $thing, $label) = @_;
+    my ($self, $thing, $label) = @_;
     return undef unless defined $thing;
     return $thing if blessed($thing);
     return $thing->new if !ref($thing);
@@ -122,7 +142,7 @@ sub _coerce_object {
 }
 
 sub _coerce_auditor {
-    my ($class, $thing, $recorder) = @_;
+    my ($self, $thing, $recorder) = @_;
     return undef unless defined $thing;
     return $thing if blessed($thing);
     return $thing->new(recorder => $recorder) if !ref($thing);
@@ -130,7 +150,7 @@ sub _coerce_auditor {
 }
 
 sub _run_child {
-    my ($class, $out_w, $err_w, $type, $exec, $run) = @_;
+    my ($self, $out_w, $err_w) = @_;
 
     $out_w->blocking(1);
     $err_w->blocking(1);
@@ -143,54 +163,44 @@ sub _run_child {
 
     $ENV{T2_HARNESS2_PIPE_COUNT} = 2;
 
-    setpgid(0, 0) if $type eq 'test job';
+    setpgid(0, 0) if $self->{+IS_TEST_JOB};
 
-    if ($exec) {
-        exec(@$exec) or die "exec(@$exec) failed: $!";
+    if (my $exec = $self->{+EXEC}) {
+        CORE::exec(@$exec) or die "exec(@$exec) failed: $!";
     }
 
-    $run->();
+    $self->{+RUN}->();
     exit 0;
 }
 
 sub _run_parent {
-    my ($class, %args) = @_;
+    my $self = shift;
 
-    my $child            = $args{child_pid};
-    my $out              = $args{out_pipe};
-    my $err              = $args{err_pipe};
-    my $parser           = $args{parser};
-    my $auditor          = $args{auditor};
-    my $rec              = $args{recorder};
-    my $type             = $args{type};
-    my $orphan_timeout   = $args{orphan_timeout};
-    my $silence_timeout  = $args{silence_timeout};
-    my $lifetime_timeout = $args{lifetime_timeout};
-
-    my $is_test_job = (defined $type && $type eq 'test job') ? 1 : 0;
+    my $out = $self->{+OUT_PIPE};
+    my $err = $self->{+ERR_PIPE};
 
     apply_atomic_pipe_compression($out);
     apply_atomic_pipe_compression($err);
 
     local %SIG = %SIG;
-    $class->_install_signal_handlers($child);
+    $self->_install_signal_handlers;
 
     my $sel = IO::Select->new;
     $sel->add($out->rh);
     $sel->add($err->rh);
+    $self->{+SEL} = $sel;
 
-    my %pipes = (
+    $self->{+PIPES} = {
         out => {stream => 'stdout', pipe => $out, eof => 0},
         err => {stream => 'stderr', pipe => $err, eof => 0},
-    );
-    my %by_fh = ($out->rh => $pipes{out}, $err->rh => $pipes{err});
+    };
+    $self->{+BY_FH} = {
+        $out->rh => $self->{+PIPES}{out},
+        $err->rh => $self->{+PIPES}{err},
+    };
 
-    my $start_time    = time;
-    my $last_activity = $start_time;
-    my $wait_status;
-    my $orphaned    = 0;
-    my $timed_out   = 0;
-    my $kill_state;
+    $self->{+START_TIME}    = time;
+    $self->{+LAST_ACTIVITY} = $self->{+START_TIME};
 
     while ($sel->count) {
         my @ready = $sel->can_read(SELECT_TIMEOUT);
@@ -198,96 +208,120 @@ sub _run_parent {
         my $activity = 0;
         if (@ready) {
             for my $fh (@ready) {
-                my $slot = $by_fh{$fh} or next;
+                my $slot = $self->{+BY_FH}{$fh} or next;
                 $slot->{pipe}->fill_buffer;
-                $activity += $class->_drain_one_pipe($slot, $sel, $parser, $auditor, $rec);
+                $activity += $self->_drain_one_pipe($slot);
             }
         }
         else {
-            $activity += $class->_drain_pipes(\%pipes, $sel, $parser, $auditor, $rec);
+            $activity += $self->_drain_pipes;
         }
 
-        $last_activity = time if $activity;
+        $self->{+LAST_ACTIVITY} = time if $activity;
 
-        unless (defined $wait_status) {
-            my $r = waitpid($child, WNOHANG);
-            if ($r > 0) {
-                $wait_status = $?;
-            }
-            elsif ($r == -1) {
-                $wait_status = 0;
-            }
-        }
+        $self->_poll_child;
+        $self->_check_test_job_timeouts;
+        $self->_escalate_kill;
 
-        if ($is_test_job && !defined $wait_status && !$kill_state) {
-            if ($silence_timeout && (time - $last_activity) >= $silence_timeout) {
-                $timed_out = 'silence';
-                $class->_emit_timeout_event(
-                    kind    => 'silence',
-                    limit   => $silence_timeout,
-                    delta   => time - $last_activity,
-                    auditor => $auditor,
-                    rec     => $rec,
-                );
-                kill 'TERM', $child;
-                $kill_state = {sig => 'TERM', stamp => time};
-            }
-            elsif ($lifetime_timeout && (time - $start_time) >= $lifetime_timeout) {
-                $timed_out = 'lifetime';
-                $class->_emit_timeout_event(
-                    kind    => 'lifetime',
-                    limit   => $lifetime_timeout,
-                    delta   => time - $start_time,
-                    auditor => $auditor,
-                    rec     => $rec,
-                );
-                kill 'TERM', $child;
-                $kill_state = {sig => 'TERM', stamp => time};
-            }
-        }
-
-        if ($kill_state && $kill_state->{sig} eq 'TERM' && !defined $wait_status) {
-            if (time - $kill_state->{stamp} >= DEFAULT_KILL_TIMEOUT) {
-                kill 'KILL', $child;
-                $kill_state = {sig => 'KILL', stamp => time};
-            }
-        }
-
-        if (defined $wait_status && $orphan_timeout && $sel->count) {
-            if (time - $last_activity >= $orphan_timeout) {
-                $orphaned = 1;
-                $class->_emit_orphan_event(
-                    orphan_timeout => $orphan_timeout,
-                    wait_status    => $wait_status,
-                    auditor        => $auditor,
-                    rec            => $rec,
-                );
-                last;
-            }
-        }
+        last if $self->_check_orphan;
     }
 
-    $class->_drain_pipes(\%pipes, $sel, $parser, $auditor, $rec);
+    $self->_drain_pipes;
 
-    return (
-        wait_status => $wait_status,
-        orphaned    => $orphaned,
-        timed_out   => $timed_out,
+    return;
+}
+
+sub _poll_child {
+    my $self = shift;
+    return if defined $self->{+WAIT_STATUS};
+
+    my $r = waitpid($self->{+CHILD_PID}, WNOHANG);
+    if ($r > 0) {
+        $self->{+WAIT_STATUS} = $?;
+    }
+    elsif ($r == -1) {
+        $self->{+WAIT_STATUS} = 0;
+    }
+    return;
+}
+
+sub _check_test_job_timeouts {
+    my $self = shift;
+
+    return unless $self->{+IS_TEST_JOB};
+    return if defined $self->{+WAIT_STATUS};
+    return if $self->{+KILL_STATE};
+
+    my $now = time;
+
+    if ($self->{+SILENCE_TIMEOUT} && ($now - $self->{+LAST_ACTIVITY}) >= $self->{+SILENCE_TIMEOUT}) {
+        $self->_trip_timeout(silence => $now - $self->{+LAST_ACTIVITY});
+        return;
+    }
+
+    if ($self->{+LIFETIME_TIMEOUT} && ($now - $self->{+START_TIME}) >= $self->{+LIFETIME_TIMEOUT}) {
+        $self->_trip_timeout(lifetime => $now - $self->{+START_TIME});
+        return;
+    }
+
+    return;
+}
+
+sub _trip_timeout {
+    my ($self, $kind, $delta) = @_;
+
+    my $limit_attr = $kind eq 'silence' ? +SILENCE_TIMEOUT : +LIFETIME_TIMEOUT;
+
+    $self->{+TIMED_OUT} = $kind;
+    $self->_emit_timeout_event(
+        kind  => $kind,
+        limit => $self->{$limit_attr},
+        delta => $delta,
     );
+
+    kill 'TERM', $self->{+CHILD_PID};
+    $self->{+KILL_STATE} = {sig => 'TERM', stamp => time};
+    return;
+}
+
+sub _escalate_kill {
+    my $self = shift;
+
+    my $kill_state = $self->{+KILL_STATE} or return;
+    return if defined $self->{+WAIT_STATUS};
+    return unless $kill_state->{sig} eq 'TERM';
+    return unless (time - $kill_state->{stamp}) >= DEFAULT_KILL_TIMEOUT;
+
+    kill 'KILL', $self->{+CHILD_PID};
+    $self->{+KILL_STATE} = {sig => 'KILL', stamp => time};
+    return;
+}
+
+sub _check_orphan {
+    my $self = shift;
+
+    return 0 unless defined $self->{+WAIT_STATUS};
+    return 0 unless $self->{+ORPHAN_TIMEOUT};
+    return 0 unless $self->{+SEL}->count;
+    return 0 unless (time - $self->{+LAST_ACTIVITY}) >= $self->{+ORPHAN_TIMEOUT};
+
+    $self->{+ORPHANED} = 1;
+    $self->_emit_orphan_event;
+    return 1;
 }
 
 sub _drain_pipes {
-    my ($class, $pipes, $sel, $parser, $auditor, $rec) = @_;
+    my $self  = shift;
     my $count = 0;
-    for my $slot (values %$pipes) {
+    for my $slot (values %{$self->{+PIPES}}) {
         next if $slot->{eof};
-        $count += $class->_drain_one_pipe($slot, $sel, $parser, $auditor, $rec);
+        $count += $self->_drain_one_pipe($slot);
     }
     return $count;
 }
 
 sub _drain_one_pipe {
-    my ($class, $slot, $sel, $parser, $auditor, $rec) = @_;
+    my ($self, $slot) = @_;
 
     my $pipe   = $slot->{pipe};
     my $stream = $slot->{stream};
@@ -298,25 +332,23 @@ sub _drain_one_pipe {
 
         unless (defined $type) {
             if ($pipe->eof) {
-                $sel->remove($pipe->rh);
+                $self->{+SEL}->remove($pipe->rh);
                 $slot->{eof} = 1;
             }
             return $count;
         }
 
         $count++;
-        $class->_handle_pipe_record($stream, $type, $data, \%extra, $parser, $auditor, $rec);
+        $self->_handle_pipe_record($stream, $type, $data, \%extra);
     }
 }
 
 sub _emit_timeout_event {
-    my ($class, %args) = @_;
+    my ($self, %args) = @_;
 
-    my $kind    = $args{kind};
-    my $limit   = $args{limit};
-    my $delta   = sprintf('%.2f', $args{delta});
-    my $auditor = $args{auditor};
-    my $rec     = $args{rec};
+    my $kind  = $args{kind};
+    my $limit = $args{limit};
+    my $delta = sprintf('%.2f', $args{delta});
 
     my %reasons = (
         silence => "Test produced no output on STDOUT or STDERR for ${limit}s "
@@ -350,17 +382,15 @@ sub _emit_timeout_event {
         },
     );
 
-    $class->_dispatch_event($event, $auditor, $rec);
+    $self->_dispatch_event($event);
     return;
 }
 
 sub _emit_orphan_event {
-    my ($class, %args) = @_;
+    my $self = shift;
 
-    my $orphan_timeout = $args{orphan_timeout};
-    my $wait_status    = $args{wait_status};
-    my $auditor        = $args{auditor};
-    my $rec            = $args{rec};
+    my $orphan_timeout = $self->{+ORPHAN_TIMEOUT};
+    my $wait_status    = $self->{+WAIT_STATUS};
 
     my $details = sprintf(
         "Collected process exited (wait status %s) but pipes remained open; "
@@ -384,24 +414,25 @@ sub _emit_orphan_event {
         },
     );
 
-    $class->_dispatch_event($event, $auditor, $rec);
+    $self->_dispatch_event($event);
     return;
 }
 
 sub _handle_pipe_record {
-    my ($class, $stream, $type, $data, $extra, $parser, $auditor, $rec) = @_;
+    my ($self, $stream, $type, $data, $extra) = @_;
+
+    my $parser = $self->{+PARSER};
 
     if ($type eq 'line') {
         chomp $data;
         my $event = $parser->parse_io(stream => $stream, line => $data) or return;
-        $class->_dispatch_event($event, $auditor, $rec);
+        $self->_dispatch_event($event);
         return;
     }
 
     if ($type eq 'burst' || $type eq 'message') {
-        if ($stream eq 'stderr') {
-            return;
-        }
+        return if $stream eq 'stderr';
+
         my $decoded = eval { decode_json($data) };
         return unless $decoded;
 
@@ -411,7 +442,7 @@ sub _handle_pipe_record {
             (defined $extra->{compressed} ? (compressed => $extra->{compressed}) : ()),
         ) or return;
 
-        $class->_dispatch_event($event, $auditor, $rec);
+        $self->_dispatch_event($event);
         return;
     }
 
@@ -419,7 +450,10 @@ sub _handle_pipe_record {
 }
 
 sub _dispatch_event {
-    my ($class, $event, $auditor, $rec) = @_;
+    my ($self, $event) = @_;
+
+    my $auditor = $self->{+AUDITOR};
+    my $rec     = $self->{+RECORDER};
 
     my @events = $auditor ? $auditor->audit_event($event) : ($event);
     for my $e (@events) {
@@ -430,7 +464,8 @@ sub _dispatch_event {
 }
 
 sub _install_signal_handlers {
-    my ($class, $child) = @_;
+    my $self  = shift;
+    my $child = $self->{+CHILD_PID};
     $SIG{$_} = 'IGNORE' for @IGNORED_SIGNALS;
     for my $sig (@FORWARDED_SIGNALS) {
         $SIG{$sig} = sub { kill $sig, $child };
@@ -439,13 +474,16 @@ sub _install_signal_handlers {
 }
 
 sub _safe_kill {
-    my ($class, $child) = @_;
-    return unless $child;
+    my $self  = shift;
+    my $child = $self->{+CHILD_PID} or return;
     kill 'TERM', $child;
     my $deadline = time + DEFAULT_KILL_TIMEOUT;
     while (time < $deadline) {
         my $done = waitpid($child, WNOHANG);
-        return if $done;
+        if ($done > 0) {
+            $self->{+WAIT_STATUS} //= $?;
+            return;
+        }
         sleep 0.05;
     }
     kill 'KILL', $child;
@@ -453,12 +491,13 @@ sub _safe_kill {
 }
 
 sub _finalize {
-    my ($class, %args) = @_;
-    my $rec       = $args{recorder};
-    my $auditor   = $args{auditor};
-    my $status    = $args{wait_status};
-    my $orphaned  = $args{orphaned} ? 1 : 0;
-    my $timed_out = $args{timed_out} || 0;
+    my ($self, $ok) = @_;
+
+    my $rec       = $self->{+RECORDER};
+    my $auditor   = $self->{+AUDITOR};
+    my $status    = $self->{+WAIT_STATUS};
+    my $orphaned  = $self->{+ORPHANED}  ? 1 : 0;
+    my $timed_out = $self->{+TIMED_OUT} || 0;
 
     if ($rec) {
         my $ok = eval {
@@ -543,16 +582,36 @@ C<255> if it itself failed before the pipeline finished.
         recorder => $r,
     );
 
+The class is a normal L<Object::HashBase> object. C<start> is a thin
+convenience that constructs a collector via C<new> and then calls
+C<run_collector> on it. Callers that want to inspect the collector
+after the run (state flags, captured wait status, etc.) can build
+the object themselves and drive it directly.
+
 =head1 PUBLIC METHODS
 
 =over 4
 
 =item $exit = Test2::Harness2::Collector->start(%args)
 
-Fork once, run the requested command (or callback) in the child, and run
-the event pipeline in the collector parent until both pipes hit EOF and
-the child has been reaped. Returns the decoded exit code of the collected
-process on success, C<255> on collector-side failure.
+Convenience constructor + driver: C<< $class->new(%args)->run_collector >>.
+Returns the decoded exit code of the collected process on success,
+C<255> on collector-side failure.
+
+=item $self = Test2::Harness2::Collector->new(%args)
+
+Standard L<Object::HashBase> constructor. Validates C<exec> /
+C<run>, coerces class-name C<parser> / C<recorder> / C<auditor>
+arguments into instances, and applies attribute defaults. Does not
+fork; the child only forks on C<run_collector>.
+
+=item $exit = $self->run_collector
+
+Fork once, run the requested command (or callback) in the child, and
+run the event pipeline in the collector parent until both pipes hit
+EOF and the child has been reaped (or one of the configured timeouts
+fires). Returns the same exit code semantics as C<start>. May only
+be called once per collector instance.
 
 Named arguments:
 
@@ -638,7 +697,7 @@ livelock while still printing.
 
 =over 4
 
-=item $class->_run_child($out_w, $err_w, $type, $exec, $run)
+=item $self->_run_child($out_w, $err_w)
 
 Child-side bootstrap: replace STDOUT / STDERR with the mixed-mode pipe
 writers, set C<T2_HARNESS2_PIPE_COUNT=2> so
@@ -647,18 +706,22 @@ recognise they are inside a collector, place test-job collected
 processes in a fresh process group, and either C<exec> the requested
 command or invoke the callback.
 
-=item $class->_run_parent(%args)
+=item $self->_run_parent
 
 Parent-side IO loop: select on both pipe read ends, decode message
 bursts to events through the parser, optionally route through the
 auditor, write through the recorder. Continues until both pipes hit
-EOF.
+EOF, until one of the configured timeouts fires, or until the orphan
+watchdog gives up. Drives C<_poll_child>,
+C<_check_test_job_timeouts>, C<_escalate_kill>, and C<_check_orphan>
+once per iteration.
 
-=item $class->_finalize(%args)
+=item $self->_finalize($ok)
 
-Tail of the parent path: record the wait-status on the recorder,
-synthesize the C<harness_process_exit> event through the auditor so the
-auditor's final-state hash carries the exit code, run the auditor's
+Tail of the parent path: record the wait-status on the recorder
+along with the C<orphaned> / C<timed_out> flags, synthesize the
+C<harness_process_exit> event through the auditor so the auditor's
+final-state hash carries the exit code, run the auditor's
 C<shutdown> hook, and finalize the recorder.
 
 =back
