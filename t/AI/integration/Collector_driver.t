@@ -26,7 +26,8 @@ sub _run_driver {
         '--dir',      $dir,
         '--parser',   $opts{parser}   || 'Test2::Harness2::Collector::Parser::IOParser',
         '--recorder', $opts{recorder} || 'Test2::Harness2::Collector::Recorder::Files',
-        ($opts{auditor} ? ('--auditor', $opts{auditor}) : ()),
+        ($opts{auditor}        ? ('--auditor',        $opts{auditor})        : ()),
+        (defined $opts{orphan_timeout} ? ('--orphan-timeout', $opts{orphan_timeout}) : ()),
         '--',
         @{$opts{exec}},
     );
@@ -118,6 +119,56 @@ subtest failing_tap_test => sub {
     my @kinds  = map { $_->{state} } @states;
     ok((grep { $_ eq 'failing' } @kinds), 'failing state recorded')
         or note(explain(\@kinds));
+};
+
+subtest orphan_descendants_trigger_timeout => sub {
+    my $dir = tempdir(CLEANUP => 1);
+
+    # Parent exits immediately. Grandchild inherits STDOUT/STDERR and
+    # sleeps long enough that, with a tiny orphan_timeout, the collector
+    # must trip the watchdog rather than wait for EOF.
+    my $script = <<'PERL';
+my $pid = fork // die "fork: $!";
+if ($pid) {
+    exit 0;
+}
+sleep 5;
+exit 0;
+PERL
+
+    my $started = time();
+    my $status  = _run_driver(
+        dir            => $dir,
+        exec           => [$^X, '-e', $script],
+        orphan_timeout => 1,
+    );
+    my $elapsed = time() - $started;
+
+    is(($status >> 8), 0, 'collector mirrors parent exit=0');
+    ok($elapsed < 4, "collector returned before grandchild exited (elapsed ${elapsed}s)")
+        or diag "expected < 4s, got ${elapsed}s";
+
+    ok(-e File::Spec->catfile($dir, 'orphaned'),  'orphaned marker present');
+    ok(-e File::Spec->catfile($dir, 'finalized'), 'finalized marker present');
+
+    my @events = map { decode_json($_) } _slurp_lines(File::Spec->catfile($dir, 'events.jsonl'));
+    my ($orphan_event) = grep { $_->{facet_data}{harness_orphan} } @events;
+    ok($orphan_event, 'harness_orphan synthetic event recorded');
+    is($orphan_event->{facet_data}{harness_orphan}{quiet_seconds}, 1, 'event carries the timeout used');
+
+    my ($info) = grep { $_->{tag} eq 'ORPHAN' } @{ $orphan_event->{facet_data}{info} // [] };
+    ok($info, 'ORPHAN info facet attached');
+};
+
+subtest no_orphan_marker_on_clean_run => sub {
+    my $dir    = tempdir(CLEANUP => 1);
+    my $status = _run_driver(
+        dir            => $dir,
+        exec           => [$^X, '-E', 'say "ok"'],
+        orphan_timeout => 1,
+    );
+    is(($status >> 8), 0, 'clean run');
+    ok(!-e File::Spec->catfile($dir, 'orphaned'), 'no orphaned marker on clean run');
 };
 
 done_testing;

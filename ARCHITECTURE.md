@@ -503,7 +503,59 @@ Two recorders ship in Part 1:
   - State transition rows in the appropriate table (`job_tries`
     state, `service_state` for services).
 
-### 5.8 Signals and errors
+### 5.8 Orphaned pipes and post-exit timeout
+
+The collector cannot rely on its child closing its pipes when it
+exits. A test (or a service) may fork further processes that inherit
+STDOUT / STDERR and outlive the original child; those descendants
+keep the pipes open after the child has been reaped. If the collector
+waits for EOF in that case it waits forever.
+
+To handle this, the collector polls `waitpid($child, WNOHANG)` inside
+its select loop. Once the child has been reaped, the collector tracks
+how long it has been since any byte arrived on either pipe. If that
+quiet interval reaches the configured **orphan-timeout** (default
+`30s`), the collector:
+
+1. Emits a synthetic event into the stream:
+
+   ```
+   facet_data => {
+       harness_orphan => {
+           stamp         => <hi-res time>,
+           quiet_seconds => <timeout used>,
+           wait_status   => <reaped status>,
+       },
+       info => [{ tag => 'ORPHAN', debug => 1, details => '...' }],
+   }
+   ```
+
+   The event flows through the auditor (if present) and the recorder
+   like any other event.
+
+2. Calls `record_exit($status, { orphaned => 1 })` so the recorder
+   can surface the condition. The `Files` recorder writes an
+   `orphaned` marker file alongside `exit`; the DB recorder sets the
+   `job_tries.orphaned` boolean.
+
+3. Exits the IO loop. The collector itself **does not** kill the
+   orphan descendants — they are left to be cleaned up by whatever
+   process group / launcher policy is in effect higher up.
+
+The orphan condition is a diagnostic, not a failure. The collector's
+own exit code still mirrors the collected process's decoded wait
+status. The orphan timeout is configurable per `start()` call
+(`orphan_timeout => $seconds`); `0` disables the check.
+
+The reference implementation (`reference/legacy`) has the conceptual
+analogue — `--post-exit-timeout`, see
+`reference/legacy/lib/Test2/Harness/Runner.pm:152` `check_timeouts` —
+but applies it from the runner against the test's process group
+rather than from a per-process collector, and uses it to kill the
+descendants rather than to drop a flag. The behavior here is more
+conservative: detect, annotate, move on.
+
+### 5.9 Signals and errors
 
 Collectors install signal handlers for `SIGTERM`, `SIGINT`,
 `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGHUP`, `SIGPIPE`:
@@ -529,7 +581,7 @@ Collectors work hard to keep going on errors:
   `reference/old3` §20: 255 on collector-side failure, otherwise
   the collected child's `wait` status.
 
-### 5.9 Development helper script
+### 5.10 Development helper script
 
 For early development (before the launcher subsystem is in place),
 ship a `t/scripts/collector` script that wraps the entry point:
@@ -1200,6 +1252,10 @@ deduplicated-by-natural-key.
 - `subtests` — top-level subtest count
 - `subtests_passed`
 - `subtests_failed`
+- `orphaned` — boolean. True when the collector reaped the collected
+  process but its pipes stayed open past the orphan-timeout (a
+  descendant inherited the pipe and outlived the parent). Diagnostic
+  only — does not change pass/fail. See §5.8.
 
 **launchers**
 - `name`

@@ -66,11 +66,27 @@ Record a state transition for the watched process. C<$state> is a short
 identifier (C<'starting'>, C<'running'>, C<'failing'>, C<'completed'>,
 etc.); C<$extra> is an optional hashref of state-specific detail.
 
-=item $recorder->record_exit($exit)
+=item $recorder->record_exit($exit, \%info)
 
 Record the exit code of the collected process. C<$exit> is the raw
 wait-status (as returned by C<wait>); recorders may decode it via
 L<Test2::Harness2::Util::IPC/parse_exit> as needed.
+
+C<%info> is an optional hashref of out-of-band flags discovered at
+collection time. Currently defined:
+
+=over 4
+
+=item orphaned => $bool
+
+True when the collector reaped the collected process but its pipes
+stayed open past the orphan-timeout, indicating descendants outlived
+the parent. The recorder is expected to surface this so downstream
+consumers (the row layer's job-try record, etc.) can flag the
+condition. The flag is informational; it does not turn a pass into
+a fail.
+
+=back
 
 =item $recorder->record_artifact(\%spec)
 

@@ -73,6 +73,28 @@ subtest compressed_form_stripped_from_event_file => sub {
     is($event->{compressed_form}, "\x01\x02BYTES", 'compressed_form restored on event');
 };
 
+subtest record_exit_orphaned_writes_marker => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $r   = Test2::Harness2::Collector::Recorder::Files->new(dir => $dir);
+
+    $r->record_exit(0, {orphaned => 1});
+
+    ok(-e File::Spec->catfile($dir, 'orphaned'), 'orphaned marker written');
+    my ($stamp) = _read_lines(File::Spec->catfile($dir, 'orphaned'));
+    ok($stamp && $stamp + 0 > 0, 'orphaned marker holds a numeric timestamp');
+};
+
+subtest record_exit_without_orphaned_skips_marker => sub {
+    my $dir = tempdir(CLEANUP => 1);
+    my $r   = Test2::Harness2::Collector::Recorder::Files->new(dir => $dir);
+
+    $r->record_exit(0);
+    $r->record_exit(0, {});
+    $r->record_exit(0, {orphaned => 0});
+
+    ok(!-e File::Spec->catfile($dir, 'orphaned'), 'no orphaned marker when flag absent / false');
+};
+
 subtest finalize_blocks_further_writes => sub {
     my $dir = tempdir(CLEANUP => 1);
     my $r   = Test2::Harness2::Collector::Recorder::Files->new(dir => $dir);

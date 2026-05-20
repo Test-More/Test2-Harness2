@@ -20,8 +20,9 @@ use Test2::Harness2::Util::IPC qw/
 use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Event;
 
-use constant DEFAULT_KILL_TIMEOUT => 5;
-use constant SELECT_TIMEOUT       => 0.1;
+use constant DEFAULT_KILL_TIMEOUT   => 5;
+use constant DEFAULT_ORPHAN_TIMEOUT => 30;
+use constant SELECT_TIMEOUT         => 0.1;
 
 my @FORWARDED_SIGNALS = qw/TERM INT QUIT/;
 my @IGNORED_SIGNALS   = qw/USR1 USR2 HUP PIPE/;
@@ -36,6 +37,10 @@ sub start {
     my $parser   = $class->_coerce_object($args{parser},   'parser');
     my $recorder = $class->_coerce_object($args{recorder}, 'recorder');
     my $auditor  = $class->_coerce_auditor($args{auditor}, $recorder);
+
+    my $orphan_timeout = exists $args{orphan_timeout}
+        ? $args{orphan_timeout}
+        : DEFAULT_ORPHAN_TIMEOUT;
 
     croak "exec or run must be supplied" unless $exec || $run;
     croak "exec and run are mutually exclusive" if $exec && $run;
@@ -61,15 +66,17 @@ sub start {
 
     $auditor->startup if $auditor;
 
+    my %parent_out;
     my $ok = eval {
-        $class->_run_parent(
-            child_pid => $child,
-            out_pipe  => $out_r,
-            err_pipe  => $err_r,
-            parser    => $parser,
-            auditor   => $auditor,
-            recorder  => $recorder,
-            type      => $type,
+        %parent_out = $class->_run_parent(
+            child_pid      => $child,
+            out_pipe       => $out_r,
+            err_pipe       => $err_r,
+            parser         => $parser,
+            auditor        => $auditor,
+            recorder       => $recorder,
+            type           => $type,
+            orphan_timeout => $orphan_timeout,
         );
         1;
     };
@@ -80,14 +87,21 @@ sub start {
         $class->_safe_kill($child);
     }
 
-    waitpid($child, 0);
-    my $status = $?;
+    my $status;
+    if (defined $parent_out{wait_status}) {
+        $status = $parent_out{wait_status};
+    }
+    else {
+        waitpid($child, 0);
+        $status = $?;
+    }
 
     $class->_finalize(
         wait_status => $status,
         recorder    => $recorder,
         auditor     => $auditor,
         ok          => $ok,
+        orphaned    => $parent_out{orphaned} ? 1 : 0,
     );
 
     return $ok ? ($status >> 8) : 255;
@@ -136,12 +150,13 @@ sub _run_child {
 sub _run_parent {
     my ($class, %args) = @_;
 
-    my $child   = $args{child_pid};
-    my $out     = $args{out_pipe};
-    my $err     = $args{err_pipe};
-    my $parser  = $args{parser};
-    my $auditor = $args{auditor};
-    my $rec     = $args{recorder};
+    my $child          = $args{child_pid};
+    my $out            = $args{out_pipe};
+    my $err            = $args{err_pipe};
+    my $parser         = $args{parser};
+    my $auditor        = $args{auditor};
+    my $rec            = $args{recorder};
+    my $orphan_timeout = $args{orphan_timeout};
 
     apply_atomic_pipe_compression($out);
     apply_atomic_pipe_compression($err);
@@ -159,32 +174,64 @@ sub _run_parent {
     );
     my %by_fh = ($out->rh => $pipes{out}, $err->rh => $pipes{err});
 
+    my $wait_status;
+    my $last_activity = time;
+    my $orphaned      = 0;
+
     while ($sel->count) {
         my @ready = $sel->can_read(SELECT_TIMEOUT);
 
-        unless (@ready) {
-            $class->_drain_pipes(\%pipes, $sel, $parser, $auditor, $rec);
-            next;
+        my $activity = 0;
+        if (@ready) {
+            for my $fh (@ready) {
+                my $slot = $by_fh{$fh} or next;
+                $slot->{pipe}->fill_buffer;
+                $activity += $class->_drain_one_pipe($slot, $sel, $parser, $auditor, $rec);
+            }
+        }
+        else {
+            $activity += $class->_drain_pipes(\%pipes, $sel, $parser, $auditor, $rec);
         }
 
-        for my $fh (@ready) {
-            my $slot = $by_fh{$fh} or next;
-            $slot->{pipe}->fill_buffer;
-            $class->_drain_one_pipe($slot, $sel, $parser, $auditor, $rec);
+        $last_activity = time if $activity;
+
+        unless (defined $wait_status) {
+            my $r = waitpid($child, WNOHANG);
+            if ($r > 0) {
+                $wait_status = $?;
+            }
+            elsif ($r == -1) {
+                $wait_status = 0;
+            }
+        }
+
+        if (defined $wait_status && $orphan_timeout && $sel->count) {
+            if (time - $last_activity >= $orphan_timeout) {
+                $orphaned = 1;
+                $class->_emit_orphan_event(
+                    orphan_timeout => $orphan_timeout,
+                    wait_status    => $wait_status,
+                    auditor        => $auditor,
+                    rec            => $rec,
+                );
+                last;
+            }
         }
     }
 
     $class->_drain_pipes(\%pipes, $sel, $parser, $auditor, $rec);
 
-    return;
+    return (wait_status => $wait_status, orphaned => $orphaned);
 }
 
 sub _drain_pipes {
     my ($class, $pipes, $sel, $parser, $auditor, $rec) = @_;
+    my $count = 0;
     for my $slot (values %$pipes) {
         next if $slot->{eof};
-        $class->_drain_one_pipe($slot, $sel, $parser, $auditor, $rec);
+        $count += $class->_drain_one_pipe($slot, $sel, $parser, $auditor, $rec);
     }
+    return $count;
 }
 
 sub _drain_one_pipe {
@@ -192,6 +239,7 @@ sub _drain_one_pipe {
 
     my $pipe   = $slot->{pipe};
     my $stream = $slot->{stream};
+    my $count  = 0;
 
     while (1) {
         my ($type, $data, %extra) = $pipe->get_line_burst_or_data;
@@ -201,11 +249,46 @@ sub _drain_one_pipe {
                 $sel->remove($pipe->rh);
                 $slot->{eof} = 1;
             }
-            return;
+            return $count;
         }
 
+        $count++;
         $class->_handle_pipe_record($stream, $type, $data, \%extra, $parser, $auditor, $rec);
     }
+}
+
+sub _emit_orphan_event {
+    my ($class, %args) = @_;
+
+    my $orphan_timeout = $args{orphan_timeout};
+    my $wait_status    = $args{wait_status};
+    my $auditor        = $args{auditor};
+    my $rec            = $args{rec};
+
+    my $details = sprintf(
+        "Collected process exited (wait status %s) but pipes remained open; "
+            . "collector waited %ss with no further output before giving up. "
+            . "Likely a descendant process inherited the pipe and outlived its parent.",
+        $wait_status, $orphan_timeout,
+    );
+
+    my $event = Test2::Harness2::Event->new(
+        facet_data => {
+            harness_orphan => {
+                stamp         => time,
+                quiet_seconds => $orphan_timeout,
+                wait_status   => $wait_status,
+            },
+            info => [{
+                tag     => 'ORPHAN',
+                debug   => 1,
+                details => $details,
+            }],
+        },
+    );
+
+    $class->_dispatch_event($event, $auditor, $rec);
+    return;
 }
 
 sub _handle_pipe_record {
@@ -274,12 +357,13 @@ sub _safe_kill {
 
 sub _finalize {
     my ($class, %args) = @_;
-    my $rec     = $args{recorder};
-    my $auditor = $args{auditor};
-    my $status  = $args{wait_status};
+    my $rec      = $args{recorder};
+    my $auditor  = $args{auditor};
+    my $status   = $args{wait_status};
+    my $orphaned = $args{orphaned} ? 1 : 0;
 
     if ($rec) {
-        my $ok = eval { $rec->record_exit($status); 1 };
+        my $ok = eval { $rec->record_exit($status, {orphaned => $orphaned}); 1 };
         warn "record_exit failed: $@\n" unless $ok;
     }
 
@@ -400,6 +484,24 @@ state transitions reach the recorder.
 
 L<Test2::Harness2::Collector::Role::Recorder> implementer. A bare class
 name is constructed with no arguments.
+
+=item orphan_timeout => $seconds
+
+How long (in seconds) the collector will keep reading from the
+collected process's pipes after the collected process itself has
+exited, before declaring the pipes "orphaned" and giving up. A test or
+service may fork descendants that inherit the pipes and outlive their
+parent; those descendants would otherwise hold the pipes open forever.
+
+When the timeout expires after the child has been reaped and no
+further output has arrived, the collector emits a synthetic
+C<harness_orphan> event into the stream, flags the collector run as
+orphaned through C<record_exit>, and exits. The condition is treated
+as a warning, not a failure: the collector's exit code still mirrors
+the collected process's wait status.
+
+Default: C<30>. C<0> disables the check (the collector then waits
+indefinitely for both pipes to hit EOF).
 
 =back
 

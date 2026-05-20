@@ -11,22 +11,24 @@ use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'lib');
 use Test2::Harness2::Collector;
 
 my %opts = (
-    parser   => 'Test2::Harness2::Collector::Parser::IOParser',
-    recorder => 'Test2::Harness2::Collector::Recorder::Files',
-    auditor  => undef,
-    dir      => undef,
-    type     => 'test job',
+    parser         => 'Test2::Harness2::Collector::Parser::IOParser',
+    recorder       => 'Test2::Harness2::Collector::Recorder::Files',
+    auditor        => undef,
+    dir            => undef,
+    type           => 'test job',
+    orphan_timeout => undef,
 );
 
 my @argv = @ARGV;
 GetOptionsFromArray(
     \@argv,
-    'parser=s'   => \$opts{parser},
-    'recorder=s' => \$opts{recorder},
-    'auditor=s'  => \$opts{auditor},
-    'dir=s'      => \$opts{dir},
-    'type=s'     => \$opts{type},
-    'help|h'     => sub { _usage(); exit 0 },
+    'parser=s'         => \$opts{parser},
+    'recorder=s'       => \$opts{recorder},
+    'auditor=s'        => \$opts{auditor},
+    'dir=s'            => \$opts{dir},
+    'type=s'           => \$opts{type},
+    'orphan-timeout=f' => \$opts{orphan_timeout},
+    'help|h'           => sub { _usage(); exit 0 },
 ) or do { _usage(); exit 2 };
 
 if (@argv && $argv[0] eq '--') { shift @argv }
@@ -51,6 +53,7 @@ my $code = Test2::Harness2::Collector->start(
     parser   => $parser,
     recorder => $recorder,
     auditor  => $auditor,
+    (defined $opts{orphan_timeout} ? (orphan_timeout => $opts{orphan_timeout}) : ()),
 );
 
 exit $code;
@@ -91,6 +94,9 @@ Options:
     --dir      PATH    Output directory (required for Recorder::Files)
     --type     STR     Collector type, e.g. 'test job' or 'service'
                         (default: 'test job')
+    --orphan-timeout N Seconds to wait for output after the child has
+                        exited before declaring the pipes orphaned
+                        (default: 30; 0 disables)
     -h, --help         Show this message
 
 Example:

@@ -106,6 +106,23 @@ so they do not get lost as the canonical docs evolve.
   `Util::FileMonitor`, and `Util::JSONL::Reader` for actual call
   sites and prune anything no consumer reaches.
 
+- **Collector orphan-timeout CLI flag.** Stage 3 added an
+  `orphan_timeout` parameter to `Test2::Harness2::Collector->start`
+  (default `30s`, `0` disables) — see `ARCHITECTURE.md` §5.8. Part 2's
+  `yath` needs a corresponding CLI option so users can tune or
+  disable the orphan watchdog. Legacy yath has a conceptually
+  similar `--post-exit-timeout` option
+  (`reference/legacy/lib/App/Yath/Options/Runner.pm:227`), but
+  legacy applies it from the runner against the test's process
+  group rather than from a per-process collector, and the legacy
+  timeout kills the descendants. The Part-1 design only flags the
+  condition; if Part 2 wants the legacy "kill the orphan tree"
+  behavior it has to layer that on separately. The flag should
+  also be settable per test via the `# HARNESS-NO-TIMEOUT` /
+  `# HARNESS-TIMEOUT-POSTEXIT-N` header hooks legacy
+  `Test2::Harness::TestFile` already understands, once an
+  equivalent test-file metadata layer exists in Part 1.
+
 ---
 
 ## Open questions to revisit when speccing Part 2

@@ -79,13 +79,21 @@ sub record_state {
 }
 
 sub record_exit {
-    my ($self, $exit) = @_;
+    my ($self, $exit, $info) = @_;
     $self->_assert_open;
 
     my $path = $self->_path('exit');
     open(my $fh, '>', $path) or die "Failed to write $path: $!";
     print {$fh} "$exit\n";
     close($fh) or die "Failed to close $path: $!";
+
+    if ($info && $info->{orphaned}) {
+        my $marker = $self->_path('orphaned');
+        open(my $ofh, '>', $marker) or die "Failed to write $marker: $!";
+        print {$ofh} time(), "\n";
+        close($ofh) or die "Failed to close $marker: $!";
+    }
+
     return;
 }
 
@@ -161,6 +169,13 @@ detail.
 
 Single line holding the raw wait-status of the collected process.
 
+=item F<orphaned>
+
+Single-line hi-res timestamp. Written by L</record_exit> when the
+collector flagged the run as orphaned (collected process exited but
+its pipes stayed open past the orphan-timeout). Absent when the run
+was not orphaned.
+
 =item F<artifacts.jsonl>
 
 JSON-encoded artifact spec per line. Written only when the auditor or
@@ -218,10 +233,15 @@ does not preserve the compressed form on disk.
 Append a state-transition row to F<state.jsonl>. C<$state> is a short
 identifier; C<$extra> is an optional hashref attached as-is.
 
-=item $r->record_exit($exit)
+=item $r->record_exit($exit, \%info)
 
 Write the raw wait-status to F<exit>. Overwrites any previous content
 (the collector records the exit exactly once).
+
+If C<%info> has a true C<orphaned> flag, additionally writes an
+F<orphaned> marker file (single-line hi-res timestamp). The marker's
+presence is the on-disk equivalent of the C<orphaned> column on a
+database-backed recorder's job-try row.
 
 =item $r->record_artifact(\%spec)
 
