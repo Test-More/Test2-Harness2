@@ -227,8 +227,13 @@ sub _run_parent {
     $self->{+BUFFER}        = {seen => {}, saw_event => 0, stdout => [], stderr => []}
         if $self->{+BUFFERING};
 
+    my $st = $self->_compute_select_timeouts;
+
     while ($sel->count) {
-        my @ready = $sel->can_read($self->_select_timeout);
+        my $timeout = defined $self->{+WAIT_STATUS} ? $st->{dead}
+            : $self->{+KILL_STATE}                  ? $st->{dying}
+            :                                         $st->{alive};
+        my @ready = $sel->can_read($timeout);
 
         my $activity = 0;
         if (@ready) {
@@ -258,28 +263,33 @@ sub _run_parent {
     return;
 }
 
-sub _select_timeout {
+sub _compute_select_timeouts {
     my $self = shift;
 
-    my @candidates;
-    push @candidates, $self->{+FLUSH_INTERVAL}
+    my @flush;
+    push @flush, $self->{+FLUSH_INTERVAL}
         if $self->{+BUFFER} && $self->{+FLUSH_INTERVAL};
 
-    if (defined $self->{+WAIT_STATUS}) {
-        push @candidates, $self->{+ORPHAN_TIMEOUT} if $self->{+ORPHAN_TIMEOUT};
-    }
-    else {
-        if ($self->{+IS_TEST_JOB} && !$self->{+KILL_STATE}) {
-            push @candidates, $self->{+SILENCE_TIMEOUT}  if $self->{+SILENCE_TIMEOUT};
-            push @candidates, $self->{+LIFETIME_TIMEOUT} if $self->{+LIFETIME_TIMEOUT};
-        }
-        push @candidates, DEFAULT_KILL_TIMEOUT if $self->{+KILL_STATE};
+    my @alive;
+    if ($self->{+IS_TEST_JOB}) {
+        push @alive, $self->{+SILENCE_TIMEOUT}  if $self->{+SILENCE_TIMEOUT};
+        push @alive, $self->{+LIFETIME_TIMEOUT} if $self->{+LIFETIME_TIMEOUT};
     }
 
-    return FALLBACK_SELECT_TIMEOUT unless @candidates;
+    my @dead;
+    push @dead, $self->{+ORPHAN_TIMEOUT} if $self->{+ORPHAN_TIMEOUT};
 
-    my $min = $candidates[0];
-    for my $v (@candidates[1 .. $#candidates]) {
+    return {
+        alive => _min_or_fallback(@flush, @alive),
+        dying => _min_or_fallback(@flush, DEFAULT_KILL_TIMEOUT),
+        dead  => _min_or_fallback(@flush, @dead),
+    };
+}
+
+sub _min_or_fallback {
+    return FALLBACK_SELECT_TIMEOUT unless @_;
+    my $min = $_[0];
+    for my $v (@_[1 .. $#_]) {
         $min = $v if $v < $min;
     }
     return $min;
