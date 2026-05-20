@@ -128,7 +128,9 @@ never both.
 - `result` — boolean; true if all jobs passed.
 - `passed` / `failed` — aggregate job counts.
 - `meta` — JSON.
-- `abort` — boolean; setting it asks the scheduler to stop the run.
+- `status` — `'pending'` / `'running'` / `'complete'` / `'broken'`
+  / `'canceled'`. Scheduler reads `'canceled'` as the signal to stop
+  dispatching new jobs and terminate in-flight ones.
 
 ### services
 - `collector_id` → `collectors`
@@ -182,6 +184,7 @@ request / response and fire-and-forget notifications.
 - `passed` / `failed` — assertion counts.
 - `subtests` / `subtests_passed` / `subtests_failed` — top-level subtest
   counts.
+- `status` — same lifecycle enum as `runs.status`.
 
 ### launchers
 - `runner_id` → `runners`

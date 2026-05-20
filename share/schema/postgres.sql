@@ -122,7 +122,8 @@ CREATE TABLE runs (
     passed      BIGINT           NOT NULL DEFAULT 0,
     failed      BIGINT           NOT NULL DEFAULT 0,
     meta        JSONB,
-    abort       BOOLEAN          NOT NULL DEFAULT FALSE,
+    status      TEXT             NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     UNIQUE(run_uuid),
     UNIQUE(runner_id, run_ord)
 );
@@ -206,6 +207,8 @@ CREATE TABLE job_tries (
     subtests        INTEGER          NOT NULL DEFAULT 0,
     subtests_passed INTEGER          NOT NULL DEFAULT 0,
     subtests_failed INTEGER          NOT NULL DEFAULT 0,
+    status          TEXT             NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     UNIQUE(job_id, try_ord)
 );
 

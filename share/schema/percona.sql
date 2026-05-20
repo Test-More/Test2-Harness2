@@ -167,7 +167,8 @@ CREATE TABLE runs (
     passed            BIGINT NOT NULL DEFAULT 0,
     failed            BIGINT NOT NULL DEFAULT 0,
     meta              JSON,
-    abort             BOOLEAN NOT NULL DEFAULT FALSE,
+    status            VARCHAR(32) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     UNIQUE KEY runs_uuid_unique (run_uuid),
     UNIQUE KEY runs_runner_ord_unique (runner_id, run_ord),
     CONSTRAINT runs_runner_fk   FOREIGN KEY (runner_id)   REFERENCES runners(runner_id)   ON DELETE CASCADE,
@@ -281,6 +282,8 @@ CREATE TABLE job_tries (
     subtests        INT NOT NULL DEFAULT 0,
     subtests_passed INT NOT NULL DEFAULT 0,
     subtests_failed INT NOT NULL DEFAULT 0,
+    status          VARCHAR(32) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     UNIQUE KEY job_tries_job_try_unique (job_id, try_ord),
     CONSTRAINT job_tries_job_fk       FOREIGN KEY (job_id)       REFERENCES jobs(job_id)             ON DELETE CASCADE,
     CONSTRAINT job_tries_collector_fk FOREIGN KEY (collector_id) REFERENCES collectors(collector_id) ON DELETE SET NULL

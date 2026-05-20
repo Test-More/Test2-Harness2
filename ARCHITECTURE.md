@@ -1312,8 +1312,12 @@ deduplicated-by-natural-key.
 - `passed` — int
 - `failed` — int
 - `meta` — JSON
-- `abort` — bool; setting this asks the scheduler to terminate
-  in-flight jobs and stop dispatching new ones for this run.
+- `status` — enum: `pending` (queued), `running` (scheduler has
+  claimed it), `complete` (finished, see `result` for pass/fail),
+  `broken` (harness-side failure that prevented completion),
+  `canceled` (user / tooling asked the scheduler to stop). The
+  scheduler reads `status='canceled'` as the cue to terminate
+  in-flight jobs and stop dispatching for this run.
 
 **test_files**
 - `relative` — path relative to project root
@@ -1336,6 +1340,8 @@ deduplicated-by-natural-key.
 - `subtests` — top-level subtest count
 - `subtests_passed`
 - `subtests_failed`
+- `status` — enum: same values as `runs.status` (`pending` /
+  `running` / `complete` / `broken` / `canceled`).
 - `orphaned` — boolean. True when the collector reaped the collected
   process but its pipes stayed open past the orphan-timeout (a
   descendant inherited the pipe and outlived the parent). Diagnostic

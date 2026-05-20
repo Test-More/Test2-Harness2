@@ -135,7 +135,8 @@ CREATE TABLE runs (
     passed      INTEGER NOT NULL DEFAULT 0,
     failed      INTEGER NOT NULL DEFAULT 0,
     meta        TEXT,
-    abort       INTEGER NOT NULL DEFAULT 0,
+    status      TEXT    NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     UNIQUE(run_uuid),
     UNIQUE(runner_id, run_ord)
 );
@@ -219,6 +220,8 @@ CREATE TABLE job_tries (
     subtests        INTEGER NOT NULL DEFAULT 0,
     subtests_passed INTEGER NOT NULL DEFAULT 0,
     subtests_failed INTEGER NOT NULL DEFAULT 0,
+    status          TEXT    NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'complete', 'broken', 'canceled')),
     UNIQUE(job_id, try_ord)
 );
 
