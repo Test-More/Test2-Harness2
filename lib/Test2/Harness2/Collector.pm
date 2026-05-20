@@ -267,17 +267,17 @@ sub _compute_select_timeouts {
     my $self = shift;
 
     my @flush;
-    push @flush, $self->{+FLUSH_INTERVAL}
+    push @flush => $self->{+FLUSH_INTERVAL}
         if $self->{+BUFFER} && $self->{+FLUSH_INTERVAL};
 
     my @alive;
     if ($self->{+IS_TEST_JOB}) {
-        push @alive, $self->{+SILENCE_TIMEOUT}  if $self->{+SILENCE_TIMEOUT};
-        push @alive, $self->{+LIFETIME_TIMEOUT} if $self->{+LIFETIME_TIMEOUT};
+        push @alive => $self->{+SILENCE_TIMEOUT}  if $self->{+SILENCE_TIMEOUT};
+        push @alive => $self->{+LIFETIME_TIMEOUT} if $self->{+LIFETIME_TIMEOUT};
     }
 
     my @dead;
-    push @dead, $self->{+ORPHAN_TIMEOUT} if $self->{+ORPHAN_TIMEOUT};
+    push @dead => $self->{+ORPHAN_TIMEOUT} if $self->{+ORPHAN_TIMEOUT};
 
     return {
         alive => _min_or_fallback(@flush, @alive),

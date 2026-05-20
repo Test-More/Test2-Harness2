@@ -92,7 +92,7 @@ sub new {
     return bless {log => $log}, $class;
 }
 sub record_event    { 1 }
-sub record_state    { push @{$_[0]->{log}}, [$_[1], $_[2]] }
+sub record_state    { push @{$_[0]->{log}} => [$_[1], $_[2]] }
 sub record_exit     { 1 }
 sub record_artifact { 1 }
 sub finalize        { 1 }
