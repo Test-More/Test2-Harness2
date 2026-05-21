@@ -51,7 +51,11 @@ they turn up before re-running the test suite:
    `STYLE_GUIDE.md`. Common slips: `eval` patterns (check the
    return value, never raw `$@`), `croak` vs `die`, `//=`,
    `Time::HiRes::sleep`, `Object::HashBase` slot ordering,
-   trailing whitespace, perltidy.
+   trailing whitespace, perltidy. Also run
+   `perl scripts/audit-methods-not-functions lib` — it catches
+   the "named subs in object modules must be methods" rule
+   (`_flavor_from_dsn`-style functions inside object classes are
+   violations).
 
 2. **POD pass.** Verify each `.pm` follows the POD layout in
    `STYLE_GUIDE.md`: `NAME` / `DESCRIPTION` / `SYNOPSIS`

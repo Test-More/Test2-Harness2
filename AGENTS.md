@@ -96,8 +96,13 @@ anything they turn up, then re-run the test suite.
    touched file conforms. Common slips: `eval` patterns (always
    check the return value, never raw `$@`), `croak` vs `die`,
    `//=` for defaults, `Time::HiRes::sleep` for sub-second waits,
-   `Object::HashBase` slot ordering, no trailing whitespace, etc.
-   Fix everything you find.
+   `Object::HashBase` slot ordering, no trailing whitespace, and
+   the "named subs in object modules must be methods, not
+   functions" rule (see STYLE_GUIDE.md "Naming and structure"
+   — `_flavor_from_dsn` style functions inside `use
+   Object::HashBase` / `with '...'` modules are violations).
+   Run `perl scripts/audit-methods-not-functions lib` and resolve
+   every reported hit. Fix everything you find.
 
 2. **POD pass.** Verify the file follows the POD layout in
    `STYLE_GUIDE.md` ("POD" section): `NAME` / `DESCRIPTION` /

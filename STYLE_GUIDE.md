@@ -97,7 +97,39 @@ primitive. If you find existing code doing it, replace with
 
 ## Naming and structure
 
-- Named subroutines (ones defined in a package namespace, not anonymous subs or subs assigned to a variable) in a module that defines an object class must be methods, not functions. Named subroutines are only allowed to be functions when the module is not an object class — e.g. a utility/export module or a plain `.pl` script. Imported named subs (e.g. from `use Carp qw/croak/`) stay as functions; this rule applies only to subs defined in the module itself.
+- Named subroutines (ones defined in a package namespace, not anonymous subs or subs assigned to a variable) in a module that defines an object class must be methods, not functions. A class is an object module if it `use`s `Object::HashBase` or composes a `Role::Tiny::With` role (i.e. matches `^use Object::HashBase` or `^with ` at file scope). Imported named subs (e.g. `use Carp qw/croak/`) stay as functions; this rule applies only to subs defined in the module itself.
+
+  Concretely, a named sub in such a module must do at least one of:
+
+  - `my $self  = shift;` (or `my $class = shift;`)
+  - `my ($self, ...) = @_;` (or `($class, ...)`)
+  - return a literal constant (`sub TABLE { 'users' }`, `sub defaults { {...} }`, `sub json_fields { qw{a b c} }`) — argless declarative-metadata methods are fine because callers invoke them as `$obj->name`.
+
+  Wrong (function inside object module):
+
+  ```perl
+  sub _flavor_from_dsn {
+      my ($dsn) = @_;
+      return undef unless $dsn && $dsn =~ /^dbi:([^:]+):/;
+      return $FLAVOR_FROM_DSN_SCHEME{$1};
+  }
+  # ... called as: $self->{+FLAVOR} //= _flavor_from_dsn($self->{+DSN});
+  ```
+
+  Right (method):
+
+  ```perl
+  sub _flavor_from_dsn {
+      my ($self, $dsn) = @_;
+      return undef unless $dsn && $dsn =~ /^dbi:([^:]+):/;
+      return $FLAVOR_FROM_DSN_SCHEME{$1};
+  }
+  # ... called as: $self->{+FLAVOR} //= $self->_flavor_from_dsn($self->{+DSN});
+  ```
+
+  An automated scanner lives at `scripts/audit-methods-not-functions` —
+  run it before declaring a stage ready for review (it is one of the
+  three mandatory pre-review checks in `AGENTS.md`).
 
 ## Testing libraries
 

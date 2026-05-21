@@ -278,13 +278,14 @@ sub _compute_select_timeouts {
     push @dead => $self->{+ORPHAN_TIMEOUT} if $self->{+ORPHAN_TIMEOUT};
 
     return {
-        alive => _min_or_fallback(@flush, @alive),
-        dying => _min_or_fallback(@flush, DEFAULT_KILL_TIMEOUT),
-        dead  => _min_or_fallback(@flush, @dead),
+        alive => $self->_min_or_fallback(@flush, @alive),
+        dying => $self->_min_or_fallback(@flush, DEFAULT_KILL_TIMEOUT),
+        dead  => $self->_min_or_fallback(@flush, @dead),
     };
 }
 
 sub _min_or_fallback {
+    my $self = shift;
     return FALLBACK_SELECT_TIMEOUT unless @_;
     my $min = $_[0];
     for my $v (@_[1 .. $#_]) {

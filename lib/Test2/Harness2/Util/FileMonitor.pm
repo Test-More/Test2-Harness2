@@ -332,7 +332,7 @@ sub _inotify_fh {
     return undef unless -e $path;
 
     my $watch;
-    $ok = eval { $watch = $inot->watch($path, _inotify_watch_mask()); 1 };
+    $ok = eval { $watch = $inot->watch($path, $self->_inotify_watch_mask); 1 };
     unless ($ok && $watch) {
         $self->{+_INOTIFY_BROKEN} = 1;
         return undef;
@@ -344,6 +344,7 @@ sub _inotify_fh {
 }
 
 sub _inotify_watch_mask {
+    my $self = shift;
     return Linux::Inotify2::IN_MODIFY() | Linux::Inotify2::IN_CREATE() | Linux::Inotify2::IN_MOVED_TO() | Linux::Inotify2::IN_DELETE_SELF() | Linux::Inotify2::IN_MOVE_SELF() | Linux::Inotify2::IN_ATTRIB();
 }
 
