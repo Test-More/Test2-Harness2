@@ -103,7 +103,7 @@ CREATE TABLE collectors (
     name            VARCHAR(191) NOT NULL,
     pid             BIGINT NOT NULL,
     watched         BIGINT,
-    type            VARCHAR(32) NOT NULL,
+    is_test         BOOLEAN NOT NULL DEFAULT FALSE,
     start_time      DOUBLE NOT NULL,
     stop_time       DOUBLE,
     exit_code       INT,
@@ -114,7 +114,6 @@ CREATE TABLE collectors (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE INDEX collectors_runner_idx ON collectors(runner_id);
-CREATE INDEX collectors_type_idx   ON collectors(type);
 
 CREATE TABLE artifacts (
     artifact_id     BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

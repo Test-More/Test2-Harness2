@@ -30,7 +30,7 @@ my @FORWARDED_SIGNALS = qw/TERM INT QUIT/;
 my @IGNORED_SIGNALS   = qw/USR1 USR2 HUP PIPE/;
 
 use Object::HashBase qw{
-    <type
+    <is_test
     <exec
     <run
     <parser
@@ -41,7 +41,6 @@ use Object::HashBase qw{
     <lifetime_timeout
     <buffering
     <flush_interval
-    -is_test_job
     -child_pid
     -out_pipe
     -err_pipe
@@ -67,8 +66,7 @@ sub start {
 sub init {
     my $self = shift;
 
-    $self->{+TYPE}        //= 'test job';
-    $self->{+IS_TEST_JOB} = ($self->{+TYPE} eq 'test job') ? 1 : 0;
+    $self->{+IS_TEST} = $self->{+IS_TEST} ? 1 : 0;
 
     croak "exec or run must be supplied" unless $self->{+EXEC} || $self->{+RUN};
     croak "exec and run are mutually exclusive" if $self->{+EXEC} && $self->{+RUN};
@@ -185,7 +183,7 @@ sub _run_child {
 
     $ENV{T2_HARNESS2_PIPE_COUNT} = 2;
 
-    setpgid(0, 0) if $self->{+IS_TEST_JOB};
+    setpgid(0, 0) if $self->{+IS_TEST};
 
     if (my $exec = $self->{+EXEC}) {
         CORE::exec(@$exec) or die "exec(@$exec) failed: $!";
@@ -271,7 +269,7 @@ sub _compute_select_timeouts {
         if $self->{+BUFFER} && $self->{+FLUSH_INTERVAL};
 
     my @alive;
-    if ($self->{+IS_TEST_JOB}) {
+    if ($self->{+IS_TEST}) {
         push @alive => $self->{+SILENCE_TIMEOUT}  if $self->{+SILENCE_TIMEOUT};
         push @alive => $self->{+LIFETIME_TIMEOUT} if $self->{+LIFETIME_TIMEOUT};
     }
@@ -332,7 +330,7 @@ sub _poll_child {
 sub _check_test_job_timeouts {
     my $self = shift;
 
-    return unless $self->{+IS_TEST_JOB};
+    return unless $self->{+IS_TEST};
     return if defined $self->{+WAIT_STATUS};
     return if $self->{+KILL_STATE};
 
@@ -757,7 +755,7 @@ finish.
     my $r = Test2::Harness2::Collector::Recorder::Files->new(dir => $path);
 
     my $exit = Test2::Harness2::Collector->start(
-        type     => 'test job',
+        is_test  => 1,
         exec     => [$^X, '-Ilib', 't/foo.t'],
         parser   => Test2::Harness2::Collector::Parser::TAPParser->new,
         auditor  => Test2::Harness2::Collector::Auditor::Test->new(recorder => $r),
@@ -800,11 +798,13 @@ Named arguments:
 
 =over 4
 
-=item type => 'test job' | 'service' | ...
+=item is_test => 0 | 1
 
-What kind of process is being collected. C<'test job'> (the default)
-puts the child in a fresh process group via C<setpgid(0, 0)> so the
-test cannot signal the collector / launcher tree.
+Boolean flag distinguishing test-job collectors (true) from
+service-style collectors (false, the default). When true, the child
+is placed in a fresh process group via C<setpgid(0, 0)> so the test
+cannot signal the collector / launcher tree, and the test-only
+orphan / silence semantics apply.
 
 =item exec => \@argv
 

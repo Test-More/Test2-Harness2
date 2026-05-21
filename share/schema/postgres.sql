@@ -96,7 +96,7 @@ CREATE TABLE collectors (
     name            TEXT             NOT NULL,
     pid             BIGINT           NOT NULL,
     watched         BIGINT,
-    type            TEXT             NOT NULL,
+    is_test         BOOLEAN          NOT NULL DEFAULT FALSE,
     start_time      DOUBLE PRECISION NOT NULL,
     stop_time       DOUBLE PRECISION,
     exit_code       INTEGER,
@@ -105,7 +105,6 @@ CREATE TABLE collectors (
 );
 
 CREATE INDEX collectors_runner_idx ON collectors(runner_id);
-CREATE INDEX collectors_type_idx   ON collectors(type);
 
 CREATE TABLE artifacts (
     artifact_id     BIGSERIAL    PRIMARY KEY,

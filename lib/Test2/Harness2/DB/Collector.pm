@@ -11,7 +11,7 @@ use Object::HashBase qw{
     <name
     <pid
     <watched
-    <type
+    <is_test
     <start_time
     <stop_time
     <exit_code
@@ -20,7 +20,7 @@ use Object::HashBase qw{
 sub TABLE       { 'collectors' }
 sub PRIMARY_KEY { 'collector_id' }
 sub COLUMNS     {
-    qw/collector_id runner_id name pid watched type start_time stop_time exit_code finalized/
+    qw/collector_id runner_id name pid watched is_test start_time stop_time exit_code finalized/
 }
 
 1;
@@ -37,10 +37,11 @@ Test2::Harness2::DB::Collector - Row object for the C<collectors> table.
 
 =head1 DESCRIPTION
 
-One row per collector process: its pid, the pid it watches, its type
-(C<'service'>, C<'test job'>, etc.), start/stop timestamps, the
-collected process's exit code, and the timestamp the recorder
-finalized its bookkeeping.
+One row per collector process: its pid, the pid it watches, an
+C<is_test> boolean (true for test-job collectors, false for
+service-style collectors), start/stop timestamps, the collected
+process's exit code, and the timestamp the recorder finalized its
+bookkeeping.
 
 =head1 SOURCE
 

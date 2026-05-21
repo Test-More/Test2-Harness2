@@ -38,7 +38,7 @@ subtest required_attributes => sub {
     like(
         dies {
             Test2::Harness2::Collector::Recorder::DB->new(
-                handle => $h, runner_id => 1, name => 'x', type => 'test job',
+                handle => $h, runner_id => 1, name => 'x', is_test => 1,
             );
         },
         qr/workdir/,
@@ -55,7 +55,7 @@ subtest full_collector_lifecycle => sub {
         handle    => $h,
         runner_id => $runner->runner_id,
         name      => 'c1',
-        type      => 'test job',
+        is_test   => 1,
         workdir   => $dir,
     );
 
@@ -64,7 +64,7 @@ subtest full_collector_lifecycle => sub {
     my $col = $h->fetch(collectors => collector_id => $rec->{collector_id});
     ok($col, 'collectors row created at startup');
     is($col->name,      'c1');
-    is($col->type,      'test job');
+    is($col->is_test,   1);
     is($col->runner_id, $runner->runner_id);
     ok(!defined $col->watched, 'watched still null pre-set');
 
@@ -131,7 +131,7 @@ subtest finalize_is_idempotent => sub {
         handle    => $h,
         runner_id => $runner->runner_id,
         name      => 'c2',
-        type      => 'service',
+        is_test   => 0,
         workdir   => $dir,
     );
 

@@ -97,7 +97,8 @@ One row per collector process.
 - `name` — unique per runner.
 - `pid` — collector's own pid.
 - `watched` — pid of the collected process (nullable until forked).
-- `type` — `'service'`, `'test job'`, etc. (indexed).
+- `is_test` — boolean. True for test-job collectors, false for
+  service-style collectors. Default false.
 - `start_time` / `stop_time` — collected-process lifecycle.
 - `exit_code` — exit code of the collected process (nullable).
 - `finalized` — timestamp the recorder finished its bookkeeping for this

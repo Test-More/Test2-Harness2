@@ -13,12 +13,11 @@ use Test2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
 
-# Right now we have 2 types, "service" and "test job". This does not exactly represent the types. We have 'simple' (services use this) and 'test' (test jobs use this). It is binary, and new types are not likely to be added later. Switch this to an is_test flag that is boolean. Services (and most future collector uses) will keep the flag false, test jobs will set it true. Make sure the database table for collectors also reflects this binary choice and is_test flag.
 use Object::HashBase qw{
     <handle
     <runner_id
     <name
-    <type
+    <is_test
     <pid
     <workdir
     <start_time
@@ -72,7 +71,7 @@ end-to-end against a database before that wiring lands.
         handle    => $harness_handle,
         runner_id => $runner->runner_id,
         name      => $unique_collector_name,
-        type      => 'test job',
+        is_test   => 1,
         workdir   => $workdir_path,
     );
 
@@ -97,9 +96,11 @@ The C<runners.runner_id> this collector belongs to.
 
 The collector's name, unique per runner.
 
-=item type (required)
+=item is_test
 
-C<'service'>, C<'test job'>, etc.
+Boolean flag distinguishing test-job collectors from service-style
+collectors. Defaults to false; test-job callers must pass C<is_test
+=> 1> explicitly. Stored as the C<collectors.is_test> column.
 
 =item pid
 
@@ -126,9 +127,9 @@ sub init {
     croak "'handle' is a required attribute"    unless $self->{+HANDLE};
     croak "'runner_id' is a required attribute" unless defined $self->{+RUNNER_ID};
     croak "'name' is a required attribute"      unless defined $self->{+NAME};
-    croak "'type' is a required attribute"      unless defined $self->{+TYPE};
     croak "'workdir' is a required attribute"   unless defined $self->{+WORKDIR};
 
+    $self->{+IS_TEST}    = $self->{+IS_TEST} ? 1 : 0;
     $self->{+PID}        //= $$;
     $self->{+START_TIME} //= time();
     $self->{+FINALIZED} = 0;
@@ -144,7 +145,7 @@ sub init {
         runner_id  => $self->{+RUNNER_ID},
         name       => $self->{+NAME},
         pid        => $self->{+PID},
-        type       => $self->{+TYPE},
+        is_test    => $self->{+IS_TEST},
         start_time => $self->{+START_TIME},
     });
     $self->{+COLLECTOR_ID} = $collector_row->collector_id;

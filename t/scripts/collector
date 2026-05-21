@@ -15,7 +15,7 @@ my %opts = (
     recorder         => 'Test2::Harness2::Collector::Recorder::Files',
     auditor          => undef,
     dir              => undef,
-    type             => 'test job',
+    is_test          => 1,
     orphan_timeout   => undef,
     silence_timeout  => undef,
     lifetime_timeout => undef,
@@ -30,7 +30,7 @@ GetOptionsFromArray(
     'recorder=s'         => \$opts{recorder},
     'auditor=s'          => \$opts{auditor},
     'dir=s'              => \$opts{dir},
-    'type=s'             => \$opts{type},
+    'is-test!'           => \$opts{is_test},
     'orphan-timeout=f'   => \$opts{orphan_timeout},
     'silence-timeout=f'  => \$opts{silence_timeout},
     'lifetime-timeout=f' => \$opts{lifetime_timeout},
@@ -56,7 +56,7 @@ if ($opts{auditor}) {
 }
 
 my $code = Test2::Harness2::Collector->start(
-    type     => $opts{type},
+    is_test  => $opts{is_test} ? 1 : 0,
     exec     => [@argv],
     parser   => $parser,
     recorder => $recorder,
@@ -104,8 +104,8 @@ Options:
     --recorder CLASS   Recorder class (default: Recorder::Files)
     --auditor  CLASS   Auditor class (optional)
     --dir      PATH    Output directory (required for Recorder::Files)
-    --type     STR     Collector type, e.g. 'test job' or 'service'
-                        (default: 'test job')
+    --[no-]is-test     Mark this collector as a test job (default:
+                        --is-test). Use --no-is-test for services.
     --orphan-timeout N   Seconds to wait for output after the child
                           has exited before declaring the pipes
                           orphaned (default: 30; 0 disables)

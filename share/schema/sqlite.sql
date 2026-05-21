@@ -97,7 +97,7 @@ CREATE TABLE collectors (
     name            TEXT    NOT NULL,
     pid             INTEGER NOT NULL,
     watched         INTEGER,
-    type            TEXT    NOT NULL,
+    is_test         INTEGER NOT NULL DEFAULT 0,
     start_time      REAL    NOT NULL,
     stop_time       REAL,
     exit_code       INTEGER,
@@ -106,7 +106,6 @@ CREATE TABLE collectors (
 );
 
 CREATE INDEX collectors_runner_idx ON collectors(runner_id);
-CREATE INDEX collectors_type_idx   ON collectors(type);
 
 CREATE TABLE artifacts (
     artifact_id     INTEGER PRIMARY KEY AUTOINCREMENT,
