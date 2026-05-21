@@ -10,6 +10,18 @@
 --     SQL defaults.
 --   * Booleans use the native BOOLEAN type.
 --   * Binary blobs are BYTEA.
+--
+-- Compression:
+--   TOAST handles per-column compression automatically for any value
+--   that pushes its row past TOAST_TUPLE_THRESHOLD (~2KB). The DDL
+--   does not specify a compression algorithm so the schema loads on
+--   every supported PG version. The server's `default_toast_compression`
+--   setting picks the algorithm; on PG 14+ admins should set
+--   `default_toast_compression = 'lz4'` in postgresql.conf for faster
+--   compress/decompress and slightly better ratio on the JSONB payload
+--   columns (notably `coverage.payload` and `resources.payload`).
+--   When PG eventually adds ZSTD as a TOAST algorithm the same GUC
+--   picks it up with no schema change required.
 
 CREATE TABLE users (
     user_id     BIGSERIAL    PRIMARY KEY,

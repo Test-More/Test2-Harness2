@@ -295,7 +295,7 @@ CREATE TABLE coverage (
     project_id  BIGINT UNSIGNED NOT NULL,
     source_file VARCHAR(512) NOT NULL,
     stamp       DOUBLE NOT NULL,
-    payload     JSON NOT NULL,
+    payload     JSON COMPRESSED NOT NULL,
     UNIQUE KEY coverage_run_source_unique (run_id, source_file),
     CONSTRAINT coverage_run_fk     FOREIGN KEY (run_id)     REFERENCES runs(run_id)         ON DELETE CASCADE,
     CONSTRAINT coverage_project_fk FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -309,7 +309,7 @@ CREATE TABLE resources (
     run_id      BIGINT UNSIGNED NOT NULL,
     type        VARCHAR(64) NOT NULL,
     stamp       DOUBLE NOT NULL,
-    payload     JSON NOT NULL,
+    payload     JSON COMPRESSED NOT NULL,
     CONSTRAINT resources_run_fk FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

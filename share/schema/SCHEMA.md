@@ -232,6 +232,21 @@ only when a coverage-producing plugin (`Test2::Plugin::Cover` /
 writes a *complete* snapshot so the run remains useful on its own
 even if other runs are pruned. No dedup across runs.
 
+**Payload compression** — applied at the database level per flavor:
+
+- PostgreSQL: TOAST auto-compresses JSONB payloads over the row
+  threshold; no DDL change. Admins on PG 14+ should set
+  `default_toast_compression = 'lz4'` in `postgresql.conf` for
+  faster compress/decompress on the JSONB payload columns.
+- MariaDB: `payload` declared `JSON COMPRESSED` (zlib, transparent
+  to readers).
+- MySQL / Percona: tables declared
+  `ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8` (page-level InnoDB
+  compression — coarser than per-column but per-column is not
+  available on these flavors).
+- SQLite: no native option; recorder may zstd-encode the JSON
+  before insert if size becomes a concern.
+
 ### resources
 Per-sample telemetry rows. Resource events ship on the event stream
 (`facet_data.resource`) when a producer plugin (CPU sampler, memory
@@ -243,6 +258,7 @@ sampler, custom resource) is active.
 - `payload` — JSON; producer-defined shape.
 - Indexed by `(run_id, type, stamp)` for sequential single-timeseries
   reads.
+- Same per-flavor payload compression as `coverage` above.
 
 ## Index strategy
 

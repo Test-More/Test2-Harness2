@@ -1459,6 +1459,27 @@ Typical queries:
   SELECT DISTINCT type FROM resources WHERE run_id = ?;
   ```
 
+**Compression for `coverage.payload` and `resources.payload`** —
+both payload columns can grow large; compression is configured per
+flavor at the DDL level (transparent to readers):
+
+- PostgreSQL: TOAST handles per-column compression automatically
+  for rows past the toast tuple threshold. The DDL does not pin an
+  algorithm — admins set the server-wide
+  `default_toast_compression` GUC. On PG 14+ this should be `lz4`
+  for the faster compress / decompress path. When PG eventually
+  adds ZSTD as a TOAST algorithm, the same GUC picks it up with no
+  schema migration.
+- MariaDB: `payload JSON COMPRESSED` (per-column attribute, zlib
+  under the hood, requires InnoDB).
+- MySQL / Percona: no per-column attribute available — the two
+  tables instead carry
+  `ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8` for page-level InnoDB
+  compression. Coarser than per-column but it is the only portable
+  option.
+- SQLite: no native option. The recorder may zstd-encode the JSON
+  before insert if size becomes a concern; not done by default.
+
 ### 13.3 Existing reference schema
 
 `reference/old3/share/schema/` already contains a `sqlite.sql`,

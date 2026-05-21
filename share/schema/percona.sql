@@ -337,7 +337,7 @@ CREATE TABLE coverage (
     UNIQUE KEY coverage_run_source_unique (run_id, source_file),
     CONSTRAINT coverage_run_fk     FOREIGN KEY (run_id)     REFERENCES runs(run_id)         ON DELETE CASCADE,
     CONSTRAINT coverage_project_fk FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8;
 
 CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp);
 CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);
@@ -349,6 +349,6 @@ CREATE TABLE resources (
     stamp       DOUBLE NOT NULL,
     payload     JSON NOT NULL,
     CONSTRAINT resources_run_fk FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8;
 
 CREATE INDEX resources_run_type_stamp_idx ON resources(run_id, type, stamp);
