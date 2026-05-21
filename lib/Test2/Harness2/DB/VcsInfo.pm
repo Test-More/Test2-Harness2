@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Service;
+package Test2::Harness2::DB::VcsInfo;
 use strict;
 use warnings;
 
@@ -6,17 +6,15 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <service_id
-    <collector_id
-    <runner_id
-    <run_id
-    <name
-    <class
-    <pid
+    <vcs_info_id
+    <project_id
+    <branch
+    <revision
+    <dirty
 };
-sub TABLE       { 'services' }
-sub PRIMARY_KEY { 'service_id' }
-sub COLUMNS     { qw/service_id collector_id runner_id run_id name class pid/ }
+sub TABLE       { 'vcs_info' }
+sub PRIMARY_KEY { 'vcs_info_id' }
+sub COLUMNS     { qw/vcs_info_id project_id branch revision dirty/ }
 
 1;
 
@@ -28,13 +26,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Service - Row object for the C<services> table.
+Test2::Harness2::DB::VcsInfo - Row object for the C<vcs_info> table.
 
 =head1 DESCRIPTION
 
-One row per service. Name is unique per C<(runner_id, run_id)>. The
-C<pid> column carries the service process's pid so other processes
-can wake its poll-loop with C<SIGUSR1>.
+One row per (project, branch, revision, dirty) tuple. Optional
+companion to L<Test2::Harness2::DB::Version> for runs done during
+development. C<Test2::Harness2> never auto-detects this; the
+queueing tool fills in the values.
 
 =head1 SOURCE
 

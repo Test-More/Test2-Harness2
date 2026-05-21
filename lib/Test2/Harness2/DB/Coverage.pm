@@ -1,4 +1,4 @@
-package Test2::Harness2::Project::TestFile;
+package Test2::Harness2::DB::Coverage;
 use strict;
 use warnings;
 
@@ -6,13 +6,17 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <test_file_id
+    <coverage_id
+    <run_id
     <project_id
-    <relative
+    <source_file
+    <stamp
+    <payload
 };
-sub TABLE       { 'test_files' }
-sub PRIMARY_KEY { 'test_file_id' }
-sub COLUMNS     { qw/test_file_id project_id relative/ }
+sub TABLE        { 'coverage' }
+sub PRIMARY_KEY  { 'coverage_id' }
+sub COLUMNS      { qw/coverage_id run_id project_id source_file stamp payload/ }
+sub JSON_COLUMNS { qw/payload/ }
 
 1;
 
@@ -24,12 +28,21 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Project::TestFile - Row object for the C<test_files> table.
+Test2::Harness2::DB::Coverage - Row object for the C<coverage> table.
 
 =head1 DESCRIPTION
 
-One row per test-file path under a project. Deduplicated by
-C<(project_id, relative)>.
+One row per (coverage-producing run, source_file). C<payload> is
+JSON with the canonical shape
+
+    {
+      "subs":       { "Foo::bar" => [...tests...] },
+      "file_level": [...tests...],
+      "meta":       { "managers" => [...] }
+    }
+
+See C<ARCHITECTURE.md> for the full description and the canonical
+"latest" / "merge several runs" queries.
 
 =head1 SOURCE
 

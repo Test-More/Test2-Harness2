@@ -1,4 +1,4 @@
-package Test2::Harness2::Launcher;
+package Test2::Harness2::DB::Host;
 use strict;
 use warnings;
 
@@ -6,22 +6,12 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <launcher_id
-    <runner_id
-    <run_id
-    <collector_id
+    <host_id
     <name
-    <class
-    <spec
-    <pid
-    <spawn_socket
 };
-sub TABLE        { 'launchers' }
-sub PRIMARY_KEY  { 'launcher_id' }
-sub COLUMNS      {
-    qw/launcher_id runner_id run_id collector_id name class spec pid spawn_socket/
-}
-sub JSON_COLUMNS { qw/spec/ }
+sub TABLE       { 'hosts' }
+sub PRIMARY_KEY { 'host_id' }
+sub COLUMNS     { qw/host_id name/ }
 
 1;
 
@@ -33,13 +23,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Launcher - Row object for the C<launchers> table.
+Test2::Harness2::DB::Host - Row object for the C<hosts> table.
 
 =head1 DESCRIPTION
 
-One row per launcher: its class, JSON construction spec, owning
-collector / runner / (optional) run, the pid for C<SIGUSR1> wake-ups,
-and a C<spawn_socket> path when the launcher supports spawn.
+One row per system hostname. Deduplicated by name.
 
 =head1 SOURCE
 

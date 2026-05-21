@@ -11,6 +11,8 @@ use File::Basename qw/dirname/;
 use POSIX ();
 use Scalar::Util qw/blessed/;
 
+use Test2::Harness2::Util qw/table_to_db_class/;
+
 use Object::HashBase qw{
     <dsn
     <flavor
@@ -152,41 +154,17 @@ sub DESTROY {
     $self->disconnect if $self->{+DBH};
 }
 
-my %TABLE_TO_CLASS = (
-    users              => 'Test2::Harness2::User',
-    hosts              => 'Test2::Harness2::Host',
-    projects           => 'Test2::Harness2::Project',
-    versions           => 'Test2::Harness2::Project::Version',
-    vcs_info           => 'Test2::Harness2::Project::VcsInfo',
-    test_files         => 'Test2::Harness2::Project::TestFile',
-    instances          => 'Test2::Harness2::Instance',
-    runners            => 'Test2::Harness2::Runner',
-    collectors         => 'Test2::Harness2::Runner::Collector',
-    services           => 'Test2::Harness2::Runner::Service',
-    service_state      => 'Test2::Harness2::Runner::Service::State',
-    requests           => 'Test2::Harness2::Runner::Service::Request',
-    schedulers         => 'Test2::Harness2::Runner::Scheduler',
-    resources          => 'Test2::Harness2::Runner::Resource',
-    resource_snapshots => 'Test2::Harness2::Runner::Resource::Snapshot',
-    runs               => 'Test2::Harness2::Runner::Run',
-    jobs               => 'Test2::Harness2::Runner::Run::Job',
-    job_tries          => 'Test2::Harness2::Runner::Run::Job::Try',
-    artifacts          => 'Test2::Harness2::Runner::Run::Artifact',
-    coverage           => 'Test2::Harness2::Runner::Run::Coverage',
-    launchers          => 'Test2::Harness2::Launcher',
-    launches           => 'Test2::Harness2::Launcher::Launch',
-);
-
 sub _row_class {
     my ($self, $table) = @_;
 
-    my $class = $table =~ /::/
-        ? $table
-        : ($TABLE_TO_CLASS{$table} or croak "unknown table '$table'");
+    my $class = $table =~ /::/ ? $table : table_to_db_class($table);
 
     unless ($class->can('new')) {
         (my $file = $class) =~ s{::}{/}g;
-        require "$file.pm";
+        local $@;
+        unless (eval { require $file . ".pm"; 1 }) {
+            croak "could not load row class '$class' for table '$table': $@";
+        }
     }
     return $class;
 }
@@ -206,10 +184,7 @@ sub fetch_all {
     my ($sql, @binds) = $self->_build_select($tname, \%where);
     my $rows = $self->{+DBH}->selectall_arrayref($sql, {Slice => {}}, @binds);
 
-    return map {
-        my $row_class = $class->class_for_row($_);
-        $row_class->new(_handle => $self, %$_);
-    } @$rows;
+    return map { $class->new(_handle => $self, %$_) } @$rows;
 }
 
 sub insert {
@@ -246,8 +221,7 @@ sub insert {
     my @out;
     for my $i (0 .. $#inserts) {
         my %row = (%{$inserts[$i]}, $pk => $ids[$i]);
-        my $row_class = $class->class_for_row(\%row);
-        push @out => $row_class->new(_handle => $self, %row);
+        push @out => $class->new(_handle => $self, %row);
     }
     return @out;
 }
@@ -419,7 +393,7 @@ step.
 
 Return a single row object matching C<%where>, or C<undef>.
 C<$table> can be a table name (C<'users'>) or a row class name
-(C<'Test2::Harness2::User'>). Croaks if more than one row
+(C<'Test2::Harness2::DB::User'>). Croaks if more than one row
 matches.
 
 =item @rows = $h->fetch_all($table, %where)

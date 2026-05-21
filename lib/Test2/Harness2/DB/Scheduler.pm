@@ -1,4 +1,4 @@
-package Test2::Harness2::Project;
+package Test2::Harness2::DB::Scheduler;
 use strict;
 use warnings;
 
@@ -6,12 +6,15 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <project_id
-    <name
+    <scheduler_id
+    <runner_id
+    <class
+    <spec
 };
-sub TABLE       { 'projects' }
-sub PRIMARY_KEY { 'project_id' }
-sub COLUMNS     { qw/project_id name/ }
+sub TABLE        { 'schedulers' }
+sub PRIMARY_KEY  { 'scheduler_id' }
+sub COLUMNS      { qw/scheduler_id runner_id class spec/ }
+sub JSON_COLUMNS { qw/spec/ }
 
 1;
 
@@ -23,11 +26,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Project - Row object for the C<projects> table.
+Test2::Harness2::DB::Scheduler - Row object for the C<schedulers>
+table.
 
 =head1 DESCRIPTION
 
-One row per project. Deduplicated by name.
+One row per runner. C<class> is the Perl class implementing the
+scheduler; C<spec> is the JSON construction spec (queue policy,
+concurrency caps, resource bindings, etc.).
 
 =head1 SOURCE
 

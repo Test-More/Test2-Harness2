@@ -1,4 +1,4 @@
-package Test2::Harness2::User;
+package Test2::Harness2::DB::Launch;
 use strict;
 use warnings;
 
@@ -6,13 +6,15 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <user_id
-    <name
-    <email
+    <launch_id
+    <launcher_id
+    <job_id
+    <requested
+    <started
 };
-sub TABLE       { 'users' }
-sub PRIMARY_KEY { 'user_id' }
-sub COLUMNS     { qw/user_id name email/ }
+sub TABLE       { 'launches' }
+sub PRIMARY_KEY { 'launch_id' }
+sub COLUMNS     { qw/launch_id launcher_id job_id requested started/ }
 
 1;
 
@@ -24,11 +26,13 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::User - Row object for the C<users> table.
+Test2::Harness2::DB::Launch - Row object for the C<launches> table.
 
 =head1 DESCRIPTION
 
-One row per known user. Deduplicated by C<name>.
+One row per scheduler-launcher handoff. The scheduler inserts with
+C<requested> set; the launcher fills in C<started> after it starts the
+process.
 
 =head1 SOURCE
 

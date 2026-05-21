@@ -1,4 +1,4 @@
-package Test2::Harness2::Project::Version;
+package Test2::Harness2::DB::Collector;
 use strict;
 use warnings;
 
@@ -6,13 +6,22 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <version_id
-    <project_id
-    <version
+    <collector_id
+    <runner_id
+    <name
+    <pid
+    <watched
+    <type
+    <start_time
+    <stop_time
+    <exit_code
+    <finalized
 };
-sub TABLE       { 'versions' }
-sub PRIMARY_KEY { 'version_id' }
-sub COLUMNS     { qw/version_id project_id version/ }
+sub TABLE       { 'collectors' }
+sub PRIMARY_KEY { 'collector_id' }
+sub COLUMNS     {
+    qw/collector_id runner_id name pid watched type start_time stop_time exit_code finalized/
+}
 
 1;
 
@@ -24,11 +33,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Project::Version - Row object for the C<versions> table.
+Test2::Harness2::DB::Collector - Row object for the C<collectors> table.
 
 =head1 DESCRIPTION
 
-One row per project version. Deduplicated by C<(project_id, version)>.
+One row per collector process: its pid, the pid it watches, its type
+(C<'service'>, C<'test job'>, etc.), start/stop timestamps, the
+collected process's exit code, and the timestamp the recorder
+finalized its bookkeeping.
 
 =head1 SOURCE
 

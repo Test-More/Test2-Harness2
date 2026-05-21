@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner;
+package Test2::Harness2::DB::User;
 use strict;
 use warnings;
 
@@ -6,16 +6,13 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <runner_id
-    <instance_id
-    <pid
-    <started
-    <finished
-    <finalized
+    <user_id
+    <name
+    <email
 };
-sub TABLE       { 'runners' }
-sub PRIMARY_KEY { 'runner_id' }
-sub COLUMNS     { qw/runner_id instance_id pid started finished finalized/ }
+sub TABLE       { 'users' }
+sub PRIMARY_KEY { 'user_id' }
+sub COLUMNS     { qw/user_id name email/ }
 
 1;
 
@@ -27,11 +24,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner - Row object for the C<runners> table.
+Test2::Harness2::DB::User - Row object for the C<users> table.
 
 =head1 DESCRIPTION
 
-One row per runner process under a harness instance.
+One row per known user. Deduplicated by C<name>.
 
 =head1 SOURCE
 

@@ -1,4 +1,4 @@
-package Test2::Harness2::Project::VcsInfo;
+package Test2::Harness2::DB::ServiceState;
 use strict;
 use warnings;
 
@@ -6,15 +6,16 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <vcs_info_id
-    <project_id
-    <branch
-    <revision
-    <dirty
+    <service_state_id
+    <service_id
+    <stamp
+    <status
+    <content
 };
-sub TABLE       { 'vcs_info' }
-sub PRIMARY_KEY { 'vcs_info_id' }
-sub COLUMNS     { qw/vcs_info_id project_id branch revision dirty/ }
+sub TABLE        { 'service_state' }
+sub PRIMARY_KEY  { 'service_state_id' }
+sub COLUMNS      { qw/service_state_id service_id stamp status content/ }
+sub JSON_COLUMNS { qw/content/ }
 
 1;
 
@@ -26,14 +27,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Project::VcsInfo - Row object for the C<vcs_info> table.
+Test2::Harness2::DB::ServiceState - Row object for the C<service_state>
+table.
 
 =head1 DESCRIPTION
 
-One row per (project, branch, revision, dirty) tuple. Optional
-companion to L<Test2::Harness2::Project::Version> for runs done during
-development. C<Test2::Harness2> never auto-detects this; the
-queueing tool fills in the values.
+Append-only state log for a service; most recent row per
+C<service_id> wins. C<content> is a JSON payload the service writes
+to publish state to readers.
 
 =head1 SOURCE
 

@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Run;
+package Test2::Harness2::DB::Run;
 use strict;
 use warnings;
 
@@ -52,7 +52,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run - Row object for the C<runs> table.
+Test2::Harness2::DB::Run - Row object for the C<runs> table.
 
 =head1 DESCRIPTION
 

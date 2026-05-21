@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Service::Request;
+package Test2::Harness2::DB::Runner;
 use strict;
 use warnings;
 
@@ -6,18 +6,16 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <request_id
-    <service_id
-    <requested
-    <completed
+    <runner_id
+    <instance_id
+    <pid
+    <started
+    <finished
     <finalized
-    <payload
-    <response
 };
-sub TABLE        { 'requests' }
-sub PRIMARY_KEY  { 'request_id' }
-sub COLUMNS      { qw/request_id service_id requested completed finalized payload response/ }
-sub JSON_COLUMNS { qw/payload response/ }
+sub TABLE       { 'runners' }
+sub PRIMARY_KEY { 'runner_id' }
+sub COLUMNS     { qw/runner_id instance_id pid started finished finalized/ }
 
 1;
 
@@ -29,14 +27,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Service::Request - Row object for the C<requests>
-table.
+Test2::Harness2::DB::Runner - Row object for the C<runners> table.
 
 =head1 DESCRIPTION
 
-One row per request directed at a service. Unified shape for both
-request/response and fire-and-forget notification flows; the latter
-leave C<response> C<NULL> and may be deleted on ack.
+One row per runner process under a harness instance.
 
 =head1 SOURCE
 

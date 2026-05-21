@@ -211,6 +211,72 @@ this layout:
 - Drop any reference to the old `resources.type` / `resources.run_id`
   columns directly on snapshot rows.
 
+## Addendum: split DB row classes vs. logic classes
+
+Captured later in the same session. After the row-role refactor and
+the schedulers/resources schema split landed, the user asked
+whether the per-table classes should remain "double-duty" (row +
+logic in one) or split into dumb DB row classes plus separate
+logic classes.
+
+Decision: **split**, codified in `ARCHITECTURE.md` §4.3 + §4.4.
+
+### What landed in this addendum
+
+- All 22 row classes moved from `Test2::Harness2::*` to
+  `Test2::Harness2::DB::*` (flat layout under `DB::`).
+- DB class name is derived from the table name by depluralising
+  (`ies $<gt> y`, then `ches $<gt> ch`, then strip trailing `s`),
+  CamelCasing the snake_case parts, and prefixing
+  `Test2::Harness2::DB::`. The conversion lives in
+  `Test2::Harness2::Util::table_to_db_class` and is shared between
+  `Test2::Harness2::_row_class` and
+  `Test2::Harness2::Util::DBDelegate`. **No table → class hash.**
+- The `Runner::Resource` / `Runner::Run::Resource` polymorphism is
+  dropped at the row layer. `DB::Resource` is one class; the
+  runner-global vs. run-scoped split is a logic-layer concern and
+  will be authored later as two logic classes in
+  `Test2::Harness2::Runner::Resource` (base) and
+  `Test2::Harness2::Runner::Run::Resource` (subclass), with the
+  logic factory on the handle picking between them based on the
+  row's `run_id`.
+- `class_for_row` is removed from `Role::Row`.
+- New `Test2::Harness2::Util::DBDelegate` helper for logic classes:
+  `use Test2::Harness2::Util::DBDelegate '$table';` installs `ROW`
+  constant, `row` accessor, `TABLE` / `DB_CLASS` class methods,
+  and per-column delegate readers in the caller. The slot name is
+  `row`; HashBase remains unaware of it.
+
+### Why split, not combined
+
+Summary; full rationale in `ARCHITECTURE.md` §4.4 and the
+conversation that produced this decision.
+
+- Mutator surface is a class-level boundary (external consumers
+  import `DB::*` and cannot accidentally call mutator logic).
+- `class_for_row` smell goes away — dispatch is logic-layer, not
+  row-layer.
+- Lookup tables (User, Host, Project, …) don't need a logic class.
+- TO_JSON / serialization is safer with row hashes that hold only
+  column data.
+- Combined → split is a painful migration once the public API is
+  mixed. Split → combined is mechanical.
+
+### Logic classes — what exists yet
+
+Nothing. Logic classes will be authored as stages 6/7/8 land. This
+stage ships only the DB layer + the `DBDelegate` helper, so the
+logic-class pattern is ready when needed.
+
+### Replay note for downstream branches
+
+Any downstream branch that hard-codes a row class name needs to
+swap `Test2::Harness2::Foo` for `Test2::Harness2::DB::Foo` (and
+walk through the depluralisation if the new name needs different
+spelling). Branches that started writing "logic-on-row" methods
+need to split them out into a new logic class that uses
+`Test2::Harness2::Util::DBDelegate`.
+
 ## Session-tracking note
 
 The `feedback` file at the repo root is untracked. It is left in

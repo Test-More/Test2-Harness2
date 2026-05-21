@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Collector;
+package Test2::Harness2::DB::Launcher;
 use strict;
 use warnings;
 
@@ -6,22 +6,22 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <collector_id
+    <launcher_id
     <runner_id
+    <run_id
+    <collector_id
     <name
+    <class
+    <spec
     <pid
-    <watched
-    <type
-    <start_time
-    <stop_time
-    <exit_code
-    <finalized
+    <spawn_socket
 };
-sub TABLE       { 'collectors' }
-sub PRIMARY_KEY { 'collector_id' }
-sub COLUMNS     {
-    qw/collector_id runner_id name pid watched type start_time stop_time exit_code finalized/
+sub TABLE        { 'launchers' }
+sub PRIMARY_KEY  { 'launcher_id' }
+sub COLUMNS      {
+    qw/launcher_id runner_id run_id collector_id name class spec pid spawn_socket/
 }
+sub JSON_COLUMNS { qw/spec/ }
 
 1;
 
@@ -33,14 +33,13 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Collector - Row object for the C<collectors> table.
+Test2::Harness2::DB::Launcher - Row object for the C<launchers> table.
 
 =head1 DESCRIPTION
 
-One row per collector process: its pid, the pid it watches, its type
-(C<'service'>, C<'test job'>, etc.), start/stop timestamps, the
-collected process's exit code, and the timestamp the recorder
-finalized its bookkeeping.
+One row per launcher: its class, JSON construction spec, owning
+collector / runner / (optional) run, the pid for C<SIGUSR1> wake-ups,
+and a C<spawn_socket> path when the launcher supports spawn.
 
 =head1 SOURCE
 

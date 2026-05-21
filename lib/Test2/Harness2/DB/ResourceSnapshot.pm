@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Run::Coverage;
+package Test2::Harness2::DB::ResourceSnapshot;
 use strict;
 use warnings;
 
@@ -6,16 +6,14 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <coverage_id
-    <run_id
-    <project_id
-    <source_file
+    <resource_snapshot_id
+    <resource_id
     <stamp
     <payload
 };
-sub TABLE        { 'coverage' }
-sub PRIMARY_KEY  { 'coverage_id' }
-sub COLUMNS      { qw/coverage_id run_id project_id source_file stamp payload/ }
+sub TABLE        { 'resource_snapshots' }
+sub PRIMARY_KEY  { 'resource_snapshot_id' }
+sub COLUMNS      { qw/resource_snapshot_id resource_id stamp payload/ }
 sub JSON_COLUMNS { qw/payload/ }
 
 1;
@@ -28,21 +26,16 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run::Coverage - Row object for the C<coverage> table.
+Test2::Harness2::DB::ResourceSnapshot - Row object for the
+C<resource_snapshots> table.
 
 =head1 DESCRIPTION
 
-One row per (coverage-producing run, source_file). C<payload> is
-JSON with the canonical shape
-
-    {
-      "subs":       { "Foo::bar" => [...tests...] },
-      "file_level": [...tests...],
-      "meta":       { "managers" => [...] }
-    }
-
-See C<ARCHITECTURE.md> for the full description and the canonical
-"latest" / "merge several runs" queries.
+One row per resource sample. C<payload> is the producer-defined JSON
+sample body. C<resource_id> points at the
+L<Test2::Harness2::DB::Resource> row whose C<class> identifies
+the sample's type. Indexed by C<(resource_id, stamp)> for sequential
+single-resource reads.
 
 =head1 SOURCE
 

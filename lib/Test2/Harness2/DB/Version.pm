@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Run::Job;
+package Test2::Harness2::DB::Version;
 use strict;
 use warnings;
 
@@ -6,15 +6,13 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <job_id
-    <run_id
-    <test_file_id
-    <spec
+    <version_id
+    <project_id
+    <version
 };
-sub TABLE        { 'jobs' }
-sub PRIMARY_KEY  { 'job_id' }
-sub COLUMNS      { qw/job_id run_id test_file_id spec/ }
-sub JSON_COLUMNS { qw/spec/ }
+sub TABLE       { 'versions' }
+sub PRIMARY_KEY { 'version_id' }
+sub COLUMNS     { qw/version_id project_id version/ }
 
 1;
 
@@ -26,12 +24,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run::Job - Row object for the C<jobs> table.
+Test2::Harness2::DB::Version - Row object for the C<versions> table.
 
 =head1 DESCRIPTION
 
-One row per scheduled job under a run. C<spec> is the JSON launch
-spec (env, args, directives, retry policy, etc.).
+One row per project version. Deduplicated by C<(project_id, version)>.
 
 =head1 SOURCE
 

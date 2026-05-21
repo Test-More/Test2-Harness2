@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Run::Job::Try;
+package Test2::Harness2::DB::JobTry;
 use strict;
 use warnings;
 
@@ -48,7 +48,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run::Job::Try - Row object for the C<job_tries> table.
+Test2::Harness2::DB::JobTry - Row object for the C<job_tries> table.
 
 =head1 DESCRIPTION
 

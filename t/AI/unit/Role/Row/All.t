@@ -1,32 +1,31 @@
 use Test2::V0;
 
 my @classes = qw(
-    Test2::Harness2::User
-    Test2::Harness2::Host
-    Test2::Harness2::Project
-    Test2::Harness2::Project::Version
-    Test2::Harness2::Project::VcsInfo
-    Test2::Harness2::Project::TestFile
-    Test2::Harness2::Instance
-    Test2::Harness2::Runner
-    Test2::Harness2::Runner::Collector
-    Test2::Harness2::Runner::Service
-    Test2::Harness2::Runner::Service::State
-    Test2::Harness2::Runner::Service::Request
-    Test2::Harness2::Runner::Scheduler
-    Test2::Harness2::Runner::Resource
-    Test2::Harness2::Runner::Resource::Snapshot
-    Test2::Harness2::Runner::Run
-    Test2::Harness2::Runner::Run::Job
-    Test2::Harness2::Runner::Run::Job::Try
-    Test2::Harness2::Runner::Run::Artifact
-    Test2::Harness2::Runner::Run::Coverage
-    Test2::Harness2::Runner::Run::Resource
-    Test2::Harness2::Launcher
-    Test2::Harness2::Launcher::Launch
+    Test2::Harness2::DB::User
+    Test2::Harness2::DB::Host
+    Test2::Harness2::DB::Project
+    Test2::Harness2::DB::Version
+    Test2::Harness2::DB::VcsInfo
+    Test2::Harness2::DB::TestFile
+    Test2::Harness2::DB::Instance
+    Test2::Harness2::DB::Runner
+    Test2::Harness2::DB::Collector
+    Test2::Harness2::DB::Service
+    Test2::Harness2::DB::ServiceState
+    Test2::Harness2::DB::Request
+    Test2::Harness2::DB::Scheduler
+    Test2::Harness2::DB::Resource
+    Test2::Harness2::DB::ResourceSnapshot
+    Test2::Harness2::DB::Run
+    Test2::Harness2::DB::Job
+    Test2::Harness2::DB::JobTry
+    Test2::Harness2::DB::Artifact
+    Test2::Harness2::DB::Coverage
+    Test2::Harness2::DB::Launcher
+    Test2::Harness2::DB::Launch
 );
 
-is(scalar(@classes), 23, '23 row classes expected');
+is(scalar(@classes), 22, '22 DB row classes expected');
 
 for my $class (@classes) {
     (my $file = $class) =~ s{::}{/}g;

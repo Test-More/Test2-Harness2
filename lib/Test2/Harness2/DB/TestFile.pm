@@ -1,4 +1,4 @@
-package Test2::Harness2::Instance;
+package Test2::Harness2::DB::TestFile;
 use strict;
 use warnings;
 
@@ -6,19 +6,13 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <instance_id
-    <instance_uuid
-    <host_id
-    <user_id
-    <started
-    <finished
-    <meta
-    <finalized
+    <test_file_id
+    <project_id
+    <relative
 };
-sub TABLE        { 'instances' }
-sub PRIMARY_KEY  { 'instance_id' }
-sub COLUMNS      { qw/instance_id instance_uuid host_id user_id started finished meta finalized/ }
-sub JSON_COLUMNS { qw/meta/ }
+sub TABLE       { 'test_files' }
+sub PRIMARY_KEY { 'test_file_id' }
+sub COLUMNS     { qw/test_file_id project_id relative/ }
 
 1;
 
@@ -30,12 +24,12 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Instance - Row object for the C<instances> table.
+Test2::Harness2::DB::TestFile - Row object for the C<test_files> table.
 
 =head1 DESCRIPTION
 
-One row per harness instance. The C<meta> column is JSON; the row class
-does not auto-decode it.
+One row per test-file path under a project. Deduplicated by
+C<(project_id, relative)>.
 
 =head1 SOURCE
 

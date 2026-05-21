@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Resource::Snapshot;
+package Test2::Harness2::DB::Artifact;
 use strict;
 use warnings;
 
@@ -6,15 +6,15 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <resource_snapshot_id
-    <resource_id
-    <stamp
-    <payload
+    <artifact_id
+    <collector_id
+    <filename
+    <content
+    <local_path
 };
-sub TABLE        { 'resource_snapshots' }
-sub PRIMARY_KEY  { 'resource_snapshot_id' }
-sub COLUMNS      { qw/resource_snapshot_id resource_id stamp payload/ }
-sub JSON_COLUMNS { qw/payload/ }
+sub TABLE       { 'artifacts' }
+sub PRIMARY_KEY { 'artifact_id' }
+sub COLUMNS     { qw/artifact_id collector_id filename content local_path/ }
 
 1;
 
@@ -26,16 +26,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Resource::Snapshot - Row object for the
-C<resource_snapshots> table.
+Test2::Harness2::DB::Artifact - Row object for the C<artifacts> table.
 
 =head1 DESCRIPTION
 
-One row per resource sample. C<payload> is the producer-defined JSON
-sample body. C<resource_id> points at the
-L<Test2::Harness2::Runner::Resource> row whose C<class> identifies
-the sample's type. Indexed by C<(resource_id, stamp)> for sequential
-single-resource reads.
+One row per file produced by a collector. Exactly one of C<content>
+(inline bytes) and C<local_path> (path on disk) is non-null at any
+time; the recorder migrates C<local_path> bytes into C<content> on
+finalize.
 
 =head1 SOURCE
 

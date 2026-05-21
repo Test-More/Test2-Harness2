@@ -1,12 +1,22 @@
-package Test2::Harness2::Runner::Run::Resource;
+package Test2::Harness2::DB::Service;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    @Test2::Harness2::Runner::Resource
+    &Test2::Harness2::Role::Row
+    <service_id
+    <collector_id
+    <runner_id
+    <run_id
+    <name
+    <class
+    <pid
 };
+sub TABLE       { 'services' }
+sub PRIMARY_KEY { 'service_id' }
+sub COLUMNS     { qw/service_id collector_id runner_id run_id name class pid/ }
 
 1;
 
@@ -18,19 +28,13 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run::Resource - Row object for run-scoped
-C<resources> rows.
+Test2::Harness2::DB::Service - Row object for the C<services> table.
 
 =head1 DESCRIPTION
 
-Subclass of L<Test2::Harness2::Runner::Resource> used when a
-C<resources> row carries a non-null C<run_id>. Identical column set
-and behavior; the only purpose of the subclass is to make
-C<isa('Test2::Harness2::Runner::Run::Resource')> a one-line test for
-"this resource is scoped to a specific run".
-
-The runner-global / run-scoped split is decided in
-L<Test2::Harness2::Runner::Resource/class_for_row>.
+One row per service. Name is unique per C<(runner_id, run_id)>. The
+C<pid> column carries the service process's pid so other processes
+can wake its poll-loop with C<SIGUSR1>.
 
 =head1 SOURCE
 

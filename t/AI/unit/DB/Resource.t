@@ -3,8 +3,8 @@ use File::Temp qw/tempdir/;
 use File::Spec ();
 
 use Test2::Harness2;
-use Test2::Harness2::Runner::Resource;
-use Test2::Harness2::Runner::Run::Resource;
+use Test2::Harness2::DB::Resource;
+use Test2::Harness2::DB::ResourceSnapshot;
 
 sub _new_harness {
     my $path = File::Spec->catfile(tempdir(CLEANUP => 1), 't.t2h2');
@@ -43,70 +43,51 @@ sub _make_run {
     return $run;
 }
 
-subtest class_for_row_picks_base_when_run_id_null => sub {
-    is(
-        Test2::Harness2::Runner::Resource->class_for_row({runner_id => 1}),
-        'Test2::Harness2::Runner::Resource',
-        'null run_id -> base class',
-    );
-};
-
-subtest class_for_row_picks_subclass_when_run_id_set => sub {
-    is(
-        Test2::Harness2::Runner::Resource->class_for_row({runner_id => 1, run_id => 7}),
-        'Test2::Harness2::Runner::Run::Resource',
-        'run_id set -> Run::Resource subclass',
-    );
-};
-
-subtest insert_dispatches_to_subclass => sub {
+subtest insert_runner_global_resource => sub {
     my $h      = _new_harness();
     my $runner = _make_runner($h);
-    my $run    = _make_run($h, $runner);
 
     my ($global) = $h->insert(resources => {
         runner_id => $runner->runner_id,
         class     => 'My::CPU',
         spec      => '{}',
     });
+    isa_ok($global, ['Test2::Harness2::DB::Resource']);
+    is($global->runner_id, $runner->runner_id);
+    is($global->run_id, undef, 'runner-global has null run_id');
+    is($global->class, 'My::CPU');
+
+    $h->disconnect;
+};
+
+subtest insert_run_scoped_resource => sub {
+    my $h      = _new_harness();
+    my $runner = _make_runner($h);
+    my $run    = _make_run($h, $runner);
+
     my ($scoped) = $h->insert(resources => {
         runner_id => $runner->runner_id,
         run_id    => $run->run_id,
         class     => 'My::Mem',
         spec      => '{}',
     });
-
-    isa_ok($global, ['Test2::Harness2::Runner::Resource'], 'runner-global = base class');
-    ok(
-        !$global->isa('Test2::Harness2::Runner::Run::Resource'),
-        'runner-global is not the Run subclass',
-    );
-    isa_ok($scoped, ['Test2::Harness2::Runner::Run::Resource'], 'run-scoped = subclass');
-    isa_ok($scoped, ['Test2::Harness2::Runner::Resource'], 'subclass still isa base');
+    isa_ok($scoped, ['Test2::Harness2::DB::Resource']);
+    is($scoped->run_id, $run->run_id);
 
     $h->disconnect;
 };
 
-subtest fetch_all_dispatches_per_row => sub {
+subtest fetch_all_returns_db_class => sub {
     my $h      = _new_harness();
     my $runner = _make_runner($h);
     my $run    = _make_run($h, $runner);
 
-    $h->insert(resources => {
-        runner_id => $runner->runner_id,
-        class     => 'My::CPU',
-    });
-    $h->insert(resources => {
-        runner_id => $runner->runner_id,
-        run_id    => $run->run_id,
-        class     => 'My::Mem',
-    });
+    $h->insert(resources => {runner_id => $runner->runner_id, class => 'My::CPU'});
+    $h->insert(resources => {runner_id => $runner->runner_id, run_id => $run->run_id, class => 'My::Mem'});
 
-    my @rows = sort { ($a->run_id // 0) <=> ($b->run_id // 0) } $h->fetch_all('resources');
+    my @rows = $h->fetch_all('resources');
     is(scalar(@rows), 2, 'fetched both rows');
-    isa_ok($rows[0], ['Test2::Harness2::Runner::Resource']);
-    ok(!$rows[0]->isa('Test2::Harness2::Runner::Run::Resource'));
-    isa_ok($rows[1], ['Test2::Harness2::Runner::Run::Resource']);
+    isa_ok($_, ['Test2::Harness2::DB::Resource']) for @rows;
 
     $h->disconnect;
 };
@@ -126,7 +107,7 @@ subtest snapshot_table => sub {
         payload     => '{"v":1}',
     });
 
-    isa_ok($snap, ['Test2::Harness2::Runner::Resource::Snapshot']);
+    isa_ok($snap, ['Test2::Harness2::DB::ResourceSnapshot']);
     is($snap->resource_id, $res->resource_id);
     is($snap->payload,     '{"v":1}');
 

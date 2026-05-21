@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Resource;
+package Test2::Harness2::DB::Resource;
 use strict;
 use warnings;
 
@@ -17,13 +17,6 @@ sub PRIMARY_KEY  { 'resource_id' }
 sub COLUMNS      { qw/resource_id runner_id run_id class spec/ }
 sub JSON_COLUMNS { qw/spec/ }
 
-sub class_for_row {
-    my ($class, $row) = @_;
-    return defined($row->{run_id})
-        ? 'Test2::Harness2::Runner::Run::Resource'
-        : 'Test2::Harness2::Runner::Resource';
-}
-
 1;
 
 __END__
@@ -34,8 +27,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Resource - Row object for the C<resources> table
-(runner-global resources; dispatch base for run-scoped subclass).
+Test2::Harness2::DB::Resource - Row object for the C<resources> table.
 
 =head1 DESCRIPTION
 
@@ -44,23 +36,13 @@ the Perl class implementing the resource; C<spec> is the JSON
 construction spec. Resources can be runner-global (C<run_id> NULL) or
 attached to a specific run (C<run_id> set).
 
-This class backs runner-global rows. Rows with a non-null C<run_id>
-load as the subclass L<Test2::Harness2::Runner::Run::Resource> via
-L</class_for_row>, so callers can branch on row class.
+Both halves are the same row class. The runner-global / run-scoped
+distinction lives in the logic layer (L<Test2::Harness2::Runner::Resource>
+and L<Test2::Harness2::Runner::Run::Resource>, to be authored when
+the scheduler / launcher work lands).
 
 Resource samples / telemetry live in the C<resource_snapshots>
-table — see L<Test2::Harness2::Runner::Resource::Snapshot>.
-
-=head1 METHODS
-
-=over 4
-
-=item $real_class = $class->class_for_row(\%data)
-
-Picks L<Test2::Harness2::Runner::Run::Resource> when C<\%data> has
-a defined C<run_id>, otherwise returns this class.
-
-=back
+table — see L<Test2::Harness2::DB::ResourceSnapshot>.
 
 =head1 SOURCE
 

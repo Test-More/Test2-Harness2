@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Run::Artifact;
+package Test2::Harness2::DB::Instance;
 use strict;
 use warnings;
 
@@ -6,15 +6,19 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <artifact_id
-    <collector_id
-    <filename
-    <content
-    <local_path
+    <instance_id
+    <instance_uuid
+    <host_id
+    <user_id
+    <started
+    <finished
+    <meta
+    <finalized
 };
-sub TABLE       { 'artifacts' }
-sub PRIMARY_KEY { 'artifact_id' }
-sub COLUMNS     { qw/artifact_id collector_id filename content local_path/ }
+sub TABLE        { 'instances' }
+sub PRIMARY_KEY  { 'instance_id' }
+sub COLUMNS      { qw/instance_id instance_uuid host_id user_id started finished meta finalized/ }
+sub JSON_COLUMNS { qw/meta/ }
 
 1;
 
@@ -26,14 +30,12 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run::Artifact - Row object for the C<artifacts> table.
+Test2::Harness2::DB::Instance - Row object for the C<instances> table.
 
 =head1 DESCRIPTION
 
-One row per file produced by a collector. Exactly one of C<content>
-(inline bytes) and C<local_path> (path on disk) is non-null at any
-time; the recorder migrates C<local_path> bytes into C<content> on
-finalize.
+One row per harness instance. The C<meta> column is JSON; the row class
+does not auto-decode it.
 
 =head1 SOURCE
 

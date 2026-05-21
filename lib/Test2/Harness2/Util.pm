@@ -29,11 +29,23 @@ our @EXPORT_OK = qw{
     open_file
     read_file
     render_duration
+    table_to_db_class
     unlock_file
     write_file
     write_file_atomic
     write_file_atomic_mode
 };
+
+sub table_to_db_class {
+    my ($table) = @_;
+    my $depluralized = $table;
+    $depluralized =~ s/ies$/y/  ||
+    $depluralized =~ s/ches$/ch/ ||
+    $depluralized =~ s/s$//;
+
+    my $stem = join('', map { ucfirst $_ } split /_/, $depluralized);
+    return "Test2::Harness2::DB::$stem";
+}
 
 =pod
 
