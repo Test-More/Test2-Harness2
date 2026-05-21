@@ -394,6 +394,12 @@ matches.
 
 =cut
 
+# Make where a hashref instead of hash, that way we can add additional arguments.
+# allow $t2h2->fetch($table => \%where)
+# also accept $t2h2->fetch($table, where => \%where, %other_args)
+# also accept $t2h2->fetch($table, \%where, %other_args)
+# same for fetch_all()
+# also accept `limit => $count` in fetch_all to only grab N rows, and have fetch() call with a limit of 2 so that if we ask for one, but get 100 we only fetch 2 before failing instead of fetching 100 before failing.
 sub fetch {
     my ($self, $table, %where) = @_;
     my @rows = $self->fetch_all($table, %where);
@@ -411,6 +417,7 @@ All row objects matching C<%where>.
 
 =cut
 
+# See notes above at fetch();
 sub fetch_all {
     my ($self, $table, %where) = @_;
     my $class = $self->_row_class($table);
