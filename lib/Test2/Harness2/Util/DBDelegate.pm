@@ -7,15 +7,6 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 use Test2::Harness2::Util qw/table_to_db_class/;
 
-my %SKIP_DELEGATE = map { $_ => 1 } qw(
-    import unimport
-    BEGIN END INIT CHECK DESTROY AUTOLOAD UNITCHECK CLONE CLONE_SKIP
-    new init
-    can isa DOES VERSION
-    attr_list add_pre_init add_post_init
-    TABLE PRIMARY_KEY COLUMNS JSON_COLUMNS
-);
-
 sub import {
     my ($class, $table) = @_;
     my $into = caller;
@@ -37,16 +28,22 @@ sub import {
     croak "DB class '$db_class' has TABLE='$expected_table', not '$table'"
         unless $expected_table eq $table;
 
-    my @columns   = $db_class->COLUMNS;
-    my %is_column = map { $_ => 1 } @columns;
+    my @columns = $db_class->COLUMNS;
 
     no strict 'refs';
     no warnings 'redefine';
 
-    *{"${into}::ROW"}      = sub { 'row' };
-    *{"${into}::TABLE"}    = sub { $table };
-    *{"${into}::DB_CLASS"} = sub { $db_class };
+    *{"${into}::ROW"}      = sub() { 'row' };
+    *{"${into}::TABLE"}    = do { my $t = $table;    sub() { $t } };
+    *{"${into}::DB_CLASS"} = do { my $c = $db_class; sub() { $c } };
     *{"${into}::row"}      = sub { $_[0]->{row} };
+
+    unless (defined &{"${into}::save"}) {
+        *{"${into}::save"} = sub { shift->{row}->save(@_) };
+    }
+    unless (defined &{"${into}::refresh"}) {
+        *{"${into}::refresh"} = sub { shift->{row}->refresh(@_) };
+    }
 
     for my $col (@columns) {
         my $name = $col;
@@ -57,19 +54,6 @@ sub import {
         unless (defined &{"${into}::${setter}"}) {
             *{"${into}::${setter}"} = sub { $_[0]->{row}->{$name} = $_[1] };
         }
-    }
-
-    for my $name (sort keys %{"${db_class}::"}) {
-        next if $SKIP_DELEGATE{$name};
-        next if $name =~ /^_/;                          # private
-        next if $name =~ /^[A-Z][A-Z0-9_]*$/;           # constant
-        next if $is_column{$name};                      # column reader (installed)
-        next if $name =~ /^set_(.+)$/ && $is_column{$1};# column setter (installed)
-        next unless defined &{"${db_class}::${name}"};
-        next if defined &{"${into}::${name}"};
-
-        my $method = $name;
-        *{"${into}::${name}"} = sub { shift->{row}->$method(@_) };
     }
 
     return;
@@ -117,8 +101,11 @@ class so its column accessors forward to the underlying DB row.
         # Write columns via direct-hash setter:
         $self->set_class('My::NewClass');
 
-        # Or apply several changes and persist in one shot:
+        # save / refresh delegate to the row directly:
         $self->save({class => 'My::Other', spec => '{...}'});
+
+        # Other non-column row methods go through the row accessor:
+        my $json = $self->row->TO_JSON;
     }
 
 =head1 DESCRIPTION
@@ -205,59 +192,22 @@ If the caller already has a method by that name (e.g. it defined
 an override before C<use>'ing this helper), the existing method is
 preserved.
 
-=item Symbol-walk delegation of non-column methods
+=item save / refresh
 
-After installing the column methods, the helper walks the DB row
-class's symbol table and installs a delegating wrapper for every
-remaining sub:
+Delegating wrappers that forward all arguments to the row:
 
-    sub method_name { shift->{row}->method_name(@_) }
+    sub save    { shift->{row}->save(@_)    }
+    sub refresh { shift->{row}->refresh(@_) }
 
-This forwards extra row methods (e.g. C<pretty_started>,
-C<has_completed>, anything the DB row class defines beyond its
-column accessors) to the logic class for free.
-
-Skipped during the walk:
-
-=over 4
-
-=item *
-
-Anything already installed in the caller (caller wins).
-
-=item *
-
-Names starting with C<_> (private).
-
-=item *
-
-All-uppercase identifiers (column constants and other
-L<Object::HashBase>-installed compile-time constants).
-
-=item *
-
-Column accessors and C<set_*> setters for known columns (the
-direct-access versions are already installed above).
-
-=item *
-
-Declarative class metadata that the row uses to describe itself —
-C<TABLE>, C<PRIMARY_KEY>, C<COLUMNS>, C<JSON_COLUMNS>. The logic
-class declares its own C<TABLE> / C<DB_CLASS> instead.
-
-=item *
-
-Perl internals and constructor plumbing: C<new>, C<init>, C<can>,
-C<isa>, C<DOES>, C<VERSION>, C<import>, C<unimport>, C<DESTROY>,
-C<AUTOLOAD>, etc., plus HashBase's C<attr_list> /
-C<add_pre_init> / C<add_post_init>.
+These two are special-cased because they are the standard
+L<Test2::Harness2::Role::Row> mutators every logic class needs.
+Pre-existing methods of the same name in the caller win.
 
 =back
 
-What B<is> picked up: C<save>, C<refresh>, C<TO_JSON>, and every
-user-defined method on the DB row class.
-
-=back
+Any other non-column method on the DB row class (C<TO_JSON>,
+user-defined helpers, etc.) is not delegated. Reach it through the
+C<row> accessor: C<< $self->row->TO_JSON >>.
 
 =head1 RATIONALE
 

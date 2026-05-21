@@ -4,19 +4,6 @@ use File::Spec ();
 
 use Test2::Harness2;
 
-# Add a custom method to a DB class so we can test symbol-walk delegation.
-# Must run at compile time, before the TestLogic::User package's `use
-# Test2::Harness2::Util::DBDelegate` (which walks the DB class symbol table
-# at compile time).
-BEGIN {
-    require Test2::Harness2::DB::User;
-    no warnings 'once';
-    *Test2::Harness2::DB::User::pretty_name = sub {
-        my $self = shift;
-        return "<<" . $self->{name} . ">>";
-    };
-}
-
 # A throwaway logic class that wraps Test2::Harness2::DB::User.
 {
     package TestLogic::User;
@@ -108,15 +95,53 @@ subtest existing_method_preserved => sub {
     is($obj->set_name,    'overridden-set',  'pre-existing setter wins');
 };
 
-subtest symbol_walk_delegates_non_columns => sub {
+subtest save_refresh_delegated => sub {
+    my $h     = _new_harness();
+    my ($db)  = $h->insert(users => {name => 'alice', email => 'a@x'});
+    my $logic = TestLogic::User->new(row => $db);
+
+    can_ok($logic, 'save');
+    can_ok($logic, 'refresh');
+
+    $logic->save({name => 'beth'});
+    is($logic->name, 'beth', 'save delegated to row');
+
+    $db->{name} = 'altered-in-memory';
+    $logic->refresh;
+    is($logic->name, 'beth', 'refresh delegated to row (reloads from DB)');
+
+    $h->disconnect;
+};
+
+subtest other_non_column_methods_not_delegated => sub {
     my $h     = _new_harness();
     my ($db)  = $h->insert(users => {name => 'alice'});
     my $logic = TestLogic::User->new(row => $db);
 
-    can_ok($logic, 'pretty_name');
-    is($logic->pretty_name, '<<alice>>', 'symbol-walk picked up pretty_name from DB class');
+    ok(!$logic->can('TO_JSON'), 'TO_JSON not auto-delegated');
+    can_ok($logic->row, 'TO_JSON');
 
     $h->disconnect;
+};
+
+subtest save_refresh_caller_wins => sub {
+    {
+        package TestLogic::OverrideSave;
+        use strict;
+        use warnings;
+        use Object::HashBase;
+
+        sub save    { 'caller-save'    }
+        sub refresh { 'caller-refresh' }
+
+        use Test2::Harness2::Util::DBDelegate 'users';
+        1;
+    }
+
+    my $db  = bless {name => 'alice'}, 'Test2::Harness2::DB::User';
+    my $obj = TestLogic::OverrideSave->new(row => $db);
+    is($obj->save,    'caller-save',    'pre-existing save preserved');
+    is($obj->refresh, 'caller-refresh', 'pre-existing refresh preserved');
 };
 
 subtest constants_and_metadata_not_delegated => sub {
@@ -131,21 +156,6 @@ subtest constants_and_metadata_not_delegated => sub {
     ok(!defined &{"TestLogic::User::NAME"}, 'NAME constant not delegated');
     ok(!defined &{"TestLogic::User::USER_ID"}, 'USER_ID constant not delegated');
     ok(!defined &{"TestLogic::User::_HANDLE"}, '_HANDLE constant not delegated');
-};
-
-subtest save_delegated_with_hashref => sub {
-    my $h     = _new_harness();
-    my ($db)  = $h->insert(users => {name => 'alice', email => 'a@x'});
-    my $logic = TestLogic::User->new(row => $db);
-
-    can_ok($logic, 'save');
-    $logic->save({name => 'carol', email => 'c@x'});
-
-    my $reread = $h->fetch(users => user_id => $db->user_id);
-    is($reread->name,  'carol');
-    is($reread->email, 'c@x');
-
-    $h->disconnect;
 };
 
 subtest wrong_table_croaks => sub {
