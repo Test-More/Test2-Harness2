@@ -43,6 +43,33 @@ subtest save_and_refresh => sub {
     $h->disconnect;
 };
 
+subtest save_with_hashref => sub {
+    my $h = _new_harness();
+    my ($row) = $h->insert(users => {name => 'orig', email => 'a@x'});
+
+    $row->save({name => 'updated', email => 'u@x'});
+    is($row->name,  'updated', 'in-memory updated by save({...})');
+    is($row->email, 'u@x',     'in-memory updated by save({...})');
+
+    my $reread = $h->fetch(users => user_id => $row->user_id);
+    is($reread->name,  'updated', 'persisted to DB');
+    is($reread->email, 'u@x',     'persisted to DB');
+
+    like(
+        dies { $row->save({bogus_col => 1}) },
+        qr/'bogus_col' is not a column/,
+        'unknown column in hashref croaks',
+    );
+
+    like(
+        dies { $row->save([]) },
+        qr/must be a hashref/,
+        'non-hashref arg croaks',
+    );
+
+    $h->disconnect;
+};
+
 subtest save_requires_pk => sub {
     my $h   = _new_harness();
     my $row = Test2::Harness2::DB::User->new(_handle => $h, name => 'orphan');

@@ -15,7 +15,18 @@ requires 'COLUMNS';
 sub JSON_COLUMNS { () }
 
 sub save {
-    my $self = shift;
+    my $self    = shift;
+    my $changes = shift;
+
+    if (defined $changes) {
+        croak "save() argument must be a hashref" unless ref($changes) eq 'HASH';
+        my %valid = map { $_ => 1 } $self->COLUMNS;
+        for my $col (keys %$changes) {
+            croak "save(): '$col' is not a column of " . $self->TABLE
+                unless $valid{$col};
+            $self->{$col} = $changes->{$col};
+        }
+    }
 
     my $handle = $self->{+_HANDLE} or croak "row not attached to a handle";
     my $dbh    = $handle->dbh     or croak "handle has no dbh";
@@ -134,9 +145,20 @@ columns themselves; the role does not auto-decode.
 
 =item $row->save
 
+=item $row->save(\%changes)
+
 Write the row's current column values back to the database via a
 single C<UPDATE ... WHERE primary_key = ?> statement. Returns the
 row itself.
+
+The optional hashref form applies C<\%changes> to the row in-memory
+B<before> issuing the UPDATE, so
+
+    $row->save({status => 'canceled', finished => time()});
+
+is equivalent to setting each key on the row's hash and then
+calling C<< $row->save >>. Croaks if any key is not a column on
+the row.
 
 =item $row->refresh
 

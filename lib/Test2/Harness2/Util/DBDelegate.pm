@@ -7,6 +7,15 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 use Test2::Harness2::Util qw/table_to_db_class/;
 
+my %SKIP_DELEGATE = map { $_ => 1 } qw(
+    import unimport
+    BEGIN END INIT CHECK DESTROY AUTOLOAD UNITCHECK CLONE CLONE_SKIP
+    new init
+    can isa DOES VERSION
+    attr_list add_pre_init add_post_init
+    TABLE PRIMARY_KEY COLUMNS JSON_COLUMNS
+);
+
 sub import {
     my ($class, $table) = @_;
     my $into = caller;
@@ -28,6 +37,9 @@ sub import {
     croak "DB class '$db_class' has TABLE='$expected_table', not '$table'"
         unless $expected_table eq $table;
 
+    my @columns   = $db_class->COLUMNS;
+    my %is_column = map { $_ => 1 } @columns;
+
     no strict 'refs';
     no warnings 'redefine';
 
@@ -36,9 +48,28 @@ sub import {
     *{"${into}::DB_CLASS"} = sub { $db_class };
     *{"${into}::row"}      = sub { $_[0]->{row} };
 
-    for my $col ($db_class->COLUMNS) {
-        next if defined &{"${into}::${col}"};
-        *{"${into}::${col}"} = sub { $_[0]->{row}->$col };
+    for my $col (@columns) {
+        my $name = $col;
+        unless (defined &{"${into}::${name}"}) {
+            *{"${into}::${name}"} = sub { $_[0]->{row}->{$name} };
+        }
+        my $setter = "set_$name";
+        unless (defined &{"${into}::${setter}"}) {
+            *{"${into}::${setter}"} = sub { $_[0]->{row}->{$name} = $_[1] };
+        }
+    }
+
+    for my $name (sort keys %{"${db_class}::"}) {
+        next if $SKIP_DELEGATE{$name};
+        next if $name =~ /^_/;                          # private
+        next if $name =~ /^[A-Z][A-Z0-9_]*$/;           # constant
+        next if $is_column{$name};                      # column reader (installed)
+        next if $name =~ /^set_(.+)$/ && $is_column{$1};# column setter (installed)
+        next unless defined &{"${db_class}::${name}"};
+        next if defined &{"${into}::${name}"};
+
+        my $method = $name;
+        *{"${into}::${name}"} = sub { shift->{row}->$method(@_) };
     }
 
     return;
@@ -79,12 +110,15 @@ class so its column accessors forward to the underlying DB row.
 
     sub dispatch_jobs {
         my $self = shift;
-        # Read columns via delegate (forwarded to $self->row->...):
+
+        # Read columns via direct-hash delegate ($self->{row}->{col}):
         my $runner_id = $self->runner_id;
 
-        # Mutate the row hash directly, then persist:
-        $self->row->{some_col} = $new_val;
-        $self->row->save;
+        # Write columns via direct-hash setter:
+        $self->set_class('My::NewClass');
+
+        # Or apply several changes and persist in one shot:
+        $self->save({class => 'My::Other', spec => '{...}'});
     }
 
 =head1 DESCRIPTION
@@ -151,21 +185,77 @@ Class method returning the table name passed to the helper.
 Class method returning the fully-qualified DB class name (e.g.
 C<'Test2::Harness2::DB::Scheduler'>).
 
-=item One reader per column
+=item One reader + one setter per column
 
-For every column reported by C<< $db_class->COLUMNS >>, a reader is
-installed that delegates to the row object:
+For every column reported by C<< $db_class->COLUMNS >>, two methods
+are installed that touch the row's hash directly:
 
-    sub colname { $_[0]->{row}->colname }
+    sub colname     { $_[0]->{row}->{colname} }
+    sub set_colname { $_[0]->{row}->{colname} = $_[1] }
 
-If the caller already has a method by that name (e.g. it defined an
-override before C<use>'ing this helper), the existing method is
+Direct hash access is intentional: the row class's accessors do
+nothing more than return the same value, so the extra method-call
+hop is pure overhead. The caller never needs to override what a
+column reader / setter returns or writes (a column accessor that
+transforms the value is a code smell — put the transform on a
+separately-named method on the DB row class instead, e.g.
+C<pretty_started> alongside C<started>).
+
+If the caller already has a method by that name (e.g. it defined
+an override before C<use>'ing this helper), the existing method is
 preserved.
 
-Setters are deliberately not installed. Mutate columns by writing
-the row's hash directly (C<< $self->row->{col} = $val >>) and then
-calling C<< $self->row->save >>; the explicit two-step keeps the
-mutation visible at the call site.
+=item Symbol-walk delegation of non-column methods
+
+After installing the column methods, the helper walks the DB row
+class's symbol table and installs a delegating wrapper for every
+remaining sub:
+
+    sub method_name { shift->{row}->method_name(@_) }
+
+This forwards extra row methods (e.g. C<pretty_started>,
+C<has_completed>, anything the DB row class defines beyond its
+column accessors) to the logic class for free.
+
+Skipped during the walk:
+
+=over 4
+
+=item *
+
+Anything already installed in the caller (caller wins).
+
+=item *
+
+Names starting with C<_> (private).
+
+=item *
+
+All-uppercase identifiers (column constants and other
+L<Object::HashBase>-installed compile-time constants).
+
+=item *
+
+Column accessors and C<set_*> setters for known columns (the
+direct-access versions are already installed above).
+
+=item *
+
+Declarative class metadata that the row uses to describe itself —
+C<TABLE>, C<PRIMARY_KEY>, C<COLUMNS>, C<JSON_COLUMNS>. The logic
+class declares its own C<TABLE> / C<DB_CLASS> instead.
+
+=item *
+
+Perl internals and constructor plumbing: C<new>, C<init>, C<can>,
+C<isa>, C<DOES>, C<VERSION>, C<import>, C<unimport>, C<DESTROY>,
+C<AUTOLOAD>, etc., plus HashBase's C<attr_list> /
+C<add_pre_init> / C<add_post_init>.
+
+=back
+
+What B<is> picked up: C<save>, C<refresh>, C<TO_JSON>, and every
+user-defined method on the DB row class.
 
 =back
 
