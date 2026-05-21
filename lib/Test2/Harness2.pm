@@ -385,24 +385,29 @@ sub blob_sql_type {
 
 =item $row = $h->fetch($table, %where)
 
-Single row object matching C<%where>, or C<undef>. C<$table> may be
-a table name (C<'users'>) or a row class name
-(C<'Test2::Harness2::DB::User'>). Croaks if more than one row
-matches.
+=item $row = $h->fetch($table, \%where)
+
+=item $row = $h->fetch($table, \%where, %extras)
+
+=item $row = $h->fetch($table, where => \%where, %extras)
+
+Single row object matching the where clause, or C<undef>. C<$table>
+may be a table name (C<'users'>) or a row class name
+(C<'Test2::Harness2::DB::User'>). Internally calls C<fetch_all> with
+C<limit =E<gt> 2> so a busted query that matches many rows croaks
+without dragging the full result set across the wire. Croaks if
+more than one row matches.
 
 =back
 
 =cut
 
-# Make where a hashref instead of hash, that way we can add additional arguments.
-# allow $t2h2->fetch($table => \%where)
-# also accept $t2h2->fetch($table, where => \%where, %other_args)
-# also accept $t2h2->fetch($table, \%where, %other_args)
-# same for fetch_all()
-# also accept `limit => $count` in fetch_all to only grab N rows, and have fetch() call with a limit of 2 so that if we ask for one, but get 100 we only fetch 2 before failing instead of fetching 100 before failing.
 sub fetch {
-    my ($self, $table, %where) = @_;
-    my @rows = $self->fetch_all($table, %where);
+    my $self  = shift;
+    my $table = shift;
+    my ($where, %extras) = _normalize_where_args(@_);
+    $extras{limit} //= 2;
+    my @rows = $self->fetch_all($table, $where, %extras);
     croak "fetch returned more than one row for $table" if @rows > 1;
     return $rows[0];
 }
@@ -411,22 +416,54 @@ sub fetch {
 
 =item @rows = $h->fetch_all($table, %where)
 
-All row objects matching C<%where>.
+=item @rows = $h->fetch_all($table, \%where)
+
+=item @rows = $h->fetch_all($table, \%where, %extras)
+
+=item @rows = $h->fetch_all($table, where => \%where, %extras)
+
+All row objects matching the where clause. Where-clause shapes:
+flat key/value pairs (legacy), a positional hashref, or an explicit
+C<< where =E<gt> \%where >> keyword. Extras (recognised:
+C<limit =E<gt> $count>) ride alongside.
 
 =back
 
 =cut
 
-# See notes above at fetch();
 sub fetch_all {
-    my ($self, $table, %where) = @_;
+    my $self  = shift;
+    my $table = shift;
+    my ($where, %extras) = _normalize_where_args(@_);
+
     my $class = $self->_row_class($table);
     my $tname = $class->TABLE;
 
-    my ($sql, @binds) = $self->_build_select($tname, \%where);
+    my ($sql, @binds) = $self->_build_select($tname, $where, \%extras);
     my $rows = $self->{+DBH}->selectall_arrayref($sql, {Slice => {}}, @binds);
 
     return map { $class->new(_handle => $self, %$_) } @$rows;
+}
+
+sub _normalize_where_args {
+    return ({}) unless @_;
+
+    if (ref($_[0]) eq 'HASH') {
+        my $where = shift;
+        return ($where, @_);
+    }
+
+    my %args = @_;
+    if (ref($args{where}) eq 'HASH') {
+        my $where = delete $args{where};
+        return ($where, %args);
+    }
+
+    my %extras;
+    for my $key (qw/limit/) {
+        $extras{$key} = delete $args{$key} if exists $args{$key};
+    }
+    return (\%args, %extras);
 }
 
 =over 4
@@ -632,11 +669,13 @@ sub _row_to_insertable {
 }
 
 sub _build_select {
-    my ($self, $table, $where) = @_;
+    my ($self, $table, $where, $extras) = @_;
+    $extras //= {};
+
     my @binds;
     my $sql = "SELECT * FROM $table";
 
-    if (keys %$where) {
+    if ($where && keys %$where) {
         my @parts;
         for my $k (sort keys %$where) {
             if (!defined $where->{$k}) {
@@ -648,6 +687,10 @@ sub _build_select {
             }
         }
         $sql .= " WHERE " . join(' AND ', @parts);
+    }
+
+    if (defined $extras->{limit}) {
+        $sql .= " LIMIT " . int($extras->{limit});
     }
 
     return ($sql, @binds);
