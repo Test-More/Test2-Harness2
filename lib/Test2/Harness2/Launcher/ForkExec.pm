@@ -82,7 +82,7 @@ Test2::Harness2::Launcher::ForkExec - POSIX fork+exec launcher.
 
 The default launcher on every POSIX-y platform. Consumes
 L<Test2::Harness2::Role::Launcher>; the only launcher-specific
-piece is L</start_process>, which uses C<fork> + C<exec> to start
+piece is C<start_process>, which uses C<fork> + C<exec> to start
 the requested command. The collector is the immediate child of
 this launcher process and the launcher reaps it directly when it
 exits.

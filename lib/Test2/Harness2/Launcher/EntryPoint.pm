@@ -111,7 +111,7 @@ Every launcher exposes a small fresh-process recipe:
     perl -MTest2::Harness2::Launcher::ForkExec=start -e '1;'
 
 The C<=start> tag on the C<use> line is honored by the launcher
-class's C<import>, which calls L</install_start_hook> with its
+class's C<import>, which calls C<install_start_hook> with its
 own name. An C<INIT> block in this module then reads a launcher
 spec from STDIN and runs the launcher's L<run|Test2::Harness2::Role::Service/run>
 method.
@@ -124,7 +124,7 @@ The launcher spec is a single JSON object on STDIN:
       "scheduler_pid":  12345           # optional
     }
 
-A helper L</feed_spec_to> on the caller side opens a pipe to the
+A helper C<feed_spec_to> on the caller side opens a pipe to the
 launcher command, encodes the spec, and closes -- the launcher
 process picks it up via its STDIN read.
 

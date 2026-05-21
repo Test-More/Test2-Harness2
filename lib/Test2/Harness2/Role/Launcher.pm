@@ -183,7 +183,7 @@ state without waiting out its backoff.
 If the launcher is not stopping, polls the C<launches> table for
 rows with C<launcher_id = $self->launcher_id> and C<started IS NULL>,
 joined to C<jobs.spec>. For each row it calls
-L</start_process>(\%spec) (provided by the subclass), records the
+C<start_process>(\%spec) (provided by the subclass), records the
 pid, and updates C<launches.started>.
 
 =item *

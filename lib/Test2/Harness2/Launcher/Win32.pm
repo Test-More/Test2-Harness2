@@ -72,7 +72,7 @@ untested in CI on POSIX hosts).
 =head1 DESCRIPTION
 
 Windows analogue of L<Test2::Harness2::Launcher::ForkExec>. Same
-launcher contract; the only difference is L</start_process>, which
+launcher contract; the only difference is C<start_process>, which
 uses Perl's C<system(1, @argv)> form. On Windows that returns the
 spawned process pid without waiting. On POSIX hosts it does not,
 and this launcher should not be used outside Windows.

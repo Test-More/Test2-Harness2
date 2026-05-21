@@ -59,11 +59,11 @@ A service is a loop. Each iteration:
 
 =item *
 
-Calls L</should_stop>. If it returns true, the loop exits.
+Calls C<should_stop>. If it returns true, the loop exits.
 
 =item *
 
-Calls L</tick>. If C<tick> returns a true value the loop immediately
+Calls C<tick>. If C<tick> returns a true value the loop immediately
 runs another iteration; otherwise it sleeps with backoff before the
 next iteration.
 
@@ -105,12 +105,12 @@ iteration.
 
 =item $service->on_start
 
-Called once at the top of L</run>, after the C<SIGUSR1> handler is
+Called once at the top of C<run>, after the C<SIGUSR1> handler is
 installed. Use it to publish the C<starting>/C<up> state row, etc.
 
 =item $service->on_stop
 
-Called once just before L</run> returns. Use it to publish a
+Called once just before C<run> returns. Use it to publish a
 terminal state row, close handles, etc.
 
 =back
@@ -121,8 +121,8 @@ terminal state row, close handles, etc.
 
 =item $service->run
 
-Run the service loop until L</should_stop> returns true. Drives
-L</tick>, the backoff schedule, and the C<SIGUSR1>-interruptible
+Run the service loop until C<should_stop> returns true. Drives
+C<tick>, the backoff schedule, and the C<SIGUSR1>-interruptible
 sleep.
 
 =item wake($pid)
