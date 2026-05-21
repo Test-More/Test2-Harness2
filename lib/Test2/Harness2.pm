@@ -283,12 +283,7 @@ sub _load_existing_discovery {
     }
 
     if ($sniff =~ /^\s*\{/) {
-        open(my $fh2, '<:raw', $path) or die "Failed to read $path: $!";
-        local $/;
-        my $bytes = <$fh2>;
-        close($fh2);
-
-        my $info = decode_json($bytes);
+        my $info = decode_json(read_file($path));
         $self->{+DSN}     //= $info->{dsn};
         $self->{+FLAVOR}  //= $info->{flavor};
         $self->{+PROJECT} //= $info->{project};
