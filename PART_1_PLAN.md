@@ -40,6 +40,38 @@ stage follows the same three-step protocol:
   for tests to invoke (e.g. `t/scripts/collector` for development of
   the collector — see `ARCHITECTURE.md` §5.9).
 
+### Pre-review checks
+
+Before declaring a stage / worktree / branch ready for human review
+or merge, run these three passes against **every file the branch
+touched** (`git diff --name-only $base...HEAD`) and resolve anything
+they turn up before re-running the test suite:
+
+1. **Style-guide pass.** Walk each touched file against
+   `STYLE_GUIDE.md`. Common slips: `eval` patterns (check the
+   return value, never raw `$@`), `croak` vs `die`, `//=`,
+   `Time::HiRes::sleep`, `Object::HashBase` slot ordering,
+   trailing whitespace, perltidy.
+
+2. **POD pass.** Verify each `.pm` follows the POD layout in
+   `STYLE_GUIDE.md`: `NAME` / `DESCRIPTION` / `SYNOPSIS`
+   (plus `ATTRIBUTES` for HashBase classes) at the top, inline
+   POD above each public / private sub, end-of-file `SOURCE` /
+   `MAINTAINERS` / `AUTHORS` / `COPYRIGHT` under `__END__`. Run
+   `podchecker` and resolve every error.
+
+3. **Util / role / base-class reuse pass.** Re-scan touched files
+   for logic that already exists in `Test2::Harness2::Util`,
+   `Test2::Harness2::Util::*`, `Test2::Harness2::Role::*`, or the
+   DB row layer. Switch to the existing implementation. If the
+   same logic appears in three-plus places across touched files,
+   extract it to a util / role / base class instead of leaving
+   the duplication.
+
+Land the fixups either as cleanup commits at the end of the stage
+or by amending the relevant feature commits. Mandatory, not
+optional.
+
 ---
 
 ## Stage 1 — Utility layer port

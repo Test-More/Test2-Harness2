@@ -85,6 +85,43 @@ discovery / project-detection question), **add a note to
 `PART_2_PLAN.md`** rather than expanding the Part-1 stage. Cross-cutting
 notes belong with the document that owns the work.
 
+### Pre-review checks
+
+Before handing a stage / worktree / branch to the human for review
+or merge, run the following passes against B<every file the branch
+touched> (typically `git diff --name-only $base...HEAD`). Resolve
+anything they turn up, then re-run the test suite.
+
+1. **Style-guide pass.** Read `STYLE_GUIDE.md` and verify each
+   touched file conforms. Common slips: `eval` patterns (always
+   check the return value, never raw `$@`), `croak` vs `die`,
+   `//=` for defaults, `Time::HiRes::sleep` for sub-second waits,
+   `Object::HashBase` slot ordering, no trailing whitespace, etc.
+   Fix everything you find.
+
+2. **POD pass.** Verify the file follows the POD layout in
+   `STYLE_GUIDE.md` ("POD" section): `NAME` / `DESCRIPTION` /
+   `SYNOPSIS` (plus `ATTRIBUTES` for HashBase-style classes) at
+   the top of the file, `EXPORTS` / `PUBLIC METHODS` / `PRIVATE
+   METHODS` inline above each sub, `SOURCE` / `MAINTAINERS` /
+   `AUTHORS` / `COPYRIGHT` under `__END__`. Run `podchecker` on
+   every `.pm` touched; resolve every error and warning.
+
+3. **Util / role / base-class reuse pass.** Re-scan touched files
+   for logic that already exists as a utility. The relevant
+   homes are `Test2::Harness2::Util`, `Test2::Harness2::Util::*`,
+   `Test2::Harness2::Role::*`, and the matching DB row classes.
+   If the file open-codes something a util / role / base class
+   already provides, switch to using it. If you see the same
+   logic appearing in three or more places across the touched
+   files, extract it to a util / role / base class instead of
+   leaving the duplication.
+
+These three passes are mandatory, not optional. Land their fixups
+either as cleanup commits at the end of the stage or by amending
+the relevant feature commits. Only after they pass should you
+announce the stage as ready for review.
+
 ## AI task documentation
 
 `AI_DOCS/` is for durable context that the code and commit history
