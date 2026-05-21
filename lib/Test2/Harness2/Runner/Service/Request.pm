@@ -1,25 +1,27 @@
-package Test2::Harness2::Row::Instances;
+package Test2::Harness2::Runner::Service::Request;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <instance_id
-    <instance_uuid
-    <host_id
-    <user_id
-    <started
-    <finished
-    <meta
+    +_handle
+    <request_id
+    <service_id
+    <requested
+    <completed
     <finalized
+    <payload
+    <response
 };
 
-sub TABLE        { 'instances' }
-sub PRIMARY_KEY  { 'instance_id' }
-sub COLUMNS      { qw/instance_id instance_uuid host_id user_id started finished meta finalized/ }
-sub JSON_COLUMNS { qw/meta/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE        { 'requests' }
+sub PRIMARY_KEY  { 'request_id' }
+sub COLUMNS      { qw/request_id service_id requested completed finalized payload response/ }
+sub JSON_COLUMNS { qw/payload response/ }
 
 1;
 
@@ -31,12 +33,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Instances - Row object for the C<instances> table.
+Test2::Harness2::Runner::Service::Request - Row object for the C<requests>
+table.
 
 =head1 DESCRIPTION
 
-One row per harness instance. The C<meta> column is JSON; the row class
-does not auto-decode it.
+One row per request directed at a service. Unified shape for both
+request/response and fire-and-forget notification flows; the latter
+leave C<response> C<NULL> and may be deleted on ack.
 
 =head1 SOURCE
 

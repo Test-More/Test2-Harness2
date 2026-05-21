@@ -1,22 +1,24 @@
-package Test2::Harness2::Row::Runners;
+package Test2::Harness2::Launcher::Launch;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <runner_id
-    <instance_id
-    <pid
+    +_handle
+    <launch_id
+    <launcher_id
+    <job_id
+    <requested
     <started
-    <finished
-    <finalized
 };
 
-sub TABLE       { 'runners' }
-sub PRIMARY_KEY { 'runner_id' }
-sub COLUMNS     { qw/runner_id instance_id pid started finished finalized/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'launches' }
+sub PRIMARY_KEY { 'launch_id' }
+sub COLUMNS     { qw/launch_id launcher_id job_id requested started/ }
 
 1;
 
@@ -28,11 +30,13 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Runners - Row object for the C<runners> table.
+Test2::Harness2::Launcher::Launch - Row object for the C<launches> table.
 
 =head1 DESCRIPTION
 
-One row per runner process under a harness instance.
+One row per scheduler-launcher handoff. The scheduler inserts with
+C<requested> set; the launcher fills in C<started> after it starts the
+process.
 
 =head1 SOURCE
 

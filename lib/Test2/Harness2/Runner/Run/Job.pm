@@ -1,27 +1,23 @@
-package Test2::Harness2::Row::Launchers;
+package Test2::Harness2::Runner::Run::Job;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <launcher_id
-    <runner_id
+    +_handle
+    <job_id
     <run_id
-    <collector_id
-    <name
-    <class
+    <test_file_id
     <spec
-    <pid
-    <spawn_socket
 };
 
-sub TABLE        { 'launchers' }
-sub PRIMARY_KEY  { 'launcher_id' }
-sub COLUMNS      {
-    qw/launcher_id runner_id run_id collector_id name class spec pid spawn_socket/
-}
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE        { 'jobs' }
+sub PRIMARY_KEY  { 'job_id' }
+sub COLUMNS      { qw/job_id run_id test_file_id spec/ }
 sub JSON_COLUMNS { qw/spec/ }
 
 1;
@@ -34,13 +30,12 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Launchers - Row object for the C<launchers> table.
+Test2::Harness2::Runner::Run::Job - Row object for the C<jobs> table.
 
 =head1 DESCRIPTION
 
-One row per launcher: its class, JSON construction spec, owning
-collector / runner / (optional) run, the pid for C<SIGUSR1> wake-ups,
-and a C<spawn_socket> path when the launcher supports spawn.
+One row per scheduled job under a run. C<spec> is the JSON launch
+spec (env, args, directives, retry policy, etc.).
 
 =head1 SOURCE
 

@@ -1,22 +1,22 @@
-package Test2::Harness2::Row::ServiceState;
+package Test2::Harness2::Project::TestFile;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <service_state_id
-    <service_id
-    <stamp
-    <status
-    <content
+    +_handle
+    <test_file_id
+    <project_id
+    <relative
 };
 
-sub TABLE        { 'service_state' }
-sub PRIMARY_KEY  { 'service_state_id' }
-sub COLUMNS      { qw/service_state_id service_id stamp status content/ }
-sub JSON_COLUMNS { qw/content/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'test_files' }
+sub PRIMARY_KEY { 'test_file_id' }
+sub COLUMNS     { qw/test_file_id project_id relative/ }
 
 1;
 
@@ -28,14 +28,12 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::ServiceState - Row object for the C<service_state>
-table.
+Test2::Harness2::Project::TestFile - Row object for the C<test_files> table.
 
 =head1 DESCRIPTION
 
-Append-only state log for a service; most recent row per
-C<service_id> wins. C<content> is a JSON payload the service writes
-to publish state to readers.
+One row per test-file path under a project. Deduplicated by
+C<(project_id, relative)>.
 
 =head1 SOURCE
 

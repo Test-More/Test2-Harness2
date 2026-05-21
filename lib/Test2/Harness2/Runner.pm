@@ -1,19 +1,25 @@
-package Test2::Harness2::Row::Versions;
+package Test2::Harness2::Runner;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <version_id
-    <project_id
-    <version
+    +_handle
+    <runner_id
+    <instance_id
+    <pid
+    <started
+    <finished
+    <finalized
 };
 
-sub TABLE       { 'versions' }
-sub PRIMARY_KEY { 'version_id' }
-sub COLUMNS     { qw/version_id project_id version/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'runners' }
+sub PRIMARY_KEY { 'runner_id' }
+sub COLUMNS     { qw/runner_id instance_id pid started finished finalized/ }
 
 1;
 
@@ -25,11 +31,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Versions - Row object for the C<versions> table.
+Test2::Harness2::Runner - Row object for the C<runners> table.
 
 =head1 DESCRIPTION
 
-One row per project version. Deduplicated by C<(project_id, version)>.
+One row per runner process under a harness instance.
 
 =head1 SOURCE
 

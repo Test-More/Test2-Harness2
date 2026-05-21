@@ -1,21 +1,21 @@
-package Test2::Harness2::Row::Jobs;
+package Test2::Harness2::Project;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <job_id
-    <run_id
-    <test_file_id
-    <spec
+    +_handle
+    <project_id
+    <name
 };
 
-sub TABLE        { 'jobs' }
-sub PRIMARY_KEY  { 'job_id' }
-sub COLUMNS      { qw/job_id run_id test_file_id spec/ }
-sub JSON_COLUMNS { qw/spec/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'projects' }
+sub PRIMARY_KEY { 'project_id' }
+sub COLUMNS     { qw/project_id name/ }
 
 1;
 
@@ -27,12 +27,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Jobs - Row object for the C<jobs> table.
+Test2::Harness2::Project - Row object for the C<projects> table.
 
 =head1 DESCRIPTION
 
-One row per scheduled job under a run. C<spec> is the JSON launch
-spec (env, args, directives, retry policy, etc.).
+One row per project. Deduplicated by name.
 
 =head1 SOURCE
 

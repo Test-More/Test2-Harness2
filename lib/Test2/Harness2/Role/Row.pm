@@ -1,25 +1,23 @@
-package Test2::Harness2::Row;
+package Test2::Harness2::Role::Row;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
+use Role::Tiny;
 
-use Object::HashBase qw{
-    +_handle
-};
+requires 'TABLE';
+requires 'PRIMARY_KEY';
+requires 'COLUMNS';
 
-sub TABLE        { croak "subclass must define TABLE" }
-sub PRIMARY_KEY  { croak "subclass must define PRIMARY_KEY" }
-sub COLUMNS      { croak "subclass must define COLUMNS" }
 sub JSON_COLUMNS { () }
 
 sub save {
     my $self = shift;
 
-    my $handle = $self->{+_HANDLE} or croak "row not attached to a handle";
-    my $dbh    = $handle->dbh      or croak "handle has no dbh";
+    my $handle = $self->{_handle} or croak "row not attached to a handle";
+    my $dbh    = $handle->dbh     or croak "handle has no dbh";
 
     my $table = $self->TABLE;
     my $pk    = $self->PRIMARY_KEY;
@@ -42,8 +40,8 @@ sub save {
 sub refresh {
     my $self = shift;
 
-    my $handle = $self->{+_HANDLE} or croak "row not attached to a handle";
-    my $dbh    = $handle->dbh      or croak "handle has no dbh";
+    my $handle = $self->{_handle} or croak "row not attached to a handle";
+    my $dbh    = $handle->dbh     or croak "handle has no dbh";
 
     my $table = $self->TABLE;
     my $pk    = $self->PRIMARY_KEY;
@@ -78,53 +76,50 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row - Base class for per-table row objects.
+Test2::Harness2::Role::Row - Role composed by per-table row classes.
 
 =head1 DESCRIPTION
 
-Every database table backs a small subclass of this base. Subclasses
-declare their attributes via L<Object::HashBase>, identify their
+Every database table backs a small class under C<Test2::Harness2::*>
+that composes this role. Consumers declare their attributes via
+L<Object::HashBase> (including a C<+_handle> slot), identify their
 table via L</TABLE>, identify their primary-key column via
 L</PRIMARY_KEY>, and list their full column set via L</COLUMNS>. The
-base class then provides the two methods every row needs: L</save>
-and L</refresh>.
+role then provides L</save>, L</refresh>, and L</TO_JSON>.
 
 Row objects are constructed via the handle's L<Test2::Harness2/insert>
 or L<Test2::Harness2/fetch> helpers, which inject themselves as the
-row's `_handle` attribute. Callers normally do not construct rows
+row's C<_handle> attribute. Callers normally do not construct rows
 directly.
 
-=head1 CLASS METHODS
+=head1 REQUIRED METHODS
 
 =over 4
 
 =item $name = $class->TABLE
 
-Return the SQL table name this row class targets. Subclasses must
-override.
+The SQL table name this row class targets.
 
 =item $name = $class->PRIMARY_KEY
 
-Return the primary-key column name (e.g. C<'user_id'>). Subclasses
-must override.
+The primary-key column name (e.g. C<'user_id'>).
 
 =item @cols = $class->COLUMNS
 
-Return the full ordered list of column names. Subclasses must
-override.
-
-=item @cols = $class->JSON_COLUMNS
-
-Return the subset of L</COLUMNS> whose contents are JSON-encoded
-strings. Default: empty list. Callers that want decoded Perl data
-structures should call L<Test2::Harness2::Util::JSON/decode_json>
-on these columns themselves; the row class does not auto-decode.
+The full ordered list of column names.
 
 =back
 
-=head1 PUBLIC METHODS
+=head1 PROVIDED METHODS
 
 =over 4
+
+=item @cols = $class->JSON_COLUMNS
+
+The subset of L</COLUMNS> whose contents are JSON-encoded strings.
+Default: empty list. Callers that want decoded Perl data structures
+should call L<Test2::Harness2::Util::JSON/decode_json> on these
+columns themselves; the role does not auto-decode.
 
 =item $row->save
 

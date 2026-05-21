@@ -152,15 +152,35 @@ sub DESTROY {
     $self->disconnect if $self->{+DBH};
 }
 
+my %TABLE_TO_CLASS = (
+    users         => 'Test2::Harness2::User',
+    hosts         => 'Test2::Harness2::Host',
+    projects      => 'Test2::Harness2::Project',
+    versions      => 'Test2::Harness2::Project::Version',
+    vcs_info      => 'Test2::Harness2::Project::VcsInfo',
+    test_files    => 'Test2::Harness2::Project::TestFile',
+    instances     => 'Test2::Harness2::Instance',
+    runners       => 'Test2::Harness2::Runner',
+    collectors    => 'Test2::Harness2::Runner::Collector',
+    services      => 'Test2::Harness2::Runner::Service',
+    service_state => 'Test2::Harness2::Runner::Service::State',
+    requests      => 'Test2::Harness2::Runner::Service::Request',
+    runs          => 'Test2::Harness2::Runner::Run',
+    jobs          => 'Test2::Harness2::Runner::Run::Job',
+    job_tries     => 'Test2::Harness2::Runner::Run::Job::Try',
+    artifacts     => 'Test2::Harness2::Runner::Run::Artifact',
+    coverage      => 'Test2::Harness2::Runner::Run::Coverage',
+    resources     => 'Test2::Harness2::Runner::Run::Resource',
+    launchers     => 'Test2::Harness2::Launcher',
+    launches      => 'Test2::Harness2::Launcher::Launch',
+);
+
 sub _row_class {
     my ($self, $table) = @_;
 
-    if ($table =~ /::/) {
-        return $table;
-    }
-
-    my $stem = join('', map { ucfirst $_ } split(/_/, $table));
-    my $class = "Test2::Harness2::Row::$stem";
+    my $class = $table =~ /::/
+        ? $table
+        : ($TABLE_TO_CLASS{$table} or croak "unknown table '$table'");
 
     unless ($class->can('new')) {
         (my $file = $class) =~ s{::}{/}g;
@@ -393,7 +413,7 @@ step.
 
 Return a single row object matching C<%where>, or C<undef>.
 C<$table> can be a table name (C<'users'>) or a row class name
-(C<'Test2::Harness2::Row::Users'>). Croaks if more than one row
+(C<'Test2::Harness2::User'>). Croaks if more than one row
 matches.
 
 =item @rows = $h->fetch_all($table, %where)

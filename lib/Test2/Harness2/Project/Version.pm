@@ -1,21 +1,22 @@
-package Test2::Harness2::Row::Launches;
+package Test2::Harness2::Project::Version;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <launch_id
-    <launcher_id
-    <job_id
-    <requested
-    <started
+    +_handle
+    <version_id
+    <project_id
+    <version
 };
 
-sub TABLE       { 'launches' }
-sub PRIMARY_KEY { 'launch_id' }
-sub COLUMNS     { qw/launch_id launcher_id job_id requested started/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'versions' }
+sub PRIMARY_KEY { 'version_id' }
+sub COLUMNS     { qw/version_id project_id version/ }
 
 1;
 
@@ -27,13 +28,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Launches - Row object for the C<launches> table.
+Test2::Harness2::Project::Version - Row object for the C<versions> table.
 
 =head1 DESCRIPTION
 
-One row per scheduler-launcher handoff. The scheduler inserts with
-C<requested> set; the launcher fills in C<started> after it starts the
-process.
+One row per project version. Deduplicated by C<(project_id, version)>.
 
 =head1 SOURCE
 

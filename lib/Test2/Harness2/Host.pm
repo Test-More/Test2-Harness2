@@ -1,21 +1,21 @@
-package Test2::Harness2::Row::Artifacts;
+package Test2::Harness2::Host;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <artifact_id
-    <collector_id
-    <filename
-    <content
-    <local_path
+    +_handle
+    <host_id
+    <name
 };
 
-sub TABLE       { 'artifacts' }
-sub PRIMARY_KEY { 'artifact_id' }
-sub COLUMNS     { qw/artifact_id collector_id filename content local_path/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'hosts' }
+sub PRIMARY_KEY { 'host_id' }
+sub COLUMNS     { qw/host_id name/ }
 
 1;
 
@@ -27,14 +27,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Artifacts - Row object for the C<artifacts> table.
+Test2::Harness2::Host - Row object for the C<hosts> table.
 
 =head1 DESCRIPTION
 
-One row per file produced by a collector. Exactly one of C<content>
-(inline bytes) and C<local_path> (path on disk) is non-null at any
-time; the recorder migrates C<local_path> bytes into C<content> on
-finalize.
+One row per system hostname. Deduplicated by name.
 
 =head1 SOURCE
 

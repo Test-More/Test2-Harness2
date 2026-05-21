@@ -3,7 +3,7 @@ use File::Temp qw/tempdir/;
 use File::Spec ();
 
 use Test2::Harness2;
-use Test2::Harness2::Row::Users;
+use Test2::Harness2::User;
 
 sub _new_harness {
     my $path = File::Spec->catfile(tempdir(CLEANUP => 1), 't.t2h2');
@@ -11,9 +11,16 @@ sub _new_harness {
 }
 
 subtest constants => sub {
-    is(Test2::Harness2::Row::Users->TABLE,       'users');
-    is(Test2::Harness2::Row::Users->PRIMARY_KEY, 'user_id');
-    is([Test2::Harness2::Row::Users->COLUMNS], [qw/user_id name email/]);
+    is(Test2::Harness2::User->TABLE,       'users');
+    is(Test2::Harness2::User->PRIMARY_KEY, 'user_id');
+    is([Test2::Harness2::User->COLUMNS], [qw/user_id name email/]);
+};
+
+subtest role_composition => sub {
+    ok(
+        Test2::Harness2::User->DOES('Test2::Harness2::Role::Row'),
+        'User composes Role::Row',
+    );
 };
 
 subtest save_and_refresh => sub {
@@ -38,7 +45,7 @@ subtest save_and_refresh => sub {
 
 subtest save_requires_pk => sub {
     my $h   = _new_harness();
-    my $row = Test2::Harness2::Row::Users->new(_handle => $h, name => 'orphan');
+    my $row = Test2::Harness2::User->new(_handle => $h, name => 'orphan');
 
     like(
         dies { $row->save },

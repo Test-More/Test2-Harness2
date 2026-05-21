@@ -1,18 +1,22 @@
-package Test2::Harness2::Row::Projects;
+package Test2::Harness2::User;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <project_id
+    +_handle
+    <user_id
     <name
+    <email
 };
 
-sub TABLE       { 'projects' }
-sub PRIMARY_KEY { 'project_id' }
-sub COLUMNS     { qw/project_id name/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE       { 'users' }
+sub PRIMARY_KEY { 'user_id' }
+sub COLUMNS     { qw/user_id name email/ }
 
 1;
 
@@ -24,11 +28,11 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Projects - Row object for the C<projects> table.
+Test2::Harness2::User - Row object for the C<users> table.
 
 =head1 DESCRIPTION
 
-One row per project. Deduplicated by name.
+One row per known user. Deduplicated by C<name>.
 
 =head1 SOURCE
 

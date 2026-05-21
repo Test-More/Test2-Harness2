@@ -1,23 +1,31 @@
-package Test2::Harness2::Row::Services;
+package Test2::Harness2::Launcher;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <service_id
-    <collector_id
+    +_handle
+    <launcher_id
     <runner_id
     <run_id
+    <collector_id
     <name
     <class
+    <spec
     <pid
+    <spawn_socket
 };
 
-sub TABLE       { 'services' }
-sub PRIMARY_KEY { 'service_id' }
-sub COLUMNS     { qw/service_id collector_id runner_id run_id name class pid/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE        { 'launchers' }
+sub PRIMARY_KEY  { 'launcher_id' }
+sub COLUMNS      {
+    qw/launcher_id runner_id run_id collector_id name class spec pid spawn_socket/
+}
+sub JSON_COLUMNS { qw/spec/ }
 
 1;
 
@@ -29,13 +37,13 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Services - Row object for the C<services> table.
+Test2::Harness2::Launcher - Row object for the C<launchers> table.
 
 =head1 DESCRIPTION
 
-One row per service. Name is unique per C<(runner_id, run_id)>. The
-C<pid> column carries the service process's pid so other processes
-can wake its poll-loop with C<SIGUSR1>.
+One row per launcher: its class, JSON construction spec, owning
+collector / runner / (optional) run, the pid for C<SIGUSR1> wake-ups,
+and a C<spawn_socket> path when the launcher supports spawn.
 
 =head1 SOURCE
 

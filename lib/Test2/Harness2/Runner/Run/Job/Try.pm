@@ -1,11 +1,11 @@
-package Test2::Harness2::Row::JobTries;
+package Test2::Harness2::Runner::Run::Job::Try;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
+    +_handle
     <job_try_id
     <job_id
     <try_ord
@@ -20,6 +20,9 @@ use Object::HashBase qw{
     <subtests_failed
     <status
 };
+
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
 
 sub TABLE       { 'job_tries' }
 sub PRIMARY_KEY { 'job_try_id' }
@@ -44,7 +47,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::JobTries - Row object for the C<job_tries> table.
+Test2::Harness2::Runner::Run::Job::Try - Row object for the C<job_tries> table.
 
 =head1 DESCRIPTION
 

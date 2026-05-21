@@ -1,22 +1,24 @@
-package Test2::Harness2::Row::Coverage;
+package Test2::Harness2::Runner::Run::Resource;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
-    <coverage_id
+    +_handle
+    <resource_id
     <run_id
-    <project_id
-    <source_file
+    <type
     <stamp
     <payload
 };
 
-sub TABLE        { 'coverage' }
-sub PRIMARY_KEY  { 'coverage_id' }
-sub COLUMNS      { qw/coverage_id run_id project_id source_file stamp payload/ }
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE        { 'resources' }
+sub PRIMARY_KEY  { 'resource_id' }
+sub COLUMNS      { qw/resource_id run_id type stamp payload/ }
 sub JSON_COLUMNS { qw/payload/ }
 
 1;
@@ -29,22 +31,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Coverage - Row object for the C<coverage> table.
+Test2::Harness2::Runner::Run::Resource - Row object for the C<resources> table.
 
 =head1 DESCRIPTION
 
-One row per (coverage-producing run, source_file). C<payload> is
-JSON with the canonical shape
-
-    {
-      "subs":       { "Foo::bar" => [...tests...] },
-      "file_level": [...tests...],
-      "meta":       { "managers" => [...] }
-    }
-
-See L<Test2::Harness2>'s C<ARCHITECTURE.md> §13.2 for the full
-description and the canonical "latest" / "merge several runs"
-queries.
+One row per resource sample. C<type> is a short identifier
+(C<'cpu'>, C<'memory'>, custom names). C<payload> is producer-defined
+JSON. Indexed by C<(run_id, type, stamp)> for sequential
+single-timeseries reads.
 
 =head1 SOURCE
 

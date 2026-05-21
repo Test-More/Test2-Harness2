@@ -1,11 +1,11 @@
-package Test2::Harness2::Row::Collectors;
+package Test2::Harness2::Runner::Collector;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Row';
 use Object::HashBase qw{
+    +_handle
     <collector_id
     <runner_id
     <name
@@ -17,6 +17,9 @@ use Object::HashBase qw{
     <exit_code
     <finalized
 };
+
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
 
 sub TABLE       { 'collectors' }
 sub PRIMARY_KEY { 'collector_id' }
@@ -34,7 +37,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Row::Collectors - Row object for the C<collectors> table.
+Test2::Harness2::Runner::Collector - Row object for the C<collectors> table.
 
 =head1 DESCRIPTION
 
