@@ -10,6 +10,7 @@ use File::Spec ();
 use IO::Handle;
 use Time::HiRes qw/time/;
 
+use Test2::Harness2::Util      qw/write_file/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 
 use Object::HashBase qw{
@@ -82,23 +83,14 @@ sub record_exit {
     my ($self, $exit, $info) = @_;
     $self->_assert_open;
 
-    my $path = $self->_path('exit');
-    open(my $fh, '>', $path) or die "Failed to write $path: $!";
-    print {$fh} "$exit\n";
-    close($fh) or die "Failed to close $path: $!";
+    write_file($self->_path('exit'), "$exit\n");
 
     if ($info && $info->{orphaned}) {
-        my $marker = $self->_path('orphaned');
-        open(my $ofh, '>', $marker) or die "Failed to write $marker: $!";
-        print {$ofh} time(), "\n";
-        close($ofh) or die "Failed to close $marker: $!";
+        write_file($self->_path('orphaned'), time(), "\n");
     }
 
     if ($info && $info->{timed_out}) {
-        my $marker = $self->_path('timed_out');
-        open(my $tfh, '>', $marker) or die "Failed to write $marker: $!";
-        print {$tfh} $info->{timed_out}, " ", time(), "\n";
-        close($tfh) or die "Failed to close $marker: $!";
+        write_file($self->_path('timed_out'), $info->{timed_out}, " ", time(), "\n");
     }
 
     return;
@@ -128,10 +120,7 @@ sub finalize {
     close($self->{+STATE_FH})     if $self->{+STATE_FH};
     close($self->{+ARTIFACTS_FH}) if $self->{+ARTIFACTS_FH};
 
-    my $marker = $self->_path('finalized');
-    open(my $fh, '>', $marker) or die "Failed to write $marker: $!";
-    print {$fh} time(), "\n";
-    close($fh) or die "Failed to close $marker: $!";
+    write_file($self->_path('finalized'), time(), "\n");
 
     $self->{+FINALIZED} = 1;
     return;
@@ -178,7 +167,7 @@ Single line holding the raw wait-status of the collected process.
 
 =item F<orphaned>
 
-Single-line hi-res timestamp. Written by L</record_exit> when the
+Single-line hi-res timestamp. Written by C<record_exit> when the
 collector flagged the run as orphaned (collected process exited but
 its pipes stayed open past the orphan-timeout). Absent when the run
 was not orphaned.
@@ -186,19 +175,19 @@ was not orphaned.
 =item F<timed_out>
 
 Single-line C<"$kind $stamp"> (e.g. C<"silence 1715890432.12">).
-Written by L</record_exit> when the collector forcibly killed the
+Written by C<record_exit> when the collector forcibly killed the
 collected test job because it hit the silence or lifetime timeout.
 Absent when no timeout fired.
 
 =item F<artifacts.jsonl>
 
 JSON-encoded artifact spec per line. Written only when the auditor or
-parser flags an external artifact via L</record_artifact>. The file is
+parser flags an external artifact via C<record_artifact>. The file is
 not created when no artifact is recorded.
 
 =item F<finalized>
 
-Single line holding a hi-res timestamp; written by L</finalize>. Its
+Single line holding a hi-res timestamp; written by C<finalize>. Its
 presence is the on-disk equivalent of the C<finalized> flag on a
 database-backed recorder's C<collectors> row.
 

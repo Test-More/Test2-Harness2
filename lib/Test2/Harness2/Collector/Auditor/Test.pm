@@ -553,7 +553,7 @@ of a single test execution.
 
 =head1 DESCRIPTION
 
-Consumes one L<Test2::Harness2::Event> at a time via L</audit_event>; tracks
+Consumes one L<Test2::Harness2::Event> at a time via C<audit_event>; tracks
 assertions, plans, nested subtests (recursively), errors, halts/bail-outs,
 and the process exit code; and emits synthetic events for subtest
 announcements and recovery from malformed TAP. Returns zero or more events
@@ -631,11 +631,11 @@ True when at least one failure has been registered.
 
 =item $bool = $auditor->passing
 
-Alias for L</pass> (satisfies L<Test2::Harness2::Collector::Role::Auditor>).
+Alias for C<pass> (satisfies L<Test2::Harness2::Collector::Role::Auditor>).
 
 =item $bool = $auditor->failing
 
-Alias for L</fail> (satisfies L<Test2::Harness2::Collector::Role::Auditor>).
+Alias for C<fail> (satisfies L<Test2::Harness2::Collector::Role::Auditor>).
 
 =item $n = $auditor->fail_count
 
@@ -684,7 +684,7 @@ Attached to the C<harness_process_exit> event when it is observed.
 
 =item @facets = $auditor->subtest_fail_error_facet_list
 
-Subset of L</fail_error_facet_list> covering only failures that belong
+Subset of C<fail_error_facet_list> covering only failures that belong
 to a single subtest's contents (plan / count / numbering / nested
 subtest-failure issues). Used recursively for nested subtests.
 

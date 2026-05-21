@@ -94,7 +94,7 @@ Test2::Harness2::Role::Row - Role composed by per-table row classes.
 
 Every database table backs a small class under C<Test2::Harness2::*>
 that composes this role. The role itself uses L<Object::HashBase> to
-declare the C<+_handle> slot used by L</save> and L</refresh>;
+declare the C<+_handle> slot used by C<save> and C<refresh>;
 consumers compose the role via L<Object::HashBase>'s C<&> import
 prefix so the role's C<_HANDLE> constant lands in the consumer at
 compile time:
@@ -138,7 +138,7 @@ The full ordered list of column names.
 
 =item @cols = $class->JSON_COLUMNS
 
-The subset of L</COLUMNS> whose contents are JSON-encoded strings.
+The subset of C<COLUMNS> whose contents are JSON-encoded strings.
 Default: empty list. Callers that want decoded Perl data structures
 should call L<Test2::Harness2::Util::JSON/decode_json> on these
 columns themselves; the role does not auto-decode.

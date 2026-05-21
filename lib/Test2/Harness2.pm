@@ -12,7 +12,7 @@ use POSIX ();
 use Scalar::Util qw/blessed/;
 use Test2::Util::UUID qw/gen_uuid/;
 
-use Test2::Harness2::Util qw/table_to_db_class load_module/;
+use Test2::Harness2::Util qw/table_to_db_class load_module read_file/;
 
 use Object::HashBase qw{
     <dsn
@@ -363,7 +363,10 @@ sub _find_schema_dir {
     return $repo if -d $repo;
 
     require File::ShareDir;
-    my $share = eval { File::ShareDir::dist_dir('Test2-Harness2') };
+    my $share;
+    my $ok  = eval { $share = File::ShareDir::dist_dir('Test2-Harness2'); 1 };
+    my $err = $@;
+    warn "File::ShareDir::dist_dir failed: $err" unless $ok;
     if (defined $share) {
         my $dir = File::Spec->catdir($share, 'schema');
         return $dir if -d $dir;
@@ -376,10 +379,7 @@ sub _load_schema {
     my $self = shift;
 
     my $path = File::Spec->catfile($self->_schema_dir, "$self->{+FLAVOR}.sql");
-    open(my $fh, '<', $path) or die "Failed to open $path: $!";
-    local $/;
-    my $sql = <$fh>;
-    close($fh);
+    my $sql  = read_file($path);
 
     $sql =~ s{^\s*--[^\n]*\n}{}mg;
     my @stmts = grep { /\S/ } split /;\s*(?:\n|\z)/, $sql;
@@ -397,7 +397,8 @@ sub _load_schema {
     };
     my $err = $@;
     unless ($ok) {
-        eval { $self->{+DBH}->rollback };
+        warn "schema-load rollback failed: $@"
+            unless eval { $self->{+DBH}->rollback; 1 };
         die $err;
     }
     return;

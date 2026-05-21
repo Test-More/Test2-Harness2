@@ -31,7 +31,7 @@ Test2::Harness2::Collector::Role::Auditor - Role implemented by collector audito
 =head1 DESCRIPTION
 
 Auditors sit between the parser and the recorder. Every event the parser
-produces is handed to L</audit_event>; the auditor inspects the event,
+produces is handed to C<audit_event>; the auditor inspects the event,
 updates its own state (assertion count, plan, halt status, etc.), and
 returns zero or more events for the recorder to write.
 
@@ -66,12 +66,12 @@ Return the number of passing assertions the auditor has counted so far.
 
 =item $bool = $auditor->passing()
 
-True when L</fail_count> is zero. Override if richer state (intermediate,
+True when C<fail_count> is zero. Override if richer state (intermediate,
 ambiguous) is needed.
 
 =item $bool = $auditor->failing()
 
-True when L</fail_count> is non-zero. Override alongside L</passing>.
+True when C<fail_count> is non-zero. Override alongside C<passing>.
 
 =item @events = $auditor->startup()
 

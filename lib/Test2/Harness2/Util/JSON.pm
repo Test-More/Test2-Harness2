@@ -9,7 +9,7 @@ use Cpanel::JSON::XS();
 use File::Temp qw/tempfile/;
 use Importer Importer => 'import';
 
-use Test2::Harness2::Util qw/write_file_atomic/;
+use Test2::Harness2::Util qw/read_file write_file_atomic/;
 
 our @EXPORT_OK = qw{
     decode_json
@@ -155,8 +155,7 @@ if the unlink fails).
 sub decode_json_file {
     my ($file, %params) = @_;
 
-    open(my $fh, '<', $file) or die "Could not open '$file': $!";
-    my $json_text = do { local $/; <$fh> };
+    my $json_text = read_file($file);
 
     if ($params{unlink}) {
         unlink($file) or warn "Could not unlink '$file': $!";

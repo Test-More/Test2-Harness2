@@ -86,7 +86,7 @@ rehydrated into a L<Test2::Harness2::Event>.
 
 This class consumes L<Test2::Harness2::Collector::Role::Parser>. Subclasses
 that want to recognize richer line protocols (TAP, JSON, custom framing)
-override L</parse_stream_line>; see
+override C<parse_stream_line>; see
 L<Test2::Harness2::Collector::Parser::TAPParser>.
 
 =head1 SYNOPSIS

@@ -29,7 +29,7 @@ zero or one L<Test2::Harness2::Event> objects which are then passed downstream
 to the optional auditor and on to the recorder.
 
 This role pins the single method the collector requires from a parser:
-L</parse_io>. Implementations may add their own attributes and helpers.
+C<parse_io>. Implementations may add their own attributes and helpers.
 
 =head1 REQUIRED METHODS
 

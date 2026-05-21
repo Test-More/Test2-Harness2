@@ -296,8 +296,8 @@ L<Test::Builder::Formatter> alongside itself. If a caller later replaces
 Test::Builder's stdout/stderr/todo handles (which legacy code occasionally
 does to capture output) the formatter routes that one event through
 Test::Builder's TAP path instead of the harness JSON path, preserving legacy
-behavior. The L</handles>, L</set_handles>, L</set_no_header>,
-L</set_no_diag>, L</set_no_numbers>, L</terminate>, L</finalize>, and
+behavior. The C<handles>, C<set_handles>, C<set_no_header>,
+C<set_no_diag>, C<set_no_numbers>, C<terminate>, C<finalize>, and
 C<AUTOLOAD> hooks all forward to Test::Builder::Formatter when the bridge is
 active.
 
@@ -307,7 +307,7 @@ active.
 
 =item encoding
 
-The active output encoding. Setting it via L</encoding> emits a control
+The active output encoding. Setting it via C<encoding> emits a control
 event so the collector can mirror the change, and applies the encoding to
 both STDOUT and STDERR via L<Test2::Harness2::Util/apply_encoding>.
 
