@@ -7,7 +7,7 @@ use Test2::Harness2::DB::User;
 
 sub _new_harness {
     my $path = File::Spec->catfile(tempdir(CLEANUP => 1), 't.t2h2');
-    return Test2::Harness2->new(discovery_path => $path);
+    return Test2::Harness2->new(path => $path, project => 'test');
 }
 
 subtest constants => sub {

@@ -1,6 +1,7 @@
 use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Spec ();
+use DBI ();
 
 use Test2::Harness2;
 
@@ -10,10 +11,10 @@ subtest new_creates_file_and_schema => sub {
     my $path = _path('a.t2h2');
     ok(!-e $path, 'path does not exist yet');
 
-    my $h = Test2::Harness2->new(discovery_path => $path, project => 'p1');
+    my $h = Test2::Harness2->new(path => $path, project => 'p1');
     isa_ok($h, 'Test2::Harness2');
-    ok(-e $path, 'discovery file exists');
-    is($h->discovery_path, $path);
+    ok(-e $path, 'harness file exists');
+    is($h->path, $path);
     is($h->project, 'p1');
     is($h->flavor,  'sqlite');
 
@@ -26,12 +27,12 @@ subtest new_creates_file_and_schema => sub {
     ok($have{artifacts},  'artifacts table created');
 
     $h->disconnect;
-    ok(!-e $path, 'discovery file removed on disconnect');
+    ok(!-e $path, 'harness file removed on disconnect');
 };
 
 subtest connect_does_not_recreate_schema => sub {
     my $path = _path('b.t2h2');
-    my $h = Test2::Harness2->new(discovery_path => $path);
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
     my ($u) = $h->insert(users => {name => 'persisted'});
     my $uid = $u->user_id;
     $h->{_owns_file} = 0;
@@ -39,7 +40,7 @@ subtest connect_does_not_recreate_schema => sub {
 
     ok(-e $path, 'file preserved');
 
-    my $h2 = Test2::Harness2->connect(discovery_path => $path);
+    my $h2 = Test2::Harness2->connect(path => $path, project => 'p');
     my $u2 = $h2->fetch(users => name => 'persisted');
     ok($u2,                   'row visible after connect');
     is($u2->user_id, $uid,    'same id');
@@ -50,7 +51,7 @@ subtest connect_does_not_recreate_schema => sub {
 
 subtest single_insert_returns_id => sub {
     my $path = _path('c.t2h2');
-    my $h = Test2::Harness2->new(discovery_path => $path);
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
 
     my ($row) = $h->insert(users => {name => 'a', email => 'a@x'});
     ok($row->user_id, 'got user_id');
@@ -62,7 +63,7 @@ subtest single_insert_returns_id => sub {
 
 subtest bulk_insert_returns_id_range => sub {
     my $path = _path('d.t2h2');
-    my $h = Test2::Harness2->new(discovery_path => $path);
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
 
     my @rows = $h->insert(users =>
         {name => 'u1'}, {name => 'u2'}, {name => 'u3'}, {name => 'u4'},
@@ -81,7 +82,7 @@ subtest bulk_insert_returns_id_range => sub {
 
 subtest fetch_with_where => sub {
     my $path = _path('e.t2h2');
-    my $h = Test2::Harness2->new(discovery_path => $path);
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
 
     $h->insert(users => {name => 'alpha'});
     $h->insert(users => {name => 'beta'});
@@ -97,7 +98,7 @@ subtest fetch_with_where => sub {
 
 subtest fetch_too_many_croaks => sub {
     my $path = _path('f.t2h2');
-    my $h = Test2::Harness2->new(discovery_path => $path);
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
 
     $h->insert(users => {name => 'a', email => 'x@y'});
     $h->insert(users => {name => 'b', email => 'x@y'});
@@ -108,6 +109,59 @@ subtest fetch_too_many_croaks => sub {
         'fetch with multiple matches croaks',
     );
 
+    $h->disconnect;
+};
+
+subtest project_is_required => sub {
+    my $path = _path('proj.t2h2');
+    like(
+        dies { Test2::Harness2->new(path => $path) },
+        qr/'project' is a required attribute/,
+        'missing project croaks',
+    );
+};
+
+subtest user_required_when_env_missing => sub {
+    my $path = _path('user.t2h2');
+    local $ENV{USER};
+    delete $ENV{USER};
+    like(
+        dies { Test2::Harness2->new(path => $path, project => 'p') },
+        qr/'user' is a required attribute/,
+        'missing USER croaks (no silent fallback)',
+    );
+};
+
+subtest insert_auto_generates_uuid => sub {
+    my $path = _path('uuid.t2h2');
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
+
+    my ($host) = $h->insert(hosts => {name => 'localhost'});
+    my ($user) = $h->insert(users => {name => 'alice'});
+
+    my ($inst) = $h->insert(instances => {
+        host_id => $host->host_id,
+        user_id => $user->user_id,
+        started => 0,
+    });
+    like($inst->instance_uuid, qr/^[0-9a-f-]{36}$/i, 'instance_uuid auto-generated');
+
+    my $explicit = '11111111-2222-7333-8444-555555555555';
+    my ($inst2) = $h->insert(instances => {
+        instance_uuid => $explicit,
+        host_id       => $host->host_id,
+        user_id       => $user->user_id,
+        started       => 0,
+    });
+    is($inst2->instance_uuid, $explicit, 'explicit uuid preserved');
+
+    $h->disconnect;
+};
+
+subtest blob_sql_type_returns_dbi_constant => sub {
+    my $path = _path('blob.t2h2');
+    my $h = Test2::Harness2->new(path => $path, project => 'p');
+    is($h->blob_sql_type, DBI::SQL_BLOB(), 'sqlite blob type is DBI::SQL_BLOB');
     $h->disconnect;
 };
 

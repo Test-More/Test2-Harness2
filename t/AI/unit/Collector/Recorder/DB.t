@@ -11,7 +11,7 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 sub _new_harness {
     my $dir  = tempdir(CLEANUP => 1);
     my $path = File::Spec->catfile($dir, 'harness.t2h2');
-    my $h = Test2::Harness2->new(discovery_path => $path);
+    my $h = Test2::Harness2->new(path => $path, project => 'test');
     return ($h, $dir);
 }
 
@@ -70,7 +70,9 @@ subtest full_collector_lifecycle => sub {
 
     my $art = $h->fetch(artifacts => collector_id => $col->collector_id);
     ok($art, 'artifacts row created at startup');
+    is($art->filename, 'events.jsonl.zst', 'artifact filename is canonical events.jsonl.zst');
     ok($art->local_path, 'artifact has local_path');
+    like($art->local_path, qr{/events/[0-9a-f-]+\.jsonl\.zst$}i, 'local on-disk path uses a uuid name');
     is($art->content, undef, 'artifact has no content yet');
     ok(-e $art->local_path, 'on-disk events file exists');
 

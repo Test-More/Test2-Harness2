@@ -10,8 +10,9 @@ use File::Spec ();
 use File::Basename qw/dirname/;
 use POSIX ();
 use Scalar::Util qw/blessed/;
+use Test2::Util::UUID qw/gen_uuid/;
 
-use Test2::Harness2::Util qw/table_to_db_class/;
+use Test2::Harness2::Util qw/table_to_db_class load_module/;
 
 use Object::HashBase qw{
     <dsn
@@ -19,52 +20,308 @@ use Object::HashBase qw{
     <project
     <user
     <name
-    <discovery_path
+    <path
     <dbh
     <tmpdir
     +_owns_file
     +_schema_dir
 };
 
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2 - Harness handle: owns the database, the `.t2h2`
+file, and the row-object surface.
+
+=head1 DESCRIPTION
+
+The library-side entry point for the harness. Constructing a handle
+opens (or creates) the harness's SQLite database at a `.t2h2` file in
+the system temp directory, and exposes the fetch / fetch_all / insert
+helpers that every row-object class uses to talk to its table.
+
+Stage 5 ships the SQLite-only path. Non-default backends (Postgres,
+MySQL, MariaDB, Percona, externally-hosted SQLite) land in a later
+stage; the handle is shaped now so those backends slot in without
+changing the public API.
+
+=head1 SYNOPSIS
+
+    use Test2::Harness2;
+
+    # Create a fresh harness instance + sqlite db at
+    # ${tmpdir}/${user}-${project}-${pid}.t2h2
+    my $h = Test2::Harness2->new(project => 'myproj');
+
+    # Reconnect to an existing .t2h2 file
+    my $h2 = Test2::Harness2->connect($t2h2_path);
+
+    my ($user) = $h->insert(users => {name => 'alice'});
+    say $user->user_id;
+
+    my @hosts = $h->fetch_all(hosts => name => 'localhost');
+
+    $h->disconnect;
+
+=head1 ATTRIBUTES
+
+=over 4
+
+=item project (required)
+
+Free-form project name used as part of the default `.t2h2` filename.
+Must be supplied by the caller; the handle does not detect a project
+from the environment or the current working directory. Project
+detection lives in the L<App::Yath2> layer.
+
+=item user
+
+The owning user. Defaults to C<$ENV{USER}>; croaks if neither is
+provided.
+
+=item name
+
+Filename for the `.t2h2` file. Defaults to
+C<"${user}-${project}-${pid}.t2h2">. Callers may override the
+pattern in full.
+
+=item tmpdir
+
+System temp directory the `.t2h2` file is placed in. Defaults to
+C<< File::Spec->tmpdir >>.
+
+=item path
+
+The full path of the `.t2h2` file. Computed from C<tmpdir> + C<name>
+unless the caller passes it in directly.
+
+=item dsn
+
+DBI DSN for the harness database. In SQLite mode this is computed
+from C<path>; callers may pass a different DSN to connect to a
+database that is not the C<path> file. Non-SQLite DSNs are reserved
+for a later stage.
+
+=item flavor
+
+Database flavor identifier (C<sqlite>, C<postgres>, C<mysql>,
+C<mariadb>, C<percona>). Used to pick the matching schema file and
+to branch flavor-specific SQL (placeholder syntax, ID recovery,
+etc.). Defaults to C<sqlite>.
+
+=item dbh
+
+The owned L<DBI> database handle.
+
+=back
+
+=cut
+
 sub init {
     my $self = shift;
 
+    croak "'project' is a required attribute"
+        unless defined $self->{+PROJECT} && length $self->{+PROJECT};
+
+    $self->{+USER} //= $ENV{USER};
+    croak "'user' is a required attribute (set USER in the environment or pass user => ...)"
+        unless defined $self->{+USER} && length $self->{+USER};
+
     $self->{+FLAVOR}   //= 'sqlite';
-    # Do not make assumptions about the project here, Test2::Harness2 should always be directly passed a project, it should not detect it or pull it from ENV.
-    $self->{+PROJECT}  //= $ENV{T2H2_PROJECT} // _basename_cwd();
-    # Die if user cannto be found, do not fallback to 'unknown'
-    $self->{+USER}     //= $ENV{USER}        // 'unknown';
     $self->{+TMPDIR}   //= File::Spec->tmpdir;
     $self->{+NAME}     //= sprintf('%s-%s-%d.t2h2', $self->{+USER}, $self->{+PROJECT}, $$);
-
-    # Test2::Harness2 does not discovery, it assumes it is given a path, or it creates the default (what we are calling discovery). The App::Yath2 layer will be responsible for discovery later. This may just be an issue with the term 'discovery'
-    $self->{+DISCOVERY_PATH} //= File::Spec->catfile($self->{+TMPDIR}, $self->{+NAME});
+    $self->{+PATH}     //= File::Spec->catfile($self->{+TMPDIR}, $self->{+NAME});
 
     return if $self->{+DBH};
 
-    my $existed = -e $self->{+DISCOVERY_PATH};
+    my $existed = -e $self->{+PATH};
     $self->{+_OWNS_FILE} = !$existed;
 
-    $self->{+DSN} //= "dbi:SQLite:dbname=" . $self->{+DISCOVERY_PATH};
+    $self->{+DSN} //= "dbi:SQLite:dbname=" . $self->{+PATH};
     $self->_open_dbh;
 
     $self->_load_schema if !$existed;
 }
 
+=head1 PUBLIC METHODS
+
+=over 4
+
+=item $h = Test2::Harness2->connect($path)
+
+=item $h = Test2::Harness2->connect(%args)
+
+Connect to an existing `.t2h2` file (or a passed-in DSN). The
+single-positional form is treated as C<path>; otherwise accepts the
+same named-argument form as C<new>. Croaks if neither C<path> nor
+C<dsn> is supplied. Does not run the schema-create step.
+
+=back
+
+=cut
+
 sub connect {
     my $class = shift;
-    my (%args) = @_ == 1 ? (discovery_path => $_[0]) : @_;
+    my (%args) = @_ == 1 ? (path => $_[0]) : @_;
 
-    croak "Missing discovery_path or dsn"
-        unless $args{discovery_path} || $args{dsn};
+    croak "Missing path or dsn"
+        unless $args{path} || $args{dsn};
 
     return $class->new(%args);
 }
 
-# Should not need this with direct 'project' passing
-sub _basename_cwd {
-    my @parts = File::Spec->splitdir(File::Spec->rel2abs(File::Spec->curdir));
-    return $parts[-1] // 'unknown';
+=over 4
+
+=item $type = $h->blob_sql_type
+
+DBI SQL type constant to use when binding a binary blob parameter
+on this handle's flavor. SQLite returns C<DBI::SQL_BLOB()>;
+additional flavors hook in here as they land.
+
+=back
+
+=cut
+
+sub blob_sql_type {
+    my $self = shift;
+
+    return DBI::SQL_BLOB() if $self->{+FLAVOR} eq 'sqlite';
+    croak "blob_sql_type not configured for flavor '$self->{+FLAVOR}'";
+}
+
+=over 4
+
+=item $row = $h->fetch($table, %where)
+
+Single row object matching C<%where>, or C<undef>. C<$table> may be
+a table name (C<'users'>) or a row class name
+(C<'Test2::Harness2::DB::User'>). Croaks if more than one row
+matches.
+
+=back
+
+=cut
+
+sub fetch {
+    my ($self, $table, %where) = @_;
+    my @rows = $self->fetch_all($table, %where);
+    croak "fetch returned more than one row for $table" if @rows > 1;
+    return $rows[0];
+}
+
+=over 4
+
+=item @rows = $h->fetch_all($table, %where)
+
+All row objects matching C<%where>.
+
+=back
+
+=cut
+
+sub fetch_all {
+    my ($self, $table, %where) = @_;
+    my $class = $self->_row_class($table);
+    my $tname = $class->TABLE;
+
+    my ($sql, @binds) = $self->_build_select($tname, \%where);
+    my $rows = $self->{+DBH}->selectall_arrayref($sql, {Slice => {}}, @binds);
+
+    return map { $class->new(_handle => $self, %$_) } @$rows;
+}
+
+=over 4
+
+=item @rows = $h->insert($table, \%row1, \%row2, ...)
+
+Insert one or more rows in a single multi-VALUES INSERT and return
+them as row objects with their primary key filled in. Uses the
+per-flavor identifier-range trick to recover the assigned IDs
+(SQLite: last_insert_rowid range; MySQL family: LAST_INSERT_ID
+range). Any column whose name ends in C<_uuid> is filled with a
+freshly generated UUID when the caller leaves it blank.
+
+=back
+
+=cut
+
+sub insert {
+    my ($self, $table, @rows) = @_;
+    return unless @rows;
+
+    my $class = $self->_row_class($table);
+    my $tname = $class->TABLE;
+    my $pk    = $class->PRIMARY_KEY;
+    my @cols  = $class->COLUMNS;
+
+    @cols = grep { $_ ne $pk } @cols;
+    my @uuid_cols = grep { /_uuid$/ } @cols;
+
+    my @inserts = map { $self->_row_to_insertable($class, $_) } @rows;
+
+    my $placeholders = '(' . join(',', ('?') x scalar(@cols)) . ')';
+    my $sql          = sprintf(
+        "INSERT INTO %s (%s) VALUES %s",
+        $tname,
+        join(',', @cols),
+        join(',', ($placeholders) x scalar(@inserts)),
+    );
+
+    my @binds;
+    for my $row (@inserts) {
+        for my $uc (@uuid_cols) {
+            $row->{$uc} //= gen_uuid();
+        }
+        push @binds => map { $row->{$_} } @cols;
+    }
+
+    my $sth = $self->{+DBH}->prepare($sql);
+    $sth->execute(@binds);
+
+    my @ids = $self->_recover_ids($tname, $pk, scalar(@inserts));
+
+    my @out;
+    for my $i (0 .. $#inserts) {
+        my %row = (%{$inserts[$i]}, $pk => $ids[$i]);
+        push @out => $class->new(_handle => $self, %row);
+    }
+    return @out;
+}
+
+=over 4
+
+=item $h->disconnect
+
+Close the database handle and remove the `.t2h2` file the handle
+created (if any). Idempotent.
+
+=back
+
+=cut
+
+sub disconnect {
+    my $self = shift;
+
+    if (my $dbh = delete $self->{+DBH}) {
+        $dbh->disconnect;
+    }
+
+    if ($self->{+_OWNS_FILE} && $self->{+PATH} && -e $self->{+PATH}) {
+        unlink($self->{+PATH});
+        my $wal = $self->{+PATH} . '-wal';
+        my $shm = $self->{+PATH} . '-shm';
+        unlink($wal) if -e $wal;
+        unlink($shm) if -e $shm;
+    }
+    return;
+}
+
+sub DESTROY {
+    my $self = shift;
+    $self->disconnect if $self->{+DBH};
 }
 
 sub _open_dbh {
@@ -96,15 +353,23 @@ sub _schema_dir {
     return $self->{+_SCHEMA_DIR} //= $self->_find_schema_dir;
 }
 
-# Update this to use File::ShareDir, we want to use share/ when working in the repo, but File::ShareDir in production/installed copies.
 sub _find_schema_dir {
     my $self = shift;
-    my $here = $INC{'Test2/Harness2.pm'} or die "Test2::Harness2 not loaded?";
-    my $abs  = File::Spec->rel2abs($here);
+
+    my $here   = $INC{'Test2/Harness2.pm'} or die "Test2::Harness2 not loaded?";
+    my $abs    = File::Spec->rel2abs($here);
     my $libdir = dirname(dirname(dirname($abs)));
-    my $dir    = File::Spec->catdir($libdir, 'share', 'schema');
-    return $dir if -d $dir;
-    die "Cannot locate share/schema relative to $here";
+    my $repo   = File::Spec->catdir($libdir, 'share', 'schema');
+    return $repo if -d $repo;
+
+    require File::ShareDir;
+    my $share = eval { File::ShareDir::dist_dir('Test2-Harness2') };
+    if (defined $share) {
+        my $dir = File::Spec->catdir($share, 'schema');
+        return $dir if -d $dir;
+    }
+
+    die "Cannot locate share/schema (checked '$repo' and File::ShareDir for Test2-Harness2)";
 }
 
 sub _load_schema {
@@ -138,103 +403,15 @@ sub _load_schema {
     return;
 }
 
-sub disconnect {
-    my $self = shift;
-
-    if (my $dbh = delete $self->{+DBH}) {
-        $dbh->disconnect;
-    }
-
-    if ($self->{+_OWNS_FILE} && $self->{+DISCOVERY_PATH} && -e $self->{+DISCOVERY_PATH}) {
-        unlink($self->{+DISCOVERY_PATH});
-        my $wal = $self->{+DISCOVERY_PATH} . '-wal';
-        my $shm = $self->{+DISCOVERY_PATH} . '-shm';
-        unlink($wal) if -e $wal;
-        unlink($shm) if -e $shm;
-    }
-    return;
-}
-
-sub DESTROY {
-    my $self = shift;
-    $self->disconnect if $self->{+DBH};
-}
-
 sub _row_class {
     my ($self, $table) = @_;
 
     my $class = $table =~ /::/ ? $table : table_to_db_class($table);
 
-    # Use the utilities in lib/Test2/Harness2/Util** which have tools for this.
-    unless ($class->can('new')) {
-        (my $file = $class) =~ s{::}{/}g;
-        local $@;
-        unless (eval { require $file . ".pm"; 1 }) {
-            croak "could not load row class '$class' for table '$table': $@";
-        }
-    }
+    my $ok = eval { load_module($class); 1 };
+    croak "could not load row class '$class' for table '$table': $@" unless $ok;
+
     return $class;
-}
-
-sub fetch {
-    my ($self, $table, %where) = @_;
-    my @rows = $self->fetch_all($table, %where);
-    croak "fetch returned more than one row for $table" if @rows > 1;
-    return $rows[0];
-}
-
-sub fetch_all {
-    my ($self, $table, %where) = @_;
-    my $class = $self->_row_class($table);
-    my $tname = $class->TABLE;
-
-    my ($sql, @binds) = $self->_build_select($tname, \%where);
-    my $rows = $self->{+DBH}->selectall_arrayref($sql, {Slice => {}}, @binds);
-
-    return map { $class->new(_handle => $self, %$_) } @$rows;
-}
-
-sub insert {
-    my ($self, $table, @rows) = @_;
-    return unless @rows;
-
-    my $class = $self->_row_class($table);
-    my $tname = $class->TABLE;
-    my $pk    = $class->PRIMARY_KEY;
-    my @cols  = $class->COLUMNS;
-
-    # Add handling to auto-gen TABLE_uuid fields if they are empty using
-    # gen_uuid from the utils, this avoids the need to manually od it every
-    # insert.
-
-    @cols = grep { $_ ne $pk } @cols;
-
-    my @inserts = map { $self->_row_to_insertable($class, $_) } @rows;
-
-    my $placeholders = '(' . join(',', ('?') x scalar(@cols)) . ')';
-    my $sql          = sprintf(
-        "INSERT INTO %s (%s) VALUES %s",
-        $tname,
-        join(',', @cols),
-        join(',', ($placeholders) x scalar(@inserts)),
-    );
-
-    my @binds;
-    for my $row (@inserts) {
-        push @binds => map { $row->{$_} } @cols;
-    }
-
-    my $sth = $self->{+DBH}->prepare($sql);
-    $sth->execute(@binds);
-
-    my @ids = $self->_recover_ids($tname, $pk, scalar(@inserts));
-
-    my @out;
-    for my $i (0 .. $#inserts) {
-        my %row = (%{$inserts[$i]}, $pk => $ids[$i]);
-        push @out => $class->new(_handle => $self, %row);
-    }
-    return @out;
 }
 
 sub _row_to_insertable {
@@ -293,138 +470,6 @@ sub _recover_ids {
 __END__
 
 =pod
-
-=encoding UTF-8
-
-=head1 NAME
-
-Test2::Harness2 - Harness handle: owns the database, the `.t2h2`
-discovery file, and the row-object surface.
-
-=head1 DESCRIPTION
-
-The library-side entry point for the harness. Constructing a handle
-opens (or creates) the harness's SQLite database, drops a `.t2h2`
-discovery file in the system temp directory, and exposes the
-fetch / fetch_all / insert helpers that every row-object class uses
-to talk to its table.
-
-Stage 5 ships the SQLite-only path. Non-default backends (Postgres,
-MySQL, MariaDB, Percona, externally-hosted SQLite) land in a later
-stage; the handle is shaped now so those backends slot in without
-changing the public API.
-
-=head1 SYNOPSIS
-
-    use Test2::Harness2;
-
-    # Create a fresh harness instance + sqlite db at
-    # ${tmpdir}/${user}-${project}-${pid}.t2h2
-    my $h = Test2::Harness2->new(project => 'myproj');
-
-    # Reconnect to an existing .t2h2 file
-    my $h2 = Test2::Harness2->connect($path);
-
-    my ($user) = $h->insert(users => {name => 'alice'});
-    say $user->user_id;
-
-    my @hosts = $h->fetch_all(hosts => name => 'localhost');
-
-    $h->disconnect;
-
-=head1 ATTRIBUTES
-
-=over 4
-
-=item project
-
-Free-form project name used as part of the default `.t2h2` filename.
-Callers normally pass this in; otherwise the handle uses
-C<$ENV{T2H2_PROJECT}> or, last, the basename of the current
-directory.
-
-=item user
-
-The owning user. Defaults to C<$ENV{USER}>.
-
-=item name
-
-Filename for the `.t2h2` discovery file. Defaults to
-C<"${user}-${project}-${pid}.t2h2">. Callers may override the
-pattern in full.
-
-=item tmpdir
-
-System temp directory the discovery file is placed in. Defaults to
-C<< File::Spec->tmpdir >>.
-
-=item discovery_path
-
-The full path of the `.t2h2` file. Computed from C<tmpdir> + C<name>
-unless the caller passes it in directly.
-
-=item dsn
-
-DBI DSN for the harness database. In SQLite mode this is computed
-from C<discovery_path>; callers may pass a different DSN to connect
-to a database that is not the C<discovery_path> file. Non-SQLite
-DSNs are reserved for a later stage.
-
-=item flavor
-
-Database flavor identifier (C<sqlite>, C<postgres>, C<mysql>,
-C<mariadb>, C<percona>). Used to pick the matching schema file and
-to branch flavor-specific SQL (placeholder syntax, ID recovery,
-etc.). Defaults to C<sqlite>.
-
-=item dbh
-
-The owned L<DBI> database handle.
-
-=back
-
-=head1 PUBLIC METHODS
-
-=over 4
-
-=item $h = Test2::Harness2->new(%args)
-
-Create a new harness handle and the backing `.t2h2` file. If a
-backing file already exists at C<discovery_path> the handle attaches
-to it instead of recreating the schema.
-
-=item $h = Test2::Harness2->connect($path_or_args)
-
-Connect to an existing `.t2h2` (or a passed-in DSN). Accepts either
-a single positional argument (treated as C<discovery_path>) or the
-same named-argument form as L</new>. Does not run the schema-create
-step.
-
-=item $row = $h->fetch($table, %where)
-
-Return a single row object matching C<%where>, or C<undef>.
-C<$table> can be a table name (C<'users'>) or a row class name
-(C<'Test2::Harness2::DB::User'>). Croaks if more than one row
-matches.
-
-=item @rows = $h->fetch_all($table, %where)
-
-Return all row objects matching C<%where>.
-
-=item @rows = $h->insert($table, \%row1, \%row2, ...)
-
-Insert one or more rows in a single multi-VALUES INSERT statement,
-return them as row objects with their primary key filled in. Uses
-the per-flavor identifier-range trick to recover the assigned IDs
-(SQLite: last_insert_rowid range; MySQL family: LAST_INSERT_ID
-range).
-
-=item $h->disconnect
-
-Close the database handle and remove the `.t2h2` file the handle
-created (if any).
-
-=back
 
 =head1 SOURCE
 
