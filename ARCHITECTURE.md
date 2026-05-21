@@ -1171,7 +1171,11 @@ commit.
   where available; otherwise `BINARY(16)` plus a `uuid_string`
   shadow column populated automatically via a `BEFORE INSERT` /
   `BEFORE UPDATE` trigger (so the human-readable form is always
-  current without an application-level write).
+  current without an application-level write). Current mapping:
+  PostgreSQL and MariaDB use the native `UUID` type (MariaDB ≥
+  10.7, which is the supported floor); MySQL and Percona use the
+  `BINARY(16)` + shadow + trigger form; SQLite stores the canonical
+  36-char string directly.
 - **JSON.** Use `JSONB` or `JSON` columns where the flavor
   supports them. Fall back to `TEXT` storing JSON-encoded strings
   on flavors that don't.
@@ -1220,6 +1224,23 @@ is exactly one entry per database file.
 **versions**
 - `version`
 - `project_id` → `projects`
+
+**vcs_info** — VCS context for runs done during development (no
+release tag). Optional companion to `versions`. A run may reference
+a `version_id` (release tarball), a `vcs_info_id` (dev work), both
+(a dev run that happens to land on a tagged commit), or neither (no
+version context supplied).
+- `project_id` → `projects`
+- `branch` — caller-supplied branch / ref label (free-form string).
+- `revision` — caller-supplied sha / hash / rev string. VCS-agnostic.
+- `dirty` — boolean. True when the working tree differed from the
+  committed `revision` at the moment the run was queued. The dirty
+  and clean rows for the same `(project, branch, revision)` are
+  distinct rows; clients querying "what's the latest clean coverage
+  for revision X?" can filter on `dirty = FALSE`.
+- The harness does not auto-detect this; the queueing tooling
+  (`yath` / CI / whatever) fills these fields. `Test2::Harness2`
+  treats them as opaque labels.
 
 **hosts**, **users**, **projects**, **versions** are
 deduplicated-by-natural-key.
@@ -1280,7 +1301,8 @@ deduplicated-by-natural-key.
 - `run_uuid`
 - `runner_id` → `runners`
 - `project_id` → `projects`
-- `version_id` → `versions`
+- `version_id` → `versions` (nullable; release context)
+- `vcs_info_id` → `vcs_info` (nullable; dev context)
 - `user_id` → `users`
 - `run_ord` — integer, unique per runner; orders runs.
 - `started` (nullable until scheduler claims the run)
@@ -1290,8 +1312,18 @@ deduplicated-by-natural-key.
 - `passed` — int
 - `failed` — int
 - `meta` — JSON
-- `abort` — bool; setting this asks the scheduler to terminate
-  in-flight jobs and stop dispatching new ones for this run.
+- `status` — enum: `pending` (queued), `running` (scheduler has
+  claimed it), `complete` (finished, see `result` for pass/fail),
+  `broken` (harness-side failure that prevented completion),
+  `canceled` (user / tooling asked the scheduler to stop). The
+  scheduler reads `status='canceled'` as the cue to terminate
+  in-flight jobs and stop dispatching for this run.
+- `has_coverage` — boolean. True when at least one `coverage` row
+  is associated with this run. Lets queries pre-filter coverage-
+  producing runs cheaply without a join.
+- `has_resources` — boolean. True when at least one `resources` row
+  is associated with this run. Same role as `has_coverage` for the
+  resources stream.
 
 **test_files**
 - `relative` — path relative to project root
@@ -1314,6 +1346,8 @@ deduplicated-by-natural-key.
 - `subtests` — top-level subtest count
 - `subtests_passed`
 - `subtests_failed`
+- `status` — enum: same values as `runs.status` (`pending` /
+  `running` / `complete` / `broken` / `canceled`).
 - `orphaned` — boolean. True when the collector reaped the collected
   process but its pipes stayed open past the orphan-timeout (a
   descendant inherited the pipe and outlived the parent). Diagnostic
@@ -1347,6 +1381,104 @@ deduplicated-by-natural-key.
 - `job_id` → `jobs`
 - `requested` — when the row was added by the scheduler
 - `started` — when the launcher started the process (nullable)
+
+**coverage** — per-coverage-run snapshot keyed by source file.
+Coverage data ships on events (the `coverage` facet) when a
+producer plugin (`Test2::Plugin::Cover` or similar) is active.
+Most runs do NOT produce coverage; only designated runs (nightly,
+opt-in) do. Each such run writes a **complete** snapshot — one
+row per source file with coverage data. The full snapshot is
+deliberate: if every other run is pruned, this run's rows still
+give a complete picture.
+- `run_id` → `runs` (`ON DELETE CASCADE`)
+- `project_id` → `projects` — denormalized for index efficiency
+- `source_file` — the covered file's path
+- `stamp` — hi-res timestamp; used for "latest coverage for X"
+  ordering and for "merge several runs, most-recent wins on
+  duplicates" queries
+- `payload` — JSON. Shape:
+  ```
+  {
+    "subs": {
+      "Foo::bar":  ["t/01-foo.t", "t/baz.t#nested-subtest"],
+      "Foo::frob": ["t/01-foo.t"]
+    },
+    "file_level": ["t/00-load.t"],
+    "meta": { "managers": ["Devel::Cover"] }
+  }
+  ```
+- Unique on `(run_id, source_file)`.
+
+The matching `runs.has_coverage` boolean lets callers find
+coverage-producing runs without a join.
+
+Typical queries:
+
+- **Tests for changed source `lib/Foo.pm` (latest):**
+  ```sql
+  SELECT payload FROM coverage
+  WHERE project_id = ? AND source_file = 'lib/Foo.pm'
+  ORDER BY stamp DESC LIMIT 1;
+  ```
+- **Merge several partial coverage runs (most-recent wins per
+  source file):**
+  ```sql
+  WITH ranked AS (
+    SELECT c.*, ROW_NUMBER() OVER (
+      PARTITION BY source_file ORDER BY stamp DESC
+    ) AS rn
+    FROM coverage c WHERE c.run_id IN (?, ?, ?)
+  )
+  SELECT source_file, payload FROM ranked WHERE rn = 1;
+  ```
+
+**resources** — per-sample telemetry rows. Resource events ship on
+the event stream (`facet_data.resource`) when a producer plugin
+(CPU sampler, memory sampler, custom resource) is active. Most
+runs do not produce resources; runs that do write one row per
+sample.
+- `run_id` → `runs` (`ON DELETE CASCADE`)
+- `type` — short identifier (`'cpu'`, `'memory'`, custom names).
+- `stamp` — hi-res timestamp of the sample.
+- `payload` — JSON; producer-defined shape.
+- Indexed by `(run_id, type, stamp)` so reads of a single
+  timeseries (one resource type within one run) are sequential.
+
+The matching `runs.has_resources` boolean lets callers find
+resource-producing runs without a join.
+
+Typical queries:
+
+- **CPU timeline for a run:**
+  ```sql
+  SELECT stamp, payload FROM resources
+  WHERE run_id = ? AND type = 'cpu' ORDER BY stamp;
+  ```
+- **All resource types present in a run:**
+  ```sql
+  SELECT DISTINCT type FROM resources WHERE run_id = ?;
+  ```
+
+**Compression for `coverage.payload` and `resources.payload`** —
+both payload columns can grow large; compression is configured per
+flavor at the DDL level (transparent to readers):
+
+- PostgreSQL: TOAST handles per-column compression automatically
+  for rows past the toast tuple threshold. The DDL does not pin an
+  algorithm — admins set the server-wide
+  `default_toast_compression` GUC. On PG 14+ this should be `lz4`
+  for the faster compress / decompress path. When PG eventually
+  adds ZSTD as a TOAST algorithm, the same GUC picks it up with no
+  schema migration.
+- MariaDB: `payload JSON COMPRESSED` (per-column attribute, zlib
+  under the hood, requires InnoDB).
+- MySQL / Percona: no per-column attribute available — the two
+  tables instead carry
+  `ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8` for page-level InnoDB
+  compression. Coarser than per-column but it is the only portable
+  option.
+- SQLite: no native option. The recorder may zstd-encode the JSON
+  before insert if size becomes a concern; not done by default.
 
 ### 13.3 Existing reference schema
 
