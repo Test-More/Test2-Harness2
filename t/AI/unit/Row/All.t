@@ -1,12 +1,12 @@
 use Test2::V0;
 
 my @rows = qw(
-    Users Hosts Projects Versions Instances Runners Collectors Artifacts
-    Runs Services ServiceState Requests TestFiles Jobs JobTries Launchers
-    Launches
+    Users Hosts Projects Versions VcsInfo Instances Runners Collectors
+    Artifacts Runs Services ServiceState Requests TestFiles Jobs JobTries
+    Launchers Launches Coverage Resources
 );
 
-is(scalar(@rows), 17, '17 row classes expected');
+is(scalar(@rows), 20, '20 row classes expected');
 
 for my $r (@rows) {
     my $class = "Test2::Harness2::Row::$r";

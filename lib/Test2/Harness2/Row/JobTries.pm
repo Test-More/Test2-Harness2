@@ -18,13 +18,20 @@ use Object::HashBase qw{
     <subtests
     <subtests_passed
     <subtests_failed
+    <status
 };
 
 sub TABLE       { 'job_tries' }
 sub PRIMARY_KEY { 'job_try_id' }
 sub COLUMNS     {
     qw/job_try_id job_id try_ord started finished collector_id result passed failed
-       subtests subtests_passed subtests_failed/
+       subtests subtests_passed subtests_failed status/
+}
+
+sub init {
+    my $self = shift;
+    $self->{+STATUS} //= 'pending';
+    return;
 }
 
 1;

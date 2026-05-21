@@ -228,7 +228,8 @@ sub insert {
 
 sub _row_to_insertable {
     my ($self, $class, $row) = @_;
-    my %h = blessed($row) ? %{$row} : %{$row};
+    my $obj = blessed($row) ? $row : $class->new(%$row);
+    my %h = %{$obj};
     delete $h{_handle};
     delete $h{_orig};
     return \%h;
