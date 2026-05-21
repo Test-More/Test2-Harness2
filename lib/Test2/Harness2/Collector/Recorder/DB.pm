@@ -49,6 +49,7 @@ sub init {
     my $events_dir = File::Spec->catdir($self->{+WORKDIR}, 'events');
     make_path($events_dir) unless -d $events_dir;
 
+    # The filename in the artifacts table should be 'events.jsonl.zst', it is only hte local on-disk file that needs a unique name with a uuid. Things will look directly for a collectors events.jsonl.zst so it needs to have that name.
     my $event_file_name = gen_uuid() . '.jsonl.zst';
     my $event_file_path = File::Spec->catfile($events_dir, $event_file_name);
     $self->{+EVENTS_PATH} = $event_file_path;
@@ -109,6 +110,7 @@ sub record_event {
     return;
 }
 
+# This does not appeat to actually record anything yet, oversign or jsut not implemented yet?
 sub record_state {
     my ($self, $state, $extra) = @_;
     $self->_assert_open;
@@ -179,6 +181,7 @@ sub _migrate_events_artifact {
     my $sth = $dbh->prepare(
         "UPDATE artifacts SET content = ?, local_path = NULL WHERE artifact_id = ?"
     );
+    # I think DBI::SQL_BLOB() may not work for all database flavors, we may need a method on HANDLE (Test2::Harness2?) that exposes the correct thing to put in bind for binary blobs based on the $dbh flavor. Even though we only have 1 flavor so far write and expose and use such a method that can be extended later for flavor variations.
     $sth->bind_param(1, $bytes, DBI::SQL_BLOB());
     $sth->bind_param(2, $self->{+EVENTS_ARTIFACT_ID});
     $sth->execute;

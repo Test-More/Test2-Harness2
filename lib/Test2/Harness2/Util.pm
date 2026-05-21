@@ -36,6 +36,7 @@ our @EXPORT_OK = qw{
     write_file_atomic_mode
 };
 
+# This should be put lower and needs POD
 sub table_to_db_class {
     my ($table) = @_;
     my $depluralized = $table;

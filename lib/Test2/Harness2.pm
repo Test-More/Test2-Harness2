@@ -30,10 +30,14 @@ sub init {
     my $self = shift;
 
     $self->{+FLAVOR}   //= 'sqlite';
+    # Do not make assumptions about the project here, Test2::Harness2 should always be directly passed a project, it should not detect it or pull it from ENV.
     $self->{+PROJECT}  //= $ENV{T2H2_PROJECT} // _basename_cwd();
+    # Die if user cannto be found, do not fallback to 'unknown'
     $self->{+USER}     //= $ENV{USER}        // 'unknown';
     $self->{+TMPDIR}   //= File::Spec->tmpdir;
     $self->{+NAME}     //= sprintf('%s-%s-%d.t2h2', $self->{+USER}, $self->{+PROJECT}, $$);
+
+    # Test2::Harness2 does not discovery, it assumes it is given a path, or it creates the default (what we are calling discovery). The App::Yath2 layer will be responsible for discovery later. This may just be an issue with the term 'discovery'
     $self->{+DISCOVERY_PATH} //= File::Spec->catfile($self->{+TMPDIR}, $self->{+NAME});
 
     return if $self->{+DBH};
@@ -57,6 +61,7 @@ sub connect {
     return $class->new(%args);
 }
 
+# Should not need this with direct 'project' passing
 sub _basename_cwd {
     my @parts = File::Spec->splitdir(File::Spec->rel2abs(File::Spec->curdir));
     return $parts[-1] // 'unknown';
@@ -91,6 +96,7 @@ sub _schema_dir {
     return $self->{+_SCHEMA_DIR} //= $self->_find_schema_dir;
 }
 
+# Update this to use File::ShareDir, we want to use share/ when working in the repo, but File::ShareDir in production/installed copies.
 sub _find_schema_dir {
     my $self = shift;
     my $here = $INC{'Test2/Harness2.pm'} or die "Test2::Harness2 not loaded?";
@@ -159,6 +165,7 @@ sub _row_class {
 
     my $class = $table =~ /::/ ? $table : table_to_db_class($table);
 
+    # Use the utilities in lib/Test2/Harness2/Util** which have tools for this.
     unless ($class->can('new')) {
         (my $file = $class) =~ s{::}{/}g;
         local $@;
@@ -195,6 +202,10 @@ sub insert {
     my $tname = $class->TABLE;
     my $pk    = $class->PRIMARY_KEY;
     my @cols  = $class->COLUMNS;
+
+    # Add handling to auto-gen TABLE_uuid fields if they are empty using
+    # gen_uuid from the utils, this avoids the need to manually od it every
+    # insert.
 
     @cols = grep { $_ ne $pk } @cols;
 
