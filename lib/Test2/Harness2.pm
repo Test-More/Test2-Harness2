@@ -231,7 +231,7 @@ sub init {
         $self->{+_SIDECAR_MODE} = 'sqlite_file';
     }
     else {
-        $self->{+FLAVOR} //= _flavor_from_dsn($self->{+DSN})
+        $self->{+FLAVOR} //= $self->_flavor_from_dsn($self->{+DSN})
             // croak "Cannot detect flavor from dsn '$self->{+DSN}'; pass `flavor => ...`";
         $self->{+_SIDECAR_MODE} //= 'json';
     }
@@ -247,7 +247,7 @@ sub init {
 }
 
 sub _flavor_from_dsn {
-    my ($dsn) = @_;
+    my ($self, $dsn) = @_;
     return undef unless defined $dsn && $dsn =~ /^dbi:([^:]+):/;
     return $FLAVOR_FROM_DSN_SCHEME{$1};
 }

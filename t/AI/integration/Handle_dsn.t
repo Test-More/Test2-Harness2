@@ -157,12 +157,12 @@ subtest reconnect_via_sidecar => sub {
 };
 
 subtest flavor_detection_from_dsn => sub {
-    is(Test2::Harness2::_flavor_from_dsn('dbi:Pg:dbname=x'),      'postgres');
-    is(Test2::Harness2::_flavor_from_dsn('dbi:MariaDB:dbname=x'), 'mariadb');
-    is(Test2::Harness2::_flavor_from_dsn('dbi:mysql:dbname=x'),   'mysql');
-    is(Test2::Harness2::_flavor_from_dsn('dbi:SQLite:dbname=x'),  'sqlite');
-    is(Test2::Harness2::_flavor_from_dsn('dbi:Unknown:'),         undef);
-    is(Test2::Harness2::_flavor_from_dsn(undef),                  undef);
+    is(Test2::Harness2->_flavor_from_dsn('dbi:Pg:dbname=x'),      'postgres');
+    is(Test2::Harness2->_flavor_from_dsn('dbi:MariaDB:dbname=x'), 'mariadb');
+    is(Test2::Harness2->_flavor_from_dsn('dbi:mysql:dbname=x'),   'mysql');
+    is(Test2::Harness2->_flavor_from_dsn('dbi:SQLite:dbname=x'),  'sqlite');
+    is(Test2::Harness2->_flavor_from_dsn('dbi:Unknown:'),         undef);
+    is(Test2::Harness2->_flavor_from_dsn(undef),                  undef);
 };
 
 done_testing;
