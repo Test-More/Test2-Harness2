@@ -39,6 +39,8 @@ sub JSON_COLUMNS { qw/meta/ }
 sub init {
     my $self = shift;
     $self->{+STATUS}        //= 'pending';
+    $self->{+PASSED}        //= 0;
+    $self->{+FAILED}        //= 0;
     $self->{+HAS_COVERAGE}  //= 0;
     $self->{+HAS_RESOURCES} //= 0;
     return;

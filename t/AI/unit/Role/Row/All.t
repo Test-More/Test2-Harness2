@@ -13,6 +13,9 @@ my @classes = qw(
     Test2::Harness2::Runner::Service
     Test2::Harness2::Runner::Service::State
     Test2::Harness2::Runner::Service::Request
+    Test2::Harness2::Runner::Scheduler
+    Test2::Harness2::Runner::Resource
+    Test2::Harness2::Runner::Resource::Snapshot
     Test2::Harness2::Runner::Run
     Test2::Harness2::Runner::Run::Job
     Test2::Harness2::Runner::Run::Job::Try
@@ -23,7 +26,7 @@ my @classes = qw(
     Test2::Harness2::Launcher::Launch
 );
 
-is(scalar(@classes), 20, '20 row classes expected');
+is(scalar(@classes), 23, '23 row classes expected');
 
 for my $class (@classes) {
     (my $file = $class) =~ s{::}{/}g;

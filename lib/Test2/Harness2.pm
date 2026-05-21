@@ -153,26 +153,28 @@ sub DESTROY {
 }
 
 my %TABLE_TO_CLASS = (
-    users         => 'Test2::Harness2::User',
-    hosts         => 'Test2::Harness2::Host',
-    projects      => 'Test2::Harness2::Project',
-    versions      => 'Test2::Harness2::Project::Version',
-    vcs_info      => 'Test2::Harness2::Project::VcsInfo',
-    test_files    => 'Test2::Harness2::Project::TestFile',
-    instances     => 'Test2::Harness2::Instance',
-    runners       => 'Test2::Harness2::Runner',
-    collectors    => 'Test2::Harness2::Runner::Collector',
-    services      => 'Test2::Harness2::Runner::Service',
-    service_state => 'Test2::Harness2::Runner::Service::State',
-    requests      => 'Test2::Harness2::Runner::Service::Request',
-    runs          => 'Test2::Harness2::Runner::Run',
-    jobs          => 'Test2::Harness2::Runner::Run::Job',
-    job_tries     => 'Test2::Harness2::Runner::Run::Job::Try',
-    artifacts     => 'Test2::Harness2::Runner::Run::Artifact',
-    coverage      => 'Test2::Harness2::Runner::Run::Coverage',
-    resources     => 'Test2::Harness2::Runner::Run::Resource',
-    launchers     => 'Test2::Harness2::Launcher',
-    launches      => 'Test2::Harness2::Launcher::Launch',
+    users              => 'Test2::Harness2::User',
+    hosts              => 'Test2::Harness2::Host',
+    projects           => 'Test2::Harness2::Project',
+    versions           => 'Test2::Harness2::Project::Version',
+    vcs_info           => 'Test2::Harness2::Project::VcsInfo',
+    test_files         => 'Test2::Harness2::Project::TestFile',
+    instances          => 'Test2::Harness2::Instance',
+    runners            => 'Test2::Harness2::Runner',
+    collectors         => 'Test2::Harness2::Runner::Collector',
+    services           => 'Test2::Harness2::Runner::Service',
+    service_state      => 'Test2::Harness2::Runner::Service::State',
+    requests           => 'Test2::Harness2::Runner::Service::Request',
+    schedulers         => 'Test2::Harness2::Runner::Scheduler',
+    resources          => 'Test2::Harness2::Runner::Resource',
+    resource_snapshots => 'Test2::Harness2::Runner::Resource::Snapshot',
+    runs               => 'Test2::Harness2::Runner::Run',
+    jobs               => 'Test2::Harness2::Runner::Run::Job',
+    job_tries          => 'Test2::Harness2::Runner::Run::Job::Try',
+    artifacts          => 'Test2::Harness2::Runner::Run::Artifact',
+    coverage           => 'Test2::Harness2::Runner::Run::Coverage',
+    launchers          => 'Test2::Harness2::Launcher',
+    launches           => 'Test2::Harness2::Launcher::Launch',
 );
 
 sub _row_class {
@@ -204,7 +206,10 @@ sub fetch_all {
     my ($sql, @binds) = $self->_build_select($tname, \%where);
     my $rows = $self->{+DBH}->selectall_arrayref($sql, {Slice => {}}, @binds);
 
-    return map { $class->new(_handle => $self, %$_) } @$rows;
+    return map {
+        my $row_class = $class->class_for_row($_);
+        $row_class->new(_handle => $self, %$_);
+    } @$rows;
 }
 
 sub insert {
@@ -241,7 +246,8 @@ sub insert {
     my @out;
     for my $i (0 .. $#inserts) {
         my %row = (%{$inserts[$i]}, $pk => $ids[$i]);
-        push @out => $class->new(_handle => $self, %row);
+        my $row_class = $class->class_for_row(\%row);
+        push @out => $row_class->new(_handle => $self, %row);
     }
     return @out;
 }

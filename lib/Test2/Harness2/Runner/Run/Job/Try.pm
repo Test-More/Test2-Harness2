@@ -33,7 +33,12 @@ sub COLUMNS     {
 
 sub init {
     my $self = shift;
-    $self->{+STATUS} //= 'pending';
+    $self->{+STATUS}          //= 'pending';
+    $self->{+PASSED}          //= 0;
+    $self->{+FAILED}          //= 0;
+    $self->{+SUBTESTS}        //= 0;
+    $self->{+SUBTESTS_PASSED} //= 0;
+    $self->{+SUBTESTS_FAILED} //= 0;
     return;
 }
 

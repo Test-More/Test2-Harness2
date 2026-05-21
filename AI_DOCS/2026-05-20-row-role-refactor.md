@@ -90,7 +90,9 @@ Artifacts are conceptually run output; the deeper nesting under
 | `job_tries` | `Row::JobTries` | `Runner::Run::Job::Try` | `lib/Test2/Harness2/Runner/Run/Job/Try.pm` |
 | `artifacts` | `Row::Artifacts` | `Runner::Run::Artifact` | `lib/Test2/Harness2/Runner/Run/Artifact.pm` |
 | `coverage` | `Row::Coverage` | `Runner::Run::Coverage` | `lib/Test2/Harness2/Runner/Run/Coverage.pm` |
-| `resources` | `Row::Resources` | `Runner::Run::Resource` | `lib/Test2/Harness2/Runner/Run/Resource.pm` |
+| `schedulers` | *(new)* | `Runner::Scheduler` | `lib/Test2/Harness2/Runner/Scheduler.pm` |
+| `resources` (spec) | `Row::Resources` *(was snapshot table; repurposed)* | `Runner::Resource` (+ `Runner::Run::Resource` subclass via `class_for_row`) | `lib/Test2/Harness2/Runner/Resource.pm` / `lib/Test2/Harness2/Runner/Run/Resource.pm` |
+| `resource_snapshots` *(new; renamed from old `resources`)* | — | `Runner::Resource::Snapshot` | `lib/Test2/Harness2/Runner/Resource/Snapshot.pm` |
 | `launchers` | `Row::Launchers` | `Launcher` | `lib/Test2/Harness2/Launcher.pm` |
 | `launches` | `Row::Launches` | `Launcher::Launch` | `lib/Test2/Harness2/Launcher/Launch.pm` |
 
@@ -109,6 +111,81 @@ directly instead of synthesising a class name from the table name.
 3. Touch every call site: tests, services, anything that hard-codes
    a row class name.
 4. `prove -Ilib -j16 -r t/` to confirm the rebase landed cleanly.
+
+## Addendum: schedulers, resources spec/snapshot split
+
+Captured during the same session after the rename refactor landed.
+Schema-side work that should have happened in stage 4; bundled here
+because stage 5 was already touching the schema + row layer.
+
+### Schema changes
+
+- Old `resources` table (per-sample telemetry: `run_id, type, stamp,
+  payload`) renamed and reshaped:
+  - Renamed to `resource_snapshots`.
+  - `type` column dropped (snapshots inherit the type from their
+    parent resource's `class`).
+  - `run_id` dropped (reachable via `resource_id` -> `resources`).
+  - New columns: `resource_snapshot_id` PK, `resource_id` FK to
+    `resources`, `stamp`, `payload` (unchanged).
+- New `resources` table now holds resource *specifications*, not
+  samples:
+  - `resource_id` PK, `runner_id` FK (required), `run_id` FK
+    (nullable), `class` (text, the Perl implementation class), `spec`
+    (JSON).
+  - No uniqueness constraint; caller manages.
+  - Indexes on `runner_id` and `run_id`.
+- New `schedulers` table — one row per runner.
+  - `scheduler_id` PK, `runner_id` FK UNIQUE, `class`, `spec` (JSON).
+- `runs.has_resources` keeps its name; semantics shifted from "has
+  resource-sample rows" to "has `resource_snapshots` rows for this
+  run" (joined via `resources`). Same intent, new target table.
+
+### Row-class dispatch
+
+The `resources` table backs two classes that differ only in identity:
+
+- `Test2::Harness2::Runner::Resource` — runner-global (`run_id` NULL).
+- `Test2::Harness2::Runner::Run::Resource` — run-scoped (`run_id`
+  set). Subclass of the base; no new columns.
+
+Dispatch is centralised on the base class:
+
+    sub class_for_row {
+        my ($class, $row) = @_;
+        return defined($row->{run_id})
+            ? 'Test2::Harness2::Runner::Run::Resource'
+            : 'Test2::Harness2::Runner::Resource';
+    }
+
+`Role::Row` provides a default `class_for_row` that returns the
+invocant class. `Test2::Harness2`'s `fetch_all` and `insert` consult
+`$class->class_for_row(\%data)` for every row and bless into the
+returned class. Existing consumers (`User`, `Host`, ...) see no
+behavior change because the default is identity.
+
+Snapshots live as a flat class
+(`Test2::Harness2::Runner::Resource::Snapshot`); no subclass split.
+
+### Side effects worth knowing
+
+- `Runner::Run` `init` now also defaults `passed`/`failed` to 0
+  (schema `NOT NULL DEFAULT 0` — the insert path doesn't drop unset
+  columns, so the row must supply them).
+- `Runner::Run::Job::Try` `init` does the same for `passed`,
+  `failed`, `subtests`, `subtests_passed`, `subtests_failed`.
+
+### Replay note for downstream branches
+
+If a downstream branch (stage6/7/8) already touched the old
+`resources` table (snapshot-flavor) it needs to be rewritten against
+this layout:
+
+- Insert into `resources` for the spec row, then insert into
+  `resource_snapshots` for each sample, referencing
+  `resource_id`.
+- Drop any reference to the old `resources.type` / `resources.run_id`
+  columns directly on snapshot rows.
 
 ## Session-tracking note
 

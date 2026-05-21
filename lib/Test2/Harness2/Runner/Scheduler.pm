@@ -1,10 +1,24 @@
-package Test2::Harness2::Runner::Run::Resource;
+package Test2::Harness2::Runner::Scheduler;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Runner::Resource';
+use Object::HashBase qw{
+    +_handle
+    <scheduler_id
+    <runner_id
+    <class
+    <spec
+};
+
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Row';
+
+sub TABLE        { 'schedulers' }
+sub PRIMARY_KEY  { 'scheduler_id' }
+sub COLUMNS      { qw/scheduler_id runner_id class spec/ }
+sub JSON_COLUMNS { qw/spec/ }
 
 1;
 
@@ -16,19 +30,14 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Run::Resource - Row object for run-scoped
-C<resources> rows.
+Test2::Harness2::Runner::Scheduler - Row object for the C<schedulers>
+table.
 
 =head1 DESCRIPTION
 
-Subclass of L<Test2::Harness2::Runner::Resource> used when a
-C<resources> row carries a non-null C<run_id>. Identical column set
-and behavior; the only purpose of the subclass is to make
-C<isa('Test2::Harness2::Runner::Run::Resource')> a one-line test for
-"this resource is scoped to a specific run".
-
-The runner-global / run-scoped split is decided in
-L<Test2::Harness2::Runner::Resource/class_for_row>.
+One row per runner. C<class> is the Perl class implementing the
+scheduler; C<spec> is the JSON construction spec (queue policy,
+concurrency caps, resource bindings, etc.).
 
 =head1 SOURCE
 

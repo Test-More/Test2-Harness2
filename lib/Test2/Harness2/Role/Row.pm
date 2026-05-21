@@ -13,6 +13,11 @@ requires 'COLUMNS';
 
 sub JSON_COLUMNS { () }
 
+sub class_for_row {
+    my ($class, $row) = @_;
+    return $class;
+}
+
 sub save {
     my $self = shift;
 
@@ -113,6 +118,14 @@ The full ordered list of column names.
 =head1 PROVIDED METHODS
 
 =over 4
+
+=item $real_class = $class->class_for_row(\%data)
+
+Resolve the concrete row class to bless a freshly-read or
+freshly-built row hashref into. Default returns the invocant —
+override in a base class that backs multiple subclasses keyed on
+row contents (e.g. C<Test2::Harness2::Runner::Resource> selecting
+its run-scoped subclass when C<run_id> is set).
 
 =item @cols = $class->JSON_COLUMNS
 
