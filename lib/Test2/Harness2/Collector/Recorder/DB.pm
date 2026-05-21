@@ -244,8 +244,12 @@ sub record_state {
 
 =item $r->record_exit($exit)
 
-Update the C<collectors.exit_code> and C<collectors.stop_time>
-columns with the collected process's wait-status and the current
+Record the collected process's wait status. The raw C<$exit> is
+stored in C<collectors.exit_code>; the broken-out fields
+C<collectors.exit_err> (C<$exit E<gt>E<gt> 8>, set when the process
+exited normally) and C<collectors.exit_sig> (C<$exit & 0x7f>, set
+when the process was killed by a signal) are populated as
+applicable. C<collectors.stop_time> is stamped with the current
 timestamp.
 
 =back
@@ -256,10 +260,21 @@ sub record_exit {
     my ($self, $exit) = @_;
     $self->_assert_open;
 
+    my $sig = $exit & 0x7f;
+    my ($exit_err, $exit_sig);
+    if ($sig) {
+        $exit_sig = $sig;
+    }
+    else {
+        $exit_err = $exit >> 8;
+    }
+
     my $dbh = $self->{+HANDLE}->dbh;
     $dbh->do(
-        "UPDATE collectors SET exit_code = ?, stop_time = ? WHERE collector_id = ?",
-        undef, $exit, time(), $self->{+COLLECTOR_ID},
+        "UPDATE collectors
+            SET exit_code = ?, exit_err = ?, exit_sig = ?, stop_time = ?
+            WHERE collector_id = ?",
+        undef, $exit, $exit_err, $exit_sig, time(), $self->{+COLLECTOR_ID},
     );
     return;
 }

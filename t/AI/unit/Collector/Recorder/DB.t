@@ -90,6 +90,8 @@ subtest full_collector_lifecycle => sub {
     $rec->record_exit(0);
     $col->refresh;
     is($col->exit_code, 0,    'exit_code recorded');
+    is($col->exit_err,  0,    'exit_err = 0 for clean exit');
+    is($col->exit_sig,  undef, 'exit_sig is null for clean exit');
     ok($col->stop_time,        'stop_time stamped');
     ok(!defined $col->finalized, 'not yet finalized');
 
@@ -145,6 +147,40 @@ subtest finalize_is_idempotent => sub {
         qr/already finalized/,
         'record_event after finalize croaks',
     );
+
+    $h->disconnect;
+};
+
+subtest record_exit_splits_status_into_err_or_sig => sub {
+    my ($h, $dir) = _new_harness();
+    my $runner = _seed($h);
+
+    my $make_rec = sub {
+        my ($name) = @_;
+        return Test2::Harness2::Collector::Recorder::DB->new(
+            handle    => $h,
+            runner_id => $runner->runner_id,
+            name      => $name,
+            is_test   => 1,
+            workdir   => $dir,
+        );
+    };
+
+    # Nonzero exit value -> exit_err set, exit_sig null.
+    my $rec_err = $make_rec->('errcase');
+    $rec_err->record_exit(2 << 8);  # exit($?>>8 == 2)
+    my $col_err = $h->fetch(collectors => collector_id => $rec_err->{collector_id});
+    is($col_err->exit_code, 2 << 8, 'raw wait status stored');
+    is($col_err->exit_err,  2,      'exit_err is wait_status >> 8');
+    is($col_err->exit_sig,  undef,  'exit_sig is null for normal exit');
+
+    # Signal kill -> exit_sig set, exit_err null.
+    my $rec_sig = $make_rec->('sigcase');
+    $rec_sig->record_exit(9);       # killed by SIGKILL (sig 9, no core)
+    my $col_sig = $h->fetch(collectors => collector_id => $rec_sig->{collector_id});
+    is($col_sig->exit_code, 9,     'raw wait status stored');
+    is($col_sig->exit_err,  undef, 'exit_err is null when killed by signal');
+    is($col_sig->exit_sig,  9,     'exit_sig is wait_status & 0x7f');
 
     $h->disconnect;
 };

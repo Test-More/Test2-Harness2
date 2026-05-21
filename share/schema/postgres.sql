@@ -100,6 +100,8 @@ CREATE TABLE collectors (
     start_time      DOUBLE PRECISION NOT NULL,
     stop_time       DOUBLE PRECISION,
     exit_code       INTEGER,
+    exit_err        INTEGER,
+    exit_sig        INTEGER,
     finalized       DOUBLE PRECISION,
     UNIQUE(runner_id, name)
 );

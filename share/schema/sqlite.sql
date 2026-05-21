@@ -101,6 +101,8 @@ CREATE TABLE collectors (
     start_time      REAL    NOT NULL,
     stop_time       REAL,
     exit_code       INTEGER,
+    exit_err        INTEGER,
+    exit_sig        INTEGER,
     finalized       REAL,
     UNIQUE(runner_id, name)
 );

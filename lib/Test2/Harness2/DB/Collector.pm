@@ -15,12 +15,14 @@ use Object::HashBase qw{
     <start_time
     <stop_time
     <exit_code
+    <exit_err
+    <exit_sig
     <finalized
 };
 sub TABLE       { 'collectors' }
 sub PRIMARY_KEY { 'collector_id' }
 sub COLUMNS     {
-    qw/collector_id runner_id name pid watched is_test start_time stop_time exit_code finalized/
+    qw/collector_id runner_id name pid watched is_test start_time stop_time exit_code exit_err exit_sig finalized/
 }
 
 1;
@@ -40,7 +42,9 @@ Test2::Harness2::DB::Collector - Row object for the C<collectors> table.
 One row per collector process: its pid, the pid it watches, an
 C<is_test> boolean (true for test-job collectors, false for
 service-style collectors), start/stop timestamps, the collected
-process's exit code, and the timestamp the recorder finalized its
+process's wait status (C<exit_code>) plus the broken-out exit
+value (C<exit_err>) or terminating signal (C<exit_sig>) when
+applicable, and the timestamp the recorder finalized its
 bookkeeping.
 
 =head1 SOURCE

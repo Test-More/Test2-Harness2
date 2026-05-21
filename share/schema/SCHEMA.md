@@ -100,7 +100,12 @@ One row per collector process.
 - `is_test` — boolean. True for test-job collectors, false for
   service-style collectors. Default false.
 - `start_time` / `stop_time` — collected-process lifecycle.
-- `exit_code` — exit code of the collected process (nullable).
+- `exit_code` — raw wait status of the collected process (nullable).
+- `exit_err` — exit value (`status >> 8`) when the process exited
+  normally (nullable; populated only when `exit_sig` is null).
+- `exit_sig` — terminating signal number (`status & 0x7f`) when the
+  process was killed by a signal (nullable; populated only when
+  `exit_err` is null).
 - `finalized` — timestamp the recorder finished its bookkeeping for this
   collector.
 

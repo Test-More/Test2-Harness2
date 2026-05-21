@@ -124,6 +124,8 @@ CREATE TABLE collectors (
     start_time      DOUBLE NOT NULL,
     stop_time       DOUBLE,
     exit_code       INT,
+    exit_err        INT,
+    exit_sig        INT,
     finalized       DOUBLE,
     UNIQUE KEY collectors_runner_name_unique (runner_id, name),
     CONSTRAINT collectors_runner_fk FOREIGN KEY (runner_id)
