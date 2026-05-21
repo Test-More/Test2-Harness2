@@ -4,7 +4,9 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Runner::Resource';
+use Object::HashBase qw{
+    @Test2::Harness2::Runner::Resource
+};
 
 1;
 

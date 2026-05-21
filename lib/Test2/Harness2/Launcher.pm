@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <launcher_id
     <runner_id
     <run_id
@@ -16,10 +16,6 @@ use Object::HashBase qw{
     <pid
     <spawn_socket
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE        { 'launchers' }
 sub PRIMARY_KEY  { 'launcher_id' }
 sub COLUMNS      {

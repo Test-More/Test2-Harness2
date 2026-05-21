@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <request_id
     <service_id
     <requested
@@ -14,10 +14,6 @@ use Object::HashBase qw{
     <payload
     <response
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE        { 'requests' }
 sub PRIMARY_KEY  { 'request_id' }
 sub COLUMNS      { qw/request_id service_id requested completed finalized payload response/ }

@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <run_id
     <run_uuid
     <runner_id
@@ -24,10 +24,6 @@ use Object::HashBase qw{
     <has_coverage
     <has_resources
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE        { 'runs' }
 sub PRIMARY_KEY  { 'run_id' }
 sub COLUMNS      {

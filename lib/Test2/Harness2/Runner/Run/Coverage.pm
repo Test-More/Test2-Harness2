@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <coverage_id
     <run_id
     <project_id
@@ -13,10 +13,6 @@ use Object::HashBase qw{
     <stamp
     <payload
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE        { 'coverage' }
 sub PRIMARY_KEY  { 'coverage_id' }
 sub COLUMNS      { qw/coverage_id run_id project_id source_file stamp payload/ }

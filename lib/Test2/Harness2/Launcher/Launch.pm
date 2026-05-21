@@ -5,17 +5,13 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <launch_id
     <launcher_id
     <job_id
     <requested
     <started
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE       { 'launches' }
 sub PRIMARY_KEY { 'launch_id' }
 sub COLUMNS     { qw/launch_id launcher_id job_id requested started/ }

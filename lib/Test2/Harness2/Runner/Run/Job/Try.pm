@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <job_try_id
     <job_id
     <try_ord
@@ -20,10 +20,6 @@ use Object::HashBase qw{
     <subtests_failed
     <status
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE       { 'job_tries' }
 sub PRIMARY_KEY { 'job_try_id' }
 sub COLUMNS     {

@@ -26,13 +26,35 @@ class. The map below is the authoritative reference for that.
 
 - `lib/Test2/Harness2/Row.pm` is **removed**.
 - `lib/Test2/Harness2/Role/Row.pm` is added. It is a `Role::Tiny`
-  role.
+  role that itself uses `Object::HashBase` to declare its
+  `+_handle` slot.
 - It `requires` `TABLE`, `PRIMARY_KEY`, `COLUMNS`. It provides
   `save`, `refresh`, `TO_JSON`, and a default `JSON_COLUMNS` of `()`.
-- Consumers continue to use `Object::HashBase` for storage and
-  compose the role via `use Role::Tiny::With; with 'Test2::Harness2::Role::Row';`
-  — `Object::HashBase` and `Role::Tiny` compose per
-  `ARCHITECTURE.md` and `AGENTS.md`.
+- Consumers compose the role via `Object::HashBase`'s `&` role
+  prefix (introduced in HashBase 0.016), which eagerly copies the
+  role's constants (notably `_HANDLE`) into the consumer at compile
+  time and defers `Role::Tiny->apply_roles_to_package` until end of
+  compile scope:
+
+      package Test2::Harness2::User;
+      use Object::HashBase qw{
+          &Test2::Harness2::Role::Row
+          <user_id <name <email
+      };
+
+  This is the canonical way to compose `Object::HashBase` and
+  `Role::Tiny` together per the `AGENTS.md` "compose" rule. Do not
+  write `use Role::Tiny::With; with '...';` separately — the `&`
+  prefix replaces both that line *and* the redundant `+_handle`
+  declaration on each consumer.
+
+- Subclasses use `Object::HashBase`'s `@` parent prefix instead of
+  `use parent`:
+
+      package Test2::Harness2::Runner::Run::Resource;
+      use Object::HashBase qw{
+          @Test2::Harness2::Runner::Resource
+      };
 
 ## Naming rules applied
 
@@ -105,8 +127,10 @@ directly instead of synthesising a class name from the table name.
 2. Resolve conflicts mechanically using the map above:
    * Any `Test2::Harness2::Row::Foos` reference becomes the new
      class name; check the map.
-   * `use parent 'Test2::Harness2::Row';` becomes
-     `use Role::Tiny::With; with 'Test2::Harness2::Role::Row';`.
+   * `use parent 'Test2::Harness2::Row';` becomes an
+     `Object::HashBase` `&` role import:
+     `use Object::HashBase qw{ &Test2::Harness2::Role::Row ... };`
+     (drop the separate `+_handle` line — the role declares it).
    * `package Test2::Harness2::Row::Foos;` becomes the new package.
 3. Touch every call site: tests, services, anything that hard-codes
    a row class name.

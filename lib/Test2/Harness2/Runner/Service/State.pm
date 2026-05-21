@@ -5,17 +5,13 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <service_state_id
     <service_id
     <stamp
     <status
     <content
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE        { 'service_state' }
 sub PRIMARY_KEY  { 'service_state_id' }
 sub COLUMNS      { qw/service_state_id service_id stamp status content/ }

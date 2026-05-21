@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <service_id
     <collector_id
     <runner_id
@@ -14,10 +14,6 @@ use Object::HashBase qw{
     <class
     <pid
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE       { 'services' }
 sub PRIMARY_KEY { 'service_id' }
 sub COLUMNS     { qw/service_id collector_id runner_id run_id name class pid/ }

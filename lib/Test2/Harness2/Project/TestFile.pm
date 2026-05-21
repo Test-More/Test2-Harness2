@@ -5,15 +5,11 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <test_file_id
     <project_id
     <relative
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE       { 'test_files' }
 sub PRIMARY_KEY { 'test_file_id' }
 sub COLUMNS     { qw/test_file_id project_id relative/ }

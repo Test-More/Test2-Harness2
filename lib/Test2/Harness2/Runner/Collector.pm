@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Object::HashBase qw{
-    +_handle
+    &Test2::Harness2::Role::Row
     <collector_id
     <runner_id
     <name
@@ -17,10 +17,6 @@ use Object::HashBase qw{
     <exit_code
     <finalized
 };
-
-use Role::Tiny::With;
-with 'Test2::Harness2::Role::Row';
-
 sub TABLE       { 'collectors' }
 sub PRIMARY_KEY { 'collector_id' }
 sub COLUMNS     {

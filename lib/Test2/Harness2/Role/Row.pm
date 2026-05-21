@@ -6,6 +6,7 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use Role::Tiny;
+use Object::HashBase qw{+_handle};
 
 requires 'TABLE';
 requires 'PRIMARY_KEY';
@@ -21,7 +22,7 @@ sub class_for_row {
 sub save {
     my $self = shift;
 
-    my $handle = $self->{_handle} or croak "row not attached to a handle";
+    my $handle = $self->{+_HANDLE} or croak "row not attached to a handle";
     my $dbh    = $handle->dbh     or croak "handle has no dbh";
 
     my $table = $self->TABLE;
@@ -45,7 +46,7 @@ sub save {
 sub refresh {
     my $self = shift;
 
-    my $handle = $self->{_handle} or croak "row not attached to a handle";
+    my $handle = $self->{+_HANDLE} or croak "row not attached to a handle";
     my $dbh    = $handle->dbh     or croak "handle has no dbh";
 
     my $table = $self->TABLE;
@@ -86,11 +87,21 @@ Test2::Harness2::Role::Row - Role composed by per-table row classes.
 =head1 DESCRIPTION
 
 Every database table backs a small class under C<Test2::Harness2::*>
-that composes this role. Consumers declare their attributes via
-L<Object::HashBase> (including a C<+_handle> slot), identify their
-table via L</TABLE>, identify their primary-key column via
-L</PRIMARY_KEY>, and list their full column set via L</COLUMNS>. The
-role then provides L</save>, L</refresh>, and L</TO_JSON>.
+that composes this role. The role itself uses L<Object::HashBase> to
+declare the C<+_handle> slot used by L</save> and L</refresh>;
+consumers compose the role via L<Object::HashBase>'s C<&> import
+prefix so the role's C<_HANDLE> constant lands in the consumer at
+compile time:
+
+    package Test2::Harness2::User;
+    use Object::HashBase qw{
+        &Test2::Harness2::Role::Row
+        <user_id <name <email
+    };
+
+    sub TABLE       { 'users' }
+    sub PRIMARY_KEY { 'user_id' }
+    sub COLUMNS     { qw/user_id name email/ }
 
 Row objects are constructed via the handle's L<Test2::Harness2/insert>
 or L<Test2::Harness2/fetch> helpers, which inject themselves as the
