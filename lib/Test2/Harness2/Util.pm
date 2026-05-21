@@ -29,6 +29,7 @@ our @EXPORT_OK = qw{
     open_file
     read_file
     render_duration
+    table_to_db_class
     unlock_file
     write_file
     write_file_atomic
@@ -279,6 +280,42 @@ sub fqmod {
     my @caller = caller;
 
     die "Could not locate a module matching '$input' at $caller[1] line $caller[2], the following were checked:\n" . join("\n", map { " * $_: $tried{$_}" } sort keys %tried) . "\n";
+}
+
+=over 4
+
+=item table_to_db_class
+
+=item $class = table_to_db_class($table)
+
+Convert a harness table name to its row-class module name under
+C<Test2::Harness2::DB::*>. Depluralises the trailing C<s> (with
+special cases for C<ies $E<gt> y> and C<ches $E<gt> ch>), CamelCases
+the remaining snake_case segments, and prepends
+C<Test2::Harness2::DB::>:
+
+    schedulers           -> Test2::Harness2::DB::Scheduler
+    service_state        -> Test2::Harness2::DB::ServiceState
+    resource_snapshots   -> Test2::Harness2::DB::ResourceSnapshot
+    job_tries            -> Test2::Harness2::DB::JobTry
+    launches             -> Test2::Harness2::DB::Launch
+    vcs_info             -> Test2::Harness2::DB::VcsInfo
+
+Pure string transform; does not C<require> the resulting module.
+
+=back
+
+=cut
+
+sub table_to_db_class {
+    my ($table) = @_;
+    my $depluralized = $table;
+    $depluralized =~ s/ies$/y/  ||
+    $depluralized =~ s/ches$/ch/ ||
+    $depluralized =~ s/s$//;
+
+    my $stem = join('', map { ucfirst $_ } split /_/, $depluralized);
+    return "Test2::Harness2::DB::$stem";
 }
 
 =over 4

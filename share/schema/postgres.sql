@@ -96,16 +96,17 @@ CREATE TABLE collectors (
     name            TEXT             NOT NULL,
     pid             BIGINT           NOT NULL,
     watched         BIGINT,
-    type            TEXT             NOT NULL,
+    is_test         BOOLEAN          NOT NULL DEFAULT FALSE,
     start_time      DOUBLE PRECISION NOT NULL,
     stop_time       DOUBLE PRECISION,
     exit_code       INTEGER,
+    exit_err        INTEGER,
+    exit_sig        INTEGER,
     finalized       DOUBLE PRECISION,
     UNIQUE(runner_id, name)
 );
 
 CREATE INDEX collectors_runner_idx ON collectors(runner_id);
-CREATE INDEX collectors_type_idx   ON collectors(type);
 
 CREATE TABLE artifacts (
     artifact_id     BIGSERIAL    PRIMARY KEY,
@@ -270,12 +271,31 @@ CREATE TABLE coverage (
 CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp DESC);
 CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);
 
-CREATE TABLE resources (
-    resource_id BIGSERIAL        PRIMARY KEY,
-    run_id      BIGINT           NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-    type        TEXT             NOT NULL,
-    stamp       DOUBLE PRECISION NOT NULL,
-    payload     JSONB            NOT NULL
+CREATE TABLE schedulers (
+    scheduler_id BIGSERIAL PRIMARY KEY,
+    runner_id    BIGINT    NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
+    class        TEXT      NOT NULL,
+    spec         JSONB,
+    UNIQUE(runner_id)
 );
 
-CREATE INDEX resources_run_type_stamp_idx ON resources(run_id, type, stamp);
+CREATE TABLE resources (
+    resource_id BIGSERIAL PRIMARY KEY,
+    runner_id   BIGINT    NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
+    run_id      BIGINT             REFERENCES runs(run_id) ON DELETE CASCADE,
+    class       TEXT      NOT NULL,
+    spec        JSONB
+);
+
+CREATE INDEX resources_runner_idx ON resources(runner_id);
+CREATE INDEX resources_run_idx    ON resources(run_id);
+
+CREATE TABLE resource_snapshots (
+    resource_snapshot_id BIGSERIAL        PRIMARY KEY,
+    resource_id          BIGINT           NOT NULL REFERENCES resources(resource_id) ON DELETE CASCADE,
+    stamp                DOUBLE PRECISION NOT NULL,
+    payload              JSONB            NOT NULL
+);
+
+CREATE INDEX resource_snapshots_resource_stamp_idx
+    ON resource_snapshots(resource_id, stamp);

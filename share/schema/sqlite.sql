@@ -97,16 +97,17 @@ CREATE TABLE collectors (
     name            TEXT    NOT NULL,
     pid             INTEGER NOT NULL,
     watched         INTEGER,
-    type            TEXT    NOT NULL,
+    is_test         INTEGER NOT NULL DEFAULT 0,
     start_time      REAL    NOT NULL,
     stop_time       REAL,
     exit_code       INTEGER,
+    exit_err        INTEGER,
+    exit_sig        INTEGER,
     finalized       REAL,
     UNIQUE(runner_id, name)
 );
 
 CREATE INDEX collectors_runner_idx ON collectors(runner_id);
-CREATE INDEX collectors_type_idx   ON collectors(type);
 
 CREATE TABLE artifacts (
     artifact_id     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,12 +272,31 @@ CREATE TABLE coverage (
 CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp DESC);
 CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);
 
-CREATE TABLE resources (
-    resource_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id      INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-    type        TEXT    NOT NULL,
-    stamp       REAL    NOT NULL,
-    payload     TEXT    NOT NULL
+CREATE TABLE schedulers (
+    scheduler_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runner_id    INTEGER NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
+    class        TEXT    NOT NULL,
+    spec         TEXT,
+    UNIQUE(runner_id)
 );
 
-CREATE INDEX resources_run_type_stamp_idx ON resources(run_id, type, stamp);
+CREATE TABLE resources (
+    resource_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runner_id   INTEGER NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
+    run_id      INTEGER          REFERENCES runs(run_id) ON DELETE CASCADE,
+    class       TEXT    NOT NULL,
+    spec        TEXT
+);
+
+CREATE INDEX resources_runner_idx ON resources(runner_id);
+CREATE INDEX resources_run_idx    ON resources(run_id);
+
+CREATE TABLE resource_snapshots (
+    resource_snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_id          INTEGER NOT NULL REFERENCES resources(resource_id) ON DELETE CASCADE,
+    stamp                REAL    NOT NULL,
+    payload              TEXT    NOT NULL
+);
+
+CREATE INDEX resource_snapshots_resource_stamp_idx
+    ON resource_snapshots(resource_id, stamp);

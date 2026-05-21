@@ -27,7 +27,7 @@ sub _run_driver {
         '--parser',   $opts{parser}   || 'Test2::Harness2::Collector::Parser::IOParser',
         '--recorder', $opts{recorder} || 'Test2::Harness2::Collector::Recorder::Files',
         ($opts{auditor} ? ('--auditor', $opts{auditor}) : ()),
-        ($opts{type}    ? ('--type',    $opts{type})    : ()),
+        (defined $opts{is_test} ? ($opts{is_test} ? '--is-test' : '--no-is-test') : ()),
         (defined $opts{orphan_timeout}   ? ('--orphan-timeout',   $opts{orphan_timeout})   : ()),
         (defined $opts{silence_timeout}  ? ('--silence-timeout',  $opts{silence_timeout})  : ()),
         (defined $opts{lifetime_timeout} ? ('--lifetime-timeout', $opts{lifetime_timeout}) : ()),
@@ -365,13 +365,13 @@ subtest lifetime_timeout_kills_chatty_test => sub {
 subtest silence_timeout_ignored_for_services => sub {
     my $dir = tempdir(CLEANUP => 1);
 
-    # 'service' type — silence timeout must be ignored. Long sleep
-    # with no output: should NOT be killed.
+    # Service-style collector (is_test=0) — silence timeout must be
+    # ignored. Long sleep with no output: should NOT be killed.
     my $script = 'print "starting\n"; STDOUT->flush; sleep 2; exit 0;';
 
     my $status = _run_driver(
         dir             => $dir,
-        type            => 'service',
+        is_test         => 0,
         silence_timeout => 1,
         exec            => [$^X, '-e', $script],
     );

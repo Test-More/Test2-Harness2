@@ -97,9 +97,15 @@ One row per collector process.
 - `name` — unique per runner.
 - `pid` — collector's own pid.
 - `watched` — pid of the collected process (nullable until forked).
-- `type` — `'service'`, `'test job'`, etc. (indexed).
+- `is_test` — boolean. True for test-job collectors, false for
+  service-style collectors. Default false.
 - `start_time` / `stop_time` — collected-process lifecycle.
-- `exit_code` — exit code of the collected process (nullable).
+- `exit_code` — raw wait status of the collected process (nullable).
+- `exit_err` — exit value (`status >> 8`) when the process exited
+  normally (nullable; populated only when `exit_sig` is null).
+- `exit_sig` — terminating signal number (`status & 0x7f`) when the
+  process was killed by a signal (nullable; populated only when
+  `exit_err` is null).
 - `finalized` — timestamp the recorder finished its bookkeeping for this
   collector.
 
@@ -133,8 +139,8 @@ never both.
   dispatching new jobs and terminate in-flight ones.
 - `has_coverage` — boolean; true when this run produced coverage
   rows. Pre-filter for coverage queries without a join.
-- `has_resources` — boolean; same as has_coverage but for
-  resource-sample rows.
+- `has_resources` — boolean; true when this run produced
+  `resource_snapshots` rows.
 
 ### services
 - `collector_id` → `collectors`
@@ -247,16 +253,42 @@ even if other runs are pruned. No dedup across runs.
 - SQLite: no native option; recorder may zstd-encode the JSON
   before insert if size becomes a concern.
 
-### resources
-Per-sample telemetry rows. Resource events ship on the event stream
-(`facet_data.resource`) when a producer plugin (CPU sampler, memory
-sampler, custom resource) is active.
+### schedulers
+Specification of the scheduler instance attached to a runner. Exactly
+one row per runner.
 
-- `run_id` → `runs` (`ON DELETE CASCADE`).
-- `type` — short identifier (`'cpu'`, `'memory'`, etc.).
+- `runner_id` → `runners` (`ON DELETE CASCADE`). Unique.
+- `class` — Perl class implementing the scheduler.
+- `spec` — JSON construction spec (queue policy, concurrency caps,
+  resource bindings, etc.).
+
+### resources
+Specification of a resource attached to a runner (or a specific run).
+The runner declares its resources at startup; runs may declare
+additional run-scoped resources at queue time.
+
+- `runner_id` → `runners` (`ON DELETE CASCADE`).
+- `run_id` → `runs` (nullable; `ON DELETE CASCADE`). NULL marks a
+  runner-global resource; non-null marks a run-scoped resource.
+- `class` — Perl class implementing the resource.
+- `spec` — JSON construction spec (resource-specific).
+
+Row-class dispatch in the row layer: rows with `run_id` IS NULL load
+as `Test2::Harness2::Runner::Resource` (runner-global). Rows with
+`run_id` set load as `Test2::Harness2::Runner::Run::Resource`
+(run-scoped) — a subclass of the base.
+
+### resource_snapshots
+Per-sample telemetry rows. Resource samples ship on the event stream
+(`facet_data.resource`) while a resource producer plugin (CPU
+sampler, memory sampler, custom resource) is active.
+
+- `resource_id` → `resources` (`ON DELETE CASCADE`). The resource
+  row carries the type via its `class`; the snapshot itself is just
+  the sample.
 - `stamp` — hi-res timestamp.
 - `payload` — JSON; producer-defined shape.
-- Indexed by `(run_id, type, stamp)` for sequential single-timeseries
+- Indexed by `(resource_id, stamp)` for sequential single-timeseries
   reads.
 - Same per-flavor payload compression as `coverage` above.
 

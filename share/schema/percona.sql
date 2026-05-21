@@ -124,10 +124,12 @@ CREATE TABLE collectors (
     name            VARCHAR(191) NOT NULL,
     pid             BIGINT NOT NULL,
     watched         BIGINT,
-    type            VARCHAR(32) NOT NULL,
+    is_test         BOOLEAN NOT NULL DEFAULT FALSE,
     start_time      DOUBLE NOT NULL,
     stop_time       DOUBLE,
     exit_code       INT,
+    exit_err        INT,
+    exit_sig        INT,
     finalized       DOUBLE,
     UNIQUE KEY collectors_runner_name_unique (runner_id, name),
     CONSTRAINT collectors_runner_fk FOREIGN KEY (runner_id)
@@ -135,7 +137,6 @@ CREATE TABLE collectors (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE INDEX collectors_runner_idx ON collectors(runner_id);
-CREATE INDEX collectors_type_idx   ON collectors(type);
 
 CREATE TABLE artifacts (
     artifact_id     BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -342,13 +343,35 @@ CREATE TABLE coverage (
 CREATE INDEX coverage_project_source_stamp_idx ON coverage(project_id, source_file, stamp);
 CREATE INDEX coverage_project_run_idx          ON coverage(project_id, run_id);
 
+CREATE TABLE schedulers (
+    scheduler_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    runner_id    BIGINT UNSIGNED NOT NULL,
+    class        VARCHAR(191) NOT NULL,
+    spec         JSON,
+    UNIQUE KEY schedulers_runner_unique (runner_id),
+    CONSTRAINT schedulers_runner_fk FOREIGN KEY (runner_id) REFERENCES runners(runner_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE resources (
     resource_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    run_id      BIGINT UNSIGNED NOT NULL,
-    type        VARCHAR(64) NOT NULL,
-    stamp       DOUBLE NOT NULL,
-    payload     JSON NOT NULL,
-    CONSTRAINT resources_run_fk FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+    runner_id   BIGINT UNSIGNED NOT NULL,
+    run_id      BIGINT UNSIGNED,
+    class       VARCHAR(191) NOT NULL,
+    spec        JSON,
+    CONSTRAINT resources_runner_fk FOREIGN KEY (runner_id) REFERENCES runners(runner_id) ON DELETE CASCADE,
+    CONSTRAINT resources_run_fk    FOREIGN KEY (run_id)    REFERENCES runs(run_id)       ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX resources_runner_idx ON resources(runner_id);
+CREATE INDEX resources_run_idx    ON resources(run_id);
+
+CREATE TABLE resource_snapshots (
+    resource_snapshot_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    resource_id          BIGINT UNSIGNED NOT NULL,
+    stamp                DOUBLE NOT NULL,
+    payload              JSON NOT NULL,
+    CONSTRAINT resource_snapshots_resource_fk FOREIGN KEY (resource_id) REFERENCES resources(resource_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8;
 
-CREATE INDEX resources_run_type_stamp_idx ON resources(run_id, type, stamp);
+CREATE INDEX resource_snapshots_resource_stamp_idx
+    ON resource_snapshots(resource_id, stamp);

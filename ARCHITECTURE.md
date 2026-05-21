@@ -249,11 +249,29 @@ return $run->result;
 
 ### 4.3 Generic row API
 
-Every database table has a corresponding row object with two
-mandatory methods:
+Every database table has a corresponding **DB row class** under
+`Test2::Harness2::DB::*` that holds column data and nothing else.
+These classes are the persistence layer; they are deliberately
+"dumb" — load, refresh, save, transform-for-display, no business
+logic. They compose `Test2::Harness2::Role::Row`, which provides:
 
 - `$row->save` — write any changed fields back to the row.
 - `$row->refresh` — re-fetch the row and update fields in place.
+
+Class-name derivation from table name is mechanical (depluralise
+the table name with `ies $<gt> y`, `ches $<gt> ch`, then strip
+trailing `s`; then CamelCase the snake_case segments; then prefix
+with `Test2::Harness2::DB::`). The conversion lives in
+`Test2::Harness2::Util::table_to_db_class`. Examples:
+
+- `users` → `Test2::Harness2::DB::User`
+- `job_tries` → `Test2::Harness2::DB::JobTry`
+- `launches` → `Test2::Harness2::DB::Launch`
+- `service_state` → `Test2::Harness2::DB::ServiceState`
+- `vcs_info` → `Test2::Harness2::DB::VcsInfo`
+
+There is no maintained table → class hash; the conversion is the
+contract.
 
 The harness handle exposes generic fetch/insert helpers:
 
@@ -265,6 +283,57 @@ The harness handle exposes generic fetch/insert helpers:
 
 Implementation: hand-written SQL on raw `DBI`, optionally aided by
 `SQL::Abstract`. **No `DBIx::Class`.**
+
+### 4.4 Logic-class / row-class split
+
+Tables with non-trivial behavior (`Scheduler`, `Service`,
+`Launcher`, `Resource`, `Run`, `Collector`, `JobTry`, …) get a
+second class — a **logic class** — at the canonical
+`Test2::Harness2::*` path (e.g. `Test2::Harness2::Runner::Scheduler`,
+`Test2::Harness2::Runner::Service`). Lookup-only tables (`User`,
+`Host`, `Project`, `TestFile`, `VcsInfo`, `Version`, `Instance`)
+do **not** get a logic class — the DB row is the only object.
+
+The logic class holds a `row` slot referencing its DB row and
+implements behavior (signal handling, dispatch loops, transient
+caches, etc.). Mutators on the logic class read columns through
+the row, mutate the row's hash, and call `$self->row->save`:
+
+```perl
+sub cancel {
+    my $self = shift;
+    $self->row->{status} = 'canceled';
+    $self->row->save;
+}
+```
+
+External consumers of the schema (`App::Yath2`, reporting tooling,
+ultraviewer) import `Test2::Harness2::DB::*` classes directly and
+never see logic methods. Internal mutating code — and only that
+code — uses the logic classes in `Test2::Harness2::*`. This makes
+the mutator surface a class-level boundary, not a documentation
+convention.
+
+When a single table backs multiple logic classes (e.g.
+`resources` backs both `Runner::Resource` for runner-global rows
+and `Runner::Run::Resource` for run-scoped rows), the dispatch
+lives in the logic layer (a logic factory on the handle inspects
+the row data and picks the logic class). The DB row class is
+always the same.
+
+Column delegation on logic classes is installed by
+`use Test2::Harness2::Util::DBDelegate '<table>';`, which:
+
+- Loads the matching DB row class,
+- Verifies its `TABLE` matches,
+- Installs a `ROW` constant (`'row'`), a `row` accessor, and
+  `TABLE` / `DB_CLASS` class methods,
+- Installs one reader per column that delegates to the row.
+
+Setters are deliberately not installed; mutations are an explicit
+two-step (`$self->row->{col} = $val; $self->row->save`).
+`Object::HashBase` remains unaware of the `row` slot — it is an
+injected hash key, not a HashBase attribute.
 
 Collectors and auditors **never** touch the database directly. Every
 write a collector or auditor needs to make goes through its
