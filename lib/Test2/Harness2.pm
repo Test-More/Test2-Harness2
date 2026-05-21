@@ -10,9 +10,12 @@ use File::Spec ();
 use File::Basename qw/dirname/;
 use POSIX ();
 use Scalar::Util qw/blessed/;
+use Sys::Hostname qw/hostname/;
+use Time::HiRes qw/time/;
 use Test2::Util::UUID qw/gen_uuid/;
 
-use Test2::Harness2::Util qw/table_to_db_class load_module read_file/;
+use Test2::Harness2::Util qw/table_to_db_class load_module read_file write_file_atomic/;
+use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use Object::HashBase qw{
     <dsn
@@ -21,11 +24,31 @@ use Object::HashBase qw{
     <user
     <name
     <path
+    <host
+    <cwd
+    <started
     <dbh
     <tmpdir
     +_owns_file
     +_schema_dir
+    +_sidecar_mode
+    +_quickdb
 };
+
+my %FLAVOR_FROM_QDB_DRIVER = (
+    SQLite     => 'sqlite',
+    PostgreSQL => 'postgres',
+    MySQL      => 'mysql',
+    MariaDB    => 'mariadb',
+    Percona    => 'percona',
+);
+
+my %FLAVOR_FROM_DSN_SCHEME = (
+    SQLite  => 'sqlite',
+    Pg      => 'postgres',
+    MariaDB => 'mariadb',
+    mysql   => 'mysql',
+);
 
 =pod
 
@@ -38,25 +61,55 @@ file, and the row-object surface.
 
 =head1 DESCRIPTION
 
-The library-side entry point for the harness. Constructing a handle
-opens (or creates) the harness's SQLite database at a `.t2h2` file in
-the system temp directory, and exposes the fetch / fetch_all / insert
-helpers that every row-object class uses to talk to its table.
+The library-side entry point for the harness. A handle owns a database
+connection plus a `.t2h2` file in the system temp directory. The file
+has two forms:
 
-Stage 5 ships the SQLite-only path. Non-default backends (Postgres,
-MySQL, MariaDB, Percona, externally-hosted SQLite) land in a later
-stage; the handle is shaped now so those backends slot in without
-changing the public API.
+=over 4
+
+=item Default SQLite mode
+
+The `.t2h2` file B<is> the SQLite database. Opening it directly
+through L<DBD::SQLite> is the whole story.
+
+=item Non-default mode
+
+The `.t2h2` file is a small JSON sidecar describing the connection
+(DSN, flavor, pid, project, user, host, cwd, started timestamp).
+Opening it dispatches to the real database via the DSN. Triggered
+either by passing C<dsn> / C<flavor> to point at a caller-managed
+database, or by passing C<driver> to spin up an ephemeral database
+via L<DBIx::QuickDB>. The QuickDB instance is held on the handle
+and torn down on disconnect.
+
+=back
+
+The handle exposes the fetch / fetch_all / insert helpers every
+row-object class uses to talk to its table.
 
 =head1 SYNOPSIS
 
     use Test2::Harness2;
 
-    # Create a fresh harness instance + sqlite db at
-    # ${tmpdir}/${user}-${project}-${pid}.t2h2
+    # Default SQLite mode -- the .t2h2 file IS the database.
     my $h = Test2::Harness2->new(project => 'myproj');
 
-    # Reconnect to an existing .t2h2 file
+    # Point at a caller-managed external Postgres. The .t2h2 file
+    # becomes a JSON sidecar describing how to attach.
+    my $h = Test2::Harness2->new(
+        project => 'myproj',
+        dsn     => 'dbi:Pg:dbname=t2h2;host=db.example;port=5432',
+        flavor  => 'postgres',
+    );
+
+    # Spin up an ephemeral MariaDB via DBIx::QuickDB. The harness owns
+    # and tears down the QuickDB instance on disconnect.
+    my $h = Test2::Harness2->new(
+        project => 'myproj',
+        driver  => 'MariaDB',
+    );
+
+    # Reconnect to an existing .t2h2 file (either form).
     my $h2 = Test2::Harness2->connect($t2h2_path);
 
     my ($user) = $h->insert(users => {name => 'alice'});
@@ -100,17 +153,42 @@ unless the caller passes it in directly.
 
 =item dsn
 
-DBI DSN for the harness database. In SQLite mode this is computed
-from C<path>; callers may pass a different DSN to connect to a
-database that is not the C<path> file. Non-SQLite DSNs are reserved
-for a later stage.
+DBI DSN for the harness database. In default SQLite mode this is
+computed from C<path>. Pass a non-SQLite DSN to connect to a
+caller-managed external database; the sidecar `.t2h2` file then
+records the DSN and metadata for other processes to attach.
 
 =item flavor
 
 Database flavor identifier (C<sqlite>, C<postgres>, C<mysql>,
-C<mariadb>, C<percona>). Used to pick the matching schema file and
-to branch flavor-specific SQL (placeholder syntax, ID recovery,
-etc.). Defaults to C<sqlite>.
+C<mariadb>, C<percona>). Defaults to C<sqlite> when no DSN is
+supplied; otherwise inferred from the DSN scheme. Callers may pass an explicit C<flavor> to
+override (necessary when the C<mysql>/C<mariadb>/C<percona> family
+share C<dbi:MariaDB:>).
+
+=item driver
+
+Transient construction argument. When set, the handle uses
+L<DBIx::QuickDB> to spin up an ephemeral database of that driver
+(e.g. C<PostgreSQL>, C<MariaDB>) and uses it as the backing store.
+The QuickDB instance is owned by the handle and torn down on
+C<disconnect>. Not stored as an attribute on the handle once
+init runs.
+
+=item host
+
+Hostname recorded in the JSON sidecar (default
+C<< Sys::Hostname::hostname() >>).
+
+=item cwd
+
+Absolute current working directory recorded in the JSON sidecar
+(default C<< File::Spec->rel2abs(File::Spec->curdir) >>).
+
+=item started
+
+Hi-res epoch seconds timestamp recorded in the JSON sidecar
+(default C<< Time::HiRes::time() >>).
 
 =item dbh
 
@@ -130,20 +208,121 @@ sub init {
     croak "'user' is a required attribute (set USER in the environment or pass user => ...)"
         unless defined $self->{+USER} && length $self->{+USER};
 
-    $self->{+FLAVOR}   //= 'sqlite';
-    $self->{+TMPDIR}   //= File::Spec->tmpdir;
-    $self->{+NAME}     //= sprintf('%s-%s-%d.t2h2', $self->{+USER}, $self->{+PROJECT}, $$);
-    $self->{+PATH}     //= File::Spec->catfile($self->{+TMPDIR}, $self->{+NAME});
+    $self->{+HOST}    //= hostname();
+    $self->{+CWD}     //= File::Spec->rel2abs(File::Spec->curdir);
+    $self->{+STARTED} //= time();
+    $self->{+TMPDIR}  //= File::Spec->tmpdir;
+    $self->{+NAME}    //= sprintf('%s-%s-%d.t2h2', $self->{+USER}, $self->{+PROJECT}, $$);
+    $self->{+PATH}    //= File::Spec->catfile($self->{+TMPDIR}, $self->{+NAME});
 
     return if $self->{+DBH};
 
+    my $driver = delete $self->{driver};
+    $self->_spin_up_ephemeral($driver) if $driver;
+
     my $existed = -e $self->{+PATH};
+
+    if ($existed && !$self->{+DSN}) {
+        $self->_load_existing_discovery;
+    }
+    elsif (!$self->{+DSN}) {
+        $self->{+FLAVOR}      //= 'sqlite';
+        $self->{+DSN}           = "dbi:SQLite:dbname=" . $self->{+PATH};
+        $self->{+_SIDECAR_MODE} = 'sqlite_file';
+    }
+    else {
+        $self->{+FLAVOR} //= _flavor_from_dsn($self->{+DSN})
+            // croak "Cannot detect flavor from dsn '$self->{+DSN}'; pass `flavor => ...`";
+        $self->{+_SIDECAR_MODE} //= 'json';
+    }
+
     $self->{+_OWNS_FILE} = !$existed;
 
-    $self->{+DSN} //= "dbi:SQLite:dbname=" . $self->{+PATH};
     $self->_open_dbh;
-
     $self->_load_schema if !$existed;
+
+    if ($self->{+_OWNS_FILE} && ($self->{+_SIDECAR_MODE} // '') eq 'json') {
+        $self->_write_sidecar;
+    }
+}
+
+sub _flavor_from_dsn {
+    my ($dsn) = @_;
+    return undef unless defined $dsn && $dsn =~ /^dbi:([^:]+):/;
+    return $FLAVOR_FROM_DSN_SCHEME{$1};
+}
+
+sub _spin_up_ephemeral {
+    my ($self, $driver) = @_;
+
+    require DBIx::QuickDB;
+    my $instance = DBIx::QuickDB->build_db("t2h2-$$", {driver => $driver})
+        or croak "Failed to build ephemeral '$driver' database";
+
+    $self->{+_QUICKDB} = $instance;
+    $self->{+DSN}      = $instance->connect_string;
+    $self->{+FLAVOR}   //= $FLAVOR_FROM_QDB_DRIVER{$driver}
+        // croak "Unknown DBIx::QuickDB driver '$driver'";
+    $self->{+_SIDECAR_MODE} //= 'json';
+    return;
+}
+
+sub _load_existing_discovery {
+    my $self = shift;
+
+    my $path = $self->{+PATH};
+    open(my $fh, '<:raw', $path) or die "Failed to read $path: $!";
+    read($fh, my $sniff, 16);
+    close($fh);
+
+    if ($sniff =~ /^SQLite format 3\0/) {
+        $self->{+FLAVOR}      //= 'sqlite';
+        $self->{+DSN}           = "dbi:SQLite:dbname=" . $path;
+        $self->{+_SIDECAR_MODE} = 'sqlite_file';
+        return;
+    }
+
+    if ($sniff =~ /^\s*\{/) {
+        open(my $fh2, '<:raw', $path) or die "Failed to read $path: $!";
+        local $/;
+        my $bytes = <$fh2>;
+        close($fh2);
+
+        my $info = decode_json($bytes);
+        $self->{+DSN}     //= $info->{dsn};
+        $self->{+FLAVOR}  //= $info->{flavor};
+        $self->{+PROJECT} //= $info->{project};
+        $self->{+USER}    //= $info->{user};
+        $self->{+HOST}    //= $info->{host};
+        $self->{+CWD}     //= $info->{cwd};
+        $self->{+STARTED} //= $info->{started};
+
+        croak "Sidecar at $path missing dsn"    unless $self->{+DSN};
+        croak "Sidecar at $path missing flavor" unless $self->{+FLAVOR};
+
+        $self->{+_SIDECAR_MODE} = 'json';
+        return;
+    }
+
+    croak "Harness file $path is neither a SQLite database nor a JSON sidecar";
+}
+
+sub _write_sidecar {
+    my $self = shift;
+
+    my %payload = (
+        dsn     => $self->{+DSN},
+        flavor  => $self->{+FLAVOR},
+        pid     => $$,
+        project => $self->{+PROJECT},
+        user    => $self->{+USER},
+        host    => $self->{+HOST},
+        cwd     => $self->{+CWD},
+        started => $self->{+STARTED},
+    );
+
+    write_file_atomic($self->{+PATH}, encode_json(\%payload));
+    return;
 }
 
 =head1 PUBLIC METHODS
@@ -177,9 +356,11 @@ sub connect {
 
 =item $type = $h->blob_sql_type
 
-DBI SQL type constant to use when binding a binary blob parameter
-on this handle's flavor. SQLite returns C<DBI::SQL_BLOB()>;
-additional flavors hook in here as they land.
+Value to pass as the third argument to L<DBI/bind_param> when
+binding a binary blob on this handle's flavor. SQLite and the
+mysql family return C<DBI::SQL_BLOB()>; postgres returns
+C<< { pg_type => DBD::Pg::PG_BYTEA() } >>. C<bind_param> accepts
+both scalar and hashref forms, so callers do not need to branch.
 
 =back
 
@@ -187,9 +368,17 @@ additional flavors hook in here as they land.
 
 sub blob_sql_type {
     my $self = shift;
+    my $flavor = $self->{+FLAVOR};
 
-    return DBI::SQL_BLOB() if $self->{+FLAVOR} eq 'sqlite';
-    croak "blob_sql_type not configured for flavor '$self->{+FLAVOR}'";
+    return DBI::SQL_BLOB() if $flavor eq 'sqlite';
+    return DBI::SQL_BLOB() if $flavor =~ /^(mysql|mariadb|percona)$/;
+
+    if ($flavor eq 'postgres') {
+        require DBD::Pg;
+        return {pg_type => DBD::Pg::PG_BYTEA()};
+    }
+
+    croak "blob_sql_type not configured for flavor '$flavor'";
 }
 
 =over 4
@@ -278,10 +467,17 @@ sub insert {
         push @binds => map { $row->{$_} } @cols;
     }
 
-    my $sth = $self->{+DBH}->prepare($sql);
-    $sth->execute(@binds);
-
-    my @ids = $self->_recover_ids($tname, $pk, scalar(@inserts));
+    my @ids;
+    if ($self->{+FLAVOR} eq 'postgres') {
+        $sql .= " RETURNING $pk";
+        my $rows = $self->{+DBH}->selectall_arrayref($sql, undef, @binds);
+        @ids = map { $_->[0] } @$rows;
+    }
+    else {
+        my $sth = $self->{+DBH}->prepare($sql);
+        $sth->execute(@binds);
+        @ids = $self->_recover_ids($tname, $pk, scalar(@inserts));
+    }
 
     my @out;
     for my $i (0 .. $#inserts) {
@@ -311,11 +507,15 @@ sub disconnect {
 
     if ($self->{+_OWNS_FILE} && $self->{+PATH} && -e $self->{+PATH}) {
         unlink($self->{+PATH});
-        my $wal = $self->{+PATH} . '-wal';
-        my $shm = $self->{+PATH} . '-shm';
-        unlink($wal) if -e $wal;
-        unlink($shm) if -e $shm;
+        if (($self->{+_SIDECAR_MODE} // '') eq 'sqlite_file') {
+            my $wal = $self->{+PATH} . '-wal';
+            my $shm = $self->{+PATH} . '-shm';
+            unlink($wal) if -e $wal;
+            unlink($shm) if -e $shm;
+        }
     }
+
+    delete $self->{+_QUICKDB};
     return;
 }
 
@@ -326,15 +526,15 @@ sub DESTROY {
 
 sub _open_dbh {
     my $self = shift;
-    my $dbh  = DBI->connect(
-        $self->{+DSN}, undef, undef,
-        {
-            RaiseError => 1,
-            PrintError => 0,
-            AutoCommit => 1,
-            sqlite_use_immediate_transaction => 1,
-        },
+
+    my %opts = (
+        RaiseError => 1,
+        PrintError => 0,
+        AutoCommit => 1,
     );
+    $opts{sqlite_use_immediate_transaction} = 1 if $self->{+FLAVOR} eq 'sqlite';
+
+    my $dbh = DBI->connect($self->{+DSN}, undef, undef, \%opts);
 
     if ($self->{+FLAVOR} eq 'sqlite') {
         $dbh->do("PRAGMA foreign_keys = ON");
@@ -454,16 +654,12 @@ sub _recover_ids {
         return ($last - $n + 1 .. $last);
     }
 
-    if ($self->{+FLAVOR} eq 'postgres') {
-        return;
-    }
-
     if ($self->{+FLAVOR} =~ /^(mysql|mariadb|percona)$/) {
         my ($first) = $self->{+DBH}->selectrow_array("SELECT LAST_INSERT_ID()");
         return ($first .. $first + $n - 1);
     }
 
-    return;
+    croak "_recover_ids: no id-recovery strategy for flavor '$self->{+FLAVOR}'";
 }
 
 1;
