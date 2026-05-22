@@ -309,35 +309,53 @@ Open clarifying questions to ask before starting:
 ## Stage 7 — Simple launchers (Default, ForkExec, Win32)
 
 Implement the non-preload launchers per `ARCHITECTURE.md` §7.1–§7.2.
+Regular launchers are **in-process objects owned by the scheduler.**
+They do **not** consume `Role::Service`, do not have rows in any DB
+table, and do not have an entry-point recipe / fresh-process
+bootstrap. The scheduler constructs them at startup and calls
+`$launcher->launch(\%spec)` directly.
 
-- `Test2::Harness2::Role::Service` — the service-loop role with the
-  poll-and-sleep backoff (`0.05s` → `0.1s` → `0.5s` → `1s`) and the
-  `SIGUSR1` wake-up hook.
-- `Test2::Harness2::Role::Launcher` — consumes `Role::Service`.
-  Polls `launches` for unstarted rows targeting its `launcher_id`,
-  starts the requested collector process, marks `started`, reaps
-  the collector when it exits, optionally sends `SIGUSR1` to the
-  scheduler.
-- `Test2::Harness2::Launcher::ForkExec` — POSIX fork+exec
-  implementation.
-- `Test2::Harness2::Launcher::Win32` — Windows
-  `system(1, ...)` implementation. Implement to the same shape as
-  ForkExec; testing on Windows may not be possible in this stage —
-  if so, note it and move on.
-- `Test2::Harness2::Launcher::Default` — picks the platform-appropriate
-  delegate and runs it in-process. No second process for the delegate.
-- Standard "run me as a fresh process" entry points
-  (`perl -MTest2::Harness2::Launcher::ForkExec=start -e '1;'`) and
-  the open-a-pipe-and-feed-spec helper.
+- `Test2::Harness2::Role::Service` — the service event-loop role,
+  used by the scheduler, resource services, and the preload
+  service (Stage 10). Backoff timer (`0.05s` → `0.1s` → `0.5s` →
+  `1s`), `SIGUSR1` wake-up, the `register_event_fd` hook for
+  extra-FD wake sources, non-blocking child reap in the loop, and
+  the upward death-watch (parent-pid change → cascade shutdown).
+  See `ARCHITECTURE.md` §6.
+- `Test2::Harness2::Role::Launcher` — thin contract role.
+  Requires `name` and `launch(\%spec)`. **Does not consume
+  `Role::Service`.** No poll loop, no DB.
+- `Test2::Harness2::Launcher::ForkExec` — POSIX. Plain
+  `Object::HashBase` consuming `Role::Launcher`. `launch` does
+  fork+exec in the caller's process; returns
+  `(ok => 1, pid => $pid)` on success.
+- `Test2::Harness2::Launcher::Win32` — Windows. Same shape with
+  `system(1, ...)` instead of fork+exec. Testing on Windows may
+  not be possible in this stage — note "best-effort, untested"
+  in commit message if so.
+- `Test2::Harness2::Launcher::Default` — construction-time
+  picker. Returns a `ForkExec` or `Win32` instance based on the
+  platform. No delegate process, no service.
+- **Delete** `Test2::Harness2::Launcher::EntryPoint` and the
+  `=start` import / INIT trampoline / `feed_spec_to` helper from
+  `ForkExec`, `Win32`, and `Default`. Regular launchers are not
+  spawned as fresh processes anymore.
+- **Delete** `Test2::Harness2::DB::Launch` and
+  `Test2::Harness2::DB::Launcher`. The `launches` table is gone;
+  the `launchers` table has been renamed to `preloads` and only
+  the preload launcher (Stage 10) writes to it.
+- Adapt / delete existing launcher tests accordingly. Add tests
+  covering `launch` for `ForkExec`, `Win32` (where feasible), and
+  `Default`'s picker logic.
 
 Open clarifying questions to ask before starting:
 
-- Should `Default` be a class with `Launcher::*` subclasses, or
-  should it be a thin "pick the right class at construction" helper?
-  (The architecture doc treats it as the latter, but it is worth
-  re-confirming.)
 - The Win32 launcher implementation is risky without a Windows test
   bed. Is "best-effort, untested" acceptable in this stage?
+- For `Default`, should the picker honor an explicit override
+  (e.g. an env var or constructor arg) for tests that want to
+  force one variant on a platform that wouldn't normally select
+  it? Lean yes — keep it simple.
 
 ---
 
@@ -345,22 +363,45 @@ Open clarifying questions to ask before starting:
 
 Implement the scheduler service plus the harness-handle methods that
 front-end it (`new_runner`, `start_scheduler`, `queue_run`,
-`finish`).
+`finish`). See `ARCHITECTURE.md` §8 for the full specification.
 
 - `Test2::Harness2::Scheduler` — consumes `Role::Service`. Owns the
-  in-process resource objects. Walks `runs` / `jobs` for its
-  `runner_id`, evaluates resources, inserts `launches` rows,
-  observes `job_tries` completion (which the collector / auditor /
-  recorder land into the DB), updates the `runs` row aggregates,
-  and exits when the runner is finalized and the queue is empty.
+  in-process resource objects **and** the in-process launcher
+  objects (`ForkExec`, `Win32`, `Default`, plus any `Preload`
+  proxy added in Stage 10). Walks `runs` / `jobs` for its
+  `runner_id`, evaluates resources, calls
+  `$launcher->launch(\%spec)` **synchronously** (no `launches`
+  table — that's gone), observes `job_tries` completion (which
+  the collector / auditor / recorder land into the DB), updates
+  the `runs` row aggregates, and exits when the runner is
+  finalized and the queue is empty.
+- Resource holds: implement `$hold = $resource->allocate(...)`
+  and `$hold->release`. Symmetric — release on any termination
+  (success, failure, recovery-sweep cleanup). No `commit` step.
+- Reap loop: scheduler reaps its own child collectors non-blocking
+  every iteration (see `ARCHITECTURE.md` §6.5). On reap, look up
+  `pid → (job_try_id, [$hold, …])` and release the holds.
+- Dispatch state machine (see `ARCHITECTURE.md` §8.2.1): allocate
+  → persist intent on `job_tries` → call `launch` → branch on
+  reply (`ok` / `temporary` / `permanent`).
+- In-memory preload status: per-preload `up` / `down` flag the
+  scheduler maintains in memory. Stage 10 wires this up; for
+  Stage 8 leave a stub or skeleton.
+- Recovery sweep on scheduler start (see `ARCHITECTURE.md`
+  §8.2.3): scan `job_tries` rows with `started` set, `finished`
+  null, no live collector → release holds + mark stale +
+  requeue. Stage 8 may stub this for the trivial-job test fixture
+  but the hook must be in place.
 - Port `Test2::Harness2::TestFile` and
   `Test2::Harness2::Util::Directives` from `reference/old3`. Turn
   each `TestFile` into one or more `jobs` rows at queue time.
 - For this stage, **execute runs sequentially** — one run at a time,
   one job at a time. Concurrency is later (intentionally; the schema
   is concurrent-friendly but the scheduler is not, yet).
-- Test: queue a run with a handful of trivial jobs and verify a full
-  pass leaves the database with all aggregate fields populated.
+- Test: queue a run with a handful of trivial jobs through
+  `ForkExec` (or `Default`) and verify a full pass leaves the
+  database with all aggregate fields populated. No `launches`
+  table interactions to assert against.
 
 Open clarifying questions to ask before starting:
 
@@ -370,6 +411,10 @@ Open clarifying questions to ask before starting:
 - For `finish` blocking semantics: poll-and-wait inside the handle,
   or rely on a row signal in the database? (Architecturally either
   works; we should pick one.)
+- Recovery sweep granularity: should Stage 8 implement it fully or
+  defer to Stage 10 once preload is wired in (since regular
+  launchers' collectors die with the scheduler anyway, making the
+  sweep mostly a no-op for Stage 8 fixtures)?
 
 ---
 
@@ -409,66 +454,84 @@ Open clarifying questions to ask before starting:
 
 ---
 
-## Stage 10 — Preload launcher
+## Stage 10 — Preload launcher (launch + spawn)
 
-Implement the preload subsystem per `ARCHITECTURE.md` §10.
+Implement the preload subsystem per `ARCHITECTURE.md` §10 and the
+preload socket protocol per `ARCHITECTURE.md` §7.3.
 
 Preloads in the new design are **flat**: each preload is one
-process; a runner may have multiple preloads but they do **not**
-chain or build off each other. The staged-preload tree from
-`reference/old3` is intentionally **out of scope** — do not port
-it. If you find yourself wanting "stage A.1 inherits from stage A",
-stop: that is the removed feature.
+service process; a runner may have multiple preloads but they do
+**not** chain or build off each other. The staged-preload tree
+from `reference/old3` is intentionally **out of scope** — do not
+port it. If you find yourself wanting "stage A.1 inherits from
+stage A", stop: that is the removed feature.
 
-- `Test2::Harness2::Launcher::Preload` — the launcher (consumes
-  `Role::Launcher`). Bootstraps via the `BEGIN`-block dance described
-  in `ARCHITECTURE.md` §10.2. Uses `Long::Jump`, `goto::file`, and
-  explicit process state cleanup. **Do not** substitute any of those
-  three with a workaround; if you get stuck, stop and discuss.
+- `Test2::Harness2::Launcher::Preload` — the scheduler-side
+  launcher object. Consumes `Role::Launcher`. Holds a connection
+  (or per-call connection) to its preload service's Unix socket
+  and forwards `launch` requests over the wire. Returns
+  `(ok => 1)` / `(ok => 0, error => ..., temporary => 0|1)`. No
+  pid; the collector writes its own row.
+- The **preload service** itself — a long-lived process consuming
+  `Role::Service`. Bootstraps via the `BEGIN` + `Long::Jump` +
+  `goto::file` dance described in `ARCHITECTURE.md` §10.2. **Do
+  not** substitute any of those three with a workaround; if you
+  get stuck, stop and discuss.
+- Socket protocol: length-prefixed JSON (4-byte BE uint32 length +
+  JSON object). Two request types multiplexed on the same socket:
+  - `launch` — scheduler-initiated; forks a collected test
+    process. Replies `{ok: 1}` on success or
+    `{ok: 0, error: "...", temporary: 0|1}` on failure. The
+    preload service classifies the error.
+  - `spawn` — external-caller-initiated (Part 2 `yath spawn`);
+    forks a single process under the preloaded state with no
+    collector, wires stdio, forwards signals, returns the
+    child's exit code via the connection.
+- The preload service's event loop selects over its socket FD
+  (via `Role::Service`'s `register_event_fd` hook), `SIGUSR1`,
+  and the backoff timer. Reaps its forked collectors
+  non-blocking; optionally sends `SIGUSR1` to the scheduler on
+  child exit.
 - `Test2::Harness2::Resource::Preload` — the resource. Publishes
   per-preload up/down/restarting state via `service_state.content`.
-  Tells the scheduler which preload (if any) a given test should run
-  under.
+  Tells the scheduler which preload (if any) a given test should
+  run under. The scheduler's in-memory preload-status flag
+  (`ARCHITECTURE.md` §8.2.2) is the runtime mirror of this.
 - Multiple preloads: confirm a runner can be configured with N
-  preloads side-by-side, each in its own process, and a test
-  routes to the named preload it asked for.
+  preloads side-by-side, each in its own service process, and a
+  test routes to the named preload it asked for.
 - Test fixture: a preload that loads (say) `Moose`, then a test
   asserting `$INC{'Moose.pm'}` is already set when the test starts.
+- Spawn test fixture: open a socket connection from a tiny client
+  helper, send a `spawn` request for `perl -e 'exit 7'`, verify
+  the client sees exit-code 7 and `collectors` has no new row.
 
 Open clarifying questions to ask before starting:
 
 - The reference design detached test collectors from their preload
-  stage; the new design keeps them as direct children. Confirm: is
-  the "preload waits for its in-flight tests on restart" trade-off
-  acceptable?
+  stage; the new design keeps them as direct children of the
+  preload service. Confirm: is the "preload service waits for its
+  in-flight tests on restart" trade-off acceptable?
 - How do tests declare which preload they want? `HARNESS-PRELOAD`
   directives like the legacy form, or something new?
-
----
-
-## Stage 11 — Spawn capability
-
-Implement the `spawn` socket per `ARCHITECTURE.md` §7.3:
-
-- Preload launchers that support spawn open a Unix socket and write
-  its path into `launchers.spawn_socket`.
-- The on-socket protocol: requester sends spawn spec, launcher
-  double-forks into a new process group with no collector, wires
-  stdio, forwards signals, returns exit status.
-- Spawns do not appear in `collectors`. They are deliberate "no
-  observation, just run it with the preload's memory advantage"
-  processes.
-
-Open clarifying questions to ask before starting:
-
-- The wire format on the socket: JSON over line-framing? Length-prefix?
-  Re-use of the EventEmitter / Atomic::Pipe framing? Pick something
-  simple — the consumer for now is internal-only.
-- Spec scope: argv, env, cwd, stdin/stdout/stderr fd inheritance —
-  anything else?
+- Should `spawn` ship in the same stage as `launch` (current plan)
+  or land as a follow-up stage so launch can be reviewed first?
+  Lean: same stage — the socket framing and select-loop work is
+  shared, splitting it would duplicate effort.
 
 Note for `PART_2_PLAN.md`: surface the `yath spawn` CLI on top of
 this — that is Part 2 work.
+
+---
+
+## Stage 11 — (intentionally removed)
+
+Stage 11 previously held a standalone "Spawn capability" stage.
+That work is now part of Stage 10 — `launch` and `spawn` share the
+same socket, framing, and event-loop integration, so splitting
+them adds churn for no benefit. Future stage numbers continue
+without renumbering: leave Stage 11 as a tombstone, advance to
+Stage 12.
 
 ---
 

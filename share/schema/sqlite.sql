@@ -232,8 +232,8 @@ CREATE INDEX job_tries_job_idx       ON job_tries(job_id);
 CREATE INDEX job_tries_collector_idx ON job_tries(collector_id);
 CREATE INDEX job_tries_result_idx    ON job_tries(result);
 
-CREATE TABLE launchers (
-    launcher_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE preloads (
+    preload_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     runner_id       INTEGER NOT NULL REFERENCES runners(runner_id) ON DELETE CASCADE,
     run_id          INTEGER          REFERENCES runs(run_id) ON DELETE CASCADE,
     collector_id    INTEGER NOT NULL REFERENCES collectors(collector_id) ON DELETE CASCADE,
@@ -241,23 +241,12 @@ CREATE TABLE launchers (
     class           TEXT    NOT NULL,
     spec            TEXT,
     pid             INTEGER,
-    spawn_socket    TEXT
+    socket          TEXT
 );
 
-CREATE INDEX launchers_runner_idx    ON launchers(runner_id);
-CREATE INDEX launchers_run_idx       ON launchers(run_id);
-CREATE INDEX launchers_collector_idx ON launchers(collector_id);
-
-CREATE TABLE launches (
-    launch_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    launcher_id INTEGER NOT NULL REFERENCES launchers(launcher_id) ON DELETE CASCADE,
-    job_id      INTEGER NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
-    requested   REAL    NOT NULL,
-    started     REAL
-);
-
-CREATE INDEX launches_launcher_idx ON launches(launcher_id, started);
-CREATE INDEX launches_job_idx      ON launches(job_id);
+CREATE INDEX preloads_runner_idx    ON preloads(runner_id);
+CREATE INDEX preloads_run_idx       ON preloads(run_id);
+CREATE INDEX preloads_collector_idx ON preloads(collector_id);
 
 CREATE TABLE coverage (
     coverage_id INTEGER PRIMARY KEY AUTOINCREMENT,

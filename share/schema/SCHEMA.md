@@ -196,27 +196,25 @@ request / response and fire-and-forget notifications.
   counts.
 - `status` — same lifecycle enum as `runs.status`.
 
-### launchers
+### preloads
 - `runner_id` → `runners`
-- `run_id` → `runs` (nullable; null for runner-global launchers).
+- `run_id` → `runs` (nullable; null for runner-global preloads).
 - `collector_id` → `collectors`
-- `name` — launcher's display name.
-- `class` — Perl class.
+- `name` — preload's display name.
+- `class` — Perl class implementing the preload service.
 - `spec` — JSON construction spec.
-- `pid` — launcher pid (same `SIGUSR1` wake-up convention as services).
-- `spawn_socket` — Unix socket path when the launcher supports `spawn`
-  (nullable).
+- `pid` — preload-service pid (same `SIGUSR1` wake-up convention as
+  services; the preload service also wakes on socket-readable, so
+  `SIGUSR1` is best-effort).
+- `socket` — Unix socket path the preload service listens on. Carries
+  both `launch` (scheduler-side) and `spawn` (external-caller-side)
+  requests; see `ARCHITECTURE.md` §7.3.
 
-### launches
-- `launcher_id` → `launchers`
-- `job_id` → `jobs`
-- `requested` — when the scheduler added the row.
-- `started` — when the launcher started the process (nullable until
-  started).
-
-The `launches(launcher_id, started)` index is the one the launcher's poll
-loop walks each tick: rows whose `started` is null and whose `launcher_id`
-matches.
+Regular launchers (`ForkExec`, `Win32`, `Default`) do **not** have
+rows in `preloads`. They are in-process objects owned by the
+scheduler — see `ARCHITECTURE.md` §7. Dispatch is synchronous in
+the scheduler (regular launchers) or synchronous over the preload
+socket; there is no per-launch queue table.
 
 ### coverage
 Per-coverage-run snapshot keyed by source file. See `ARCHITECTURE.md`
@@ -296,7 +294,8 @@ sampler, memory sampler, custom resource) is active.
 
 Every foreign key has its own index. Read-time access patterns
 (`runs → jobs → job_tries → artifacts` joins, scheduler walking the
-unstarted-launches stripe, services querying their `service_state` history)
+services querying their `service_state` history, scheduler walking
+`job_tries`)
 each get a covering index. Write-time cost is acceptable: events are written
 as a single per-collector blob, so the row-write rate stays low and
 batch-shaped.

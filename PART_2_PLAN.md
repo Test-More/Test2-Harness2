@@ -65,13 +65,14 @@ Out of scope for the foreseeable future (intentionally **not** Part 2):
 These notes apply directly to Part 2 work; they are recorded here
 so they do not get lost as the canonical docs evolve.
 
-- **`yath spawn`.** Built on the preload-launcher spawn socket
-  (Part 1 §11 / `ARCHITECTURE.md` §7.3). Behaves "just like running
-  the command" except the child inherits the preload's loaded-module
-  state. The launcher emulates a normal foreground process: child
-  stdout/stderr go to requester stdout/stderr, requester stdin goes
-  to the child, signals are forwarded, the child's exit code becomes
-  the requester's exit code.
+- **`yath spawn`.** Built on the preload service's request socket
+  (Part 1 Stage 10 / `ARCHITECTURE.md` §7.3 + §10). Behaves "just
+  like running the command" except the child inherits the
+  preload's loaded-module state. The preload service emulates a
+  normal foreground process for the spawn: child stdout/stderr go
+  to requester stdout/stderr, requester stdin goes to the child,
+  signals are forwarded, the child's exit code becomes the
+  requester's exit code.
 - **`yath start` / `yath run`.** Built on the Part-1 persistent
   runner. Discovery via the `.t2h2` files written by the harness
   handle. `yath run` queues a run against the discovered runner and

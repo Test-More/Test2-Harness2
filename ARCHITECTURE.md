@@ -51,33 +51,39 @@ contract).
   scheduler) and zero or more runs. A runner can be finalized,
   signaling "no more runs are coming".
 - **Service** — a long-lived process consuming
-  `Test2::Harness2::Role::Service`. Spends its life in a poll loop
-  that reads work from the database and writes results back. The
-  scheduler, every resource service, every launcher, and every preload
-  root are services.
+  `Test2::Harness2::Role::Service`. Runs an event loop that
+  selects over its work sources (DB tables, registered sockets,
+  signals) and writes results back. The scheduler, every resource
+  service, and every preload service is a service. Regular
+  launchers are **not** services.
 - **Scheduler** — `Test2::Harness2::Scheduler`. Exactly one per
   runner. Drives run + job execution: claims queued runs, evaluates
-  resources, hands each job to a launcher via the `launches` table,
-  reaps results.
-- **Launcher** — a service consuming
-  `Test2::Harness2::Role::Launcher` (which itself consumes
-  `Role::Service`). Each launcher process polls the `launches` table
-  for rows addressed to it and starts the requested process. There
-  are several launcher implementations (`Default`, `ForkExec`,
-  `Win32`, `Preload`). A launcher may optionally expose a Unix
-  socket for `spawn` operations.
-- **Collector** — `Test2::Harness2::Collector`. A child process the
-  launcher creates to wrap a *collected* process. Reads the collected
+  resources, dispatches each job to a launcher in-process (or over
+  the preload socket), reaps results.
+- **Launcher** — a class consuming
+  `Test2::Harness2::Role::Launcher`. The role is a thin contract
+  (`name`, `launch(\%spec)`); it does **not** consume
+  `Role::Service`. Regular launchers (`Default`, `ForkExec`,
+  `Win32`) are plain in-process objects owned by the scheduler.
+  The preload launcher (`Preload`) is a proxy object owned by the
+  scheduler that talks to its long-lived preload service over a
+  per-preload Unix socket. The socket carries both `launch` and
+  `spawn` requests — see §7.3.
+- **Collector** — `Test2::Harness2::Collector`. A child process
+  forked to wrap a *collected* process. Its parent is the
+  scheduler (for regular launches) or a preload service (for
+  preload launches). Reads the collected
   process's stdout / stderr through `Atomic::Pipe`s in mixed-data
   mode, runs the bytes through a parser → optional auditor →
   recorder pipeline, and finalizes the collector row in the database
   when the collected process exits. Every test job and every service
   process is wrapped by a collector. Spawns are not.
-- **Spawn** — a detached process produced by the spawn entry point of
-  a preload launcher (eventually surfaced as `yath spawn`). Spawns
-  do **not** get a collector; they double-fork and are intended to
-  emulate "just running the command", inheriting the preload state
-  but otherwise behaving like a normal foreground process.
+- **Spawn** — a detached process produced by the `spawn` message
+  on a preload service's request socket (eventually surfaced as
+  `yath spawn`). Spawns do **not** get a collector; they
+  double-fork and are intended to emulate "just running the
+  command", inheriting the preload state but otherwise behaving
+  like a normal foreground process.
 - **Parser** — consumes the bytes the collector reads from the
   collected process. Two kinds of bytes coexist on the same pipe:
   raw text and structured event bursts framed by `Atomic::Pipe`'s
@@ -110,34 +116,60 @@ contract).
 ```
 caller process (test runner script, `yath …` command later)
  └── Test2::Harness2 handle (in-process; no daemon)
-      ├── scheduler service       (collector ↔ scheduler ↔ DB)
-      │    ├── resource services  (one per resource that declares it needs a service)
-      │    ├── launcher services  (Default / ForkExec / Win32 / Preload)
-      │    │    └── collector ↔ test process    (per job)
-      │    └── (preload processes, when a Preload launcher is in use)
-      │         └── collector ↔ test process    (per job launched from a preload)
+      ├── scheduler service                       (one process per runner)
+      │    ├── resource services                  (one per resource that declares it needs a service)
+      │    ├── preload services                   (one per configured preload — see §10)
+      │    │    └── collector ↔ test process       (per job launched from this preload)
+      │    └── collector ↔ test process            (per non-preload job — direct child of scheduler)
       └── …
 ```
 
 Key invariants:
 
-- **No central message bus.** All state flows through the database.
-  Services do not talk to each other directly; they poll the DB,
-  process work, write responses to the DB. The only IPC primitive is
-  `SIGUSR1`, used purely as an early-wake hint to break a service
-  out of a sleep when there is known new work in the DB. On platforms
-  where `SIGUSR1` is unsupported the harness still works — wake-up
-  just falls back to the next poll-cycle sleep expiry.
+- **No central message bus.** Almost all cross-process state flows
+  through the database. Services do not generally talk to each other
+  directly; they poll the DB, process work, write responses to the
+  DB. The one exception is the preload-service request socket
+  (§10): scheduler ↔ preload `launch` / `spawn` requests run over a
+  per-preload Unix socket because they are short, synchronous, and
+  do not need DB durability. Beyond that, `SIGUSR1` is used purely
+  as an early-wake hint to break a service out of a sleep when
+  there is known new work. On platforms where `SIGUSR1` is
+  unsupported the harness still works — wake-up just falls back to
+  the next poll-cycle sleep expiry.
 - **No long-lived harness daemon.** The `Test2::Harness2` object lives
-  in the caller's process. The scheduler, launchers, resource
-  services, and preload services are independent processes; they
-  outlive the constructing caller only when explicitly daemonized.
+  in the caller's process. The scheduler, resource services, and
+  preload services are independent processes; they outlive the
+  constructing caller only when explicitly daemonized.
+- **Regular launchers are in-process, not separate processes.**
+  `ForkExec`, `Win32`, and `Default` are plain Perl objects that
+  live inside the scheduler. The scheduler calls
+  `$launcher->launch(\%spec)` directly. The fork+exec (or Win32
+  `system(1, …)` equivalent) happens in the scheduler process, so
+  the new collector is a **direct child of the scheduler**. There
+  is no `launches` table, no poll loop, and no separate launcher
+  process for the simple case.
+- **Preload launchers are the only launcher type that backs a
+  service.** A preload-launcher object lives in the scheduler and
+  proxies to its long-lived preload service process over a Unix
+  socket. Test processes started under a preload are direct
+  children of that preload service, not of the scheduler.
 - **Every collected process is wrapped by exactly one collector.**
   The collector is the collected process's direct parent (fork+exec
-  on POSIX, `system(1, ...)` on Windows). Collectors do not
-  double-fork; their parent launcher waits for them and reaps them.
+  on POSIX, `system(1, …)` on Windows). Collectors do not
+  double-fork. Reaping is the responsibility of whichever service
+  is the collector's direct parent — the scheduler for non-preload
+  jobs, the owning preload service for preload jobs.
 - **Spawns are the only un-collected processes.** Their lifetime is
   controlled by the requester, not by the harness.
+- **Upward death-watch cascades shutdown.** Every long-lived process
+  in the tree (services and collectors alike) watches its parent
+  pid. If the parent goes away the watcher terminates its own
+  children, finalizes what it can, and exits. A scheduler death
+  brings down the preload services and collectors it owned; a
+  preload-service death brings down the collectors it owned. The
+  rule exists so no test process is ever left running past the
+  service that started it. See §5.x and §6.x.
 
 ## 3. Namespaces and dependency contract
 
@@ -266,7 +298,7 @@ with `Test2::Harness2::DB::`). The conversion lives in
 
 - `users` → `Test2::Harness2::DB::User`
 - `job_tries` → `Test2::Harness2::DB::JobTry`
-- `launches` → `Test2::Harness2::DB::Launch`
+- `preloads` → `Test2::Harness2::DB::Preload`
 - `service_state` → `Test2::Harness2::DB::ServiceState`
 - `vcs_info` → `Test2::Harness2::DB::VcsInfo`
 
@@ -354,9 +386,9 @@ the same multi-row insert pattern the row-object layer uses.
 ### 5.1 Topology
 
 ```
-launcher process                    (or any service that needs to collect a process)
+parent service              (scheduler for regular launches; preload service for preload launches; any service that needs to collect a process)
    |
-   | fork                           (launcher forks)
+   | fork                   (in-process launcher fork; or preload service fork)
    v
 collector process
    |  build mixed-data Atomic::Pipes for STDOUT and STDERR
@@ -369,10 +401,13 @@ collector parent (collector loop)  | collector child     |
    |                               `---------------------'
 ```
 
-The launcher fork is a single fork (no double-fork). The launcher
-keeps the collector's pid in its tracking state. When the collector
-exits the launcher reaps it (via `waitpid`) and notifies the
-scheduler — see §8.
+The fork into the collector is a single fork (no double-fork). The
+collector's parent — the scheduler for regular launches, the
+preload service for preload launches — keeps the collector's pid
+in its tracking state and reaps it on exit (via non-blocking
+`waitpid` inside its event loop, see §6.5). The reap entry is the
+signal the scheduler uses to release the resource hold for that
+job; see §8.
 
 ### 5.2 Entry point
 
@@ -417,13 +452,15 @@ exit 0;
 job (i.e. `type = 'test job'`), the child calls
 `POSIX::setpgid(0, 0)` post-fork / pre-`exec` (or pre-`goto::file`
 in the preload case) to enter a **fresh process group of its own**.
-The collector itself stays in its parent launcher's process group.
-This isolates the test: a test that does `kill 'TERM', 0` (or
-otherwise signals its own process group) reaches only its own
-descendants, never the collector, launcher, scheduler, or any
-other part of the harness tree. Service collectors and their
-collected services do not get this treatment — they stay in the
-launcher's group so a deliberate sweep can reach them.
+The collector itself stays in its parent's process group (the
+scheduler for regular launches; the preload service for preload
+launches). This isolates the test: a test that does
+`kill 'TERM', 0` (or otherwise signals its own process group)
+reaches only its own descendants, never the collector, the
+scheduler, the preload service, or any other part of the harness
+tree. Service collectors and their collected services do not get
+this treatment — they stay in their parent's group so a
+deliberate sweep can reach them.
 
 ### 5.3 Pipe protocol
 
@@ -663,7 +700,9 @@ quiet interval reaches the configured **orphan-timeout** (default
 
 3. Exits the IO loop. The collector itself **does not** kill the
    orphan descendants — they are left to be cleaned up by whatever
-   process group / launcher policy is in effect higher up.
+   process-group policy is in effect higher up (the parent
+   scheduler or preload service, plus the death-watch cascade in
+   §5.10 / §6.6).
 
 The orphan condition is a diagnostic, not a failure. The collector
 itself returns `0` regardless — the collected process's pass/fail
@@ -712,7 +751,40 @@ Collectors work hard to keep going on errors:
   collector's exit code. Collectors exit `255` only when they
   themselves fail internally before they could finish their job.
 
-### 5.10 Development helper script
+### 5.10 Upward death-watch
+
+Collectors watch their parent pid for the same reason services do
+(see §6.6). The collector captures `getppid()` at start and checks
+it once per IO-loop iteration. If the captured pid no longer
+matches:
+
+1. Send `SIGTERM` to the collected child.
+2. Keep draining the pipes during the standard kill-grace
+   (`DEFAULT_KILL_TIMEOUT`, 5s).
+3. `SIGKILL` the child if it is still alive.
+4. Emit a synthetic event into the stream marking
+   `harness_orphan` with a reason of `'parent_died'` (distinct
+   from the orphan-timeout case in §5.8), so consumers can see
+   why the collector tore down early.
+5. Call `record_exit($status, { parent_died => 1 })` so the
+   recorder can persist the condition (`job_tries.parent_died`
+   boolean in the DB recorder; a marker file in the `Files`
+   recorder).
+6. Finalize the collector row and exit.
+
+On Linux the collector may additionally arm `PR_SET_PDEATHSIG`
+for an instant wake on parent death — same optimization status
+as in §6.6.
+
+The rule is non-negotiable: no test process is ever allowed to
+outlive the service that launched its collector. A scheduler
+crash, a preload-service crash, or any other parent death must
+result in the collected children being torn down rather than
+left running. Combined with the death-watch on services
+themselves (§6.6) this guarantees clean cascade shutdown of the
+entire harness tree.
+
+### 5.11 Development helper script
 
 For early development (before the launcher subsystem is in place),
 ship a `t/scripts/collector` script that wraps the entry point:
@@ -728,48 +800,75 @@ The `Files` recorder is the typical recorder for this script.
 ## 6. Service framework
 
 `Test2::Harness2::Role::Service` defines the contract for every
-long-lived helper process in the harness tree (scheduler, launchers,
-resource services, preload services).
+long-lived helper process in the harness tree (scheduler, resource
+services, preload services). Regular launchers do not consume
+`Role::Service` — they are plain in-process objects owned by the
+scheduler. See §7.
 
-### 6.1 The poll loop
+### 6.1 The event loop
 
-A service is a loop. Each iteration:
+A service is an event loop. Each iteration:
 
 1. Check the service's termination flag (a column on its
    `service_state` row, or on its dedicated service-table row).
    Exit cleanly if it is set.
-2. Read whatever the service is interested in from the database
-   (incoming `requests` rows, new `launches` rows, etc.).
-3. Process whatever work was found, writing responses back to the
-   database.
-4. If anything was done this iteration, immediately loop again
+2. Wait for an event with `select` (or the platform equivalent),
+   using a timeout derived from the current backoff. The wait
+   returns early on any of:
+   - A readable FD the service registered via the event-loop hook
+     (e.g. the preload service's request socket — see §10).
+   - A signal (`SIGUSR1` and friends — see §6.2).
+   - The backoff timer expiring.
+3. **Reap children** non-blocking (`waitpid(-1, WNOHANG)` in a
+   loop). Any service that forks children — scheduler, preload
+   service — owns reaping them in its own loop. See §6.5.
+4. Service the upward **death-watch** (§6.6): if the parent pid
+   has gone away, begin cascade shutdown.
+5. Read whatever the service is interested in from the database
+   (`requests` rows, work-table rows, etc.) and from any FD that
+   was readable.
+6. Process whatever work was found, writing responses back to the
+   database / socket as appropriate.
+7. If anything was done this iteration, immediately loop again
    (non-blocking).
-5. If nothing was done, sleep with backoff before the next
+8. If nothing was done, advance the backoff before the next
    iteration: `0.05s`, `0.1s`, `0.5s`, then `1s` as the maximum.
-   Any iteration that did work resets the backoff. The sleep is
-   interruptible by `SIGUSR1` — see §6.2. Any other process that
-   knows it has just written work this service needs can signal
-   the service's pid (read from `services.pid` / `launchers.pid`)
-   to wake it immediately. Use `Time::HiRes::sleep` for the sleep
-   itself — it returns early on signal so the wake-up actually
-   takes effect.
+   Any iteration that did work resets the backoff. Use
+   `Time::HiRes::sleep` (or `select` with a sub-second timeout)
+   so the wake-up actually takes effect — see `STYLE_GUIDE.md`.
 
 This pacing is deliberate. Continuous polling with no sleep would
 hammer the database; long sleeps add latency. The backoff plus the
-SIGUSR1 wake-up is the balance.
+`SIGUSR1` wake-up plus the readable-FD wake-up is the balance.
+
+### 6.1.1 Registering extra wake sources
+
+`Role::Service` exposes a small hook that lets a consumer register
+additional readable FDs for the loop to select on:
+
+```perl
+$self->register_event_fd($fh, sub { $self->handle_socket_request($fh) });
+```
+
+When `$fh` becomes readable the loop calls the callback before
+moving on to the rest of the iteration. The hook exists so the
+preload service (and any future service that needs synchronous IPC)
+can integrate its socket without bespoke loop code.
 
 ### 6.2 SIGUSR1 wake-ups
 
 On platforms where it is supported, services install a no-op
 `SIGUSR1` handler. Other processes that have just written work into
 the database can send `SIGUSR1` to a service's pid (read from
-`services.pid` for plain services, `launchers.pid` for launchers)
-to interrupt its sleep early. The service's next iteration sees the
-new work without waiting for the backoff to expire.
+`services.pid`) to interrupt its sleep early. The service's next
+iteration sees the new work without waiting for the backoff to
+expire.
 
 `SIGUSR1` is an optimization, not a contract. On platforms that
 don't support signals (some Win32 contexts) the harness still
-works; the sleep simply expires on its own schedule.
+works; the sleep simply expires on its own schedule. The preload
+service also wakes on socket-readable in addition to `SIGUSR1`,
+which makes `SIGUSR1` even less critical for that service.
 
 ### 6.3 Service state and requests
 
@@ -808,96 +907,239 @@ that want to emit structured events use the same wire frame as
 `Util::EventEmitter`, ported into the new tree).
 
 The collector outlives its service: when the service exits, the
-collector finalizes and exits too. The launcher that started the
-service reaps the collector.
+collector finalizes and exits too. The process that started the
+service (its parent — the scheduler for resource and preload
+services; the caller's harness handle for the scheduler itself)
+reaps the collector.
+
+### 6.5 Child reaping
+
+Every service that forks children is responsible for reaping them
+in its own event loop, non-blocking:
+
+```perl
+while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
+    my $status = $?;
+    $self->on_child_exit($pid, $status);
+}
+```
+
+Reaping happens once per loop iteration before any DB work, so a
+child that exited mid-sleep is recognized on the next wake. The
+service is also free to install a `SIGCHLD` handler that signals
+the loop to wake early; the handler must not call `waitpid` itself,
+only flag the loop.
+
+Examples by service:
+
+- **Scheduler.** Reaps collectors it spawned via in-process
+  launchers (regular launchers). Also reaps its preload services,
+  resource services, and any other direct children. On collector
+  reap, looks up `pid → (job_try_id, resource hold)` in its
+  in-memory map and releases the hold (see §8).
+- **Preload service.** Reaps collectors it forked from its
+  preloaded process. On reap, optionally signals the scheduler
+  via `SIGUSR1` so the scheduler picks up the `job_tries`
+  completion sooner. The collector itself already wrote its exit
+  bookkeeping via the recorder.
+- **Resource services.** Same pattern if the resource service
+  forks children; most do not.
+
+### 6.6 Upward death-watch
+
+Every service watches its parent pid. The check runs once per
+event-loop iteration. On POSIX:
+
+```perl
+my $orig_ppid = getppid();
+# ...later, each loop iteration...
+if (getppid() != $orig_ppid) {
+    $self->begin_cascade_shutdown();
+}
+```
+
+When `getppid()` no longer matches the value captured at startup
+(typically because the parent died and the OS reparented to init
+or to a subreaper), the service:
+
+1. Stops accepting new work — closes its request socket, ignores
+   further DB requests addressed to it.
+2. Signals every child it owns: `SIGTERM`, brief grace period,
+   `SIGKILL` if still alive. Children include collectors started
+   by this service plus any helper subprocesses.
+3. Reaps each child as it exits.
+4. Finalizes its own `service_state` row (`status='broken'` with
+   a note that the parent died), best-effort.
+5. Exits.
+
+The cascade is depth-first: a scheduler death takes down every
+preload service and direct-child collector. Each preload service,
+seeing its parent gone, takes down its own collectors in turn. No
+test process is ever orphaned past the chain of services that
+launched it.
+
+On Linux the service may additionally arm `PR_SET_PDEATHSIG` to
+get an instant wake on parent death rather than waiting for the
+next iteration. Treat that as an optimization, not a substitute
+for the `getppid()` check — the loop must work on platforms
+without it.
+
+The same death-watch lives on **collectors**, see §5.x. The
+mechanism there is identical; the rule is repeated under §5
+because the collector loop is structured differently from the
+service loop.
 
 ## 7. Launchers
 
-`Test2::Harness2::Role::Launcher` consumes `Role::Service` and adds
-launch-specific behavior: poll the `launches` table for rows
-addressed to this launcher and start the requested process.
+`Test2::Harness2::Role::Launcher` is a thin contract role declaring
+what every launcher must provide. Launchers are **not** services in
+their own right. Most are plain in-process objects owned by the
+scheduler; only the preload launcher backs a separate service
+process, and even then the scheduler-side object is a proxy that
+talks to the service over a Unix socket.
 
 ### 7.1 Common contract
 
-Every launcher:
+`Role::Launcher` requires:
 
-- Has a row in `launchers` and is identified by `name`. The
-  scheduler addresses launchers by `launcher_id`.
-- Polls the `launches` table for unstarted rows targeting its
-  `launcher_id`. On finding one it:
-  1. Starts the process via the launcher-specific mechanism.
-  2. Sets `launches.started` to the current timestamp.
-  3. Tracks the started child for reaping (collectors don't
-     double-fork, so the launcher is the direct parent of every
-     collector it starts).
-- Reaps exited collectors. When a collector exits the launcher
-  optionally sends `SIGUSR1` to the scheduler service so it
-  notices the completion immediately. The collector itself has
-  already finalized its `collectors` row through its recorder;
-  the launcher's job is just reaping the OS process.
-- On termination, refuses new launches and reaps remaining
-  collectors before exiting.
+- **`name`** — short identifier used for logging and for routing
+  jobs to a specific launcher.
+- **`launch(\%spec)`** — synchronously start one collector + test
+  process pair for the given spec. The spec carries the test
+  binary / argv, env, cwd, job_try_id, and any other per-launch
+  metadata the scheduler has assembled.
+
+`launch` returns one of:
+
+- `(ok => 1, pid => $pid)` — process started. `pid` is set only
+  for launchers whose `launch` forks in the scheduler's process
+  (regular launchers); preload launchers return `ok` without a
+  pid because the test process is a child of the preload service
+  rather than of the scheduler.
+- `(ok => 0, error => $reason, temporary => 0|1)` — start failed.
+  When `temporary` is true the scheduler returns the job to the
+  queue and tries again on a future loop. When false the
+  scheduler fails the job_try with `$reason` and does not retry
+  on this launcher (the unavailable-action / fallback policy in
+  §8.3 may still queue a fallback launch through `Default`).
+
+Launchers do not poll the database. There is no `launches` table.
+The scheduler decides which launcher handles each job and calls
+`launch` directly. The resulting collector becomes a child of
+either the scheduler (regular launchers) or the preload service
+(preload launchers); see §5.1 and §6.5 for reaping responsibilities.
 
 ### 7.2 Implementations
 
-- `Test2::Harness2::Launcher::ForkExec` — POSIX. Uses
-  `fork` + `exec` to start the collector. The collector then
-  forks once more for the collected process per §5.1.
-- `Test2::Harness2::Launcher::Win32` — Windows. Same lifecycle as
-  `ForkExec` but uses the `system(1, ...)` window trick to start
-  the collector. The collector uses the same trick for its
-  collected child.
-- `Test2::Harness2::Launcher::Default` — picks the right
-  implementation for the current platform. Creates an in-process
-  instance of `ForkExec` or `Win32` and **delegates to it**.
-  Does not start a separate process for the delegate; the
-  `Default` launcher's process *is* the actual launcher process,
-  it just decides at startup which strategy to use.
+- `Test2::Harness2::Launcher::ForkExec` — POSIX. Plain
+  `Object::HashBase` object consuming `Role::Launcher`. Its
+  `launch` does `fork` + `exec` inside the caller's process
+  (the scheduler) to start the collector. The collector then
+  forks once more for the collected process per §5.1. Returns
+  the collector's pid.
+- `Test2::Harness2::Launcher::Win32` — Windows. Same shape; uses
+  the `system(1, …)` window trick instead of `fork` + `exec`.
+- `Test2::Harness2::Launcher::Default` — construction-time picker.
+  Inspects the platform and returns a `ForkExec` or `Win32`
+  instance. No delegate process, no extra address space; the
+  scheduler uses the returned object directly.
 - `Test2::Harness2::Launcher::Preload` — preload-aware launcher.
-  See §10.
+  Holds a connection (or per-call connection) to its preload
+  service's Unix socket and forwards `launch` over the wire.
+  See §10 for the service side and the socket protocol.
 
-Every launcher is constructible as a fresh process so the harness
-can start them via standard exec rather than baking them into the
-parent's address space. The canonical recipe:
+Regular launchers are constructed at scheduler startup and live
+for the scheduler's lifetime. There is no "start a launcher as a
+fresh process" recipe; no `=start` import, no INIT trampoline.
+The preload service has its own `BEGIN` / `Long::Jump` /
+`goto::file` bootstrap recipe described in §10.2 — that recipe
+is preserved as-is.
+
+### 7.3 Preload socket protocol
+
+Each preload service listens on a Unix socket whose path is
+recorded in `preloads.socket`. The same socket carries two
+request types:
+
+- `launch` — scheduler-initiated; start a collected test process
+  out of this preload.
+- `spawn` — external-caller-initiated (e.g. `yath spawn` in Part 2);
+  start a single command out of this preload with no collector.
+
+Framing: each message is a length-prefix (`4-byte big-endian
+unsigned`) followed by a JSON object. Requests and replies use
+the same framing. Connections are accepted on the socket; the
+scheduler may keep a long-lived connection per preload for `launch`
+traffic, while external `spawn` clients typically connect
+per-request.
+
+`launch` request:
 
 ```
-perl -MTest2::Harness2::Launcher::ForkExec=start -e '1;'
+{ "type": "launch", "spec": { ...launch spec... } }
 ```
 
-The `start` import sets up an `INIT`-or-similar hook that calls
-`Test2::Harness2::Launcher::ForkExec->start`. Equivalent recipes
-exist for the other launchers. A shipping helper wraps this so the
-scheduler can run, e.g.:
+`launch` reply (one of):
 
-```perl
-open(my $fh, '|-', $^X, '-MTest2::Harness2::Launcher::Preload=start', '-e', '1;')
-    or die "Failed to start preload launcher: $!";
-print $fh encode_json($preload_specification);
-close $fh;
+```
+{ "ok": 1 }
+{ "ok": 0, "error": "<reason>", "temporary": 0|1 }
 ```
 
-### 7.3 Spawn capability
+The reply carries no pid and no collector_id. The collector
+writes its own row to `collectors` once it has started; the
+scheduler reads the DB to learn that the test is running.
 
-Preload launchers optionally support a `spawn` operation. A
-launcher that advertises spawn support sets
-`launchers.spawn_socket` to the absolute path of a Unix socket it
-listens on. The protocol on that socket is the spawn protocol:
+`spawn` request:
 
-- The requester connects and sends a spawn spec.
-- The launcher forks the requested process (under the preloaded
-  state, no collector) and wires:
-  - The new process's STDOUT and STDERR to the requester's
-    STDOUT / STDERR.
-  - The requester's STDIN to the new process's STDIN.
-- The launcher forwards signals from the requester to the spawned
-  child.
-- The spawned child's exit code becomes the requester's exit code.
+```
+{ "type": "spawn", "spec": { argv, env, cwd, ... } }
+```
 
-Spawns are double-forked into a new process group so they outlive
-the launcher's connection handler. They do not get a collector
-and do not appear in `collectors`. They exist so commands like
-`yath spawn` (Part 2) can run a single command with the preload's
-in-memory advantage without paying for the full test-job framing.
+`spawn` lifetime: the preload service forks the requested process
+(under the preloaded state, no collector) and wires:
+
+- The new process's STDOUT and STDERR to the requester's
+  STDOUT / STDERR (the FDs come over the socket via SCM_RIGHTS,
+  or via a side-channel — implementation detail).
+- The requester's STDIN to the new process's STDIN.
+
+The preload service forwards signals from the requester to the
+spawned child. The spawned child's exit code becomes the
+requester's exit code. Spawns are double-forked into a new
+process group so they outlive the connection handler. They do
+not appear in `collectors`. They exist so commands like `yath spawn`
+(Part 2) can run a single command with the preload's in-memory
+advantage without paying for the full test-job framing.
+
+### 7.4 Error classification
+
+A preload service that returns `temporary => 1` is telling the
+scheduler "this attempt could not be served right now, but the
+problem is not the launch spec itself — try again." Examples:
+
+- The preload is mid-restart (in-place reload, or `exec`-restart
+  per §10.4).
+- A transient OS-level fork failure (`EAGAIN` from `fork` because
+  of an RLIMIT brush).
+- A short-lived resource the preload owns is exhausted right now
+  but expected to recover.
+
+A preload service that returns `temporary => 0` is telling the
+scheduler "this attempt is genuinely broken — do not retry on
+me." Examples:
+
+- The launch spec references a test file that does not exist.
+- The preload has decided it cannot service this kind of job at
+  all (compatibility mismatch).
+- A required module failed to load in the preload's `%INC` and
+  the preload cannot fork tests out of itself until it is
+  reloaded.
+
+The classification is made by the preload service at the moment
+it generates the error. The scheduler does not second-guess it
+(see §8 for the retry / fallback decision tree). Permanent errors
+feed the unavailable-action / fallback path in §8.3.
 
 ## 8. Scheduler
 
@@ -906,26 +1148,40 @@ scheduler per runner; its row in `services` has `name = 'scheduler'`,
 `runner_id = $runner_id`, and `run_id IS NULL` (the scheduler is
 global to the runner, not per-run).
 
+The scheduler owns:
+
+- In-process resource objects (see §9).
+- In-process launcher objects (see §7) — `ForkExec`, `Win32`, or
+  `Default` for the regular launchers, plus one `Preload`
+  proxy-object per configured preload.
+- The supervisory relationship for any preload service or
+  resource service it started — reaping and restart policy live
+  here.
+
 ### 8.1 Responsibilities
 
 - Watch the `runs` table for queued runs that belong to its runner.
   A run is "queued" when its row exists but `started` is null.
-- For each runnable run, evaluate resources. The scheduler owns the
-  canonical in-process resource objects (see §9); it asks each
-  resource whether the run can proceed, what slots it can grant,
-  etc.
-- Walk `jobs` for the run, choose the next job to launch based on
-  resource availability, and decide which launcher should handle
-  it.
-- Insert a row into `launches` targeting the chosen launcher. The
-  launcher picks it up on its next poll (and is woken via SIGUSR1
-  where supported).
+- For each runnable run, evaluate resources. The scheduler asks
+  each resource whether the run can proceed and how many slots it
+  can grant.
+- Walk `jobs` for the run, choose the next job to dispatch based
+  on resource availability, and decide which launcher should
+  handle it.
+- Call `$launcher->launch(\%spec)` directly. For regular launchers
+  this fork+execs in the scheduler's process. For preload
+  launchers the call goes over the preload service's Unix socket.
+  Both paths are synchronous from the scheduler's point of view.
 - Update `runs.passed`, `runs.failed`, `runs.result` in real time
   as `job_tries` complete. Set `runs.started` / `runs.finished`
   appropriately.
-- When `runs.abort` is set, stop dispatching further jobs for that
-  run and terminate any in-flight jobs by setting a terminate flag
-  on their collectors via the recorder's state path.
+- When `runs.status` flips to `canceled`, stop dispatching further
+  jobs for that run and terminate any in-flight jobs by setting a
+  terminate flag on their collectors via the recorder's state
+  path.
+- Reap own children non-blocking each loop iteration (see §6.5):
+  collectors started by regular launchers, supervised preload
+  services, supervised resource services.
 - Exit when the runner is finalized and the queue is empty.
 
 For the first iteration the scheduler executes runs sequentially
@@ -934,54 +1190,148 @@ that run. Concurrency support arrives in a later stage.
 
 ### 8.2 Resource assignment
 
-For every job the scheduler:
+The resource API is symmetric `allocate` / `release` (see §9). For
+every job the scheduler:
 
 1. Asks each configured resource `needed($job)` and
    `available()`. If the job needs a resource that is not
    available it is deferred.
-2. Calls `assign($job)` on each granting resource to take its
-   slot(s).
-3. Emits the launch row with the resource bindings attached.
-4. On completion, calls `release($job)` on each resource the job
-   was using.
+2. Calls `$hold = $resource->allocate($job, $need)` on each
+   granting resource to take its slot(s). The hold is an opaque
+   token the scheduler keeps until the attempt terminates.
+3. Calls `$launcher->launch(\%spec)` (see §8.2.1 below).
+4. On *any* termination of the attempt — normal exit, fail,
+   `temporary` error, `permanent` error, recovery-sweep cleanup —
+   calls `$hold->release` on every hold the attempt was using.
+   Release is unconditional; there is no separate "commit" step.
 
 Resources backed by services publish their state to the scheduler
 via `service_state.content`. The scheduler's resource object reads
 that JSON to decide availability without having to wait on a
 synchronous request.
 
-### 8.3 Unavailable-action launches
+### 8.2.1 The dispatch state machine
+
+For each dispatched attempt:
+
+1. **Allocate holds.** `$hold = $resource->allocate(...)` for
+   every needed resource. If any required resource cannot
+   allocate, the job is deferred and no holds are taken.
+2. **Persist intent.** Insert (or update) the `job_tries` row
+   for this attempt with `started = now()` and the chosen
+   launcher recorded in the row.
+3. **Call `launch`.** Synchronous. Branch on the return:
+   - `ok => 1` — slot is filled. Store
+     `(job_try_id => [$hold, $hold, ...])` in the in-memory map.
+     For regular launchers, also store `pid => job_try_id` so the
+     reap loop can resolve the pid back to the holds.
+   - `ok => 0, temporary => 1` — release every hold, clear the
+     `started` timestamp on the `job_tries` row (or insert a new
+     try row, per the retry policy in §11), and let the next
+     loop iteration pick the job up again.
+   - `ok => 0, temporary => 0` — release every hold and fail the
+     `job_try` with `error` as the reason via the recorder
+     pathway. If the failing launcher was a specialized one (a
+     preload), the unavailable-action / fallback path in §8.3
+     may also queue a `Default`-launcher attempt so the
+     downstream stream still sees a deterministic skip / fail
+     row. Permanent errors do **not** retry on the same launcher.
+4. **Wait for completion.** Two paths:
+   - Regular launcher: the collector is a direct child of the
+     scheduler. The non-blocking reap loop (§6.5) catches its
+     exit. Look up `pid → job_try_id → holds` and release.
+   - Preload launcher: the collector is a child of the preload
+     service. The scheduler watches for the matching `job_tries`
+     completion via DB poll, woken by `SIGUSR1` from the preload
+     service when a child exits. On completion, look up
+     `job_try_id → holds` and release.
+
+### 8.2.2 In-memory preload status
+
+The scheduler holds an in-memory `up` / `down` flag per preload
+launcher object. On boot the flag mirrors whether the scheduler
+has confirmed the preload service is accepting socket connections.
+While `up`, the scheduler issues `launch` calls against the
+preload without first round-tripping through the DB. The error
+path:
+
+- Connect / write / read fails on the socket → flip flag to
+  `down`, treat the in-flight attempt as `temporary` (job
+  returned to queue), respawn the preload service.
+- A `temporary => 1` reply from the preload → leave flag `up`,
+  return job to queue.
+- A `permanent` reply → leave flag `up`, fail the job_try.
+
+When a preload service is `down` the scheduler skips it for the
+pass (does not dispatch to it) and respawns it on its supervisory
+path. When the respawned service announces ready, the flag flips
+back to `up`. There is no `preloads.health` column; the status
+lives in memory only and is rebuilt on scheduler restart by
+attempting fresh connections.
+
+### 8.2.3 Recovery sweep on startup
+
+Every scheduler-start (cold start or restart after a crash) runs
+a recovery sweep before accepting new work:
+
+- Scan `job_tries` for rows whose `started` is non-null and
+  `finished` is null. For each:
+  - If the collector row exists and the `collectors.pid` is still
+    alive — this is an in-flight attempt that survived the
+    scheduler restart (only possible for preload-launched jobs,
+    since regular-launched collectors die with the scheduler).
+    Re-bind it to its preload service and reattach the holds.
+  - Otherwise — the attempt is stale. Release any holds the row
+    referenced and mark the `job_try` `broken` with a synthetic
+    "scheduler restart while attempt in flight" reason via the
+    recorder pathway, then let the retry policy decide whether to
+    requeue.
+
+The sweep is what makes resource-hold leaks recoverable. A
+scheduler that crashes mid-`launch` is otherwise indistinguishable
+from one that allocated holds and forgot to release them.
+
+### 8.3 Unavailable-action launches and fallback
 
 When a job cannot run because a needed resource is permanently
-broken, or because the job's declared minimum exceeds what any
-resource can ever grant, the scheduler does not silently drop the
-job. Instead it queues an **unavailable-action launch**: a real
-collector launch of a tiny Perl one-liner that either
+broken, because the job's declared minimum exceeds what any
+resource can ever grant, or because a specialized launcher
+returned a `temporary => 0` permanent error, the scheduler does
+not silently drop the job. Instead it dispatches an
+**unavailable-action launch** through the `Default` launcher: a
+real collector launch of a tiny Perl one-liner that either
 `Test2::skip_all`s or `die`s with a reason string naming the
-resource. The resulting `job_tries` row carries the same shape
-real failures do, so renderers and downstream consumers see a
-uniform stream.
+underlying cause. The resulting `job_tries` row carries the same
+shape real failures do, so renderers and downstream consumers see
+a uniform stream.
 
 The two unavailable-action kinds are `skip` and `fail`. The kind
-is chosen per resource policy (`broken_resource_behavior`:
+is chosen per policy (resource-side `broken_resource_behavior`:
 `skip`, `fail`, or `abort` — where `abort` switches the rest of
-the run to `fail`-everything mode).
+the run to `fail`-everything mode; launcher-side permanent errors
+default to `fail`).
 
 **Unavailable-action launches always go through the `Default`
 launcher**, never through a preload or any other specialized
 launcher. The point is to record a deterministic skip / fail
 regardless of what state the rest of the launch fleet is in: a
-broken preload, a saturated specialized launcher, or a resource
-that knocked out the launcher the job would normally have used
-must not also knock out the unavailable-action path.
+broken preload, a permanent error from a specialized launcher, or
+a resource that knocked out the launcher the job would normally
+have used must not also knock out the unavailable-action path.
 
-If the `Default` launcher itself is broken or unreachable, that is
-a **critical, runner-ending failure.** The scheduler cannot record
-its verdicts, so the runner aborts: mark the run `abort`, fail every
-remaining `job_tries` row with a synthetic "default launcher
-unavailable" error via the recorder pathway, finalize the runner,
-and exit. Do not silently swallow this — the operator needs to see
-that the runner died because its fallback launcher was unusable.
+`Default` is in-process (see §7.2). It cannot become "unreachable"
+the way a separate process could; the only way it can fail is if
+its in-process `fork` / `exec` itself fails, which is a critical,
+runner-ending condition. In that case the scheduler aborts: mark
+the run `canceled` / `broken`, fail every remaining `job_tries`
+row with a synthetic "default launcher unavailable" error via the
+recorder pathway, finalize the runner, and exit. Do not silently
+swallow this — the operator needs to see that the runner died
+because its fallback launcher was unusable.
+
+Note: a `temporary => 1` reply from a specialized launcher does
+**not** feed this fallback path. Temporary errors just return the
+job to the queue for a later attempt (see §8.2.1).
 
 ## 9. Resources
 
@@ -992,15 +1342,25 @@ implement. The role surface:
   the quantity requested (or `0` / falsy for "no").
 - `available($self, $job, $need)` — given the current state, can
   this resource grant `$need` units to `$job` right now?
-- `assign($self, $job, $need)` — take the requested units; record
-  the binding.
-- `release($self, $job)` — give the units back.
+- `allocate($self, $job, $need)` — take the requested units and
+  return an opaque hold token. The token responds to `release`
+  to give the units back.
 - `status($self)` — return a hashref describing the resource's
   current state. Used in two places:
   - As the JSON payload that the resource service (if any) writes
     into `service_state.content`.
   - As the response of the `status` request the harness handle
     exposes.
+
+The hold returned by `allocate` is the only handle the scheduler
+keeps for an in-flight attempt. **There is no `commit` step.**
+`allocate` already assumes the units will be used; calling
+`$hold->release` is the only way to give them back, and the
+scheduler does so unconditionally when the attempt terminates
+(normal exit, failure, temporary or permanent launcher error,
+recovery-sweep cleanup). The same code path handles every
+termination — release is symmetric and lifecycle-agnostic. See
+§8.2 for how the scheduler drives this.
 
 A resource may declare one or more **service methods** named
 `service_<name>_start`. Each such method returns a starter for a
@@ -1045,10 +1405,11 @@ described in earlier iterations.
 
 ## 10. Preloads
 
-A preload is a Perl process that loads a set of modules during a
-`BEGIN` block, then forks fresh test processes from that loaded
-state. It exists to amortize per-test startup cost (loading Moose,
-DBIx::Class, the app under test, etc.) across many test runs.
+A preload is a long-lived Perl service process that loads a set of
+modules during a `BEGIN` block and then forks fresh test processes
+from that loaded state. It exists to amortize per-test startup cost
+(loading Moose, DBIx::Class, the app under test, etc.) across many
+test runs.
 
 Preloads are a launcher type (see `Launcher::Preload`) **and** a
 resource type (see `Resource::Preload`):
@@ -1056,22 +1417,24 @@ resource type (see `Resource::Preload`):
 - The **resource** owns scheduling decisions: which tests prefer
   which preload, when each preload is up/down, when to skip vs
   defer when a preload is broken.
-- The **launcher** owns execution: starting the preload process and
-  launching tests out of it.
+- The **launcher** owns execution. The scheduler-side
+  `Launcher::Preload` object is a proxy that forwards `launch`
+  requests over a Unix socket to its preload service; the
+  service itself is what forks tests.
 
 ### 10.1 Shape — flat, not staged
 
-Each preload is **one process**. No tree, no parent / child stages,
-no chained `%INC` inheritance. A runner may have **multiple
-preloads** configured (e.g. one preloading Moose, another preloading
-a heavy app harness), each running independently in its own
-process; they do not build on each other.
+Each preload is **one service process**. No tree, no parent /
+child stages, no chained `%INC` inheritance. A runner may have
+**multiple preloads** configured (e.g. one preloading Moose,
+another preloading a heavy app harness), each running independently
+in its own process; they do not build on each other.
 
 ```
-launcher process
-├── preload P1 (one process, BEGIN-bootstrapped)
-├── preload P2 (one process, BEGIN-bootstrapped)
-└── preload P3 (...)
+scheduler process
+├── preload service P1 (one process, BEGIN-bootstrapped)
+├── preload service P2 (one process, BEGIN-bootstrapped)
+└── preload service P3 (...)
 ```
 
 Earlier rewrite attempts (and `reference/old3`) modeled preloads as
@@ -1082,25 +1445,31 @@ loaded-module set of preload A *plus* the loaded-module set of
 preload B, the user defines a third preload C that loads both. Each
 preload stands alone.
 
-Each preload registers itself in `services` (and gets a corresponding
-launcher row in `launchers`) with a unique name. Tests requesting a
-specific preload route to the launcher row whose `spec` identifies
-that preload by name.
+Each preload service registers itself in `services` and also gets a
+row in `preloads` with a unique name (`preloads.name`). The
+`preloads.socket` column carries the absolute path of the Unix
+socket the service listens on; the `preloads.pid` column carries
+the service's process id (so the scheduler can `SIGUSR1` it).
 
 ### 10.2 BEGIN-block bootstrap
 
-Each preload process must be a **fresh process**, started by exec —
+Each preload service must be a **fresh process**, started by exec —
 not by fork — so that no Perl state has been initialised before the
-preload's own `BEGIN`. The `BEGIN` does three things:
+preload's own `BEGIN`. The scheduler starts a preload service by
+exec-ing the standard preload entrypoint with the service spec
+passed in via an inherited fd / argv. The `BEGIN` does three
+things:
 
 1. Declares a `Long::Jump::setjump` target at the top of the
    block.
 2. Loads (`use` / `require`) every module the preload is
    configured for.
-3. Enters the launcher's poll loop (in the same `BEGIN`).
+3. Opens the request socket (`preloads.socket`), publishes its
+   pid + socket path into the DB, and enters the service event
+   loop (in the same `BEGIN`).
 
-When a test needs to run out of this preload, the launcher forks.
-In the forked child it:
+When a test needs to run out of this preload, the service forks
+in response to a `launch` request. In the forked child it:
 
 1. Long-jumps back to the top of the `BEGIN`.
 2. Resets process state (`$0`, signal handlers, ENV slots that
@@ -1121,25 +1490,42 @@ acceptable shortcut.
 
 ### 10.3 Launching a test from a preload
 
-When a test should run under preload P, the scheduler queues a
-`launches` row addressed to P's launcher row. P's process:
+When a test should run under preload P, the scheduler:
 
-1. Receives the launch via its poll loop.
-2. Forks. The fork target is the `Long::Jump` / `goto::file`
-   dance from §10.2.
-3. The newly forked process is the **collector** for the test
+1. Writes a length-prefixed JSON `launch` request to P's socket
+   (see §7.3 for the framing).
+2. Blocks on the reply.
+
+The preload service:
+
+1. Receives the request via the event loop (woken by socket
+   readability — see §6.1).
+2. Validates the spec. On a permanent problem it replies
+   `{ok: 0, error: "...", temporary: 0}` and goes back to
+   reading the socket. On a temporary problem it replies
+   `{ok: 0, error: "...", temporary: 1}`.
+3. On success, forks. The fork target is the `Long::Jump` /
+   `goto::file` dance from §10.2.
+4. Replies `{ok: 1}` after the fork has been committed. The
+   reply carries no pid and no collector_id — the collector
+   itself writes its row to `collectors` once it has started.
+5. The newly forked process is the **collector** for the test
    job. It in turn forks the test process per §5.1, with the
    preload's `%INC` carried into the test via the goto target.
 
 The collector behaves exactly like a collector for a non-preloaded
-test would: it parses, audits, records. The launcher reaps the
-collector on exit.
+test would: it parses, audits, records. The preload service reaps
+the collector on exit (non-blocking, in its event loop — see §6.5)
+and optionally sends `SIGUSR1` to the scheduler so the scheduler
+picks up the `job_tries` completion without waiting for its next
+poll.
 
 There is no detachment / double-fork dance and no separate
-"intermediary" process. The collector is a direct child of P, which
-is a direct child of the launcher. When P goes away (reload, crash)
-the collectors P already started are still P's children and P's
-shutdown path is responsible for reaping them.
+"intermediary" process. The collector is a direct child of P, the
+service. When P goes away (reload, crash) the collectors P already
+started are still P's children — P's shutdown path tears them down
+per the death-watch / cascade rules in §6.6 (and the collectors'
+own death-watch in §5.10 reinforces it).
 
 ### 10.4 Reload (later stage)
 
@@ -1430,26 +1816,28 @@ deduplicated-by-natural-key.
   failure from an in-test failure without scanning the event
   stream. See §5.8.
 
-**launchers**
+**preloads**
 - `name`
-- `class` — Perl class
-- `spec` — JSON; construction spec
+- `class` — Perl class implementing the preload service.
+- `spec` — JSON; construction spec.
 - `runner_id` → `runners`
-- `run_id` → `runs` (nullable; null for global launchers, set for
-  run-scoped launchers)
+- `run_id` → `runs` (nullable; null for runner-global preloads,
+  set for run-scoped preloads).
 - `collector_id` → `collectors`
-- `pid` — the launcher process's pid. Same role as `services.pid`:
-  the scheduler signals it with `SIGUSR1` after inserting a new
-  `launches` row so the launcher wakes immediately instead of
-  waiting out its backoff.
-- `spawn_socket` — Unix socket path when the launcher supports
-  `spawn` (see §7.3); nullable.
+- `pid` — the preload service's process id. Same role as
+  `services.pid`: the scheduler signals it with `SIGUSR1` to wake
+  its event loop. The preload service also wakes on socket
+  readability, so `SIGUSR1` is best-effort here.
+- `socket` — Unix socket path the preload service listens on.
+  Carries both `launch` (scheduler-side) and `spawn` (external-
+  caller-side) requests per §7.3.
 
-**launches**
-- `launcher_id` → `launchers`
-- `job_id` → `jobs`
-- `requested` — when the row was added by the scheduler
-- `started` — when the launcher started the process (nullable)
+Regular launchers (`ForkExec`, `Win32`, `Default`) do **not** have
+rows in `preloads`. They are in-process objects owned by the
+scheduler — see §7. The `launches` request-queue table from
+earlier iterations is removed: dispatch is synchronous in-process
+for regular launchers and synchronous over the socket for preload
+launchers; there is no DB row per launch request.
 
 **coverage** — per-coverage-run snapshot keyed by source file.
 Coverage data ships on events (the `coverage` facet) when a
@@ -1649,9 +2037,10 @@ deliberate departures:
   per-run process. (`reference/old3`'s last addendum had already
   removed `RunService`; the new design never reintroduces it.)
 - **No `IPC::Manager`-style collector detachment.** Test-job
-  collectors are direct children of their launcher (or of a preload
-  stage that is itself a direct child of the launcher). Reaping is
-  by the parent launcher / stage.
+  collectors are direct children of the service that launched
+  them — the scheduler for regular launches, the preload service
+  for preload launches. Reaping is by that parent service in its
+  own event loop (§6.5).
 - **No `ipc_run` / `ipc_parent` / `ipc_harness` triplet.** Collectors
   identify themselves via their `collectors` row; everything else
   is read from the database.
