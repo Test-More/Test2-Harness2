@@ -1,4 +1,4 @@
-package Test2::Harness2::DB::Launcher;
+package Test2::Harness2::DB::Preload;
 use strict;
 use warnings;
 
@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use Object::HashBase qw{
     &Test2::Harness2::Role::Row
-    <launcher_id
+    <preload_id
     <runner_id
     <run_id
     <collector_id
@@ -14,12 +14,12 @@ use Object::HashBase qw{
     <class
     <spec
     <pid
-    <spawn_socket
+    <socket
 };
-sub TABLE        { 'launchers' }
-sub PRIMARY_KEY  { 'launcher_id' }
+sub TABLE        { 'preloads' }
+sub PRIMARY_KEY  { 'preload_id' }
 sub COLUMNS      {
-    qw/launcher_id runner_id run_id collector_id name class spec pid spawn_socket/
+    qw/preload_id runner_id run_id collector_id name class spec pid socket/
 }
 sub JSON_COLUMNS { qw/spec/ }
 
@@ -33,13 +33,18 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::DB::Launcher - Row object for the C<launchers> table.
+Test2::Harness2::DB::Preload - Row object for the C<preloads> table.
 
 =head1 DESCRIPTION
 
-One row per launcher: its class, JSON construction spec, owning
+One row per preload service: its class, JSON construction spec, owning
 collector / runner / (optional) run, the pid for C<SIGUSR1> wake-ups,
-and a C<spawn_socket> path when the launcher supports spawn.
+and the Unix socket path the preload service listens on for C<launch>
+and C<spawn> requests.
+
+Regular launchers (C<ForkExec>, C<Win32>, C<Default>) are in-process
+objects owned by the scheduler and do B<not> have rows in this table.
+See C<ARCHITECTURE.md> section 7 and section 10.
 
 =head1 SOURCE
 

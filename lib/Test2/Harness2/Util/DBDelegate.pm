@@ -138,7 +138,7 @@ C<Test2::Harness2::DB::>:
     service_state        -> Test2::Harness2::DB::ServiceState
     resource_snapshots   -> Test2::Harness2::DB::ResourceSnapshot
     job_tries            -> Test2::Harness2::DB::JobTry
-    launches             -> Test2::Harness2::DB::Launch
+    preloads             -> Test2::Harness2::DB::Preload
     vcs_info             -> Test2::Harness2::DB::VcsInfo
 
 The conversion lives in L<Test2::Harness2::Util/table_to_db_class>

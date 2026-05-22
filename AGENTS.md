@@ -264,8 +264,13 @@ must internalise before writing any code:
 - **Every collected process gets exactly one collector.** Spawns
   (`yath spawn`-style detached processes) do **not** get a
   collector.
-- **Collectors are direct children of their launcher.** No
-  double-fork, no detachment.
+- **Collectors are direct children of the service that started
+  them.** Regular (`ForkExec` / `Win32` / `Default`) launchers
+  are in-process objects owned by the scheduler, so those
+  collectors are children of the scheduler. Preload launchers
+  proxy to their preload service over a Unix socket, so those
+  collectors are children of the preload service. No double-fork,
+  no detachment.
 - **`Object::HashBase` for objects; `Role::Tiny` for roles.** They
   compose — `Object::HashBase` may be used inside roles and used by
   consumers of roles that use it.
