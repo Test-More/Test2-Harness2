@@ -49,7 +49,7 @@ __END__
 =head1 NAME
 
 Test2::Harness2::Role::Service - Role for long-lived harness services
-(scheduler, launchers, resource services, preload services).
+(scheduler, resource services, preload services).
 
 =head1 DESCRIPTION
 

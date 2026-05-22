@@ -39,7 +39,7 @@ attached to a specific run (C<run_id> set).
 Both halves are the same row class. The runner-global / run-scoped
 distinction lives in the logic layer (L<Test2::Harness2::Runner::Resource>
 and L<Test2::Harness2::Runner::Run::Resource>, to be authored when
-the scheduler / launcher work lands).
+the scheduler work lands).
 
 Resource samples / telemetry live in the C<resource_snapshots>
 table — see L<Test2::Harness2::DB::ResourceSnapshot>.

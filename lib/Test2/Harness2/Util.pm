@@ -298,7 +298,7 @@ C<Test2::Harness2::DB::>:
     service_state        -> Test2::Harness2::DB::ServiceState
     resource_snapshots   -> Test2::Harness2::DB::ResourceSnapshot
     job_tries            -> Test2::Harness2::DB::JobTry
-    launches             -> Test2::Harness2::DB::Launch
+    preloads             -> Test2::Harness2::DB::Preload
     vcs_info             -> Test2::Harness2::DB::VcsInfo
 
 Pure string transform; does not C<require> the resulting module.

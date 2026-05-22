@@ -5,38 +5,43 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
+use Errno qw/EAGAIN ENOMEM/;
 use POSIX ();
 
-use Test2::Harness2::Util::JSON qw/decode_json/;
-
 use Object::HashBase qw{
-    <handle
-    <launcher_id
-    +scheduler_pid
-    +stopping
-    +_launcher_children
+    +name
 };
 
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Launcher';
 
-sub start_process {
+sub name { $_[0]->{+NAME} //= 'forkexec' }
+
+sub launch {
     my ($self, $spec) = @_;
     croak "spec must be a hashref" unless ref($spec) eq 'HASH';
 
     my $exec = $spec->{exec}
-        or croak "spec is missing 'exec'";
-    croak "exec must be an arrayref" unless ref($exec) eq 'ARRAY';
-    croak "exec is empty" unless @$exec;
+        or return (ok => 0, error => "spec is missing 'exec'", temporary => 0);
+    return (ok => 0, error => "exec must be an arrayref", temporary => 0)
+        unless ref($exec) eq 'ARRAY';
+    return (ok => 0, error => "exec is empty", temporary => 0)
+        unless @$exec;
 
     my $cwd = $spec->{cwd};
     my $env = $spec->{env};
 
-    my $pid = fork // die "fork: $!";
-    return $pid if $pid;
+    my $pid = fork;
+    if (!defined $pid) {
+        my $err = "$!";
+        my $temporary = ($!{EAGAIN} || $!{ENOMEM}) ? 1 : 0;
+        return (ok => 0, error => "fork: $err", temporary => $temporary);
+    }
+
+    return (ok => 1, pid => $pid) if $pid;
 
     $self->_run_child($exec, $cwd, $env);
-    exit 255;
+    POSIX::_exit(255);
 }
 
 sub _run_child {
@@ -58,14 +63,6 @@ sub _run_child {
     POSIX::_exit(253);
 }
 
-sub import {
-    my ($class, @tags) = @_;
-    return unless grep { $_ eq 'start' } @tags;
-    require Test2::Harness2::Launcher::EntryPoint;
-    Test2::Harness2::Launcher::EntryPoint::install_start_hook($class);
-    return;
-}
-
 1;
 
 __END__
@@ -81,57 +78,39 @@ Test2::Harness2::Launcher::ForkExec - POSIX fork+exec launcher.
 =head1 DESCRIPTION
 
 The default launcher on every POSIX-y platform. Consumes
-L<Test2::Harness2::Role::Launcher>; the only launcher-specific
-piece is C<start_process>, which uses C<fork> + C<exec> to start
-the requested command. The collector is the immediate child of
-this launcher process and the launcher reaps it directly when it
-exits.
-
-The C<exec>'d command is whatever the caller put in C<spec.exec>.
-In the scheduler-driven path that is the standard collector
-entry-point invocation (C<perl -MTest2::Harness2::Collector=start
--e '1;'> with the collector spec fed in over a pipe), but the
-launcher does not enforce that shape -- any argv list works, which
-is what makes the launcher unit-testable in isolation.
+L<Test2::Harness2::Role::Launcher>; an in-process object owned by the
+scheduler. Its C<launch> does C<fork> + C<exec> in the caller's
+process, so the resulting collector is a direct child of whoever
+called C<launch> (in normal use, the scheduler).
 
 =head1 SYNOPSIS
 
     use Test2::Harness2::Launcher::ForkExec;
 
-    my $l = Test2::Harness2::Launcher::ForkExec->new(
-        handle      => $harness_handle,
-        launcher_id => $launcher_row->launcher_id,
-    );
+    my $l = Test2::Harness2::Launcher::ForkExec->new(name => 'fe');
 
-    $l->run;   # loop until stopping is set and no children remain
+    my %reply = $l->launch({
+        exec => [$^X, '-MTest2::Harness2::Collector=start', '-e', '1'],
+        cwd  => '/some/dir',         # optional
+        env  => { FOO => 'bar' },    # optional
+    });
 
-To start the launcher as a fresh process:
-
-    perl -MTest2::Harness2::Launcher::ForkExec=start -e '1;'
-
-The C<=start> import installs an end-of-compile hook that reads a
-launcher spec from STDIN and calls the launcher's C<run> method.
+    if ($reply{ok}) {
+        my $pid = $reply{pid};
+        # scheduler reaps $pid in its event loop
+    }
+    else {
+        # $reply{error}, $reply{temporary}
+    }
 
 =head1 ATTRIBUTES
 
 =over 4
 
-=item handle (required)
+=item name
 
-The L<Test2::Harness2> handle for database access.
-
-=item launcher_id (required)
-
-The C<launchers.launcher_id> this launcher polls for.
-
-=item scheduler_pid
-
-Optional pid for C<SIGUSR1> wake-ups on each completion.
-
-=item stopping
-
-Set true to ask the launcher to refuse new launches and exit once
-in-flight children are reaped.
+Short identifier, defaults to C<'forkexec'>. Used for logging and
+for routing when several launchers share a scheduler.
 
 =back
 
@@ -139,7 +118,7 @@ in-flight children are reaped.
 
 =over 4
 
-=item $pid = $l->start_process(\%spec)
+=item %reply = $l->launch(\%spec)
 
 C<%spec> keys understood by this launcher:
 
@@ -159,7 +138,10 @@ Set these env vars before C<exec>.
 
 =back
 
-Returns the child pid.
+On success returns C<(ok =E<gt> 1, pid =E<gt> $pid)>. On failure
+returns C<(ok =E<gt> 0, error =E<gt> $reason, temporary =E<gt> 0|1)>;
+C<fork> failures with C<EAGAIN> / C<ENOMEM> are classified
+temporary, everything else (bad spec, etc.) is permanent.
 
 =back
 

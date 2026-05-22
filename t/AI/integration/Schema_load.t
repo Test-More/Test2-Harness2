@@ -13,7 +13,7 @@ my @EXPECTED_TABLES = qw/
     instances runners collectors artifacts
     runs services service_state requests
     test_files jobs job_tries
-    launchers launches
+    preloads
     coverage schedulers resources resource_snapshots
 /;
 

@@ -21,11 +21,10 @@ my @classes = qw(
     Test2::Harness2::DB::JobTry
     Test2::Harness2::DB::Artifact
     Test2::Harness2::DB::Coverage
-    Test2::Harness2::DB::Launcher
-    Test2::Harness2::DB::Launch
+    Test2::Harness2::DB::Preload
 );
 
-is(scalar(@classes), 22, '22 DB row classes expected');
+is(scalar(@classes), 21, '21 DB row classes expected');
 
 for my $class (@classes) {
     (my $file = $class) =~ s{::}{/}g;

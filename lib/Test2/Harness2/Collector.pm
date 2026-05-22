@@ -804,8 +804,8 @@ Named arguments:
 Boolean flag distinguishing test-job collectors (true) from
 service-style collectors (false, the default). When true, the child
 is placed in a fresh process group via C<setpgid(0, 0)> so the test
-cannot signal the collector / launcher tree, and the test-only
-orphan / silence semantics apply.
+cannot signal the collector or its parent service tree, and the
+test-only orphan / silence semantics apply.
 
 =item exec => \@argv
 

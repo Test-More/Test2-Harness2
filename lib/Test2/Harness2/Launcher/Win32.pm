@@ -8,29 +8,30 @@ use Carp qw/croak/;
 use Cwd qw/getcwd/;
 
 use Object::HashBase qw{
-    <handle
-    <launcher_id
-    +scheduler_pid
-    +stopping
-    +_launcher_children
+    +name
 };
 
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Launcher';
 
-sub start_process {
+sub name { $_[0]->{+NAME} //= 'win32' }
+
+sub launch {
     my ($self, $spec) = @_;
     croak "spec must be a hashref" unless ref($spec) eq 'HASH';
 
     my $exec = $spec->{exec}
-        or croak "spec is missing 'exec'";
-    croak "exec must be an arrayref" unless ref($exec) eq 'ARRAY';
-    croak "exec is empty" unless @$exec;
+        or return (ok => 0, error => "spec is missing 'exec'", temporary => 0);
+    return (ok => 0, error => "exec must be an arrayref", temporary => 0)
+        unless ref($exec) eq 'ARRAY';
+    return (ok => 0, error => "exec is empty", temporary => 0)
+        unless @$exec;
 
     my $cwd_before;
     if (defined $spec->{cwd}) {
         $cwd_before = getcwd();
-        chdir($spec->{cwd}) or croak "chdir($spec->{cwd}) failed: $!";
+        chdir($spec->{cwd})
+            or return (ok => 0, error => "chdir($spec->{cwd}) failed: $!", temporary => 0);
     }
 
     local %ENV = %ENV;
@@ -42,18 +43,10 @@ sub start_process {
 
     chdir($cwd_before) if defined $cwd_before;
 
-    croak "system(1, ...) returned no pid (got '$pid')"
+    return (ok => 0, error => "system(1, ...) returned no pid (got '$pid')", temporary => 0)
         unless $pid && $pid > 0;
 
-    return $pid;
-}
-
-sub import {
-    my ($class, @tags) = @_;
-    return unless grep { $_ eq 'start' } @tags;
-    require Test2::Harness2::Launcher::EntryPoint;
-    Test2::Harness2::Launcher::EntryPoint::install_start_hook($class);
-    return;
+    return (ok => 1, pid => $pid);
 }
 
 1;
@@ -71,30 +64,36 @@ untested in CI on POSIX hosts).
 
 =head1 DESCRIPTION
 
-Windows analogue of L<Test2::Harness2::Launcher::ForkExec>. Same
-launcher contract; the only difference is C<start_process>, which
-uses Perl's C<system(1, @argv)> form. On Windows that returns the
-spawned process pid without waiting. On POSIX hosts it does not,
-and this launcher should not be used outside Windows.
+Windows analogue of L<Test2::Harness2::Launcher::ForkExec>. Same role,
+same contract; the only difference is C<launch>, which uses Perl's
+C<system(1, @argv)> form. On Windows that returns the spawned process
+pid without waiting. On POSIX hosts it does not, and this launcher
+should not be used outside Windows.
 
-The Default launcher (L<Test2::Harness2::Launcher::Default>) picks
-between this class and L<Test2::Harness2::Launcher::ForkExec> at
-construction based on C<$^O>, so callers normally do not name this
-class directly.
+L<Test2::Harness2::Launcher::Default> picks between this class and
+L<Test2::Harness2::Launcher::ForkExec> at construction based on
+C<$^O>, so callers normally do not name this class directly.
 
 =head1 ATTRIBUTES
 
-Same as L<Test2::Harness2::Launcher::ForkExec/ATTRIBUTES>.
+=over 4
+
+=item name
+
+Short identifier, defaults to C<'win32'>.
+
+=back
 
 =head1 PUBLIC METHODS
 
 =over 4
 
-=item $pid = $l->start_process(\%spec)
+=item %reply = $l->launch(\%spec)
 
 Spawn the requested process via C<system(1, @{$spec->{exec}})>.
 Honors C<spec.cwd> and C<spec.env> via temporary C<chdir> and a
-C<local %ENV> wrap. Returns the spawned process's pid.
+C<local %ENV> wrap. On success returns C<(ok =E<gt> 1, pid =E<gt> $pid)>;
+on failure returns C<(ok =E<gt> 0, error =E<gt> $reason, temporary =E<gt> 0)>.
 
 =back
 
