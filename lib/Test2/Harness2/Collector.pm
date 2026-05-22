@@ -154,7 +154,10 @@ sub _coerce_object {
     my ($self, $thing, $label) = @_;
     return undef unless defined $thing;
     return $thing if blessed($thing);
-    return $thing->new if !ref($thing);
+    if (!ref($thing)) {
+        $self->_require_class($thing);
+        return $thing->new;
+    }
     croak "'$label' must be a class name or an object, not a " . ref($thing);
 }
 
@@ -165,8 +168,18 @@ sub _coerce_auditor {
         $thing->set_recorder($recorder) if $recorder && $thing->can('set_recorder');
         return $thing;
     }
-    return $thing->new(recorder => $recorder) if !ref($thing);
+    if (!ref($thing)) {
+        $self->_require_class($thing);
+        return $thing->new(recorder => $recorder);
+    }
     croak "'auditor' must be a class name or an object, not a " . ref($thing);
+}
+
+sub _require_class {
+    my ($self, $class) = @_;
+    (my $file = $class) =~ s{::}{/}g;
+    require "$file.pm";
+    return;
 }
 
 sub _run_child {

@@ -3,11 +3,74 @@ use File::Temp qw/tempdir/;
 use File::Spec ();
 use Time::HiRes qw/time sleep/;
 
+use Test2::Harness2;
+use Test2::Harness2::Util::JSON qw/encode_json/;
 use Test2::Harness2::Launcher::ForkExec;
+use Test2::Harness2::Collector::Recorder::Files;
 
-sub _await_exit {
+require POSIX;
+
+sub _new_harness {
+    my $path = File::Spec->catfile(tempdir(CLEANUP => 1), 'h.t2h2');
+    return Test2::Harness2->new(path => $path, project => 'test');
+}
+
+sub _seed_run {
+    my ($h) = @_;
+
+    my ($host)     = $h->insert(hosts    => {name => 'localhost'});
+    my ($user)     = $h->insert(users    => {name => 'tester'});
+    my ($project)  = $h->insert(projects => {name => 'p'});
+    my ($instance) = $h->insert(instances => {
+        instance_uuid => 'i-1', host_id => $host->host_id,
+        user_id => $user->user_id, started => time(),
+    });
+    my ($runner) = $h->insert(runners => {
+        instance_id => $instance->instance_id, pid => $$, started => time(),
+    });
+    my ($run) = $h->insert(runs => {
+        run_uuid => 'r-1', runner_id => $runner->runner_id,
+        project_id => $project->project_id, user_id => $user->user_id,
+        run_ord => 1, passed => 0, failed => 0,
+    });
+
+    return {runner => $runner, run => $run, project => $project};
+}
+
+sub _seed_job_try {
+    my ($h, $seed, %spec) = @_;
+
+    my $relative = $spec{test_file};
+    $relative =~ s{^.*[\\/]}{};
+
+    my ($tf) = $h->insert(test_files => {
+        project_id => $seed->{project}->project_id,
+        relative   => $relative,
+    });
+    my ($job) = $h->insert(jobs => {
+        run_id       => $seed->{run}->run_id,
+        test_file_id => $tf->test_file_id,
+        spec         => encode_json(\%spec),
+    });
+    my ($job_try) = $h->insert(job_tries => {
+        job_id  => $job->job_id,
+        try_ord => 1,
+    });
+    return $job_try;
+}
+
+sub _write_test_script {
+    my ($dir, $name, $body) = @_;
+    my $path = File::Spec->catfile($dir, $name);
+    open(my $fh, '>', $path) or die "open $path: $!";
+    print {$fh} $body;
+    close($fh);
+    return $path;
+}
+
+sub _wait_pid {
     my ($pid, $timeout) = @_;
-    $timeout //= 5;
+    $timeout //= 10;
     my $deadline = time() + $timeout;
     while (time() < $deadline) {
         my $r = waitpid($pid, POSIX::WNOHANG());
@@ -17,90 +80,224 @@ sub _await_exit {
     return (0, undef);
 }
 
-require POSIX;
+subtest launch_runs_passing_test => sub {
+    my $h    = _new_harness();
+    my $seed = _seed_run($h);
 
-subtest launch_runs_to_exit_zero => sub {
-    my $l = Test2::Harness2::Launcher::ForkExec->new;
-    is($l->name, 'forkexec', 'default name');
+    my $dir  = tempdir(CLEANUP => 1);
+    my $script = _write_test_script($dir, 'pass.t', <<'EOT');
+use Test2::V0;
+ok(1, 'works');
+done_testing;
+EOT
 
-    my %reply = $l->launch({exec => [$^X, '-e', 'exit 0']});
-    is($reply{ok}, 1, 'ok=1') or diag(explain(\%reply));
-    my $pid = $reply{pid};
-    ok($pid && $pid > 0, 'got a pid');
+    my $rec_dir = File::Spec->catdir($dir, 'rec');
+    my $rec = Test2::Harness2::Collector::Recorder::Files->new(dir => $rec_dir);
 
-    my ($r, $status) = _await_exit($pid);
-    is($r, $pid, 'child reaped');
-    is($status, 0, 'child exited 0');
-};
-
-subtest launch_propagates_exec_failure => sub {
-    my $l = Test2::Harness2::Launcher::ForkExec->new;
-
-    my %reply = $l->launch({exec => [$^X, '-e', 'exit 7']});
-    is($reply{ok}, 1, 'fork+exec ok');
-    my ($r, $status) = _await_exit($reply{pid});
-    is($status >> 8, 7, 'exit 7 propagated');
-};
-
-subtest launch_rejects_missing_exec => sub {
-    my $l = Test2::Harness2::Launcher::ForkExec->new;
-
-    my %reply = $l->launch({});
-    is($reply{ok}, 0, 'ok=0');
-    is($reply{temporary}, 0, 'permanent');
-    like($reply{error}, qr/exec/i, 'mentions exec');
-};
-
-subtest launch_rejects_bad_spec => sub {
-    my $l = Test2::Harness2::Launcher::ForkExec->new;
-
-    like(
-        dies { $l->launch("not a hash") },
-        qr/hashref/i,
-        'non-hash spec dies',
+    my $job_try = _seed_job_try(
+        $h, $seed,
+        test_file => $script,
+        includes  => [],
+        modules   => [],
     );
 
-    my %reply = $l->launch({exec => "string"});
-    is($reply{ok}, 0, 'string exec rejected');
-    like($reply{error}, qr/arrayref/i);
+    my $l = Test2::Harness2::Launcher::ForkExec->new(
+        handle   => $h,
+        parser   => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor  => 'Test2::Harness2::Collector::Auditor::Test',
+        recorder => $rec,
+    );
 
-    %reply = $l->launch({exec => []});
-    is($reply{ok}, 0, 'empty exec rejected');
-    like($reply{error}, qr/empty/i);
+    my %reply = $l->launch($job_try);
+    is($reply{ok}, 1, 'ok=1') or diag(explain(\%reply));
+    my $pid = $reply{pid};
+    ok($pid && $pid > 0, "collector pid: $pid");
+
+    my ($r, $status) = _wait_pid($pid);
+    is($r, $pid, 'collector reaped');
+    is($status, 0, 'collector exited 0');
+
+    ok(-e File::Spec->catfile($rec_dir, 'events.jsonl'), 'events.jsonl written');
+    ok(-e File::Spec->catfile($rec_dir, 'exit'),         'exit written');
+    ok(-e File::Spec->catfile($rec_dir, 'finalized'),    'finalized marker written');
+
+    open(my $efh, '<', File::Spec->catfile($rec_dir, 'exit')) or die "open exit: $!";
+    chomp(my $exit_line = <$efh>);
+    close($efh);
+    is($exit_line, '0', 'test process exit code recorded as 0');
+
+    $h->disconnect;
 };
 
-subtest launch_honors_cwd_and_env => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $out = File::Spec->catfile($dir, 'out');
+subtest launch_records_failing_test => sub {
+    my $h    = _new_harness();
+    my $seed = _seed_run($h);
 
-    my $script = <<'EOF';
+    my $dir  = tempdir(CLEANUP => 1);
+    my $script = _write_test_script($dir, 'fail.t', <<'EOT');
+use Test2::V0 -no_pragmas => 1;
+exit 3;
+EOT
+
+    my $rec_dir = File::Spec->catdir($dir, 'rec');
+    my $rec = Test2::Harness2::Collector::Recorder::Files->new(dir => $rec_dir);
+
+    my $job_try = _seed_job_try(
+        $h, $seed,
+        test_file => $script,
+    );
+
+    my $l = Test2::Harness2::Launcher::ForkExec->new(
+        handle   => $h,
+        parser   => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor  => 'Test2::Harness2::Collector::Auditor::Test',
+        recorder => $rec,
+    );
+
+    my %reply = $l->launch($job_try);
+    is($reply{ok}, 1, 'ok=1') or diag(explain(\%reply));
+    _wait_pid($reply{pid});
+
+    open(my $efh, '<', File::Spec->catfile($rec_dir, 'exit')) or die "open exit: $!";
+    chomp(my $exit_line = <$efh>);
+    close($efh);
+    is($exit_line, '768', 'test process exit code recorded (768 = 3<<8)');
+
+    $h->disconnect;
+};
+
+subtest launch_honors_includes_modules_env_cwd => sub {
+    my $h    = _new_harness();
+    my $seed = _seed_run($h);
+
+    my $dir = tempdir(CLEANUP => 1);
+    my $lib_dir = File::Spec->catdir($dir, 'lib');
+    mkdir $lib_dir or die "mkdir: $!";
+    my $mod_path = File::Spec->catfile($lib_dir, 'PingPong.pm');
+    open(my $mfh, '>', $mod_path) or die "open: $!";
+    print {$mfh} <<'EOT';
+package PingPong;
+use strict;
+use warnings;
+our $LOADED = 1;
+1;
+EOT
+    close($mfh);
+
+    my $outfile = File::Spec->catfile($dir, 'out');
+    my $script = _write_test_script($dir, 'probe.t', <<'EOT');
 use Cwd qw/getcwd/;
 open(my $fh, '>', $ENV{OUT}) or die "open: $!";
-print {$fh} getcwd(), "\n", $ENV{FOO} // '', "\n";
+print {$fh} getcwd, "\n", ($PingPong::LOADED // ''), "\n", ($ENV{FOO} // ''), "\n";
 close($fh);
+print "1..1\nok 1\n";
 exit 0;
-EOF
+EOT
 
-    my $l = Test2::Harness2::Launcher::ForkExec->new;
-    my %reply = $l->launch({
-        exec => [$^X, '-e', $script],
-        cwd  => $dir,
-        env  => {OUT => $out, FOO => 'bar'},
+    my $rec_dir = File::Spec->catdir($dir, 'rec');
+    my $rec = Test2::Harness2::Collector::Recorder::Files->new(dir => $rec_dir);
+
+    my $job_try = _seed_job_try(
+        $h, $seed,
+        test_file => $script,
+        includes  => [$lib_dir],
+        modules   => ['PingPong'],
+        env       => {OUT => $outfile, FOO => 'bar'},
+        cwd       => $dir,
+    );
+
+    my $l = Test2::Harness2::Launcher::ForkExec->new(
+        handle   => $h,
+        parser   => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor  => 'Test2::Harness2::Collector::Auditor::Test',
+        recorder => $rec,
+    );
+
+    my %reply = $l->launch($job_try);
+    is($reply{ok}, 1, 'launch ok') or diag(explain(\%reply));
+    _wait_pid($reply{pid});
+
+    open(my $ofh, '<', $outfile) or die "open out: $!";
+    chomp(my @lines = <$ofh>);
+    close($ofh);
+
+    is(scalar(@lines), 3, '3 probe lines') or diag(explain(\@lines));
+    is($lines[0], $dir,  'cwd applied');
+    is($lines[1], '1',   'module loaded via -M from -I');
+    is($lines[2], 'bar', 'env applied');
+
+    $h->disconnect;
+};
+
+subtest launch_rejects_missing_test_file => sub {
+    my $h    = _new_harness();
+    my $seed = _seed_run($h);
+
+    my $dir = tempdir(CLEANUP => 1);
+
+    # Insert a spec with no test_file.
+    my ($tf) = $h->insert(test_files => {
+        project_id => $seed->{project}->project_id,
+        relative   => 'phantom.t',
     });
-    is($reply{ok}, 1, 'launched');
-    _await_exit($reply{pid});
+    my ($job) = $h->insert(jobs => {
+        run_id       => $seed->{run}->run_id,
+        test_file_id => $tf->test_file_id,
+        spec         => encode_json({includes => []}),
+    });
+    my ($job_try) = $h->insert(job_tries => {
+        job_id => $job->job_id, try_ord => 1,
+    });
 
-    open(my $fh, '<', $out) or die "open $out: $!";
-    chomp(my @lines = <$fh>);
-    close($fh);
-    is(scalar(@lines), 2, 'two lines written');
-    is($lines[1], 'bar', 'env propagated');
-    like($lines[0], qr/\Q$dir\E$/, 'cwd honored');
+    my $rec = Test2::Harness2::Collector::Recorder::Files->new(
+        dir => File::Spec->catdir($dir, 'rec'),
+    );
+    my $l = Test2::Harness2::Launcher::ForkExec->new(
+        handle   => $h,
+        parser   => 'Test2::Harness2::Collector::Parser::TAPParser',
+        auditor  => 'Test2::Harness2::Collector::Auditor::Test',
+        recorder => $rec,
+    );
+
+    my %reply = $l->launch($job_try);
+    is($reply{ok}, 0, 'ok=0');
+    is($reply{temporary}, 0, 'permanent');
+    like($reply{error}, qr/test_file/, 'mentions test_file');
+
+    $h->disconnect;
+};
+
+subtest launch_rejects_non_jobtry_arg => sub {
+    my $h = _new_harness();
+    my $rec = Test2::Harness2::Collector::Recorder::Files->new(
+        dir => File::Spec->catdir(tempdir(CLEANUP => 1), 'rec'),
+    );
+    my $l = Test2::Harness2::Launcher::ForkExec->new(
+        handle => $h, recorder => $rec,
+        parser => 'Test2::Harness2::Collector::Parser::TAPParser',
+    );
+
+    my %reply = $l->launch(undef);
+    is($reply{ok}, 0, 'undef rejected');
+    like($reply{error}, qr/job_try/);
+
+    %reply = $l->launch({fake => 1});
+    is($reply{ok}, 0, 'hashref rejected');
+
+    $h->disconnect;
 };
 
 subtest custom_name => sub {
-    my $l = Test2::Harness2::Launcher::ForkExec->new(name => 'mine');
+    my $l = Test2::Harness2::Launcher::ForkExec->new(
+        name => 'mine',
+        handle => undef,
+    );
     is($l->name, 'mine', 'custom name retained');
+};
+
+subtest default_name => sub {
+    my $l = Test2::Harness2::Launcher::ForkExec->new(handle => undef);
+    is($l->name, 'forkexec', 'default name');
 };
 
 done_testing;

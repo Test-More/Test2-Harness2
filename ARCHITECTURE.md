@@ -1004,18 +1004,22 @@ talks to the service over a Unix socket.
 
 - **`name`** — short identifier used for logging and for routing
   jobs to a specific launcher.
-- **`launch(\%spec)`** — synchronously start one collector + test
-  process pair for the given spec. The spec carries the test
-  binary / argv, env, cwd, job_try_id, and any other per-launch
-  metadata the scheduler has assembled.
+- **`launch($job_try)`** — synchronously start one collector + test
+  process pair for the given `job_tries` row. The launcher reads
+  whatever it needs off the row (and its related `job` row, see
+  §13.2 / §7.1.1) and is responsible for wiring the collector
+  around the test process. Callers do **not** craft raw `exec`
+  argv; the spec is the database row.
 
 `launch` returns one of:
 
-- `(ok => 1, pid => $pid)` — process started. `pid` is set only
-  for launchers whose `launch` forks in the scheduler's process
-  (regular launchers); preload launchers return `ok` without a
-  pid because the test process is a child of the preload service
-  rather than of the scheduler.
+- `(ok => 1, pid => $collector_pid)` — collector started.
+  `collector_pid` is the OS pid of the **collector process**
+  (the test process is the collector's own child, see §5.1).
+  `pid` is set only for launchers whose `launch` forks in the
+  caller's process (regular launchers); preload launchers return
+  `ok` without a pid because the collector is a child of the
+  preload service rather than of the scheduler.
 - `(ok => 0, error => $reason, temporary => 0|1)` — start failed.
   When `temporary` is true the scheduler returns the job to the
   queue and tries again on a future loop. When false the
@@ -1029,24 +1033,65 @@ The scheduler decides which launcher handles each job and calls
 either the scheduler (regular launchers) or the preload service
 (preload launchers); see §5.1 and §6.5 for reaping responsibilities.
 
+### 7.1.1 What the launcher reads off a `job_try`
+
+A launcher receives only the `job_tries` row; everything else it
+needs it pulls off that row (or off the related `job` row through
+the harness handle):
+
+- **`job_tries.job_id`** → fetch `jobs.spec` (JSON) — the per-job
+  launch shape:
+  - `test_file` — **absolute path** to the test script.
+  - `includes` — arrayref of `@INC` directories; each becomes a
+    `-I` arg.
+  - `modules` — arrayref of module names; each becomes a `-M` arg.
+  - `env` — hashref of env vars to set in the test process.
+  - `cwd` — optional working directory for the test process.
+- **`job_tries.try_ord`** — used for collector / row naming.
+- **`job_tries.job_try_id`** — passed through to the collector so
+  the recorder can link the collector row back to this attempt.
+
+Per-launcher knobs (parser class, auditor class, recorder, default
+timeouts) live on the launcher object itself — they are set when
+the scheduler constructs the launcher at startup, not on each
+`job_try`. The launcher hands those plus the per-job data to
+`Test2::Harness2::Collector->start` when it boots the collector.
+
 ### 7.2 Implementations
 
 - `Test2::Harness2::Launcher::ForkExec` — POSIX. Plain
   `Object::HashBase` object consuming `Role::Launcher`. Its
-  `launch` does `fork` + `exec` inside the caller's process
-  (the scheduler) to start the collector. The collector then
-  forks once more for the collected process per §5.1. Returns
-  the collector's pid.
-- `Test2::Harness2::Launcher::Win32` — Windows. Same shape; uses
-  the `system(1, …)` window trick instead of `fork` + `exec`.
+  `launch` forks once in the caller's process. The **collector
+  inherits** the scheduler's process state (already-loaded
+  modules, etc.) — there is no `exec` for the collector itself.
+  In the forked child the launcher calls
+  `Test2::Harness2::Collector->start(...)` in-process; the
+  collector then forks once more per §5.1 and *that* fork
+  `exec`s the test process with the built test argv
+  (`$^X` + `-I…` + `-M…` + `$test_file`). Returns the collector's pid.
+- `Test2::Harness2::Launcher::Win32` — Windows. Same outward
+  contract, different mechanics: no `fork`. Uses Perl's
+  `system(1, $^X, …)` form to spawn a fresh perl that becomes the
+  collector. The launcher hands the collector spec to that fresh
+  perl as a JSON object on its stdin; a small bootstrap inside
+  the spawned perl reads stdin, requires the parser / auditor /
+  recorder classes, and calls `Test2::Harness2::Collector->start`.
+  Because `system(1, …)` cannot inherit Perl state, the Win32
+  collector runs in a fresh interpreter rather than inheriting
+  the scheduler's. Best-effort; not exercised in CI from POSIX
+  hosts.
 - `Test2::Harness2::Launcher::Default` — construction-time picker.
   Inspects the platform and returns a `ForkExec` or `Win32`
   instance. No delegate process, no extra address space; the
   scheduler uses the returned object directly.
 - `Test2::Harness2::Launcher::Preload` — preload-aware launcher.
   Holds a connection (or per-call connection) to its preload
-  service's Unix socket and forwards `launch` over the wire.
-  See §10 for the service side and the socket protocol.
+  service's Unix socket and forwards a `launch` request over the
+  wire. The preload service forks **without `exec`** — the
+  forked child inherits the preload's already-loaded `%INC`, then
+  uses `Long::Jump` + `goto::file` to substitute the test script
+  for the `BEGIN` body. See §10 for the service side and the
+  socket protocol.
 
 Regular launchers are constructed at scheduler startup and live
 for the scheduler's lifetime. There is no "start a launcher as a
@@ -1787,7 +1832,23 @@ deduplicated-by-natural-key.
 **jobs**
 - `run_id` → `runs`
 - `test_file_id` → `test_files`
-- `spec` — JSON; full launch spec (env, args, directives, etc.).
+- `spec` — JSON; full launch spec consumed by the launcher.
+  Documented keys (the launcher reads these; the scheduler
+  populates them when queueing the run):
+  - `test_file` — **absolute path** to the test script. (The
+    `test_files.relative` column is the canonical relative path;
+    the scheduler resolves it against the project root and writes
+    the absolute form here so the launcher does not have to know
+    about project layout.)
+  - `includes` — arrayref of `@INC` directories; the launcher
+    turns each entry into a `-I` arg on the test argv.
+  - `modules` — arrayref of module names; the launcher turns each
+    entry into a `-M` arg on the test argv.
+  - `env` — hashref of env vars set in the test process before
+    `exec`.
+  - `cwd` — optional working directory the test is run from.
+  Directives and other metadata may also live here; the keys
+  above are the minimum the launcher subsystem relies on.
 
 **job_tries**
 - `job_id` → `jobs`
