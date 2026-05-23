@@ -9,6 +9,8 @@ not here.
 ## Object orientation
 
 - Use `Object::HashBase` for object attributes.
+- Slot ordering in `Object::HashBase` is intentional; additions should
+  typically go at the end unless a specific grouping is documented.
 - Use `Role::Tiny` / `Role::Tiny::With` for roles.
 - Use `parent` for inheritance, not `base`.
 - `Object::HashBase` and `Role::Tiny` compose. `Object::HashBase` may
@@ -38,11 +40,67 @@ not here.
 
 - No trailing whitespace. No emojis.
 - Use perltidy and the `.perltidyrc` on new or edited code.
+- Use perlcritic and the `.perlcriticrc` to catch common mistakes.
 
 ## Language-feature defaults
 
 - Prefer `//=` for defaults.
 - Use constants over package vars for "is module installed" gating.
+
+## Minimum Perl and subroutine signatures
+
+Minimum supported Perl is **5.38.0** (released 2023-07-02).
+Signatures became stable in 5.36; 5.38 added `//=` / `||=` defaults
+inside signatures. Every shipped module starts with:
+
+```perl
+use v5.38;
+```
+
+This single line enables `strict`, `warnings`, and the stable
+`signatures` feature. Add `use warnings;` / `use strict;` only when
+you also need to override the bundle (very rare).
+
+Use Perl's subroutine signatures for **all** named subs, methods, and
+anonymous subs whose argument handling fits within what signatures
+support. That includes:
+
+- Methods: `sub method ($self, $arg, $other = undef) { ... }`.
+- Class methods: `sub new ($class, %params) { ... }`.
+- Functions: `sub helper ($x, $y //= compute_default()) { ... }`.
+- Variadic tails: `sub foo ($first, @rest) { ... }` /
+  `sub bar (%opts) { ... }`.
+
+Default-value variants follow the same intent rules as `//=` /
+`||=` on assignment:
+
+- `$x = $default` — applied only when the argument is **missing**.
+  An explicit `undef` is preserved.
+- `$x //= $default` — applied when the argument is missing **or** the
+  caller passed `undef`. Match this against the same use-cases where
+  you would write `$x //= $default;` in the body.
+- `$x ||= $default` — applied when the argument is missing or falsy.
+  Use sparingly; like the assignment form, it drops legitimate `0`
+  / `""` values.
+
+Drop to `@_` only when signatures genuinely cannot express the call
+shape. Real cases:
+
+- Re-dispatching arguments unchanged (`goto &other`,
+  `$other->(@_)`).
+- Argument shapes signatures cannot describe (positional + key/value
+  + flag mixes that need custom parsing, prototype-driven DSLs).
+- Subs whose first action is to peek at `wantarray` / `caller` and
+  then forward.
+
+Aesthetic preference for `my $self = shift;` is **not** a reason to
+skip signatures.
+
+Argless declarative-metadata methods (`sub TABLE { 'users' }`,
+`sub json_fields { qw{a b c} }`) may keep their empty
+parameter list — `sub TABLE { 'users' }` and
+`sub TABLE () { 'users' }` are both acceptable. Pick one and be
+consistent within a file.
 
 ## Sub-second sleeps
 
@@ -127,7 +185,7 @@ primitive. If you find existing code doing it, replace with
   # ... called as: $self->{+FLAVOR} //= $self->_flavor_from_dsn($self->{+DSN});
   ```
 
-  An automated scanner lives at `scripts/audit-methods-not-functions` —
+  An automated scanner lives at `agent_scripts/audit-methods-not-functions` —
   run it before declaring a stage ready for review (it is one of the
   three mandatory pre-review checks in `AGENTS.md`).
 
@@ -136,6 +194,8 @@ primitive. If you find existing code doing it, replace with
 - Use `Test2::V0` as the test library for everything new under `t/`.
   Avoid `Test::More` and `Test::Simple` in new code; existing `t/`
   imports may stay as they are until touched.
+- AI-generated tests live in `t/AI/` and must mirror the main test
+  directory's layout.
 
 ## UUIDs
 
