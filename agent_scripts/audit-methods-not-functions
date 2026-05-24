@@ -14,9 +14,12 @@ use warnings;
 #
 # Exits 1 on any violation, 0 on clean.
 #
-# Heuristic-driven: walks each sub's first ~6 body lines looking for
-# the invokant. Multi-line / complex methods stay clean because the
-# invokant pickup almost always lives at the very top of the sub.
+# Heuristic-driven: walks each sub's declaration line plus its first
+# ~8 body lines looking for the invokant. The declaration line is
+# included so signature-style methods (`sub foo ($self, ...)`) count
+# their signature invokant. Multi-line / complex methods stay clean
+# because the invokant pickup almost always lives in the signature or
+# at the very top of the sub.
 
 use File::Find ();
 
@@ -86,7 +89,7 @@ sub _audit_file {
             next;
         }
 
-        my $body = "";
+        my $body = $lines[$i] . "\n";
         for my $k (1 .. 8) {
             last if $i + $k >= @lines;
             last if $lines[$i + $k] =~ /^sub\s/;
