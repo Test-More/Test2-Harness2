@@ -252,6 +252,10 @@ guide; walk it before declaring work ready for review.
   `worktrees/`.
 - Documentation-only work (editing `ARCHITECTURE.md`, `STYLE_GUIDE.md`,
   this file, etc.) does not require a worktree.
+- Always integrate a worktree's branch with a merge commit
+  (`git merge --no-ff`), never a fast-forward. The merge commit is the
+  record that a discrete piece of work landed; preserve it even when the
+  target branch has not advanced.
 
 ## Architecture quick-reference
 
