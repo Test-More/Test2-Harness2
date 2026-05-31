@@ -8,9 +8,8 @@ use Test2::Harness2::Collector;
 
 subtest default_parser => sub {
     my $test = Test2::Harness2::Collector->new(
-        events_file => 'x',
-        run_sub     => sub { },
-        is_test     => 1,
+        name    => "collector-test", run_sub  => sub { },
+        is_test => 1,                run_uuid => "RUN-1",
     );
     isa_ok(
         $test->parser,
@@ -19,9 +18,8 @@ subtest default_parser => sub {
     );
 
     my $non_test = Test2::Harness2::Collector->new(
-        events_file => 'x',
-        run_sub     => sub { },
-        is_test     => 0,
+        name    => "collector-test", run_sub => sub { },
+        is_test => 0,
     );
     isa_ok(
         $non_test->parser,
@@ -37,10 +35,9 @@ subtest default_parser => sub {
 
 subtest explicit_parser_wins => sub {
     my $self = Test2::Harness2::Collector->new(
-        events_file => 'x',
-        run_sub     => sub { },
-        is_test     => 1,
-        parser      => 'Test2::Harness2::Collector::Parser::IOParser',
+        name    => "collector-test", run_sub  => sub { },
+        is_test => 1,                run_uuid => "RUN-1",
+        parser  => 'Test2::Harness2::Collector::Parser::IOParser',
     );
     is(
         ref($self->parser),

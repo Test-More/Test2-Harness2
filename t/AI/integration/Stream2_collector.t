@@ -4,6 +4,7 @@ use v5.38;
 use File::Temp qw/tempdir/;
 
 use Test2::Harness2::Collector;
+use Test2::Harness2::Collector::Recorder;
 use Test2::Harness2::Util::Zstd qw/open_zstd_reader/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
 
@@ -24,8 +25,8 @@ my $dir = tempdir(CLEANUP => 1);
 my $ef  = "$dir/events.jsonl.zst";
 
 my $exit = Test2::Harness2::Collector->start(
-    is_test      => 1,
-    events_file  => $ef,
+    name         => "collector-test", is_test => 1, run_uuid => "RUN-1",
+    recorder     => Test2::Harness2::Collector::Recorder->new(events_file => $ef),
     exec_command => [$^X, '-Ilib', 't/AI/scripts/stream2_job.pl'],
 );
 
@@ -49,12 +50,12 @@ ok(
 ok((grep { $_->{facet_data}{plan} } @events), "got a plan facet");
 
 # No UUIDs, no sync fields, no redundant/empty noise made it to disk.
-ok(!(grep { ref $_ eq 'ARRAY' } @events), "sync markers were not recorded");
+ok(!(grep { ref $_ eq 'ARRAY' } @events),     "sync markers were not recorded");
 ok(!(grep { exists $_->{event_id} } @events), "no event_id stamped on any event");
 
 my ($a) = @asserts;
 ok(!exists $a->{facet_data}{trace}{full_caller}, "trace.full_caller purged");
-ok(!exists $a->{facet_data}{control}, "empty control facet purged");
+ok(!exists $a->{facet_data}{control},            "empty control facet purged");
 
 my ($plan_e) = grep { $_->{facet_data}{plan} } @events;
 ok(!exists $plan_e->{facet_data}{control}, "control facet (only a null terminate) purged");
