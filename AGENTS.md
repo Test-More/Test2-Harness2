@@ -200,6 +200,11 @@ run via:
 prove -Ilib -j16 -r t/
 ```
 
+Until `Test2-Collector` is installed, the `t2clib` symlink must exist
+at the repository root (`ln -s ../Test2-Collector/lib t2clib`) —
+scripts and the tests that need `Test2::Collector*` load it from
+there.
+
 Eventually yath will be self-hosting and the runner moves to:
 
 ```
@@ -239,16 +244,14 @@ guide; walk it before declaring work ready for review.
   options that explicitly request `App::Yath2*` functionality.
 - The collector pipeline comes from the external `Test2-Collector`
   distribution (`Test2::Collector` namespace; checkout at
-  `~/projects/Test2/Test2-Collector`). It is **not yet released or
-  installed** — it is still under review. Until the in-tree collector
-  code is swapped out for it, do not write code that loads
-  `Test2::Collector*` modules. Once the swap lands it becomes a hard
-  dependency. The dependency points one way: `Test2::Collector` never
-  loads `Test2::Harness2*` or `App::Yath2*`.
-- The in-tree `Test2::Harness2::Collector*` modules (everything except
-  `Collector::Monitor`) and `Test2::Formatter::Stream2*` are
-  pre-extraction copies slated for replacement by `Test2-Collector`.
-  Do not build new code against their internals.
+  `~/projects/Test2/Test2-Collector`). It is a hard dependency, but it
+  is **not yet released or installed**, so it is loaded from the
+  `t2clib` symlink at the repository root (gitignored; points at the
+  sibling checkout's `lib/`). Scripts under `scripts/` add it to
+  `@INC` themselves; a test that loads `Test2::Collector*` needs a
+  `use lib 't2clib';` line. This scaffolding goes away once the dist
+  is installed. The dependency points one way: `Test2::Collector`
+  never loads `Test2::Harness2*` or `App::Yath2*`.
 - Hard-required CPAN deps for `Test2::Harness2` /
   `Test2::Formatter::Stream2` are fine. Non-default database
   drivers (Postgres, MySQL, MariaDB, Percona) are loaded only when
@@ -297,10 +300,9 @@ must internalise before writing any code (all are documented in
   reference doc or piece of `reference/` code calls for
   `IPC::Manager`, treat that as outdated.
 - **The collector comes from `Test2-Collector`** (`Test2::Collector`
-  namespace; external, unreleased, under review). The in-tree
-  `Test2::Harness2::Collector*` modules are pre-extraction copies
-  awaiting replacement; only `Collector::Monitor` stays in the
-  harness. See `ARCHITECTURE.md` §2.7 and §4.1.
+  namespace; external, unreleased — loaded via the `t2clib` symlink
+  until installed). Only `Collector::Monitor` lives in the harness.
+  See `ARCHITECTURE.md` §2.7 and §4.1.
 - **The harness orchestrates collectors** (`ARCHITECTURE.md` §4.2).
   Every harness-started process — including the main harness process —
   is a collector (non-test variant). Completion is learned from

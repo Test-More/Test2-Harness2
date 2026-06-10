@@ -31,10 +31,11 @@ sub feed_fin   ($mon, $uuid)     { $mon->feed(payload_for({harness_collector_fin
 
 sub unmanaged_monitor () { Test2::Harness2::Collector::Monitor->new }
 
-# Build a {type,payload} transition envelope frame for one collector message.
+# Build a transition frame for one collector message: a plain event stamped
+# with a harness_collector identity facet (no envelope).
 sub frame_for ($facet, %collector) {
     my $fd = {%$facet, harness_collector => {%collector}};
-    return compress(encode_json({type => 'transition', payload => {facet_data => $fd}}));
+    return compress(encode_json({facet_data => $fd}));
 }
 
 # Read every frame a connection received and replay it into a fresh unmanaged
@@ -50,7 +51,7 @@ sub downstream_from_conn ($conn) {
         $fb->push_bytes($buf);
     }
     my $down = unmanaged_monitor();
-    $down->feed(decode_json($_->{payload})->{payload}) for $fb->drain;
+    $down->feed(decode_json($_->{payload})) for $fb->drain;
     return $down;
 }
 
@@ -111,6 +112,16 @@ subtest final_state_and_exits => sub {
     is($mon->collector('T1')->{status}, 'complete', "completed collector is complete");
     is([$mon->new_test_exits],          ['T1'],     "test exit delta reports the completed test");
     is([$mon->new_test_exits],          [],         "test exit delta drains");
+};
+
+subtest plain_collector_exited => sub {
+    my $mon = unmanaged_monitor();
+    feed_start($mon, uuid => 'S1', name => 'my-service');
+    feed_trans($mon, 'exited', 'S1');
+
+    is($mon->collector('S1')->{status}, 'complete', "an exited plain collector is complete");
+    is([$mon->new_completed],           ['S1'],     "completed delta reports the exited service");
+    is([$mon->new_test_exits],          [],         "exited does not count as a test exit");
 };
 
 subtest finalized => sub {

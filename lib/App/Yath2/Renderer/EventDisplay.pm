@@ -76,7 +76,7 @@ my @FACET_ORDER = qw/assert control plan errors trace amnesty info/;
 
 =head1 PUBLIC METHODS
 
-All methods accept an event as a L<Test2::Harness2::Event>, a raw
+All methods accept an event as a L<Test2::Collector::Event>, a raw
 C<< {facet_data => \%facets} >> event hashref, or a bare facet_data hashref.
 
 =cut

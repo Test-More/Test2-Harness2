@@ -39,7 +39,7 @@ L<Term::ANSIColor> names.
     my $painter = App::Yath2::Renderer::Text::EventPainter->new(color => 1);
 
     my @lines = $painter->paint(
-        $event,            # a Test2::Harness2::Event or raw facet_data hashref
+        $event,            # a Test2::Collector::Event or raw facet_data hashref
         verbosity => 1,    # max facet level to show: 1 = normal, 2 = also verbose-only facets (plans, etc.)
         left_pad  => 0,
         prefix    => '',
@@ -142,7 +142,7 @@ sub init ($self) {
 =item @lines = $painter->paint($event, %opts)
 
 Paint one event into text lines. C<$event> may be a
-L<Test2::Harness2::Event> or a raw facet_data hashref. Options: C<left_pad>
+L<Test2::Collector::Event> or a raw facet_data hashref. Options: C<left_pad>
 (indent columns, default 0), C<prefix> (string before every line, default
 C<''>), C<verbosity> (the highest facet level to show -- C<1> (default) shows
 normal facets, C<2> also shows verbose-only facets such as plans; see

@@ -28,7 +28,7 @@ Atomic::Pipe without loading Test2::API.
 
 A small standalone helper that writes structured events to an
 L<Atomic::Pipe> in mixed-data mode using the same wire format that
-L<Test2::Formatter::Stream2> uses. Services and harness infrastructure code
+L<Test2::Formatter::Collector> uses. Services and harness infrastructure code
 use it to emit lifecycle events that an existing collector can read without
 loading the L<Test2::API> hub.
 
@@ -209,7 +209,7 @@ same stream.
 
 In practice this only matters in contrived test scenarios that drive a tight
 C<print> / C<write_message> loop on the same pipe fd. Normal test processes
-via L<Test2::Formatter::Stream2> are not affected.
+via L<Test2::Formatter::Collector> are not affected.
 
 =head1 SOURCE
 

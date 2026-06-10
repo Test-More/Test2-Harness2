@@ -40,8 +40,8 @@ track the state of every collector.
 
 =head1 DESCRIPTION
 
-A monitor folds the notification messages that collector recorders send (see
-L<Test2::Harness2::Collector::Recorder>) into per-collector state, keyed on the
+A monitor folds the transition messages that collectors send through their
+reporter sink (see L<Test2::Collector>) into per-collector state, keyed on the
 collector C<uuid> that rides on every message. B<Any number of collectors --
 tests and services alike -- are tracked by one monitor.> It can then be queried
 for the tests and services it has seen, each one's status, events file, and
@@ -56,19 +56,19 @@ The monitor runs in one of two modes:
 
 =item Managed (C<listen>)
 
-The monitor owns a listening unix socket. Each collector's recorder connects to
+The monitor owns a listening unix socket. Each collector's reporter connects to
 it and writes self-contained zstd frames; one accepted connection per collector
 means no two collectors' frames ever interleave. L</poll> -- which never blocks
 -- accepts pending connections, reads ready ones, splits frames, and folds each
-C<transition> envelope into state. The monitor's file descriptors are exposed
+transition event into state. The monitor's file descriptors are exposed
 via L</io_handles> so a caller can add them to its own L<IO::Select> loop, and
 the listen path via L</socket_path>.
 
 =item Unmanaged (no C<listen>)
 
-Some other component owns the socket(s). It reads, decompresses, decodes, and
-unwraps frames itself, then hands the monitor already-decoded transition
-payloads via L</feed> (or raw frames via L</feed_frame>, which also forwards to
+Some other component owns the socket(s). It reads, decompresses, and decodes
+frames itself, then hands the monitor already-decoded transition
+events via L</feed> (or raw frames via L</feed_frame>, which also forwards to
 proxies). In this mode L</poll> does nothing.
 
 =back
@@ -78,9 +78,9 @@ proxies). In this mode L</poll> does nothing.
     use IO::Select;
     use Test2::Harness2::Collector::Monitor;
 
-    # Managed: the monitor listens; recorders connect to its socket path.
+    # Managed: the monitor listens; collector reporters connect to its path.
     my $mon = Test2::Harness2::Collector::Monitor->new(listen => 1);
-    my $path = $mon->socket_path;    # hand this to recorder transition_sockets
+    my $path = $mon->socket_path;    # hand this to the reporter's socket paths
 
     while (1) {
         IO::Select->new($mon->io_handles)->can_read;    # block until ready
@@ -161,7 +161,7 @@ sub _default_socket_path ($self) {
 
 Managed mode only (a no-op in unmanaged mode). Never blocks: accept any pending
 connections, read every connection that is ready, split complete frames, and
-fold each C<transition> envelope into internal state. A connection at EOF is
+fold each transition event into internal state. A connection at EOF is
 reaped (cleanup only -- the C<harness_collector_finalized> message arrives
 before the close). Context-sensitive: in list context returns the decoded
 transition payloads (in arrival order); in scalar context returns the number of
@@ -187,17 +187,18 @@ loop. Empty in unmanaged mode.
 
 =item $mon->feed($payload)
 
-Unmanaged mode: fold one already-decoded transition C<$payload> (the envelope's
-C<payload>, i.e. C<< {facet_data =E<gt> ...} >>) into state. Does not forward to
-proxies (there is no frame to forward).
+Unmanaged mode: fold one already-decoded transition event C<$payload>
+(C<< {facet_data =E<gt> ...} >>, carrying a C<harness_collector> facet) into
+state. Does not forward to proxies (there is no frame to forward).
 
 =item feed_frame
 
 =item $payload = $mon->feed_frame($frame)
 
 Unmanaged mode with a raw frame in hand: decode the frame, fold the
-C<transition> payload into state, and forward the verbatim frame to proxies.
-Returns the payload, or C<undef> for a non-transition frame.
+transition event into state, and forward the verbatim frame to proxies.
+Returns the decoded event, or C<undef> for a frame that carries no collector
+identity.
 
 =item @uuids = $mon->collectors
 
@@ -335,6 +336,8 @@ named state since the previous call to that method, then forgets them.
 C<new_collectors> reports collectors seen for the first time (their events
 file is available by then); C<new_test_exits> reports tests whose process has
 exited (the C<completed> transition), which the scheduler uses to free a slot.
+C<new_completed> also covers plain (non-test) collectors, which signal the end
+of their run with an C<exited> transition instead of C<completed>.
 
 =item close
 
@@ -442,9 +445,9 @@ Pick a unique unix socket path in a fresh temp directory, for C<listen =E<gt> 1>
 =item $payload = $self->_handle_frame($rec)
 
 Process one decoded frame C<< {frame =E<gt> $raw, payload =E<gt> $json} >>:
-decode the C<< {type, payload} >> envelope, fold a C<transition> payload into
-state, forward the verbatim frame to proxies, and retain it for replay. Returns
-the transition payload, or C<undef> for a non-transition or undecodable frame.
+decode the transition event, fold it into state, forward the verbatim frame to
+proxies, and retain it for replay. Returns the decoded event, or C<undef> for
+an undecodable frame or one with no collector identity.
 
 =item @uuids = $self->_drain($slot)
 
@@ -485,23 +488,19 @@ Write one raw frame to a single proxy socket, warning (not dying) on failure.
 =cut
 
 sub _handle_frame ($self, $rec) {
-    my $envelope;
-    my $ok = eval { $envelope = decode_json($rec->{payload}); 1 };
+    my $payload;
+    my $ok = eval { $payload = decode_json($rec->{payload}); 1 };
     unless ($ok) {
         warn "monitor: could not decode a transition frame: $@\n";
         return undef;
     }
 
-    return undef unless ($envelope->{type} // '') eq 'transition';
+    my $uuid = ref($payload) eq 'HASH' ? $payload->{facet_data}{harness_collector}{uuid} : undef;
+    return undef unless defined $uuid;
 
-    my $payload = $envelope->{payload};
     $self->_process($payload);
-
-    my $uuid = $payload->{facet_data}{harness_collector}{uuid};
-    if (defined $uuid) {
-        $self->_forward($uuid, $rec->{frame});
-        $self->_retain_for_replay($uuid, $rec->{frame});
-    }
+    $self->_forward($uuid, $rec->{frame});
+    $self->_retain_for_replay($uuid, $rec->{frame});
 
     return $payload;
 }
@@ -630,6 +629,14 @@ sub _process_transition ($self, $c, $state, $hc) {
         push @{$self->{+PENDING_COMPLETED}} => $c->{uuid};
         push @{$self->{+PENDING_EXITS}} => $c->{uuid}
             if ($c->{category} // '') eq 'test';
+        return;
+    }
+
+    # Plain (non-test) collectors have no auditor; the collector itself emits
+    # an 'exited' transition in place of the auditor's 'completed'.
+    if ($state eq 'exited') {
+        $c->{status} = 'complete';
+        push @{$self->{+PENDING_COMPLETED}} => $c->{uuid};
         return;
     }
 

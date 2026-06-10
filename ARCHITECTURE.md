@@ -176,9 +176,9 @@ for the collector contract; §4.1 here documents only the boundary the
 harness consumes, plus the Monitor, which deliberately stayed behind.
 
 The dependency points one way: `Test2::Collector` never loads
-`Test2::Harness2*` or `App::Yath2*`. Once the in-tree collector code
-is replaced (§4.1 "Status"), `Test2-Collector` becomes a hard
-dependency of this distribution.
+`Test2::Harness2*` or `App::Yath2*`. `Test2-Collector` is a hard
+dependency of this distribution; see §4.1 "Status" for how it is
+loaded until it is released and installed.
 
 ## 3. Repository layout
 
@@ -233,20 +233,22 @@ fallback parsing, transition stamping, and the safety / lifecycle
 controls (silence / lifetime / orphan timeouts, watched parent,
 process-group signaling).
 
-**Status — in-tree replacement pending.** `Test2-Collector` is still
-under review; it is not released and not installed. Until that
-review completes, the pre-extraction copies under
-`lib/Test2/Harness2/Collector*` and the `Test2::Formatter::Stream2*`
-formatter remain in-tree and working (`scripts/t2h2_collector` drives
-them). The committed plan: once review completes, replace the in-tree
-collector code with a dependency on `Test2-Collector`, delete the
-superseded modules, and port the drivers and the Monitor to the
-extracted contract. New code must not be built against the in-tree
-collector modules' internals in the meantime.
+**Status — swap landed, dist not yet installed.** The pre-extraction
+copies (`lib/Test2/Harness2/Collector*` minus the Monitor,
+`Test2::Formatter::Stream2*`, `Test2::Harness2::Event`) are deleted;
+the drivers, the Monitor, and the tests run against
+`Test2::Collector*`. `Test2-Collector` is still under review — not
+released, not installed — so until it is, it is loaded from the
+`t2clib` symlink at the repository root (gitignored; points at a
+sibling checkout's `lib/`). The `scripts/t2h2_*` drivers add it to
+`@INC` themselves when the symlink exists; tests that load
+`Test2::Collector*` carry a `use lib 't2clib'` line. Both scaffolds
+go away when the dist is installed and becomes an ordinary hard
+dependency.
 
 **Extraction differences.** The extracted collector deliberately
-changed a few things relative to the in-tree copies, so the in-tree
-code must not be read as spec:
+changed a few things relative to the pre-extraction code, so old
+branches and `reference/` reading must not be taken as spec:
 
 - **Unified sinks.** In-tree, the base recorder wrote the events file
   *and* pushed transition notifications to unix sockets, with a
@@ -268,8 +270,9 @@ code must not be read as spec:
 (`Test2::Harness2::Collector::Monitor`) was deliberately not
 extracted: cross-process monitoring, scheduling, run-history storage,
 and rendering are out of scope for `Test2-Collector` and belong to
-the harness. The Monitor will be adapted to the extracted transition
-shape (no envelope) when the swap lands.
+the harness. It speaks the extracted transition shape (plain stamped
+events, no envelope), and treats the `exited` transition a plain
+(non-test) collector emits as that collector's completion.
 
 **Monitor.** `Collector::Monitor` is the read side of the transitions channel
 (§5.2): its non-blocking `poll` reads whatever is available, folds each
@@ -439,11 +442,9 @@ contract:
   recompression) to downstream sockets, preserving the global / C<run_uuid>
   filtering.
 
-The message shape above is the extracted (`Test2-Collector`) contract.
-The in-tree pre-extraction recorder still writes the old
-C<< {type =E<gt> "transition", payload =E<gt> {...}} >> envelope and the
-in-tree Monitor still expects it; both change together when the swap to
-`Test2-Collector` lands (§4.1 "Status").
+The earlier in-tree implementation wrapped each message in a
+C<< {type =E<gt> "transition", payload =E<gt> {...}} >> envelope; that
+envelope is gone. The Monitor consumes the plain-event shape above.
 
 ## 6. Open questions
 

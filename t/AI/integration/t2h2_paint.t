@@ -3,8 +3,10 @@ use v5.38;
 
 use File::Temp qw/tempdir/;
 
-use Test2::Harness2::Collector;
-use Test2::Harness2::Collector::Recorder;
+use lib 't2clib';    # temporary until Test2-Collector is installed
+
+use Test2::Collector;
+use Test2::Collector::Recorder::Zstd;
 
 # t2h2_paint reads an events file and prints the painted subtest graph. Produce
 # a real events file via the collector, then check the script's output.
@@ -15,11 +17,11 @@ sub painted_lines (@args) {
     my $dir = tempdir(CLEANUP => 1);
     my $ef  = "$dir/events.jsonl.zst";
 
-    Test2::Harness2::Collector->start(
+    # is_test auto-wires the Assembler -> Auditor processor pipeline.
+    Test2::Collector->start(
         name         => "paint", is_test => 1, run_uuid => "RUN",
-        processor    => ['Test2::Harness2::Collector::Assembler', 'Test2::Harness2::Collector::Auditor'],
-        recorder     => Test2::Harness2::Collector::Recorder->new(events_file => $ef),
-        exec_command => [$^X, '-Ilib', 't/AI/scripts/paint_job.pl'],
+        recorder     => Test2::Collector::Recorder::Zstd->new(file => $ef),
+        exec_command => [$^X, '-Ilib', '-It2clib', 't/AI/scripts/paint_job.pl'],
     );
 
     my $out = qx{$^X -Ilib \Q$script\E @args \Q$ef\E};
