@@ -43,13 +43,13 @@ single distribution (`Test2-Harness2`), split across two namespaces
 by concern:
 
 - **`Test2::Harness2`** owns **producing results**: running tests,
-  driving the collector pipeline, schedulers, launchers, recorders,
-  and preloads. Results are recorded to disk (the collector pipeline
-  writes per-process event logs); see §1's note on the database.
-- **`App::Yath2`** owns **the user interface**: parsing user input,
-  feeding tests-to-run into `Test2::Harness2`, and formatting /
-  displaying results (live render, archived render, querying past
-  runs).
+  orchestrating collectors (§4.1, §4.2), schedulers, launchers, and
+  preloads. Results are recorded to disk (each collector writes a
+  per-process event log); see §1's note on the database.
+- **`App::Yath2`** owns **the user interface**: parsing user input
+  (command-line arguments are processed with `Getopt::Yath`), feeding
+  tests-to-run into `Test2::Harness2`, and formatting / displaying
+  results (live render, archived render, querying past runs).
 
 Both namespaces live under `lib/` in this repository and ship as
 parts of the same distribution. The split is a code-level
@@ -65,7 +65,7 @@ binary.
 The harness is **not database-driven**. Results are produced and
 recorded to disk by the collector pipeline: each collected process's
 events stream to a `jsonl.zst` log written by a recorder (§2.3,
-§4 when it lands). Cross-process coordination does not flow through a
+§4.1, §4.2). Cross-process coordination does not flow through a
 database. A database is a **deferred** concern — when it arrives it
 will be used to store / archive logs, not as the live coordination
 substrate — and its schema will be defined with `DBIx::QuickORM`
@@ -125,7 +125,8 @@ If a reference doc, a design note, or a snippet of `reference/` code
 calls for `IPC::Manager`, treat that as outdated and follow this
 document instead. The transport is `Atomic::Pipe` (mixed-mode, with
 zstd compression on the wire) for transient bytes between processes;
-the collector pipeline (§4 when it lands) is the first consumer.
+the collector pipeline (§4.1, owned by `Test2-Collector` per §2.7) is
+the first consumer.
 Durable cross-process state, where needed later, goes to disk, not
 through a live coordination daemon.
 
@@ -163,6 +164,22 @@ the right starting point for "how did this used to work" questions;
 when their answer conflicts with this document, this document wins
 and the conflict gets flagged.
 
+### 2.7 The collector comes from `Test2-Collector`
+
+The collector pipeline — spawn one process, capture everything it
+produces, feed it through `parser -> processors -> recorder + reporter`
+— is **not** part of this distribution. It was extracted to the
+standalone **`Test2-Collector`** distribution (`Test2::Collector`
+namespace; working checkout at `~/projects/Test2/Test2-Collector`).
+That distribution's own `ARCHITECTURE.md` is the authoritative spec
+for the collector contract; §4.1 here documents only the boundary the
+harness consumes, plus the Monitor, which deliberately stayed behind.
+
+The dependency points one way: `Test2::Collector` never loads
+`Test2::Harness2*` or `App::Yath2*`. Once the in-tree collector code
+is replaced (§4.1 "Status"), `Test2-Collector` becomes a hard
+dependency of this distribution.
+
 ## 3. Repository layout
 
 Top-level layout that architecture depends on:
@@ -173,7 +190,7 @@ Top-level layout that architecture depends on:
   code.
 - `t/` — human-authored tests.
 - `t/AI/` — AI-generated tests, mirroring `t/`'s subdirectory layout.
-- `reference/` — historical iterations; immutable, see §2.5.
+- `reference/` — historical iterations; immutable, see §2.6.
 - `AI_DOCS/<YYYY-MM-DD>-<slug>.md` — durable context for non-trivial
   decisions that the code and commit history cannot carry alone.
 
@@ -197,107 +214,79 @@ removed, its number is retired, not reused.
 
 ### 4.1 Collector
 
-**Responsibility.** The collector runs one child process and turns its
-output into a recorded stream of events. It lives in
-`lib/Test2/Harness2/Collector.pm` (engine + functional façade) with the
-pipeline parts under `lib/Test2/Harness2/Collector/`.
+**Responsibility.** The collector spawns one process (test or
+otherwise), captures everything it produces, and feeds it through
 
-**Pipeline.** A single child is forked; its STDOUT and STDERR are wired to
-mixed-mode `Atomic::Pipe`s (zstd on the wire). The collector parent runs:
+    bytes  ->  parser  ->  processors  ->  recorder + reporter
 
-    bytes  ->  parser  ->  optional processor  ->  optional recorder
+where the **recorder** sink gets the full event stream (one
+`jsonl.zst` events file per collector) and the **reporter** sink gets
+only the transitions (§4.2, §5.2).
 
-The parser turns lines and pre-decoded message bursts into
-`Test2::Harness2::Event` objects. The optional processor sees one event at a
-time and returns zero or more events. The optional recorder is the sink (it
-owns whatever it writes — a file, a database, nothing). When a child
-exits, the collector drains both pipes, then dispatches a synthetic
-`harness_process_exit` event through the pipeline — so the exit event is
-always recorded **after** all of the child's output. The exit event carries
-the launch (`start_stamp`) and reap (`stamp`) times.
+That machinery lives in the external **`Test2-Collector`**
+distribution (§2.7). Its `ARCHITECTURE.md` is the authoritative spec
+for everything inside the collector boundary: the pipeline stages and
+their roles, the sink classes (`Recorder::JSONL` / `Zstd` / `FIFO` /
+`Socket` / `Pipe`), the formatter contract
+(`Test2::Formatter::Collector`, selected via `T2_FORMATTER`), raw-TAP
+fallback parsing, transition stamping, and the safety / lifecycle
+controls (silence / lifetime / orphan timeouts, watched parent,
+process-group signaling).
 
-The collector can decode the child's raw (non-structured) output by an
-`encoding` (default: bytes pass through), and a child may switch it mid-stream
-with a `control` facet carrying an `encoding`.
+**Status — in-tree replacement pending.** `Test2-Collector` is still
+under review; it is not released and not installed. Until that
+review completes, the pre-extraction copies under
+`lib/Test2/Harness2/Collector*` and the `Test2::Formatter::Stream2*`
+formatter remain in-tree and working (`scripts/t2h2_collector` drives
+them). The committed plan: once review completes, replace the in-tree
+collector code with a dependency on `Test2-Collector`, delete the
+superseded modules, and port the drivers and the Monitor to the
+extracted contract. New code must not be built against the in-tree
+collector modules' internals in the meantime.
 
-**Stage contracts** (each a `Role::Tiny` role under
-`Collector/Role/`):
+**Extraction differences.** The extracted collector deliberately
+changed a few things relative to the in-tree copies, so the in-tree
+code must not be read as spec:
 
-- **Parser** — `parse_io(stream => ..., line|event => ...)` returns one event
-  or undef.
-- **Processor** — `process_event($event)` returns the list of events to
-  record (drop, pass through, or expand). A processor that mutates an event
-  must clear its `compressed_form`.
-- **Recorder** — `record_event($event)` persists one event; `finalize`
-  closes its files and sends a finalization message to its notification
-  pipes. The base recorder (`Collector::Recorder`) writes every event to one
-  `jsonl.zst` file. The recorder is optional and there is no default: with
-  none, events are still parsed and audited but nothing is written.
+- **Unified sinks.** In-tree, the base recorder wrote the events file
+  *and* pushed transition notifications to unix sockets, with a
+  `Recorder::Test` subclass routing transitions to the sockets wrapped
+  in a `{type => "transition", payload => {...}}` envelope. Extracted,
+  one sink abstraction serves both streams — the collector itself
+  routes by facet (transitions to the `reporter`, everything else to
+  the `recorder`), the envelope is gone, and transitions are plain
+  events stamped with a `harness_collector` identity facet (an
+  optional `transition_frame` attribute re-wraps them for consumers
+  that multiplex streams).
+- **Auto-wired test pipeline.** The `Assembler` → `Auditor` processor
+  chain is wired automatically for `is_test` jobs instead of being the
+  caller's job.
+- **Renames.** `Test2::Harness2::Collector*` → `Test2::Collector*`;
+  `Test2::Formatter::Stream2` → `Test2::Formatter::Collector`.
 
-  A recorder may also be given a `pipes` arrayref of notification targets.
-  Only important occurrences — not every event — are sent to every pipe as a
-  single zstd-compressed atomic message (the base recorder sends the
-  finalization; the test recorder also sends each transition and the final
-  state). Each entry is either a live `Atomic::Pipe` (in-process or post-fork
-  only) or a `{ fifo => $path }` spec the recorder opens itself (survives
-  `exec`; the portable choice where pipe handles are not inheritable, e.g.
-  Windows). A listener opens the read end and any number of collectors write
-  to it.
+**What stayed behind.** The **Monitor**
+(`Test2::Harness2::Collector::Monitor`) was deliberately not
+extracted: cross-process monitoring, scheduling, run-history storage,
+and rendering are out of scope for `Test2-Collector` and belong to
+the harness. The Monitor will be adapted to the extracted transition
+shape (no envelope) when the swap lands.
 
-  Every pipe message carries a `harness_collector` facet with the collector's
-  `uuid`, so a listener can tell which collector sent it. Identity is sent
-  once: the start message (the `starting` transition) carries the collected
-  thing's `name`, the `events_file` path, and — for test collectors — the
-  `try` number (always `1` until retry exists). Later messages carry only the
-  `uuid`; a consumer (the monitor below) is a state machine and tracks the
-  rest across messages, so nothing is repeated. The collector pushes its
-  identity to the recorder via `set_collector_info` during construction.
-
-**Functional interface.** `Test2::Harness2::Collector` exports `collect`
-(run in the current process; returns `{exit => {...}, final_state => ...}`
-where `exit` is the hash `parse_exit` returns — `sig` / `err` / `dmp` /
-`all`) and `spawn_collector` (fork a collector process; return its pid;
-exit 0/1 by verdict). A recorder-less `collect` still returns its summary;
-`spawn_collector` **requires** a recorder, since a forked collector's summary
-cannot cross the fork. `parser` / `processor` / `recorder` each accept a
-blessed instance, a class name, or `[class => @args]`.
-
-**Test jobs.** A test job (`is_test`) runs with the stream formatter selected
-and uses the auditor (`Collector::Auditor`) as its processor. The
-auditor passes events through (reassembling streaming subtests into buffered
-parent events), validates the run (plan present and matching the assertion
-count, no skipped or repeated assertion numbers, no incomplete subtests, no
-error / bail-out, zero exit), recurses into each subtest with a fresh
-sub-auditor, tracks per-phase timing (startup / events / cleanup / total via
-`Collector::Auditor::TimeTracker`), and injects `harness_state_transition`
-events (starting / failing / diagnosing / completed) plus a
-`harness_final_state` event (with the top-level subtest summary and phase
-times) on exit. The test recorder
-(`Collector::Recorder::Test`) keeps the transitions and the final state out of
-the events file and sends them to the pipes only (the final-state message also
-carries the collector `name` and `try`); there is no separate state file. The
-only output file is the events file. `scripts/t2h2_collector` wires this
-together for a single test file: it creates an `Atomic::Pipe`,
-`spawn_collector`s the collector (the middle process) with the recorder
-holding the write end, loops over the notification messages printing a basic
-line per start / transition / final result, and exits 0 (pass) / 1 (fail) from
-the collector's verdict. Its second argument is the events-file path.
-
-**Monitor.** `Collector::Monitor` is the read side of the notification pipes:
-constructed with the read-end `Atomic::Pipe`, its non-blocking `poll` reads
-whatever is available, folds each message into per-collector state (keyed by
-the message `uuid`, so any number of test and service collectors may share one
-pipe), and returns the payloads (list context) or their count (scalar). It
+**Monitor.** `Collector::Monitor` is the read side of the transitions channel
+(§5.2): its non-blocking `poll` reads whatever is available, folds each
+message into per-collector state (keyed by the message `uuid`, so any number
+of test and service collectors may share one monitor), and returns the
+payloads (list context) or their count (scalar). It
 answers queries — `tests` / `services`, per-collector `status` / `events_file`
 / `final_state` — and drain-on-call deltas (`new_collectors`, `new_failing`,
 `new_diagnosing`, `new_completed`, `new_test_exits`, `new_finalized`) for
-callers that act on changes. It exposes its `pipe` so a caller can select on
-the read handle and block until there is something to poll. `t2h2_collector`
+callers that act on changes. It exposes its file descriptors so a caller can
+select on them and block until there is something to poll. `t2h2_collector`
 uses it; `App::Yath2` and the scheduler (to free a slot when a test exits) are
 the intended future consumers.
 
-A monitor can also **proxy**: `add_proxy($name, $pipe, %filter)` forwards
-messages it reads on to another `Atomic::Pipe` (any number of named proxies).
+A monitor can also **proxy**: `add_proxy($name, $target, %filter)` forwards
+messages it reads on to downstream sockets (any number of named proxies),
+sending the verbatim cached compressed frame (§5.2).
 With no filter the proxy gets everything; `global => 1` restricts it to
 collectors with no `run_uuid`, and `run_uuid => $u` / `run_uuids => \@u`
 restrict it to the named runs (combinable, and the runs need not exist yet).
@@ -310,11 +299,44 @@ Each collector carries a `run_uuid` (required for tests, optional for
 services; absent ⇒ global), sent in its start message; the monitor tracks it
 and filters proxies on it.
 
-**Failure modes.** The engine returns `0` on a clean pipeline run and `255`
-on an internal collector failure, independent of the child's exit. The
-child's exit, any timeout / orphan / watched-parent-death, and the verdict
-all surface as recorded events (and, for `collect`, in the returned info
-hashref).
+**Failure modes.** Collector-internal failure modes (timeouts, orphans,
+watched-parent death, reap errors, signal escalation) are owned and
+documented by `Test2-Collector`. The harness observes them the same way it
+observes everything else: as recorded events in the events file and as
+transitions / final state on the transitions channel.
+
+### 4.2 Harness orchestration
+
+The main harness is an **orchestrator of collectors**. The shape below
+directly answers yath 1.0's bottlenecks (one process re-reading every
+event from every test, everything broadcast everywhere, per-event
+database rows, heavy file polling); it is decided architecture, being
+built out now.
+
+- **One collector per collected process.** Each test runs under its own
+  collector (`test -> parser -> processors (auditor) -> recorder +
+  reporter`). The full event stream goes to that collector's compressed
+  `jsonl.zst` events file; only the transitions go to the harness.
+- **Every harness-started process is a collector.** Anything the
+  harness spawns — services, workers, and the main harness process
+  itself — runs as a (non-test) collector, so every process, test or
+  otherwise, speaks one wire format and records one kind of events
+  file.
+- **Completion comes from transitions, not reaping.** Collectors are
+  not necessarily direct children of the harness, so the harness must
+  not depend on `waitpid` to learn that one finished. The final-state /
+  finalized messages on the transitions channel are the completion
+  signal; reaping is a local detail for whichever process actually
+  forked the collector.
+- **Transitions are the shared state.** Transition events — plus any
+  events the harness itself adds — are the primary state shared
+  between processes and forwarded to consumers (renderers, schedulers,
+  loggers). No component rebroadcasts the full per-event stream.
+- **Consumers pull detail on demand.** The state carried by the
+  transitions includes each collector's events-file path (sent on the
+  `starting` transition), so a renderer or other consumer that needs
+  full events reads that collector's `jsonl.zst` file directly, when
+  and if it cares.
 
 ## 5. Cross-cutting concerns
 
@@ -328,7 +350,10 @@ The event encoding spans the test child (which serializes and sends
 events), the collector pipeline (which receives, decodes, and records
 them), and the on-disk events file. The compression decisions below are
 shared across that whole path. They were settled by measurement, not
-assumption; recorded here so they are not relitigated.
+assumption; recorded here so they are not relitigated. The
+implementation now lives in `Test2-Collector` (§2.7), but the
+conclusions bind both distributions — anything in the harness that
+reads or writes these formats inherits them.
 
 - **Compress each event in the test child before sending it over the
   pipe.** Compressing the JSON in the writer and decompressing in the
@@ -366,11 +391,13 @@ assumption; recorded here so they are not relitigated.
 
 ### 5.2 Transition channel: unix sockets
 
-The collector recorder notifies interested listeners about a small set of
+The collector notifies interested listeners about a small set of
 per-collector occurrences -- the C<starting> message, each state transition
 (C<failing> / C<diagnosing> / C<completed>), the final state, and
 C<harness_collector_finalized>. These are low-frequency, high-value messages,
 distinct from the high-volume per-event stream that goes to the events file.
+They are the substrate of §4.2: the harness learns everything it knows about
+a collector — including that it completed — from this channel.
 
 The transition channel is **unix-domain stream sockets** (C<SOCK_STREAM>), not
 C<Atomic::Pipe>. The earlier iteration multiplexed all collectors over one
@@ -382,24 +409,27 @@ contract:
   connection per collector. Frames from different collectors land on separate
   file descriptors and can never interleave -- atomicity by construction,
   rather than relying on each message fitting in C<PIPE_BUF>.
-- **The recorder connects out.** A recorder is given C<transition_sockets>
-  (socket paths); it C<connect()>s to each at construction and writes to all
-  of them. It makes no assumption about what is on the other end.
-- **Message shape.** Each message is a
-  C<< {type =E<gt> "transition", payload =E<gt> {...}} >> envelope, JSON-encoded
-  and zstd-compressed once into one self-contained frame, then written to each
+- **The reporter connects out.** The collector's C<reporter> sink (a
+  C<Test2::Collector::Recorder::Socket>) is given socket paths; it
+  C<connect()>s to each and writes to all of them. It makes no assumption
+  about what is on the other end.
+- **Message shape.** Each message is an ordinary transition event, stamped
+  with a C<harness_collector> identity facet, JSON-encoded and
+  zstd-compressed once into one self-contained frame, then written to each
   socket with a blocking C<syswrite> (retried on C<EINTR>, C<SIGPIPE> ignored
-  so a vanished reader surfaces as a trappable error). The C<type> field
-  exists because a socket may carry other message kinds later; only
-  C<transition> is produced and consumed today. Readers split a connection's
-  byte stream on zstd frame boundaries (the shared
-  L<Test2::Harness2::Util::Zstd::FrameBuffer>, also used by the events-file
-  reader).
+  so a vanished reader surfaces as a trappable error). There is no
+  C<< {type =E<gt> ...} >> envelope; a consumer that multiplexes transitions
+  with other records on one stream can opt into a wrapper via the collector's
+  C<transition_frame> attribute. Readers split a connection's byte stream on
+  zstd frame boundaries (the shared zstd C<FrameBuffer>, also used by the
+  events-file reader).
 - **uuid in every payload.** The collector C<uuid> rides on every message (not
   just the first). Per-connection identity would allow sending it once, but the
   monitor's proxy fan-out and unmanaged-feed paths multiplex collectors and
   have no per-connection context; keeping the uuid everywhere lets all paths
-  demultiplex identically. The uuid is cheap on these rare messages.
+  demultiplex identically. The uuid is cheap on these rare messages. The
+  C<starting> transition additionally carries the collector name, the
+  events-file path, the run association, and (for tests) the try number.
 - **Monitor modes.** Managed: the monitor owns the listening socket, accepts
   connections, and reads framed messages in a non-blocking C<poll()>; it
   exposes its file descriptors for an external C<IO::Select> loop. Unmanaged:
@@ -408,6 +438,12 @@ contract:
 - **Proxy fan-out** forwards the verbatim cached compressed frame (no
   recompression) to downstream sockets, preserving the global / C<run_uuid>
   filtering.
+
+The message shape above is the extracted (`Test2-Collector`) contract.
+The in-tree pre-extraction recorder still writes the old
+C<< {type =E<gt> "transition", payload =E<gt> {...}} >> envelope and the
+in-tree Monitor still expects it; both change together when the swap to
+`Test2-Collector` lands (§4.1 "Status").
 
 ## 6. Open questions
 

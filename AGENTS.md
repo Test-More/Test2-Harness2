@@ -5,13 +5,15 @@ single distribution (`Test2-Harness2`), with a separation of concerns
 expressed through two namespaces:
 
 - **`Test2::Harness2`** owns **producing results**. Running tests,
-  driving the collector pipeline, schedulers, launchers, recorders,
-  preloads, and the harness database. Perl API only; no user
-  interface lives here.
+  orchestrating collectors, schedulers, launchers, and preloads.
+  Perl API only; no user interface lives here. The collector
+  pipeline itself comes from the external `Test2-Collector`
+  distribution (see "Dependency rules" and `ARCHITECTURE.md` §2.7,
+  §4.1).
 - **`App::Yath2`** owns **the user interface**: parsing user input
-  and feeding tests-to-run into `Test2::Harness2`, plus formatting
-  and displaying results (live render, archived render, querying
-  past runs).
+  (`Getopt::Yath`) and feeding tests-to-run into `Test2::Harness2`,
+  plus formatting and displaying results (live render, archived
+  render, querying past runs).
 
 Both namespaces live under `lib/` in this repository and ship in the
 same CPAN distribution. The split is a code-level separation of
@@ -235,6 +237,18 @@ guide; walk it before declaring work ready for review.
 - `Test2::Harness2` must not load `App::Yath2*` modules directly.
   Dynamic loading is acceptable only when driven by user-provided
   options that explicitly request `App::Yath2*` functionality.
+- The collector pipeline comes from the external `Test2-Collector`
+  distribution (`Test2::Collector` namespace; checkout at
+  `~/projects/Test2/Test2-Collector`). It is **not yet released or
+  installed** — it is still under review. Until the in-tree collector
+  code is swapped out for it, do not write code that loads
+  `Test2::Collector*` modules. Once the swap lands it becomes a hard
+  dependency. The dependency points one way: `Test2::Collector` never
+  loads `Test2::Harness2*` or `App::Yath2*`.
+- The in-tree `Test2::Harness2::Collector*` modules (everything except
+  `Collector::Monitor`) and `Test2::Formatter::Stream2*` are
+  pre-extraction copies slated for replacement by `Test2-Collector`.
+  Do not build new code against their internals.
 - Hard-required CPAN deps for `Test2::Harness2` /
   `Test2::Formatter::Stream2` are fine. Non-default database
   drivers (Postgres, MySQL, MariaDB, Percona) are loaded only when
@@ -278,8 +292,19 @@ must internalise before writing any code (all are documented in
   is for ephemeral test setups and non-default flavors; never for
   the default SQLite path.
 - **No `IPC::Manager`.** Earlier iterations relied on it; the new
-  architecture does not. Cross-process state goes through the
-  harness database; transient bytes between processes go through
-  `Atomic::Pipe`. If a reference doc or piece of `reference/` code
-  calls for `IPC::Manager`, treat that as outdated.
+  architecture does not. Transient bytes between processes go through
+  `Atomic::Pipe`; durable cross-process state goes to disk. If a
+  reference doc or piece of `reference/` code calls for
+  `IPC::Manager`, treat that as outdated.
+- **The collector comes from `Test2-Collector`** (`Test2::Collector`
+  namespace; external, unreleased, under review). The in-tree
+  `Test2::Harness2::Collector*` modules are pre-extraction copies
+  awaiting replacement; only `Collector::Monitor` stays in the
+  harness. See `ARCHITECTURE.md` §2.7 and §4.1.
+- **The harness orchestrates collectors** (`ARCHITECTURE.md` §4.2).
+  Every harness-started process — including the main harness process —
+  is a collector (non-test variant). Completion is learned from
+  transition messages, never from reaping. Transitions are the shared
+  state; consumers read a collector's `jsonl.zst` events file on
+  demand for full detail.
 - **Reference trees are immutable.** Copy out, modify the copy.
