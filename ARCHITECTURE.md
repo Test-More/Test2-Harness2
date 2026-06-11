@@ -346,6 +346,63 @@ built out now.
   full events reads that collector's `jsonl.zst` file directly, when
   and if it cares.
 
+### 4.3 Harness service
+
+**Responsibility.** The long-running process that owns a workdir and
+executes queued test runs, one collector per job. Modules:
+
+- `lib/Test2/Harness2.pm` — the client handle. `new(project => ...)`
+  (required; default workdir
+  `<tmpdir>/t2h2-<user>-<project>`), `start`, `queue_run`, `shutdown`,
+  `wait`.
+- `lib/Test2/Harness2/Run.pm` / `lib/Test2/Harness2/Run/Job.pm` — value
+  objects describing what to run.
+- `lib/Test2/Harness2/Service/Harness.pm` — the service loop that runs
+  inside the spawned process. The handle's `harness_class` attribute
+  selects it, so a subclass can be swapped in.
+
+**Runs and jobs are final-form data.** A `Run` is a `run_uuid` plus an
+arrayref of `Run::Job`s; a `Job` is `job_uuid`, `try` (always `1` until
+retry exists), `test_file`, `env_vars`, `includes`, and `via` (launch
+method; only `fork_exec` exists). These classes do **no sniffing** — no
+shebang parsing, no directive scanning, no discovery. Producers (the
+future `App::Yath2` layer) subclass them, sniff and populate the
+attribute values, then serialize; the harness rehydrates plain base-class
+objects from the data (`TO_JSON` → `new`, with hashref job entries
+re-blessed automatically). The harness never sees or loads the
+subclasses.
+
+**Process shape.** `start` spawns the service via `spawn_collector` as a
+plain (non-test) collector child running the service loop in a `run_sub`
+— per §4.2, every harness-started process, the harness itself included,
+is a collector. The service's own output is recorded to
+`<workdir>/harness.jsonl.zst`. `start` waits for the request socket to
+appear before returning.
+
+**Sockets and protocol.** Two unix sockets in the workdir:
+
+- `<workdir>/harness.socket` — client requests. Each request is one
+  zstd-compressed JSON object frame (the same framing as collector
+  events): `{queue_run => <Run TO_JSON>}` queues a run;
+  `{shutdown => true}` declares no more runs are coming, so the service
+  finishes its queue and exits.
+- `<workdir>/harness_transitions.socket` — a managed
+  `Collector::Monitor` (§5.2). Each job collector's reporter connects
+  here and streams its transitions.
+
+**Job execution.** One job at a time, no concurrency (the scheduling is
+a simple cursor inside the service for now; a real scheduler comes
+later). Per job the service spawns a test collector: `fork_exec` builds
+`[$^X, -I<includes...>, <test_file>]`, the job's `env_vars` go into the
+child, the collector `uuid` is the `job_uuid` and carries the
+`run_uuid` / `try`. Events are recorded to
+`<workdir>/<run_uuid>/<job_uuid>-<try>.jsonl.zst` — the harness decides
+the path, hands it to the recorder, and the `starting` transition
+carries it to any consumer. A job is **complete when its
+`harness_collector_finalized` message arrives** on the transitions
+channel; only then is the collector reaped (`waitpid` is reaping and a
+health check, never the completion signal — §4.2).
+
 ## 5. Cross-cutting concerns
 
 Reserved for things that cut across multiple subsystems once more than
