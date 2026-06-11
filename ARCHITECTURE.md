@@ -185,7 +185,11 @@ loaded until it is released and installed.
 Top-level layout that architecture depends on:
 
 - `lib/Test2/Harness2/` — harness library code.
-- `lib/Test2/Harness2/Util/` — leaf utility modules.
+- `lib/Test2/Harness2/Util/` — leaf utility modules, for utilities the
+  harness alone needs. Wire-format and IPC utilities (JSON, zstd
+  framing, unix sockets, event emission) come from
+  `Test2::Collector::Util::*` (§2.7) — do not re-grow harness copies
+  of those.
 - `lib/Test2/Harness2/Role/` — `Role::Tiny` roles consumed by harness
   code.
 - `t/` — human-authored tests.
@@ -235,9 +239,10 @@ process-group signaling).
 
 **Status — swap landed, dist not yet installed.** The pre-extraction
 copies (`lib/Test2/Harness2/Collector*` minus the Monitor,
-`Test2::Formatter::Stream2*`, `Test2::Harness2::Event`) are deleted;
-the drivers, the Monitor, and the tests run against
-`Test2::Collector*`. `Test2-Collector` is still under review — not
+`Test2::Formatter::Stream2*`, `Test2::Harness2::Event`, and the whole
+`Test2::Harness2::Util*` tree) are deleted; the drivers, the Monitor,
+and the tests run against `Test2::Collector*`, including its
+`Test2::Collector::Util::*` modules. `Test2-Collector` is still under review — not
 released, not installed — so until it is, it is loaded from the
 `t2clib` symlink at the repository root (gitignored; points at a
 sibling checkout's `lib/`). The `scripts/t2h2_*` drivers add it to

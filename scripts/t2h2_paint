@@ -7,8 +7,8 @@ use FindBin qw/$RealBin/;
 # symlink at the repository root (it points at a sibling checkout's lib).
 use lib grep { -d $_ } "$RealBin/../t2clib", "$RealBin/../lib";
 
-use Test2::Harness2::Util::Zstd qw/open_zstd_reader ZSTD_FRAME_MAGIC/;
-use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Collector::Util::Zstd qw/open_zstd_reader ZSTD_FRAME_MAGIC/;
+use Test2::Collector::Util::JSON qw/decode_json/;
 use Test2::Util::Term qw/term_size/;
 
 use App::Yath2::Renderer::Text::EventPainter;

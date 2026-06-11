@@ -5,12 +5,12 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
-use Compress::Zstd ();
-use IO::Select     ();
+use IO::Select ();
 
-use Test2::Harness2::Util::Socket qw/open_unix_listen connect_unix write_frame/;
-use Test2::Harness2::Util::Zstd::FrameBuffer;
-use Test2::Harness2::Util::JSON qw/decode_json/;
+use Test2::Collector::Util::Socket qw/open_unix_listen connect_unix write_frame/;
+use Test2::Collector::Util::Zstd qw/decompress_blob/;
+use Test2::Collector::Util::Zstd::FrameBuffer;
+use Test2::Collector::Util::JSON qw/decode_json/;
 
 use Object::HashBase qw{
     <listen
@@ -240,7 +240,7 @@ sub poll ($self) {
     while (my $conn = $self->{+LISTEN_SOCK}->accept) {
         $conn->blocking(0);
         $sel->add($conn);
-        $self->{+CONNS}{$conn} = Test2::Harness2::Util::Zstd::FrameBuffer->new;
+        $self->{+CONNS}{$conn} = Test2::Collector::Util::Zstd::FrameBuffer->new;
     }
 
     my @payloads;
@@ -288,9 +288,9 @@ sub feed ($self, $payload) {
 }
 
 sub feed_frame ($self, $frame) {
-    my $payload = Compress::Zstd::decompress($frame);
+    my $payload;
     croak "monitor: feed_frame given an undecodable frame"
-        unless defined $payload;
+        unless eval { $payload = decompress_blob($frame); 1 } && defined $payload;
     return $self->_handle_frame({frame => $frame, payload => $payload});
 }
 

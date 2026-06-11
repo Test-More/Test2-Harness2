@@ -14,9 +14,9 @@ use lib grep { -d $_ } "$RealBin/../t2clib", "$RealBin/../lib";
 use Test2::Collector qw/spawn_collector/;
 use Test2::Collector::Recorder::Zstd;
 use Test2::Collector::Recorder::Socket;
+use Test2::Collector::Util::Zstd qw/open_zstd_reader/;
+use Test2::Collector::Util::JSON qw/decode_json/;
 use Test2::Harness2::Collector::Monitor;
-use Test2::Harness2::Util::Zstd qw/open_zstd_reader/;
-use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Util::Term qw/term_size/;
 use Test2::Util::UUID qw/gen_uuid/;
 

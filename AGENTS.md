@@ -115,7 +115,9 @@ from). Resolve anything they turn up, then re-run the test suite.
 
 3. **Util / role / base-class reuse pass.** Re-scan touched files
    for logic that already exists as a utility. The relevant homes
-   are `Test2::Harness2::Util`, `Test2::Harness2::Util::*`,
+   are `Test2::Collector::Util::*` (wire formats, JSON, zstd framing,
+   unix sockets — preferred; do not re-grow harness copies),
+   `Test2::Harness2::Util::*` (harness-only utilities),
    `Test2::Harness2::Role::*`, and the matching DB row classes. If
    the file open-codes something a util / role / base class
    already provides, switch to using it. If you see the same logic

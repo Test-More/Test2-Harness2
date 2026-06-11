@@ -3,11 +3,13 @@ use v5.38;
 
 use File::Temp ();
 use IO::Select;
-use Compress::Zstd qw/compress/;
 
-use Test2::Harness2::Util::Socket qw/open_unix_listen connect_unix write_frame/;
-use Test2::Harness2::Util::Zstd::FrameBuffer;
-use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+use lib 't2clib';    # temporary until Test2-Collector is installed
+
+use Test2::Collector::Util::Socket qw/open_unix_listen connect_unix write_frame/;
+use Test2::Collector::Util::Zstd qw/compress_blob/;
+use Test2::Collector::Util::Zstd::FrameBuffer;
+use Test2::Collector::Util::JSON qw/encode_json decode_json/;
 
 use Test2::Harness2::Collector::Monitor;
 
@@ -35,14 +37,14 @@ sub unmanaged_monitor () { Test2::Harness2::Collector::Monitor->new }
 # with a harness_collector identity facet (no envelope).
 sub frame_for ($facet, %collector) {
     my $fd = {%$facet, harness_collector => {%collector}};
-    return compress(encode_json({facet_data => $fd}));
+    return compress_blob(encode_json({facet_data => $fd}));
 }
 
 # Read every frame a connection received and replay it into a fresh unmanaged
 # downstream monitor (mirrors what a real downstream consumer would do).
 sub downstream_from_conn ($conn) {
     $conn->blocking(0);
-    my $fb  = Test2::Harness2::Util::Zstd::FrameBuffer->new;
+    my $fb  = Test2::Collector::Util::Zstd::FrameBuffer->new;
     my $sel = IO::Select->new($conn);
     while ($sel->can_read(2)) {
         my $buf = '';

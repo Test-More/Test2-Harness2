@@ -7,8 +7,10 @@ use FindBin qw/$RealBin/;
 # symlink at the repository root (it points at a sibling checkout's lib).
 use lib grep { -d $_ } "$RealBin/../t2clib", "$RealBin/../lib";
 
-use Test2::Harness2::Util::Zstd qw/open_zstd_reader ZSTD_FRAME_MAGIC/;
-use Test2::Harness2::Util::JSON qw/decode_json encode_pretty_json/;
+use Cpanel::JSON::XS ();
+
+use Test2::Collector::Util::Zstd qw/open_zstd_reader ZSTD_FRAME_MAGIC/;
+use Test2::Collector::Util::JSON qw/decode_json/;
 
 # t2h2_extract - dump a collector events file as human-readable JSON.
 #
@@ -31,7 +33,12 @@ for my $line (_read_lines($events_file)) {
     push @events => decode_json($line);
 }
 
-print encode_pretty_json(\@events), "\n";
+# Pretty / canonical / ASCII-safe encoder for the human-facing dump. This is
+# the only consumer of pretty output, so the encoder lives here rather than in
+# a shared util.
+my $pretty = Cpanel::JSON::XS->new->ascii(1)->pretty(1)->canonical(1)->convert_blessed(1)->allow_nonref(1);
+
+print $pretty->encode(\@events), "\n";
 
 exit 0;
 

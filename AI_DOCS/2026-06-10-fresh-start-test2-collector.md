@@ -79,12 +79,10 @@ What changed:
   `Recorder` (+`::Test`), `Role::*`, `Test2::Formatter::Stream2*`,
   and `Test2::Harness2::Event` — plus their tests and the orphaned
   helper scripts. `Test2-Collector`'s own suite covers all of it.
-- **Kept** all `Test2::Harness2::Util::*` modules. They were copied
-  into the collector dist at extraction but have since diverged
-  (e.g. the dist's optional-zstd gating, the harness's
-  `encode_pretty_json` / `Zstd::Writer`), and the Monitor, scripts,
-  and renderers use the harness copies. Two dists owning their own
-  utils is normal; no cross-dist util dependency was introduced.
+- **Kept** all `Test2::Harness2::Util::*` modules — **superseded the
+  same day** (see "Util unification" below): the user directed
+  switching to the collector's utils, and the whole harness Util
+  tree was deleted.
 - **Ported the Monitor** to the extracted transition shape: frames
   decode to plain events (`{facet_data => ...}`) stamped with a
   `harness_collector` facet — no `{type, payload}` envelope. Added
@@ -108,3 +106,31 @@ What changed:
 
 Suite after the swap: 8 files, 71 tests, all passing via
 `prove -Ilib -j16 -r t/`.
+
+## Util unification (same day, follow-up)
+
+The user directed switching to the collector's utility modules
+wherever possible. The entire `Test2::Harness2::Util*` tree is now
+deleted; the Monitor, the `scripts/t2h2_*` drivers, and the tests use
+`Test2::Collector::Util::{JSON, Socket, Zstd, Zstd::FrameBuffer}`.
+Notes:
+
+- `encode_pretty_json` / `json_true` / `json_false` and
+  `open_zstd_writer` / `open_zstd_reader_fh` have no collector
+  equivalent and no remaining consumers. The one pretty-JSON user
+  (`scripts/t2h2_extract`, a human-facing dump) builds its own
+  `Cpanel::JSON::XS` pretty/canonical/ascii encoder inline; the one
+  zstd-writer user (`t2h2_extract.t`'s fixture) writes
+  `compress_blob` frames directly.
+- The Monitor's `feed_frame` uses `decompress_blob` instead of
+  calling `Compress::Zstd::decompress` directly, dropping the
+  Monitor's direct `Compress::Zstd` dependency (the collector util
+  gates zstd behind `HAVE_ZSTD`).
+- Future harness-only utilities may re-grow under
+  `lib/Test2/Harness2/Util/`, but wire-format / IPC helpers must come
+  from `Test2::Collector::Util::*` (recorded in `ARCHITECTURE.md` §3
+  and the AGENTS.md reuse pass).
+
+Suite after unification: 6 files, 63 tests, all passing (the two
+in-tree util unit tests went with their modules; the collector dist
+tests its own utils).

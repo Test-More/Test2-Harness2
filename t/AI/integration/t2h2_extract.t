@@ -3,8 +3,10 @@ use v5.38;
 
 use File::Temp qw/tempdir/;
 
-use Test2::Harness2::Util::Zstd qw/open_zstd_writer/;
-use Test2::Harness2::Util::JSON qw/decode_json/;
+use lib 't2clib';    # temporary until Test2-Collector is installed
+
+use Test2::Collector::Util::Zstd qw/compress_blob/;
+use Test2::Collector::Util::JSON qw/decode_json/;
 
 # The t2h2_extract script reads a collector events file -- either plain jsonl or
 # a multi-frame zstd file, detected from the leading bytes rather than the name
@@ -47,10 +49,12 @@ subtest zstd_file => sub {
     my $dir  = tempdir(CLEANUP => 1);
     my $file = "$dir/events.bin";      # zstd content, non-.zst name
 
-    my $w = open_zstd_writer($file);
-    $w->print(qq[{"facet_data":{"assert":{"pass":1,"details":"a"}}}], "\n");
-    $w->print(qq[{"facet_data":{"assert":{"pass":1,"details":"b"}}}], "\n");
-    $w->close;
+    # One self-contained zstd frame per event record, matching the events-file
+    # format the collector's Recorder::Zstd sink writes.
+    open(my $fh, '>:raw', $file) or die "open: $!";
+    print $fh compress_blob(qq[{"facet_data":{"assert":{"pass":1,"details":"a"}}}\n]);
+    print $fh compress_blob(qq[{"facet_data":{"assert":{"pass":1,"details":"b"}}}\n]);
+    close($fh);
 
     my ($code, $out) = run_script($file);
     is($code, 0, "exits 0 on a zstd file detected by content");
