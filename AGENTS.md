@@ -77,6 +77,9 @@ for its specific subsystem:
 - `reference/painter/` — an event-painting renderer.
 - `reference/io_events/` — in-tree formatter IO-events, before the
   `Test2-Collector` extraction.
+- `reference/notes/` — working notes captured from the
+  abandoned-branch era (`fresh_start`, `harness_service`,
+  `redirect`).
 
 **Never modify anything under `reference/`.** Copy out, modify the
 copy. The reference trees are immutable history we read against.
@@ -101,6 +104,9 @@ docs win — flag the conflict if it is non-trivial.
 4. **This file (`AGENTS.md`)** — Per-repository agent / contributor
    workflow, pre-review checks, and project conventions that are
    not pure style.
+5. **`MIGRATION.md`** — Living status tracker for the 1.0 → 2.0
+   transition. Read it before doing transition work; update it after
+   landing a chunk.
 
 If you are about to implement something that seems to conflict with
 `ARCHITECTURE.md`, stop and verify. The most common cause is that
@@ -293,6 +299,11 @@ guide; walk it before declaring work ready for review.
 
 ## Worktrees
 
+- **Foundations override (active):** while the 1.0 → 2.0 transition
+  foundations are being laid, do **not** create worktrees or feature
+  branches. Commit directly to the transition branch (currently
+  `2.0d`, see `MIGRATION.md`). The rules below resume once the user
+  declares foundations done.
 - Significant work requires a worktree. Place worktrees in
   `worktrees/`.
 - Documentation-only work (editing `ARCHITECTURE.md`, `STYLE_GUIDE.md`,

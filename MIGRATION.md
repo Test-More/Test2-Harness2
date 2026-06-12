@@ -38,7 +38,8 @@ architecture* lives in `ARCHITECTURE.md`; the *how-to-work* rules live in
   `2.0b` (collector swap + Monitor + harness-service MVP),
   `harness_service` (Role::Service, scheduler, system-load service),
   `dbix_quickorm` (DBIx::QuickORM layer), `painter` (renderer),
-  `io_events` (in-tree formatter IO-events).
+  `io_events` (in-tree formatter IO-events). `reference/notes/` holds
+  working notes from that abandoned-branch era.
 
 ## Ground rules (current)
 

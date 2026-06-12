@@ -27,9 +27,11 @@ carries one of:
   abandoned branch under `reference/`. Nothing in the live tree depends on it
   yet.
 
-At the time this document was written the live tree is pure 1.0, so every
-target subsystem below is `[target]` and nothing is `[migrating]` yet. Update
-the tag on a section as its migration starts and completes.
+Chunk 1 of the migration (mechanical renames + version bump, §1.1) has
+landed: the tree carries the 2.0 names and versions but otherwise still runs
+1.0 logic, and every target subsystem below remains `[target]`. Update the
+tag on a section as its migration starts and completes. Current per-chunk
+migration status lives in `MIGRATION.md`, not here.
 
 ## Conventions for this document
 
@@ -84,10 +86,12 @@ designs, but the live tree starts from 1.0 and is migrated forward.
   from the external `Test2-Collector` distribution and never depends back on
   this one (§2.8).
 
-### 1.1 Migration order `[target]`
+### 1.1 Migration order `[migrating]`
 
 The end state is reached in chunks, each small enough for a human to review
-and each keeping the test suite green. The intended order, roughly:
+and each keeping the test suite green. Per-chunk status (done / in progress /
+not started, with commit refs) is tracked in `MIGRATION.md`. The intended
+order, roughly:
 
 1. **Mechanical renames** — `App::Yath` → `App::Yath2`,
    `Test2::Harness` → `Test2::Harness2`; versions → `2.000000`;
@@ -164,12 +168,14 @@ unix sockets, §4.3); durable cross-process state goes to disk. If a reference
 doc or a snippet of `reference/` code calls for `IPC::Manager`, treat that as
 outdated and follow this document.
 
-### 2.6 Minimum Perl version
+### 2.6 Minimum Perl version `[target]`
 
-The harness targets **Perl 5.38.0** as its floor. Every shipped module starts
-with `use v5.38;`, which enables `strict`, `warnings`, and stable `signatures`
-in one line. `STYLE_GUIDE.md` ("Minimum Perl and subroutine signatures") owns
-the usage rule.
+The harness targets **Perl 5.38.0** as its floor. New and migrated modules
+start with `use v5.38;`, which enables `strict`, `warnings`, and stable
+`signatures` in one line. Modules inherited from 1.0 still use
+`strict`/`warnings` directly and adopt `use v5.38;` as their migration chunk
+touches them. `STYLE_GUIDE.md` ("Minimum Perl and subroutine signatures")
+owns the usage rule.
 
 ### 2.7 Reference trees are immutable
 
@@ -180,7 +186,8 @@ snapshots of abandoned 2.0 feature branches — `2.0b/` (collector swap to
 (`Role::Service`, scheduler, system-load service), `dbix_quickorm/` (a refined
 `DBIx::QuickORM` layer), `painter/` (an event-painting renderer), and
 `io_events/` (in-tree formatter IO-events before the `Test2-Collector`
-extraction). Nothing under `reference/` is edited in place — copy out and
+extraction). `reference/notes/` holds working notes captured from that
+abandoned-branch era. Nothing under `reference/` is edited in place — copy out and
 modify the copy. When a reference's behavior conflicts with this document,
 this document wins and the conflict gets flagged.
 
@@ -202,9 +209,11 @@ line. This scaffolding goes away once the dist is installed. The dependency
 points one way: `Test2::Collector` never loads `Test2::Harness2*` or
 `App::Yath2*`.
 
-## 3. Repository layout `[target]`
+## 3. Repository layout `[migrating]`
 
-Target layout that architecture depends on (reached as the renames land):
+Layout the architecture depends on. The renamed `lib/` paths are in place;
+`lib/Test2/Harness2/Role/`, `t/AI/`, and `AI_DOCS/` appear as the first work
+that needs them lands:
 
 - `lib/Test2/Harness2/` — harness library code (from `lib/Test2/Harness/`).
 - `lib/Test2/Harness2/Util/` — leaf utilities the harness alone needs.
