@@ -1,25 +1,9 @@
 package App::Yath2::Options::Persist;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
-use Test2::Util qw/IS_WIN32/;
-use Test2::Harness2::Util qw/clean_path/;
-
-use App::Yath2::Options;
-
-option_group {prefix => 'runner', category => "Runner Options"} => sub {
-    option daemon => (
-        description => 'Start the runner as a daemon (Default: True)',
-        default => 1,
-    );
-};
-
-1;
-
-__END__
-
+use Getopt::Yath;
 
 =pod
 
@@ -34,6 +18,24 @@ App::Yath2::Options::Persist - Persistent Runner options for Yath.
 This is where the command line options for the persistent runner are defined.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+
+=cut
+
+option_group {group => 'runner', category => "Runner Options"} => sub {
+    option daemon => (
+        type        => 'Bool',
+        description => 'Start the runner as a daemon (Default: True)',
+        default     => 1,
+    );
+};
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
 
 =head1 SOURCE
 

@@ -1,6 +1,5 @@
 package App::Yath2::Options::Workspace;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -10,63 +9,7 @@ use File::Temp qw/tempdir/;
 
 use Test2::Harness2::Util qw/clean_path chmod_tmp/;
 
-use App::Yath2::Options;
-
-option_group {prefix => 'workspace', category => "Workspace Options"} => sub {
-    option tmp_dir => (
-        type        => 's',
-        short       => 't',
-        alt         => ['tmpdir'],
-        description => 'Use a specific temp directory (Default: use system temp dir)',
-        env_vars => [qw/T2_HARNESS_TEMP_DIR YATH_TEMP_DIR TMPDIR TEMPDIR TMP_DIR TEMP_DIR/],
-        default     => sub { File::Spec->tmpdir },
-    );
-
-    option workdir => (
-        type         => 's',
-        short        => 'w',
-        description  => 'Set the work directory (Default: new temp directory)',
-        env_vars => [qw/T2_WORKDIR YATH_WORKDIR/],
-        clear_env_vars => 1,
-        normalize    => \&clean_path,
-    );
-
-    option clear => (
-        short       => 'C',
-        description => 'Clear the work directory if it is not already empty',
-    );
-
-    post sub {
-        my %params   = @_;
-        my $settings = $params{settings};
-
-        if (my $workdir = $settings->workspace->workdir) {
-            if (-d $workdir) {
-                remove_tree($workdir, {safe => 1, keep_root => 1}) if $settings->workspace->clear;
-            }
-            else {
-                mkdir($workdir) or die "Could not create workdir: $!";
-                chmod_tmp($workdir);
-            }
-
-            return;
-        }
-
-        my $project = $settings->harness->project;
-        my $template = join '-' => ( "yath", $$, "XXXXXX");
-
-        my $tmpdir = tempdir(
-            $template,
-            DIR     => $settings->workspace->tmp_dir,
-            CLEANUP => !($settings->debug->keep_dirs || $params{command}->always_keep_dir),
-        );
-        chmod_tmp($tmpdir);
-
-        $settings->workspace->field(workdir => $tmpdir);
-    };
-};
-
-1;
+use Getopt::Yath;
 
 =pod
 
@@ -81,6 +24,70 @@ App::Yath2::Options::Workspace - Options for specifying the yath work dir.
 Options regarding the yath working directory.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+
+=cut
+
+option_group {group => 'workspace', category => "Workspace Options"} => sub {
+    option tmp_dir => (
+        type          => 'Scalar',
+        short         => 't',
+        alt           => ['tmpdir', 'tmp-dir'],
+        description   => 'Use a specific temp directory (Default: use system temp dir)',
+        from_env_vars => [qw/T2_HARNESS_TEMP_DIR YATH_TEMP_DIR TMPDIR TEMPDIR TMP_DIR TEMP_DIR/],
+        default       => sub { File::Spec->tmpdir },
+    );
+
+    option workdir => (
+        type           => 'Scalar',
+        short          => 'w',
+        description    => 'Set the work directory (Default: new temp directory)',
+        from_env_vars  => [qw/T2_WORKDIR YATH_WORKDIR/],
+        clear_env_vars => [qw/T2_WORKDIR YATH_WORKDIR/],
+        normalize      => \&clean_path,
+    );
+
+    option clear => (
+        type        => 'Bool',
+        short       => 'C',
+        description => 'Clear the work directory if it is not already empty',
+    );
+};
+
+option_post_process 0 => sub {
+    my ($options, $state) = @_;
+    my $settings = $state->{settings};
+
+    if (my $workdir = $settings->workspace->workdir) {
+        if (-d $workdir) {
+            remove_tree($workdir, {safe => 1, keep_root => 1}) if $settings->workspace->clear;
+        }
+        else {
+            mkdir($workdir) or die "Could not create workdir: $!";
+            chmod_tmp($workdir);
+        }
+
+        return;
+    }
+
+    my $template = join '-' => ("yath", $$, "XXXXXX");
+
+    my $tmpdir = tempdir(
+        $template,
+        DIR     => $settings->workspace->tmp_dir,
+        CLEANUP => !($settings->debug->keep_dirs || ($state->{command} && $state->{command}->always_keep_dir)),
+    );
+    chmod_tmp($tmpdir);
+
+    $settings->workspace->create_option(workdir => $tmpdir);
+};
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
 
 =head1 SOURCE
 
