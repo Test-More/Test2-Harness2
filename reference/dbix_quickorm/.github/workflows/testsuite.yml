@@ -1,0 +1,231 @@
+name: testsuite
+
+on:
+  push:
+    branches:
+      - main
+      - '2.0'
+    tags-ignore:
+      - '*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_matrix:
+        description: "Also run the Perl version matrix (slower)"
+        type: boolean
+        default: false
+
+# Cancel any in-flight run for the same branch/PR when a new push
+# arrives. Without this block, rapid force-pushes produce a pile of
+# superseded runs that each have to be cancelled individually, and
+# GitHub's anti-abuse heuristics can stop auto-triggering new runs
+# for a while. Scoping the group to workflow+ref means push events
+# and the PR events for the same branch share a single slot.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  #
+  # A basic and simple test run
+  #
+
+  ubuntu:
+    name: "Simple TestRun"
+    env:
+      PERL_USE_UNSAFE_INC: 0
+      AUTHOR_TESTING: 0
+      AUTOMATED_TESTING: 1
+      RELEASE_TESTING: 1
+      PERL_CARTON_PATH: $GITHUB_WORKSPACE/local
+      # Per-yath-run cap, only consulted when a contributor invokes
+      # `yath test` by hand; `make test` itself runs .t files directly
+      # via Test::Harness so this is purely defensive.
+      YATH_TEST_TIMEOUT: 480
+      # How long the harness waits for a freshly-spawned run service
+      # to announce itself over IPC. The upstream default (10s) is
+      # too tight for slower container scheduling; see #392.
+      YATH_RUN_SERVICE_READY_TIMEOUT: 60
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+      - run: perl -V
+      - name: Get cache week number
+        id: cache-week
+        run: echo "week=$(date +%Y-W%V)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v5
+        with:
+          path: local
+          key: cpan-ubuntu-${{ hashFiles('cpanfile') }}-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            cpan-ubuntu-${{ hashFiles('cpanfile') }}-
+            cpan-ubuntu-
+      - name: install dependencies from cpanfile (all groups)
+        uses: perl-actions/install-with-cpm@v2
+        with:
+          cpanfile: "cpanfile"
+          # Install runtime + test + configure + develop. The develop
+          # group carries the modules that used to live in
+          # .github/cpanfile.ci plus optional backends (e.g.
+          # Compress::Zstd) that gate Log test coverage.
+          # Do NOT pass --with-suggests: RuntimeSuggests includes
+          # Win32::Console::ANSI / Win32::Job, which fail to configure
+          # on Linux runners ("OS unsupported").
+          args: "--with-develop"
+          retries: 3
+      - run: perl Makefile.PL
+      - run: make
+      - run: make test
+
+  #
+  # Same as `ubuntu`, but installs App::Yath::Script from the unreleased
+  # `script` branch of this repo instead of CPAN, so PRs that touch the
+  # wrapper get smoke-tested against the unreleased code before any
+  # release is cut.
+  #
+
+  ubuntu-script-branch:
+    name: "Simple TestRun (App::Yath::Script @ origin/script)"
+    env:
+      PERL_USE_UNSAFE_INC: 0
+      AUTHOR_TESTING: 0
+      AUTOMATED_TESTING: 1
+      RELEASE_TESTING: 1
+      PERL_CARTON_PATH: $GITHUB_WORKSPACE/local
+      YATH_TEST_TIMEOUT: 480
+      YATH_RUN_SERVICE_READY_TIMEOUT: 60
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Need the full history so origin/script is reachable.
+          fetch-depth: 0
+      - run: perl -V
+      - name: Get cache week number
+        id: cache-week
+        run: echo "week=$(date +%Y-W%V)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v5
+        with:
+          path: local
+          key: cpan-ubuntu-script-${{ hashFiles('cpanfile') }}-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            cpan-ubuntu-script-${{ hashFiles('cpanfile') }}-
+            cpan-ubuntu-script-
+      - name: install App::Yath::Script from origin/script
+        run: |
+          git fetch origin script:script || git fetch origin script
+          perl author/install-yath-script --force
+      - name: install dependencies from cpanfile (all groups)
+        uses: perl-actions/install-with-cpm@v2
+        with:
+          cpanfile: "cpanfile"
+          # Install runtime + test + configure + develop. The develop
+          # group carries the modules that used to live in
+          # .github/cpanfile.ci plus optional backends (e.g.
+          # Compress::Zstd) that gate Log test coverage.
+          # Do NOT pass --with-suggests: RuntimeSuggests includes
+          # Win32::Console::ANSI / Win32::Job, which fail to configure
+          # on Linux runners ("OS unsupported").
+          args: "--with-develop"
+          retries: 3
+      - run: perl Makefile.PL
+      - run: make
+      - run: make test
+
+  #
+  # Determine which Perl versions to test
+  #
+
+  perl-versions:
+    # On manual dispatch, only run when the user opts into the matrix.
+    # Push/PR events keep the default (always run).
+    if: github.event_name != 'workflow_dispatch' || inputs.run_matrix
+    runs-on: ubuntu-latest
+    name: List Perl versions
+    outputs:
+      perl-versions: ${{ steps.action.outputs.perl-versions }}
+    steps:
+      - id: action
+        uses: perl-actions/perl-versions@v2
+        with:
+          since-perl: v5.14
+          until-perl: "5.40"
+          with-devel: false
+
+  #
+  # Only trigger the matrix if the testsuite pass above
+  #
+
+  perl:
+    name: "linux Perl ${{ matrix.perl-version }}"
+    needs: [ubuntu, perl-versions]
+    # Same gate as perl-versions: skip on manual dispatch unless the
+    # user opted in.
+    if: github.event_name != 'workflow_dispatch' || inputs.run_matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+       PERL_USE_UNSAFE_INC: 0
+       AUTHOR_TESTING: 0
+       AUTOMATED_TESTING: 1
+       RELEASE_TESTING: 1
+       PERL_CARTON_PATH: $GITHUB_WORKSPACE/local
+       PERL5LIB: ${{ github.workspace }}/local/lib/perl5
+       T2_NO_FORK: 1
+       # Per-yath-run cap; matches the ubuntu job but tighter since
+       # matrix jobs run in slower container scheduling.
+       YATH_TEST_TIMEOUT: 480
+       # Give the run-service handshake a larger budget than the
+       # upstream 10s default; matrix containers schedule IPC bind
+       # much more slowly than the host-native ubuntu job. See #392.
+       YATH_RUN_SERVICE_READY_TIMEOUT: 120
+
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        perl-version: ${{ fromJson(needs.perl-versions.outputs.perl-versions) }}
+
+    container:
+      image: perldocker/perl-tester:${{ matrix.perl-version }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - run: perl -V
+      - name: Get cache week number
+        id: cache-week
+        run: echo "week=$(date +%Y-W%V)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v5
+        with:
+          path: local
+          key: cpan-perl-${{ matrix.perl-version }}-${{ hashFiles('cpanfile') }}-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            cpan-perl-${{ matrix.perl-version }}-${{ hashFiles('cpanfile') }}-
+            cpan-perl-${{ matrix.perl-version }}-
+      - name: install dependencies from cpanfile (all groups)
+        uses: perl-actions/install-with-cpm@v2
+        with:
+          cpanfile: "cpanfile"
+          # Install runtime + test + configure + develop. The develop
+          # group carries the modules that used to live in
+          # .github/cpanfile.ci plus optional backends (e.g.
+          # Compress::Zstd) that gate Log test coverage.
+          # Do NOT pass --with-suggests: RuntimeSuggests includes
+          # Win32::Console::ANSI / Win32::Job, which fail to configure
+          # on Linux runners ("OS unsupported").
+          args: "--with-develop"
+          global: true
+          sudo: false
+          retries: 3
+      - run: perl Makefile.PL
+      - run: make
+      - run: make test

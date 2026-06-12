@@ -1,0 +1,135 @@
+#!/usr/bin/env perl
+use v5.38;
+
+use Config qw/%Config/;
+use File::Path qw/make_path/;
+use File::Basename qw/dirname/;
+use FindBin qw/$RealBin/;
+use IO::Select;
+
+# Test2-Collector is not installed yet; until it is, load it from the t2clib
+# symlink at the repository root (it points at a sibling checkout's lib).
+use lib grep { -d $_ } "$RealBin/../t2clib", "$RealBin/../lib";
+
+use Test2::Collector qw/spawn_collector/;
+use Test2::Collector::Recorder::Zstd;
+use Test2::Collector::Recorder::Socket;
+use Test2::Collector::Util::Zstd qw/open_zstd_reader/;
+use Test2::Collector::Util::JSON qw/decode_json/;
+use Test2::Harness2::Collector::Monitor;
+use Test2::Util::Term qw/term_size/;
+use Test2::Util::UUID qw/gen_uuid/;
+
+use App::Yath2::Renderer::Text::EventPainter;
+
+# t2h2_collector - run one test file under the collector and report progress.
+#
+# Usage: t2h2_collector [-v|-vv] TEST_FILE EVENTS_FILE
+#
+# Three processes: this script, the collector it spawns (the middle process,
+# which owns the sinks), and the test child the collector forks/execs. This
+# script creates a managed Monitor that listens on a unix socket and hands the
+# socket path to the collector's reporter; the reporter connects back and sends
+# the start, each state transition, and the final result. The script loops over
+# those messages, printing a basic line for each. The full event stream is
+# written to EVENTS_FILE; the verdict comes over the socket.
+#
+# After the run, -v paints the events log (App::Yath2::Renderer::Text::Event
+# Painter) so the recorded events are shown as a subtest graph, each line
+# prefixed with a [TAG] column. -vv also turns on the assembler's stray-event
+# copies, which paint flat with a '>' node.
+#
+# Exits 0 (pass) or 1 (fail) from the collector's own verdict-derived exit.
+
+my $verbose = 0;
+while (@ARGV && $ARGV[0] =~ /\A-(v+)\z/) {
+    $verbose += length $1;
+    shift @ARGV;
+}
+
+my ($test_file, $events_file) = @ARGV;
+
+die "Usage: $0 [-v|-vv] TEST_FILE EVENTS_FILE\n"
+    unless defined $test_file && defined $events_file;
+
+die "No such test file: $test_file\n" unless -f $test_file;
+
+my $dir = dirname($events_file);
+make_path($dir) unless -d $dir;
+
+# The collected test runs with the collector formatter selected (is_test), so
+# it needs the collector's libraries on its include path. Propagate our own
+# @INC to the child so it can load them regardless of how we were invoked.
+my $sep      = $Config{path_sep} || ':';
+my $perl5lib = join($sep, grep { defined && length } @INC, $ENV{PERL5LIB});
+
+# The managed monitor owns the listening socket; the reporter in the spawned
+# collector connects back to this path.
+my $sock_path = "$dir/transitions.sock";
+my $monitor   = Test2::Harness2::Collector::Monitor->new(listen => $sock_path);
+
+# This runner handles a single test as its own one-off run, so the run_uuid
+# and the collector's own uuid can be one and the same fresh uuid.
+my $uuid = gen_uuid();
+
+my $pid = spawn_collector(
+    is_test   => 1,
+    name      => $test_file,
+    uuid      => $uuid,
+    run_uuid  => $uuid,
+    exec      => [$^X, $test_file],
+    env       => {PERL5LIB => $perl5lib},
+    processor => [
+        ['Test2::Collector::Assembler', emit_stray => $verbose >= 2 ? 1 : 0],
+        'Test2::Collector::Auditor',
+    ],
+    recorder => Test2::Collector::Recorder::Zstd->new(file => $events_file),
+    reporter => Test2::Collector::Recorder::Socket->new(paths => [$sock_path]),
+);
+
+my $done = 0;
+my $pass = 0;
+until ($done) {
+    # Re-fetch the handles each iteration: the accepted connection appears
+    # after the first poll() accepts the recorder's connect.
+    IO::Select->new($monitor->io_handles)->can_read;
+
+    # poll() folds the messages into the monitor's per-collector state; we read
+    # progress from its change-delta APIs rather than re-inspecting each payload.
+    my @payloads = $monitor->poll;
+
+    say "transition: starting"   for $monitor->new_collectors;
+    say "transition: diagnosing" for $monitor->new_diagnosing;
+    say "transition: failing"    for $monitor->new_failing;
+    say "transition: completed"  for $monitor->new_completed;
+
+    for my $uuid ($monitor->new_finalized) {
+        my $state = $monitor->final_state($uuid);
+        $pass = $state && $state->{pass} ? 1 : 0;
+        say "result: " . ($pass ? 'PASS' : 'FAIL');
+        $done = 1;
+    }
+}
+
+# The spawned collector's exit code reports collector health (0 clean, 255
+# internal collector failure), not the test verdict; the verdict came over
+# the socket in the final state. Fail on either.
+waitpid($pid, 0);
+my $exit = ($pass && !$?) ? 0 : 1;
+
+# With -v, paint the recorded events as a subtest graph. The reporter routed
+# transitions and the final state to the socket, so the events file holds just
+# the test's own events.
+if ($verbose && -e $events_file) {
+    my $painter = App::Yath2::Renderer::Text::EventPainter->new(color => (-t STDOUT ? 1 : 0));
+    my $width   = term_size() || 80;
+    my $reader  = open_zstd_reader($events_file);
+
+    while (defined(my $line = $reader->readline)) {
+        chomp $line;
+        next unless length $line;
+        say for $painter->paint(decode_json($line), tags => 1, left_pad => 2, max_width => $width);
+    }
+}
+
+exit $exit;

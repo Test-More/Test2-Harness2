@@ -1,0 +1,8 @@
+-D
+#-D=rel(t/Harness/selftest/lib)
+#;-pSelfTest
+#--project Test2-Harness2
+
+[test]
+#-Irel(t/Harness/selftest/lib)
+#--default-search rel(t)
