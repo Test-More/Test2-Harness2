@@ -33,3 +33,6 @@ lastlog.*
 *.test_info.*.json
 .testsharedjobslots.yml
 docs
+
+# Symlink to the unreleased Test2-Collector checkout (machine-specific).
+/t2clib
