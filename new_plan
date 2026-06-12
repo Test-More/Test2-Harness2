@@ -1,0 +1,52 @@
+Instead of writing yath 2.0 from scratch, we are going to start with 1.0 as a base and modify it into what we want.
+
+Broad strokes:
+ * Mechanical rename of App::Yath namespace to App::Yath2
+ * Mechanical rename of Test2::Harness namespace to Test2::Harness2
+ * Mechanical change of all version numbers to 2.000000
+ * Implement App::Yath::Script::V2 so the `yath` script can use the 2.0 we are writing
+ * Migration to Getopt::Yath for argument processing
+ * Switch to using Test2-Collector for executing and auditing tests, witht he current yath collector being simplified to gather events from the .jsonl.zst files the collector writes instead of gathering raw events and parsing/auditing them
+ * Use collectors for all processes involved in yath, not just tests
+ * Move to only pipelining transitions instead of sending all events everywhere
+  * Will need state sync similar to the 'Monitor' work we did in the `2.0b` branch, or one of its worktrees
+  * Renderer rewrite so that base renderer (or renderer role) knows how to find the .jsonl.zst files
+ * Implementation of the system load service (we implemented a version of this in a 2.0 branch or worktree)
+  * Ability to gate number of tests run concurrently on cpu/mem usage in addition to, or instead of a static -j value
+ * rewrite the DB+UI layer that is currently Test2-Harness-UI, but write it inline.
+
+So architectural changes:
+ * Getopt::Yath
+ * Test2-Collector
+
+For now Test2-Collector is not installed, and I am not ready to install it, it
+still needs review. But it is symlinked as ./t2clib/ so we can already access
+it.
+
+We will be migrating things in small chunks to try to get to the following architecture:
+
+ * One main harness service that does scheduling and job dispatch, and hold the canonical state
+ * Collectors for all processes including main harness
+ * Collectors report transitions to main harness
+ * Other things that need transitions get them from the main harness
+ * Things that need more complete events (not just transitions) directly seek
+   out the .jsonl.zst files instead of all events going through pipe to
+   everything.
+ * Any non-test, non-spawn process started by yath will be wrapped in a
+   collector, any that need to receive and handle requests will get a unix
+   socket, others such as the system load service which do not recieve
+   requests, but only send state changes when the system load changes, will
+   connect to the main harnesses socket instead of having their own.
+ * Log files will be sqlite databases with the events.jsonl.zst files stored in the artifacts tables
+
+When we do get to the database layer we will use DBIx::QuickORM.
+
+
+Several branches and worktrees that we have abandonded implemented parts of this, but always from scratch. We may reference those for architectural info moving forward.
+
+
+Things we WILL NOT DO:
+ * We will not use IPC::Manager
+ * We will not use DBIx::Class
+
+
