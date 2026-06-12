@@ -1,6 +1,5 @@
 package App::Yath2::Options::Debug;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -9,78 +8,99 @@ use Test2::Util::Table qw/table/;
 use Test2::Harness2::Util qw/find_libraries mod2file clean_path/;
 
 use Errno qw/EINTR/;
+use Time::HiRes ();
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
-option_group {prefix => 'debug', category => 'Help and Debugging'} => sub {
-    post 99999 => \&_post_process_show_opts;
-    post 99998 => \&_post_process_interactive;
-    post \&_post_process_version;
-    post \&_post_process_help;
+=pod
 
+=encoding UTF-8
+
+=head1 NAME
+
+App::Yath2::Options::Debug - Debug options for Yath
+
+=head1 DESCRIPTION
+
+This is where debug related command line options live.
+
+=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+
+=cut
+
+option_group {group => 'debug', category => 'Help and Debugging'} => sub {
     option dummy => (
+        type           => 'Bool',
         short          => 'd',
         description    => 'Dummy run, do not actually execute anything',
-        env_vars       => [qw/T2_HARNESS_DUMMY/],
-        clear_env_vars => 1,
+        from_env_vars  => [qw/T2_HARNESS_DUMMY/],
+        clear_env_vars => [qw/T2_HARNESS_DUMMY/],
         default        => 0,
     );
 
     option procname_prefix => (
-        type => 's',
-        default => '',
+        type        => 'Scalar',
+        default     => '',
         description => 'Add a prefix to all proc names (as seen by ps).',
     );
 
     option keep_dirs => (
+        type        => 'Bool',
         short       => 'k',
-        alt         => ['keep_dir'],
+        alt         => ['keep-dir'],
         description => 'Do not delete directories when done. This is useful if you want to inspect the directories used for various commands.',
         default     => 0,
     );
 
     option 'show-opts' => (
-        description => 'Exit after showing what yath thinks your options mean',
-        pre_command => 1,
+        type           => 'Auto',
+        autofill       => 1,
+        description    => 'Exit after showing what yath thinks your options mean',
+        short_examples => ['', '=group'],
+        long_examples  => ['', '=group'],
     );
 
     option version => (
+        type        => 'Bool',
         short       => 'V',
         description => "Exit after showing a helpful usage message",
-        pre_command => 1,
     );
 
     option help => (
-        short       => 'h',
-        description => "exit after showing help information",
+        type           => 'Auto',
+        autofill       => 1,
+        short          => 'h',
+        description    => "exit after showing help information",
+        short_examples => ['', '=Group'],
+        long_examples  => ['', '=Group'],
     );
 
     option interactive => (
-        short => 'i',
+        type        => 'Bool',
+        short       => 'i',
         description => 'Use interactive mode, 1 test at a time, stdin forwarded to it',
     );
 
     option summary => (
-        type        => 'd',
-        description => "Write out a summary json file, if no path is provided 'summary.json' will be used. The .json extension is added automatically if omitted.",
-
+        type          => 'Auto',
+        autofill      => sub { clean_path('summary.json') },
+        description   => "Write out a summary json file, if no path is provided 'summary.json' will be used. The .json extension is added automatically if omitted.",
         long_examples => ['', '=/path/to/summary.json'],
-
-        normalize  => \&normalize_summary,
-        action     => \&summary_action,
-        applicable => sub {
-            my ($option, $options) = @_;
-
-            return 1 if $options->included->{'App::Yath2::Options::Run'};
+        normalize     => \&normalize_summary,
+        applicable    => sub ($opt, $options, $settings) {
+            return 1 if $options && $options->option_groups->{run};
             return 0;
         },
     );
 };
 
-sub normalize_summary {
-    my $val = shift;
+option_post_process 99999 => \&_post_process_show_opts;
+option_post_process 99998 => \&_post_process_interactive;
+option_post_process 0     => \&_post_process_version;
+option_post_process 0     => \&_post_process_help;
 
-    return $val if $val eq '1';
+sub normalize_summary ($val) {
+    return clean_path('summary.json') if !defined($val) || $val eq '1';
 
     $val =~ s/\.json$//g;
     $val .= '.json';
@@ -88,30 +108,27 @@ sub normalize_summary {
     return clean_path($val);
 }
 
-sub summary_action {
-    my ($prefix, $field, $raw, $norm, $slot, $settings) = @_;
-
-    return $$slot = clean_path($norm)
-        unless $norm eq '1';
-
-    return if $$slot;
-    return $$slot = clean_path('summary.json');
+sub _print_command_banner ($settings) {
+    # Guard command access defensively — wired in a later task
+    return unless $settings->check_group('harness') && $settings->harness->check_option('command');
+    my $cmd_class = $settings->harness->command;
+    print "\nCommand selected: " . $cmd_class->name . "  (" . $cmd_class . ")\n" if $cmd_class;
 }
 
-sub _post_process_help {
-    my %params = @_;
+sub _post_process_help ($options, $state) {
+    my $settings = $state->{settings};
 
-    return unless $params{settings}->debug->help;
+    return unless $settings->debug->help;
 
-    my $help;
-    if (my $cmd = $params{command}) {
-        $help = $cmd->cli_help(%params);
-    }
-    else {
-        $help = __PACKAGE__->cli_help(%params);
-    }
+    my $group = $settings->debug->help;
 
-    if (eval { require IO::Pager; 1 }) {
+    _print_command_banner($settings);
+
+    my $help = $options->docs('cli', settings => $settings, ($group && $group ne '1' ? (group => $group) : ()));
+
+    my $ok = eval { require IO::Pager; 1 };
+    my $err = $@;
+    if ($ok) {
         local $SIG{PIPE} = sub {};
         my $pager = IO::Pager->new(*STDOUT);
         $pager->print($help);
@@ -123,19 +140,20 @@ sub _post_process_help {
     exit 0;
 }
 
-sub _post_process_show_opts {
-    my %params = @_;
+sub _post_process_show_opts ($options, $state) {
+    my $settings = $state->{settings};
 
-    return unless $params{settings}->debug->show_opts;
+    return unless $settings->debug->show_opts;
 
-    my $settings = $params{settings};
+    _print_command_banner($settings);
 
-    print "\nCommand selected: " . $params{command}->name . "  (" . ref($params{command}) . ")\n" if $params{command};
+    my $remains = $state->{remains} // [];
+    print "\nCommand args: " . join(', ' => @$remains) . "\n" if @$remains;
 
-    my $args = $params{args};
-    print "\nCommand args: " . join(', ' => @$args) . "\n" if @$args;
-
-    my $out = encode_pretty_json($settings);
+    my $group = $settings->debug->show_opts;
+    my $out = $group eq '1'
+        ? encode_pretty_json($settings)
+        : encode_pretty_json($settings->check_group($group) ? $settings->$group : "!! Invalid Group '$group' !!");
 
     print "\nCurrent command line and config options result in these settings:\n";
     print "$out\n";
@@ -144,41 +162,41 @@ sub _post_process_show_opts {
 }
 
 my $RAN = 0;
-sub _post_process_interactive {
+sub _post_process_interactive ($options, $state) {
     return if $RAN++;
-    my %params = @_;
 
-    return unless $params{settings}->debug->interactive;
+    my $settings = $state->{settings};
 
-    my $settings = $params{settings};
+    return unless $settings->debug->interactive;
 
     my ($fifo);
-    if ($settings->check_prefix('workspace')) {
+    if ($settings->check_group('workspace')) {
         my $dir = $settings->workspace->workdir;
         $fifo = "$dir/fifo-$$";
     }
     else {
         require File::Temp;
-        my $fh;
-        ($fh, $fifo) = File::Temp::tempfile("YATH-FIFO-$$-XXXXXX", TMPDIR => 1);
+        my ($fh, $tmpfile) = File::Temp::tempfile("YATH-FIFO-$$-XXXXXX", TMPDIR => 1);
         close($fh);
-        unlink($fifo);
+        unlink($tmpfile);
+        $fifo = $tmpfile;
     }
 
-    ${$settings->debug->vivify_field('fifo')} = $fifo;
+    ${$settings->debug->option_ref('fifo', 1)} = $fifo;
 
-    if ($settings->check_prefix('display')) {
+    if ($settings->check_group('display')) {
         my $display = $settings->display;
-        $display->field(quiet   => 0) if $display->check_field('quiet');
-        $display->field(verbose => 1) if $display->check_field('verbose') && !$display->verbose;
+        $display->create_option(quiet   => 0) if $display->check_option('quiet');
+        $display->create_option(verbose => 1) if $display->check_option('verbose') && !$display->verbose;
     }
 
-    if ($settings->check_prefix('formatter')) {
+    if ($settings->check_group('formatter')) {
         my $formatter = $settings->formatter;
-        $formatter->field(qvf => 0) if $formatter->check_field('qvf');
+        $formatter->create_option(qvf => 0) if $formatter->check_option('qvf');
     }
 
-    if ($settings->check_prefix('run')) {
+    if ($settings->check_group('run')) {
+        $settings->run->create_option(env_vars => {}) unless $settings->run->check_option('env_vars');
         $settings->run->env_vars->{YATH_INTERACTIVE} = $fifo;
         $ENV{YATH_INTERACTIVE} = $fifo;
     }
@@ -217,14 +235,14 @@ sub _post_process_interactive {
         for (1 .. 10) {
             last if open($fh, '>', $fifo);
             die "Could not open fifo ($fifo): $!" unless $! == EINTR;
-            sleep 0.2;
+            Time::HiRes::sleep(0.2);
         }
         die "Could not open fifo ($fifo): $!" unless $fh;
 
         $fh->autoflush(1);
         my $guard = Scope::Guard->new($cleanup);
 
-        while(1) {
+        while (1) {
             my $data = <STDIN>;
             if (defined($data) && length($data)) {
                 print $fh $data;
@@ -243,14 +261,13 @@ sub _post_process_interactive {
     close(STDIN);
     open(STDIN, '<', '/dev/null');
 
-    require Time::HiRes;
-    while (! -e $fifo) { Time::HiRes::sleep(0.02) };
+    while (!-e $fifo) { Time::HiRes::sleep(0.02) }
 }
 
-sub _post_process_version {
-    my %params = @_;
+sub _post_process_version ($options, $state) {
+    my $settings = $state->{settings};
 
-    return unless $params{settings}->debug->version;
+    return unless $settings->debug->version;
 
     require App::Yath2;
     my $out = <<"    EOT";
@@ -263,19 +280,19 @@ Extended Version Info
     my $plugin_libs = find_libraries('App::Yath2::Plugin::*');
 
     my @vers = (
-        [perl        => $^V],
-        ['App::Yath2' => App::Yath2->VERSION],
+        [perl          => $^V],
+        ['App::Yath2'  => App::Yath2->VERSION],
         (
             map {
-                eval { require(mod2file($_)); 1 }
-                    ? [$_ => $_->VERSION // 'N/A']
+                my $ok = eval { require(mod2file($_)); 1 };
+                $ok ? [$_ => $_->VERSION // 'N/A']
                     : [$_ => 'N/A']
             } qw/Test2::API Test2::Suite Test::Builder/
         ),
         (
             map {
-                eval { require($plugin_libs->{$_}); 1 }
-                    && [$_ => $_->VERSION // 'N/A']
+                my $ok = eval { require($plugin_libs->{$_}); 1 };
+                $ok ? [$_ => $_->VERSION // 'N/A'] : ()
             } sort keys %$plugin_libs
         ),
     );
@@ -297,16 +314,6 @@ __END__
 =pod
 
 =encoding UTF-8
-
-=head1 NAME
-
-App::Yath2::Options::Debug - Debug options for Yath
-
-=head1 DESCRIPTION
-
-This is where debug related command line options live.
-
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
 
 =head1 SOURCE
 
