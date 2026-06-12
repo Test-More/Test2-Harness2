@@ -1,134 +1,12 @@
 package App::Yath2::Options::PreCommand;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
 use App::Yath2::Util qw/find_pfile/;
-use Test2::Harness2::Util qw/mod2file clean_path/;
+use Test2::Harness2::Util qw/mod2file fqmod clean_path/;
 
-use App::Yath2::Options;
-
-option_group {prefix => 'harness', pre_command => 1} => sub {
-    option plugins => (
-        type  => 'm',
-        short => 'p',
-        alt  => ['plugin'],
-
-        category       => 'Plugins',
-        long_examples  => [' PLUGIN', ' +App::Yath2::Plugin::PLUGIN', ' PLUGIN=arg1,arg2,...'],
-        short_examples => ['PLUGIN'],
-        description    => 'Load a yath plugin.',
-
-        action => \&plugin_action,
-    );
-
-    option no_scan_plugins => (
-        type => 'b',
-
-        category => 'Plugins',
-        description => 'Normally yath scans for and loads all App::Yath2::Plugin::* modules in order to bring in command-line options they may provide. This flag will disable that. This is useful if you have a naughty plugin that is loading other modules when it should not.',
-    );
-
-    option project => (
-        type        => 's',
-        alt         => ['project-name'],
-        category    => 'Environment',
-        description => 'This lets you provide a label for your current project/codebase. This is best used in a .yath.rc file. This is necessary for a persistent runner.',
-    );
-
-    option persist_dir => (
-        type        => 's',
-        category    => 'Environment',
-        description => 'Where to find persistence files.',
-        normalize   => \&clean_path,
-    );
-
-    option persist_file => (
-        type        => 's',
-        category    => 'Environment',
-        alt         => ['pfile'],
-        normalize   => \&clean_path,
-        description => "Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.",
-    );
-
-    option dev_libs => (
-        type  => 'D',
-        short => 'D',
-        name  => 'dev-lib',
-
-        category    => 'Developer',
-        description => 'Add paths to @INC before loading ANYTHING. This is what you use if you are developing yath or yath plugins to make sure the yath script finds the local code instead of the installed versions of the same code. You can provide an argument (-Dfoo) to provide a custom path, or you can just use -D without and arg to add lib, blib/lib and blib/arch.',
-
-        long_examples  => ['', '=lib'],
-        short_examples => ['', '=lib', 'lib'],
-
-        normalize => \&normalize_dev_libs,
-        action    => \&dev_libs_action,
-    );
-
-    post \&post_process;
-};
-
-sub plugin_action {
-    my ($prefix, $field, $raw, $norm, $slot, $settings, $handler, $options) = @_;
-
-    my ($class, $args) = split /=/, $norm, 2;
-    $args = [split ',', $args] if $args;
-
-    $class = "App::Yath2::Plugin::$class"
-        unless $class =~ s/^\+//;
-
-    return if grep { $class eq (ref($_) || $_) } @{$settings->harness->plugins};
-
-    my $file = mod2file($class);
-    require $file;
-
-    $options->include_from($class) if $class->can('options');
-
-    my $plugin = $class->can('new') ? $class->new(@{$args // []}) : $class;
-
-    $handler->($slot, $plugin);
-}
-
-sub normalize_dev_libs {
-    my $val = shift;
-
-    return $val if $val eq '1';
-
-    return clean_path($val);
-}
-
-sub dev_libs_action {
-    my ($prefix, $field, $raw, $norm, $slot, $settings) = @_;
-
-    my %seen = map { $_ => 1 } @{$$slot};
-
-    my @new = grep { !$seen{$_}++ } ($norm eq '1') ? (map { clean_path($_) } 'lib', 'blib/lib', 'blib/arch') : ($norm);
-
-    return unless @new;
-
-    warn <<"    EOT" for @new;
-dev-lib '$_' added to \@INC late, it is possible some yath libraries were already loaded from other paths.
-(Maybe you need to move the -D or --dev-lib argument(s) to be earlier in your command line or config file?)
-    EOT
-
-    unshift @INC   => @new;
-    unshift @{$$slot} => @new;
-}
-
-sub post_process {
-    my %params   = @_;
-    my $settings = $params{settings};
-
-    $settings->harness->field(persist_file => find_pfile($settings, vivify => 1, no_checks => 1))
-        unless defined $settings->harness->persist_file;
-}
-
-1;
-
-__END__
-
+use Getopt::Yath;
 
 =pod
 
@@ -136,13 +14,182 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Options::PreCommand - Options for yath before command is specified.
+App::Yath2::Options::PreCommand - Options for yath before a command is specified.
 
 =head1 DESCRIPTION
 
-This is qhere many pe-commnd options are defined.
+This is where many pre-command options are defined, including plugin loading,
+developer library paths, project identity, and persistence configuration.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+
+=cut
+
+option_group {group => 'harness', category => 'Yath Options'} => sub {
+
+    # -------------------------------------------------------------------------
+    # Plugins
+    # -------------------------------------------------------------------------
+
+    option plugins => (
+        type  => 'List',
+        short => 'p',
+        alt   => ['plugin'],
+
+        category       => 'Plugins',
+        long_examples  => [' PLUGIN', ' +App::Yath2::Plugin::PLUGIN', ' PLUGIN=arg1,arg2,...'],
+        short_examples => ['PLUGIN'],
+        description    => 'Load a yath plugin.',
+
+        # Normalize: fully-qualify the class part; preserve any =args suffix.
+        normalize => \&normalize_plugin,
+
+        # Trigger: require the plugin module and pull in its options.
+        # We do this manually (instead of mod_adds_options) so we can split
+        # the class name from any =args suffix before calling mod2file().
+        # Note: plugins still on the old App::Yath2::Options machinery will
+        # have a ->options method that returns an App::Yath2::Options object,
+        # not a Getopt::Yath::Instance.  We guard against that by only calling
+        # include() when the returned object is a Getopt::Yath::Instance.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+
+            for my $spec (@{$params{val}}) {
+                my ($class) = split /=/, $spec, 2;
+
+                my $file = mod2file($class);
+                my $ok   = eval { require $file; 1 };
+                my $err  = $@;
+                die "Failed to load plugin '$class': $err" unless $ok;
+
+                next unless $class->can('options');
+                my $plugin_opts = $class->options;
+                # TODO(Task 9): drop this guard once all plugins are on Getopt::Yath
+                next unless ref($plugin_opts) && $plugin_opts->isa('Getopt::Yath::Instance');
+                $params{options}->include($plugin_opts);
+            }
+        },
+    );
+
+    option no_scan_plugins => (
+        type        => 'Bool',
+        category    => 'Plugins',
+        description => 'Normally yath scans for and loads all App::Yath2::Plugin::* modules in order to bring in command-line options they may provide. This flag will disable that. This is useful if you have a naughty plugin that is loading other modules when it should not.',
+    );
+
+    # -------------------------------------------------------------------------
+    # Environment
+    # -------------------------------------------------------------------------
+
+    option project => (
+        type        => 'Scalar',
+        alt         => ['project-name'],
+        category    => 'Environment',
+        description => 'This lets you provide a label for your current project/codebase. This is best used in a .yath.rc file. This is necessary for a persistent runner.',
+    );
+
+    option persist_dir => (
+        type        => 'Scalar',
+        category    => 'Environment',
+        normalize   => \&clean_path,
+        description => 'Where to find persistence files.',
+    );
+
+    option persist_file => (
+        type        => 'Scalar',
+        category    => 'Environment',
+        alt         => ['pfile'],
+        normalize   => \&clean_path,
+        description => "Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.",
+    );
+
+    # -------------------------------------------------------------------------
+    # Developer
+    # -------------------------------------------------------------------------
+
+    option dev_libs => (
+        type  => 'AutoPathList',
+        short => 'D',
+        name  => 'dev-lib',
+
+        category       => 'Developer',
+        long_examples  => ['', '=lib'],
+        short_examples => ['', '=lib', 'lib'],
+
+        normalize => \&clean_path,
+
+        autofill => sub {
+            map { clean_path($_) } 'lib', 'blib/lib', 'blib/arch';
+        },
+
+        description => 'Add paths to @INC before loading ANYTHING. This is what you use if you are developing yath or yath plugins to make sure the yath script finds the local code instead of the installed versions of the same code. You can provide an argument (-Dfoo) to provide a custom path, or you can just use -D without and arg to add lib, blib/lib and blib/arch.',
+
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+
+            my $ref = $params{ref};
+
+            # Build a set of already-known paths from the current list.
+            my %seen = map { $_ => 1 } (defined($$ref) ? @{$$ref} : ());
+
+            # Keep only genuinely new paths.
+            my @new = grep { !$seen{$_}++ } @{$params{val}};
+
+            # Clear val to prevent add_value from pushing duplicates.
+            # On the early-return path this discards the duplicate entries;
+            # on the normal path we replace with the de-duped list below.
+            @{$params{val}} = ();
+            return unless @new;
+
+            warn <<"            EOT" for @new;
+dev-lib '$_' added to \@INC late, it is possible some yath libraries were already loaded from other paths.
+(Maybe you need to move the -D or --dev-lib argument(s) to be earlier in your command line or config file?)
+            EOT
+
+            unshift @INC => @new;
+
+            # Replace val with only the new (de-duped) paths so add_value
+            # does not push duplicates onto the stored list.
+            @{$params{val}} = @new;
+        },
+    );
+};
+
+option_post_process 0 => sub ($options, $state) {
+    my $settings = $state->{settings};
+
+    return if defined $settings->harness->persist_file;
+
+    $settings->harness->create_option(persist_file => find_pfile($settings, vivify => 1, no_checks => 1));
+};
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Fully-qualify the class portion of a plugin spec, leaving any =args suffix
+# intact.  Input examples:
+#   'Git'                   -> 'App::Yath2::Plugin::Git'
+#   '+App::Yath2::Plugin::Git'  -> 'App::Yath2::Plugin::Git'
+#   'Git=arg1,arg2'         -> 'App::Yath2::Plugin::Git=arg1,arg2'
+sub normalize_plugin ($raw) {
+    my ($class, $args) = split /=/, $raw, 2;
+
+    # fqmod($prefix, $name): prepends "App::Yath2::Plugin::" unless name
+    # starts with '+', in which case the leading '+' is stripped and the
+    # remainder is used as-is.
+    $class = fqmod('App::Yath2::Plugin', $class);
+
+    return defined($args) ? "$class=$args" : $class;
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
 
 =head1 SOURCE
 
