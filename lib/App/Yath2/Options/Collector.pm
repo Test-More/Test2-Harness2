@@ -1,46 +1,9 @@
 package App::Yath2::Options::Collector;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Options;
-
-option_group {prefix => 'collector', category => "Collector Options"} => sub {
-    option max_open_jobs => (
-        type => 's',
-        description => 'Maximum number of jobs a collector can process at a time, if more jobs are pending their output will be delayed until the earlier jobs have been processed. (Default: double the -j value)',
-        long_examples  => [' 18'],
-        short_examples => [' 18'],
-    );
-
-    option max_poll_events => (
-        type => 's',
-        description => 'Maximum number of events to poll from a job before jumping to the next job. (Default: 1000)',
-        default => 1000,
-        long_examples  => [' 1000'],
-        short_examples => [' 1000'],
-    );
-
-    post \&collector_post;
-};
-
-sub collector_post {
-    my %params   = @_;
-    my $settings = $params{settings};
-
-    unless ($settings->collector->max_open_jobs) {
-        my $j = $settings->runner->job_count // 1;
-        my $max_open = 2 * $j;
-        $settings->collector->field(max_open_jobs => $max_open);
-    }
-}
-
-
-1;
-
-__END__
-
+use Getopt::Yath;
 
 =pod
 
@@ -55,6 +18,44 @@ App::Yath2::Options::Collector - collector options for Yath.
 This is where the command line options for the collector are defined.
 
 =head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+
+=cut
+
+option_group {group => 'collector', category => "Collector Options"} => sub {
+    option max_open_jobs => (
+        type           => 'Scalar',
+        long_examples  => [' 18'],
+        short_examples => [' 18'],
+        description    => 'Maximum number of jobs a collector can process at a time, if more jobs are pending their output will be delayed until the earlier jobs have been processed. (Default: double the -j value)',
+    );
+
+    option max_poll_events => (
+        type           => 'Scalar',
+        default        => 1000,
+        long_examples  => [' 1000'],
+        short_examples => [' 1000'],
+        description    => 'Maximum number of events to poll from a job before jumping to the next job. (Default: 1000)',
+    );
+};
+
+option_post_process 0 => sub {
+    my ($options, $state) = @_;
+    my $settings = $state->{settings};
+
+    unless ($settings->collector->max_open_jobs) {
+        my $j = $settings->check_group('runner') ? ($settings->runner->job_count // 1) : 1;
+        my $max_open = 2 * $j;
+        $settings->collector->create_option(max_open_jobs => $max_open);
+    }
+};
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
 
 =head1 SOURCE
 
