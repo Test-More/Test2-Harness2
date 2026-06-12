@@ -1,10 +1,10 @@
-use Test2::V0 -target => 'App::Yath::Options';
-require App::Yath::Command;
+use Test2::V0 -target => 'App::Yath2::Options';
+require App::Yath2::Command;
 
 subtest sugar => sub {
     package Test::Options::One;
-    use App::Yath::Options;
-    use Test2::V0 -target => 'App::Yath::Options';
+    use App::Yath2::Options;
+    use Test2::V0 -target => 'App::Yath2::Options';
 
     imported_ok(qw/post option options option_group include_options/);
 
@@ -97,8 +97,8 @@ subtest sugar => sub {
     );
 
     package Test::Options::Two;
-    use App::Yath::Options;
-    use Test2::V0 -target => 'App::Yath::Options';
+    use App::Yath2::Options;
+    use Test2::V0 -target => 'App::Yath2::Options';
 
     include_options 'Test::Options::One';
 
@@ -132,7 +132,7 @@ subtest init => sub {
         "Set defaults",
     );
 
-    isa_ok($one->settings, ['Test2::Harness::Settings'], "Generated a settings object by default");
+    isa_ok($one->settings, ['Test2::Harness2::Settings'], "Generated a settings object by default");
 };
 
 subtest option => sub {
@@ -140,7 +140,7 @@ subtest option => sub {
 
     my $trace = [__PACKAGE__, __FILE__, __LINE__ + 1];
     my $opt = $one->option('foo', prefix => 'pre');
-    isa_ok($opt, ['App::Yath::Option'], "Got an option instance");
+    isa_ok($opt, ['App::Yath2::Option'], "Got an option instance");
     is($opt->trace, $trace, "Injected the correct trace");
     is($opt->title, 'foo', "Correct title");
     is($opt->prefix, 'pre', "Correct prefix");
@@ -154,7 +154,7 @@ subtest _option => sub {
 
     my $trace = [__PACKAGE__, __FILE__, __LINE__ + 1];
     my $opt = $one->_option($trace, 'foo', prefix => 'pre');
-    isa_ok($opt, ['App::Yath::Option'], "Got an option instance");
+    isa_ok($opt, ['App::Yath2::Option'], "Got an option instance");
     is($opt->trace, $trace, "Used the correct trace");
     is($opt->title, 'foo', "Correct title");
     is($opt->prefix, 'pre', "Correct prefix");
@@ -214,34 +214,34 @@ subtest _parse_option_caller => sub {
         "Need a prefix"
     );
 
-    local @App::Yath::Command::fake::ISA = ('App::Yath::Command');
-    local *App::Yath::Command::fake::name = sub { 'fake' };
+    local @App::Yath2::Command::fake::ISA = ('App::Yath2::Command');
+    local *App::Yath2::Command::fake::name = sub { 'fake' };
     is(
-        {$one->_parse_option_caller('App::Yath::Command::fake')},
+        {$one->_parse_option_caller('App::Yath2::Command::fake')},
         {from_command => 'fake'},
         "Found command, prefix not required"
     );
 
     is(
-        {$one->_parse_option_caller('App::Yath::Command::fake::Options::Foo')},
+        {$one->_parse_option_caller('App::Yath2::Command::fake::Options::Foo')},
         {from_command => 'fake'},
         "Found command (options class for command), prefix not required"
     );
 
     is(
-        {$one->_parse_option_caller('App::Yath')},
+        {$one->_parse_option_caller('App::Yath2')},
         {},
-        "Special case, prefix not required for App::Yath namespace"
+        "Special case, prefix not required for App::Yath2 namespace"
     );
 
     is(
-        {$one->_parse_option_caller('App::Yath::Plugin::Foo')},
-        {from_plugin => 'App::Yath::Plugin::Foo', prefix => 'foo'},
+        {$one->_parse_option_caller('App::Yath2::Plugin::Foo')},
+        {from_plugin => 'App::Yath2::Plugin::Foo', prefix => 'foo'},
         "Automatic prefix for plugin"
     );
     is(
-        {$one->_parse_option_caller('App::Yath::Plugin::Foo', {prefix => 'bar'})},
-        {from_plugin => 'App::Yath::Plugin::Foo', prefix => 'bar'},
+        {$one->_parse_option_caller('App::Yath2::Plugin::Foo', {prefix => 'bar'})},
+        {from_plugin => 'App::Yath2::Plugin::Foo', prefix => 'bar'},
         "Can override automatic plugin prefix"
     );
 };
@@ -250,12 +250,12 @@ subtest include_option => sub {
     my $one = $CLASS->new();
 
     like(
-        dies { $one->include_option(bless({title => 'foo', prefix => 'pre'}, 'App::Yath::Option')) },
+        dies { $one->include_option(bless({title => 'foo', prefix => 'pre'}, 'App::Yath2::Option')) },
         qr/Options must have a trace/,
         "Need a trace"
     );
 
-    my $opt = App::Yath::Option->new(title => 'foo', prefix => 'foo');
+    my $opt = App::Yath2::Option->new(title => 'foo', prefix => 'foo');
     is($one->include_option($opt), exact_ref($opt), "Added, and returned the reference");
 
     like(
@@ -271,8 +271,8 @@ subtest include_option => sub {
 
 subtest _index_option => sub {
     my $one = $CLASS->new();
-    my $opt1 = App::Yath::Option->new(title => 'foo', short => 'f', alt => ['fooo', 'fo'], prefix => 'foo');
-    my $opt2 = App::Yath::Option->new(title => 'boo', short => 'b', alt => ['booo', 'bo'], prefix => 'foo');
+    my $opt1 = App::Yath2::Option->new(title => 'foo', short => 'f', alt => ['fooo', 'fo'], prefix => 'foo');
+    my $opt2 = App::Yath2::Option->new(title => 'boo', short => 'b', alt => ['booo', 'bo'], prefix => 'foo');
 
     is($one->_index_option($opt1), 4, "indexed into 4 slots");
     is($one->_index_option($opt1), 0, "Double indexing the same opt does not explode, 0 slots");
@@ -306,17 +306,17 @@ subtest _index_option => sub {
 
     my $string = $opt1->trace_string;
     like(
-        dies { $one->_index_option(App::Yath::Option->new(title => 'foo', prefix => 'foo')) },
+        dies { $one->_index_option(App::Yath2::Option->new(title => 'foo', prefix => 'foo')) },
         qr/Option 'foo' was already defined \(\Q$string\E\)/,
         "Cannot add 2 opts with the same long flag"
     );
     like(
-        dies { $one->_index_option(App::Yath::Option->new(title => 'xoo', alt => ['fo'], prefix => 'foo')) },
+        dies { $one->_index_option(App::Yath2::Option->new(title => 'xoo', alt => ['fo'], prefix => 'foo')) },
         qr/Option 'fo' was already defined \(\Q$string\E\)/,
         "Cannot add 2 opts with the same long flag (alt)"
     );
     like(
-        dies { $one->_index_option(App::Yath::Option->new(title => 'zoo', short => 'f', prefix => 'foo')) },
+        dies { $one->_index_option(App::Yath2::Option->new(title => 'zoo', short => 'f', prefix => 'foo')) },
         qr/Option 'f' was already defined \(\Q$string\E\)/,
         "Cannot add 2 opts with the same short flag"
     );
@@ -324,8 +324,8 @@ subtest _index_option => sub {
 
 subtest _list_option => sub {
     my $one = $CLASS->new();
-    my $opt1 = App::Yath::Option->new(title => 'foo', prefix => 'xxx');
-    my $opt2 = App::Yath::Option->new(title => 'bar', prefix => 'xxx', pre_command => 1);
+    my $opt1 = App::Yath2::Option->new(title => 'foo', prefix => 'xxx');
+    my $opt2 = App::Yath2::Option->new(title => 'bar', prefix => 'xxx', pre_command => 1);
 
     ok($one->_list_option($opt1), "listed option 1");
     ok($one->_list_option($opt2), "listed option 2");
@@ -484,8 +484,8 @@ subtest populate_cmd_defaults => sub {
         "Need to set command class first"
     );
 
-    push @App::Yath::Command::fake::ISA => 'App::Yath::Command';
-    $one->set_command_class('App::Yath::Command::fake');
+    push @App::Yath2::Command::fake::ISA => 'App::Yath2::Command';
+    $one->set_command_class('App::Yath2::Command::fake');
     $one->populate_cmd_defaults();
 
     is(
@@ -631,7 +631,7 @@ subtest '*_command_opts' => sub {
         ],
     );
     my $one = $CLASS->new();
-    $one->set_command_class('App::Yath::Command');
+    $one->set_command_class('App::Yath2::Command');
 
     my $opt1 = $one->option('foo', prefix => 'x', type => 'b', short   => 'f');
     my $opt2 = $one->option('bar', prefix => 'x', type => 'b', alt     => ['ba']);
@@ -736,10 +736,10 @@ subtest set_command_class => sub {
 
     ok(!$one->command_class, "No command class yet");
 
-    require App::Yath::Command::test;
-    my $cmd = bless {}, 'App::Yath::Command::test';
+    require App::Yath2::Command::test;
+    my $cmd = bless {}, 'App::Yath2::Command::test';
     $one->set_command_class($cmd);
-    is($one->command_class, 'App::Yath::Command::test', "Can set via a blessed command instance");
+    is($one->command_class, 'App::Yath2::Command::test', "Can set via a blessed command instance");
 
     like(
         dies { $one->set_command_class() },
@@ -747,16 +747,16 @@ subtest set_command_class => sub {
         "Cannot change command class once set."
     );
 
-    ok($one->included->{'App::Yath::Command::test'}, "Included options from the command");
+    ok($one->included->{'App::Yath2::Command::test'}, "Included options from the command");
 
     $one = $CLASS->new();
-    $one->set_command_class('App::Yath::Command::test');
-    is($one->command_class, 'App::Yath::Command::test', "Can set via a class name");
+    $one->set_command_class('App::Yath2::Command::test');
+    is($one->command_class, 'App::Yath2::Command::test', "Can set via a class name");
 
     $one = $CLASS->new();
     like(
-        dies { $one->set_command_class('Test2::Harness::Util') },
-        qr/Invalid command class: Test2::Harness::Util/,
+        dies { $one->set_command_class('Test2::Harness2::Util') },
+        qr/Invalid command class: Test2::Harness2::Util/,
         "Must be a valid command class"
     );
 };

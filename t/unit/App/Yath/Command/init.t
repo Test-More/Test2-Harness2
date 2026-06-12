@@ -1,9 +1,9 @@
-use Test2::V0 -target => 'App::Yath::Command::init';
+use Test2::V0 -target => 'App::Yath2::Command::init';
 # HARNESS-DURATION-SHORT
 
 use ok $CLASS;
 
-use App::Yath::Tester qw/make_example_dir/;
+use App::Yath2::Tester qw/make_example_dir/;
 
 use Cwd qw/getcwd/;
 my $orig = getcwd();

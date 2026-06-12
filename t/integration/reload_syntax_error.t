@@ -4,11 +4,11 @@ use Test2::Require::AuthorTesting;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use App::Yath::Tester qw/yath/;
-use Test2::Harness::Util::File::JSONL;
-use Test2::Harness::Util qw/clean_path/;
+use App::Yath2::Tester qw/yath/;
+use Test2::Harness2::Util::File::JSONL;
+use Test2::Harness2::Util qw/clean_path/;
 
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use Test2::Util qw/CAN_REALLY_FORK/;
 skip_all "Cannot fork, skipping preload test"
@@ -26,7 +26,7 @@ package Preload;
 use strict;
 use warnings;
 
-use Test2::Harness::Runner::Preload;
+use Test2::Harness2::Runner::Preload;
 
 stage A => sub {
     default();

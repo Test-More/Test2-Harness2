@@ -1,4 +1,4 @@
-use Test2::V0 -target => 'App::Yath::Plugin::SysInfo';
+use Test2::V0 -target => 'App::Yath2::Plugin::SysInfo';
 use Test2::Util qw/CAN_THREAD CAN_REALLY_FORK CAN_FORK CAN_SIGSYS/;
 # HARNESS-DURATION-SHORT
 
@@ -8,7 +8,7 @@ my $control = mock $CLASS => (
     ],
 );
 
-local *App::Yath::Plugin::SysInfo::Config = {
+local *App::Yath2::Plugin::SysInfo::Config = {
     'useperlio'       => 'define',
     'use64bitint'     => 'define',
     'use64bitall'     => 'define',

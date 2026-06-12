@@ -3,11 +3,11 @@ use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use App::Yath::Tester qw/yath/;
-use Test2::Harness::Util::File::JSONL;
-use Test2::Harness::Util qw/clean_path/;
+use App::Yath2::Tester qw/yath/;
+use Test2::Harness2::Util::File::JSONL;
+use Test2::Harness2::Util qw/clean_path/;
 
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 skip_all "This test is not run under automated testing"
     if $ENV{AUTOMATED_TESTING};
@@ -324,7 +324,7 @@ subtest in_place => sub {
                         'Runner failed to reload \'lib/Preload/ExceptionA.pm\' in place...',
                         'Loaded Preload::ExceptionA again.',
                         'BEGIN failed--compilation aborted at lib/Preload/ExceptionA.pm',
-                        'Compilation failed in require at lib/Test2/Harness/Runner/Reloader.pm',
+                        'Compilation failed in require at lib/Test2/Harness2/Runner/Reloader.pm',
                         'Runner detected a change in one or more preloaded modules...',
                         'Runner detected changes in file \'lib/Preload/WarningA.pm\'...',
                         'Runner attempting to reload \'lib/Preload/WarningA.pm\' in place...',
@@ -393,7 +393,7 @@ subtest in_place => sub {
                         'Runner failed to reload \'lib/Preload/ExceptionA.pm\' in place...',
                         'Loaded Preload::ExceptionA again.',
                         'BEGIN failed--compilation aborted at lib/Preload/ExceptionA.pm',
-                        'Compilation failed in require at lib/Test2/Harness/Runner/Reloader.pm',
+                        'Compilation failed in require at lib/Test2/Harness2/Runner/Reloader.pm',
                         'Runner detected a change in one or more preloaded modules...',
                         'Runner detected changes in file \'lib/Preload/ExceptionB.pm\'...',
                         'Runner attempting to reload \'lib/Preload/ExceptionB.pm\' in place...',
@@ -401,7 +401,7 @@ subtest in_place => sub {
                         'Runner failed to reload \'lib/Preload/ExceptionB.pm\' in place...',
                         'Loaded Preload::ExceptionB again.',
                         'BEGIN failed--compilation aborted at lib/Preload/ExceptionB.pm',
-                        'Compilation failed in require at lib/Test2/Harness/Runner/Reloader.pm',
+                        'Compilation failed in require at lib/Test2/Harness2/Runner/Reloader.pm',
                         'Runner detected a change in one or more preloaded modules...',
                         'Runner detected changes in file \'lib/Preload/WarningA.pm\'...',
                         'Runner attempting to reload \'lib/Preload/WarningA.pm\' in place...',
@@ -441,7 +441,7 @@ subtest in_place => sub {
                         'Runner detected changes in file \'lib/Preload/IncChange.pm\'...',
                         'Runner attempting to reload \'lib/Preload/IncChange.pm\' in place...',
                         'Runner failed to reload \'lib/Preload/IncChange.pm\' in place...',
-                        'Reloading \'Preload/IncChange.pm\' loaded \'TEMP/Preload/IncChange.pm\' instead of \'lib/Preload/IncChange.pm\', @INC must have been altered at lib/Test2/Harness/Runner/Reloader.pm'
+                        'Reloading \'Preload/IncChange.pm\' loaded \'TEMP/Preload/IncChange.pm\' instead of \'lib/Preload/IncChange.pm\', @INC must have been altered at lib/Test2/Harness2/Runner/Reloader.pm'
                     ],
                 },
                 "Reload happened as expected",

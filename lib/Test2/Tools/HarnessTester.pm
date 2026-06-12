@@ -2,11 +2,11 @@ package Test2::Tools::HarnessTester;
 use strict;
 use warnings;
 
-our $VERSION = '1.000173';
+our $VERSION = '2.000000';
 
-use Test2::Harness::Util::UUID qw/gen_uuid/;
+use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
-use App::Yath::Tester qw/make_example_dir/;
+use App::Yath2::Tester qw/make_example_dir/;
 
 use Importer Importer => qw/import/;
 our @EXPORT_OK = qw/make_example_dir summarize_events/;
@@ -21,13 +21,13 @@ sub summarize_events {
     my $run_id = "run-$id";
     my $job_id = "job-$id";
 
-    require Test2::Harness::Auditor::Watcher;
-    my $watcher = Test2::Harness::Auditor::Watcher->new(job => 1, try => 0);
+    require Test2::Harness2::Auditor::Watcher;
+    my $watcher = Test2::Harness2::Auditor::Watcher->new(job => 1, try => 0);
 
-    require Test2::Harness::Event;
+    require Test2::Harness2::Event;
     for my $e (@$events) {
         my $fd = $e->facet_data;
-        my $he = Test2::Harness::Event->new(
+        my $he = Test2::Harness2::Event->new(
             facet_data => $fd,
             event_id   => gen_uuid(),
             run_id     => $run_id,
@@ -63,7 +63,7 @@ Test2::Tools::HarnessTester - Run events through a harness for a summary
 
 =head1 DESCRIPTION
 
-This tool allows you to process events through the L<Test2::Harness> auditor.
+This tool allows you to process events through the L<Test2::Harness2> auditor.
 The main benefit here is to get a pass/fail result, as well as counts for
 assertions, failures, and errors.
 
@@ -102,8 +102,8 @@ assertions, failures, and errors.
 
 This takes an arrayref of events, such as that produced by C<intercept {...}>
 from L<Test2::API>. The result is a hashref that summarizes the results of the
-events as processed by L<Test2::Harness>, specifically the
-L<Test2::Harness::Auditor::Watcher> module.
+events as processed by L<Test2::Harness2>, specifically the
+L<Test2::Harness2::Auditor::Watcher> module.
 
 Fields in the summary hash:
 
@@ -144,7 +144,7 @@ Count of failures seen.
 This will create a temporary directory with 't', 't2', and 'xt' subdirectories
 each of which will contain a single passing test.
 
-This is re-exported from L<App::Yath::Tester>.
+This is re-exported from L<App::Yath2::Tester>.
 
 =head1 SOURCE
 

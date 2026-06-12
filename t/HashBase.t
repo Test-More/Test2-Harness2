@@ -24,7 +24,7 @@ BEGIN {
 
     package
         main::HBase;
-    use Test2::Harness::Util::HashBase qw/foo bar baz/;
+    use Test2::Harness2::Util::HashBase qw/foo bar baz/;
 
     main::is(FOO, 'foo', "FOO CONSTANT");
     main::is(BAR, 'bar', "BAR CONSTANT");
@@ -35,7 +35,7 @@ BEGIN {
     package
         main::HBaseSub;
     use base 'main::HBase';
-    use Test2::Harness::Util::HashBase qw/apple pear/;
+    use Test2::Harness2::Util::HashBase qw/apple pear/;
 
     main::is(FOO,   'foo',   "FOO CONSTANT");
     main::is(BAR,   'bar',   "BAR CONSTANT");
@@ -65,7 +65,7 @@ is_deeply(
 BEGIN {
     package
         main::Const::Test;
-    use Test2::Harness::Util::HashBase qw/foo/;
+    use Test2::Harness2::Util::HashBase qw/foo/;
 
     sub do_it {
         if (FOO()) {
@@ -89,7 +89,7 @@ BEGIN {
 
     package
         main::HBase::Wrapped;
-    use Test2::Harness::Util::HashBase qw/foo bar dup/;
+    use Test2::Harness2::Util::HashBase qw/foo bar dup/;
 
     my $foo = __PACKAGE__->can('foo');
     no warnings 'redefine';
@@ -106,7 +106,7 @@ BEGIN {
     package
         main::HBase::Wrapped::Inherit;
     use base 'main::HBase::Wrapped';
-    use Test2::Harness::Util::HashBase qw/baz dup/;
+    use Test2::Harness2::Util::HashBase qw/baz dup/;
 }
 
 my $o = main::HBase::Wrapped::Inherit->new(foo => 1);
@@ -119,7 +119,7 @@ is($o->bar, 1, 'parent attribute sub not overridden');
 
     sub new;
 
-    use Test2::Harness::Util::HashBase qw/foo bar baz/;
+    use Test2::Harness2::Util::HashBase qw/foo bar baz/;
 
     sub new { 'foo' };
 }
@@ -131,7 +131,7 @@ BEGIN {
 
     package
         main::HBase2;
-    use Test2::Harness::Util::HashBase qw/foo -bar ^baz <bat >ban +boo/;
+    use Test2::Harness2::Util::HashBase qw/foo -bar ^baz <bat >ban +boo/;
 
     main::is(FOO, 'foo', "FOO CONSTANT");
     main::is(BAR, 'bar', "BAR CONSTANT");
@@ -165,7 +165,7 @@ like($warnings->[0], qr/set_baz\(\) is deprecated/, "Deprecation warning");
 
 
 is_deeply(
-    [Test2::Harness::Util::HashBase::attr_list('main::HBase::Wrapped::Inherit')],
+    [Test2::Harness2::Util::HashBase::attr_list('main::HBase::Wrapped::Inherit')],
     [qw/foo bar dup baz/],
     "Got a list of attributes in order starting from base class, duplicates removed",
 );
@@ -203,7 +203,7 @@ BEGIN {
     $INC{'Object/HashBase/Test/HBase3.pm'} = __FILE__;
     package
         main::HBase3;
-    use Test2::Harness::Util::HashBase qw/foo/;
+    use Test2::Harness2::Util::HashBase qw/foo/;
 
     sub can {
         my $self = shift;
@@ -214,7 +214,7 @@ BEGIN {
     $INC{'Object/HashBase/Test/HBase4.pm'} = __FILE__;
     package
         main::HBase4;
-    use Test2::Harness::Util::HashBase qw/foo/;
+    use Test2::Harness2::Util::HashBase qw/foo/;
 
     sub can {
         my $self = shift;

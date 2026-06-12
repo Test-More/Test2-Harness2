@@ -3,8 +3,8 @@ use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use App::Yath::Tester qw/yath/;
-use App::Yath::Util qw/find_yath/;
+use App::Yath2::Tester qw/yath/;
+use App::Yath2::Util qw/find_yath/;
 
 yath(
     command => 'help',

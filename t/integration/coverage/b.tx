@@ -2,7 +2,7 @@ use Test2::V0;
 use Test2::Plugin::Cover;
 use Path::Tiny;
 
-use Test2::Harness::Util::JSON qw/encode_json/;
+use Test2::Harness2::Util::JSON qw/encode_json/;
 
 STDIN->blocking(0);
 

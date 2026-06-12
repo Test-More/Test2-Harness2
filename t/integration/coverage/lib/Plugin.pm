@@ -2,7 +2,7 @@ package Plugin;
 use strict;
 use warnings;
 
-use parent 'App::Yath::Plugin';
+use parent 'App::Yath2::Plugin';
 
 sub changed_files {
     return () unless $ENV{TEST_CASE};

@@ -2,7 +2,7 @@ package SmokePlugin;
 use strict;
 use warnings;
 
-use parent 'App::Yath::Plugin';
+use parent 'App::Yath2::Plugin';
 
 sub munge_files {
     my $self = shift;

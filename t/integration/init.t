@@ -4,8 +4,8 @@ use File::Temp qw/tempdir/;
 use File::Spec;
 use Cwd qw/cwd/;
 
-use App::Yath::Tester qw/yath/;
-use App::Yath::Util qw/find_yath/;
+use App::Yath2::Tester qw/yath/;
+use App::Yath2::Util qw/find_yath/;
 find_yath();    # cache result before we chdir
 
 my $orig = cwd();

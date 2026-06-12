@@ -2,7 +2,7 @@ package Resource;
 use strict;
 use warnings;
 
-use parent 'Test2::Harness::Runner::Resource';
+use parent 'Test2::Harness2::Runner::Resource';
 
 my $limit = 2;
 

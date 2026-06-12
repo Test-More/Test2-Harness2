@@ -2,9 +2,9 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-use App::Yath::Options::Runner;
+use App::Yath2::Options::Runner;
 
-my $opts = App::Yath::Options::Runner->options;
+my $opts = App::Yath2::Options::Runner->options;
 
 subtest 'fail_on_resource_skip option is defined' => sub {
     my @all = @{$opts->all};

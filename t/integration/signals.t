@@ -4,8 +4,8 @@ use Test2::Require::AuthorTesting;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use Test2::Harness::Util::File::JSONL;
-use App::Yath::Tester qw/yath/;
+use Test2::Harness2::Util::File::JSONL;
+use App::Yath2::Tester qw/yath/;
 
 my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;

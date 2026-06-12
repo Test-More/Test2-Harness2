@@ -1,10 +1,10 @@
-use Test2::V0 -target => 'Test2::Harness::Runner::Job';
+use Test2::V0 -target => 'Test2::Harness2::Runner::Job';
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
 use File::Temp qw/tempdir/;
 use File::Spec;
-use Test2::Harness::Settings;
+use Test2::Harness2::Settings;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -25,7 +25,7 @@ my $tmp = tempdir(CLEANUP => 1);
 sub make_settings {
     my (%overrides) = @_;
 
-    my $settings = Test2::Harness::Settings->new();
+    my $settings = Test2::Harness2::Settings->new();
     $settings->define_prefix('debug');
     $settings->debug->vivify_field('dummy');
     $settings->debug->field(dummy => $overrides{dummy} // 0);
@@ -74,7 +74,7 @@ sub make_job {
     );
 
     # Pre-set job_dir so file operations work
-    $job->{+Test2::Harness::Runner::Job::JOB_DIR()} = $job_dir;
+    $job->{+Test2::Harness2::Runner::Job::JOB_DIR()} = $job_dir;
 
     return $job;
 }

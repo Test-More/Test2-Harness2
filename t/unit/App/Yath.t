@@ -1,10 +1,10 @@
-use Test2::V0 -target => 'App::Yath';
+use Test2::V0 -target => 'App::Yath2';
 use Data::Dumper;
 use Carp;
 
-use App::Yath;
+use App::Yath2;
 
-use Test2::Harness::Util qw/clean_path/;
+use Test2::Harness2::Util qw/clean_path/;
 
 $ENV{'YATH_SELF_TEST'} = 1;
 
@@ -12,7 +12,7 @@ subtest init => sub {
     my $one = $CLASS->new(argv => [foo => 'bar']);
     isa_ok($one, $CLASS);
 
-    isa_ok($one->settings, 'Test2::Harness::Settings');
+    isa_ok($one->settings, 'Test2::Harness2::Settings');
 
     is($one->settings->harness->script, clean_path(__FILE__), "Yath script set to this test file");
 
@@ -20,17 +20,17 @@ subtest init => sub {
 
     is($one->config, {}, "Default empty config");
 
-    my $two = App::Yath->new();
+    my $two = App::Yath2->new();
     is($two->_argv, [], "default to empty argv");
 };
 
 {
-    require App::Yath::Command;
-    $INC{'App/Yath/Command/NOGEN.pm'} = __FILE__;
-    $INC{'App/Yath/Command/GEN.pm'} = __FILE__;
+    require App::Yath2::Command;
+    $INC{'App/Yath2/Command/NOGEN.pm'} = __FILE__;
+    $INC{'App/Yath2/Command/GEN.pm'} = __FILE__;
 
-    package App::Yath::Command::NOGEN;
-    use App::Yath::Options;
+    package App::Yath2::Command::NOGEN;
+    use App::Yath2::Options;
 
     option 'verbose' => (
         type   => 'c',
@@ -39,14 +39,14 @@ subtest init => sub {
     );
     post sub { $main::POST++ };
 
-    use Test2::Harness::Util::HashBase qw/settings argv/;
-    our @ISA = ('App::Yath::Command');
+    use Test2::Harness2::Util::HashBase qw/settings argv/;
+    our @ISA = ('App::Yath2::Command');
 
     sub run { 123 }
 
-    package App::Yath::Command::GEN;
+    package App::Yath2::Command::GEN;
 
-    our @ISA = ('App::Yath::Command::NOGEN');
+    our @ISA = ('App::Yath2::Command::NOGEN');
 
     sub generate_run_sub { ('ran gen_run_sub', @_) }
 }
@@ -59,7 +59,7 @@ subtest generate_run_sub => sub {
         \@out,
         [
             'ran gen_run_sub',
-            'App::Yath::Command::GEN',
+            'App::Yath2::Command::GEN',
             'main::RUNSUB',
             [],
             exact_ref($one->settings),
@@ -95,7 +95,7 @@ subtest run_command => sub {
 
 subtest command_class => sub {
     my $one = $CLASS->new(argv => ['GEN']);
-    is($one->command_class, 'App::Yath::Command::GEN', "Got command class from args");
+    is($one->command_class, 'App::Yath2::Command::GEN', "Got command class from args");
 
     $one->{_command_class} = 'foo';
 
@@ -105,14 +105,14 @@ subtest command_class => sub {
 subtest load_command => sub {
     my $one = $CLASS->new();
 
-    is($one->load_command('GEN'), 'App::Yath::Command::GEN', "Works for valid command (inline)");
-    is($one->load_command('test'), 'App::Yath::Command::test', "Works for valid command (real)");
+    is($one->load_command('GEN'), 'App::Yath2::Command::GEN', "Works for valid command (inline)");
+    is($one->load_command('test'), 'App::Yath2::Command::test', "Works for valid command (real)");
 
     is($one->load_command('gsdfgsdfgsd', check_only => 1), undef, "Missing module is ok in 'check_only' mode");
 
     is(
         dies { $one->load_command('dgfsdfgsdf') },
-        "yath command 'dgfsdfgsdf' not found. (did you forget to install App::Yath::Command::dgfsdfgsdf?)\n",
+        "yath command 'dgfsdfgsdf' not found. (did you forget to install App::Yath2::Command::dgfsdfgsdf?)\n",
         "Correct message for missing command"
     );
 
@@ -136,8 +136,8 @@ subtest load_options => sub {
     is(
         $options->included,
         {
-            'App::Yath::Options::Debug'      => 1,
-            'App::Yath::Options::PreCommand' => 1,
+            'App::Yath2::Options::Debug'      => 1,
+            'App::Yath2::Options::PreCommand' => 1,
         },
         "Included Debug and PreCommand, but not plugins"
     );
@@ -150,9 +150,9 @@ subtest load_options => sub {
     like(
         $options->included,
         {
-            'App::Yath::Options::Debug'      => 1,
-            'App::Yath::Options::PreCommand' => 1,
-            'App::Yath::Plugin::Options'     => 1,
+            'App::Yath2::Options::Debug'      => 1,
+            'App::Yath2::Options::PreCommand' => 1,
+            'App::Yath2::Plugin::Options'     => 1,
         },
         "Included Debug and PreCommand, as well as the plugin"
     );
@@ -170,7 +170,7 @@ subtest process_argv => sub {
 
     my @ignore = warns { is($one->process_argv(), $one->_argv, "remaining args are returned") };
 
-    is($one->command_class, 'App::Yath::Command::fake', "Set command class");
+    is($one->command_class, 'App::Yath2::Command::fake', "Set command class");
     is(
         ${$one->settings->fake},
         {

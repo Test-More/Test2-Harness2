@@ -8,9 +8,9 @@ chdir($ARGV[0]) or die "Could not chdir to $ARGV[0]";
 
 unshift @INC => './lib';
 
-require App::Yath::Command;
+require App::Yath2::Command;
 
-for my $base ('./lib/App/Yath/Options', './lib/App/Yath/Plugin') {
+for my $base ('./lib/App/Yath2/Options', './lib/App/Yath2/Plugin') {
     opendir(my $dh, $base) or die "Could not open dir '$base': $!";
 
     for my $file (readdir($dh)) {
@@ -29,7 +29,7 @@ for my $base ('./lib/App/Yath/Options', './lib/App/Yath/Plugin') {
         next unless $pkg->can('options');
         my $options = $pkg->options or next;
         delete $_->{applicable} for @{$options->all};
-        $options->set_command_class('App::Yath::Command');
+        $options->set_command_class('App::Yath2::Command');
         my $pre_opts = $options->pre_docs('pod', 3);
         my $cmd_opts = $options->cmd_docs('pod', 3);
         die "No option docs for $file?" unless $pre_opts || $cmd_opts;

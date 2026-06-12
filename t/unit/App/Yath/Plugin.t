@@ -1,6 +1,6 @@
-use Test2::V0 -target => 'App::Yath::Plugin';
+use Test2::V0 -target => 'App::Yath2::Plugin';
 
-isa_ok($CLASS, ['Test2::Harness::Plugin'], "Subclasses Test2::Harness::Plugin");
+isa_ok($CLASS, ['Test2::Harness2::Plugin'], "Subclasses Test2::Harness2::Plugin");
 
 can_ok($CLASS, ['finish'], "finish() is defined");
 is([$CLASS->finish], [], "finish returns an empty list in list context");

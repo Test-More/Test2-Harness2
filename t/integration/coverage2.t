@@ -1,8 +1,8 @@
 use Test2::V0;
-use Test2::Harness::Util::JSON qw/encode_json decode_json/;
+use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Require::Module 'Test2::Plugin::Cover' => '0.000022';
 
-use App::Yath::Tester qw/yath/;
+use App::Yath2::Tester qw/yath/;
 
 use File::Temp qw/tempfile/;
 
@@ -33,7 +33,7 @@ is(
         item {
             'test'       => 't/integration/coverage/a.tx',
             'manager'    => 'Manager',
-            'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByTest',
+            'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByTest',
             'files'      => {
                 'Ax.pm' => {
                     '*'  => ['*'],
@@ -53,7 +53,7 @@ is(
 
         item {
             'test'       => 't/integration/coverage/b.tx',
-            'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByTest',
+            'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByTest',
             'files'      => {
                 'Bx.pm' => {
                     'b' => ['*'],
@@ -65,7 +65,7 @@ is(
         item {
             'test'       => 't/integration/coverage/c.tx',
             'manager'    => 'Manager',
-            'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByTest',
+            'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByTest',
             'files'      => {
                 'Ax.pm' => {
                     'a' => bag { item {'subtest' => 'c'}; item {'subtest' => 'a'} },
@@ -80,19 +80,19 @@ is(
 
         item {
             'test'       => 't/integration/coverage/once.tx',
-            'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByTest',
+            'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByTest',
             'files'      => {},
         };
 
         item {
-            'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByTest',
+            'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByTest',
             'test'       => 't/integration/coverage/open.tx',
             'files'      => {'Bx.pm' => {'<>' => ['*']}},
         };
 
         item {
             'test'       => 't/integration/coverage/x.tx',
-            'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByTest',
+            'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByTest',
             'files'      => {'Bx.pm' => {'*' => ['*']}},
         };
     },

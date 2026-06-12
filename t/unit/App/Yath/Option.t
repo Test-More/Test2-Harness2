@@ -1,6 +1,6 @@
-use Test2::V0 -target => 'App::Yath::Option';
+use Test2::V0 -target => 'App::Yath2::Option';
 
-use Test2::Harness::Settings;
+use Test2::Harness2::Settings;
 
 subtest types => sub {
     ok($CLASS->valid_type($_), "'$_' is a valid type") for qw/b c s m d D h H/;
@@ -68,7 +68,7 @@ subtest init => sub {
 
     {
         package Foo;
-        Test2::Harness::Util::HashBase->import(qw/bar/);
+        Test2::Harness2::Util::HashBase->import(qw/bar/);
     }
 
     like(
@@ -149,7 +149,7 @@ subtest long_args => sub {
 subtest option_slot => sub {
     my $one = $CLASS->new(title => 'foo', prefix => 'xxx');
 
-    my $settings = Test2::Harness::Settings->new();
+    my $settings = Test2::Harness2::Settings->new();
 
     ok(my $slot = $one->option_slot($settings), "Got the slot");
     is($$slot, undef, "slot is a reference pointing to a scalar with an undef value");
@@ -197,9 +197,9 @@ subtest get_normalized => sub {
 };
 
 subtest handle => sub {
-    require App::Yath::Options;
-    my $options = App::Yath::Options->new();
-    my $new = sub { $CLASS->new(title => 'foo', prefix => 'xxx', @_), Test2::Harness::Settings->new() };
+    require App::Yath2::Options;
+    my $options = App::Yath2::Options->new();
+    my $new = sub { $CLASS->new(title => 'foo', prefix => 'xxx', @_), Test2::Harness2::Settings->new() };
 
     my ($one, $settings) = $new->(type => 'c');
     $one->handle(1, $settings, $options);
@@ -262,9 +262,9 @@ subtest handle => sub {
 };
 
 subtest handle_negation => sub {
-    require App::Yath::Options;
-    my $options = App::Yath::Options->new();
-    my $new = sub { $CLASS->new(title => 'foo', prefix => 'xxx', @_), Test2::Harness::Settings->new() };
+    require App::Yath2::Options;
+    my $options = App::Yath2::Options->new();
+    my $new = sub { $CLASS->new(title => 'foo', prefix => 'xxx', @_), Test2::Harness2::Settings->new() };
 
     for my $type (qw/b c/) {
         my ($one, $settings) = $new->(type => $type);

@@ -1,10 +1,10 @@
 use Test2::V0;
 
-use App::Yath::Tester qw/yath/;
+use App::Yath2::Tester qw/yath/;
 use File::Temp qw/tempdir/;
-use Test2::Harness::Util::File::JSONL;
+use Test2::Harness2::Util::File::JSONL;
 
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use POSIX qw/locale_h/;
 my $locale = setlocale(LC_CTYPE) || '';

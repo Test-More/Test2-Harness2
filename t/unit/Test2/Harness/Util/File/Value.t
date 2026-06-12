@@ -1,9 +1,9 @@
-use Test2::Bundle::Extended -target => 'Test2::Harness::Util::File::Value';
+use Test2::Bundle::Extended -target => 'Test2::Harness2::Util::File::Value';
 # HARNESS-DURATION-SHORT
 
 use ok $CLASS;
 
-isa_ok($CLASS, 'Test2::Harness::Util::File');
+isa_ok($CLASS, 'Test2::Harness2::Util::File');
 
 my $one = $CLASS->new(name => __FILE__);
 
@@ -14,7 +14,7 @@ is($val, $no_tail, "trailing newline was removed from the value");
 $val = $one->read_line;
 is(
     $val,
-    "use Test2::Bundle::Extended -target => 'Test2::Harness::Util::File::Value';",
+    "use Test2::Bundle::Extended -target => 'Test2::Harness2::Util::File::Value';",
     "got line, no newline"
 );
 

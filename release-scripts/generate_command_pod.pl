@@ -5,7 +5,7 @@ chdir($ARGV[0]) or die "Could not chdir to $ARGV[0]";
 
 unshift @INC => './lib';
 
-my $base = './lib/App/Yath/Command';
+my $base = './lib/App/Yath2/Command';
 
 opendir(my $dh, $base) or die "Could not open command dir!";
 

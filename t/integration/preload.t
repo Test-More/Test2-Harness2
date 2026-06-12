@@ -3,10 +3,10 @@ use Test2::V0;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use App::Yath::Tester qw/yath/;
-use Test2::Harness::Util::File::JSONL;
+use App::Yath2::Tester qw/yath/;
+use Test2::Harness2::Util::File::JSONL;
 
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use Test2::Util qw/CAN_REALLY_FORK/;
 

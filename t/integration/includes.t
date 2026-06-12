@@ -3,9 +3,9 @@ use IPC::Cmd qw/can_run/;
 
 use File::Spec;
 
-use App::Yath::Tester qw/yath/;
+use App::Yath2::Tester qw/yath/;
 
-use App::Yath::Util qw/find_yath/;
+use App::Yath2::Util qw/find_yath/;
 find_yath();    # cache result before we chdir
 
 my $dir = __FILE__;

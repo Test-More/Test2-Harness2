@@ -2,11 +2,11 @@ package Test2::Formatter::Test2;
 use strict;
 use warnings;
 
-our $VERSION = '1.000173';
+our $VERSION = '2.000000';
 
 use Test2::Util::Term qw/term_size/;
-use Test2::Harness::Util qw/hub_truth apply_encoding/;
-use Test2::Harness::Util::Term qw/USE_ANSI_COLOR/;
+use Test2::Harness2::Util qw/hub_truth apply_encoding/;
+use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 use Test2::Util qw/IS_WIN32 clone_io/;
 use Time::HiRes qw/time/;
 use IO::Handle;
@@ -752,12 +752,12 @@ __END__
 
 =head1 NAME
 
-Test2::Formatter::Test2 - An alternative to TAP, used by Test2::Harness.
+Test2::Formatter::Test2 - An alternative to TAP, used by Test2::Harness2.
 
 =head1 DESCRIPTION
 
 This formatter is the primary formatter used for final result rendering when
-you use Test2::Harness. This formatter is NOT designed to have its output
+you use Test2::Harness2. This formatter is NOT designed to have its output
 consumed by code/machine/harnesses. The goal of this formatter is to have
 output that is easily read by humans.
 

@@ -2,7 +2,7 @@ package Test2::Formatter::Stream;
 use strict;
 use warnings;
 
-our $VERSION = '1.000173';
+our $VERSION = '2.000000';
 
 use Carp qw/croak confess/;
 use Time::HiRes qw/time/;
@@ -10,9 +10,9 @@ use IO::Handle;
 use File::Spec();
 use List::Util qw/first/;
 
-use Test2::Harness::Util::UUID qw/gen_uuid/;
-use Test2::Harness::Util::JSON qw/JSON JSON_IS_XS/;
-use Test2::Harness::Util qw/hub_truth apply_encoding/;
+use Test2::Harness2::Util::UUID qw/gen_uuid/;
+use Test2::Harness2::Util::JSON qw/JSON JSON_IS_XS/;
+use Test2::Harness2::Util qw/hub_truth apply_encoding/;
 
 use Test2::Util qw/get_tid ipc_separator/;
 
@@ -434,7 +434,7 @@ test output can be properly reconstructed in order with STDERR/STDOUT and
 events mostly synced so that they appear in the correct order.
 
 This formatter is not usually useful to humans. This formatter is used by
-L<Test2::Harness> when possible to prevent the loss of data that normally
+L<Test2::Harness2> when possible to prevent the loss of data that normally
 occurs when TAP is used.
 
 =head1 SYNOPSIS
@@ -445,7 +445,7 @@ If you really want your test to output this:
     use Test2::V0;
     ...
 
-Otherwise just use L<App::Yath> without the C<--no-stream> argument and this
+Otherwise just use L<App::Yath2> without the C<--no-stream> argument and this
 formatter will be used when possible.
 
 =head1 SOURCE

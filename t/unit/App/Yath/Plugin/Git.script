@@ -77,7 +77,7 @@ EOT
 my %out = (
     'rev-parse HEAD'              => [0, "4570988f2c2bd26a1691a82766d5bf5c7524bcea\n"],
     'rev-parse --short HEAD'      => [0, "4570988\n"],
-    'status -s'                   => [0, " M lib/App/Yath/Plugin/Git.pm\n"],
+    'status -s'                   => [0, " M lib/App/Yath2/Plugin/Git.pm\n"],
     'rev-parse --abbrev-ref HEAD' => [0, "my.branch.foo\n"],
 
     'merge-base --is-ancestor HEAD master' => [1, ""],
@@ -108,22 +108,22 @@ exit 1;
 
 __END__
 
-diff --git a/lib/App/Yath/Plugin/Git.pm b/lib/App/Yath/Plugin/Git.pm
+diff --git a/lib/App/Yath2/Plugin/Git.pm b/lib/App/Yath2/Plugin/Git.pm
 index a7175683..7646fa7b 100644
---- a/lib/App/Yath/Plugin/Git.pm
-+++ b/lib/App/Yath/Plugin/Git.pm
+--- a/lib/App/Yath2/Plugin/Git.pm
++++ b/lib/App/Yath2/Plugin/Git.pm
 @@ -1,170 +1,218 @@
- package App::Yath::Plugin::Git;
+ package App::Yath2::Plugin::Git;
  use strict;
  use warnings;
  
  our $VERSION = '1.000045';
  
  use IPC::Cmd qw/can_run/;
- use Test2::Harness::Util::IPC qw/run_cmd/;
- use parent 'App::Yath::Plugin';
+ use Test2::Harness2::Util::IPC qw/run_cmd/;
+ use parent 'App::Yath2::Plugin';
  
- use App::Yath::Options;
+ use App::Yath2::Options;
  
  option_group {prefix => 'git', category => "Git Options"} => sub {
      option change_base => (

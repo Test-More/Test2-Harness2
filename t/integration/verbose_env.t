@@ -4,11 +4,11 @@ use Config qw/%Config/;
 use File::Temp qw/tempfile/;
 use File::Spec;
 
-use App::Yath::Tester qw/yath/;
-use Test2::Harness::Util::File::JSONL;
+use App::Yath2::Tester qw/yath/;
+use Test2::Harness2::Util::File::JSONL;
 
-use Test2::Harness::Util       qw/clean_path/;
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util       qw/clean_path/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;

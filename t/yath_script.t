@@ -13,8 +13,8 @@ my %sections;
 
 {
     local $.;
-    my ($script) = grep { -f $_ } 'lib/App/Yath/Script/V1.pm', '../lib/App/Yath/Script/V1.pm';
-    die "Could not find App::Yath::Script::V1 module" unless $script;
+    my ($script) = grep { -f $_ } 'lib/App/Yath/Script/V2.pm', '../lib/App/Yath/Script/V2.pm';
+    die "Could not find App::Yath::Script::V2 module" unless $script;
     open(my $fh, '<', $script) or die "Could not open V1 module: $!";
 
     my ($tdir) = grep { -d $_ } 't/yath_script', 'yath_script';
@@ -329,9 +329,9 @@ sub test_create_app {
     my $code = delete $sections{create_app};
 
     my $args;
-    require App::Yath;
+    require App::Yath2;
     my $control = Test2::V0::mock(
-        'App::Yath' => (
+        'App::Yath2' => (
             override => {
                 generate_run_sub => sub { $args = [@_] },
             },
@@ -344,8 +344,8 @@ sub test_create_app {
     eval $code or die $@;
 
     my ($app, $symbol) = @$args;
-    Test2::V0::isa_ok($app, 'App::Yath');
-    Test2::V0::is($symbol, 'App::Yath::Script::V1::_run', "Got correct symbol");
+    Test2::V0::isa_ok($app, 'App::Yath2');
+    Test2::V0::is($symbol, 'App::Yath::Script::V2::_run', "Got correct symbol");
 
     Test2::V0::ref_is($app->_argv, \@ARGV, "Used ARGV");
     Test2::V0::ref_is($app->config, \%CONFIG, "Used CONFIG");

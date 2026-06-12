@@ -1,6 +1,6 @@
 use Test2::V0;
 
-use App::Yath::Tester qw/yath/;
+use App::Yath2::Tester qw/yath/;
 
 my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;

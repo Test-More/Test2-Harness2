@@ -1,8 +1,8 @@
-use Test2::V0 -target => 'App::Yath::Plugin::Git';
+use Test2::V0 -target => 'App::Yath2::Plugin::Git';
 use Test2::Util qw/CAN_THREAD CAN_REALLY_FORK CAN_FORK CAN_SIGSYS/;
 # HARNESS-DURATION-SHORT
 
-use Test2::Harness::Settings;
+use Test2::Harness2::Settings;
 
 subtest NOTHING => sub {
     my $control = mock $CLASS => (
@@ -32,7 +32,7 @@ subtest ENV => sub {
     local $ENV{GIT_COMMAND} = $script;
     local $ENV{GIT_LONG_SHA}  = "1230988f2c2bd26a1691a82766d5bf5c7524b123";
     local $ENV{GIT_SHORT_SHA} = "1230988";
-    local $ENV{GIT_STATUS}    = " M lib/App/Yath/Command.pm";
+    local $ENV{GIT_STATUS}    = " M lib/App/Yath2/Command.pm";
     local $ENV{GIT_BRANCH}    = "my.super-long-branch-name-needs-to-be-trimmed";
 
     my $meta   = {};
@@ -45,7 +45,7 @@ subtest ENV => sub {
             git => {
                 branch => 'my.super-long-branch-name-needs-to-be-trimmed',
                 sha    => '1230988f2c2bd26a1691a82766d5bf5c7524b123',
-                status => ' M lib/App/Yath/Command.pm',
+                status => ' M lib/App/Yath2/Command.pm',
             },
         },
         "Added git info to meta-data"
@@ -84,7 +84,7 @@ subtest CMD => sub {
             git => {
                 branch => 'my.branch.foo',
                 sha    => '4570988f2c2bd26a1691a82766d5bf5c7524bcea',
-                status => ' M lib/App/Yath/Plugin/Git.pm',
+                status => ' M lib/App/Yath2/Plugin/Git.pm',
             },
         },
         "Added git info to meta-data"
@@ -123,7 +123,7 @@ subtest MIX => sub {
             git => {
                 branch => 'my.branch.foo',
                 sha    => '1230988f2c2bd26a1691a82766d5bf5c7524b123',
-                status => ' M lib/App/Yath/Plugin/Git.pm',
+                status => ' M lib/App/Yath2/Plugin/Git.pm',
             },
         },
         "Added git info to meta-data"
@@ -144,7 +144,7 @@ subtest MIX => sub {
 };
 
 #subtest changed_files => sub {
-#    my $settings = Test2::Harness::Settings->new();
+#    my $settings = Test2::Harness2::Settings->new();
 #    $settings->define_prefix('git');
 #    $settings->git->vivify_field('change_base');
 #

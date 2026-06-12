@@ -4,7 +4,7 @@ use warnings;
 use Test::More;
 use Test2::Plugin::UTF8;
 use Test2::API qw/test2_stack/;
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Tools::Basic qw/skip_all/;
 use File::Spec;
 use Test2::Util qw/get_tid ipc_separator/;

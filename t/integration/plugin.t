@@ -1,10 +1,10 @@
 use Test2::V0;
 
-use App::Yath::Tester qw/yath/;
+use App::Yath2::Tester qw/yath/;
 use File::Temp qw/tempdir/;
-use Test2::Harness::Util::File::JSONL;
+use Test2::Harness2::Util::File::JSONL;
 
-use Test2::Harness::Util::JSON qw/decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
 my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;
@@ -21,8 +21,8 @@ sub verify {
     like($text, qr/TEST PLUGIN: Loaded Plugin/, "Yath loaded the plugin");
     like($text, qr/TEST PLUGIN: duration_data/, "duration_data() was called");
 
-    like($text, qr/TEST PLUGIN: changed_files\(Test2::Harness::Settings\)/,               "changed_files() was called");
-    like($text, qr/TEST PLUGIN: get_coverage_tests\(Test2::Harness::Settings, HASH\(5\)\)/, "get_coverage_tests() was called");
+    like($text, qr/TEST PLUGIN: changed_files\(Test2::Harness2::Settings\)/,               "changed_files() was called");
+    like($text, qr/TEST PLUGIN: get_coverage_tests\(Test2::Harness2::Settings, HASH\(5\)\)/, "get_coverage_tests() was called");
 
     like($text, qr/TEST PLUGIN: munge_files/,     "munge_files() was called");
     like($text, qr/TEST PLUGIN: munge_search/,    "munge_search() was called");
@@ -31,15 +31,15 @@ sub verify {
 
     like($text, qr/TEST PLUGIN: claim_file .*test\.tx$/m,           "claim_file(test.tx) was called");
     like($text, qr/TEST PLUGIN: claim_file .*TestPlugin\.pm$/m,     "claim_file(TestPlugin.pm) was called");
-    like($text, qr/TEST PLUGIN: setup Test2::Harness::Settings/,    "setup() was called with settings");
-    like($text, qr/TEST PLUGIN: teardown Test2::Harness::Settings/, "teardown() was called with settings");
+    like($text, qr/TEST PLUGIN: setup Test2::Harness2::Settings/,    "setup() was called with settings");
+    like($text, qr/TEST PLUGIN: teardown Test2::Harness2::Settings/, "teardown() was called with settings");
 
     like($text, qr/\(TESTPLUG\)\s+STDERR WRITE$/m, "Got the STDERR write from the shellcall");
     like($text, qr/\(TESTPLUG\)\s+STDOUT WRITE$/m, "Got the STDOUT write from the shellcall");
 
     like(
         $text,
-        qr/TEST PLUGIN: finish asserts_seen => 10, final_data => HASH, pass => 1, settings => Test2::Harness::Settings, tests_seen => 5/,
+        qr/TEST PLUGIN: finish asserts_seen => 10, final_data => HASH, pass => 1, settings => Test2::Harness2::Settings, tests_seen => 5/,
         "finish() was called with necessary args"
     );
 

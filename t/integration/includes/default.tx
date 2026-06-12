@@ -1,6 +1,6 @@
 use Test2::V0;
 
-require App::Yath;
+require App::Yath2;
 
 use File::Spec;
 
@@ -11,7 +11,7 @@ my $path = File::Spec->catpath(@parts);
 like(
     \@INC,
     [
-        App::Yath->app_path,
+        App::Yath2->app_path,
         File::Spec->catdir($path, 'lib'),
         File::Spec->catdir($path, 'blib', 'lib'),
         File::Spec->catdir($path, 'blib', 'arch'),

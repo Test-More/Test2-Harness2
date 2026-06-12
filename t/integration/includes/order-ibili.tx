@@ -6,12 +6,12 @@ my @parts = File::Spec->splitpath(File::Spec->rel2abs(__FILE__));
 pop @parts;
 my $path = File::Spec->catpath(@parts);
 
-require App::Yath;
+require App::Yath2;
 
 like(
     \@INC,
     [
-        App::Yath->app_path,
+        App::Yath2->app_path,
 
         File::Spec->catdir($path, 'a'),
 

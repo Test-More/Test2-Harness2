@@ -2,7 +2,7 @@ package Test2::Formatter::Test2::Composer;
 use strict;
 use warnings;
 
-our $VERSION = '1.000173';
+our $VERSION = '2.000000';
 
 use Scalar::Util qw/blessed/;
 use List::Util qw/first/;
@@ -345,7 +345,7 @@ Test2::Formatter::Test2::Composer - Compose output components from event facets
 
 This is used by L<Test2::Formatter::Test2> to turn events into output
 components. This logic lives here instead of in the formatter because it is
-also used by L<Test2::Harness::UI>. Other tools may also find this conversion
+also used by L<Test2::Harness2::UI>. Other tools may also find this conversion
 useful.
 
 =head1 SYNOPSIS

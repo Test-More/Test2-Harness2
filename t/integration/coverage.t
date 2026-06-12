@@ -1,8 +1,8 @@
 use Test2::V0;
-use Test2::Harness::Util::JSON qw/encode_json decode_json/;
+use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Require::Module 'Test2::Plugin::Cover' => '0.000022';
 
-use App::Yath::Tester qw/yath/;
+use App::Yath2::Tester qw/yath/;
 
 use File::Temp qw/tempfile/;
 
@@ -26,7 +26,7 @@ my $coverage = decode_json($json);
 is(
     $coverage,
     {
-        'aggregator' => 'Test2::Harness::Log::CoverageAggregator::ByRun',
+        'aggregator' => 'Test2::Harness2::Log::CoverageAggregator::ByRun',
         'testmeta' => {
             't/integration/coverage/a.tx'    => {'manager' => 'Manager', 'type' => 'split'},
             't/integration/coverage/b.tx'    => {'type'    => 'flat'},

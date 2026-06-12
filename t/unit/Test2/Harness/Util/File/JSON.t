@@ -1,9 +1,9 @@
-use Test2::Bundle::Extended -target => 'Test2::Harness::Util::File::JSON';
+use Test2::Bundle::Extended -target => 'Test2::Harness2::Util::File::JSON';
 # HARNESS-DURATION-SHORT
 
 use ok $CLASS;
 
-isa_ok($CLASS, 'Test2::Harness::Util::File');
+isa_ok($CLASS, 'Test2::Harness2::Util::File');
 
 my $one = $CLASS->new(name => 'fake');
 

@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use lib 'lib';
-use App::Yath::Util qw/find_yath/;
+use App::Yath2::Util qw/find_yath/;
 
 print "1..2\n";
 

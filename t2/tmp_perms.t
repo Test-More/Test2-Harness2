@@ -1,6 +1,6 @@
 use Test2::V0;
 use File::Spec;
-use Test2::Harness::Util qw/clean_path/;
+use Test2::Harness2::Util qw/clean_path/;
 use Fcntl ':mode';
 
 sub check_perms {

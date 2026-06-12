@@ -5,7 +5,7 @@ use Time::HiRes qw/sleep time/;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use Test2::Harness::Runner::Preload;
+use Test2::Harness2::Runner::Preload;
 
 my $dir = tempdir(CLEANUP => 1);
 my $TRIGGER = File::Spec->catfile($dir, 'trigger');

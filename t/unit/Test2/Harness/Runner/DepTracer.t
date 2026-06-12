@@ -1,4 +1,4 @@
-use Test2::V0 -target => 'Test2::Harness::Runner::DepTracer';
+use Test2::V0 -target => 'Test2::Harness2::Runner::DepTracer';
 # HARNESS-NO-PRELOAD
 
 BEGIN { skip_all 'TODO' }
@@ -28,7 +28,7 @@ subtest require_hook => sub {
 
     is(
         $one->dep_map, {
-            'baz.pm' => [['main', 't/Test2/Harness/Runner/DepTracer.t']],
+            'baz.pm' => [['main', 't/Test2/Harness2/Runner/DepTracer.t']],
             'foo.pm' => [['baz',  't/lib/baz.pm'], ['bar', 't/lib/bar.pm']],
             'bar.pm' => [['baz',  't/lib/baz.pm']],
         },
@@ -70,7 +70,7 @@ subtest inc_hook => sub {
 
     is(
         $one->dep_map, {
-            'baz_core.pm' => [['main', 't/Test2/Harness/Runner/DepTracer.t']],
+            'baz_core.pm' => [['main', 't/Test2/Harness2/Runner/DepTracer.t']],
             # The @INC hook is limited, it can catch hidden loads for watching,
             # but it cannot trace deps when a thing is loaded more than once.
             'foo_core.pm' => [['baz_core',  't/lib/baz_core.pm']], #, ['bar', 't/lib/bar_core.pm']],

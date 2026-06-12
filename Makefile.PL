@@ -9,7 +9,7 @@ use 5.010000;
 use ExtUtils::MakeMaker;
 
 use Config qw/%Config/;
-die "OS unsupported\nTest2-Harness currently only works on systems that support true forking.\n"
+die "OS unsupported\nTest2-Harness2 currently only works on systems that support true forking.\n"
     unless $Config{d_fork};
 if ($ENV{AUTOMATED_TESTING}) {
     my $is_njh = 0;
@@ -28,10 +28,10 @@ my %WriteMakefileArgs = (
   "CONFIGURE_REQUIRES" => {
     "ExtUtils::MakeMaker" => 0
   },
-  "DISTNAME" => "Test2-Harness",
+  "DISTNAME" => "Test2-Harness2",
   "LICENSE" => "perl",
   "MIN_PERL_VERSION" => "5.010000",
-  "NAME" => "Test2::Harness",
+  "NAME" => "Test2::Harness2",
   "PREREQ_PM" => {
     "App::Yath::Script" => "2.000011",
     "Carp" => 0,
@@ -89,7 +89,7 @@ my %WriteMakefileArgs = (
   "TEST_REQUIRES" => {
     "File::Copy" => 0
   },
-  "VERSION" => "1.000173",
+  "VERSION" => "2.000000",
   "test" => {
     "TESTS" => "t/*.t t/integration/*.t t/integration/signals/*.t t/unit/App/*.t t/unit/App/Yath/*.t t/unit/App/Yath/Command/*.t t/unit/App/Yath/Options/*.t t/unit/App/Yath/Plugin/*.t t/unit/Test2/Harness/*.t t/unit/Test2/Harness/Runner/*.t t/unit/Test2/Harness/Runner/Resource/SharedJobSlots/*.t t/unit/Test2/Harness/Settings/*.t t/unit/Test2/Harness/Util/*.t t/unit/Test2/Harness/Util/File/*.t t/unit/Test2/Tools/*.t"
   }

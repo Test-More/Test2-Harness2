@@ -1,4 +1,4 @@
-use Test2::V0 -target => 'Test2::Harness::Settings::Prefix';
+use Test2::V0 -target => 'Test2::Harness2::Settings::Prefix';
 
 my $one = $CLASS->new();
 isa_ok($one, [$CLASS], "Created an instance");
@@ -49,7 +49,7 @@ is(
 {
     $INC{'TheThing.pm'} = 1;
     package TheThing;
-    use Test2::Harness::Util::HashBase qw/foo bar/;
+    use Test2::Harness2::Util::HashBase qw/foo bar/;
 }
 
 my $res = $one->build('TheThing', bar => 'yyy');

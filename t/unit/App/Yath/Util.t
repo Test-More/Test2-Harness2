@@ -1,15 +1,15 @@
-use Test2::V0 -target => 'App::Yath::Util';
+use Test2::V0 -target => 'App::Yath2::Util';
 use Test2::Tools::Spec;
 
 use Test2::Util qw/CAN_REALLY_FORK/;
 use Test2::Tools::GenTemp qw/gen_temp/;
-use Test2::Harness::Util qw/clean_path/;
+use Test2::Harness2::Util qw/clean_path/;
 use File::Temp qw/tempfile/;
 use Cwd qw/cwd/;
 
 use File::Spec;
 
-use App::Yath::Util qw{
+use App::Yath2::Util qw{
     find_pfile
     is_generated_test_pl
     fit_to_width
@@ -49,14 +49,14 @@ tests find_yath => sub {
     chdir($tmp2);
 
     $App::Yath::Script::SCRIPT = undef;
-    local *App::Yath::Util::Config = {};
+    local *App::Yath2::Util::Config = {};
     like(
         dies { find_yath },
         qr/Could not find yath in Config paths/,
         "No yath found"
     );
 
-    local *App::Yath::Util::Config = {
+    local *App::Yath2::Util::Config = {
         scriptdir => File::Spec->catdir($tmp, 'scripts'),
     };
     like(find_yath, qr{\Q$yath\E$}, "Found it in a config path");

@@ -1,4 +1,4 @@
-use Test2::V0 -target => 'Test2::Harness::Runner::Resource::SharedJobSlots::State';
+use Test2::V0 -target => 'Test2::Harness2::Runner::Resource::SharedJobSlots::State';
 use File::Temp qw/tempfile/;
 
 use ok $CLASS;
@@ -71,7 +71,7 @@ subtest init_state => sub {
         "Local data is as expected",
     );
 
-    my $stored = Test2::Harness::Util::File::JSON->new(name => $one->state_file)->read;
+    my $stored = Test2::Harness2::Util::File::JSON->new(name => $one->state_file)->read;
     is($state, $stored, "state and stored match");
 };
 
@@ -205,7 +205,7 @@ subtest transaction => sub {
 
     delete $state->{local};
 
-    my $stored = Test2::Harness::Util::File::JSON->new(name => $one->state_file)->read;
+    my $stored = Test2::Harness2::Util::File::JSON->new(name => $one->state_file)->read;
     is($state, $stored, "state and stored match");
 };
 
@@ -289,7 +289,7 @@ subtest registration => sub {
     );
 
     # Emulate 'three' timing out.
-    my $file = Test2::Harness::Util::File::JSON->new(name => $one->{state_file});
+    my $file = Test2::Harness2::Util::File::JSON->new(name => $one->{state_file});
     my $data = $file->read;
     $data->{runners}->{three}->{seen} -= 100 + $one->TIMEOUT;
     $file->write($data);

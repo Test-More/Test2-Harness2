@@ -2,7 +2,7 @@ package Preload;
 use strict;
 use warnings;
 
-use Test2::Harness::Runner::Preload;
+use Test2::Harness2::Runner::Preload;
 
 print "$$ $0 - Loaded ${ \__PACKAGE__ }\n";
 
