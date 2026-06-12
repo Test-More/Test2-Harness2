@@ -334,7 +334,7 @@ POD layout governs the outer ordering. **Within** each POD group, then:
       "TODO before merge", changelog-style notes. Those belong in
       commit messages. Comments that describe a **real, durable**
       external contract or hidden consumer (e.g. "this signature is
-      called by `Test2::Formatter::Stream2`") are fine; they document
+      called by `Test2::Formatter::Collector`") are fine; they document
       an invariant, not a change.
 
 ## 16. POD

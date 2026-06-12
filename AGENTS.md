@@ -1,27 +1,35 @@
 # AGENTS.md
 
-This project is a ground-up rewrite of yath 2.0. Everything ships in a
-single distribution (`Test2-Harness2`), with a separation of concerns
-expressed through two namespaces:
+This project builds yath 2.0 by **evolving the existing yath 1.0
+codebase in small, reviewable chunks** — not by rewriting from
+scratch. Several prior from-scratch attempts were abandoned and now
+live read-only under `reference/`. The result ships in a renamed
+`Test2-Harness2` distribution — renaming the distribution and the
+namespaces lets an installed yath 2.0 co-exist with an installed
+yath 1.0 (`Test2-Harness`), which is why the namespace changes are
+mechanical. The two namespaces split by concern:
 
-- **`Test2::Harness2`** owns **producing results**. Running tests,
-  orchestrating collectors, schedulers, launchers, and preloads.
-  Perl API only; no user interface lives here. The collector
-  pipeline itself comes from the external `Test2-Collector`
-  distribution (see "Dependency rules" and `ARCHITECTURE.md` §2.7,
-  §4.1).
-- **`App::Yath2`** owns **the user interface**: parsing user input
-  (`Getopt::Yath`) and feeding tests-to-run into `Test2::Harness2`,
-  plus formatting and displaying results (live render, archived
-  render, querying past runs).
+- **`Test2::Harness2`** (renamed from `Test2::Harness`) owns
+  **producing results**. Running tests, orchestrating collectors,
+  schedulers, launchers, and preloads. Perl API only; no user
+  interface lives here. The collector pipeline itself comes from the
+  external `Test2-Collector` distribution (see "Dependency rules" and
+  `ARCHITECTURE.md` §2.8, §4.1).
+- **`App::Yath2`** (renamed from `App::Yath`) owns **the user
+  interface**: parsing user input (migrating to `Getopt::Yath`) and
+  feeding tests-to-run into `Test2::Harness2`, plus formatting and
+  displaying results (live render, archived render, querying past
+  runs). The database + UI layer that was the separate
+  `Test2-Harness-UI` distribution is rewritten inline here.
 
 Both namespaces live under `lib/` in this repository and ship in the
 same CPAN distribution. The split is a code-level separation of
 concerns, not a distribution boundary.
 
 The `yath` script itself comes from `App::Yath::Script` (an external
-module that discovers and loads our `App::Yath2` implementation).
-This distribution does not ship its own `yath` binary.
+module that discovers and loads our `App::Yath2` implementation; a
+`V2` entry point selects the 2.0 implementation). This distribution
+does not ship its own `yath` binary.
 
 ## How work happens
 
@@ -56,13 +64,29 @@ codebase.
 - `reference/old4/` — most recent attempt prior to this restart.
 - `reference/botched/` — failed refactor attempt. Reference only.
 
+Snapshots of abandoned 2.0 feature branches, each the best reference
+for its specific subsystem:
+
+- `reference/2.0b/` — abandoned ground-up rewrite: collector swap to
+  `Test2-Collector`, the transition Monitor, and a harness-service
+  MVP.
+- `reference/harness_service/` — `Role::Service`, a scheduler, and
+  the system-load service (`t2h2_sysload`).
+- `reference/dbix_quickorm/` — a refined `DBIx::QuickORM` database
+  layer.
+- `reference/painter/` — an event-painting renderer.
+- `reference/io_events/` — in-tree formatter IO-events, before the
+  `Test2-Collector` extraction.
+
 **Never modify anything under `reference/`.** Copy out, modify the
 copy. The reference trees are immutable history we read against.
 
 When borrowing, `reference/old3` and `reference/old4` are usually the
-right starting points. If a reference's behavior conflicts with
-`ARCHITECTURE.md` or `STYLE_GUIDE.md`, the current docs win — flag
-the conflict if it is non-trivial.
+right starting points for general "how did this used to work"
+questions, and the named feature snapshots above are the best
+reference for their specific subsystems. If a reference's behavior
+conflicts with `ARCHITECTURE.md` or `STYLE_GUIDE.md`, the current
+docs win — flag the conflict if it is non-trivial.
 
 ## Canonical sources of truth
 
@@ -254,9 +278,8 @@ guide; walk it before declaring work ready for review.
   `use lib 't2clib';` line. This scaffolding goes away once the dist
   is installed. The dependency points one way: `Test2::Collector`
   never loads `Test2::Harness2*` or `App::Yath2*`.
-- Hard-required CPAN deps for `Test2::Harness2` /
-  `Test2::Formatter::Stream2` are fine. Non-default database
-  drivers (Postgres, MySQL, MariaDB, Percona) are loaded only when
+- Hard-required CPAN deps for `Test2::Harness2` are fine. Non-default
+  database drivers (Postgres, MySQL, MariaDB, Percona) are loaded only when
   the caller points the harness at a matching DSN, so their
   `DBD::*` modules must be Suggests / Recommends in `dist.ini`,
   not hard requirements.
@@ -289,10 +312,12 @@ must internalise before writing any code (all are documented in
   compose — `Object::HashBase` may be used inside roles and used by
   consumers of roles that use it.
 - **`parent` for inheritance, not `base`.**
+- **`Getopt::Yath` for argument processing** (migrating from 1.0's
+  `App::Yath::Options`).
 - **`Test2::Util::UUID` for UUIDs** (v7; generated in Perl, not in
   the database).
-- **No `DBIx::Class`** for the harness's row layer. SQL via DBI
-  (optionally aided by `SQL::Abstract`).
+- **Database via `DBIx::QuickORM`** (schema-as-Perl), never
+  `DBIx::Class`.
 - **`DBD::SQLite` directly for the default backend.** `DBIx::QuickDB`
   is for ephemeral test setups and non-default flavors; never for
   the default SQLite path.
@@ -303,12 +328,13 @@ must internalise before writing any code (all are documented in
   `IPC::Manager`, treat that as outdated.
 - **The collector comes from `Test2-Collector`** (`Test2::Collector`
   namespace; external, unreleased — loaded via the `t2clib` symlink
-  until installed). Only `Collector::Monitor` lives in the harness.
-  See `ARCHITECTURE.md` §2.7 and §4.1.
-- **The harness orchestrates collectors** (`ARCHITECTURE.md` §4.2).
-  Every harness-started process — including the main harness process —
-  is a collector (non-test variant). Completion is learned from
-  transition messages, never from reaping. Transitions are the shared
-  state; consumers read a collector's `jsonl.zst` events file on
-  demand for full detail.
+  until installed). The yath-side collector is simplified to read the
+  `jsonl.zst` files the collector writes rather than parsing and
+  auditing raw events itself. See `ARCHITECTURE.md` §2.8 and §4.1.
+- **The harness orchestrates collectors** (`ARCHITECTURE.md` §4.2,
+  §4.3). Every harness-started process — including the main harness
+  process — is a collector (non-test variant). Completion is learned
+  from transition messages, never from reaping. Transitions are the
+  shared state; consumers read a collector's `jsonl.zst` events file
+  on demand for full detail.
 - **Reference trees are immutable.** Copy out, modify the copy.
