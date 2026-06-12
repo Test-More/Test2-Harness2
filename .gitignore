@@ -39,3 +39,6 @@ docs
 
 # Scratch / holding dir for files pending review or deletion.
 /xxx/
+
+# Git worktree checkouts (see AGENTS.md "Worktrees").
+/worktrees/
