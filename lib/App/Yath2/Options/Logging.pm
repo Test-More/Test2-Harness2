@@ -36,8 +36,8 @@ option_group {group => 'logging', category => "Logging Options"} => sub {
         type          => 'Scalar',
         alt           => ['lff'],
         from_env_vars => [qw/YATH_LOG_FILE_FORMAT TEST2_HARNESS_LOG_FORMAT/],
-        default       => sub { '%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl' },
-        description   => 'Specify the format for automatically-generated log files. Overridden by --log-file, if given. This option implies -L (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else "%!P%Y-%m-%d~%H:%M:%S~%!U~%!p.jsonl"). This is a string in which percent-escape sequences will be replaced as per POSIX::strftime. The following special escape sequences are also replaced: (%!P : Project name followed by a ~, if a project is defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process ID) (%!S : the number of seconds since local midnight UTC)',
+        default       => '%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl',
+        description   => 'Specify the format for automatically-generated log files. Overridden by --log-file, if given. This option implies -L (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else "%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl"). This is a string in which percent-escape sequences will be replaced as per POSIX::strftime. The following special escape sequences are also replaced: (%!P : Project name followed by a ~, if a project is defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process ID) (%!S : the number of seconds since local midnight UTC)',
     );
 
     option bzip2 => (
@@ -68,8 +68,7 @@ option_group {group => 'logging', category => "Logging Options"} => sub {
     );
 };
 
-option_post_process 0 => sub {
-    my ($options, $state) = @_;
+option_post_process 0 => sub ($options, $state) {
     my $settings = $state->{settings};
     my $logging  = $settings->logging;
 
@@ -95,23 +94,21 @@ option_post_process 0 => sub {
     $log_file =~ s{/+$}{}g;
     $log_file =~ s/\.(gz|bz2)$//;
     $log_file =~ s/\.jsonl?$//;
-    $log_file .= "\.jsonl";
-    $log_file .= "\.bz2" if $logging->bzip2;
-    $log_file .= "\.gz"  if $logging->gzip;
+    $log_file .= ".jsonl";
+    $log_file .= ".bz2" if $logging->bzip2;
+    $log_file .= ".gz"  if $logging->gzip;
     $logging->create_option(log_file => $log_file);
 };
 
 sub time_for_strftime { time() }
 
-sub expand_log_file_format {
-    my ($pattern, $settings) = @_;
+sub expand_log_file_format ($pattern, $settings) {
     $pattern =~ s{%!(\w)}{expand($1, $settings)}ge;
     my $res = strftime($pattern, localtime(time_for_strftime()));
     return $res;
 }
 
-sub expand {
-    my ($letter, $settings) = @_;
+sub expand ($letter, $settings) {
     if    ($letter eq "U") { return $settings->run->run_id }
     elsif ($letter eq "p") { return $$ }
     elsif ($letter eq "P") {

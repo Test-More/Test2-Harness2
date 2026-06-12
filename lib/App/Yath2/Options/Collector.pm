@@ -38,8 +38,7 @@ option_group {group => 'collector', category => "Collector Options"} => sub {
     );
 };
 
-option_post_process 0 => sub {
-    my ($options, $state) = @_;
+option_post_process 0 => sub ($options, $state) {
     my $settings = $state->{settings};
 
     unless ($settings->collector->max_open_jobs) {
