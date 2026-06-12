@@ -1,0 +1,5 @@
+use Test2::V0;
+
+ok(1, "This test should not actually run either");
+
+done_testing;

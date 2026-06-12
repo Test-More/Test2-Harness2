@@ -1,0 +1,6 @@
+use Test2::V0;
+# HARNESS2: retry.count 1
+
+ok($ENV{T2_HARNESS_JOB_IS_TRY}, "This is a retry");
+
+done_testing;

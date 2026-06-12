@@ -1,0 +1,60 @@
+Going to create the Test2::Harness2 module which is going to be an interface into the harness service, and makes it possible to connect to an dlaunch a service.
+
+Namespaces:
+
+Test2::Harness2
+    API for starting and/or connecting to a harness service, queing jobs, etc
+
+    my $t2h2 = Test2::Harness2->new(%specs)
+    my $t2h2 = Test2::Harness2->connect(%info)
+
+    new() creates a new harness, it will either need or vivify a workdir, a harness service class (or subclass), default to 'Test2::Harness2::Service::Harness'; Workdir would default to a tempdir like $TMPDIR/t2h2-$USER-$PROJECT. project is a required argument, no guessing or default.
+
+Test2::Harness2::Role::Service
+    Role with common functionality for all services
+    Always starts via a collector
+    Optional run_uuid, services are either global or run-based
+    unique name per run or global (no 2 global services can have the same name, no 2 services for a specific run can have the same name, but a run service and a different runs service may, as well a run service may have the same name as a global service)
+    Need a unix socket, usually $workdir/service_name.socket, or $workdir/$run_ord/service_name.socket. the run_ord is the numeric order of the runs based on order they were queued, starting with 1. WE use run_ord instead of uuid because of unix socket filename length limits.
+    Has a loop
+        - Reap children
+        - accept socket connections
+        - handle and respond to socket requests
+
+Test2::Harness2::Service::Harness
+    The main harness service
+    Has a scheduler instance
+    accepts requests from clients to queue runs (which also adds requesting client to the proxy list in the monitor to get state updates for global and run-specific collectors)
+    Additional loop tasks:
+        - get state changes from collectors and pass them to monitor
+         - Forward monitor updates to any client that has asked to get them proxied
+        - scheduler tick so it can kick off new jobs
+
+Test2::Harness2::Scheduler
+    Responsible for deciding when to start a run, when the run is done, when and how to kick off the jobs
+    Initial version will just run 1 run and 1 test job at a time
+    Monitor class is canonical way to tell when a job is done
+    We will add support for resources and custom launchers later. For now launch a job using fork+exec to start the collector and the test job under the collector
+
+
+Other notes:
+Runs and jobs both get uuids run_uuid, and job_uuid. They can be passed in when calling queue_jobs, or they can be vivified when missing.
+Collector events files will be written to these locations:
+    $workdir/service_name.jsonl.zst
+    $workdir/$run_ord/service_name.jsonl.zst
+    $workdir/$run_ord/$job_ord/$job_try.jsonl.zst  (job tries numerical starting at 1, for now jobs only get 1 try, we will implement retry later)
+
+
+also create the t2h2_run script:
+    * Creates a new Test2::Harness2 instance with a workdir
+    * uses the above object to start a harness service and connect to it
+    * queues a run with all the test files specified as command line arguments
+    * Tell the harness no additional runs are coming so that it shuts down when run is done
+    * prints state changes for all test jobs as they occur (like t2h2 collector does)
+    * if '-v' is specified as the first argument then also do what t2h2_collector does and print the events for each job once it completes
+    * if '-vv' is specified then also record/show stray events
+    * use the state updates (Monitor class) to find the events files, script should not assume he $workdir structure above is honored, or must assume it can change
+    * Should regularly poll the service events files and print events from the services as they are seen, even without -v flag. (Inotify?)
+
+
+

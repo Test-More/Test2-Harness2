@@ -1,0 +1,464 @@
+package Test2::Harness2::Reloader::Common;
+use strict;
+use warnings;
+
+our $VERSION = '2.000013';
+
+use Carp qw/croak/;
+use Cwd qw/abs_path/;
+use File::Spec ();
+use Scalar::Util qw/blessed/;
+
+use Object::HashBase qw{
+    <project_root
+    +last_reload_at
+    +last_error
+    +churn_cache
+};
+
+# Reloader::Common -- shared base class for the reloader backends.
+#
+# Provides:
+#   _project_root()          locate the project root by walking up from cwd.
+#   _filter_inc()            arrayref of %INC entries inside the project root.
+#   _attempt_in_place_reload reload one file; returns (ok, err).
+#   find_churn / _attempt_churn_reload
+#                            `HARNESS2: churn {` ... `HARNESS2: churn }` partial reload.
+#   request_restart($svc)    send preload_restarting IPC + exec a fresh copy.
+#
+# Subclasses (HiResStat, INotify) supply watch_paths() + do_reload().
+
+sub init {
+    my $self = shift;
+    $self->{+PROJECT_ROOT}    //= __PACKAGE__->_project_root();
+    $self->{+LAST_RELOAD_AT}  //= 0;
+    $self->{+CHURN_CACHE}     //= {};
+}
+
+# Walk up from cwd looking for a .yath.rc* file or a .git directory.
+# Returns an absolute path (cwd if no marker found). The first marker
+# hit wins; .yath.rc* takes precedence over .git only within the same
+# directory.
+sub _project_root {
+    my ($class, $start) = @_;
+    $start //= File::Spec->rel2abs('.');
+    $start = abs_path($start) // $start;
+
+    my @parts = File::Spec->splitdir($start);
+    while (@parts) {
+        my $dir = File::Spec->catdir(@parts);
+        return $dir if defined _has_yath_rc($dir);
+        return $dir if -d File::Spec->catdir($dir, '.git');
+        pop @parts;
+    }
+    return $start;
+}
+
+sub _has_yath_rc {
+    my ($dir) = @_;
+    opendir(my $dh, $dir) or return undef;
+    while (defined(my $entry = readdir($dh))) {
+        next unless $entry =~ /\A\.yath\.rc/;
+        my $path = File::Spec->catfile($dir, $entry);
+        if (-f $path) {
+            closedir $dh;
+            return $path;
+        }
+    }
+    closedir $dh;
+    return undef;
+}
+
+# Walk %INC, return the entries whose absolute file lives under
+# project_root. Returns an arrayref of [$inc_key, $abs_path] pairs.
+sub _filter_inc {
+    my ($self, %opts) = @_;
+    my $root = $opts{root} // $self->{+PROJECT_ROOT};
+    return [] unless defined $root && length $root;
+
+    # Normalize root with trailing separator so the prefix check does
+    # not accept /foo/bar2 when root is /foo/bar.
+    my $root_with_sep = $root;
+    $root_with_sep .= '/' unless $root_with_sep =~ m{/\z};
+
+    my @out;
+    for my $key (keys %INC) {
+        my $abs = $INC{$key};
+        next unless defined $abs && !ref $abs && length $abs;
+        my $resolved = abs_path($abs) // $abs;
+        next unless 0 == index($resolved, $root_with_sep);
+        push @out => [$key, $resolved];
+    }
+    return \@out;
+}
+
+# Attempt to reload a single file in place. Returns ($ok, $err):
+#
+#   ($ok, undef)    success.
+#   (0,   $err)     failure with a descriptive error.
+#
+# Strategy:
+#   1. Identify the inc_key for $file (from %INC reverse-lookup) when
+#      possible.
+#   2. Symbol-table sweep: clear the module's package stash. This
+#      drops stale subs/constants/closures before we re-require.
+#   3. Moose meta dance (when Class::MOP::class_of returns a meta):
+#      reset_package, recompile, re-apply roles.
+#   4. delete $INC{$file} + $INC{$inc_key}, then require $file.
+#   5. Set %INC entries back.
+#
+# Compile errors are caught and surfaced as the $err return value
+# (never re-thrown). Caller decides whether to flip the resource to
+# transient broken or request a restart.
+sub _attempt_in_place_reload {
+    my ($self, $file) = @_;
+    croak "_attempt_in_place_reload requires a file" unless defined $file && length $file;
+
+    my $abs = abs_path($file) // $file;
+    my ($inc_key, $mod) = $self->_resolve_inc_module($abs);
+
+    _moose_reset_package_cache_flag($mod);
+    _clear_package_stash($mod);
+
+    delete $INC{$inc_key} if defined $inc_key;
+    delete $INC{$file};
+    delete $INC{$abs};
+
+    my ($ok, $err) = _require_abs($abs);
+
+    unless ($ok) {
+        _restore_inc($abs, $inc_key, $file);
+        $self->{+LAST_ERROR} = $err;
+        return (0, $err);
+    }
+
+    # Restore inc entries (require may have left them).
+    $INC{$inc_key} //= $abs if defined $inc_key;
+    $INC{$file}    //= $abs;
+    $INC{$abs}     //= $abs;
+
+    $self->{+LAST_RELOAD_AT} = time;
+    $self->{+LAST_ERROR}     = undef;
+    return (1, undef);
+}
+
+sub _resolve_inc_module {
+    my ($self, $abs) = @_;
+
+    my $inc_key;
+    for my $k (keys %INC) {
+        my $v = $INC{$k};
+        next unless defined $v;
+        my $r = abs_path($v) // $v;
+        next unless $r eq $abs;
+        $inc_key = $k;
+        last;
+    }
+
+    my $mod;
+    if (defined $inc_key) {
+        my $stripped = $inc_key;
+        $stripped =~ s{\.pm\z}{};
+        $stripped =~ s{/}{::}g;
+        $mod = $stripped if length $stripped;
+    }
+
+    return ($inc_key, $mod);
+}
+
+# Best-effort Moose hint: tell Class::MOP the package stash will
+# mutate so the next require recompiles cleanly. No-op without MOP.
+sub _moose_reset_package_cache_flag {
+    my ($mod) = @_;
+    return unless $mod && $INC{'Class/MOP.pm'};
+    eval {
+        require Class::MOP;
+        if (my $meta = Class::MOP::class_of($mod)) {
+            $meta->reset_package_cache_flag if $meta->can('reset_package_cache_flag');
+        }
+        1;
+    };
+}
+
+# Undef each non-namespace glob in $mod's stash so stale subs do
+# not linger when the new source removes them. `undef` on the glob
+# (vs delete on the hash slot) is what actually clears the CODE
+# slot so require's redefine warning fires on real changes.
+sub _clear_package_stash {
+    my ($mod) = @_;
+    return unless defined $mod && length $mod;
+    no strict 'refs';
+    my $stash = \%{"${mod}::"};
+    my @syms = grep { !/::\z/ } keys %$stash;
+    for my $sym (@syms) {
+        undef *{"${mod}::${sym}"};
+    }
+}
+
+sub _require_abs {
+    my ($abs) = @_;
+    my @warnings;
+    my $ok = eval {
+        local $SIG{__WARN__} = sub { push @warnings => @_ };
+        local $.;
+        require $abs;
+        1;
+    };
+    return ($ok, $@);
+}
+
+# After a failed require Perl leaves the %INC slot as a non-creatable
+# hash value; delete then re-assign so subsequent reloader ticks can
+# still find this file as a project-root module candidate.
+sub _restore_inc {
+    my ($abs, @keys) = @_;
+    for my $k (grep { defined } @keys) {
+        delete $INC{$k};
+        $INC{$k} = $abs;
+    }
+}
+
+# Send preload_restarting to the harness and exec a fresh copy of
+# this process. Used when a structural change (role/inheritance/MRO)
+# makes an in-place reload unsafe.
+#
+# Two-phase to keep tests honest: callers in unit tests inject an
+# `exec_cb` so the test sees what argv would have been exec'd
+# without actually replacing the process.
+sub request_restart {
+    my ($self, $svc, %opts) = @_;
+
+    my $client = blessed($svc) && $svc->can('client') ? $svc->client : undef;
+    my $name   = blessed($svc) && $svc->can('preload_name')
+        ? $svc->preload_name
+        : (blessed($svc) && $svc->can('name') ? $svc->name : undef);
+
+    if ($client) {
+        my %payload = (
+            kind         => 'preload_restarting',
+            (defined $name ? (preload_name => $name) : ()),
+            ($svc->can('scope')  ? (scope  => $svc->scope)   : ()),
+            ($svc->can('run_id') ? (run_id => $svc->run_id)  : ()),
+        );
+        eval { $client->send_message('harness', \%payload); 1 };
+    }
+
+    my $cb = $opts{exec_cb};
+    if ($cb) {
+        return $cb->([$^X, $0, @ARGV]);
+    }
+
+    exec($^X, $0, @ARGV) or die "exec failed in request_restart: $!";
+}
+
+# Find HARNESS2: churn { / HARNESS2: churn } block sections in
+# $file. Returns a list of arrayrefs [$start_line, $body, $end_line]
+# for each section. Used by the churn-only partial reload path.
+sub find_churn {
+    my ($self, $file) = @_;
+    return () unless defined $file && length $file && -f $file;
+
+    open(my $fh, '<', $file) or return ();
+
+    my @out;
+    my $active  = 0;
+    my $line_no = 0;
+    while (defined(my $line = <$fh>)) {
+        $line_no++;
+
+        if ($active) {
+            if ($line =~ m{\A\s*(?:\#|//)\s*HARNESS2:\s*churn\s*\}\s*\z}) {
+                $out[-1][2] = $line_no;
+                $active = 0;
+                next;
+            }
+            $out[-1][1] .= $line;
+            next;
+        }
+
+        if ($line =~ m{\A\s*(?:\#|//)\s*HARNESS2:\s*churn\s*\{\s*\z}) {
+            $active = 1;
+            push @out => [$line_no, '', undef];
+        }
+    }
+    close $fh;
+    return @out;
+}
+
+# Attempt a churn-only partial reload: re-eval each CHURN block in
+# the module's package with `no warnings 'redefine'`. Module-level
+# state outside the CHURN blocks survives. Returns ($ok, $err).
+sub _attempt_churn_reload {
+    my ($self, $file) = @_;
+
+    my @churn = $self->find_churn($file);
+    return (0, "no CHURN sections in $file") unless @churn;
+
+    my $abs = abs_path($file) // $file;
+    my (undef, $mod) = $self->_resolve_inc_module($abs);
+    return (0, "could not resolve module for $file") unless defined $mod && length $mod;
+
+    for my $block (@churn) {
+        my ($start, $body, $end) = @$block;
+        my $sline = $start + 1;
+        my $code = "package $mod;\n"
+            . "use strict;\n"
+            . "use warnings;\n"
+            . "no warnings 'redefine';\n"
+            . "#line $sline $abs\n"
+            . $body
+            . "\n;1;";
+
+        my $ok = eval $code;
+        unless ($ok) {
+            my $err = $@;
+            $self->{+LAST_ERROR} = $err;
+            return (0, "churn block $abs lines $start-$end: $err");
+        }
+    }
+
+    $self->{+LAST_RELOAD_AT} = time;
+    $self->{+LAST_ERROR}     = undef;
+    return (1, undef);
+}
+
+sub last_reload_at { $_[0]->{+LAST_RELOAD_AT} }
+sub last_error     { $_[0]->{+LAST_ERROR} }
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2::Reloader::Common - Shared base for reloader backends.
+
+=head1 DESCRIPTION
+
+Common implementation glue for the reloader subsystem. Holds:
+
+=over 4
+
+=item project_root
+
+Result of C<_project_root()>: the absolute directory found by
+walking up from cwd until a C<.yath.rc*> file or C<.git/> directory
+is found.
+
+=item last_reload_at
+
+Unix epoch of the most recent successful reload (0 if none).
+
+=item last_error
+
+Stringified error from the most recent failed reload (undef on
+success or no attempts).
+
+=back
+
+The class provides three reload entry points:
+
+=over 4
+
+=item ($ok, $err) = $rel->_attempt_in_place_reload($file)
+
+Symbol-table sweep + Moose meta reset + require. Returns success
+status. Compile errors are caught.
+
+=item ($ok, $err) = $rel->_attempt_churn_reload($file)
+
+For files containing C<HARNESS2: churn {> / C<HARNESS2: churn }>
+sections, re-evals only those sections in the module's package with
+C<no warnings 'redefine'>. Module-level state outside the sections
+survives.
+
+=item $rel->request_restart($svc, %opts)
+
+Sends a C<preload_restarting> IPC to the harness, then C<exec()>s
+C<$^X $0 @ARGV>. When C<%opts> contains an C<exec_cb> coderef the
+callback receives the argv list instead of actually exec()ing -- used
+by unit tests to verify the argv shape without replacing the process.
+
+=back
+
+Subclasses (L<Test2::Harness2::Reloader::HiResStat>,
+L<Test2::Harness2::Reloader::INotify>) consume
+L<Test2::Harness2::Role::Reloader> and provide C<watch_paths> +
+C<do_reload>.
+
+=head1 METHODS
+
+=over 4
+
+=item $rel->init
+
+L<Object::HashBase> hook: defaults C<project_root>, C<last_reload_at>,
+and the internal churn cache.
+
+=item $ts = $rel->last_reload_at
+
+=item $err = $rel->last_error
+
+Unix epoch of the most recent successful reload (0 if none) and the
+stringified error from the most recent failure (undef otherwise).
+
+=item ($ok, $err) = $rel->_attempt_in_place_reload($file)
+
+Private. Symbol-table sweep + Moose meta reset + C<require>. Catches
+compile errors and returns them as C<$err>.
+
+=item ($ok, $err) = $rel->_attempt_churn_reload($file)
+
+Private. Re-evals C<HARNESS2: churn {>...C<HARNESS2: churn }> sections
+of C<$file> in the module's package with C<no warnings 'redefine'>.
+
+=item @sections = $rel->find_churn($file)
+
+Scan C<$file> for churn markers and return one C<[$start, $body, $end]>
+triple per block.
+
+=item $rel->request_restart($svc, %opts)
+
+Notify the harness with C<preload_restarting>, then C<exec()> a fresh
+copy of this process. C<%opts> may pass an C<exec_cb> coderef which
+receives the argv list instead of actually exec()ing (used by unit
+tests).
+
+=item ($inc_key, $mod) = $rel->_resolve_inc_module($abs)
+
+Private. Reverse-look-up the C<%INC> key for an absolute path and
+derive the corresponding module name.
+
+=item $arrayref = $rel->_filter_inc(%opts)
+
+Private. Returns the C<%INC> entries whose absolute paths live under
+C<project_root>, as C<[$inc_key, $abs_path]> pairs. Accepts a C<root>
+override.
+
+=item $dir = Test2::Harness2::Reloader::Common->_project_root($start)
+
+=item $path = Test2::Harness2::Reloader::Common::_has_yath_rc($dir)
+
+Private. Walk up from C<$start> (or cwd) until a C<.yath.rc*> file or
+C<.git/> is found and return that directory. C<_has_yath_rc> returns
+the absolute path of the rc file in C<$dir> or undef.
+
+=item Test2::Harness2::Reloader::Common::_moose_reset_package_cache_flag($mod)
+
+=item Test2::Harness2::Reloader::Common::_clear_package_stash($mod)
+
+=item ($ok, $err) = Test2::Harness2::Reloader::Common::_require_abs($abs)
+
+=item Test2::Harness2::Reloader::Common::_restore_inc($abs, @keys)
+
+Private helpers used by C<_attempt_in_place_reload>: hint Class::MOP to
+recompile, undef the package's globs, C<require> by absolute path under
+a warning trap, and re-seat C<%INC> entries after a failed require.
+
+=back
+
+=cut

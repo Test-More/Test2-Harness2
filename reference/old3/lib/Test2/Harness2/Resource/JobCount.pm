@@ -1,0 +1,213 @@
+package Test2::Harness2::Resource::JobCount;
+use strict;
+use warnings;
+
+our $VERSION = '2.000013';
+
+use Carp qw/croak/;
+use List::Util qw/min/;
+use Time::HiRes qw/time/;
+
+use Object::HashBase qw{
+    <slots
+    <max_per_job
+    <used
+    <assignments
+    &Test2::Harness2::Role::Resource
+};
+
+sub init {
+    my $self = shift;
+
+    my $slots = $self->{+SLOTS};
+    croak "'slots' is required and must be a positive integer"
+        unless defined $slots && $slots =~ m/^\d+$/ && $slots > 0;
+
+    if (defined $self->{+MAX_PER_JOB}) {
+        croak "'max_per_job' must be a positive integer"
+            unless $self->{+MAX_PER_JOB} =~ m/^\d+$/ && $self->{+MAX_PER_JOB} > 0;
+        croak "'max_per_job' ($self->{+MAX_PER_JOB}) must not exceed 'slots' ($slots)"
+            if $self->{+MAX_PER_JOB} > $slots;
+    }
+
+    $self->{+USED}        //= 0;
+    $self->{+ASSIGNMENTS} //= {};
+}
+
+# Brokenness not supported; rely on role's croaking defaults. Pause uses role default.
+
+sub _job_slot_bounds {
+    my ($self, $job, %p) = @_;
+
+    # %p overrides are used by unavailable-action skip/fail launches.
+    my $tf = $job->test_file;
+    # check_*_slots scans the `HARNESS2: slots` directive; bare *_slots accessors return only the role default.
+    my $min = $p{min} // ($tf->can('check_min_slots') ? $tf->check_min_slots : $tf->min_slots) || 1;
+    my $max = $p{max} // ($tf->can('check_max_slots') ? $tf->check_max_slots : $tf->max_slots);
+    $max = $min unless defined $max;
+
+    # Per-job cap from -j N:M / -x M. Tests with min > cap are flagged
+    # permanently unsatisfiable in available() (returns -1).
+    # max <= 0 from the test means "as many as free"; cap wins in that case.
+    if (defined $self->{+MAX_PER_JOB}) {
+        my $cap = $self->{+MAX_PER_JOB};
+        $max = $cap if $max < 1 || $max > $cap;
+    }
+
+    return ($min, $max);
+}
+
+sub available {
+    my ($self, %p) = @_;
+
+    my $job = $p{job} or croak "'job' is required";
+
+    my ($min, $max) = $self->_job_slot_bounds($job, %p);
+    my $need = $p{need} // $min;
+
+    # -1: pool or per-job cap < min -> permanently unsatisfiable (scheduler skips, not defers).
+    return -1 if $self->{+SLOTS} < $min;
+    return -1 if defined $self->{+MAX_PER_JOB} && $self->{+MAX_PER_JOB} < $min;
+
+    my $free = $self->{+SLOTS} - $self->{+USED};
+
+    return 0 if $free < 1;
+    return 0 if $free < $min;
+    return 0 if $free < $need;
+
+    # max_slots <= 0 means "as many as are free up to min..free".
+    $max = $free if $max < 1;
+
+    my $grant = min($max, $free);
+    $grant = $need if $need > $min && $need <= $grant;
+
+    return $grant;
+}
+
+sub assign {
+    my ($self, %p) = @_;
+
+    my $id  = $p{id}  or croak "'id' is required";
+    my $job = $p{job} or croak "'job' is required";
+    my $env = $p{env} or croak "'env' hashref is required";
+
+    croak "duplicate assign for id '$id'"
+        if exists $self->{+ASSIGNMENTS}->{$id};
+
+    my $count = $self->available(%p);
+    croak "cannot assign id '$id': resource unavailable"
+        unless $count > 0;
+
+    $self->{+USED} += $count;
+    $self->{+ASSIGNMENTS}->{$id} = {
+        job   => $job,
+        count => $count,
+        stamp => time,
+    };
+
+    $env->{T2_HARNESS_MY_JOB_CONCURRENCY} = $count;
+
+    # Return value is for tests; scheduler ignores it.
+    return $count;
+}
+
+sub release {
+    my ($self, %p) = @_;
+
+    my $id = $p{id} or croak "'id' is required";
+
+    my $assign = delete $self->{+ASSIGNMENTS}->{$id}
+        or croak "invalid release id '$id'";
+
+    $self->{+USED} -= $assign->{count};
+
+    # Return value is for tests; scheduler ignores it.
+    return $assign->{count};
+}
+
+sub status {
+    my $self = shift;
+
+    my $free = $self->{+SLOTS} - $self->{+USED};
+
+    my @assigned;
+    for my $id (sort keys %{$self->{+ASSIGNMENTS} // {}}) {
+        my $a  = $self->{+ASSIGNMENTS}->{$id};
+        my $tf = $a->{job}->test_file;
+        push @assigned => {
+            id    => $id,
+            count => $a->{count},
+            stamp => $a->{stamp},
+            age   => time - $a->{stamp},
+            test  => $tf->relative,
+        };
+    }
+
+    return {
+        resource    => $self->resource_name,
+        slots       => $self->{+SLOTS},
+        used        => $self->{+USED},
+        free        => $free,
+        broken      => $self->is_broken,
+        paused      => $self->is_paused,
+        permanent   => $self->is_permanent_broken,
+        assignments => \@assigned,
+    };
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2::Resource::JobCount - Limit on concurrent test jobs.
+
+=head1 DESCRIPTION
+
+Caps total concurrent jobs. The harness does not require this class;
+L<App::Yath2::Options::Resource> auto-injects it when the user passes
+C<-j>, or as the default cap on non-Linux platforms (where the
+utilizer/throttle stack is unavailable).
+
+Each job declares slot requirements on its
+L<Test2::Harness2::Role::TestFile> (C<min_slots> / C<max_slots>).
+JobCount grants an integer count from that range, writes it to
+C<T2_HARNESS_MY_JOB_CONCURRENCY> in the child environment, and
+tracks the outstanding assignment until C<release>.
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+See L<https://dev.perl.org/licenses/>
+
+=cut

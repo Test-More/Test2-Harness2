@@ -1,0 +1,7 @@
+use Test2::V0;
+# HARNESS2: preload @off
+
+ok(!$INC{'AISimplePreload.pm'}, 'AISimplePreload NOT preloaded (opted out)');
+ok(!$INC{'AIPreload.pm'},       'AIPreload NOT preloaded (opted out)');
+
+done_testing;

@@ -1,0 +1,258 @@
+package App::Yath2::Command::ps;
+use strict;
+use warnings;
+
+our $VERSION = '2.000013';
+
+use POSIX qw/strftime/;
+use Term::Table();
+
+use Test2::Harness2::Spawn;
+use App::Yath2::Util::IPC qw/discover_daemons assert_daemon_alive/;
+
+use Role::Tiny::With;
+with 'App::Yath2::Role::Command';
+
+use Object::HashBase qw{
+    <args
+    <settings
+};
+
+use Getopt::Yath;
+include_options(
+    'App::Yath2::Options::Yath',
+    'App::Yath2::Options::Harness',
+    'App::Yath2::Options::IPC',
+);
+
+option_group {group => 'ps', category => "PS Options"} => sub {
+    option workdir => (
+        type           => 'Scalar',
+        long_examples  => [' DIR'],
+        short_examples => [' DIR'],
+        description    => 'Workdir of the daemon to query (single-daemon mode).',
+    );
+
+    option latest => (
+        type        => 'Bool',
+        default     => 0,
+        description => 'When multiple daemons match, pick the most recently started.',
+    );
+
+    option all_projects => (
+        type        => 'Bool',
+        default     => 0,
+        description => 'List in-flight jobs across all projects, not just this one.',
+    );
+
+    option all_users => (
+        type        => 'Bool',
+        default     => 0,
+        description => 'List in-flight jobs across all users.',
+    );
+};
+
+sub load_plugins   { 0 }
+sub load_resources { 0 }
+sub load_renderers { 0 }
+
+sub accepts_dot_args   { 0 }
+sub args_include_tests { 0 }
+
+sub group { 'daemon' }
+
+sub summary { "List in-flight tests on running yath daemons" }
+
+sub description {
+    return <<"    EOT";
+Connect to every matching yath daemon and print its in-flight jobs:
+service pid, run_id, job_id, test file, age.
+    EOT
+}
+
+sub run {
+    my $self = shift;
+
+    local $| = 1;
+
+    my $settings = $self->{+SETTINGS};
+    my $ps       = $settings->ps;
+    my $single   = $ps->workdir ? 1 : 0;
+
+    my $daemons = $self->_discover($settings, $ps);
+    unless ($daemons) {
+        print "No running yath daemons.\n";
+        return 0;
+    }
+
+    my $now = time;
+    my $any = 0;
+    for my $info (@$daemons) {
+        next unless $self->_alive_or_warn($info, $single);
+        my $st = $self->_fetch_status($info, $single) // next;
+        $self->_print_daemon_block($st, $now);
+        $any = 1;
+    }
+
+    return $any ? 0 : 1;
+}
+
+sub _discover {
+    my ($self, $settings, $ps) = @_;
+
+    if ($ps->workdir) {
+        my $info = discover_daemons(
+            settings => $settings,
+            workdir  => $ps->workdir,
+            latest   => $ps->latest,
+        );
+        return [$info];
+    }
+
+    my $list = discover_daemons(
+        settings => $settings,
+        count    => 'all',
+        ($ps->all_projects ? (project => undef) : ()),
+        ($ps->all_users    ? (user    => undef) : ()),
+    );
+    return @$list ? $list : undef;
+}
+
+sub _alive_or_warn {
+    my ($self, $info, $single) = @_;
+    my $ok = eval { assert_daemon_alive($info); 1 };
+    return 1 if $ok;
+    my $err = $@;
+    die $err if $single;
+    warn $err;
+    return 0;
+}
+
+sub _fetch_status {
+    my ($self, $info, $single) = @_;
+
+    my $spawn = Test2::Harness2::Spawn->new(
+        pid                  => $info->{pid},
+        ipcm_info            => $info->{ipcm_info},
+        workdir              => $info->{workdir},
+        terminate_on_destroy => 0,
+    );
+
+    my $st;
+    my $ok = eval { $st = $spawn->status; 1 };
+    return $st if $ok;
+
+    my $err = $@;
+    die $err if $single;
+    warn "ps: status for pid=$info->{pid} failed: $err";
+    return undef;
+}
+
+sub _print_daemon_block {
+    my ($self, $st, $now) = @_;
+
+    my $svc     = $st->{service}  // {};
+    my $running = $st->{running}  // [];
+
+    printf("Daemon: pid=%s workdir=%s (state=%s) — %d in-flight job(s)\n",
+        ($svc->{pid}     // '?'),
+        ($svc->{workdir} // '?'),
+        ($svc->{state}   // '?'),
+        scalar @$running,
+    );
+
+    $self->_print_running_jobs($running, $now) if @$running;
+    $self->_print_services($st->{services} // []);
+    print "\n";
+}
+
+sub _print_running_jobs {
+    my ($self, $running, $now) = @_;
+    my @rows;
+    for my $j (@$running) {
+        my $age = defined $j->{started}
+            ? sprintf("%.1fs", $now - $j->{started})
+            : '?';
+        push @rows => [
+            ($j->{pid}       // '?'),
+            ($j->{run_id}    // '?'),
+            ($j->{job_id}    // '?'),
+            ($j->{test_file} // '?'),
+            $age,
+        ];
+    }
+    my $table = Term::Table->new(
+        collapse => 1,
+        header   => [qw/PID RUN_ID JOB_ID TEST_FILE AGE/],
+        rows     => \@rows,
+    );
+    print "  $_\n" for $table->render;
+}
+
+sub _print_services {
+    my ($self, $services) = @_;
+    return unless @$services;
+
+    my @rows;
+    for my $s (@$services) {
+        push @rows => [
+            ($s->{pid}           // '?'),
+            ($s->{name}          // '?'),
+            ($s->{service_class} // '?'),
+            ($s->{scope}         // '?'),
+            ($s->{via_preload} ? 'yes' : 'no'),
+        ];
+    }
+    my $table = Term::Table->new(
+        collapse => 1,
+        header   => [qw/PID NAME CLASS SCOPE VIA_PRELOAD/],
+        rows     => \@rows,
+    );
+    print "  Services:\n";
+    print "    $_\n" for $table->render;
+}
+
+1;
+
+__END__
+
+=head1 METHODS
+
+=head2 load_plugins / load_resources / load_renderers / accepts_dot_args / args_include_tests
+
+Standard Command framework hooks (see L<App::Yath2::Role::Command>). All return
+false: ps is a read-only daemon-status client.
+
+=head2 _discover
+
+Return an arrayref of IPC info records, either a single one when C<--workdir>
+is given or every match across the requested project/user scope.
+
+=head2 _alive_or_warn
+
+Wrap L<App::Yath2::Util::IPC/assert_daemon_alive> so unreachable daemons in
+multi-target mode only warn instead of aborting the whole listing.
+
+=head2 _fetch_status
+
+Open a L<Test2::Harness2::Spawn> handle and request a status snapshot. Failures
+in multi-target mode warn and skip; single-target failures rethrow.
+
+=head2 _print_daemon_block
+
+Print the per-daemon header line followed by the running-jobs and services
+sub-tables for one status snapshot.
+
+=head2 _print_running_jobs
+
+Render the in-flight job table (pid, run_id, job_id, test_file, age) via
+L<Term::Table>.
+
+=head2 _print_services
+
+Render the active-services table (pid, name, class, scope, via_preload) when
+the daemon reports any.
+
+=head1 POD IS AUTO-GENERATED
+
+=cut

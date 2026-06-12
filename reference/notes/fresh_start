@@ -1,0 +1,37 @@
+We are making yet another fresh attempt at App::Yath2/Test2::Harness2
+
+Test2::Harness (App::Yath) is a released and well used Test harness.
+
+The way the current 1.0 implementation works is this:
+A runner executes all the tests, they write their output to files in a
+directory structure. A single process then reads all these output files, turnes
+their lines into events, then audits them and injects additional events or
+modifies some events in place. The event stream is then fed to loggers and/or
+renderers. Everything along the way sees every event from every process.
+
+Problems with the main implementation:
+ * Many test processes, but only 1 process reading the events, major bottleneck
+ * All events sent everywhere, even when something only cares about little bits.
+ * The YathDB database layer stores every event as its own row, which is not necessary and causes major db issues.
+ * The current YathUI layer is slow, and clunky
+ * Lots of disk IO, and too many handles, polling on files, etc.
+ * Uses an older version of what became Getopt::Yath
+
+----
+
+Moving foward
+
+The new 2.0 yath, which will be App::Yath2 and Test2::Harness2 will be a fresh
+rewrite that fixes most of these things.
+
+ * Command line arguments will be processed with Getopt::Yath
+ * Each test will be run using a collector (Test2-Collector, ~/projects/Test2-Collector)
+  * test -> parser -> processors (auditor) -> recorder
+  * All events get written to a compressed .jsonl.zst file
+  * Transitions get sent to the main harness
+ * The main harness will largely be an orchestrator of collectors.
+  * Note that collectors may not be direct children, so we need to reply on the transition messages to tell us when one is completed, not reaping
+ * Transition events (as well as any added by the harness itself) will be the primary state shared and forwarded to things like renderers.
+ * Renderers can look at the .jsonl.zst files as needed based on transitions (the state carried should include the events.jsonl.zst paths for each collector)
+ * Every process started by the harness, including the main harness process should be a collector (non-test variant) so that we have a consistency of wire format for all processes, test and otherwise.
+

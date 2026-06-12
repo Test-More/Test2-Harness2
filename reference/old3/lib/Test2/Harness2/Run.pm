@@ -1,0 +1,335 @@
+package Test2::Harness2::Run;
+use strict;
+use warnings;
+
+our $VERSION = '2.000013';
+
+use Carp qw/croak/;
+use Scalar::Util qw/blessed/;
+use Time::HiRes qw/time/;
+use Test2::Util::UUID qw/gen_uuid/;
+
+use Role::Tiny ();
+
+use Test2::Harness2::Run::Job;
+use Test2::Harness2::Role::TestFile;
+use Test2::Harness2::Util qw/load_module/;
+
+use Object::HashBase qw{
+    <run_id
+    <run_uuid
+    <jobs
+    <created_at
+    <resources
+    <launch_job_timeout
+    <requested_harness_uuid
+    <hash_seed
+    <chdir
+};
+
+# Default retry interval the harness will use when a launch_job
+# request to a run service or preload stage times out waiting for
+# its ack (see ARCHITECTURE.md §14). Overridable per-run by setting
+# launch_job_timeout at construction; a future CLI option will expose
+# this to the user.
+use constant DEFAULT_LAUNCH_JOB_TIMEOUT_SECS => 5;
+
+sub init {
+    my $self = shift;
+
+    croak "'run_id' is a required attribute"
+        unless defined $self->{+RUN_ID};
+
+    $self->{+RUN_UUID}           //= gen_uuid();
+    $self->{+JOBS}               //= [];
+    $self->{+CREATED_AT}         //= time;
+    $self->{+RESOURCES}          //= [];
+    $self->{+LAUNCH_JOB_TIMEOUT} //= DEFAULT_LAUNCH_JOB_TIMEOUT_SECS;
+
+    # Per-run logger overrides were dropped. Silently swallow legacy
+    # slots for back-compat.
+    delete $self->{loggers};
+    delete $self->{extend_loggers};
+    delete $self->{test_loggers};
+    delete $self->{extend_test_loggers};
+}
+
+sub from_files {
+    my ($class, %params) = @_;
+
+    my $files = delete $params{files} or croak "'files' is required";
+    croak "'files' must be an arrayref" unless ref($files) eq 'ARRAY';
+
+    croak "'run_id' is required"
+        unless defined $params{run_id};
+
+    my $run_id = $params{run_id};
+
+    # Accept a role-consuming blessed object, a [$class, @ctor_args]
+    # arrayref (passed through as $class->new(@ctor_args)), or a
+    # TO_JSON-shaped hashref carrying '__test_file_class__' (the
+    # class is asked to rehydrate itself from the hash). There is no
+    # caller-side default class.
+    #
+    # Job ids are sequential ordinal integers within a run, starting
+    # at 1. Each run owns its own counter (this run's `from_files`
+    # allocates them top-down; further jobs added via `add_job` after
+    # construction continue the sequence inside `add_job` itself).
+    my @jobs;
+    my $next_job_id = 1;
+    for my $input (@$files) {
+        my $test_file = $class->_coerce_test_file($input);
+        push @jobs => Test2::Harness2::Run::Job->new(
+            test_file => $test_file,
+            run_id    => $run_id,
+            job_id    => $next_job_id++,
+        );
+    }
+
+    return $class->new(%params, run_id => $run_id, jobs => \@jobs);
+}
+
+sub _coerce_test_file {
+    my $class = shift;
+    my ($input) = @_;
+
+    if (blessed($input)) {
+        return $input
+            if Role::Tiny::does_role($input, 'Test2::Harness2::Role::TestFile');
+        croak "files entries must consume Test2::Harness2::Role::TestFile, got a " . ref($input);
+    }
+
+    my $ref = ref($input);
+
+    my ($tf_class, $method, @params);
+    if ($ref eq 'ARRAY') {
+        $method = 'new';
+        ($tf_class, @params) = @$ref;
+    }
+    elsif ($ref eq 'HASH') {
+        $method   = 'rehydrate';
+        @params   = ($input);
+        $tf_class = $input->{__test_file_class__}
+            or croak "hashref entries must carry '__test_file_class__' (got keys: " . join(',', sort keys %$input) . ")";
+    }
+
+    croak "files entries must consume Test2::Harness2::Role::TestFile or be a construction arrayref with a class and parameters, or a hashref with __test_file_class__"
+        unless $tf_class && $method;
+
+    my $ok  = eval { load_module($tf_class); 1 };
+    my $err = $@;
+    croak "could not load '$tf_class': $err" unless $ok;
+
+    croak "'$tf_class' does not consume Test2::Harness2::Role::TestFile"
+        unless Role::Tiny::does_role($tf_class, 'Test2::Harness2::Role::TestFile');
+
+    return $tf_class->$method(@params);
+}
+
+# Add a job to the spec at queue-build time. After the run has been
+# handed to $harness->queue, the Spec is treated as immutable and
+# this MUST NOT be called.
+sub add_job {
+    my ($self, $job) = @_;
+    croak "'job' is required" unless defined $job;
+    croak "'job' must be a Test2::Harness2::Run::Job"
+        unless blessed($job) && $job->isa('Test2::Harness2::Run::Job');
+    push @{$self->{+JOBS}} => $job;
+    return;
+}
+
+sub TO_JSON {
+    my $self = shift;
+    my %out = %$self;
+    # RESOURCES holds live blessed Resource instances (no required
+    # TO_JSON contract on those classes); omit them from the
+    # serialized snapshot rather than letting the encoder choke.
+    delete $out{+RESOURCES};
+    return \%out;
+}
+
+sub rehydrate {
+    my $class = shift;
+    my ($hash) = @_;
+    croak "rehydrate requires a hashref" unless ref($hash) eq 'HASH';
+
+    my %args = %$hash;
+
+    # Jobs round-trip: when reading back from disk each entry will be
+    # a plain hash (TO_JSON unblessed it). Re-bless via Run::Job's
+    # rehydrate-shaped constructor so callers see the same object
+    # graph they would have seen pre-serialization. Already-blessed
+    # entries are left alone.
+    if (ref($args{jobs}) eq 'ARRAY') {
+        my @rebuilt;
+        for my $j (@{$args{jobs}}) {
+            push @rebuilt => blessed($j) ? $j : Test2::Harness2::Run::Job->new(%$j);
+        }
+        $args{jobs} = \@rebuilt;
+    }
+
+    return $class->new(%args);
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2::Run - Immutable spec for a single test run.
+
+=head1 SYNOPSIS
+
+    use Test2::Harness2::Run;
+
+    # Build from a list of test files
+    my $run = Test2::Harness2::Run->from_files(files => ['t/foo.t', 't/bar.t']);
+
+    # Hand to the harness; from this point the Run is treated as immutable.
+    $harness->queue_test_run(run => $run);
+
+=head1 DESCRIPTION
+
+A C<Test2::Harness2::Run> represents the I<intent> to execute one logical
+test run: an ordered collection of test jobs plus the policies (resources,
+timeouts) the caller chose at queue time.
+
+The Run itself does not track lifecycle state. Mutable state (pending /
+running / done lists, per-job result hashes, exit summaries, etc.) lives
+on a paired L<Test2::Harness2::Run::State> the run service constructs as
+soon as the Run is accepted for execution.
+
+Once the spec has been handed off to C<< $harness->queue >> it is treated
+as immutable. Mutators are limited to the queue-build phase: C<add_job>
+may be called to append a job, but no setter exists for the policy slots
+because they are constructor-only.
+
+=head1 ATTRIBUTES
+
+=over 4
+
+=item run_id
+
+Sequential ordinal integer identifying this run on disk, allocated by the
+harness (required).
+
+=item run_uuid
+
+UUID metadata for this run (auto-generated if not supplied). Surfaced in
+the run's spec sidecar and indexed in DB schemas, but not encoded in the
+on-disk path.
+
+=item jobs
+
+Arrayref of L<Test2::Harness2::Run::Job> objects. Each job carries a
+L<Test2::Harness2::Role::TestFile>-consuming value object.
+
+=item created_at
+
+Epoch timestamp (float) when the run was queued.
+
+=item resources
+
+Arrayref of L<Test2::Harness2::Role::Resource> instances scoped to this
+specific run (as opposed to the harness-global resources on the harness
+itself). Defaults to empty.
+
+=item launch_job_timeout
+
+Seconds the harness will wait for an ack on a launch_job IPC request
+before retrying.
+
+=item requested_harness_uuid
+
+UUID of a specific harness the user wants this run to execute on, when
+they pinned a target at queue time. C<undef> means "any available
+harness". The runtime counterpart C<running_harness_uuid> on
+L<Test2::Harness2::Run::State> records the harness that actually ran
+the run.
+
+=back
+
+=head1 METHODS
+
+=over 4
+
+=item $run = Test2::Harness2::Run->from_files(files => \@files, %opts)
+
+Construct a run from a list of C<files>. Each entry becomes one
+L<Test2::Harness2::Run::Job>. Entries may be:
+
+=over 4
+
+=item * an object consuming L<Test2::Harness2::Role::TestFile>
+
+=item * an arrayref C<[$class, @ctor_args]>. The class is loaded if
+needed and constructed via C<< $class->new(@ctor_args) >>.
+
+=item * a hashref carrying a C<__test_file_class__> key naming the
+concrete TestFile class (as emitted by
+L<Test2::Harness2::Role::TestFile/TO_JSON>). The class is loaded if
+needed and asked to L<< rehydrate|Test2::Harness2::Role::TestFile/rehydrate >>
+itself from the hashref.
+
+=back
+
+Bare path strings are B<not> accepted: callers must hand in one of
+the three forms above.
+
+=item $run = Test2::Harness2::Run->rehydrate(\%hash)
+
+Reconstruct a Run from a hashref shaped like C<TO_JSON>'s output.
+Re-blesses C<Run::Job> entries inside the C<jobs> arrayref.
+
+=item $run->add_job($job)
+
+Append a L<Test2::Harness2::Run::Job> to the spec at queue-build time.
+Must not be called once the spec has been handed to the harness.
+
+=item $hash = $run->TO_JSON
+
+Return a plain hash of every spec slot. Suitable for serialization to
+the C<runs/E<lt>run_idE<gt>/spec.json> sidecar.
+
+=back
+
+=head1 SEE ALSO
+
+L<Test2::Harness2::Run::State> -- mutable runtime state.
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<https://github.com/Test-More/Test2-Harness>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<https://dev.perl.org/licenses/>
+
+=cut

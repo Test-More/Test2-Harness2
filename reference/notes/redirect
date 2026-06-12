@@ -1,0 +1,98 @@
+We are changing directions again.
+
+Keeping:
+ - Collector system
+ - Object::HashBase for objects
+ - Role::Tiny for roles
+ - Atomic::Pipe + zst compression for message sending
+ - Will use App::Yath::Script for the 'yath' script
+ - Will use DBIx::QuickORM for database schema
+ - Same style guide
+ - V7 UUIDS
+ - minimum perl versions
+ - method signatures
+ - No IPC::Manager
+
+Changing:
+ - No longer database driven, will eventually use databases for logs.
+
+
+----
+
+We are going to build in smaller incremental steps from the ground up.
+
+
+The Collector system needs some changes and polish:
+
+The Test2::Harness2::Collector library should be a polished interface
+
+    use Test2::Harness2::Collector qw/collect spawn_collector/;
+
+    # Fork a new process that is a collector and will start its child
+    my $pid = spawn_collector(
+        env => \%env,
+
+        exec => \@exec,         # start child and call exec(@exec)
+        # or
+        run  => sub { ... },    # start child and run the sub, no exec
+
+        parser    => $parser_info,       # Class, or [$class, %construction_args], or blessed instance
+        processor => $processor_info,    # Class, or [$class, %construction_args], or blessed instance
+        recorder  => $recorder_info,     # Class, or [$class, %construction_args], or blessed instance
+
+        # See existing timeout params
+        %timeout_params,
+    );
+
+    # Start a new child process and collect it in this process, return when child exits.
+    my $info = collect(
+        # Same args
+    );
+
+    $info = {
+        exit => {
+            code => $INT,
+            err  => $INT,
+            sig  => $INT,
+        },
+        # Any data the processor or recorder want to attach
+    }
+
+
+Collector works like it does today, atomic::pipes with zst compression for
+childs stderr/stdout, parsers parse the childs output into events, events are
+passed to an optional processor (Processor is a role, takes input events one at
+a time, returns 1 or more events for each 1 it reads). Events are then passed
+to an optional recorder which may or may not act on each event passed to it.
+The collector loops over output and also watches for child exit, and sends the
+child exit as an event to the pipeline.
+
+Initial recorder writes all events to a file provided via construction
+arguments, jsonl.zst format, but recorder does not enforce anything about
+filename, it just gets a filename and creates+write to it.
+
+A test subclass of the recorder will also write 2 additional files, a
+transitions file that gets a zst compressed json line written for each of the
+transitions we care about, these will be noticed by the auditor and sent as
+additional events to the recorder, the recorder sees these transition events
+and writes them to the transitions file instead of the events file. The other
+additional file is a 'state' file where the final state from the auditor is
+written. Note that we need to be cautious about ordering, we need to make sure
+the exit event from the child exiting comes AFTER all output, so either after
+the pipes are both closed, or after they re forcefully closed due to the
+timeouts.
+
+The base recorder class should also accept an optional 'touchfile' argument.
+This file should be touched to have its mtime modified when the collector
+exits, the test recorder can also touch it every transition. This will be used
+to wake up things that monitor collectors by touching it and trigerring inotify
+events.
+
+Lets also create a t2h2_collector script that takes a test file and an output
+dir as arguments, the script will then fill out the rest like output filenames
+(in output dir), parser, processor (auditor), etc. It will exit 0 on test pass,
+and 1 on failure. The script process itself uses collect() with exec to spawn
+the child process. 2 processes total.
+
+Tests can validate other paths like spawn_collector, touch file, non-test
+recorder, etc.

@@ -1,0 +1,78 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+BEGIN {
+    return if $^C;
+
+    my %SEEN = map { $_ => 1 } @INC;
+    push @INC => grep { !$SEEN{$_}++ } split /;/, $ENV{T2_HARNESS_INCLUDES} if $ENV{T2_HARNESS_INCLUDES};
+    $ENV{T2_HARNESS_INCLUDES} = join ';' => @INC;
+
+    unless ($ENV{PERL_HASH_SEED}) {
+        my @ltime = localtime;
+        my $seed = sprintf('%04d%02d%02d', 1900 + $ltime[5], 1 + $ltime[4], $ltime[3]);
+        print "PERL_HASH_SEED not set, setting to '$seed' for more reproducible results.\n";
+        $ENV{PERL_HASH_SEED} = $seed;
+        exec $^X, (map {('-I' => $_)} @INC), __FILE__, @ARGV;
+    }
+
+    require App::Yath2::Script;
+    App::Yath2::Script::goto_alt_script('yath', __FILE__, './scripts/yath');
+}
+
+exit(App::Yath2::Script::run(__FILE__, \@ARGV));
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+yath - script to launch L<App::Yath2> which is the frontend for
+L<Test2::Harness2>.
+
+=head1 DESCRIPTION
+
+=head1 SYNOPSIS
+
+=head1 EXPORTS
+
+=over 4
+
+=back
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness2 can be found at
+L<http://github.com/Test-More/Test2-Harness/>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<http://dev.perl.org/licenses/>
+
+=cut
+

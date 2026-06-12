@@ -1,0 +1,744 @@
+package Test2::Harness2::Util;
+use strict;
+use warnings;
+
+our $VERSION = '2.000013';
+
+use Carp qw/croak confess/;
+use Cwd qw/realpath/;
+use Fcntl qw/LOCK_EX LOCK_UN O_WRONLY O_CREAT O_EXCL/;
+use File::Spec;
+use Importer Importer => 'import';
+use Importer 'Test2::Util::Times' => qw/render_duration/;
+use Test2::Util qw/try_sig_mask do_rename/;
+use Test2::Util::UUID qw/looks_like_uuid/;
+
+our @EXPORT_OK = qw{
+    apply_encoding
+    clean_path
+    close_file
+    find_libraries
+    fqmod
+    hub_truth
+    load_module
+    lock_file
+    looks_like_uuid
+    maybe_open_file
+    maybe_read_file
+    mod2file
+    open_file
+    parse_exit
+    read_file
+    render_duration
+    render_status_data
+    tinysleep
+    unlock_file
+    write_file
+    write_file_atomic
+    write_file_atomic_mode
+};
+
+# Load a Perl module by its :: name, idempotently. Returns the module
+# name. Short-circuits when %INC already has the file or the package
+# stash is already populated, so repeated calls (or calls for modules
+# that were brought in by some other path) are cheap. Dies (via the
+# underlying require) if the module cannot be loaded.
+sub load_module {
+    my ($name) = @_;
+    croak "load_module: module name is required"
+        unless defined $name && length $name;
+
+    my $file = mod2file($name);
+    return $name if $INC{$file};
+    {
+        no strict 'refs';
+        return $name if %{"${name}::"};
+    }
+    require $file;
+    return $name;
+}
+
+# Short sub-second sleep that returns early when a signal arrives.
+# Time::HiRes::sleep retries internally on EINTR, so a long nap will
+# silently swallow signals; polling loops that want to react to
+# SIGCHLD / SIGTERM promptly should use this instead. Implemented
+# over four-arg select(), which returns -1 on EINTR.
+sub tinysleep {
+    my ($secs) = @_;
+    return if !defined $secs || $secs <= 0;
+    select(undef, undef, undef, $secs);
+    return;
+}
+
+# Canonicalise $path to an absolute, symlink-resolved form. With $absolute
+# false, skip the realpath() step and just return File::Spec->rel2abs($path);
+# that mode is for callers that want an absolute path without collapsing
+# symlinks. Confesses on empty input.
+sub clean_path {
+    my ($path, $absolute) = @_;
+
+    confess "No path was provided to clean_path()" unless $path;
+
+    $absolute //= 1;
+    $path = realpath($path) // $path if $absolute;
+
+    return File::Spec->rel2abs($path);
+}
+
+sub mod2file {
+    my ($mod) = @_;
+    confess "No module name provided" unless $mod;
+    my $file = $mod;
+    $file =~ s{::}{/}g;
+    $file .= ".pm";
+    return $file;
+}
+
+# Resolve a short module name against one or more namespace prefixes. A
+# leading '+' bypasses the prefixes entirely and treats the rest as an
+# absolute module name. Otherwise each prefix is tried in order and the
+# first that loads wins. With no_require the module name is returned
+# without attempting to load it (only legal with a single prefix, since
+# there is no way to pick between candidates without loading).
+sub fqmod {
+    my ($input, $prefixes, %options) = @_;
+
+    croak "At least 1 prefix is required" unless $prefixes;
+
+    $prefixes = [$prefixes] unless ref($prefixes) eq 'ARRAY';
+
+    croak "At least 1 prefix is required" unless @$prefixes;
+    croak "Cannot use no_require when providing multiple prefixes" if $options{no_require} && @$prefixes > 1;
+
+    if ($input =~ m/^\+(.*)$/) {
+        my $mod = $1;
+        return $mod if $options{no_require};
+        return $mod if eval { require(mod2file($mod)); 1 };
+        confess($@);
+    }
+
+    my %tried;
+    for my $pre (@$prefixes) {
+        my $mod = $input =~ m/^\Q$pre\E/ ? $input : "$pre\::$input";
+
+        if ($options{no_require}) {
+            return $mod;
+        }
+        else {
+            return $mod if eval { require(mod2file($mod)); 1 };
+            ($tried{$mod}) = split /\n/, $@;
+            $tried{$mod} =~ s{^(Can't locate \S+ in \@INC).*$}{$1.};
+        }
+    }
+
+    my @caller = caller;
+
+    die "Could not locate a module matching '$input' at $caller[1] line $caller[2], the following were checked:\n" . join("\n", map { " * $_: $tried{$_}" } sort keys %tried) . "\n";
+}
+
+# Walk @paths (defaults to @INC) looking for .pm files matching the
+# namespace pattern $search. '*' wildcards in $search expand directory
+# entries at that level (e.g. 'App::Yath2::*' matches every immediate
+# child); literal segments traverse directly. Returns a hashref keyed by
+# discovered module name with the matching @INC-relative file path as
+# the value. Nested @INC entries are skipped during wildcard expansion
+# so a parent directory does not double-count modules reachable through
+# a child entry.
+sub find_libraries {
+    my ($search, @paths) = @_;
+    my @parts = grep $_, split /::(\*)?/, $search;
+
+    @paths = @INC unless @paths;
+
+    @paths = map { File::Spec->canonpath($_) } @paths;
+
+    my %prefixes = map { $_ => 1 } @paths;
+
+    my @found;
+    my @bases = ([map { [$_ => length($_)] } @paths]);
+    while (my $set = shift @bases) {
+        my $new_base = [];
+        my $part     = shift @parts;
+
+        for my $base (@$set) {
+            my ($dir, $prefix) = @$base;
+            if ($part ne '*') {
+                my $path = File::Spec->catdir($dir, $part);
+                if (@parts) {
+                    push @$new_base => [$path, $prefix] if -d $path;
+                }
+                elsif (-f "$path.pm") {
+                    push @found => ["$path.pm", $prefix];
+                }
+
+                next;
+            }
+
+            opendir(my $dh, $dir) or next;
+            for my $item (readdir($dh)) {
+                next if $item =~ m/^\./;
+                my $path = File::Spec->catdir($dir, $item);
+                if (@parts) {
+                    # Sometimes @INC dirs are nested in eachother.
+                    next if $prefixes{$path};
+
+                    push @$new_base => [$path, $prefix] if -d $path;
+                    next;
+                }
+
+                next unless -f $path && $path =~ m/\.pm$/;
+                push @found => [$path, $prefix];
+            }
+        }
+
+        push @bases => $new_base if @$new_base;
+    }
+
+    my %out;
+    for my $found (@found) {
+        my ($path, $prefix) = @$found;
+
+        my @file_parts = File::Spec->splitdir(substr($path, $prefix));
+        shift @file_parts if $file_parts[0] eq '';
+
+        my $file = join '/' => @file_parts;
+        $file_parts[-1] = substr($file_parts[-1], 0, -3);
+        my $module = join '::' => @file_parts;
+
+        $out{$module} //= $file;
+    }
+
+    return \%out;
+}
+
+sub apply_encoding {
+    my ($fh, $enc) = @_;
+    return unless $enc;
+
+    # https://rt.perl.org/Public/Bug/Display.html?id=31923
+    # If utf8 is requested we use ':utf8' instead of ':encoding(utf8)' in
+    # order to avoid the thread segfault.
+    return binmode($fh, ":utf8") if $enc =~ m/^utf-?8$/i;
+    binmode($fh, ":encoding($enc)");
+}
+
+sub hub_truth {
+    my ($f) = @_;
+
+    return $f->{hubs}->[0] if $f->{hubs} && @{$f->{hubs}};
+    return $f->{trace}     if $f->{trace};
+    return {};
+}
+
+sub parse_exit {
+    my ($exit) = @_;
+    croak "an exit value is required" unless defined $exit;
+
+    my $sig = $exit & 127;
+    my $dmp = $exit & 128;
+
+    return {
+        sig => $sig,
+        err => ($exit >> 8),
+        dmp => $dmp,
+        all => $exit,
+    };
+}
+
+
+# Compression readers recognised by open_file(). Only used on read; writes
+# go through plain open() regardless of extension.
+my %COMPRESSION = (
+    bz2 => {module => 'IO::Uncompress::Bunzip2', errors => \$IO::Uncompress::Bunzip2::Bunzip2Error},
+    gz  => {module => 'IO::Uncompress::Gunzip',  errors => \$IO::Uncompress::Gunzip::GunzipError},
+);
+
+# Open $file for $mode (default '<'). For read mode, files whose name ends
+# in .gz or .bz2 (or an explicit 'ext'/'compression' option) are opened via
+# the matching IO::Uncompress::* module so callers get a normal-looking
+# filehandle over compressed data. Dies on failure; the 'no_decompress'
+# opt bypasses compression detection entirely.
+sub open_file {
+    my ($file, $mode, %opts) = @_;
+    $mode ||= '<';
+
+    unless ($opts{no_decompress}) {
+        if (my $ext = $opts{ext}) {
+            $opts{compression} //= $COMPRESSION{$ext} or die "Unknown compression: $ext";
+        }
+
+        if ($file =~ m/\.(gz|bz2)$/i) {
+            my $ext = lc($1);
+            $opts{compression} //= $COMPRESSION{$ext} or die "Unknown compression: $ext";
+        }
+
+        if ($mode eq '<' && $opts{compression}) {
+            my $spec = $opts{compression};
+            my $mod  = $spec->{module};
+            require(mod2file($mod));
+
+            my $fh = $mod->new($file) or die "Could not open file '$file' ($mode): ${$spec->{errors}}";
+            return $fh;
+        }
+    }
+
+    open(my $fh, $mode, $file) or confess "Could not open file '$file' ($mode): $!";
+    return $fh;
+}
+
+sub maybe_open_file {
+    my ($file, $mode) = @_;
+    return undef unless -f $file;
+    return open_file($file, $mode);
+}
+
+sub close_file {
+    my ($fh, $name) = @_;
+    return if close($fh);
+    confess "Could not close file: $!" unless $name;
+    confess "Could not close file '$name': $!";
+}
+
+sub read_file {
+    my ($file, @args) = @_;
+
+    my $fh = open_file($file, '<', @args);
+    local $/;
+    my $out = <$fh>;
+    close_file($fh, $file);
+
+    return $out;
+}
+
+sub maybe_read_file {
+    my ($file) = @_;
+    return undef unless -f $file;
+    return read_file($file);
+}
+
+sub write_file {
+    my ($file, @content) = @_;
+
+    my $fh = open_file($file, '>');
+    print $fh @content;
+    close_file($fh, $file);
+
+    return @content;
+}
+
+# Advisory lock helpers over flock(). lock_file accepts either a filename
+# (opened for append unless $mode overrides) or an already-open handle,
+# and retries up to 20 times on EINTR/ERESTART before giving up. Callers
+# must pair lock_file with unlock_file (or close the handle) to release.
+sub lock_file {
+    my ($file, $mode) = @_;
+
+    my $fh;
+    if (ref $file) {
+        $fh = $file;
+    }
+    else {
+        open($fh, $mode // '>>', $file) or die "Could not open file '$file': $!";
+    }
+
+    for (1 .. 21) {
+        flock($fh, LOCK_EX) and last;
+        die "Could not lock file (try $_): $!" if $_ >= 20;
+        next if $!{EINTR} || $!{ERESTART};
+        die "Could not lock file: $!";
+    }
+
+    return $fh;
+}
+
+sub unlock_file {
+    my ($fh) = @_;
+    for (1 .. 21) {
+        flock($fh, LOCK_UN) and last;
+        die "Could not unlock file (try $_): $!" if $_ >= 20;
+        next if $!{EINTR} || $!{ERESTART};
+        die "Could not unlock file: $!";
+    }
+
+    return $fh;
+}
+
+# Render structured status data into a human-readable string.
+# $data is an arrayref of group hashrefs, each containing:
+#   title   - optional heading printed as "*** title ***"
+#   tables  - arrayref of table hashrefs (header, rows, title, format, term_table_opts)
+#   lines   - arrayref of plain-text lines printed below the tables
+# Columns with format entry 'duration' are run through render_duration().
+# Returns the formatted string, or undef when $data is empty.
+sub render_status_data {
+    my ($data) = @_;
+    croak "must pass in a data array or undef" unless @_;
+
+    return unless @$data;
+
+    require Term::Table;
+
+    my $out = "";
+
+    for my $group (@$data) {
+        my $gout = "\n";
+        $gout .= "**** $group->{title} ****\n\n" if defined $group->{title};
+
+        for my $table (@{$group->{tables} || []}) {
+            my $rows = $table->{rows};
+
+            if (my $format = $table->{format}) {
+                my $rows2 = [];
+
+                for my $row (@$rows) {
+                    my $row2 = [];
+                    for (my $i = 0; $i < @$row; $i++) {
+                        my $val = $row->[$i];
+                        my $fmt = $format->[$i];
+
+                        $val = defined($val) ? render_duration($val) : '--'
+                            if $fmt && $fmt eq 'duration';
+
+                        push @$row2 => $val;
+                    }
+                    push @$rows2 => $row2;
+                }
+
+                $rows = $rows2;
+            }
+
+            next unless $rows && @$rows;
+
+            my $tt = Term::Table->new(
+                header => $table->{header},
+                rows   => $rows,
+
+                sanitize     => 1,
+                collapse     => 1,
+                auto_columns => 1,
+
+                %{$table->{term_table_opts} || {}},
+            );
+
+            $gout .= "** $table->{title} **\n" if defined $table->{title};
+            $gout .= "$_\n" for $tt->render;
+            $gout .= "\n";
+        }
+
+        if ($group->{lines} && @{$group->{lines}}) {
+            $gout .= "$_\n" for @{$group->{lines}};
+            $gout .= "\n";
+        }
+
+        $out .= $gout;
+    }
+
+    return $out;
+}
+
+# Write @content to "$file.pend" and then do_rename() it over $file.  Signal
+# masking keeps the half-written pending file from being abandoned if the
+# process is signalled mid-write.  Callers that need richer encoding (e.g.
+# JSON) layer their own helper on top; see write_json_file_atomic in
+# Test2::Harness2::Util::JSON.
+sub write_file_atomic {
+    my ($file, @content) = @_;
+
+    my $pend = "$file.pend";
+
+    my ($ok, $err) = try_sig_mask {
+        write_file($pend, @content);
+        my ($ren_ok, $ren_err) = do_rename($pend, $file);
+        die "$pend -> $file: $ren_err" unless $ren_ok;
+    };
+
+    unless ($ok) {
+        unlink($pend);
+        die $err;
+    }
+
+    return @content;
+}
+
+# write_file_atomic with explicit POSIX mode bits on the result file.
+# Use this when the file must have specific permissions regardless of
+# the caller's umask (e.g. credential-bearing IPC info files that must
+# stay 0600). The mode is enforced three ways:
+#   - sysopen(.pend, ..., $mode) under a temporary 'umask 0' so umask
+#     cannot strip bits from the create-time mode;
+#   - chmod($mode, .pend) before the rename pins the mode in place
+#     against any umask race after sysopen;
+#   - the rename keeps the inode (and its mode) intact, so the final
+#     file inherits .pend's mode exactly.
+# The whole sequence runs under try_sig_mask so a SIGINT during the
+# sysopen-chmod-rename window cannot leave a partially-permissioned
+# file in the wrong place.
+sub write_file_atomic_mode {
+    my ($file, $mode, @content) = @_;
+
+    croak "write_file_atomic_mode: 'mode' must be defined"
+        unless defined $mode;
+
+    my $pend = "$file.pend";
+
+    my ($ok, $err) = try_sig_mask {
+        my $old_umask = umask 0;
+        my $created   = sysopen(my $fh, $pend, O_WRONLY | O_CREAT | O_EXCL, $mode);
+        my $serr      = $!;
+        umask $old_umask;
+        die "open '$pend' for write: $serr" unless $created;
+
+        print {$fh} @content;
+        close_file($fh, $pend);
+
+        chmod($mode, $pend) or die sprintf("chmod 0%o '$pend': $!", $mode);
+
+        my ($ren_ok, $ren_err) = do_rename($pend, $file);
+        die "$pend -> $file: $ren_err" unless $ren_ok;
+    };
+
+    unless ($ok) {
+        unlink($pend);
+        die $err;
+    }
+
+    return @content;
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+Test2::Harness2::Util - Small shared utility functions used across the harness.
+
+=head1 SYNOPSIS
+
+    use Test2::Harness2::Util qw/apply_encoding hub_truth mod2file parse_exit/;
+
+    my $file  = mod2file('Foo::Bar');         # 'Foo/Bar.pm'
+    my $hub   = hub_truth($facet_data);       # canonical hub/trace facet
+    my $codes = parse_exit($?);               # { sig, err, dmp, all }
+
+    apply_encoding(\*STDOUT, 'utf8');         # binmode helper
+
+=head1 EXPORTS
+
+All exports are optional and must be requested explicitly.
+
+=over 4
+
+=item apply_encoding($fh, $encoding)
+
+Apply C<$encoding> to C<$fh> via C<binmode>. Returns immediately when
+C<$encoding> is false. Uses C<:utf8> for any C<utf-?8> spelling to avoid the
+thread segfault from C<:encoding(utf8)>; for any other encoding uses
+C<:encoding($encoding)>.
+
+=item $abs = clean_path($path)
+
+=item $abs = clean_path($path, $absolute)
+
+Return an absolute form of C<$path>. By default (C<$absolute> true) the
+path is first run through L<Cwd/realpath> to resolve symlinks, then
+through C<< File::Spec->rel2abs >>. Pass a false C<$absolute> to skip
+the C<realpath> step when you want an absolute path but do not want
+symlinks collapsed. Confesses when C<$path> is empty.
+
+=item $modules = find_libraries($search)
+
+=item $modules = find_libraries($search, @paths)
+
+Search for C<.pm> files matching the namespace pattern C<$search> under
+C<@paths> (defaults to C<@INC>). C<$search> is a C<::>-separated pattern
+in which C<*> segments are wildcards that expand to any immediate child
+directory or module at that level; literal segments traverse directly.
+Returns a hashref mapping each discovered module name to its path
+relative to the matching search root. Nested C<@INC> entries are not
+double-traversed during wildcard expansion, so a module reachable via
+both a parent and a child search root appears under only one of them.
+
+Example: C<find_libraries('App::Yath2::Command::*')> returns every
+C<App::Yath2::Command::Foo> module reachable through C<@INC>.
+
+=item $mod = fqmod($input, $prefix)
+
+=item $mod = fqmod($input, \@prefixes, %options)
+
+Resolve a short module name C<$input> against one or more namespace
+prefixes, returning the fully qualified module name. A leading C<'+'>
+on C<$input> bypasses the prefixes entirely and the remainder is
+treated as an absolute module name. Otherwise each prefix is tried in
+order and the first module that successfully C<require>s wins; an
+C<$input> that already starts with one of the prefixes is used as-is.
+
+Options:
+
+=over 4
+
+=item no_require
+
+Skip the C<require> step and return the resolved name without loading
+the module. Only legal with a single prefix (there is no way to pick
+between candidates without loading).
+
+=back
+
+Dies with a multi-line diagnostic listing each candidate module and
+why it failed to load when no prefix resolves.
+
+=item $name = load_module($module_name)
+
+Load C<$module_name> via C<require>, idempotently. Short-circuits when
+C<%INC> already records the file or the package stash is populated, so
+repeated calls (or calls for modules pulled in by another path) do no
+work. Returns the module name on success; propagates the underlying
+C<require> exception on failure. Use this wherever the harness
+dynamically loads a class by string name.
+
+=item $path = mod2file($module_name)
+
+Convert a Perl module name (C<Foo::Bar::Baz>) to its C<%INC>-style relative
+path (C<Foo/Bar/Baz.pm>). Confesses if the module name is undefined.
+
+=item $facet = hub_truth($facet_data)
+
+Return the authoritative hub/trace facet from a Test2 facet-data hash. Prefers
+C<< $facet_data->{hubs}->[0] >> when present, falls back to
+C<< $facet_data->{trace} >>, and returns an empty hashref if neither is
+populated.
+
+=item $codes = parse_exit($wstat)
+
+Decode a wait-status integer (typically C<$?>) into a hashref:
+
+=over 4
+
+=item C<sig> -- the low 7 bits (signal number, or 0)
+
+=item C<err> -- the upper bits shifted right 8 (exit code)
+
+=item C<dmp> -- bit 7 (core-dump flag)
+
+=item C<all> -- the original raw value
+
+=back
+
+Croaks if C<$wstat> is undefined.
+
+=item tinysleep($seconds)
+
+Sub-second sleep that returns early when a signal arrives. Backed by
+four-arg C<select()>, which returns C<-1> on C<EINTR>, so a signal
+received mid-nap causes an immediate return instead of being delayed
+by the rest of the interval. Prefer this over C<Time::HiRes::sleep>
+inside polling loops (C<waitpid> reapers, TERM-then-KILL escalation,
+readiness waits) where prompt signal response matters. Returns
+nothing. A non-positive or undefined argument is a no-op.
+
+=item $fh = open_file($path)
+
+=item $fh = open_file($path, $mode)
+
+=item $fh = open_file($path, $mode, %opts)
+
+Open C<$path> and return the handle. The default mode is C<< '<' >>.
+When opening for read, C<.gz> / C<.bz2> extensions trigger transparent
+decompression via L<IO::Uncompress::Gunzip> / L<IO::Uncompress::Bunzip2>;
+pass C<< no_decompress =E<gt> 1 >> to disable that behaviour, or
+C<< ext =E<gt> 'gz' >> / C<< ext =E<gt> 'bz2' >> to force a specific
+compression when the filename does not carry the usual extension.
+
+Dies with a C<confess>-style message on failure.
+
+=item $fh = maybe_open_file($path)
+
+=item $fh = maybe_open_file($path, $mode)
+
+Like L</open_file>, but returns C<undef> when C<$path> is not a regular
+file instead of raising an exception. Intended for "read if present"
+callers.
+
+=item close_file($fh)
+
+=item close_file($fh, $name)
+
+Wrap C<close()> with a clearer error. The optional C<$name> is included
+in the diagnostic when the close fails.
+
+=item $content = read_file($path, %open_opts)
+
+Slurp C<$path> in full and return the result. Extra options are passed
+through to L</open_file> (e.g. for explicit compression handling). Dies
+on any I/O failure.
+
+=item $content = maybe_read_file($path)
+
+Like L</read_file>, but returns C<undef> when C<$path> is not a regular
+file instead of raising an exception.
+
+=item write_file($path, @content)
+
+Open C<$path> for write, print C<@content>, and close. Dies on any I/O
+failure. For crash-safe writes use L</write_file_atomic>.
+
+=item $fh = lock_file($path_or_fh)
+
+=item $fh = lock_file($path, $mode)
+
+Acquire an exclusive advisory lock via C<flock(LOCK_EX)>. Accepts either
+a filename (opened in C<< '>>' >> mode unless C<$mode> is supplied) or an
+already-open handle. Retries up to 20 times on C<EINTR>/C<ERESTART>
+before giving up. Returns the locked handle; pair with L</unlock_file>
+(or simply close the handle) to release.
+
+=item unlock_file($fh)
+
+Release an advisory lock acquired via L</lock_file>. Retries on
+C<EINTR>/C<ERESTART> the same way as acquisition.
+
+=item write_file_atomic($path, @content)
+
+Write C<@content> to C<$path> atomically: writes to C<"$path.pend"> first,
+then C<do_rename()>s it over the target under a signal mask so an
+interrupt cannot leave a half-written file in place.  Dies on any I/O
+failure; the pending file is removed on error.
+
+=back
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<http://github.com/Test-More/Test2-Harness/>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
+See L<http://dev.perl.org/licenses/>
+
+=cut

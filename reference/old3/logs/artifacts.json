@@ -1,0 +1,4 @@
+{
+   "services/harness.json" : "Test2::Harness2::Collector::Logger::JSON",
+   "services/harness.jsonl" : "Test2::Harness2::Collector::Logger::JSONL"
+}

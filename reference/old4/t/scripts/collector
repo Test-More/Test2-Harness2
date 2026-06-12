@@ -1,0 +1,134 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+use FindBin ();
+use File::Spec ();
+use Getopt::Long qw/GetOptionsFromArray :config require_order/;
+
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'lib');
+
+use Test2::Harness2::Collector;
+
+my %opts = (
+    parser           => 'Test2::Harness2::Collector::Parser::IOParser',
+    recorder         => 'Test2::Harness2::Collector::Recorder::Files',
+    auditor          => undef,
+    dir              => undef,
+    is_test          => 1,
+    orphan_timeout   => undef,
+    silence_timeout  => undef,
+    lifetime_timeout => undef,
+    buffering        => undef,
+    flush_interval   => undef,
+);
+
+my @argv = @ARGV;
+GetOptionsFromArray(
+    \@argv,
+    'parser=s'           => \$opts{parser},
+    'recorder=s'         => \$opts{recorder},
+    'auditor=s'          => \$opts{auditor},
+    'dir=s'              => \$opts{dir},
+    'is-test!'           => \$opts{is_test},
+    'orphan-timeout=f'   => \$opts{orphan_timeout},
+    'silence-timeout=f'  => \$opts{silence_timeout},
+    'lifetime-timeout=f' => \$opts{lifetime_timeout},
+    'buffering!'         => \$opts{buffering},
+    'flush-interval=f'   => \$opts{flush_interval},
+    'help|h'             => sub { _usage(); exit 0 },
+) or do { _usage(); exit 2 };
+
+if (@argv && $argv[0] eq '--') { shift @argv }
+
+unless (@argv) {
+    print STDERR "No command specified.\n";
+    _usage();
+    exit 2;
+}
+
+my $parser   = _load_and_build($opts{parser});
+my $recorder = _build_recorder($opts{recorder}, $opts{dir});
+my $auditor;
+if ($opts{auditor}) {
+    _load_class($opts{auditor});
+    $auditor = $opts{auditor}->new(recorder => $recorder);
+}
+
+my $code = Test2::Harness2::Collector->start(
+    is_test  => $opts{is_test} ? 1 : 0,
+    exec     => [@argv],
+    parser   => $parser,
+    recorder => $recorder,
+    auditor  => $auditor,
+    (defined $opts{orphan_timeout}   ? (orphan_timeout   => $opts{orphan_timeout})   : ()),
+    (defined $opts{silence_timeout}  ? (silence_timeout  => $opts{silence_timeout})  : ()),
+    (defined $opts{lifetime_timeout} ? (lifetime_timeout => $opts{lifetime_timeout}) : ()),
+    (defined $opts{buffering}        ? (buffering        => $opts{buffering})        : ()),
+    (defined $opts{flush_interval}   ? (flush_interval   => $opts{flush_interval})   : ()),
+);
+
+exit $code;
+
+sub _load_class {
+    my ($class) = @_;
+    (my $file = $class) =~ s{::}{/}g;
+    require "$file.pm";
+    return;
+}
+
+sub _load_and_build {
+    my ($class) = @_;
+    _load_class($class);
+    return $class->new;
+}
+
+sub _build_recorder {
+    my ($class, $dir) = @_;
+    _load_class($class);
+
+    if ($class eq 'Test2::Harness2::Collector::Recorder::Files') {
+        die "--dir is required for Recorder::Files\n" unless defined $dir;
+        return $class->new(dir => $dir);
+    }
+
+    return $class->new;
+}
+
+sub _usage {
+    print STDERR <<'USAGE';
+Usage: t/scripts/collector [options] -- <command> [args...]
+
+Options:
+    --parser   CLASS   Parser class (default: Parser::IOParser)
+    --recorder CLASS   Recorder class (default: Recorder::Files)
+    --auditor  CLASS   Auditor class (optional)
+    --dir      PATH    Output directory (required for Recorder::Files)
+    --[no-]is-test     Mark this collector as a test job (default:
+                        --is-test). Use --no-is-test for services.
+    --orphan-timeout N   Seconds to wait for output after the child
+                          has exited before declaring the pipes
+                          orphaned (default: 30; 0 disables)
+    --silence-timeout N  Test jobs only. Kill the test if it
+                          produces no output for N seconds while
+                          still running (default: 0; 0 disables)
+    --lifetime-timeout N Test jobs only. Kill the test if total
+                          runtime exceeds N seconds, even while
+                          still producing output (default: 0;
+                          0 disables)
+    --[no-]buffering     Enable / disable STDOUT/STDERR sync
+                          buffering (default: enabled)
+    --flush-interval N   Force-flush the buffer after N seconds
+                          with pending items (default: 0.25;
+                          0 disables periodic flush)
+    -h, --help           Show this message
+
+Example:
+    t/scripts/collector \\
+        --parser   Test2::Harness2::Collector::Parser::TAPParser \\
+        --auditor  Test2::Harness2::Collector::Auditor::Test \\
+        --dir      /tmp/collected/ \\
+        -- perl t/foo.t
+USAGE
+    return;
+}
