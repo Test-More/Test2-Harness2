@@ -42,3 +42,6 @@ docs
 
 # Git worktree checkouts (see AGENTS.md "Worktrees").
 /worktrees/
+
+# Test2::Plugin::Immiscible serialization lock (test artifact).
+.immiscible-test.lock
