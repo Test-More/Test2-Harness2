@@ -63,7 +63,7 @@ instance. The instance created will then be used when calling all the methods.
 
 To pass arguments to the constructor you can use
 C<yath -pYourPlugin=arg1,arg2,arg3...>. Your plugin can also define options
-using L<App::Yath2::Options> which will be dropped into the C<$settings> that
+using L<Getopt::Yath> which will be dropped into the C<$settings> that
 get passed around.
 
 =head1 METHODS

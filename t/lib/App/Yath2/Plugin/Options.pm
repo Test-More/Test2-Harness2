@@ -2,11 +2,12 @@ package App::Yath2::Plugin::Options;
 use strict;
 use warnings;
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
-option foobar => (
-    prefix => 'testplugin',
-    type => 'b',
-);
+option_group {group => 'testplugin', prefix => 'testplugin'} => sub {
+    option foobar => (
+        type => 'Bool',
+    );
+};
 
 1;

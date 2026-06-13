@@ -1,6 +1,5 @@
 package App::Yath2::Plugin::Cover;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -11,112 +10,115 @@ use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use parent 'App::Yath2::Plugin';
 use Test2::Harness2::Util::HashBase qw/-aggregator -no_aggregate +metrics +outfile/;
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
-option_group {prefix => 'cover', category => "Cover Options"} => sub {
-    post \&post_process;
-
+# prefix => 'cover' makes the CLI long forms --cover-NAME (matching the old
+# plugin name munging which prepended the group as a prefix). Note: the prefix
+# also applies to alts, so alts here are the bare (un-prefixed) spellings.
+option_group {group => 'cover', prefix => 'cover', category => "Cover Options"} => sub {
     option types => (
-        alt => ['cover-type'],
-        type => 'm',
-        default => sub { [qw/pl pm/] },
+        alt => ['type'],
+        type => 'List',
+        # List defaults are flattened via add_value, so return a flat list.
+        default => sub { ('pl', 'pm') },
     );
 
     option dirs => (
-        alt => ['cover-dir'],
-        type => 'm',
-        default => sub { ['lib'] },
+        alt => ['dir'],
+        type => 'List',
+        default => sub { ('lib') },
 
-        action => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings) = @_;
-            push @$$slot => glob($norm);
+        # Trigger fires before the value is stored; glob-expand each raw
+        # value in place so the stored list contains the expanded paths.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+            @{$params{val}} = map { glob($_) } @{$params{val}};
         },
     );
 
     option exclude_private => (
-        type => 'b',
+        type => 'Bool',
         default => 0,
         description => "",
     );
 
     option files => (
-        type => 'b',
+        type => 'Bool',
         description => "Use Test2::Plugin::Cover to collect coverage data for what files are touched by what tests. Unlike Devel::Cover this has very little performance impact (About 4% difference)",
     );
 
     option metrics => (
-        type => 'b',
+        type => 'Bool',
         description => '',
     );
 
     option write => (
-        type => 'd',
+        type => 'Auto',
         normalize => \&clean_path,
         long_examples => ['', '=coverage.jsonl', '=coverage.json'],
         description => "Create a json or jsonl file of all coverage data seen during the run (This implies --cover-files).",
-        action      => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings) = @_;
 
-            return $$slot = clean_path("coverage.jsonl") if $raw eq '1';
-            return $$slot = $norm;
-        },
+        # Bare --cover-write defaults to coverage.jsonl. Autofill bypasses
+        # normalize, so clean the path here. The =PATH form goes through
+        # normalize (clean_path) above.
+        autofill => sub { clean_path("coverage.jsonl") },
     );
 
     option aggregator => (
-        alt => ['cover-agg'],
-        type => 's',
+        alt => ['agg'],
+        type => 'Scalar',
         long_examples => [' ByTest', ' ByRun', ' +Custom::Aggregator'],
         description => 'Choose a custom aggregator subclass',
-        normalize => sub {
-            my ($agg) = @_;
+        normalize => sub ($agg) {
             return $agg if $agg =~ s/^\+//;
             return "Test2::Harness2::Log::CoverageAggregator::$agg";
         },
     );
 
     option class => (
-        type => 's',
+        type => 'Scalar',
         description => 'Choose a Test2::Plugin::Cover subclass',
         default => 'Test2::Plugin::Cover',
     );
 
     option manager => (
-        type => 's',
+        type => 'Scalar',
         description => "Coverage 'from' manager to use when coverage data does not provide one",
         long_examples => [ ' My::Coverage::Manager'],
         applicable => \&changes_applicable,
     );
 
     option from_type => (
-        type => 's',
+        type => 'Scalar',
         description => 'File type for coverage source. Usually it can be detected, but when it cannot be you should specify. "json" is old style single-blob coverage data, "jsonl" is the new by-test style, "log" is a logfile from a previous run.',
         long_examples => [' json', ' jsonl', ' log' ],
     );
 
     option maybe_from_type => (
-        type => 's',
+        type => 'Scalar',
         'description' => 'Same as "from_type" but for "maybe_from". Defaults to "from_type" if that is specified, otherwise auto-detect',
         long_examples => [' json', ' jsonl', ' log' ],
     );
 
     option from => (
-        type => 's',
+        type => 'Scalar',
         description => "This can be a test log, a coverage dump (old style json or new jsonl format), or a url to any of the previous. Tests will not be run if the file/url is invalid.",
         long_examples => [' path/to/log.jsonl', ' http://example.com/coverage', ' path/to/coverage.jsonl']
     );
 
     option maybe_from => (
-        type => 's',
+        type => 'Scalar',
         description => "This can be a test log, a coverage dump (old style json or new jsonl format), or a url to any of the previous. Tests will coninue if even if the coverage file/url is invalid.",
         long_examples => [' path/to/log.jsonl', ' http://example.com/coverage', ' path/to/coverage.jsonl']
     );
+
+    option_post_process 0 => \&post_process;
 };
 
-sub changes_applicable {
-    my ($option, $options) = @_;
-
-    # Cannot use this options with projects
-    return 0 if $options->command_class && $options->command_class->isa('App::Yath2::Command::projects');
+sub changes_applicable ($opt, $options, $settings) {
+    return 1 unless $settings && $settings->check_group('harness') && $settings->harness->check_option('command');
+    my $c = $settings->harness->command;
+    return 0 if $c && $c->isa('App::Yath2::Command::projects');
     return 1;
 }
 
@@ -130,18 +132,31 @@ sub spawn_args {
     return ('-M' . $class . '=disabled,1');
 }
 
-sub post_process {
-    my %params   = @_;
-    my $settings = $params{settings};
+sub post_process ($options, $state) {
+    my $settings = $state->{settings};
 
     my $cover = $settings->cover;
 
     if ($cover->files || $cover->write || $cover->metrics) {
         my $cover_class = $cover->class // 'Test2::Plugin::Cover';
 
-        eval { require(mod2file($cover_class)); 1 } or die "Could not enable file coverage, could not load '$cover_class': $@";
-        push @{$settings->run->load_import->{'@'}} => $cover_class;
-        $settings->run->load_import->{$cover_class} = [];
+        my $ok = eval { require(mod2file($cover_class)); 1 };
+        my $err = $@;
+        die "Could not enable file coverage, could not load '$cover_class': $err" unless $ok;
+
+        # Vivify load_import if nothing was set on the CLI yet, then maintain
+        # the insertion-ordered '@' key (per Run.pm dbi_profiling pattern).
+        # Guard with check_option first: this post and Run.pm's own post share
+        # weight 0, so ordering is not guaranteed and the option may not be
+        # registered yet -- reading it unguarded would confess via AUTOLOAD.
+        my $run = $settings->run;
+        $run->create_option(load_import => {})
+            unless $run->check_option('load_import') && defined $run->load_import;
+        my $load_import = $run->load_import;
+        unless ($load_import->{$cover_class}) {
+            push @{$load_import->{'@'}} => $cover_class;
+            $load_import->{$cover_class} = [];
+        }
     }
 }
 

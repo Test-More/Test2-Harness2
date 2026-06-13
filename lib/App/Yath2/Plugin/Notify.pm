@@ -1,6 +1,5 @@
 package App::Yath2::Plugin::Notify;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -11,52 +10,49 @@ use Sys::Hostname qw/hostname/;
 
 use Carp qw/croak confess/;
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
 use parent 'App::Yath2::Plugin';
 use Test2::Harness2::Util::HashBase qw/-final -tries -problems -problem_cids +text_mod +text_mod_handles_events +text_mod_fail/;
 
 # Notifications only apply to commands which build a run.
-sub applicable {
-    my ($option, $options) = @_;
-
-    return 1 if $options->included->{'App::Yath2::Options::Run'};
-    return 0;
+sub applicable ($opt, $options, $settings) {
+    return $options && $options->option_groups->{run} ? 1 : 0;
 }
 
-option_group {prefix => 'notify', category => "Notification Options", applicable => \&applicable} => sub {
+option_group {group => 'notify', prefix => 'notify', category => "Notification Options", applicable => \&applicable} => sub {
     option slack => (
-        type => 'm',
+        type => 'List',
         description => "Send results to a slack channel and/or user",
         long_examples  => [" '#foo'", " '\@bar'"],
     );
 
     option slack_fail => (
-        type => 'm',
+        type => 'List',
         description => "Send failing results to a slack channel and/or user",
         long_examples => [" '#foo'", " '\@bar'"],
     );
 
     option slack_url => (
-        type => 's',
+        type => 'Scalar',
         description => "Specify an API endpoint for slack webhook integrations",
         long_examples  => [" https://hooks.slack.com/..."],
     );
 
     option slack_owner => (
-        type => 'b',
+        type => 'Bool',
         description => "Send slack notifications to the slack channels/users listed in test meta-data when tests fail.",
         default => 0,
     );
 
     option no_batch_slack => (
-        type => 'b',
+        type => 'Bool',
         default => 0,
         description => 'Usually owner failures are sent as a single batch at the end of testing. Toggle this to send failures as they happen.',
     );
 
     option email_from => (
-        type          => 's',
+        type          => 'Scalar',
         long_examples => [' foo@example.com'],
         description   => "If any email is sent, this is who it will be from",
         default       => sub {
@@ -67,55 +63,56 @@ option_group {prefix => 'notify', category => "Notification Options", applicable
     );
 
     option email => (
-        type => 'm',
+        type => 'List',
         long_examples => [' foo@example.com'],
         description => "Email the test results to the specified email address(es)",
     );
 
     option email_fail => (
-        type => 'm',
+        type => 'List',
         long_examples => [' foo@example.com'],
         description => "Email failing results to the specified email address(es)",
     );
 
     option email_owner => (
-        type => 'b',
+        type => 'Bool',
         description => 'Email the owner of broken tests files upon failure. Add `# HARNESS-META-OWNER foo@example.com` to the top of a test file to give it an owner',
         default => 0,
     );
 
     option no_batch_email => (
-        type => 'b',
+        type => 'Bool',
         default => 0,
         description => 'Usually owner failures are sent as a single batch at the end of testing. Toggle this to send failures as they happen.',
     );
 
     option text => (
-        type => 's',
+        type => 'Scalar',
         alt => ['message', 'msg'],
         description => "Add a custom text snippet to email/slack notifications",
     );
 
     option text_module => (
-        type => 's',
-        alt => ['message_module'],
+        type => 'Scalar',
+        alt => ['message-module'],
         description => "Use the specified module to generate messages for emails and/or slack.",
     );
 
-    post sub {
-        my %params = @_;
+    option_post_process 0 => sub ($options, $state) {
+        my $settings = $state->{settings};
 
-        my $settings = $params{settings};
-        my $options  = $params{options};
-
-        my $set_by_cli = $options->set_by_cli->{notify};
+        # Getopt::Yath does not track set-by-cli source. The owner flags both
+        # default to 0 and can only be turned ON via the CLI (Bool), so
+        # "default owner unless the user set it" is equivalent to "default
+        # owner unless it is already truthy".
 
         # Should we use email?
         if (@{$settings->notify->email} || $settings->notify->email_owner) {
-            $settings->notify->field(email_owner => 1) unless $set_by_cli->{email_owner};
+            $settings->notify->option(email_owner => 1) unless $settings->notify->email_owner;
 
             # Do we have Email::Stuffer?
-            eval { require Email::Stuffer; 1 } or die "Cannot use --email-owner without Email::Stuffer, which is not installed.\n";
+            my $ok = eval { require Email::Stuffer; 1 };
+            die "Cannot use --email-owner without Email::Stuffer, which is not installed.\n" unless $ok;
 
             push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
         }
@@ -125,12 +122,13 @@ option_group {prefix => 'notify', category => "Notification Options", applicable
         if ($use_slack) {
             die "slack url must be provided in order to use slack" unless $settings->notify->slack_url;
 
-            eval { require HTTP::Tiny; 1 } or die "Cannot use slack without HTTP::Tiny which is not installed.\n";
+            my $ok = eval { require HTTP::Tiny; 1 };
+            die "Cannot use slack without HTTP::Tiny which is not installed.\n" unless $ok;
 
             die "HTTP::Tiny reports that it does not support SSL, cannot use slack without ssl."
                 unless HTTP::Tiny::can_ssl();
 
-            $settings->notify->field(slack_owner => 1) unless $set_by_cli->{slack_owner};
+            $settings->notify->option(slack_owner => 1) unless $settings->notify->slack_owner;
 
             push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
         }

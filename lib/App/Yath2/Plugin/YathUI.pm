@@ -1,6 +1,5 @@
 package App::Yath2::Plugin::YathUI;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -8,43 +7,37 @@ use File::Spec;
 use Test2::Harness2::Util qw/read_file mod2file looks_like_uuid/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
 
-use App::Yath2::Options;
+use Getopt::Yath;
 use parent 'App::Yath2::Plugin';
 
-sub can_log {
-    my ($option, $options) = @_;
-
-    return 1 if $options->included->{'App::Yath2::Options::Logging'};
-    return 0;
+sub can_log ($opt, $options, $settings) {
+    return $options && $options->option_groups->{logging} ? 1 : 0;
 }
 
-sub can_finder {
-    my ($option, $options) = @_;
-
-    return 1 if $options->included->{'App::Yath2::Options::Finder'};
-    return 0;
+sub can_finder ($opt, $options, $settings) {
+    return $options && $options->option_groups->{finder} ? 1 : 0;
 }
 
-option_group {prefix => 'yathui', category => "YathUI Options"} => sub {
+option_group {group => 'yathui', prefix => 'yathui', category => "YathUI Options"} => sub {
     option url => (
-        type => 's',
+        type => 'Scalar',
         alt => ['uri'],
         description => "Yath-UI url",
         long_examples  => [" http://my-yath-ui.com/..."],
     );
 
     option api_key => (
-        type => 's',
+        type => 'Scalar',
         description => "Yath-UI API key. This is not necessary if your Yath-UI instance is set to single-user"
     );
 
     option project => (
-        type => 's',
+        type => 'Scalar',
         description => "The Yath-UI project for your test results",
     );
 
     option mode => (
-        type => 's',
+        type => 'Scalar',
         default => 'qvfd',
         description => "Set the upload mode (default 'qvfd')",
         long_examples => [
@@ -56,23 +49,26 @@ option_group {prefix => 'yathui', category => "YathUI Options"} => sub {
     );
 
     option retry => (
-        type => 'c',
+        type => 'Count',
         description => "How many times to try an operation before giving up",
         default => 0,
     );
 
     option grace => (
+        type => 'Bool',
         description => "If yath cannot connect to yath-ui it normally throws an error, use this to make it fail gracefully. You get a warning, but things keep going.",
         default => 0,
     );
 
     option durations => (
+        type => 'Bool',
         description => "Poll duration data from Yath-UI to help order tests efficiently",
         default => 0,
         applicable => \&can_finder,
     );
 
     option coverage => (
+        type => 'Bool',
         description => "Poll coverage data from Yath-UI to determine what tests should be run for changed files",
         default => 0,
         applicable => \&can_finder,
@@ -80,39 +76,37 @@ option_group {prefix => 'yathui', category => "YathUI Options"} => sub {
 
 #    TODO
 #    option median_durations => (
-#        type => 'b',
+#        type => 'Bool',
 #        description => "Get median duration data",
 #        default => 0,
 #    );
 
     option medium_duration => (
-        type => 's',
+        type => 'Scalar',
         description => "Minimum duration length (seconds) before a test goes from SHORT to MEDIUM",
         long_examples => [' 5'],
         default => 5,
     );
 
     option long_duration => (
-        type => 's',
+        type => 'Scalar',
         description => "Minimum duration length (seconds) before a test goes from MEDIUM to LONG",
         long_examples => [' 10'],
         default => 10,
     );
 
     option upload => (
+        type => 'Bool',
         description => "Upload the log to Yath-UI",
         default => 0,
         applicable => \&can_log,
     );
 
-    post -1 => sub {
-        my %params = @_;
+    option_post_process -1 => sub ($options, $state) {
+        my $settings = $state->{settings};
 
-        my $settings = $params{settings};
-        my $options  = $params{options};
-
-        my $has_finder = $options->included->{'App::Yath2::Options::Finder'};
-        my $has_logger = $options->included->{'App::Yath2::Options::Logging'};
+        my $has_finder = $options && $options->option_groups->{finder};
+        my $has_logger = $options && $options->option_groups->{logging};
 
         my $has_durations = $has_finder && $settings->yathui->durations;
         my $has_upload    = $has_logger && $settings->yathui->upload;
@@ -126,14 +120,17 @@ option_group {prefix => 'yathui', category => "YathUI Options"} => sub {
 
         $url =~ s{/+$}{}g;
 
+        # Cross-group writes: use create_option (set-or-create, matching the
+        # old Settings 'field' semantics) since the target group/option may not
+        # have been initialized by another module.
         if ($has_upload) {
-            $settings->logging->field(log => 1);
-            $settings->logging->field(bzip2 => 1);
+            $settings->logging->create_option(log => 1);
+            $settings->logging->create_option(bzip2 => 1);
         }
 
         if ($has_coverage) {
             my $curl = join '/' => ($url, 'coverage', $project);
-            $settings->cover->field(($grace ? 'maybe_from' : 'from'), $curl);
+            $settings->group('cover', 1)->create_option(($grace ? 'maybe_from' : 'from'), $curl);
         }
 
         if ($has_durations) {
@@ -141,7 +138,7 @@ option_group {prefix => 'yathui', category => "YathUI Options"} => sub {
             my $long = $settings->yathui->long_duration;
 
             my $durl = join '/' => ($url, 'durations', $project, $med, $long);
-            $settings->finder->field(($grace ? 'maybe_durations' : 'durations'), $durl);
+            $settings->finder->create_option(($grace ? 'maybe_durations' : 'durations'), $durl);
         }
 
         return;
@@ -160,7 +157,7 @@ sub grab_rerun {
     my $path;
     if ($rerun eq '1') {
         my $project = $settings->yathui->project or return (0);
-        my $user = $settings->yathui->user // $ENV{USER};
+        my $user = ($settings->yathui->check_option('user') ? $settings->yathui->user : undef) // $ENV{USER};
 
         $path = "$project/$user";
 
@@ -200,7 +197,7 @@ sub _request {
     my %fields;
 
     for my $field (qw/project api_key mode/) {
-        my $val = $settings->yathui->field($field) or next;
+        my $val = $settings->yathui->option($field) or next;
         $fields{$field} = $val;
     }
 

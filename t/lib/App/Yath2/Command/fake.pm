@@ -1,15 +1,14 @@
 package App::Yath2::Command::fake;
-use strict;
-use warnings;
+use v5.38;
 
 use parent 'App::Yath2::Command';
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
-option_group {prefix => 'fake'}, sub {
-    option($_, short => $_) for qw/x y z/;
+option_group {group => 'fake'}, sub {
+    option($_, type => 'Bool', short => $_) for qw/x y z/;
 
-    post sub { print "\n\nAAAA\n\n";  $main::POST_HOOK++ };
+    option_post_process 0 => sub ($options, $state) { print "\n\nAAAA\n\n"; $main::POST_HOOK++ };
 };
 
 1;
