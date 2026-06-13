@@ -66,7 +66,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | # | Chunk | Status | Refs |
 |---|-------|--------|------|
 | 1 | Mechanical renames + version bump | ✅ | `2ea678e`, `aa6e5eb` |
-| 2 | Argument processing → `Getopt::Yath` | ⬜ | — |
+| 2 | Argument processing → `Getopt::Yath` | ✅ | `3270b30`..`213b5bd` + this task's deletion/POD/docs commits |
 | 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ⬜ | — |
 | 4 | Collectors wrap every yath-started process | ⬜ | — |
 | 5 | Transition-only pipelining + Monitor-style state sync | ⬜ | — |
@@ -94,13 +94,26 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 - Verified the suite runs against `lib/`, not installed 1.0.
 - Suite green: `Files=67, Result: PASS`.
 
+**Chunk 2 — argument processing → `Getopt::Yath`** (`3270b30`..`213b5bd` +
+this task):
+- All option, command, and plugin declarations converted to `Getopt::Yath`.
+- `App::Yath2` parse flow swapped to `Getopt::Yath` two-stage processing;
+  `Test2::Harness2` consumes `Getopt::Yath::Settings` throughout.
+- The 1.0 option machinery (`App::Yath2::Options`, `App::Yath2::Option`,
+  `Test2::Harness2::Settings`, `…::Settings::Prefix`) deleted.
+- Release POD generators rewritten for the `Getopt::Yath::Instance` API;
+  option/command/plugin POD regenerated.
+- Suite green: `Files=63, Result: PASS`.
+
 ## Current state
 
 - **Namespaces/versions:** fully on the 2.0 names (`App::Yath2`,
   `Test2::Harness2`, dist `Test2-Harness2`, versions `2.000000`).
+- **Option handling:** now `Getopt::Yath`. The settings object is
+  `Getopt::Yath::Settings` (the 1.0 `App::Yath2::Options` / `App::Yath2::Option`
+  / `Test2::Harness2::Settings` machinery is deleted).
 - **Logic:** otherwise still 1.0. The collector pipeline is still the in-tree
-  1.0 implementation (not yet `Test2-Collector`). Option handling is still
-  1.0's `App::Yath2::Options` (not yet `Getopt::Yath`). No harness service,
+  1.0 implementation (not yet `Test2-Collector`). No harness service,
   transition channel, system-load service, or QuickORM DB layer yet — those
   are `[target]` in `ARCHITECTURE.md`.
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
@@ -108,6 +121,8 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 
 ## Next
 
-**Chunk 2 — migrate argument processing to `Getopt::Yath`** (`ARCHITECTURE.md`
-§2.3). Reference: the abandoned 2.0 attempts under `reference/old2`–`old4`
-already use `Getopt::Yath`.
+**Chunk 3 — collector swap → `Test2-Collector`** (`ARCHITECTURE.md` §4).
+The yath collector should read `.jsonl.zst` produced by the external
+`Test2-Collector` dist (loaded via the `t2clib` symlink) in place of the
+in-tree 1.0 collector pipeline. Reference: `reference/2.0b` (collector swap +
+harness-service MVP).

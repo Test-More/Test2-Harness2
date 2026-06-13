@@ -27,11 +27,12 @@ carries one of:
   abandoned branch under `reference/`. Nothing in the live tree depends on it
   yet.
 
-Chunk 1 of the migration (mechanical renames + version bump, §1.1) has
-landed: the tree carries the 2.0 names and versions but otherwise still runs
-1.0 logic, and every target subsystem below remains `[target]`. Update the
-tag on a section as its migration starts and completes. Current per-chunk
-migration status lives in `MIGRATION.md`, not here.
+Chunks 1 and 2 of the migration have landed (mechanical renames + version
+bump, §1.1; argument processing → `Getopt::Yath`, §2.3): the tree carries the
+2.0 names/versions and option handling is `Getopt::Yath`. The remaining target
+subsystems are otherwise still 1.0 logic. Update the tag on a section as its
+migration starts and completes. Current per-chunk migration status lives in
+`MIGRATION.md`, not here.
 
 ## Conventions for this document
 
@@ -139,12 +140,11 @@ UUIDs are generated in Perl, using `Test2::Util::UUID`, never in the database.
 They are v7; do not re-pack bits for index locality — v7 is already
 time-ordered.
 
-### 2.3 Argument parsing: `Getopt::Yath` `[target]`
+### 2.3 Argument parsing: `Getopt::Yath`
 
-Command-line and option processing migrates to **`Getopt::Yath`**. The 1.0
-`App::Yath::Options` machinery is replaced as the rename and option work lands.
-Until then 1.0's option handling remains in place behind the renamed
-namespaces.
+Command-line and option processing is handled by **`Getopt::Yath`**, and the
+settings object is **`Getopt::Yath::Settings`**. The 1.0 `App::Yath::Options`
+machinery has been removed.
 
 ### 2.4 Databases
 
