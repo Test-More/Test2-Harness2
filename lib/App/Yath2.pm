@@ -30,7 +30,7 @@ use App::Yath2::Options::Debug;
 use App::Yath2::Options::PreCommand;
 
 my $APP_PATH = __FILE__;
-$APP_PATH =~ s{App\S+Yath\.pm$}{}g;
+$APP_PATH =~ s{App\S+Yath2\.pm$}{}g;
 $APP_PATH = clean_path($APP_PATH);
 sub app_path { $APP_PATH }
 
@@ -383,6 +383,20 @@ sub _instantiate_plugins ($self) {
         require $file unless $INC{$file};
 
         push @plugins => $class->can('new') ? $class->new(@args) : $class;
+    }
+
+    # Restore the 1.0 "used_plugins" behavior: any plugin whose option was
+    # SET during parse (tracked in STATE_MODULES by Getopt::Yath) is
+    # auto-registered, even without an explicit -p spec. This is what makes
+    # e.g. --cover-write activate the Cover plugin without -pCover.
+    for my $module (keys %{$self->{+STATE_MODULES} // {}}) {
+        next if $seen{$module}++;
+        next unless $module->isa('App::Yath2::Plugin');
+
+        my $file = mod2file($module);
+        require $file unless $INC{$file};
+
+        push @plugins => $module->can('new') ? $module->new() : $module;
     }
 
     $harness->create_option(plugins => \@plugins);
