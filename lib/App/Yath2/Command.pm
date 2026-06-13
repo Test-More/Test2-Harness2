@@ -1,16 +1,14 @@
 package App::Yath2::Command;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
 use File::Spec;
 use Carp qw/croak/;
+use Scalar::Util qw/blessed/;
 use Test2::Harness2::Util qw/mod2file/;
 
 use Test2::Harness2::Util::HashBase qw/-settings -args/;
-
-use App::Yath2::Options();
 
 use Test2::Harness2::Util::File::JSON();
 
@@ -20,11 +18,10 @@ sub summary         { "No Summary" }
 sub description     { "No Description" }
 sub group           { "Z-UNFINISHED" }
 sub doc_args        { () }
-sub only_cmd_opts   { 0 }
 
-sub handle_invalid_option { 0 }
-
-sub munge_opts { }
+# Commands that provide options override this to return a
+# Getopt::Yath::Instance.
+sub options { undef }
 
 sub name { $_[0] =~ m/([^:=]+)(?:=.*)?$/; $1 || $_[0] }
 
@@ -36,46 +33,46 @@ sub run {
     return 1;
 }
 
+sub _options_for_docs ($class, $settings = undef) {
+    require App::Yath2;
+    my $app = App::Yath2->new($settings ? (settings => $settings) : ());
+
+    my $options = $app->options;
+
+    # TODO(Task 10): commands are still on the old App::Yath2::Options
+    # machinery. Include their options only once they hand back a
+    # Getopt::Yath::Instance.
+    if ($class->can('options')) {
+        my $add = $class->options;
+        $options->include($add) if blessed($add) && $add->isa('Getopt::Yath::Instance');
+    }
+
+    return $options;
+}
+
 sub cli_help {
-    my $class = shift;
+    my $class  = shift;
     my %params = @_;
 
-    my $settings = $params{settings} // {};
-    my $script   = $settings->harness->script // $0;
+    my $settings = $params{settings};
+    my $script   = ($settings ? $settings->maybe(harness => 'script') : undef) // $0;
 
     my $cmd = $class->name;
     my (@args) = $class->doc_args;
 
-    my $options = $params{options};
-    unless ($options) {
-        $options = App::Yath2::Options->new;
-        $options->set_command_class($class);
-    }
+    my $options = $params{options} // $class->_options_for_docs($settings);
 
-    my ($pre_opts, $cmd_opts);
-    if ($options) {
-        $pre_opts = $options->pre_docs('cli');
-        $cmd_opts = $options->cmd_docs('cli');
-    }
+    my $opt_docs = $options ? $options->docs('cli', settings => $settings) : '';
 
-    my $usage = "Usage: $script";
+    my $usage = "Usage: $script [YATH OPTIONS] $cmd";
 
     my @out;
 
-    if ($pre_opts) {
-        $usage .= ' [YATH OPTIONS]';
+    if ($opt_docs) {
+        $usage .= ' [OPTIONS]';
 
-        $pre_opts =~ s/^/  /mg;
-        push @out => "[YATH OPTIONS]\n$pre_opts";
-    }
-
-    $usage .= " $cmd";
-
-    if ($cmd_opts) {
-        $usage .= " [COMMAND OPTIONS]";
-
-        $cmd_opts =~ s/^/  /mg;
-        push @out => "[COMMAND OPTIONS]\n$cmd_opts";
+        $opt_docs =~ s/^/  /mg;
+        push @out => "[OPTIONS]\n$opt_docs";
     }
 
     if (@args) {
@@ -112,23 +109,16 @@ sub generate_pod {
     my $cmd = $class->name;
     my (@args) = $class->doc_args;
 
-    my $options = App::Yath2::Options->new();
-    require App::Yath2;
-    my $ay = App::Yath2->new();
-    $options->include($ay->load_options);
-    $options->set_command_class($class);
-    my $pre_opts = $options->pre_docs('pod', 3);
-    my $cmd_opts = $options->cmd_docs('pod', 3);
+    my $options  = $class->_options_for_docs();
+    my $opt_docs = $options ? $options->docs('pod', head => 3, applicable => 1) : '';
 
     my $usage = "    \$ yath [YATH OPTIONS] $cmd";
 
     my @head2s;
 
-    push @head2s => ("=head2 YATH OPTIONS",    $pre_opts) if $pre_opts;
-
-    if ($cmd_opts) {
-        $usage .= " [COMMAND OPTIONS]";
-        push @head2s => ("=head2 COMMAND OPTIONS", $cmd_opts);
+    if ($opt_docs) {
+        $usage .= " [OPTIONS]";
+        push @head2s => ("=head2 OPTIONS", $opt_docs);
     }
 
     if (@args) {
@@ -137,7 +127,7 @@ sub generate_pod {
         push @head2s => (
             "=head2 COMMAND ARGUMENTS",
             "=over 4",
-            (map { ref($_) ? ( "=item $_->[0]", $_->[1] ) : ("=item $_") } @args),
+            (map { ref($_) ? ("=item $_->[0]", $_->[1]) : ("=item $_") } @args),
             "=back"
         );
     }
@@ -160,21 +150,21 @@ sub write_settings_to {
     my ($dir, $file) = @_;
 
     croak "'directory' is a required parameter" unless $dir;
-    croak "'filename' is a required parameter" unless $file;
+    croak "'filename' is a required parameter"  unless $file;
 
-    my $settings = $self->settings;
+    my $settings      = $self->settings;
     my $settings_file = Test2::Harness2::Util::File::JSON->new(name => File::Spec->catfile($dir, $file));
-    $settings_file->write($settings);
+    $settings_file->write($settings->TO_JSON);
     return $settings_file->name;
 }
 
 sub setup_resources {
-    my $self = shift;
+    my $self     = shift;
     my $settings = $self->settings;
 
-    return unless $settings->check_prefix('runner');
+    return unless $settings->check_group('runner');
     my $runner = $settings->runner;
-    my $res = $runner->resources or return;
+    my $res    = $runner->resources or return;
     return unless @$res;
 
     for my $res (@$res) {
@@ -199,7 +189,6 @@ sub finalize_plugins {
     $_->finalize($self->settings) for @{$self->settings->harness->plugins};
 }
 
-
 1;
 
 __END__
@@ -223,19 +212,15 @@ command you should subclass this package.
     use strict;
     use warnings;
 
-    use App::Yath2::Options();
+    use Getopt::Yath;
     use parent 'App::Yath2::Command';
 
-    # Include existing option sets
-    include_options(
-        'App::Yath2::Options::Debug',
-        'App::Yath2::Options::PreCommand',
-        ...,
-    );
-
-    # Add some custom options
-    option_group {prefix => 'mycommand', category => 'mycommand options'} => sub {
+    # Add some custom options. The 'options' method this generates returns
+    # a Getopt::Yath::Instance which yath will include when the command is
+    # loaded.
+    option_group {group => 'mycommand', category => 'mycommand options'} => sub {
         option foo => (
+            type        => 'Bool',
             description => "the foo option",
             default     => 0,
         );
@@ -279,9 +264,9 @@ command you should subclass this package.
 This method generates the command line help for any given command. In general
 you will NOT want to override this.
 
-$settings should be an instance of L<Test2::Harness2::Settings>.
+$settings should be an instance of L<Getopt::Yath::Settings>.
 
-$options should be an instance of L<App::Yath2::Options> if provided. This
+$options should be an instance of L<Getopt::Yath::Instance> if provided. This
 method is usually capable of filling in the details when this is omitted.
 
 =item $multi_line_string = $cmd_class->description()
@@ -317,6 +302,11 @@ make it float, C<' test'> is a special case, you are not that special.
 
 Name of the command. By default this is the last part of the package name. You
 will probably never want to override this.
+
+=item $instance_or_undef = $cmd_class->options()
+
+Returns the L<Getopt::Yath::Instance> with the command's options, or undef
+for commands that have no options of their own.
 
 =item $short_string = $cmd_class->summary()
 

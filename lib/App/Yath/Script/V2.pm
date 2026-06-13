@@ -10,18 +10,18 @@ sub do_begin {
     my $class  = shift;
     my %params = @_;
 
-    my $script      = $params{script};
-    my $argv        = $params{argv};
-    my $config_file = $params{config};
+    my $script           = $params{script};
+    my $argv             = $params{argv};
+    my $config_file      = $params{config};
     my $user_config_file = $params{user_config};
 
     local $.;
 
     my $ORIG_TMP;
     my $ORIG_TMP_PERMS;
-    my %ORIG_SIG = map { defined($SIG{$_}) ? ($_ => "$SIG{$_}") : () } keys %SIG;
+    my %ORIG_SIG  = map { defined($SIG{$_}) ? ($_ => "$SIG{$_}") : () } keys %SIG;
     my @ORIG_ARGV = @$argv;
-    my @ORIG_INC = @INC;
+    my @ORIG_INC  = @INC;
     my %CONFIG;
 
     @ARGV = @$argv;
@@ -43,18 +43,18 @@ sub do_begin {
             next unless length($line);
 
             my ($key, $eq, $val);
-            if ($line =~ m/^(-\S)((?:rel|glob|relglob)\(.*\))$/) {   # Handle things like -Irel(...)
+            if ($line =~ m/^(-\S)((?:rel|glob|relglob)\(.*\))$/) {    # Handle things like -Irel(...)
                 $key = $1;
                 $eq  = '';
                 $val = $2;
             }
             else {
-                ($key, $eq, $val) = split /(=|\s+)/, $line, 2;  # Covers most cases
+                ($key, $eq, $val) = split /(=|\s+)/, $line, 2;        # Covers most cases
             }
 
             my $is_pre;
             if ($key =~ m/^-D/ || $key eq '--dev-lib') {
-                $eq = '=' if $val;
+                $eq     = '=' if $val;
                 $is_pre = 1;
             }
 
@@ -85,9 +85,9 @@ sub do_begin {
                 }
 
                 # Avoid loading File::Glob in this process...
-                my $out = `$^X -e 'print join "\\n" => glob("${path}${val}")'`;
+                my $out  = `$^X -e 'print join "\\n" => glob("${path}${val}")'`;
                 my @vals = split /\n/, $out;
-                @all = map {[$key, $eq, $_, 1]} @vals;
+                @all = map { [$key, $eq, $_, 1] } @vals;
             }
             else {
                 @all = ([$key, $eq, $val, $need_to_clean]);
@@ -105,7 +105,7 @@ sub do_begin {
                 else {
                     $cmd //= '~';
                     push @{$CONFIG{$cmd}} => @parts;
-                    push @TO_CLEAN => [$cmd, $#{$CONFIG{$cmd}}, $key, $eq, $val] if $need_to_clean;
+                    push @TO_CLEAN        => [$cmd, $#{$CONFIG{$cmd}}, $key, $eq, $val] if $need_to_clean;
                 }
             }
         }
@@ -161,7 +161,7 @@ sub do_begin {
     require Cwd;
     require File::Spec;
 
-    $ORIG_TMP = File::Spec->tmpdir();
+    $ORIG_TMP       = File::Spec->tmpdir();
     $ORIG_TMP_PERMS = ((stat($ORIG_TMP))[2] & 07777);
 
     # ==START TESTABLE CODE CLEANUP_PATHS==
@@ -189,32 +189,33 @@ sub do_begin {
 
     require App::Yath2;
     require Time::HiRes;
-    require Test2::Harness2::Settings;
+    require Getopt::Yath::Settings;
 
     my %mixin = (config_file => '', user_config_file => '');
     $mixin{config_file}      = Cwd::realpath($config_file)      // File::Spec->rel2abs($config_file)      if $config_file;
     $mixin{user_config_file} = Cwd::realpath($user_config_file) // File::Spec->rel2abs($user_config_file) if $user_config_file;
 
-    my $settings = Test2::Harness2::Settings->new(
+    my $settings = Getopt::Yath::Settings->new;
+    $settings->create_group(
         harness => {
-            orig_tmp         => $ORIG_TMP,
-            orig_tmp_perms   => $ORIG_TMP_PERMS,
-            orig_sig         => \%ORIG_SIG,
-            orig_argv        => \@ORIG_ARGV,
-            orig_inc         => \@ORIG_INC,
-            script           => $script,
-            no_scan_plugins  => $NO_PLUGINS,
-            dev_libs         => \@DEVLIBS,
-            start            => Time::HiRes::time(),
-            version          => $App::Yath2::VERSION,
-            cwd              => Cwd::getcwd(),
+            orig_tmp        => $ORIG_TMP,
+            orig_tmp_perms  => $ORIG_TMP_PERMS,
+            orig_sig        => \%ORIG_SIG,
+            orig_argv       => \@ORIG_ARGV,
+            orig_inc        => \@ORIG_INC,
+            script          => $script,
+            no_scan_plugins => $NO_PLUGINS,
+            dev_libs        => \@DEVLIBS,
+            start           => Time::HiRes::time(),
+            version         => $App::Yath2::VERSION,
+            cwd             => Cwd::getcwd(),
             %mixin,
         },
     );
 
     my $app = App::Yath2->new(
-        argv    => \@ARGV,
-        config  => \%CONFIG,
+        argv     => \@ARGV,
+        config   => \%CONFIG,
         settings => $settings,
     );
 

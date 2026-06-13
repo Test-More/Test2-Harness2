@@ -1,25 +1,33 @@
 package App::Yath2;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
 use Test2::Harness2::Util::HashBase qw{
-    -config
-    -settings
+    <config
+    <settings
 
-    -_options -options_loaded
-    -_argv   -argv_processed <_orig_argv
+    +options
 
-    -_command_class -_command_name -_early_command
+    <_argv <argv_processed <_orig_argv
+
+    <_command_class <_command_name
+
+    <option_state
+    <state_env <state_cleared <state_modules
 };
 
 use Time::HiRes qw/time/;
+use Scalar::Util qw/blessed/;
+
+use Getopt::Yath::Instance;
+use Getopt::Yath::Settings;
 
 use App::Yath2::Util qw/find_pfile/;
-use Test2::Harness2::Util qw/find_libraries clean_path/;
-use App::Yath2::Options();
-use Scalar::Util qw/blessed/;
+use Test2::Harness2::Util qw/find_libraries clean_path mod2file/;
+
+use App::Yath2::Options::Debug;
+use App::Yath2::Options::PreCommand;
 
 my $APP_PATH = __FILE__;
 $APP_PATH =~ s{App\S+Yath\.pm$}{}g;
@@ -29,63 +37,31 @@ sub app_path { $APP_PATH }
 sub init {
     my $self = shift;
 
-    my $old = select STDOUT;
-    $| = 1;
-    select STDERR;
-    $| = 1;
-    select $old;
+    STDOUT->autoflush(1);
+    STDERR->autoflush(1);
 
     my @caller = caller(1);
 
-    $self->{+SETTINGS} //= Test2::Harness2::Settings->new;
+    $self->{+SETTINGS} //= Getopt::Yath::Settings->new;
 
-    ${$self->{+SETTINGS}->define_prefix('harness')->vivify_field('script')}          //= clean_path($caller[1]);
-    ${$self->{+SETTINGS}->define_prefix('harness')->vivify_field('start')}           //= time();
-    ${$self->{+SETTINGS}->define_prefix('harness')->vivify_field('no_scan_plugins')} //= 0;
+    my $harness = $self->{+SETTINGS}->group(harness => 1);
+    ${$harness->option_ref(script          => 1)} //= clean_path($caller[1]);
+    ${$harness->option_ref(start           => 1)} //= time();
+    ${$harness->option_ref(no_scan_plugins => 1)} //= 0;
 
-    $self->{+_ARGV}  //= delete($self->{argv}) // [];
+    $self->{+_ARGV} //= delete($self->{argv}) // [];
     $self->{+_ORIG_ARGV} = [@{$self->{+_ARGV}}];
     $self->{+CONFIG} //= {};
 }
 
-sub generate_run_sub {
-    my $self = shift;
-    my ($symbol) = @_;
+sub generate_run_sub ($self, $symbol) {
+    my $argv      = $self->process_argv();
+    my $settings  = $self->{+SETTINGS};
+    my $cmd_class = $self->{+_COMMAND_CLASS};
 
-    my $cmd_class;
-    my ($options, $argv);
+    return $cmd_class->generate_run_sub($symbol, $argv, $settings, $self->{+_ORIG_ARGV}) if $cmd_class->can('generate_run_sub');
 
-    if (my $cmd = $self->_command_from_argv(no_default => 1, valid_only => 1)) {
-        $cmd_class = $self->load_command($cmd);
-
-        $self->{+_COMMAND_NAME}  = $cmd;
-        $self->{+_COMMAND_CLASS} = $cmd_class;
-
-        if ($cmd_class->only_cmd_opts) {
-            $self->{+_EARLY_COMMAND} = 1;
-            my $settings = $self->{+SETTINGS};
-
-            $options = App::Yath2::Options->new(settings => $settings);
-            $options->set_command_class($cmd_class);
-            $options->set_args($self->{+_ARGV});
-
-            $argv = $self->{+_ARGV};
-            $cmd_class->munge_opts($options, $argv, $settings);
-        }
-    }
-
-    $options //= $self->load_options();
-
-    $cmd_class //= $self->command_class();
-    ${$self->{+SETTINGS}->define_prefix('harness')->vivify_field('command')} //= $cmd_class;
-
-    $argv = $self->process_argv();
-
-    return $cmd_class->generate_run_sub($symbol, $argv, $self->{+SETTINGS}, $self->{+_ORIG_ARGV}) if $cmd_class->can('generate_run_sub');
-
-    my $cmd = $cmd_class->new(settings => $options->settings, args => $argv, orig_args => $self->{+_ORIG_ARGV});
-
-    $options->process_option_post_actions($cmd);
+    my $cmd = $cmd_class->new(settings => $settings, args => $argv, orig_args => $self->{+_ORIG_ARGV});
 
     my $run = sub { $self->run_command($cmd) };
 
@@ -109,19 +85,22 @@ sub run_command {
     return $exit;
 }
 
-sub load_options {
-    my $self = shift;
+sub options ($self) {
+    return $self->{+OPTIONS} if $self->{+OPTIONS};
 
-    my $settings = $self->{+SETTINGS} = $self->{+SETTINGS};
-
-    my $options = $self->{+_OPTIONS} //= App::Yath2::Options->new(settings => $settings);
-
-    return $options if $self->{+OPTIONS_LOADED}++;
-
-    $options->include_from(
-        'App::Yath2::Options::Debug',
-        'App::Yath2::Options::PreCommand',
+    my $options = $self->{+OPTIONS} = Getopt::Yath::Instance->new(
+        category_sort_map => {
+            'NO CATEGORY - FIX ME' => 99999,
+            'Yath Options'         => -100,
+            'Plugins'              => -99,
+            'Environment'          => -98,
+            'Developer'            => -97,
+            'Help and Debugging'   => -90,
+        },
     );
+
+    $options->include(App::Yath2::Options::Debug->options);
+    $options->include(App::Yath2::Options::PreCommand->options);
 
     return $options if $self->{+SETTINGS}->harness->no_scan_plugins;
 
@@ -129,78 +108,254 @@ sub load_options {
         %{find_libraries('App::Yath2::Plugin::*')},
         %{find_libraries('Test2::Harness2::Runner::Resource::*')},
     };
+
     for my $lib (sort keys %$option_libs) {
-        my $ok = eval { require $option_libs->{$lib}; 1 };
+        my $ok  = eval { require $option_libs->{$lib}; 1 };
+        my $err = $@;
         unless ($ok) {
-            warn "Failed to load module '$option_libs->{$lib}': $@";
+            warn "Failed to load module '$option_libs->{$lib}': $err";
             next;
         }
 
         next unless $lib->can('options');
-        my $add = $lib->options;
-        next unless $add;
+        my $add = $lib->options or next;
 
-        unless (blessed($add) && $add->isa('App::Yath2::Options')) {
-            warn "Module '$option_libs->{$lib}' is outdated, not loading options.\n"
-                unless $ENV{'YATH_SELF_TEST'};
-            next;
-        }
+        # TODO(Task 12): plugins/resources are still on the old
+        # App::Yath2::Options machinery. Skip anything that does not hand
+        # back a Getopt::Yath::Instance until they are converted.
+        next unless blessed($add) && $add->isa('Getopt::Yath::Instance');
 
-        $options->include_from($lib);
+        $options->include($add);
     }
 
     return $options;
 }
 
-sub process_argv {
-    my $self = shift;
-
+sub process_argv ($self) {
     return $self->{+_ARGV} if $self->{+ARGV_PROCESSED}++;
 
-    my $options = $self->load_options();
-    my $settings = $self->settings;
+    my $settings = $self->{+SETTINGS};
 
-    my $config_pre_args = $self->{+CONFIG}->{'~'};
-    $options->grab_pre_command_opts(args => $config_pre_args, stop_at_non_opt => 0, passthrough => 0, die_at_non_opt => 1)
-        if $config_pre_args;
+    # Stage 1: global/pre-command options. Config file global ('~') args are
+    # parsed first so that real command line arguments override them.
+    my @args  = (@{$self->{+CONFIG}->{'~'} // []}, @{$self->{+_ARGV}});
+    my $state = $self->_process_global_args(\@args);
 
-    $options->set_args($self->{+_ARGV});
-    $options->grab_pre_command_opts();
+    my ($cmd_name, $tail) = $self->_command_from_argv($state);
 
-    $options->process_pre_command_opts();
-
-    my $cmd_name  = $self->_command_from_argv();
     my $cmd_class = $self->load_command($cmd_name);
-    die "Command '$cmd_name' needs to be specified earlier in the command line arguments to yath.\n" if $cmd_class->only_cmd_opts && !$self->{+_EARLY_COMMAND};
-    $options->set_command_class($cmd_class);
+    $self->{+_COMMAND_NAME}  = $cmd_name;
     $self->{+_COMMAND_CLASS} = $cmd_class;
 
-    $options->grab_pre_command_opts(stop_at_non_opt => 1, passthrough => 1, die_at_non_opt => 0);
+    # Stage 2: command options. Config file command args first (so the
+    # command line overrides them), then any unrecognized options that were
+    # skipped in stage 1, then everything that followed the command.
+    my @cmd_args = (
+        @{$self->{+CONFIG}->{$cmd_name} // []},
+        @{$state->{skipped} // []},
+        @$tail,
+    );
 
-    my $config_cmd_args = $self->{+CONFIG}->{$cmd_name};
+    my $cmd_state = $self->_process_command_args(\@cmd_args, cmd => $cmd_name);
+    $self->{+OPTION_STATE} = $cmd_state;
 
-    $options->grab_pre_command_opts(args => $config_cmd_args, stop_at_non_opt => 1, passthrough => 1, die_at_non_opt => 0)
-        if $config_cmd_args;
+    # Final argv for the command: non-option args, plus any stop token
+    # ('--' or '::') and everything after it, preserved for the command to
+    # interpret.
+    my @argv = @{$cmd_state->{skipped} // []};
+    push @argv => $cmd_state->{stop} if defined $cmd_state->{stop};
+    push @argv => @{$cmd_state->{remains} // []};
 
-    $options->process_pre_command_opts();
-
-    $options->grab_command_opts(args => $config_cmd_args, die_at_non_opt => 1, stop_at_non_opt => 0, passthrough => 0)
-        if $config_cmd_args;
-
-    $options->grab_command_opts();
-    $options->process_command_opts();
-
-    $options->clear_env();
+    @{$self->{+_ARGV}} = @argv;
 
     $self->clear_env();
 
-    my %seen = map {((ref($_) || $_) => 1)} @{$settings->harness->plugins};
-    for my $plugin (@{$options->used_plugins}) {
-        next if $seen{$plugin}++;
-        push @{$settings->harness->plugins} => $plugin->can('new') ? $plugin->new() : $plugin;
-    }
+    $self->_instantiate_plugins();
 
     return $self->{+_ARGV};
+}
+
+sub _process_args ($self, $args, %params) {
+    return $self->options->process_args(
+        $args,
+        env      => $self->{+STATE_ENV}     //= {},
+        cleared  => $self->{+STATE_CLEARED} //= {},
+        modules  => $self->{+STATE_MODULES} //= {},
+        settings => $self->{+SETTINGS},
+        stops    => ['--', '::'],
+        %params,
+    );
+}
+
+sub _process_global_args ($self, $args, %params) {
+    # Pass-through unknown options at this stage rather than erroring.
+    # Top-level options are intentionally a small set; everything else
+    # (renderer, runner, finder, ...) is command-scoped. Letting unknown
+    # forms fall through here lets users put e.g. `-v` before the command
+    # (`yath -D -v test ...`) and have it bind at command-level parsing.
+    # Genuinely invalid options surface a clear, command-specific error
+    # later in _process_command_args.
+    return $self->_process_args(
+        $args,
+        %params,
+
+        skip_posts        => 1,
+        stop_at_non_opts  => 1,
+        skip_invalid_opts => 1,
+    );
+}
+
+sub _process_command_args ($self, $args, %params) {
+    my $cmd = delete $params{cmd} or die "'cmd' arg missing";
+
+    return $self->_process_args(
+        $args,
+        %params,
+
+        skip_non_opts => 1,
+
+        invalid_opt_callback => sub ($opt, @) {
+            print STDERR "\nERROR: '$opt' is not a valid yath or '$cmd' command option.\nSee `yath help $cmd` for available options.\n\n";
+            exit 255;
+        },
+    );
+}
+
+sub command_class {
+    my $self = shift;
+
+    $self->process_argv() unless $self->{+_COMMAND_CLASS};
+
+    return $self->{+_COMMAND_CLASS};
+}
+
+sub _command_from_argv ($self, $state) {
+    my $settings = $self->{+SETTINGS};
+
+    my @args = grep { defined($_) } $state->{stop}, @{$state->{remains} // []};
+
+    # --help and --version are options now, consumed by the stage 1 parse.
+    # When either is set we resolve to the (option-less) 'help' command so
+    # we never load a real command module just to print help/version. The
+    # stage 2 post-processing prints the output and exits before the
+    # command would run.
+    return (help => \@args) if $settings->debug->help || $settings->debug->version;
+
+    for (my $idx = 0; $idx < @args; $idx++) {
+        my $arg = $args[$idx];
+
+        if ($arg =~ m/^-*h(elp)?$/i) {
+            splice(@args, $idx, 1);
+            return (help => \@args);
+        }
+
+        if ($arg eq 'do') {
+            splice(@args, $idx, 1);
+            last;
+        }
+
+        last if $arg eq '::';
+        next if $arg =~ m/^-/;
+
+        if ($arg =~ m/\.jsonl(\.bz2|\.gz)?$/) {
+            warn "\n** First argument is a log file, defaulting to the 'replay' command **\n\n";
+            return (replay => \@args);
+        }
+
+        if ($self->load_command($arg, check_only => 1)) {
+            splice(@args, $idx, 1);
+            return ($arg => \@args);
+        }
+
+        my $is_path = (-f $arg || -d $arg) ? 1 : 0;
+
+        # Assume it is a command, but an invalid one (load_command reports it).
+        unless ($is_path) {
+            splice(@args, $idx, 1);
+            return ($arg => \@args);
+        }
+    }
+
+    if (find_pfile($settings, no_checks => 1)) {
+        warn "\n** Persistent runner detected, defaulting to the 'run' command **\n\n";
+        return (run => \@args);
+    }
+
+    warn "\n** Defaulting to the 'test' command **\n\n";
+    return (test => \@args);
+}
+
+sub load_command ($self, $cmd_name, %params) {
+    my $cmd_class = "App::Yath2::Command::$cmd_name";
+    my $cmd_file  = "App/Yath2/Command/$cmd_name.pm";
+
+    my $ok  = eval { require $cmd_file; 1 };
+    my $err = $@;
+
+    unless ($ok) {
+        $err ||= 'unknown error';
+        my $not_found = $err =~ m{Can't locate \Q$cmd_file\E in \@INC};
+
+        return undef if $params{check_only} && $not_found;
+
+        die "yath command '$cmd_name' not found. (did you forget to install $cmd_class?)\n"
+            if $not_found;
+
+        die $err;
+    }
+
+    return $cmd_class if $params{check_only};
+
+    # Only register the command when called on an instance (this method is
+    # also used as a class-method utility, ex by the 'help' command).
+    if (blessed($self)) {
+        # TODO(Task 10): commands are still on the old App::Yath2::Options
+        # machinery. Include their options only once they hand back a
+        # Getopt::Yath::Instance.
+        if ($cmd_class->can('options')) {
+            my $add = $cmd_class->options;
+            $self->options->include($add) if blessed($add) && $add->isa('Getopt::Yath::Instance');
+        }
+
+        # Several option post-processing hooks (help banner, workspace
+        # cleanup, finder applicability) read this, it MUST be set before
+        # the stage 2 parse runs the posts.
+        $self->{+SETTINGS}->harness->create_option(command => $cmd_class);
+    }
+
+    return $cmd_class;
+}
+
+sub _instantiate_plugins ($self) {
+    my $harness = $self->{+SETTINGS}->harness;
+
+    my $specs = $harness->check_option('plugins') ? $harness->plugins : undef;
+    $specs //= [];
+
+    my (%seen, @plugins);
+    for my $spec (@$specs) {
+        # Already an instance? Keep it (deduped by class).
+        if (blessed($spec)) {
+            push @plugins => $spec unless $seen{blessed($spec)}++;
+            next;
+        }
+
+        # Specs are normalized to 'Class' or 'Class=arg1,arg2' by the
+        # plugins option in App::Yath2::Options::PreCommand.
+        my ($class, $args) = split /=/, $spec, 2;
+        next if $seen{$class}++;
+
+        my @args = defined($args) ? (split /,/, $args) : ();
+
+        my $file = mod2file($class);
+        require $file unless $INC{$file};
+
+        push @plugins => $class->can('new') ? $class->new(@args) : $class;
+    }
+
+    $harness->create_option(plugins => \@plugins);
+
+    return \@plugins;
 }
 
 sub clear_env {
@@ -221,86 +376,6 @@ sub clear_env {
     delete $ENV{TEST2_ACTIVE} unless $INC{'Test2/API.pm'};
     delete $ENV{TEST_ACTIVE}  unless $INC{'Test2/API.pm'};
 }
-
-sub command_class {
-    my $self = shift;
-
-    $self->process_argv() unless $self->{+_COMMAND_CLASS};
-
-    return $self->{+_COMMAND_CLASS};
-}
-
-sub _command_from_argv {
-    my $self = shift;
-    my %params = @_;
-
-    return $self->{+_COMMAND_NAME} if $self->{+_COMMAND_NAME};
-
-    my $argv = $self->{+_ARGV};
-
-    for (my $idx = 0; $idx < @$argv; $idx++) {
-        my $arg = $argv->[$idx];
-
-        if ($arg =~ m/^-*h(elp)?$/i) {
-            splice(@$argv, $idx, 1);
-            return 'help';
-        }
-
-        if ($arg eq 'do') {
-            splice(@$argv, $idx, 1);
-            last;
-        }
-
-        last if $arg eq '::';
-        next if $arg =~ /^-/;
-
-        if ($arg =~ m/\.jsonl(\.bz2|\.gz)?$/) {
-            warn "\n** First argument is a log file, defaulting to the 'replay' command **\n\n";
-            return 'replay';
-        }
-
-        return splice(@$argv, $idx, 1) if $self->load_command($arg, check_only => 1);
-        return if $params{valid_only};
-
-        my $is_path = 0;
-        $is_path ||= -f $arg;
-        $is_path ||= -d $arg;
-
-        # Assume it is a command, but an invalid one.
-        return splice(@$argv, $idx, 1) unless $is_path;
-    }
-
-    return if $params{no_default};
-
-    if (my $pfile = find_pfile($self->settings, no_checks => 1)) {
-        warn "\n** Persistent runner detected, defaulting to the 'run' command **\n\n";
-        return 'run';
-    }
-
-    warn "\n** Defaulting to the 'test' command **\n\n";
-    return 'test';
-}
-
-sub load_command {
-    my $self = shift;
-    my ($cmd_name, %params) = @_;
-
-    my $cmd_class = "App::Yath2::Command::$cmd_name";
-    my $cmd_file  = "App/Yath2/Command/$cmd_name.pm";
-
-    return $cmd_class if eval { require $cmd_file; 1 };
-    my $error = $@ || 'unknown error';
-
-    my $not_found = $error =~ m{Can't locate \Q$cmd_file\E in \@INC};
-
-    return undef if $params{check_only} && $not_found;
-
-    die "yath command '$cmd_name' not found. (did you forget to install $cmd_class?)\n"
-        if $not_found;
-
-    die $error;
-}
-
 
 1;
 
@@ -789,15 +864,16 @@ A minimum yath script looks like this:
 
         require Time::HiRes;
         require App::Yath2;
-        require Test2::Harness2::Settings;
+        require Getopt::Yath::Settings;
 
-        my $settings = Test2::Harness2::Settings->new(
+        my $settings = Getopt::Yath::Settings->new;
+        $settings->create_group(
             harness => {
-                orig_argv       => [@ARGV],
-                orig_inc        => [@INC],
-                script          => __FILE__,
-                start           => Time::HiRes::time(),
-                version         => $App::Yath2::VERSION,
+                orig_argv => [@ARGV],
+                orig_inc  => [@INC],
+                script    => __FILE__,
+                start     => Time::HiRes::time(),
+                version   => $App::Yath2::VERSION,
             },
         );
 
