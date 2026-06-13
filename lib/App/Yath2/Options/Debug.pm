@@ -120,16 +120,26 @@ sub _post_process_help ($options, $state) {
 
     return unless $settings->debug->help;
 
+    # Defer to the help command when it is the resolved command. This lets
+    # `yath --help` (and `yath -h`) with no command word fall through to
+    # help->run(), which prints the command table. When a real command was
+    # resolved (e.g. `yath --help test`) we do NOT defer: we print that
+    # command's help here and exit.
+    if ($settings->check_group('harness') && $settings->harness->check_option('command')) {
+        my $cmd_class = $settings->harness->command;
+        return if $cmd_class && $cmd_class->isa('App::Yath2::Command::help');
+    }
+
     my $group = $settings->debug->help;
 
     _print_command_banner($settings);
 
     my $help = $options->docs('cli', settings => $settings, ($group && $group ne '1' ? (group => $group) : ()));
 
-    my $ok = eval { require IO::Pager; 1 };
+    my $ok  = eval { require IO::Pager; 1 };
     my $err = $@;
     if ($ok) {
-        local $SIG{PIPE} = sub {};
+        local $SIG{PIPE} = sub { };
         my $pager = IO::Pager->new(*STDOUT);
         $pager->print($help);
     }
@@ -151,7 +161,8 @@ sub _post_process_show_opts ($options, $state) {
     print "\nCommand args: " . join(', ' => @$remains) . "\n" if @$remains;
 
     my $group = $settings->debug->show_opts;
-    my $out = $group eq '1'
+    my $out =
+        $group eq '1'
         ? encode_pretty_json($settings)
         : encode_pretty_json($settings->check_group($group) ? $settings->$group : "!! Invalid Group '$group' !!");
 
@@ -162,6 +173,7 @@ sub _post_process_show_opts ($options, $state) {
 }
 
 my $RAN = 0;
+
 sub _post_process_interactive ($options, $state) {
     return if $RAN++;
 
@@ -222,10 +234,10 @@ sub _post_process_interactive ($options, $state) {
 
         $SIG{CHLD} = sub {
             local $?;
-            my $res = waitpid($pid, 0);
+            my $res  = waitpid($pid, 0);
             my $exit = ($? >> 8);
 
-            close($fh) if $fh;
+            close($fh)    if $fh;
             unlink($fifo) if -e $fifo;
 
             # Forward the exit code from our child
@@ -280,12 +292,13 @@ Extended Version Info
     my $plugin_libs = find_libraries('App::Yath2::Plugin::*');
 
     my @vers = (
-        [perl          => $^V],
-        ['App::Yath2'  => App::Yath2->VERSION],
+        [perl         => $^V],
+        ['App::Yath2' => App::Yath2->VERSION],
         (
             map {
                 my $ok = eval { require(mod2file($_)); 1 };
-                $ok ? [$_ => $_->VERSION // 'N/A']
+                $ok
+                    ? [$_ => $_->VERSION // 'N/A']
                     : [$_ => 'N/A']
             } qw/Test2::API Test2::Suite Test::Builder/
         ),

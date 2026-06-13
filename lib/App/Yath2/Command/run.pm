@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
 use Test2::Harness2::Run;
 use Test2::Harness2::Util::Queue;
@@ -32,18 +32,17 @@ include_options(
     'App::Yath2::Options::Run',
 );
 
-option_group {prefix => 'run'} => sub {
+option_group {group => 'run'} => sub {
     option check_reload_state => (
-        type => 'b',
+        type        => 'Bool',
         description => 'Abort the run if there are unfixes reload errors and show a confirmation dialogue for unfixed reload warnings.',
-        default => 1,
+        default     => 1,
     );
 };
 
-
 sub group { 'persist' }
 
-sub summary { "Run tests using the persistent test runner" }
+sub summary  { "Run tests using the persistent test runner" }
 sub cli_args { '[--] [test files/dirs] [::] [arguments to test scripts] [test_file.t] [test_file2.t="--arg1 --arg2 --param=\'foo bar\'"] [:: --argv-for-all-tests]' }
 
 sub description {
@@ -53,14 +52,13 @@ the start command for details on how to launch a persistant instance.
     EOT
 }
 
-sub terminate_queue {}
-sub write_settings_to {}
-sub setup_plugins {}
-sub setup_resources {}
-sub teardown_plugins {}
-sub finalize_plugins {}
-sub pfile_params { () }
-
+sub terminate_queue   { }
+sub write_settings_to { }
+sub setup_plugins     { }
+sub setup_resources   { }
+sub teardown_plugins  { }
+sub finalize_plugins  { }
+sub pfile_params      { () }
 
 sub monitor_preloads { 1 }
 sub job_count        { 1 }
@@ -113,7 +111,7 @@ sub check_reload_state {
             }
         }
     }
-    $errors //= 0;
+    $errors   //= 0;
     $warnings //= 0;
 
     return 1 unless @out || $errors || $warnings;
@@ -172,17 +170,17 @@ sub init {
     my $self = shift;
 
     my $settings = $self->settings;
-    my $pdata = $self->pfile_data;
+    my $pdata    = $self->pfile_data;
 
     my $runner_settings = Test2::Harness2::Util::File::JSON->new(name => $pdata->{dir} . '/settings.json')->read();
 
     for my $prefix (sort keys %{$runner_settings}) {
-        next if $settings->check_prefix($prefix);
+        next if $settings->check_group($prefix);
 
-        my $new = $settings->define_prefix($prefix);
-        ${$new->vivify_field('from_runner')} = 1;
+        my $new = $settings->group($prefix, 1);
+        ${$new->option_ref('from_runner', 1)} = 1;
         for my $key (sort keys %{$runner_settings->{$prefix}}) {
-            ${$new->vivify_field($key)} = $runner_settings->{$prefix}->{$key};
+            ${$new->option_ref($key, 1)} = $runner_settings->{$prefix}->{$key};
         }
     }
 

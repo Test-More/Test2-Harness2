@@ -165,7 +165,7 @@ sub process_argv ($self) {
 
     my $cmd_state = $self->_process_command_args(
         \@cmd_args,
-        cmd        => $cmd_name,
+        cmd => $cmd_name,
         $replay_posts ? (skip_posts => 1) : (),
     );
     $self->{+OPTION_STATE} = $cmd_state;
@@ -257,12 +257,17 @@ sub _command_from_argv ($self, $state) {
 
     my @args = grep { defined($_) } $state->{stop}, @{$state->{remains} // []};
 
-    # --help and --version are options now, consumed by the stage 1 parse.
-    # When either is set we resolve to the (option-less) 'help' command so
-    # we never load a real command module just to print help/version. The
-    # stage 2 post-processing prints the output and exits before the
-    # command would run.
-    return (help => \@args) if $settings->debug->help || $settings->debug->version;
+    # --version is an option now, consumed by the stage 1 parse. When it is
+    # set we resolve to the (option-less) 'help' command so we never load a
+    # real command module; the version post-processing prints and exits.
+    return (help => \@args) if $settings->debug->version;
+
+    # --help is also an option consumed in stage 1. Unlike --version we still
+    # attempt to resolve a real command from the remaining args so that
+    # `yath --help test` renders the TEST command's help (the help post sees
+    # the command's option groups). Only when NO real command is present do we
+    # fall through to the 'help' command (bare `yath --help` -> command table,
+    # via the help post deferring when the resolved command isa help).
 
     for (my $idx = 0; $idx < @args; $idx++) {
         my $arg = $args[$idx];
@@ -299,6 +304,10 @@ sub _command_from_argv ($self, $state) {
         }
     }
 
+    # Bare `yath --help` (no command word) resolves to the help command, which
+    # prints the command table. The help post defers for this case.
+    return (help => \@args) if $settings->debug->help;
+
     if (find_pfile($settings, no_checks => 1)) {
         warn "\n** Persistent runner detected, defaulting to the 'run' command **\n\n";
         return (run => \@args);
@@ -332,9 +341,9 @@ sub load_command ($self, $cmd_name, %params) {
     # Only register the command when called on an instance (this method is
     # also used as a class-method utility, ex by the 'help' command).
     if (blessed($self)) {
-        # TODO(Task 10): commands are still on the old App::Yath2::Options
-        # machinery. Include their options only once they hand back a
-        # Getopt::Yath::Instance.
+        # Fold the command's own options into the app instance. The base
+        # command class returns undef from options(); the isa guard skips
+        # that (and anything not yet a Getopt::Yath::Instance).
         if ($cmd_class->can('options')) {
             my $add = $cmd_class->options;
             $self->options->include($add) if blessed($add) && $add->isa('Getopt::Yath::Instance');

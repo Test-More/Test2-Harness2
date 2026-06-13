@@ -10,13 +10,14 @@ use Test2::Harness2::Util::File::JSONL;
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw{<log_file};
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
-option brief => (
-    prefix => 'display',
-    category => 'Display Options',
-    description => 'Show only the files that failed, newline separated, no other output. If a file failed once but passed on a retry it will NOT be shown.',
-);
+option_group {group => 'display', category => 'Display Options'} => sub {
+    option brief => (
+        type        => 'Bool',
+        description => 'Show only the files that failed, newline separated, no other output. If a file failed once but passed on a retry it will NOT be shown.',
+    );
+};
 
 sub summary { "Show the failed tests from an event log" }
 
@@ -45,14 +46,14 @@ sub run {
     shift @$args if @$args && $args->[0] eq '--';
 
     $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file" unless -f $self->{+LOG_FILE};
+    die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
     die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
 
     my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
 
     my %failed;
 
-    while(1) {
+    while (1) {
         my @events = $stream->poll(max => 1000) or last;
 
         for my $event (@events) {
@@ -95,8 +96,8 @@ sub run {
     print "\nThe following jobs failed at least once:\n";
     print join "\n" => table(
         collapse => 1,
-        header => ['Job ID', 'Times Run', 'Test File', "Subtests", "Succeeded Eventually?"],
-        rows   => $rows,
+        header   => ['Job ID', 'Times Run', 'Test File', "Subtests", "Succeeded Eventually?"],
+        rows     => $rows,
     );
     print "\n";
 
@@ -137,7 +138,6 @@ sub subtests {
 
     return @out;
 }
-
 
 1;
 

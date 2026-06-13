@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Options;
+use Getopt::Yath;
 require App::Yath2::Command::test;
 
 use parent 'App::Yath2::Command';
@@ -15,7 +15,6 @@ include_options(
     'App::Yath2::Options::Display',
     'App::Yath2::Options::PreCommand',
 );
-
 
 sub group { 'log' }
 
@@ -53,10 +52,10 @@ sub run {
     shift @$args if @$args && $args->[0] eq '--';
 
     $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file" unless -f $self->{+LOG_FILE};
+    die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
     die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
 
-    my $jobs = @$args ? {map {$_ => 1} @$args} : undef;
+    my $jobs = @$args ? {map { $_ => 1 } @$args} : undef;
 
     my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
 

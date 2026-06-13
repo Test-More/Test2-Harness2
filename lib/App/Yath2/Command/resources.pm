@@ -10,7 +10,7 @@ use Time::HiRes qw/sleep/;
 
 use App::Yath2::Util qw/find_pfile/;
 
-use App::Yath2::Options;
+use Getopt::Yath;
 use Test2::Harness2::Runner::State;
 use Test2::Harness2::Util::File::JSON();
 use Test2::Harness2::Util::Queue();
@@ -25,7 +25,7 @@ include_options(
 
 sub group { 'state' }
 
-sub summary { "View the state info for a test runner" }
+sub summary  { "View the state info for a test runner" }
 sub cli_args { "" }
 
 sub description {
@@ -73,7 +73,7 @@ sub state {
             my $settings = Test2::Harness2::Util::File::JSON->new(name => "$workdir/settings.json")->read();
 
             return $self->{+STATE} = Test2::Harness2::Runner::State->new(
-                observe  => 1,
+                observe   => 1,
                 job_count => $settings->{runner}->{job_count} // 1,
                 workdir   => $data->{dir},
             );
@@ -103,7 +103,7 @@ sub run {
 
     my $res;
 
-    if(my $state = $self->state) {
+    if (my $state = $self->state) {
         my @list;
         $res = sub {
             unless (@list) {
@@ -140,7 +140,7 @@ sub run {
             next unless @lines;
             push @out => (
                 "\nResource: " . ref($resource) . "\n",
-                 join "\n" => @lines,
+                join "\n" => @lines,
             );
         }
         push @out => "\n\n";

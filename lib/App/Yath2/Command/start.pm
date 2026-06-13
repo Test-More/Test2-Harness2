@@ -1,11 +1,13 @@
 package App::Yath2::Command::start;
 use strict;
 use warnings;
+use feature 'signatures';
+no warnings 'experimental::signatures';
 
 our $VERSION = '2.000000';
 
 use App::Yath2::Util qw/find_pfile/;
-use App::Yath2::Options;
+use Getopt::Yath;
 
 use Test2::Harness2::Run;
 use Test2::Harness2::Util::Queue;
@@ -39,46 +41,51 @@ include_options(
     'App::Yath2::Options::Collector',
 );
 
-option_group {prefix => 'runner', category => "Persistent Runner Options"} => sub {
+option_group {group => 'runner', category => "Persistent Runner Options"} => sub {
     option reload => (
-        short => 'r',
-        type  => 'b',
+        short       => 'r',
+        type        => 'Bool',
         description => "Attempt to reload modified modules in-place, restarting entire stages only when necessary.",
-        default => 0,
+        default     => 0,
     );
 
     option restrict_reload => (
-        type => 'D',
+        type           => 'AutoPathList',
+        autofill       => 1,
         long_examples  => ['', '=path'],
         short_examples => ['', '=path'],
-        description => "Only reload modules under the specified path, if no path is specified look at anything under the .yath.rc path, or the current working directory.",
+        description    => "Only reload modules under the specified path, if no path is specified look at anything under the .yath.rc path, or the current working directory.",
 
-        normalize => sub { $_[0] eq '1' ? $_[0] : clean_path($_[0]) },
-        action    => \&restrict_action,
+        # Keep the '1' sentinel until the trigger so we can resolve the
+        # bare-flag case to the rc-file dir (or cwd) at parse time.
+        normalize => sub ($val) { $val eq '1' ? $val : clean_path($val) },
+
+        # action -> trigger: fires BEFORE add_value. Reshape @{$params{val}},
+        # replacing the '1' sentinel with the resolved default path.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+
+            my $settings = $params{settings};
+            for my $val (@{$params{val}}) {
+                next unless $val eq '1';
+
+                my $hset = $settings->harness;
+                my $path = ($hset->check_option('config_file') ? $hset->config_file : undef)
+                    || ($hset->check_option('cwd') ? $hset->cwd : undef);
+                $path //= do { require Cwd; Cwd::getcwd() };
+                $path =~ s{\.yath\.rc$}{}g;
+                $val = $path;
+            }
+        },
     );
 
     option quiet => (
         short       => 'q',
-        type        => 'c',
+        type        => 'Count',
         description => "Be very quiet.",
-        default     => 0,
+        initialize  => 0,
     );
 };
-
-sub restrict_action {
-    my ($prefix, $field, $raw, $norm, $slot, $settings) = @_;
-
-    if ($norm eq '1') {
-        my $hset = $settings->harness;
-        my $path = $hset->config_file || $hset->cwd;
-        $path //= do { require Cwd; Cwd::getcwd() };
-        $path =~ s{\.yath\.rc$}{}g;
-        push @{$$slot} => $path;
-    }
-    else {
-        push @{$$slot} => $norm;
-    }
-}
 
 sub MAX_ATTACH() { 1_048_576 }
 
@@ -86,7 +93,7 @@ sub group { 'persist' }
 
 sub always_keep_dir { 1 }
 
-sub summary { "Start the persistent test runner" }
+sub summary  { "Start the persistent test runner" }
 sub cli_args { "" }
 
 sub description {
@@ -176,7 +183,7 @@ sub run {
 
     local $?;
     while (1) {
-        my $out = waitpid($pid, WNOHANG);
+        my $out   = waitpid($pid, WNOHANG);
         my $wstat = $?;
 
         my $count = 0;
@@ -193,7 +200,7 @@ sub run {
 
         sleep(0.02) unless $out || $count;
 
-        next if $out == 0;
+        next       if $out == 0;
         return 255 if $out < 0;
 
         my $exit = parse_exit($?);

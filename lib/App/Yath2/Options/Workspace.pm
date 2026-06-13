@@ -34,7 +34,7 @@ option_group {group => 'workspace', category => "Workspace Options"} => sub {
         alt           => ['tmpdir', 'tmp-dir'],
         description   => 'Use a specific temp directory (Default: use system temp dir)',
         from_env_vars => [qw/T2_HARNESS_TEMP_DIR YATH_TEMP_DIR TMPDIR TEMPDIR TMP_DIR TEMP_DIR/],
-        default       => sub ($opt, %params) { File::Spec->tmpdir },
+        default       => sub { File::Spec->tmpdir },
     );
 
     option workdir => (

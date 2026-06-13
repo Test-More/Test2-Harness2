@@ -12,12 +12,11 @@ use Test2::Harness2::Util::HashBase qw/<_command_info_hash/;
 use Test2::Harness2::Util qw/open_file find_libraries/;
 use List::Util ();
 
-sub options {};
-sub group { '' }
+sub group   { '' }
 sub summary { 'Show the list of commands' }
 
 sub description {
-    return <<"    EOT"
+    return <<"    EOT";
 This command provides a list of commands when called with no arguments.
 When given a command name as an argument it will print the help for that
 command.
@@ -39,7 +38,7 @@ sub command_info_hash {
         }
 
         next if $lib->internal_only;
-        my $name = $lib->name;
+        my $name  = $lib->name;
         my $group = $lib->group;
         $commands{$group}->{$name} = $lib->summary;
     }
@@ -51,7 +50,7 @@ sub command_list {
     my $self = shift;
 
     my $command_hash = $self->command_info_hash();
-    my @commands = map keys %$_, values %$command_hash;
+    my @commands     = map keys %$_, values %$command_hash;
     return @commands;
 }
 

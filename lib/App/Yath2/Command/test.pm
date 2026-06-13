@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
 use Test2::Harness2::Run;
 use Test2::Harness2::Event;
@@ -215,14 +215,14 @@ sub run {
     my $self = shift;
 
     my $settings = $self->settings;
-    my $plugins = $self->settings->harness->plugins;
+    my $plugins  = $self->settings->harness->plugins;
 
     if ($self->start()) {
         $self->render();
         $self->stop();
 
         my $final_data = $self->{+FINAL_DATA} or die "Final data never received from auditor!\n";
-        my $pass = $self->{+TESTS_SEEN} && $final_data->{pass};
+        my $pass       = $self->{+TESTS_SEEN} && $final_data->{pass};
         $self->render_final_data($final_data);
         $self->produce_summary($pass);
 
@@ -231,7 +231,7 @@ sub run {
                 settings     => $settings,
                 final_data   => $final_data,
                 pass         => $pass ? 1 : 0,
-                tests_seen   => $self->{+TESTS_SEEN} // 0,
+                tests_seen   => $self->{+TESTS_SEEN}   // 0,
                 asserts_seen => $self->{+ASSERTS_SEEN} // 0,
             );
             $_->finish(%args) for @$plugins;
@@ -322,14 +322,14 @@ sub render {
         $_->step for @{$renderers};
 
         my $line = <$reader>;
-        unless(defined $line) {
+        unless (defined $line) {
             $ipc->wait() if $ipc;
             sleep 0.02;
             next;
         }
 
         if ($buffer) {
-            $line = $buffer . $line;
+            $line   = $buffer . $line;
             $buffer = undef;
         }
 
@@ -405,7 +405,7 @@ sub get_job_pid {
 
     return undef unless $run_id && $job_id;
 
-    my $run_dir = File::Spec->catdir($self->workdir, $run_id);
+    my $run_dir   = File::Spec->catdir($self->workdir, $run_id);
     my $jobs_file = File::Spec->catfile($run_dir, 'jobs.jsonl');
 
     return undef unless -f $jobs_file;
@@ -450,7 +450,7 @@ sub stop {
 
         for my $task (values %$running) {
             next unless $task->{run_id} && $task->{run_id} eq $self->{+RUN_ID};
-            my $pid = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
+            my $pid  = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
             my $file = $task->{rel_file};
             print "Killing test $pid - $file...\n";
             kill('INT', USE_P_GROUPS ? -$pid : $pid);
@@ -489,9 +489,9 @@ sub build_run {
     return $self->{+RUN} if $self->{+RUN};
 
     my $settings = $self->settings;
-    my $dir = $self->workdir;
+    my $dir      = $self->workdir;
 
-    my $run = $settings->build(run => 'Test2::Harness2::Run');
+    my $run = Test2::Harness2::Run->new($settings->run->all);
 
     mkdir($run->run_dir($dir)) or die "Could not make run dir: $!";
     chmod_tmp($dir);
@@ -517,7 +517,7 @@ sub job_count {
 
 sub run_queue {
     my $self = shift;
-    my $dir = $self->workdir;
+    my $dir  = $self->workdir;
     return $self->{+RUN_QUEUE} //= Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($dir, 'run_queue.jsonl'));
 }
 
@@ -529,7 +529,7 @@ sub tasks_queue {
     );
 }
 
-sub finder_args {()}
+sub finder_args { () }
 
 sub populate_queue {
     my $self = shift;
@@ -537,11 +537,11 @@ sub populate_queue {
     my $run = $self->build_run();
     $self->{+RUN_ID} = $run->run_id;
     my $settings = $self->settings;
-    my $finder = $settings->build(finder => $settings->finder->finder, $self->finder_args);
+    my $finder   = ($settings->finder->finder)->new($settings->finder->all, $self->finder_args);
 
-    my $state = $self->state;
+    my $state       = $self->state;
     my $tasks_queue = $self->tasks_queue;
-    my $plugins = $settings->harness->plugins;
+    my $plugins     = $settings->harness->plugins;
 
     $state->queue_run($run->queue_item($plugins));
 
@@ -558,8 +558,9 @@ sub populate_queue {
 
     my $job_count = 0;
     for my $file (@files) {
-        my $task = $file->queue_item(++$job_count, $run->run_id,
-            $settings->check_prefix('display') ? (verbose => $settings->display->verbose) : (),
+        my $task = $file->queue_item(
+            ++$job_count, $run->run_id,
+            $settings->check_group('display') ? (verbose => $settings->display->verbose) : (),
         );
 
         $task->{category} = 'isolation' if $settings->debug->interactive;
@@ -636,17 +637,19 @@ sub render_summary {
     return if $self->settings->display->quiet > 1;
 
     my $final_data = $self->{+FINAL_DATA};
-    my $failures = @{$final_data->{failed} // []};
+    my $failures   = @{$final_data->{failed} // []};
 
     my @summary = (
         $failures ? ("     Fail Count: $failures") : (),
         "     File Count: $self->{+TESTS_SEEN}",
         "Assertion Count: $self->{+ASSERTS_SEEN}",
-        $time_data ? (
-            sprintf("      Wall Time: %.2f seconds", $time_data->{wall}),
+        $time_data
+        ? (
+            sprintf("      Wall Time: %.2f seconds",                                                       $time_data->{wall}),
             sprintf("       CPU Time: %.2f seconds (usr: %.2fs | sys: %.2fs | cusr: %.2fs | csys: %.2fs)", @{$time_data}{qw/cpu user system cuser csystem/}),
-            sprintf("      CPU Usage: %i%%", $cpu_usage),
-        ) : (),
+            sprintf("      CPU Usage: %i%%",                                                               $cpu_usage),
+            )
+        : (),
     );
 
     my $res = "    -->  Result: " . ($pass ? 'PASSED' : 'FAILED') . "  <--";
@@ -657,7 +660,7 @@ sub render_summary {
     }
     push @summary => $res;
 
-    my $msg = "Yath Result Summary";
+    my $msg    = "Yath Result Summary";
     my $length = max map { length($_) } @summary;
     my $prefix = ($length - length($msg)) / 2;
 
@@ -692,8 +695,8 @@ sub render_final_data {
         print "\nThe following jobs failed:\n";
         print join "\n" => table(
             collapse => 1,
-            header => ['Job ID', 'Test File', 'Subtests'],
-            rows   => [map { my $r = [@{$_}]; $r->[2] = stringify_subtest_map($r->[2]) if $r->[2]; $r} @$rows],
+            header   => ['Job ID', 'Test File', 'Subtests'],
+            rows     => [map { my $r = [@{$_}]; $r->[2] = stringify_subtest_map($r->[2]) if $r->[2]; $r } @$rows],
         );
         print "\n";
     }
@@ -718,75 +721,75 @@ sub render_final_data {
 }
 
 sub _render_final_data_plainly {
-  my $self = shift;
-  my ($final_data) = @_;
+    my $self = shift;
+    my ($final_data) = @_;
 
-  return if $self->settings->display->quiet > 1;
+    return if $self->settings->display->quiet > 1;
 
-  if (my $rows = $final_data->{retried}) {
-    print "\nThe following jobs failed at least once:\n";
-    for my $row (@$rows) {
-      print "- filename: $row->[2]\n";
-      print "  job_id: $row->[0]\n";
-      print "  times_run: $row->[1]\n";
-      print "  succeeded_eventually: $row->[3]\n";
+    if (my $rows = $final_data->{retried}) {
+        print "\nThe following jobs failed at least once:\n";
+        for my $row (@$rows) {
+            print "- filename: $row->[2]\n";
+            print "  job_id: $row->[0]\n";
+            print "  times_run: $row->[1]\n";
+            print "  succeeded_eventually: $row->[3]\n";
+        }
     }
-  }
 
-  if (my $rows = $final_data->{failed}) {
-    print "\nThe following jobs failed:\n";
-    for my $row (@$rows) {
-      print "- filename: $row->[1]\n";
-      print "  job_id: $row->[0]\n";
-      if ($row->[2]) {
-        print "  subtests:\n";
-        my @paths = _subtest_paths($row->[2]);
-        print "  - $_\n" for @paths;
-      }
+    if (my $rows = $final_data->{failed}) {
+        print "\nThe following jobs failed:\n";
+        for my $row (@$rows) {
+            print "- filename: $row->[1]\n";
+            print "  job_id: $row->[0]\n";
+            if ($row->[2]) {
+                print "  subtests:\n";
+                my @paths = _subtest_paths($row->[2]);
+                print "  - $_\n" for @paths;
+            }
+        }
     }
-  }
 
-  if (my $rows = $final_data->{halted}) {
-    print "\nThe following jobs requested all testing be halted:\n";
-    for my $row (@$rows) {
-      print "- filename: $row->[1]\n";
-      print "  job_id: $row->[0]\n";
-      print "  reason: $row->[2]\n" if $row->[2];
+    if (my $rows = $final_data->{halted}) {
+        print "\nThe following jobs requested all testing be halted:\n";
+        for my $row (@$rows) {
+            print "- filename: $row->[1]\n";
+            print "  job_id: $row->[0]\n";
+            print "  reason: $row->[2]\n" if $row->[2];
+        }
     }
-  }
 
-  if (my $rows = $final_data->{unseen}) {
-    print "\nThe following jobs never ran:\n";
-    for my $row (@$rows) {
-      print "- filename: $row->[1]\n";
-      print "  job_id: $row->[0]\n";
+    if (my $rows = $final_data->{unseen}) {
+        print "\nThe following jobs never ran:\n";
+        for my $row (@$rows) {
+            print "- filename: $row->[1]\n";
+            print "  job_id: $row->[0]\n";
+        }
     }
-  }
 }
 
 sub _subtest_paths {
-  my ($map) = @_;
+    my ($map) = @_;
 
-  my @paths;
-  my @todo = @$map;
-  my @state;
-  while (my $st = shift @todo) {
-    if (!ref($st)) {
-      pop @state if $st eq 'pop';
-      next;
+    my @paths;
+    my @todo = @$map;
+    my @state;
+    while (my $st = shift @todo) {
+        if (!ref($st)) {
+            pop @state if $st eq 'pop';
+            next;
+        }
+        push @state, $st->[0];
+        push @paths, join(' -> ', @state);
+        unshift @todo, (@{$st->[1]}, 'pop');
     }
-    push @state, $st->[0];
-    push @paths, join(' -> ', @state);
-    unshift @todo, (@{$st->[1]}, 'pop');
-  }
 
-  return @paths;
+    return @paths;
 }
 
 sub stringify_subtest_map {
     my ($map) = @_;
 
-    my $out = "";
+    my $out  = "";
     my @todo = @$map;
     my @state;
     while (my $st = shift @todo) {
@@ -835,7 +838,7 @@ sub logger {
     }
 
     if ($file =~ m/\.(jsonl(?:\.(?:bz2|gz))?)$/) {
-        my $ext = $1;
+        my $ext  = $1;
         my $name = "./lastlog.$ext";
         if (eval { symlink($file, $name); 1 }) {
             $self->{+LAST_LOG} = $name;
@@ -869,7 +872,7 @@ sub renderers {
 sub start_auditor {
     my $self = shift;
 
-    my $run = $self->build_run();
+    my $run      = $self->build_run();
     my $settings = $self->settings;
 
     my $ipc = $self->ipc;
@@ -904,7 +907,7 @@ sub start_collector {
     pipe($rh, $wh) or die "Could not create pipe";
 
     my %options = (show_runner_output => 1);
-    if ($settings->check_prefix('display')) {
+    if ($settings->check_group('display')) {
         $options{show_runner_output}     = $settings->display->hide_runner_output ? 0 : 1;
         $options{truncate_runner_output} = $settings->display->truncate_runner_output;
     }
@@ -943,23 +946,23 @@ sub start_runner {
     $args{monitor_preloads} //= $self->monitor_preloads;
 
     my $settings = $self->settings;
-    my $dir = $settings->workspace->workdir;
+    my $dir      = $settings->workspace->workdir;
 
     my @prof;
     if ($settings->runner->nytprof) {
         push @prof => '-d:NYTProf';
     }
 
-    my $ipc = $self->ipc;
+    my $ipc  = $self->ipc;
     my $proc = $ipc->spawn(
-        stderr => File::Spec->catfile($dir, 'error.log'),
-        stdout => File::Spec->catfile($dir, 'output.log'),
-        env_vars => { @prof ? (NYTPROF => 'start=no:addpid=1') : () },
+        stderr      => File::Spec->catfile($dir, 'error.log'),
+        stdout      => File::Spec->catfile($dir, 'output.log'),
+        env_vars    => {@prof ? (NYTPROF => 'start=no:addpid=1') : ()},
         no_set_pgrp => 1,
-        command => [
+        command     => [
             $^X, @prof, $self->spawn_args($settings), $settings->harness->script,
             (map { "-D$_" } @{$settings->harness->dev_libs}),
-            '--no-scan-plugins', # Do not preload any plugin modules
+            '--no-scan-plugins',    # Do not preload any plugin modules
             runner => $dir,
             %args,
         ],
@@ -971,9 +974,9 @@ sub start_runner {
 }
 
 sub parse_args {
-    my $self = shift;
+    my $self     = shift;
     my $settings = $self->settings;
-    my $args = $self->args;
+    my $args     = $self->args;
 
     my $dest = $settings->finder->search;
     for my $arg (@$args) {

@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Options;
+use Getopt::Yath;
 
 use Time::HiRes qw/sleep time/;
 use File::Temp qw/tempfile/;
@@ -16,7 +16,7 @@ use Test2::Harness2::Util::HashBase;
 
 sub group { 'persist' }
 
-sub summary { "Launch a perl script from the preloaded environment" }
+sub summary  { "Launch a perl script from the preloaded environment" }
 sub cli_args { "[--] path/to/script.pl [options and args]" }
 
 sub description {
@@ -29,28 +29,28 @@ you care about.
     EOT
 }
 
-option_group {prefix => 'spawn', category => 'spawn options'} => sub {
+option_group {group => 'spawn', category => 'spawn options'} => sub {
     option stage => (
-        short => 's',
-        type => 's',
-        description => 'Specify the stage to be used for launching the script',
-        long_examples => [ ' foo'],
-        short_examples => [ ' foo'],
-        default => 'default',
+        short          => 's',
+        type           => 'Scalar',
+        description    => 'Specify the stage to be used for launching the script',
+        long_examples  => [' foo'],
+        short_examples => [' foo'],
+        default        => 'default',
     );
 
     option copy_env => (
-        short => 'e',
-        type => 'm',
-        description => "Specify environment variables to pass along with their current values, can also use a regex",
-        long_examples => [ ' HOME', ' SHELL', ' /PERL_.*/i' ],
-        short_examples => [ ' HOME', ' SHELL', ' /PERL_.*/i' ],
+        short          => 'e',
+        type           => 'List',
+        description    => "Specify environment variables to pass along with their current values, can also use a regex",
+        long_examples  => [' HOME', ' SHELL', ' /PERL_.*/i'],
+        short_examples => [' HOME', ' SHELL', ' /PERL_.*/i'],
     );
 
     option env_var => (
         field          => 'env_vars',
         short          => 'E',
-        type           => 'h',
+        type           => 'Map',
         long_examples  => [' VAR=VAL'],
         short_examples => ['VAR=VAL', ' VAR=VAL'],
         description    => 'Set environment variables for the spawn',
@@ -68,7 +68,7 @@ sub read_line {
             my @caller = caller;
             die "Timed out at $caller[1] line $caller[2].\n";
         }
-        seek($fh, 0,1) if eof($fh);
+        seek($fh, 0, 1) if eof($fh);
         my $out = <$fh>;
         unless (defined $out) {
             sleep 0.02;
@@ -119,7 +119,7 @@ sub set_pname {
     my $self = shift;
     my ($run) = @_;
 
-    $0 = "yath-" . $self->name . " $run " . join (' ', @ARGV);
+    $0 = "yath-" . $self->name . " $run " . join(' ', @ARGV);
 }
 
 sub pre_process_argv {
@@ -133,7 +133,10 @@ sub set_sig_handlers {
     my ($wpid) = @_;
 
     local $@;
-    eval { my $s = $_; $SIG{$s} = sub { kill($s, $wpid) } } for $self->sig_handlers;
+    eval {
+        my $s = $_;
+        $SIG{$s} = sub { kill($s, $wpid) }
+    } for $self->sig_handlers;
 }
 
 sub clear_sig_handlers {
@@ -143,7 +146,7 @@ sub clear_sig_handlers {
     eval { my $s = $_; $SIG{$s} = 'DEFAULT' } for $self->sig_handlers;
 }
 
-sub pre_exit_hook {}
+sub pre_exit_hook { }
 
 sub run {
     my $self = shift;

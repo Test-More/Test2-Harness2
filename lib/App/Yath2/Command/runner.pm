@@ -10,6 +10,7 @@ use File::Spec;
 # For some reason Filter::Util::Class breaks the STDIN filehandle. This works
 # around that.
 my $FIX_STDIN;
+
 BEGIN {
     require goto::file;
     no strict 'refs';
@@ -109,6 +110,7 @@ sub init { confess(ref($_[0]) . " is not intended to be instantiated") }
 sub run  { confess(ref($_[0]) . " does not implement run()") }
 
 our $RUNNER_PID;
+
 sub generate_run_sub {
     my $class = shift;
     my ($symbol, $argv, $spawn_settings) = @_;
@@ -116,11 +118,11 @@ sub generate_run_sub {
 
     $RUNNER_PID = $$;
     my $runner_pid = $$;
-    my $settings = Test2::Harness2::Settings->new(File::Spec->catfile($dir, 'settings.json'));
+    my $settings   = Test2::Harness2::Settings->new(File::Spec->catfile($dir, 'settings.json'));
 
     my $name = $ENV{NESTED_YATH} ? 'yath-nested-runner' : 'yath-runner';
     $name = $settings->debug->procname_prefix . "-${name}" if $settings->debug->procname_prefix;
-    $0 = $name;
+    $0    = $name;
 
     my $cleanup = $class->cleanup($settings, \%args, $dir);
 
@@ -128,7 +130,7 @@ sub generate_run_sub {
         local $.;
 
         my %orig_sig = %SIG;
-        my $guard = Scope::Guard->new(sub {
+        my $guard    = Scope::Guard->new(sub {
             my %seen;
             for my $sig (@SIGNALS) {
                 next if $seen{$sig}++;
@@ -141,8 +143,9 @@ sub generate_run_sub {
             }
         });
 
-        my $runner = $settings->build(
-            runner => 'Test2::Harness2::Runner',
+        require Test2::Harness2::Runner;
+        my $runner = Test2::Harness2::Runner->new(
+            $settings->runner->all,
 
             %args,
 
@@ -170,7 +173,7 @@ sub generate_run_sub {
 
     my ($action, $job, $stage) = @$jump;
 
-    if($action eq 'respawn') {
+    if ($action eq 'respawn') {
         print "$$ Respawning the runner...\n";
         $cleanup->dismiss(1);
         exec($^X, $settings->harness->script, @{$spawn_settings->harness->orig_argv});
@@ -298,7 +301,7 @@ sub cleanup_process {
 
     $stage->do_pre_launch($job) if $stage;
 
-    $class->final_state($job); # Important final cleanup
+    $class->final_state($job);         # Important final cleanup
 }
 
 sub test2_state {
@@ -440,9 +443,9 @@ sub update_io {
     my $stderr = clone_io(\*STDERR);
 
     my $die = sub {
-        my @caller = caller;
+        my @caller  = caller;
         my @caller2 = caller(1);
-        my $msg = "$_[0] at $caller[1] line $caller[2] ($caller2[1] line $caller2[2]).\n";
+        my $msg     = "$_[0] at $caller[1] line $caller[2] ($caller2[1] line $caller2[2]).\n";
         print $stderr $msg;
         print STDERR $msg;
         POSIX::_exit(127);
@@ -509,7 +512,6 @@ sub preload_list {
 
     return $list;
 }
-
 
 1;
 
