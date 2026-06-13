@@ -19,7 +19,7 @@ unless ($ENV{AUTOMATED_TESTING}) {
         exit    => 0,
         test    => sub {
             run_tests('run');
-            yath(command => 'stop', args => [], exit => 0);
+            yath(command => 'stop', pre => ['--project', $project], args => [], exit => 0);
         }
     );
 }

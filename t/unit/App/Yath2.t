@@ -12,7 +12,7 @@ subtest init => sub {
     my $one = $CLASS->new(argv => [foo => 'bar']);
     isa_ok($one, $CLASS);
 
-    isa_ok($one->settings, 'Test2::Harness2::Settings');
+    isa_ok($one->settings, 'Getopt::Yath::Settings');
 
     is($one->settings->harness->script, clean_path(__FILE__), "Yath script set to this test file");
 
@@ -30,14 +30,16 @@ subtest init => sub {
     $INC{'App/Yath2/Command/GEN.pm'} = __FILE__;
 
     package App::Yath2::Command::NOGEN;
-    use App::Yath2::Options;
+    use Getopt::Yath;
 
-    option 'verbose' => (
-        type   => 'c',
-        prefix => 'foo',
-        short  => 'v',
-    );
-    post sub { $main::POST++ };
+    option_group {group => 'foo', category => 'Foo Options'} => sub {
+        option 'verbose' => (
+            type       => 'Count',
+            short      => 'v',
+            initialize => 0,
+        );
+    };
+    option_post_process sub { $main::POST++ };
 
     use Test2::Harness2::Util::HashBase qw/settings argv/;
     our @ISA = ('App::Yath2::Command');
@@ -74,7 +76,11 @@ subtest generate_run_sub => sub {
     is($two->settings->foo->verbose, 2, "Set verbose with CLI args");
     ok(defined(&main::RUNSUB), "Added the runsub to the provided symbol");
     is(main::RUNSUB(), 123, "runsub does what we expect (runs the command run method) and we get the exit value");
-    is($main::POST, 1, "Ran post-process callbacks");
+
+    # Post-process callbacks now fire during process_argv (once per parse).
+    # Both the GEN parse above and this NOGEN parse run the inherited post,
+    # so it has fired twice by now.
+    is($main::POST, 2, "Ran post-process callbacks (once per command parse)");
 };
 
 subtest run_command => sub {
@@ -126,38 +132,33 @@ subtest load_command => sub {
     );
 };
 
-subtest load_options => sub {
+subtest options => sub {
     local @INC = (@INC, 't/lib');
     my $one = $CLASS->new();
 
-    $one->settings->harness->field(no_scan_plugins => 1);
+    $one->settings->harness->create_option(no_scan_plugins => 1);
 
-    my $options = $one->load_options();
-    is(
-        $options->included,
-        {
-            'App::Yath2::Options::Debug'      => 1,
-            'App::Yath2::Options::PreCommand' => 1,
-        },
-        "Included Debug and PreCommand, but not plugins"
-    );
+    my $options = $one->options();
+    isa_ok($options, ['Getopt::Yath::Instance'], "options() returns a Getopt::Yath::Instance");
 
+    my $groups = $options->option_groups;
+    is($groups->{debug}, 1, "Has the debug option group (from Debug)");
+    is($groups->{harness}, 1, "Has the harness option group (from PreCommand)");
+
+    ref_is($options, $one->options, "Cached options result");
+
+    # With plugin scanning enabled the instance also gains plugin/resource
+    # groups discovered on disk.
     my $two = $CLASS->new();
+    $two->settings->harness->create_option(no_scan_plugins => 0);
 
-    $two->settings->harness->field(no_scan_plugins => 0);
+    my $scanned;
+    my @ignore = warns { $scanned = $two->options() };
+    isa_ok($scanned, ['Getopt::Yath::Instance'], "scanned options() returns a Getopt::Yath::Instance");
 
-    my @ignore = warns { $options = $two->load_options() };
-    like(
-        $options->included,
-        {
-            'App::Yath2::Options::Debug'      => 1,
-            'App::Yath2::Options::PreCommand' => 1,
-            'App::Yath2::Plugin::Options'     => 1,
-        },
-        "Included Debug and PreCommand, as well as the plugin"
-    );
-
-    ref_is($options, $two->load_options, "Cached options result");
+    my $sgroups = $scanned->option_groups;
+    is($sgroups->{debug}, 1, "Scanned: still has the debug group");
+    is($sgroups->{harness}, 1, "Scanned: still has the harness group");
 };
 
 subtest process_argv => sub {
@@ -172,7 +173,7 @@ subtest process_argv => sub {
 
     is($one->command_class, 'App::Yath2::Command::fake', "Set command class");
     is(
-        ${$one->settings->fake},
+        {$one->settings->fake->all},
         {
             x         => 1,
             y         => 1,
@@ -194,70 +195,64 @@ subtest process_argv => sub {
     is($one->_argv, [qw/blah uhg/], "Remaining args");
 
     no warnings 'once';
-    is($main::POST_HOOK, F(), "Did not run hook yet (requires command instance)");
+    # The fake command's option_post_process hook now fires during the
+    # stage-2 command parse inside process_argv.
+    is($main::POST_HOOK, 1, "Ran the command's post-process hook during process_argv");
 };
 
 subtest command_from_argv => sub {
-    my $one = $CLASS->new();
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
+    # _command_from_argv now consumes the state hash produced by the stage-1
+    # global parse (it reads $state->{stop} + $state->{remains}) and returns
+    # ($command_name, \@trailing_args). Leading global/unknown options are
+    # pulled into $state->{skipped} by the parse and are NOT passed along.
+    my $resolve = sub {
+        my ($argv) = @_;
+        my $one = $CLASS->new(argv => [@$argv]);
+        $one->settings->harness->option_ref('persist_file', 1);
+        $one->settings->harness->option_ref('project',      1);
+        $one->settings->harness->option_ref('persist_dir',  1);
+
+        my $state = $one->_process_global_args([@$argv]);
+        my ($cmd, $tail) = $one->_command_from_argv($state);
+        return ($cmd, $tail);
+    };
 
     like(
-        warning { is($one->_command_from_argv, 'test', "Default to test") },
+        warning { my ($cmd) = $resolve->([]); is($cmd, 'test', "Default to test") },
         qr/Defaulting to the 'test' command/,
         "Warning about default"
     );
 
-    my $control = mock $CLASS => ( override => [ find_pfile => sub { 1 } ] );
-    like(
-        warning { is($one->_command_from_argv, 'run', "Default to run if we have a persistence file") },
-        qr/Persistent runner detected, defaulting to the 'run' command/,
-        "Warning about default"
-    );
-    $control = undef;
+    {
+        my $control = mock $CLASS => (override => [find_pfile => sub { 1 }]);
+        like(
+            warning { my ($cmd) = $resolve->([]); is($cmd, 'run', "Default to run if we have a persistence file") },
+            qr/Persistent runner detected, defaulting to the 'run' command/,
+            "Warning about default"
+        );
+    }
 
-    $one = $CLASS->new(argv => ['-f', '--foo', 'test', '-b', '--bar']);
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
-    is($one->_command_from_argv(), "test", "Found 'test' command");
-    is($one->_argv, ['-f', '--foo', '-b', '--bar'], "Command was removed from argv");
+    my ($cmd, $tail);
 
-    $one = $CLASS->new(argv => ['-f', '--foo', 'hfajhdajshfj', '-b', '--bar']);
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
-    is($one->_command_from_argv(), "hfajhdajshfj", "Found 'hfajhdajshfj' command");
-    is($one->_argv, ['-f', '--foo', '-b', '--bar'], "Command was removed from argv");
+    ($cmd, $tail) = $resolve->(['-f', '--foo', 'test', '-b', '--bar']);
+    is($cmd, "test", "Found 'test' command");
+    is($tail, ['-b', '--bar'], "Trailing args after the command are returned");
 
-    $one = $CLASS->new(argv => ['-f', '--foo', '--help', '-b', '--bar']);
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
-    is($one->_command_from_argv(), "help", "Found 'help' command");
-    is($one->_argv, ['-f', '--foo', '-b', '--bar'], "Command was removed from argv");
+    ($cmd, $tail) = $resolve->(['-f', '--foo', 'hfajhdajshfj', '-b', '--bar']);
+    is($cmd, "hfajhdajshfj", "Found 'hfajhdajshfj' command");
+    is($tail, ['-b', '--bar'], "Trailing args after the command are returned");
 
-    $one = $CLASS->new(argv => ['-f', '--foo', '-h', '-b', '--bar']);
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
-    is($one->_command_from_argv(), "help", "Found 'help' command");
-    is($one->_argv, ['-f', '--foo', '-b', '--bar'], "Command was removed from argv");
+    ($cmd, $tail) = $resolve->(['-f', '--foo', '--help', '-b', '--bar']);
+    is($cmd, "help", "Found 'help' command");
 
-    $one = $CLASS->new(argv => ['-f', '--foo', 'foo.jsonl.bz2', '-b', '--bar']);
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
-    my @ignore = warns { is($one->_command_from_argv(), "replay", "Found 'replay' command because we got a log") };
-    is($one->_argv, ['-f', '--foo', 'foo.jsonl.bz2', '-b', '--bar'], "log was not removed from argv");
+    ($cmd, $tail) = $resolve->(['-f', '--foo', '-h', '-b', '--bar']);
+    is($cmd, "help", "Found 'help' command");
 
-    $one = $CLASS->new(argv => ['-f', '--foo', __FILE__, '-b', '--bar']);
-    $one->settings->harness->vivify_field('persist_file');
-    $one->settings->harness->vivify_field('project');
-    $one->settings->harness->vivify_field('persist_dir');
-    @ignore = warns { is($one->_command_from_argv(), "test", "Found 'test' command because we got a path") };
-    is($one->_argv, ['-f', '--foo', __FILE__, '-b', '--bar'], "path was not removed");
+    my @ignore = warns { ($cmd, $tail) = $resolve->(['-f', '--foo', 'foo.jsonl.bz2', '-b', '--bar']) };
+    is($cmd, "replay", "Found 'replay' command because we got a log");
+
+    @ignore = warns { ($cmd, $tail) = $resolve->(['-f', '--foo', __FILE__, '-b', '--bar']) };
+    is($cmd, "test", "Found 'test' command because we got a path");
 };
 
 done_testing;

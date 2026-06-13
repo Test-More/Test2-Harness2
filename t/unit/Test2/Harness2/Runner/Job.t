@@ -4,7 +4,7 @@ use Test2::V0 -target => 'Test2::Harness2::Runner::Job';
 
 use File::Temp qw/tempdir/;
 use File::Spec;
-use Test2::Harness2::Settings;
+use Getopt::Yath::Settings;
 
 my $tmp = tempdir(CLEANUP => 1);
 
@@ -25,17 +25,13 @@ my $tmp = tempdir(CLEANUP => 1);
 sub make_settings {
     my (%overrides) = @_;
 
-    my $settings = Test2::Harness2::Settings->new();
-    $settings->define_prefix('debug');
-    $settings->debug->vivify_field('dummy');
-    $settings->debug->field(dummy => $overrides{dummy} // 0);
+    my $settings = Getopt::Yath::Settings->new();
 
-    $settings->define_prefix('runner');
-    for my $field (qw/fail_on_resource_skip nytprof/) {
-        $settings->runner->vivify_field($field);
-    }
-    $settings->runner->field(fail_on_resource_skip => $overrides{fail_on_resource_skip} // 0);
-    $settings->runner->field(nytprof => 0);
+    $settings->group('debug', 1)->create_option(dummy => $overrides{dummy} // 0);
+
+    my $runner = $settings->group('runner', 1);
+    $runner->create_option(fail_on_resource_skip => $overrides{fail_on_resource_skip} // 0);
+    $runner->create_option(nytprof => 0);
 
     return $settings;
 }

@@ -123,11 +123,11 @@ index a7175683..7646fa7b 100644
  use Test2::Harness2::Util::IPC qw/run_cmd/;
  use parent 'App::Yath2::Plugin';
  
- use App::Yath2::Options;
- 
- option_group {prefix => 'git', category => "Git Options"} => sub {
+ use Getopt::Yath;
+
+ option_group {group => 'git', prefix => 'git', category => "Git Options"} => sub {
      option change_base => (
-         type => 's',
+         type => 'Scalar',
          description => "Find files changed by all commits in the current branch from most recent stopping when a commit is found that is also present in the history of 
 the branch/commit specified as the change base.",
          long_examples  => [" master", " HEAD^", " df22abe4"],
