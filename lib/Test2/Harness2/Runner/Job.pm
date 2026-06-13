@@ -15,7 +15,7 @@ use Time::HiRes qw/time/;
 use File::Spec();
 use File::Temp();
 
-use Test2::Harness2::Util qw/fqmod clean_path write_file_atomic write_file mod2file open_file parse_exit process_includes chmod_tmp/;
+use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp/;
 use Test2::Harness2::IPC;
 
 use parent 'Test2::Harness2::IPC::Process';
@@ -23,14 +23,12 @@ use Test2::Harness2::Util::HashBase(
     qw{ <task <runner <run <settings }, # required
     qw{
         <fork_callback
-        <last_output_size
-        +output_changed
 
         +verbose
 
         +via
 
-        +run_dir +job_dir +tmp_dir +event_dir
+        +run_dir +job_dir +tmp_dir
 
         +ch_dir +unsafe_inc
 
@@ -38,7 +36,6 @@ use Test2::Harness2::Util::HashBase(
 
         +includes +runner_includes
         +switches
-        +use_stream
         +cli_includes
         +cli_options
 
@@ -58,8 +55,6 @@ use Test2::Harness2::Util::HashBase(
         +event_timeout +post_exit_timeout +use_timeout
 
         +switches_from_env
-
-        +et_file +pet_file
 
         +min_slots
         +max_slots
@@ -82,8 +77,6 @@ sub init {
 
     my $task = $self->{+TASK} or croak "'task' is a required attribute";
 
-    delete $self->{+LAST_OUTPUT_SIZE};
-
     confess "Task does not have a job ID" unless $task->{job_id};
     confess "Task does not have a file"   unless $task->{file};
 }
@@ -95,7 +88,6 @@ sub prepare_dir {
 
     $self->job_dir();
     $self->tmp_dir();
-    $self->event_dir();
 }
 
 sub via {
@@ -239,17 +231,12 @@ my %JSON_SKIP = (
     CLI_OPTIONS()      => 1,
     ERR_FILE()         => 1,
     EVENTS_FILE()      => 1,
-    ET_FILE()          => 1,
-    EVENT_DIR()        => 1,
     EXIT()             => 1,
     EXIT_TIME()        => 1,
     IN_FILE()          => 1,
     JOB_DIR()          => 1,
-    LAST_OUTPUT_SIZE() => 1,
     OUT_FILE()         => 1,
     BAIL_FILE()        => 1,
-    OUTPUT_CHANGED()   => 1,
-    PET_FILE()         => 1,
     RUN_DIR()          => 1,
     TMP_DIR()          => 1,
 );
@@ -283,10 +270,8 @@ sub rel_file  { File::Spec->abs2rel($_[0]->file) }
 sub file      { $_[0]->{+FILE}      //= clean_path($_[0]->{+TASK}->{file}, 0) }
 sub err_file  { $_[0]->{+ERR_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stderr')) }
 sub out_file  { $_[0]->{+OUT_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stdout')) }
-sub bail_file { $_[0]->{+BAIL_FILE} //= clean_path(File::Spec->catfile($_[0]->event_dir, 'bail')) }
+sub bail_file { $_[0]->{+BAIL_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'bail')) }
 sub events_file { $_[0]->{+EVENTS_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'events.jsonl.zst')) }
-sub et_file   { $_[0]->{+ET_FILE}   //= clean_path(File::Spec->catfile($_[0]->job_dir, 'event_timeout')) }
-sub pet_file  { $_[0]->{+PET_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'post_exit_timeout')) }
 sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+RUNNER}->dir, $_[0]->{+RUN}->run_id)) }
 
 sub bailed_out {
@@ -314,30 +299,6 @@ sub bailed_out {
     return "";
 }
 
-sub output_size {
-    my $self = shift;
-
-    my $size = 0;
-
-    $size += -s $self->err_file || 0;
-    $size += -s $self->out_file || 0;
-
-    return $self->{+LAST_OUTPUT_SIZE} = $size;
-}
-
-sub output_changed {
-    my $self = shift;
-
-    my $last = $self->{+LAST_OUTPUT_SIZE};
-    my $size = $self->output_size();
-
-    # Output changed, update time
-    return $self->{+OUTPUT_CHANGED} = time() if $last && $size != $last;
-
-    # Return the last recorded time, if there is no previously recorded time then the record starts now
-    return $self->{+OUTPUT_CHANGED} //= time();
-}
-
 sub verbose { $_[0]->{+VERBOSE} //= $_[0]->{+TASK}->{verbose} // 0 }
 sub is_try  { $_[0]->{+IS_TRY}  //= $_[0]->{+TASK}->{is_try}  // 0 }
 sub ch_dir  { $_[0]->{+CH_DIR}  //= $_[0]->{+TASK}->{ch_dir}  // '' }
@@ -349,7 +310,6 @@ sub io_events { $_[0]->{+IO_EVENTS} //= $_[0]->_fallback(io_events => 1, qw/task
 
 sub smoke             { $_[0]->{+SMOKE}             //= $_[0]->_fallback(smoke             => 0,     qw/task/) }
 sub retry_isolated    { $_[0]->{+RETRY_ISOLATED}    //= $_[0]->_fallback(retry_isolated    => 0,     qw/task run/) }
-sub use_stream        { $_[0]->{+USE_STREAM}        //= $_[0]->_fallback(use_stream        => 1,     qw/task run/) }
 sub use_timeout       { $_[0]->{+USE_TIMEOUT}       //= $_[0]->_fallback(use_timeout       => 1,     qw/task/) }
 sub retry             { $_[0]->{+RETRY}             //= $_[0]->_fallback(retry             => undef, qw/task run/) }
 sub event_timeout     { $_[0]->{+EVENT_TIMEOUT}     //= $_[0]->_fallback(event_timeout     => undef, qw/task runner/) }
@@ -443,18 +403,6 @@ sub tmp_dir {
     chmod_tmp($tmp_dir);
 
     $self->{+TMP_DIR} = clean_path($tmp_dir);
-}
-
-sub make_event_dir { $_[0]->event_dir }
-sub event_dir {
-    my $self = shift;
-    return $self->{+EVENT_DIR} if $self->{+EVENT_DIR};
-
-    my $events_dir = File::Spec->catdir($self->job_dir, 'events');
-    unless (-d $events_dir) {
-        mkdir($events_dir) or die "$$ $0 Could not create events directory '$events_dir': $!";
-    }
-    $self->{+EVENT_DIR} = $events_dir;
 }
 
 sub in_file {
@@ -714,18 +662,6 @@ File to which all STDOUT for the job will be written.
 
 File to which all STDERR for the job will be written.
 
-=item $path = $job->et_file
-
-File to which event timeout notifications will be written.
-
-=item $path = $job->pet_file
-
-File to which post exit timeout events will be written.
-
-=item $path = $job->event_dir
-
-Directory to which L<Test2::Formatter::Stream> events will be written.
-
 =item $time = $job->event_timeout
 
 Event timeout specification, if any, first from test queue item, then from
@@ -852,10 +788,6 @@ True if '.' should be added to C<@INC>.
 =item $bool = $job->use_fork
 
 True if this job should be launched via fork.
-
-=item $bool = $job->use_stream
-
-True if this job should use L<Test2::Formatter::Stream>.
 
 =item $bool = $job->use_timeout
 

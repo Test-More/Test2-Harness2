@@ -352,15 +352,10 @@ sub test2_state {
 
     # Under a Test2-Collector collector the collector selects its own stream
     # formatter (T2_FORMATTER=Collector, set in the collector child before this
-    # runs) and folds in io-events itself; the harness must not install
-    # Test2::Formatter::Stream or the IOEvents plugin here.
+    # runs) and folds in io-events itself; the harness must not install the
+    # IOEvents plugin here. Real test jobs are always collected now, so there is
+    # no non-collected stream-formatter fallback.
     my $collected = ($ENV{T2_FORMATTER} // '') eq 'Collector';
-
-    if (!$collected && $job->use_stream) {
-        $ENV{T2_FORMATTER} = 'Stream';
-        require Test2::Formatter::Stream;
-        Test2::Formatter::Stream->import(dir => $job->event_dir, job_id => $job->job_id);
-    }
 
     if ($job->event_uuids) {
         require Test2::Plugin::UUID;
