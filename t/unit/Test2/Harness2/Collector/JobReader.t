@@ -83,4 +83,29 @@ subtest failing_job => sub {
     is($fend->facet_data->{harness_job_end}{fail}, 1, "job_end fail=1 when final_state pass=0");
 };
 
+# skip_all: Test2-Collector's plan facet carries {count=>0, skip=>1 (bool),
+# details=>'reason'}. job_end must surface the DETAILS as the skip reason
+# (not the boolean flag), and not mark it failed.
+subtest skip_all_job => sub {
+    my $sdir  = tempdir(CLEANUP => 1);
+    my $sfile = "$sdir/events.jsonl.zst";
+
+    my $srec = Test2::Collector::Recorder::Zstd->new(file => $sfile);
+    $srec->record_event($ev->(plan => {count => 0, skip => 1, details => 'no thanks'}));
+    $srec->record_event($ev->(harness_final_state => {pass => 1, fail_count => 0, pass_count => 0, assertion_count => 0, exit => 0, plan => {count => 0, skip => 1, details => 'no thanks'}}));
+    $srec->record_event($ev->(harness_process_exit => {all => 0, err => 0, sig => 0, dmp => 0, stamp => 789}));
+    $srec->finalize;
+
+    my $sreader = Test2::Harness2::Collector::JobReader->new(
+        job_id => 'JOB-3', job_try => 0, run_id => 'RUN-1', events_file => $sfile, file => "t/skip.t",
+    );
+
+    my @se;
+    for (1 .. 5) { push @se => $sreader->poll(1000); last if $sreader->done }
+
+    my ($send) = grep { $_->facet_data->{harness_job_end} } @se;
+    is($send->facet_data->{harness_job_end}{skip}, 'no thanks', "skip reason is plan details, not the boolean flag");
+    is($send->facet_data->{harness_job_end}{fail}, 0,           "skip_all is not a failure");
+};
+
 done_testing;

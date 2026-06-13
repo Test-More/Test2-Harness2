@@ -123,12 +123,26 @@ sub _job_end_facet {
     my $self = shift;
     my ($fs) = @_;
     my $file = $self->{+FILE};
+
+    # A skip-all test declares a plan with a zero count (e.g. "1..0 # SKIP
+    # reason"). Test2-Collector carries the whole plan facet through to its
+    # final-state verdict, so derive the skip reason here the way the 1.0
+    # auditor did. The renderer renders SKIPPED off this field.
+    # Test2-Collector's plan facet uses `skip` as a boolean flag and carries the
+    # human-readable reason in `details` (matching the 1.0 Auditor::Watcher).
+    my $skip;
+    if (my $plan = $fs->{plan}) {
+        $skip = $plan->{details} || "No reason given"
+            unless $plan->{count};
+    }
+
     return {
         file     => $file,
         rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
         abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
         retry    => 0,
         fail     => $fs->{pass} ? 0 : 1,
+        skip     => $skip,
         stamp    => $fs->{stamp},
         times    => $fs->{times},
     };
