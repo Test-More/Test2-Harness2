@@ -64,6 +64,7 @@ use Test2::Harness2::Util::HashBase(
         <signal
 
         +last_timeout_check
+        +timeout_signaled
         +dispatch_lock_file
         +can_stage
         <tmp_dir
@@ -159,40 +160,41 @@ sub check_timeouts {
     # Check only once per second, that is as granular as we get. Also the check is not cheep.
     return if $self->{+LAST_TIMEOUT_CHECK} && $now < (1 + $self->{+LAST_TIMEOUT_CHECK});
 
+    # The per-test silence and lifetime timeouts are now enforced by the
+    # Test2-Collector collector parent itself (via collect(silence_timeout =>
+    # ..., lifetime_timeout => ...)): it kills the test child's process group,
+    # records the timeout in events.jsonl.zst, and exits. The runner no longer
+    # tracks per-job output activity or writes event_timeout/post_exit_timeout
+    # marker files.
+    #
+    # What remains here is a backstop for a collector PARENT that should have
+    # exited but has not: once a job process has been reaped (it is in WAITING)
+    # we give it a grace window, then escalate TERM -> KILL so a wedged
+    # collector cannot hang the run.
+    my $grace = $self->{+POST_EXIT_TIMEOUT} || 60;
+
+    my $signaled = $self->{+TIMEOUT_SIGNALED} //= {};
+
+    # Drop entries for pids that are no longer live, so a future job that reuses
+    # a pid does not inherit a stale "already TERMed, escalate to KILL" flag.
+    delete $signaled->{$_} for grep { !$self->{+PROCS}->{$_} } keys %$signaled;
+
     for my $pid (keys %{$self->{+PROCS}}) {
         my $job = $self->{+PROCS}->{$pid};
         next unless $job->isa('Test2::Harness2::Runner::Job');
-        next unless $job->use_timeout;
 
-        my $et  = $job->event_timeout     // $self->{+EVENT_TIMEOUT};
-        my $pet = $job->post_exit_timeout // $self->{+POST_EXIT_TIMEOUT};
+        my $waiting = $self->{+WAITING}->{$pid} or next;
+        my $since   = $waiting->[1] // $now;
+        next unless ($now - $since) > $grace;
 
-        next unless $et || $pet;
-
-        my $changed = $job->output_changed();
-        my $delta   = $now - $changed;
-
-        # Event timout if we are checking for one, and if the delta is larger than the timeout.
-        my $e_to = $et && $delta > $et;
-
-        # Post-Exit timeout if we are checking for one, the process has exited (we are waiting) and the delta is larger than the timeout.
-        my $pe_to = $pet && $self->{+WAITING}->{$pid} && $delta > $pet;
-
-        next unless $e_to || $pe_to;
-
-        my $kill = -f $job->et_file || -f $job->pet_file;
-
-        write_file_atomic($job->et_file,  "$now $delta") if $e_to  && !-f $job->et_file;
-        write_file_atomic($job->pet_file, "$now $delta") if $pe_to && !-f $job->pet_file;
+        my $kill = $signaled->{$pid}++;
 
         my $sigmap = $self->SIG_MAP;
         my $sig = $kill ? $sigmap->{'KILL'} : $sigmap->{'TERM'};
-
         $sig = "-$sig" if $self->USE_P_GROUPS;
 
-        print STDERR "$$ $0 " . $job->file . " did not respond to SIGTERM, sending SIGKILL to $pid...\n" if $kill;
+        print STDERR "$$ $0 " . $job->file . " collector process-group did not fully exit after the collector was reaped, sending " . ($kill ? 'SIGKILL' : 'SIGTERM') . " to $pid...\n";
 
-        # storing the jobid we had to stop
         $self->{run_reached_timeout} //= {};
         $self->{run_reached_timeout}->{$job->task->{job_id}} = $pid;
 

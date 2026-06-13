@@ -7,6 +7,7 @@ our $VERSION = '2.000000';
 use Carp qw/confess croak/;
 use Config qw/%Config/;
 use List::Util qw/min/;
+use POSIX();
 use Scalar::Util qw/weaken blessed/;
 use Test2::Util qw/CAN_REALLY_FORK/;
 use Time::HiRes qw/time/;
@@ -46,7 +47,7 @@ use Test2::Harness2::Util::HashBase(
 
         +args +file +run_file
 
-        +out_file +err_file +in_file +bail_file
+        +out_file +err_file +in_file +bail_file +events_file
 
         +load +load_import
 
@@ -116,58 +117,107 @@ sub via {
 sub spawn_params {
     my $self = shift;
 
+    # The forked job child becomes the Test2-Collector collector parent. The
+    # collector forks the actual test child internally (exec, here), captures
+    # its stdout/stderr/exit, and records the full event stream (events +
+    # transitions + final_state + process_exit) into events.jsonl.zst. There
+    # are therefore no separate stdout/stderr/exit files: the collector owns
+    # all of that.
+    # NOTE: this command coderef never returns -- it runs the whole collector
+    # and POSIX::_exit()s. That only works under the fork-exec run_cmd
+    # (_run_cmd_fork), which invokes the coderef in the already-forked child.
+    # The harness only supports fork-capable systems (Makefile.PL dies "OS
+    # unsupported" without d_fork), so the non-fork _run_cmd_spwn path (which
+    # would run this in the parent) is never reached. chdir and env are applied
+    # inside run_under_collector (collect's chdir/child_env); run_cmd's own
+    # chdir/env handling never runs given the never-returning coderef, so they
+    # are intentionally NOT returned here.
+    return {
+        command => sub {
+            my $info = $self->run_under_collector($self->collector_target);
+            my $exit = ($info && $info->{collector} && $info->{collector}{ok}) ? 0 : 255;
+            POSIX::_exit($exit);
+        },
+    };
+}
+
+# Build the exec target (and any skip/fail short-circuit) for the spawn path.
+# The spawn path always exec()s a perl (or binary) command inside the
+# collector's child; the preload/fork path runs the test in-process and wraps
+# its own run_sub (see App::Yath2::Command::runner), so it does not come here.
+sub collector_target {
+    my $self = shift;
+
     my $task = $self->{+TASK};
 
     my $skip;
     my $resource_skip_is_fail;
     $skip = 'dummy mode' if $self->{+SETTINGS}->debug->dummy;
-    if ($self->{+TASK}->{resource_skip}) {
-        my $msg = "Some resources are not available: " . join(', ' => @{$self->{+TASK}->{resource_skip}});
+    if ($task->{resource_skip}) {
+        my $msg = "Some resources are not available: " . join(', ' => @{$task->{resource_skip}});
         $skip = $msg;
         $resource_skip_is_fail = 1 if $self->{+SETTINGS}->runner->fail_on_resource_skip;
     }
 
-    my $command;
-    if (!$skip && $task->{binary} || $task->{non_perl}) {
-        my $file = $self->ch_dir ? $self->file : $self->rel_file;
-        $file = clean_path($file);
-        $command = [$file, $self->args];
-        unshift @$command => $^X if $task->{non_perl} && !(-x $file)  && !$task->{binary};
+    if (!$skip && ($task->{binary} || $task->{non_perl})) {
+        my $file = clean_path($self->ch_dir ? $self->file : $self->rel_file);
+        my @cmd  = ($file, $self->args);
+        unshift @cmd => $^X if $task->{non_perl} && !(-x $file) && !$task->{binary};
+        return (exec => \@cmd);
     }
-    else {
-        my @skip_or_fail;
-        if ($skip && $resource_skip_is_fail) {
-            @skip_or_fail = ('-e', "print \"1..1\\nnot ok 1 - $skip\\n\"");
-        }
-        elsif ($skip) {
-            @skip_or_fail = ('-e', "print \"1..0 # SKIP $skip\"");
-        }
 
-        $command = [
+    my @skip_or_fail;
+    if ($skip && $resource_skip_is_fail) {
+        @skip_or_fail = ('-e', "print \"1..1\\nnot ok 1 - $skip\\n\"");
+    }
+    elsif ($skip) {
+        @skip_or_fail = ('-e', "print \"1..0 # SKIP $skip\"");
+    }
+
+    return (
+        exec => [
             $^X,
             $self->cli_includes,
             $self->{+SETTINGS}->runner->nytprof ? ('-d:NYTProf') : (),
             $self->switches,
             $self->cli_options,
 
-            @skip_or_fail ? @skip_or_fail : (sub { $self->run_file }),
+            @skip_or_fail ? @skip_or_fail : ($self->run_file),
 
             $self->args,
-        ];
-    }
+        ],
+    );
+}
 
-    my $out_fh = open_file($self->out_file, '>');
-    my $err_fh = open_file($self->err_file, '>');
-    my $in_fh  = open_file($self->in_file,  '<');
+# Runs in the forked job child (spawn path) or as the collector wrapper for the
+# preload/fork path. Becomes the Test2-Collector collector parent: collect()
+# forks the actual test child (exec for the spawn path, or a run_sub the
+# preload path supplies) and records the full stream into events.jsonl.zst.
+sub run_under_collector {
+    my $self = shift;
+    my (@target) = @_;
 
-    return {
-        command => $command,
-        stdin   => $in_fh,
-        stdout  => $out_fh,
-        stderr  => $err_fh,
-        chdir   => $self->ch_dir(),
-        env     => $self->env_vars(),
-    };
+    require Test2::Collector;
+    require Test2::Collector::Recorder::Zstd;
+
+    my $in_file = $self->in_file;
+
+    my %common = (
+        name               => $self->rel_file,
+        is_test            => 1,
+        run_uuid           => $self->run->run_id,
+        try                => $self->is_try,
+        record_transitions => 1,
+        recorder           => Test2::Collector::Recorder::Zstd->new(file => $self->events_file),
+        child_env          => $self->env_vars,
+        chdir              => ($self->ch_dir || undef),
+        io_events          => ($self->io_events ? 1 : 0),
+        ($in_file                                          ? (stdin            => $in_file)               : ()),
+        ($self->use_timeout && $self->event_timeout)       ? (silence_timeout  => $self->event_timeout)    : (),
+        ($self->use_timeout && $self->post_exit_timeout)   ? (lifetime_timeout => $self->post_exit_timeout) : (),
+    );
+
+    return Test2::Collector::collect(%common, @target);
 }
 
 sub switches_from_env {
@@ -188,6 +238,7 @@ my %JSON_SKIP = (
     CLI_INCLUDES()     => 1,
     CLI_OPTIONS()      => 1,
     ERR_FILE()         => 1,
+    EVENTS_FILE()      => 1,
     ET_FILE()          => 1,
     EVENT_DIR()        => 1,
     EXIT()             => 1,
@@ -233,6 +284,7 @@ sub file      { $_[0]->{+FILE}      //= clean_path($_[0]->{+TASK}->{file}, 0) }
 sub err_file  { $_[0]->{+ERR_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stderr')) }
 sub out_file  { $_[0]->{+OUT_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stdout')) }
 sub bail_file { $_[0]->{+BAIL_FILE} //= clean_path(File::Spec->catfile($_[0]->event_dir, 'bail')) }
+sub events_file { $_[0]->{+EVENTS_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'events.jsonl.zst')) }
 sub et_file   { $_[0]->{+ET_FILE}   //= clean_path(File::Spec->catfile($_[0]->job_dir, 'event_timeout')) }
 sub pet_file  { $_[0]->{+PET_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'post_exit_timeout')) }
 sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+RUNNER}->dir, $_[0]->{+RUN}->run_id)) }
@@ -460,14 +512,11 @@ sub includes {
 sub cli_options {
     my $self = shift;
 
-    my $event_dir = $self->event_dir;
-    my $job_id = $self->job_id;
-
+    # Test2::Formatter::Collector is selected by Test2::Collector in the child
+    # (T2_FORMATTER=Collector); io-events is handled via collect(io_events=>).
     return (
-        $self->use_stream  ? ("-MTest2::Formatter::Stream=dir,$event_dir,job_id,$job_id") : (),
         $self->event_uuids ? ('-MTest2::Plugin::UUID')                     : (),
         $self->mem_usage   ? ('-MTest2::Plugin::MemUsage')                 : (),
-        $self->io_events   ? ('-MTest2::Plugin::IOEvents')                 : (),
         (map { @{$_->[1]} ? "-M$_->[0]=" . join(',' => @{$_->[1]}) : "-M$_->[0]" } $self->load_import),
         (map { "-m$_" } $self->load),
     );
@@ -534,7 +583,8 @@ sub env_vars {
         $from_run  ? (%$from_run)  : (),
         $from_task ? (%$from_task) : (),
 
-        $self->use_stream ? (T2_FORMATTER => 'Stream', T2_STREAM_DIR => $self->event_dir, T2_STREAM_JOB_ID => $self->job_id) : (),
+        # T2_FORMATTER is set to 'Collector' by Test2::Collector inside the test
+        # child; the harness no longer selects Test2::Formatter::Stream here.
 
         $self->{+SETTINGS}->runner->nytprof ? (NYTPROF => "addpid=1:start=begin") : (),
 
@@ -586,13 +636,10 @@ sub set_exit {
     my $self = shift;
     my ($runner, $exit, $time, @args) = @_;
 
+    # Runner bookkeeping only. The job's exit status is recorded by the
+    # collector as a harness_process_exit event in events.jsonl.zst; the
+    # harness no longer writes a separate 'exit' file.
     $self->SUPER::set_exit(@_);
-
-    my $file = File::Spec->catfile($self->job_dir, 'exit');
-
-    my $e = parse_exit($exit);
-
-    write_file_atomic($file, join(" " => $exit, $e->{err}, $e->{sig}, $e->{dmp}, $time, @args));
 }
 
 1;
