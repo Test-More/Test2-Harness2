@@ -536,8 +536,10 @@ sub populate_queue {
 
     my $run = $self->build_run();
     $self->{+RUN_ID} = $run->run_id;
-    my $settings = $self->settings;
-    my $finder   = ($settings->finder->finder)->new($settings->finder->all, $self->finder_args);
+    my $settings     = $self->settings;
+    my $finder_class = $settings->finder->finder;
+    require(mod2file($finder_class));
+    my $finder = $finder_class->new($settings->finder->all, $self->finder_args);
 
     my $state       = $self->state;
     my $tasks_queue = $self->tasks_queue;

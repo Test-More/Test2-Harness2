@@ -12,7 +12,7 @@ use List::Util qw/first/;
 
 use Test2::Harness2::Util qw/mod2file/;
 
-use Test2::Harness2::Settings;
+use Getopt::Yath::Settings;
 use Test2::Harness2::Runner::Constants;
 
 use Test2::Harness2::Runner::Run;
@@ -94,7 +94,7 @@ sub init {
 
 sub settings {
     my $self = shift;
-    return $self->{+SETTINGS} //= Test2::Harness2::Settings->new(File::Spec->catfile($self->{+WORKDIR}, 'settings.json'));
+    return $self->{+SETTINGS} //= Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($self->{+WORKDIR}, 'settings.json'));
 }
 
 sub run {

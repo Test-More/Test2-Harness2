@@ -8,6 +8,8 @@ use File::Spec;
 
 use App::Yath2::Util qw/isolate_stdout/;
 
+use Getopt::Yath::Settings;
+
 use Test2::Harness2::Util::JSON qw/decode_json/;
 use Test2::Harness2::Util qw/mod2file/;
 
@@ -30,7 +32,7 @@ sub run {
 
     my $fh = isolate_stdout();
 
-    my $settings = Test2::Harness2::Settings->new(File::Spec->catfile($dir, 'settings.json'));
+    my $settings = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
 
     require(mod2file($collector_class));
 

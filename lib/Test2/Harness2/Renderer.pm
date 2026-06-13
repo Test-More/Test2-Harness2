@@ -38,7 +38,7 @@ These are set at construction time and cannot be changed.
 
 =item $settings = $renderer->settings
 
-Get the L<Test2::Harness2::Settings> reference.
+Get the L<Getopt::Yath::Settings> reference.
 
 =item $int = $renderer->verbose
 
@@ -78,7 +78,7 @@ not exit or throw any exceptions here please.
 
 =item settings => $settings
 
-Get the L<Test2::Harness2::Settings> reference.
+Get the L<Getopt::Yath::Settings> reference.
 
 =item pass => $bool
 

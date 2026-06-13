@@ -765,7 +765,7 @@ Search path includes provided directly by the runner.
 
 =item $settings = $job->settings
 
-The L<Test2::Harness2::Settings> instance.
+The L<Getopt::Yath::Settings> instance.
 
 =item $bool = $job->smoke
 

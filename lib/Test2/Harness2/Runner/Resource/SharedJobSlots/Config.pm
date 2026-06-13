@@ -38,7 +38,7 @@ sub find {
     my $config_file = delete $opts{config_file};
 
     unless ($config_file) {
-        $base_name //= ($settings && $settings->check_prefix('runner')) ? $settings->runner->shared_jobs_config : '.sharedjobslots.yml';
+        $base_name //= ($settings && $settings->check_group('runner')) ? $settings->runner->shared_jobs_config : '.sharedjobslots.yml';
         $config_file = ($base_name =~ m{(/|\\)} || -e $base_name) ? $base_name : find_in_updir($base_name);
     }
 

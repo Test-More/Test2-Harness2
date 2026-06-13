@@ -630,7 +630,7 @@ cases the runner module is exposed via a callback or a plugin affordance.
 
 =head2 FROM SETTINGS
 
-These are attributesd with values set from the L<Test2::Harness2::Settings>
+These are attributesd with values set from the L<Getopt::Yath::Settings>
 instance created from command line arguments.
 
 See L<App::Yath2::Options::Runner> for the most up to date documentation on
@@ -676,7 +676,7 @@ Path to the working directory.
 
 =item $settings = $runner->settings
 
-The L<App::Yath2::Settings> instance.
+The L<Getopt::Yath::Settings> instance.
 
 =item $coderef = $runner->fork_job_callback
 

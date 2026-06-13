@@ -24,15 +24,15 @@ use Test2::Harness2::Util::HashBase qw{
 
     <no_long <only_long
 
-    <rerun <rerun_modes <rerun_plugin
+    <rerun <rerun_modes <rerun_plugins
 
     search <extensions
 
     <multi_project
 
     <changed <changed_only <changes_plugin <show_changed_files <changes_diff
-    <changes_filter_file <changes_filter_pattern
-    <changes_exclude_file <changes_exclude_pattern
+    <changes_filter_files <changes_filter_patterns
+    <changes_exclude_files <changes_exclude_patterns
     <changes_include_whitespace <changes_exclude_nonsub
     <changes_exclude_loads <changes_exclude_opens
 };
@@ -44,7 +44,7 @@ sub init {
 
     $self->{+EXCLUDE_FILES} = { map {( $_ => 1 )} @{$self->{+EXCLUDE_FILES}} } if ref($self->{+EXCLUDE_FILES}) eq 'ARRAY';
 
-    if (my $plugins = $self->{+RERUN_PLUGIN}) {
+    if (my $plugins = $self->{+RERUN_PLUGINS}) {
         for (@$plugins) {
             $_ = "App::Yath2::Plugin::$_" unless s/^\+// or m/^(App::Yath2|Test2::Harness2)::Plugin::/;
             my $file = mod2file($_);
@@ -241,11 +241,11 @@ sub find_changes {
         }
     }
 
-    my $filter_patterns = @{$self->{+CHANGES_FILTER_PATTERN}} ? $self->{+CHANGES_FILTER_PATTERN} : undef;
-    my $filter_files    = @{$self->{+CHANGES_FILTER_FILE}} ? {map { $_ => 1 } @{$self->{+CHANGES_FILTER_FILE}}} : undef;
+    my $filter_patterns = @{$self->{+CHANGES_FILTER_PATTERNS}} ? $self->{+CHANGES_FILTER_PATTERNS} : undef;
+    my $filter_files    = @{$self->{+CHANGES_FILTER_FILES}} ? {map { $_ => 1 } @{$self->{+CHANGES_FILTER_FILES}}} : undef;
 
-    my $exclude_patterns = @{$self->{+CHANGES_EXCLUDE_PATTERN}} ? $self->{+CHANGES_EXCLUDE_PATTERN} : undef;
-    my $exclude_files    = @{$self->{+CHANGES_EXCLUDE_FILE}} ? {map { $_ => 1 } @{$self->{+CHANGES_EXCLUDE_FILE}}} : undef;
+    my $exclude_patterns = @{$self->{+CHANGES_EXCLUDE_PATTERNS}} ? $self->{+CHANGES_EXCLUDE_PATTERNS} : undef;
+    my $exclude_files    = @{$self->{+CHANGES_EXCLUDE_FILES}} ? {map { $_ => 1 } @{$self->{+CHANGES_EXCLUDE_FILES}}} : undef;
 
     my %changed_map;
     for my $change (@listed_changes, @found_changes) {
@@ -286,7 +286,7 @@ sub add_rerun_to_search {
     my $mode_hash = { map {$_ => 1} @$modes };
 
     my ($grabbed, $data);
-    for my $p ($self->get_capable_plugins(grab_rerun => [@{$self->{+RERUN_PLUGIN} // []}, @$plugins])) {
+    for my $p ($self->get_capable_plugins(grab_rerun => [@{$self->{+RERUN_PLUGINS} // []}, @$plugins])) {
         ($grabbed, $data) = $p->grab_rerun($rerun, modes => $modes, mode_hash => $mode_hash, settings => $settings);
         next unless $grabbed;
 
@@ -575,7 +575,7 @@ sub find_project_files {
     $plugins //= [];
 
     my $default_search = [@{$self->default_search}];
-    push @$default_search => @{$self->default_at_search} if $settings->check_prefix('run') && $settings->run->author_testing;
+    push @$default_search => @{$self->default_at_search} if $settings->check_group('run') && $settings->run->author_testing;
 
     $_->munge_search($input, $default_search, $settings) for @$plugins;
 
@@ -808,7 +808,7 @@ run.
 $plugins is a list of plugins, some may be class names, others may be
 instances.
 
-$settings is an L<Test2::Harness2::Settings> instance.
+$settings is an L<Getopt::Yath::Settings> instance.
 
 B<Note:> In many cases it is better to override C<find_project_files()> in your
 subclasses.
@@ -861,7 +861,7 @@ once per project directory.
 $plugins is a list of plugins, some may be class names, others may be
 instances.
 
-$settings is an L<Test2::Harness2::Settings> instance.
+$settings is an L<Getopt::Yath::Settings> instance.
 
 $search is an arrayref of search paths.
 

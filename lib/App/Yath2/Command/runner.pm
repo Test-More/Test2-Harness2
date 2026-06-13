@@ -84,6 +84,8 @@ use Test2::Util qw/clone_io/;
 
 use Long::Jump qw/setjump longjump/;
 
+use Getopt::Yath::Settings;
+
 use Test2::Harness2::Util qw/mod2file write_file_atomic open_file clean_path process_includes/;
 
 use Test2::Harness2::Util::IPC qw/swap_io/;
@@ -118,7 +120,7 @@ sub generate_run_sub {
 
     $RUNNER_PID = $$;
     my $runner_pid = $$;
-    my $settings   = Test2::Harness2::Settings->new(File::Spec->catfile($dir, 'settings.json'));
+    my $settings   = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
 
     my $name = $ENV{NESTED_YATH} ? 'yath-nested-runner' : 'yath-runner';
     $name = $settings->debug->procname_prefix . "-${name}" if $settings->debug->procname_prefix;

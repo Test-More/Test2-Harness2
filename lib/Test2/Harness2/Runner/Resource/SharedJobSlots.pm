@@ -43,7 +43,7 @@ sub init {
         unless $sconf;
 
     my $runner_id;
-    $runner_id = $self->{+RUNNER_ID} //= $settings->runner->runner_id if $settings->check_prefix('runner');
+    $runner_id = $self->{+RUNNER_ID} //= $settings->runner->runner_id if $settings->check_group('runner');
     my $runner_pid = $self->{+RUNNER_PID} //= $Test2::Harness2::Runner::RUNNER_PID // $App::Yath2::Command::runner::RUNNER_PID;
 
     my $prefix = $settings->debug->procname_prefix // '';

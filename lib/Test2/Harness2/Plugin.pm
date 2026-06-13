@@ -2,6 +2,8 @@ package Test2::Harness2::Plugin;
 use strict;
 use warnings;
 
+use Scalar::Util qw/blessed/;
+
 our $VERSION = '2.000000';
 
 # Document, but do not implement
@@ -28,9 +30,9 @@ sub redirect_io {
 
     my @caller = caller();
     my $at = "at $caller[1] line $caller[2].\n";
-    die "Invalid settings ($settings) $at" unless $settings && ref($settings) eq 'Test2::Harness2::Settings';
+    die "Invalid settings ($settings) $at" unless blessed($settings) && $settings->isa('Getopt::Yath::Settings');
     die "No name provided $at"             unless $name;
-    die "This cannot be used without a workspace $at" unless $settings->check_prefix('workspace');
+    die "This cannot be used without a workspace $at" unless $settings->check_group('workspace');
 
     require File::Spec;
     require Test2::Harness2::Util::IPC;
@@ -53,7 +55,7 @@ sub shellcall {
 
     my @caller = caller();
     my $at = "at $caller[1] line $caller[2].\n";
-    die "Invalid settings ($settings) $at" unless $settings && ref($settings) eq 'Test2::Harness2::Settings';
+    die "Invalid settings ($settings) $at" unless blessed($settings) && $settings->isa('Getopt::Yath::Settings');
     die "No name provided $at" unless $name;
     die "No command provided $at" unless @cmd && length($cmd[0]);
 
@@ -67,7 +69,7 @@ sub shellcall {
         local $@;
 
         eval {
-            if ($settings->check_prefix('workspace')) {
+            if ($settings->check_group('workspace')) {
                 $this->redirect_io($settings, $name);
             }
             exec(@cmd) if @cmd > 1;
@@ -127,7 +129,7 @@ line.
 C<$default_search> is an arrayref with the default files/directories pulled in
 when nothing is specified at the command ine.
 
-C<$settings> is an instance of L<Test2::Harness2::Settings>
+C<$settings> is an instance of L<Getopt::Yath::Settings>
 
 =item $undef_or_inst = $plugin->claim_file($path, $settings)
 

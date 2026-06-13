@@ -413,8 +413,9 @@ sub _post_process ($options, $state) {
     my @keep = grep { $modes_href->{$_} } sort keys %RERUN_MODES;
     push @keep, 'all' unless @keep;
 
-    # Rebuild the hashref: only truthy entries for active modes.
-    %{$modes_href} = map { $_ => 1 } @keep;
+    # Store the active mode names as an arrayref; the Finder consumer expects
+    # an arrayref (it builds its own {mode => 1} hash from it).
+    $finder->create_option(rerun_modes => [@keep]);
 
     # ---- durations_threshold: live j+1 semantics ----
     if (!defined($finder->durations_threshold)) {

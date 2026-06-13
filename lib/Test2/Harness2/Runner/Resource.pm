@@ -381,7 +381,7 @@ per-process instances may not be forked from the process that calls setup().
 =item $res = $class->new(settings => $settings);
 
 A default new method, returns a blessed hashref with the settings key set to
-the L<Test2::Harness2::Settings> instance.
+the L<Getopt::Yath::Settings> instance.
 
 =item $val = $res->available(\%task)
 
