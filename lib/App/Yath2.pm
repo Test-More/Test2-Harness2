@@ -390,11 +390,14 @@ sub _instantiate_plugins ($self) {
     # auto-registered, even without an explicit -p spec. This is what makes
     # e.g. --cover-write activate the Cover plugin without -pCover.
     for my $module (keys %{$self->{+STATE_MODULES} // {}}) {
-        next if $seen{$module}++;
-        next unless $module->isa('App::Yath2::Plugin');
-
+        # Plugin modules are already loaded by options() before parsing, but
+        # require defensively first so the isa() guard is robust even if a
+        # caller injects an unloaded module name into the parse state.
         my $file = mod2file($module);
         require $file unless $INC{$file};
+
+        next unless $module->isa('App::Yath2::Plugin');
+        next if $seen{$module}++;
 
         push @plugins => $module->can('new') ? $module->new() : $module;
     }

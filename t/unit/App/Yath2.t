@@ -255,4 +255,18 @@ subtest command_from_argv => sub {
     is($cmd, "test", "Found 'test' command because we got a path");
 };
 
+subtest used_plugin_registration => sub {
+    # Setting a plugin's option (Cover's --cover-write) must auto-register that
+    # plugin into harness->plugins without an explicit -p, restoring the 1.0
+    # "used_plugins" behavior. Modules whose options merely default must NOT.
+    my $with = $CLASS->new(argv => ['test', '--cover-write=/tmp/yath-selftest-cov.jsonl']);
+    my @ignore = warns { $with->process_argv };
+    my @cover = grep { $_->isa('App::Yath2::Plugin::Cover') } @{$with->settings->harness->plugins};
+    is(scalar(@cover), 1, "Cover auto-registered from --cover-write without -pCover");
+
+    my $without = $CLASS->new(argv => ['test']);
+    @ignore = warns { $without->process_argv };
+    is($without->settings->harness->plugins, [], "No plugins registered when none of their options are set");
+};
+
 done_testing;
