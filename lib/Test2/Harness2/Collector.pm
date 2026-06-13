@@ -128,7 +128,18 @@ sub process {
     # One last slurp
     $self->process_runner_output if $self->{+SHOW_RUNNER_OUTPUT};
 
-    if ($self->{+JOBS_DONE} && $self->{+TASKS_DONE}) {
+    # The loop above only exits once collection is genuinely complete: every
+    # reachable job has been polled to done and removed, so VERDICTS is whole.
+    # Emit the run-level harness_final + end sentinel here, on EVERY completion
+    # path (normal/non-persistent, persistent-done, and halt) -- not only on
+    # halt. Previously this was gated on JOBS_DONE, but JOBS_DONE is set only by
+    # State::halt_run (the jobs-queue terminator), so a normally-completed run
+    # never emitted a final; the (now removed) auditor process produced it
+    # independently. Gate on TASKS_DONE: it is set whenever the run's task queue
+    # terminator is read, which is true on every genuine completion and guards
+    # against emitting a bogus "pass" final on a degraded/premature exit (e.g. a
+    # runner that died before writing the task terminator).
+    if ($self->{+TASKS_DONE}) {
         $self->{+ACTION}->($self->_final_event);
         $self->{+ACTION}->(undef);
     }
