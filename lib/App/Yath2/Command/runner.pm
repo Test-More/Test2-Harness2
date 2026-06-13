@@ -310,8 +310,10 @@ sub launch_via_fork {
             },
         );
 
-        my $exit = ($info && $info->{collector} && $info->{collector}{ok}) ? 0 : 255;
-        POSIX::_exit($exit);
+        # Exit with the TEST child's verdict (not the collector's own health) so
+        # the runner's retry/fail logic sees the real result. See
+        # Test2::Harness2::Runner::Job::_collector_exit_code.
+        POSIX::_exit($job->_collector_exit_code($info));
 
         1;
     };

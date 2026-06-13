@@ -32,6 +32,7 @@ use Test2::Harness2::Util::HashBase qw{
     +jobs_file +jobs_queue +jobs_done  +jobs
     +pending
     +verdicts
+    +tries
 
     <wait_time
     <action
@@ -49,6 +50,7 @@ sub init {
 
     $self->{+WAIT_TIME} //= 0.02;
     $self->{+VERDICTS} //= {};
+    $self->{+TRIES}    //= {};
 
     $self->{+ACTION}->($self->_harness_event(0, undef, time, harness_run => $self->{+RUN}, harness_settings => $self->settings, about => {no_display => 1}));
 }
@@ -371,11 +373,19 @@ sub _note_verdict {
     my $fd = $event->facet_data or return;
 
     if (my $end = $fd->{harness_job_end}) {
-        $self->{+VERDICTS}{$event->job_id} = {
+        my $job_id = $event->job_id;
+
+        # VERDICTS is last-try-wins (keyed by job_id, overwritten each try) so it
+        # always holds the FINAL verdict for the job. TRIES counts every
+        # harness_job_end seen for the job_id, giving the total attempt count
+        # (try 0 + each retry) independent of last-try-wins.
+        $self->{+VERDICTS}{$job_id} = {
             file => $end->{file},
             fail => $end->{fail} ? 1 : 0,
             try  => $event->job_try,
         };
+
+        $self->{+TRIES}{$job_id}++;
     }
 }
 
@@ -397,21 +407,32 @@ sub _final_event {
 
         if ($verdict) {
             my $file = defined($verdict->{file}) ? File::Spec->abs2rel($verdict->{file}) : $task->{file};
+
+            # VERDICTS is last-try-wins, so $verdict->{fail} is the FINAL
+            # verdict: a job that failed try 0 but passed a retry is NOT failed.
             # NOTE: failed_subtest_tree (the old 3rd element) came from the
             # Auditor::Watcher state machine, which no longer runs in the
             # gatherer. Emit the [job_id, file] pair the finalizer iterates.
             push @{$final_data->{failed}} => [$job_id, $file] if $verdict->{fail};
+
+            # A job that ran more than once was retried. Shape required by
+            # retry.t: [uuid, tries, file, status] where tries = total attempts
+            # (try 0 + retries) and status = 'YES' if it eventually passed, 'NO'
+            # if every attempt failed (final verdict failed).
+            my $tries = $self->{+TRIES}{$job_id} // 1;
+            if ($tries > 1) {
+                push @{$final_data->{retried}} => [$job_id, $tries, $file, ($verdict->{fail} ? 'NO' : 'YES')];
+            }
         }
         else {
             push @{$final_data->{unseen}} => [$job_id, $task->{file}];
         }
     }
 
-    # NOTE: 'retried' and 'halted' cannot be reconstructed yet. The events file
-    # produced by Test2-Collector does not thread retry intent (JobReader's
-    # done->{retry} is hardcoded 0) nor a run-halt signal, so the gatherer has
-    # no source for them. Threading these is a cross-chunk follow-up (see the
-    # TODO in JobReader::poll). Left empty to keep parity with what flows.
+    # NOTE: 'halted' cannot be reconstructed yet. The events file produced by
+    # Test2-Collector does not thread a run-halt signal, so the gatherer has no
+    # source for it. Threading it is a cross-chunk follow-up. Left empty to keep
+    # parity with what flows.
 
     $final_data->{pass} = 0 if $final_data->{failed} or $final_data->{unseen};
 

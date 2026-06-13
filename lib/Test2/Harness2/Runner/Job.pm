@@ -127,10 +127,34 @@ sub spawn_params {
     return {
         command => sub {
             my $info = $self->run_under_collector($self->collector_target);
-            my $exit = ($info && $info->{collector} && $info->{collector}{ok}) ? 0 : 255;
-            POSIX::_exit($exit);
+            POSIX::_exit($self->_collector_exit_code($info));
         },
     };
+}
+
+# Decide the collector-parent's exit code from the collect() info hash. The
+# RUNNER reaps this process and uses its wait status to drive retry/fail logic
+# (see Test2::Harness2::Runner::set_proc_exit), so the collector-parent MUST
+# exit with the TEST child's verdict, NOT merely its own (collector) health:
+#   - collector itself failed  -> 255 (a harness/collector error, not a test
+#     result; the runner treats non-zero as failure, which is correct here too).
+#   - otherwise                -> the test child's exit status: WEXITSTATUS when
+#     non-zero, or 1 if the test died by signal. Zero only on a clean pass, so a
+#     passing test still makes the runner see success.
+# POSIX::_exit(N) makes the runner observe wait-status N<<8, parse_exit -> err=N.
+sub _collector_exit_code {
+    my $self = shift;
+    my ($info) = @_;
+
+    unless ($info && $info->{collector} && $info->{collector}{ok}) {
+        if ($info && $info->{collector} && @{$info->{collector}{errors} // []}) {
+            warn "$_\n" for @{$info->{collector}{errors}};
+        }
+        return 255;
+    }
+
+    my $exit = $info->{exit} // {};
+    return $exit->{err} || ($exit->{sig} ? 1 : 0);
 }
 
 # Build the exec target (and any skip/fail short-circuit) for the spawn path.
