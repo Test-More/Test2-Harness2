@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Collector::JobDir;
+use Test2::Harness2::Collector::JobReader;
 
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::Queue;
@@ -31,6 +31,7 @@ use Test2::Harness2::Util::HashBase qw{
     +task_file +task_queue +tasks_done +tasks
     +jobs_file +jobs_queue +jobs_done  +jobs
     +pending
+    +verdicts
 
     <wait_time
     <action
@@ -47,6 +48,7 @@ sub init {
     $self->{+RUN_DIR} = $run_dir;
 
     $self->{+WAIT_TIME} //= 0.02;
+    $self->{+VERDICTS} //= {};
 
     $self->{+ACTION}->($self->_harness_event(0, undef, time, harness_run => $self->{+RUN}, harness_settings => $self->settings, about => {no_display => 1}));
 }
@@ -79,6 +81,7 @@ sub process {
             $count++;
             my $e_count = 0;
             for my $event ($jdir->poll($self->settings->collector->max_poll_events // 1000)) {
+                $self->_note_verdict($event);
                 $self->{+ACTION}->($event);
                 $e_count++;
             }
@@ -93,7 +96,7 @@ sub process {
 
             delete $jobs->{$job_try};
             unless ($settings->debug->keep_dirs) {
-                my $job_path = $jdir->job_root;
+                my $job_path = File::Spec->catdir($self->{+RUN_DIR}, $job_try);
                 # Needed because we set the perms so that a tmpdir under it can be used.
                 # This is the only remove_tree that needs it because it is the
                 # only one in a process that did not initially create the dir.
@@ -125,7 +128,10 @@ sub process {
     # One last slurp
     $self->process_runner_output if $self->{+SHOW_RUNNER_OUTPUT};
 
-    $self->{+ACTION}->(undef) if $self->{+JOBS_DONE} && $self->{+TASKS_DONE};
+    if ($self->{+JOBS_DONE} && $self->{+TASKS_DONE}) {
+        $self->{+ACTION}->($self->_final_event);
+        $self->{+ACTION}->(undef);
+    }
 
     remove_tree($self->{+RUN_DIR}, {safe => 1, keep_root => 0}) unless $settings->debug->keep_dirs;
 
@@ -332,12 +338,12 @@ sub jobs {
 
         my $job_try = $job_id . '+' . $job->{is_try};
 
-        $jobs->{$job_try} = Test2::Harness2::Collector::JobDir->new(
-            job_try    => $job->{is_try} // 0,
-            job_id     => $job_id,
-            run_id     => $self->{+RUN_ID},
-            runner_pid => $self->{+RUNNER_PID},
-            job_root   => File::Spec->catdir($self->{+RUN_DIR}, $job_try),
+        $jobs->{$job_try} = Test2::Harness2::Collector::JobReader->new(
+            job_id      => $job_id,
+            job_try     => $job->{is_try} // 0,
+            run_id      => $self->{+RUN_ID},
+            file        => $file,
+            events_file => File::Spec->catfile($self->{+RUN_DIR}, $job_try, 'events.jsonl.zst'),
         );
     }
 
@@ -345,6 +351,60 @@ sub jobs {
     $self->send_backed_up if $max_open_jobs <= keys %$jobs;
 
     return $jobs;
+}
+
+sub _note_verdict {
+    my $self = shift;
+    my ($event) = @_;
+
+    my $fd = $event->facet_data or return;
+
+    if (my $end = $fd->{harness_job_end}) {
+        $self->{+VERDICTS}{$event->job_id} = {
+            file => $end->{file},
+            fail => $end->{fail} ? 1 : 0,
+            try  => $event->job_try,
+        };
+    }
+}
+
+# Run-level rollup. Ports the shape produced by Test2::Harness2::Auditor::finish
+# (which is removed in Task 7): a harness_final facet with pass + failed/retried/
+# halted/unseen lists. The test command's finalizer (App::Yath2::Command::test
+# 'render') reads ONLY harness_final, so this shape is a hard contract.
+sub _final_event {
+    my $self = shift;
+
+    my $final_data = {pass => 1};
+
+    # Every job we ever queued has a TASK entry. A job that produced a verdict
+    # (harness_job_end) is "seen"; one still left in PENDING with no verdict is
+    # "unseen". This mirrors Auditor::finish's watchers-vs-no-watchers split.
+    for my $job_id (keys %{$self->{+TASKS}}) {
+        my $task = $self->{+TASKS}{$job_id};
+        my $verdict = $self->{+VERDICTS}{$job_id};
+
+        if ($verdict) {
+            my $file = defined($verdict->{file}) ? File::Spec->abs2rel($verdict->{file}) : $task->{file};
+            # NOTE: failed_subtest_tree (the old 3rd element) came from the
+            # Auditor::Watcher state machine, which no longer runs in the
+            # gatherer. Emit the [job_id, file] pair the finalizer iterates.
+            push @{$final_data->{failed}} => [$job_id, $file] if $verdict->{fail};
+        }
+        else {
+            push @{$final_data->{unseen}} => [$job_id, $task->{file}];
+        }
+    }
+
+    # NOTE: 'retried' and 'halted' cannot be reconstructed yet. The events file
+    # produced by Test2-Collector does not thread retry intent (JobReader's
+    # done->{retry} is hardcoded 0) nor a run-halt signal, so the gatherer has
+    # no source for them. Threading these is a cross-chunk follow-up (see the
+    # TODO in JobReader::poll). Left empty to keep parity with what flows.
+
+    $final_data->{pass} = 0 if $final_data->{failed} or $final_data->{unseen};
+
+    return $self->_harness_event(0, undef, time, harness_final => $final_data);
 }
 
 sub _harness_event {

@@ -65,6 +65,19 @@ for my $sig (qw/INT TERM/) {
 require App::Yath2;
 my $apppath = App::Yath2->app_path;
 
+# The nested yath processes (runner fork + gatherer) 'require Test2::Collector',
+# which lives in the external Test2-Collector dist symlinked at <worktree>/t2clib.
+# app_path is <worktree>/lib, so t2clib is a sibling of it. Add it as a dev-lib
+# so the nested @INC (inherited via dev_libs) can locate the module.
+my $t2clib;
+{
+    my ($vol, $dirs) = File::Spec->splitpath($apppath, 1);
+    my @parts = File::Spec->splitdir($dirs);
+    pop @parts;    # drop 'lib'
+    my $cand = File::Spec->catpath($vol, File::Spec->catdir(@parts, 't2clib'), '');
+    $t2clib = $cand if -d $cand;
+}
+
 sub cover {
     return unless $ENV{T2_DEVEL_COVER};
     $ENV{T2_COVER_SELF} = 1;
@@ -128,6 +141,7 @@ sub yath {
     unless ($no_app_path) {
         push @inc => "-I$apppath" if $cmd =~ m/^(test|start|projects)$/;
         push @dev => "-D$apppath";
+        push @dev => "-D$t2clib" if $t2clib;
     }
 
     my @cover = cover();

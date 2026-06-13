@@ -298,6 +298,13 @@ sub bailed_out {
         return $reason;
     }
 
+    # As of chunk 3 (Test2-Collector swap) the runner no longer writes a stdout
+    # file, so the legacy "scan stdout for 'Bail out!'" path has no input. Guard
+    # against the missing file so this never dies at runtime. Bail-out is now
+    # carried in the events stream (a control facet / harness_final_state halt);
+    # re-sourcing bail detection from the events file is a deferred follow-up.
+    return "" unless -f $self->out_file;
+
     my $fh = open_file($self->out_file, '<');
     while (my $line = <$fh>) {
         next unless $line =~ m/^Bail out!\s*(.*)$/;
