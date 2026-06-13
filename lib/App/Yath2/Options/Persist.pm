@@ -17,7 +17,21 @@ App::Yath2::Options::Persist - Persistent Runner options for Yath.
 
 This is where the command line options for the persistent runner are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Runner Options
+
+=over 4
+
+=item --daemon
+
+=item --no-daemon
+
+Start the runner as a daemon (Default: True)
+
+
+=back
+
 
 =cut
 

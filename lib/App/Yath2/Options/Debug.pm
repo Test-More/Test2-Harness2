@@ -24,7 +24,96 @@ App::Yath2::Options::Debug - Debug options for Yath
 
 This is where debug related command line options live.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Help and Debugging
+
+=over 4
+
+=item -d
+
+=item --dummy
+
+=item --no-dummy
+
+Dummy run, do not actually execute anything
+
+Can also be set with the following environment variables: C<T2_HARNESS_DUMMY>
+
+The following environment variables will be cleared after arguments are processed: C<T2_HARNESS_DUMMY>
+
+
+=item -h
+
+=item -h=Group
+
+=item --help
+
+=item --help=Group
+
+=item --no-help
+
+exit after showing help information
+
+
+=item -i
+
+=item --interactive
+
+=item --no-interactive
+
+Use interactive mode, 1 test at a time, stdin forwarded to it
+
+
+=item -k
+
+=item --keep-dir
+
+=item --keep-dirs
+
+=item --no-keep-dirs
+
+Do not delete directories when done. This is useful if you want to inspect the directories used for various commands.
+
+
+=item --procname-prefix ARG
+
+=item --procname-prefix=ARG
+
+=item --no-procname-prefix
+
+Add a prefix to all proc names (as seen by ps).
+
+
+=item --show-opts
+
+=item --show-opts=group
+
+=item --no-show-opts
+
+Exit after showing what yath thinks your options mean
+
+
+=item --summary
+
+=item --summary=/path/to/summary.json
+
+=item --no-summary
+
+Write out a summary json file, if no path is provided 'summary.json' will be used. The .json extension is added automatically if omitted.
+
+
+=item -V
+
+=item --version
+
+=item --no-version
+
+Exit after showing a helpful usage message
+
+
+=back
+
 
 =cut
 

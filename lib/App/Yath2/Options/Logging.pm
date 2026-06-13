@@ -21,7 +21,88 @@ App::Yath2::Options::Logging - Logging options for yath
 
 This is where the command line options for logging are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Logging Options
+
+=over 4
+
+=item -B
+
+=item --bz2
+
+=item --bzip2
+
+=item --bzip2-log
+
+=item --no-bzip2
+
+Use bzip2 compression when writing the log. This option implies -L. The .bz2 prefix is added to log file name for you
+
+
+=item -G
+
+=item --gz
+
+=item --gzip
+
+=item --gzip-log
+
+=item --no-gzip
+
+Use gzip compression when writing the log. This option implies -L. The .gz prefix is added to log file name for you
+
+
+=item -L
+
+=item --log
+
+=item --no-log
+
+Turn on logging
+
+
+=item --log-dir ARG
+
+=item --log-dir=ARG
+
+=item --no-log-dir
+
+Specify a log directory. Will fall back to the system temp dir.
+
+
+=item -FARG
+
+=item -F ARG
+
+=item -F=ARG
+
+=item --log-file ARG
+
+=item --log-file=ARG
+
+=item --no-log-file
+
+Specify the name of the log file. This option implies -L.
+
+
+=item --lff ARG
+
+=item --lff=ARG
+
+=item --log-file-format ARG
+
+=item --log-file-format=ARG
+
+=item --no-log-file-format
+
+Specify the format for automatically-generated log files. Overridden by --log-file, if given. This option implies -L (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else "%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl"). This is a string in which percent-escape sequences will be replaced as per POSIX::strftime. The following special escape sequences are also replaced: (%!P : Project name followed by a ~, if a project is defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process ID) (%!S : the number of seconds since local midnight UTC)
+
+Can also be set with the following environment variables: C<YATH_LOG_FILE_FORMAT>, C<TEST2_HARNESS_LOG_FORMAT>
+
+
+=back
+
 
 =cut
 

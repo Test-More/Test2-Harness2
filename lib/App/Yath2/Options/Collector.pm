@@ -17,7 +17,28 @@ App::Yath2::Options::Collector - collector options for Yath.
 
 This is where the command line options for the collector are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Collector Options
+
+=over 4
+
+=item --max-open-jobs 18
+
+=item --no-max-open-jobs
+
+Maximum number of jobs a collector can process at a time, if more jobs are pending their output will be delayed until the earlier jobs have been processed. (Default: double the -j value)
+
+
+=item --max-poll-events 1000
+
+=item --no-max-poll-events
+
+Maximum number of events to poll from a job before jumping to the next job. (Default: 1000)
+
+
+=back
+
 
 =cut
 

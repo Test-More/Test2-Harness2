@@ -439,7 +439,169 @@ App::Yath2::Plugin::Cover - Plugin to collect and report basic coverage data
 Simple coverage data, file and sub coverage only. Use L<Devel::Cover> if you
 want deep coverage stats.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Cover Options
+
+=over 4
+
+=item --cover-agg ByRun
+
+=item --cover-agg ByTest
+
+=item --cover-aggregator ByRun
+
+=item --cover-aggregator ByTest
+
+=item --cover-agg +Custom::Aggregator
+
+=item --cover-aggregator +Custom::Aggregator
+
+=item --no-cover-aggregator
+
+Choose a custom aggregator subclass
+
+
+=item --cover-class ARG
+
+=item --cover-class=ARG
+
+=item --no-cover-class
+
+Choose a Test2::Plugin::Cover subclass
+
+
+=item --cover-dir ARG
+
+=item --cover-dir=ARG
+
+=item --cover-dirs ARG
+
+=item --cover-dirs=ARG
+
+=item --cover-dir '["json","list"]'
+
+=item --cover-dir='["json","list"]'
+
+=item --cover-dirs '["json","list"]'
+
+=item --cover-dirs='["json","list"]'
+
+=item --no-cover-dirs
+
+NO DESCRIPTION - FIX ME
+
+Note: Can be specified multiple times
+
+
+=item --cover-exclude-private
+
+=item --no-cover-exclude-private
+
+
+
+
+=item --cover-files
+
+=item --no-cover-files
+
+Use Test2::Plugin::Cover to collect coverage data for what files are touched by what tests. Unlike Devel::Cover this has very little performance impact (About 4% difference)
+
+
+=item --cover-from path/to/log.jsonl
+
+=item --cover-from path/to/coverage.jsonl
+
+=item --cover-from http://example.com/coverage
+
+=item --no-cover-from
+
+This can be a test log, a coverage dump (old style json or new jsonl format), or a url to any of the previous. Tests will not be run if the file/url is invalid.
+
+
+=item --cover-from-type log
+
+=item --cover-from-type json
+
+=item --cover-from-type jsonl
+
+=item --no-cover-from-type
+
+File type for coverage source. Usually it can be detected, but when it cannot be you should specify. "json" is old style single-blob coverage data, "jsonl" is the new by-test style, "log" is a logfile from a previous run.
+
+
+=item --cover-manager My::Coverage::Manager
+
+=item --no-cover-manager
+
+Coverage 'from' manager to use when coverage data does not provide one
+
+
+=item --cover-maybe-from path/to/log.jsonl
+
+=item --cover-maybe-from path/to/coverage.jsonl
+
+=item --cover-maybe-from http://example.com/coverage
+
+=item --no-cover-maybe-from
+
+This can be a test log, a coverage dump (old style json or new jsonl format), or a url to any of the previous. Tests will coninue if even if the coverage file/url is invalid.
+
+
+=item --cover-maybe-from-type log
+
+=item --cover-maybe-from-type json
+
+=item --cover-maybe-from-type jsonl
+
+=item --no-cover-maybe-from-type
+
+Same as "from_type" but for "maybe_from". Defaults to "from_type" if that is specified, otherwise auto-detect
+
+
+=item --cover-metrics
+
+=item --no-cover-metrics
+
+
+
+
+=item --cover-type ARG
+
+=item --cover-type=ARG
+
+=item --cover-types ARG
+
+=item --cover-types=ARG
+
+=item --cover-type '["json","list"]'
+
+=item --cover-type='["json","list"]'
+
+=item --cover-types '["json","list"]'
+
+=item --cover-types='["json","list"]'
+
+=item --no-cover-types
+
+NO DESCRIPTION - FIX ME
+
+Note: Can be specified multiple times
+
+
+=item --cover-write
+
+=item --cover-write=coverage.json
+
+=item --cover-write=coverage.jsonl
+
+=item --no-cover-write
+
+Create a json or jsonl file of all coverage data seen during the run (This implies --cover-files).
+
+
+=back
+
 
 =head1 SOURCE
 

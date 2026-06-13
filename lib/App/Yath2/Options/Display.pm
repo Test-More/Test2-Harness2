@@ -19,7 +19,189 @@ App::Yath2::Options::Display - Display options for Yath.
 
 This is where display options are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Display Options
+
+=over 4
+
+=item --color
+
+=item --no-color
+
+Turn color on, default is true if STDOUT is a TTY.
+
+Can also be set with the following environment variables: C<YATH_COLOR>, C<CLICOLOR_FORCE>
+
+The following environment variables will be set after arguments are processed: C<YATH_COLOR>
+
+
+=item --hide-runner-output
+
+=item --no-hide-runner-output
+
+Hide output from the runner, showing only test output. (See Also truncate_runner_output)
+
+
+=item --no-final-table
+
+=item --no-no-final-table
+
+When printing final results, don't use table-style display
+
+
+=item --no-wrap
+
+=item --no-no-wrap
+
+Do not do fancy text-wrapping, let the terminal handle it
+
+
+=item --progress
+
+=item --no-progress
+
+Toggle progress indicators. On by default if STDOUT is a TTY. You can use --no-progress to disable the 'events seen' counter and buffered event pre-display
+
+
+=item -q
+
+=item -qq
+
+=item -qqq..
+
+=item -q=COUNT
+
+=item --quiet
+
+=item --quiet=COUNT
+
+=item --no-quiet
+
+Be very quiet.
+
+Note: Can be specified multiple times, counter bumps each time it is used.
+
+
+=item --renderer +My::Renderer
+
+=item --renderers +My::Renderer
+
+=item --renderer Renderer=arg1,arg2,...
+
+=item --renderers Renderer=arg1,arg2,...
+
+=item --no-renderers
+
+Specify renderers, (Default: "Formatter=Test2"). Use "+" to give a fully qualified module name. Without "+" "Test2::Harness2::Renderer::" will be prepended to your argument.
+
+Note: Can be specified multiple times
+
+
+=item -T
+
+=item --show-times
+
+=item --no-show-times
+
+Show the timing data for each job
+
+
+=item --term-size 80
+
+=item --term-width 80
+
+=item --term-size 200
+
+=item --term-width 200
+
+=item --no-term-width
+
+Alternative to setting $TABLE_TERM_SIZE. Setting this will override the terminal width detection to the number of characters specified.
+
+Can also be set with the following environment variables: C<TABLE_TERM_SIZE>
+
+The following environment variables will be set after arguments are processed: C<TABLE_TERM_SIZE>
+
+
+=item --truncate-runner-output
+
+=item --no-truncate-runner-output
+
+Only show runner output that was generated after the current command. This is only useful with a persistent runner.
+
+
+=item -v
+
+=item -vv
+
+=item -vvv..
+
+=item -v=COUNT
+
+=item --verbose
+
+=item --verbose=COUNT
+
+=item --no-verbose
+
+Be more verbose
+
+Note: Can be specified multiple times, counter bumps each time it is used.
+
+
+=back
+
+=head3 Formatter Options
+
+=over 4
+
+=item --formatter ARG
+
+=item --formatter=ARG
+
+=item --no-formatter
+
+Specify the formatter to use. (Default: "Test2", or "QVF" if --qvf is set)
+
+
+=item --qvf
+
+=item --no-qvf
+
+[Q]uiet, but [V]erbose on [F]ailure. Hide all output from tests when they pass, except to say they passed. If a test fails then ALL output from the test is verbosely output.
+
+
+=item --show-job-end
+
+=item --no-show-job-end
+
+Show output when a job ends. (Default: on)
+
+
+=item --show-job-info
+
+=item --no-show-job-info
+
+Show the job configuration when a job starts. (Default: off, unless -vv)
+
+
+=item --show-job-launch
+
+=item --no-show-job-launch
+
+Show output for the start of a job. (Default: off unless -v)
+
+
+=item --show-run-info
+
+=item --no-show-run-info
+
+Show the run configuration when a run starts. (Default: off, unless -vv)
+
+
+=back
+
 
 =cut
 

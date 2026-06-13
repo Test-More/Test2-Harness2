@@ -22,7 +22,299 @@ App::Yath2::Options::Runner - Runner options for Yath.
 
 This is where command line options for the runner are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Runner Options
+
+=over 4
+
+=item --abort-on-bail
+
+=item --no-abort-on-bail
+
+Abort all testing if a bail-out is encountered (default: on)
+
+
+=item -b
+
+=item --blib
+
+=item --no-blib
+
+(Default: include if it exists) Include 'blib/lib' and 'blib/arch' in your module path
+
+
+=item --cover
+
+=item --cover=-silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl
+
+=item --no-cover
+
+Use Devel::Cover to calculate test coverage. This disables forking. If no args are specified the following are used: -silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl
+
+Can also be set with the following environment variables: C<T2_DEVEL_COVER>
+
+The following environment variables will be set after arguments are processed: C<T2_DEVEL_COVER>
+
+
+=item --dump-depmap
+
+=item --no-dump-depmap
+
+When using staged preload, dump the depmap for each stage as json files
+
+
+=item --et SECONDS
+
+=item --event-timeout SECONDS
+
+=item --no-event-timeout
+
+Kill test if no output is received within timeout period. (Default: 60 seconds). Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis. This prevents a hung test from running forever.
+
+
+=item --fail-on-resource-skip
+
+=item --no-fail-on-resource-skip
+
+Treat resource-skipped tests as failures instead of skips. When enabled, tests that would be skipped due to unavailable resources will be marked as failing.
+
+
+=item -I ARG
+
+=item -I=ARG
+
+=item -I '["json","list"]'
+
+=item -I='["json","list"]'
+
+=item --include ARG
+
+=item --include=ARG
+
+=item --include '["json","list"]'
+
+=item --include='["json","list"]'
+
+=item --no-include
+
+Add a directory to your include paths
+
+Note: Can be specified multiple times
+
+
+=item -j4
+
+=item -j8:2
+
+=item --jobs 4
+
+=item --jobs 8:2
+
+=item --job-count 4
+
+=item --job-count 8:2
+
+=item --no-job-count
+
+Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.
+
+Can also be set with the following environment variables: C<YATH_JOB_COUNT>, C<T2_HARNESS_JOB_COUNT>, C<HARNESS_JOB_COUNT>
+
+The following environment variables will be cleared after arguments are processed: C<YATH_JOB_COUNT>, C<T2_HARNESS_JOB_COUNT>, C<HARNESS_JOB_COUNT>
+
+
+=item -l
+
+=item --lib
+
+=item --no-lib
+
+(Default: include if it exists) Include 'lib' in your module path
+
+
+=item --nytprof
+
+=item --no-nytprof
+
+Use Devel::NYTProf on tests. This will set addpid=1 for you. This works with or without fork.
+
+
+=item --pet SECONDS
+
+=item --post-exit-timeout SECONDS
+
+=item --no-post-exit-timeout
+
+Stop waiting post-exit after the timeout period. (Default: 15 seconds) Some tests fork and allow the parent to exit before writing all their output. If Test2::Harness2 detects an incomplete plan after the test exits it will monitor for more events until the timeout period. Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis.
+
+
+=item -WARG
+
+=item -W ARG
+
+=item -W=ARG
+
+=item --Pt ARG
+
+=item --Pt=ARG
+
+=item --preload-threshold ARG
+
+=item --preload-threshold=ARG
+
+=item --no-preload-threshold
+
+Only do preload if at least N tests are going to be run. In some cases a full preload takes longer than simply running the tests, this lets you specify a minimum number of test jobs that will be run for preload to happen. This has no effect for a persistent runner. The default is 0, and it means always preload.
+
+
+=item -P ARG
+
+=item -P=ARG
+
+=item -P '["json","list"]'
+
+=item -P='["json","list"]'
+
+=item --preload ARG
+
+=item --preload=ARG
+
+=item --preloads ARG
+
+=item --preloads=ARG
+
+=item --preload '["json","list"]'
+
+=item --preload='["json","list"]'
+
+=item --preloads '["json","list"]'
+
+=item --preloads='["json","list"]'
+
+=item --no-preloads
+
+Preload a module before running tests
+
+Note: Can be specified multiple times
+
+
+=item -R Port
+
+=item --resource Port
+
+=item --resource +Test2::Harness2::Runner::Resource::Port
+
+=item --no-resource
+
+Use a resource module to assign resource assignments to individual tests
+
+Note: Can be specified multiple times
+
+
+=item --rt SECONDS
+
+=item --resource-timeout SECONDS
+
+=item --no-resource-timeout
+
+Abort the test run if no tests have been able to start for SECONDS seconds while there are pending tests and none running. This is useful when a resource class is broken and always claims a resource will become available, preventing yath from ever finishing. (Default: 0, meaning no timeout)
+
+
+=item --runner-id ARG
+
+=item --runner-id=ARG
+
+=item --no-runner-id
+
+Runner ID (usually a generated uuid)
+
+
+=item --shared-jobs-config .sharedjobslots.yml
+
+=item --shared-jobs-config relative/path/.sharedjobslots.yml
+
+=item --shared-jobs-config /absolute/path/.sharedjobslots.yml
+
+=item --no-shared-jobs-config
+
+Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.
+
+
+=item -x2
+
+=item --slots-per-job 2
+
+=item --no-slots-per-job
+
+This sets the number of slots each job will use (default 1). This is normally set by the ':#' in '-j#:#'.
+
+Can also be set with the following environment variables: C<T2_HARNESS_JOB_CONCURRENCY>
+
+The following environment variables will be cleared after arguments are processed: C<T2_HARNESS_JOB_CONCURRENCY>
+
+
+=item -S ARG
+
+=item -S=ARG
+
+=item -S '["json","list"]'
+
+=item -S='["json","list"]'
+
+=item --switch ARG
+
+=item --switch=ARG
+
+=item --switch '["json","list"]'
+
+=item --switch='["json","list"]'
+
+=item --no-switch
+
+Pass the specified switch to perl for each test. This is not compatible with preload.
+
+Note: Can be specified multiple times
+
+
+=item --tlib
+
+=item --no-tlib
+
+(Default: off) Include 't/lib' in your module path
+
+
+=item --unsafe-inc
+
+=item --no-unsafe-inc
+
+perl is removing '.' from @INC as a security concern. This option keeps things from breaking for now.
+
+Can also be set with the following environment variables: C<PERL_USE_UNSAFE_INC>
+
+
+=item --fork
+
+=item --use-fork
+
+=item --no-use-fork
+
+(default: on, except on windows) Normally tests are run by forking, which allows for features like preloading. This will turn off the behavior globally (which is not compatible with preloading). This is slower, it is better to tag misbehaving tests with the '# HARNESS-NO-PRELOAD' comment in their header to disable forking only for those tests.
+
+Can also be set with the following environment variables: C<!T2_NO_FORK>, C<T2_HARNESS_FORK>, C<!T2_HARNESS_NO_FORK>, C<YATH_FORK>, C<!YATH_NO_FORK>
+
+
+=item --timeout
+
+=item --use-timeout
+
+=item --no-use-timeout
+
+(default: on) Enable/disable timeouts
+
+
+=back
+
 
 =cut
 

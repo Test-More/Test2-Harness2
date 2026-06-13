@@ -20,7 +20,331 @@ App::Yath2::Options::Finder - Finder options for Yath.
 
 This is where the command line options for discovering test files are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Finder Options
+
+=over 4
+
+=item --changed path/to/file
+
+=item --no-changed
+
+Specify one or more files as having been changed.
+
+Note: Can be specified multiple times
+
+
+=item --changed-only
+
+=item --no-changed-only
+
+Only search for tests for changed files (Requires a coverage data source, also requires a list of changes either from the --changed option, or a plugin that implements changed_files() or changed_diff())
+
+
+=item --changes-diff path/to/diff.diff
+
+=item --no-changes-diff
+
+Path to a diff file that should be used to find changed files for use with --changed-only. This must be in the same format as `git diff -W --minimal -U1000000`
+
+
+=item --changes-exclude-file path/to/file
+
+=item --changes-exclude-files path/to/file
+
+=item --no-changes-exclude-files
+
+Specify one or more files to ignore when looking at changes
+
+Note: Can be specified multiple times
+
+
+=item --changes-exclude-loads
+
+=item --no-changes-exclude-loads
+
+Exclude coverage tests which only load changed files, but never call code from them. (default: off)
+
+
+=item --changes-exclude-nonsub
+
+=item --no-changes-exclude-nonsub
+
+Exclude changes outside of subroutines (perl files only) (default: off)
+
+
+=item --changes-exclude-opens
+
+=item --no-changes-exclude-opens
+
+Exclude coverage tests which only open() changed files, but never call code from them. (default: off)
+
+
+=item --changes-exclude-pattern '(apple|pear|orange)'
+
+=item --changes-exclude-patterns '(apple|pear|orange)'
+
+=item --no-changes-exclude-patterns
+
+Ignore files matching this pattern when looking for changes. Your pattern will be inserted unmodified into a `$file =~ m/$pattern/` check.
+
+Note: Can be specified multiple times
+
+
+=item --changes-filter-file path/to/file
+
+=item --changes-filter-files path/to/file
+
+=item --no-changes-filter-files
+
+Specify one or more files to check for changes. Changes to other files will be ignored
+
+Note: Can be specified multiple times
+
+
+=item --changes-filter-pattern '(apple|pear|orange)'
+
+=item --changes-filter-patterns '(apple|pear|orange)'
+
+=item --no-changes-filter-patterns
+
+Specify a pattern for change checking. When only running tests for changed files this will limit which files are checked for changes. Only files that match this pattern will be checked. Your pattern will be inserted unmodified into a `$file =~ m/$pattern/` check.
+
+Note: Can be specified multiple times
+
+
+=item --changes-include-whitespace
+
+=item --no-changes-include-whitespace
+
+Include changed lines that are whitespace only (default: off)
+
+
+=item --changes-plugin Git
+
+=item --changes-plugin +App::Yath2::Plugin::Git
+
+=item --no-changes-plugin
+
+What plugin should be used to detect changed files.
+
+
+=item --default-at-search ARG
+
+=item --default-at-search=ARG
+
+=item --default-at-search '["json","list"]'
+
+=item --default-at-search='["json","list"]'
+
+=item --no-default-at-search
+
+Specify the default file/dir search when 'AUTHOR_TESTING' is set. Defaults to './xt'. The default AT search is only used if no files were specified at the command line
+
+Note: Can be specified multiple times
+
+
+=item --default-search ARG
+
+=item --default-search=ARG
+
+=item --default-search '["json","list"]'
+
+=item --default-search='["json","list"]'
+
+=item --no-default-search
+
+Specify the default file/dir search. defaults to './t', './t2', and 'test.pl'. The default search is only used if no files were specified at the command line
+
+Note: Can be specified multiple times
+
+
+=item --durations file.json
+
+=item --durations http://example.com/durations.json
+
+=item --no-durations
+
+Point at a json file or url which has a hash of relative test filenames as keys, and 'SHORT', 'MEDIUM', or 'LONG' as values. This will override durations listed in the file headers. An exception will be thrown if the durations file or url does not work.
+
+
+=item --Dt ARG
+
+=item --Dt=ARG
+
+=item --durations-threshold ARG
+
+=item --durations-threshold=ARG
+
+=item --no-durations-threshold
+
+Only fetch duration data if running at least this number of tests. Default (-j value + 1)
+
+
+=item --exclude-file t/nope.t
+
+=item --exclude-files t/nope.t
+
+=item --no-exclude-files
+
+Exclude a file from testing
+
+Note: Can be specified multiple times
+
+
+=item --exclude-list file.txt
+
+=item --exclude-lists file.txt
+
+=item --exclude-list http://example.com/exclusions.txt
+
+=item --exclude-lists http://example.com/exclusions.txt
+
+=item --no-exclude-lists
+
+Point at a file or url which has a new line separated list of test file names to exclude from testing. Starting a line with a '#' will comment it out (for compatibility with Test2::Aggregate list files).
+
+Note: Can be specified multiple times
+
+
+=item --exclude-pattern t/nope.t
+
+=item --exclude-patterns t/nope.t
+
+=item --no-exclude-patterns
+
+Exclude a pattern from testing, matched using m/$PATTERN/
+
+Note: Can be specified multiple times
+
+
+=item --ext ARG
+
+=item --ext=ARG
+
+=item --extension ARG
+
+=item --extension=ARG
+
+=item --extensions ARG
+
+=item --extensions=ARG
+
+=item --ext '["json","list"]'
+
+=item --ext='["json","list"]'
+
+=item --extension '["json","list"]'
+
+=item --extension='["json","list"]'
+
+=item --extensions '["json","list"]'
+
+=item --extensions='["json","list"]'
+
+=item --no-extensions
+
+Specify valid test filename extensions, default: t and t2
+
+Note: Can be specified multiple times
+
+
+=item --finder MyFinder
+
+=item --finder +Test2::Harness2::Finder::MyFinder
+
+=item --no-finder
+
+Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise Test2::Harness2::Finder::XXX namespace is assumed.
+
+
+=item --maybe-durations file.json
+
+=item --maybe-durations http://example.com/durations.json
+
+=item --no-maybe-durations
+
+Point at a json file or url which has a hash of relative test filenames as keys, and 'SHORT', 'MEDIUM', or 'LONG' as values. This will override durations listed in the file headers. An exception will be thrown if the durations file or url does not work.
+
+
+=item --no-long
+
+=item --no-no-long
+
+Do not run tests that have their duration flag set to 'LONG'
+
+
+=item --only-long
+
+=item --no-only-long
+
+Only run tests that have their duration flag set to 'LONG'
+
+
+=item --rerun
+
+=item --rerun=path/to/log.jsonl
+
+=item --rerun=plugin_specific_string
+
+=item --no-rerun
+
+Re-Run tests from a previous run from a log file (or last log file). Plugins can intercept this, such as YathUIDB which will grab a run UUID and derive tests to re-run from that.
+
+
+=item --rerun-modes all,failed,missed,passed,retried
+
+=item --no-rerun-modes
+
+=item /^--(no-)?(?^u:rerun-(all|failed|missed|passed|retried)(=.+)?$/
+
+Pick which test categories to re-run. all:     Re-Run all tests from a previous run from a log file (or last log file). Plugins can intercept this, such as YathUIDB which will grab a run UUID and derive tests to re-run from that. failed:  Re-Run failed tests from a previous run from a log file (or last log file). Plugins can intercept this, such as YathUIDB which will grab a run UUID and derive tests to re-run from that. missed:  Run missed tests from a previously aborted/stopped run from a log file (or last log file). Plugins can intercept this, such as YathUIDB which will grab a run UUID and derive tests to re-run from that. passed:  Re-Run passed tests from a previous run from a log file (or last log file). Plugins can intercept this, such as YathUIDB which will grab a run UUID and derive tests to re-run from that. retried: Re-Run retried tests from a previous run from a log file (or last log file). Plugins can intercept this, such as YathUIDB which will grab a run UUID and derive tests to re-run from that.
+
+Note: This will turn on the 'rerun' option. If the --rerun-MODE form is used, you can specify the log file with --rerun-MODE=logfile.
+
+Note: Can be specified multiple times
+
+
+=item --rerun-plugin Foo
+
+=item --rerun-plugins Foo
+
+=item --rerun-plugin +App::Yath2::Plugin::Foo
+
+=item --rerun-plugins +App::Yath2::Plugin::Foo
+
+=item --no-rerun-plugins
+
+What plugin(s) should be used for rerun (will fallback to other plugins if the listed ones decline the value, this is just used to set an order of priority)
+
+Note: Can be specified multiple times
+
+
+=item --search ARG
+
+=item --search=ARG
+
+=item --search '["json","list"]'
+
+=item --search='["json","list"]'
+
+=item --no-search
+
+List of tests and test directories to use instead of the default search paths. Typically these can simply be listed as command line arguments without the --search prefix.
+
+Note: Can be specified multiple times
+
+
+=item --show-changed-files
+
+=item --no-show-changed-files
+
+Print a list of changed files if any are found
+
+
+=back
+
 
 =cut
 
@@ -38,12 +362,11 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
     # Finder class
     # -------------------------------------------------------------------------
 
-    # mod_adds_options is NOT used here because live Finder subclasses may still
-    # use the old App::Yath2::Options machinery whose options() returns a legacy
-    # object that Getopt::Yath::Instance->include() cannot accept.  We guard
-    # exactly like PreCommand.pm's plugins trigger: require the class, check
-    # ->can('options'), and only call include() when the result is a
-    # Getopt::Yath::Instance.
+    # mod_adds_options is NOT used here so we can guard the include: a Finder
+    # subclass might expose an options() that does not return a
+    # Getopt::Yath::Instance, which include() cannot accept.  We require the
+    # class, check ->can('options'), and only call include() when the result is
+    # a Getopt::Yath::Instance.
     option finder => (
         type    => 'Scalar',
         default => 'Test2::Harness2::Finder',
@@ -64,9 +387,8 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
                 next unless $class->can('options');
                 my $finder_opts = $class->options;
-                # Guard: only include if it is a Getopt::Yath::Instance.
-                # Old-style finders return an App::Yath2::Options object which
-                # cannot be passed to include().
+                # Guard: only include if it is a Getopt::Yath::Instance;
+                # anything else cannot be passed to include().
                 next unless ref($finder_opts) && $finder_opts->isa('Getopt::Yath::Instance');
                 $params{options}->include($finder_opts);
             }

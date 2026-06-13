@@ -173,7 +173,25 @@ L<Test2::Harness2::UI>.
 
 The data will include the long sha, short sha, branch name, and a brief status.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Git Options
+
+=over 4
+
+=item --git-change-base HEAD^
+
+=item --git-change-base master
+
+=item --git-change-base df22abe4
+
+=item --no-git-change-base
+
+Find files changed by all commits in the current branch from most recent stopping when a commit is found that is also present in the history of the branch/commit specified as the change base.
+
+
+=back
+
 
 =head1 SOURCE
 

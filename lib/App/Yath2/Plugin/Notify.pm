@@ -594,7 +594,126 @@ A slack hooks url is always needed for slack to work.
 
     $ yath test --notify-slack-url https://hooks.slack.com/... --notify-slack-fail '#foo' --notify-slack-owner
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Notification Options
+
+=over 4
+
+=item --notify-email foo@example.com
+
+=item --no-notify-email
+
+Email the test results to the specified email address(es)
+
+Note: Can be specified multiple times
+
+
+=item --notify-email-fail foo@example.com
+
+=item --no-notify-email-fail
+
+Email failing results to the specified email address(es)
+
+Note: Can be specified multiple times
+
+
+=item --notify-email-from foo@example.com
+
+=item --no-notify-email-from
+
+If any email is sent, this is who it will be from
+
+
+=item --notify-email-owner
+
+=item --no-notify-email-owner
+
+Email the owner of broken tests files upon failure. Add `# HARNESS-META-OWNER foo@example.com` to the top of a test file to give it an owner
+
+
+=item --notify-no-batch-email
+
+=item --no-notify-no-batch-email
+
+Usually owner failures are sent as a single batch at the end of testing. Toggle this to send failures as they happen.
+
+
+=item --notify-no-batch-slack
+
+=item --no-notify-no-batch-slack
+
+Usually owner failures are sent as a single batch at the end of testing. Toggle this to send failures as they happen.
+
+
+=item --notify-slack '#foo'
+
+=item --notify-slack '@bar'
+
+=item --no-notify-slack
+
+Send results to a slack channel and/or user
+
+Note: Can be specified multiple times
+
+
+=item --notify-slack-fail '#foo'
+
+=item --notify-slack-fail '@bar'
+
+=item --no-notify-slack-fail
+
+Send failing results to a slack channel and/or user
+
+Note: Can be specified multiple times
+
+
+=item --notify-slack-owner
+
+=item --no-notify-slack-owner
+
+Send slack notifications to the slack channels/users listed in test meta-data when tests fail.
+
+
+=item --notify-slack-url https://hooks.slack.com/...
+
+=item --no-notify-slack-url
+
+Specify an API endpoint for slack webhook integrations
+
+
+=item --notify-msg ARG
+
+=item --notify-msg=ARG
+
+=item --notify-text ARG
+
+=item --notify-text=ARG
+
+=item --notify-message ARG
+
+=item --notify-message=ARG
+
+=item --no-notify-text
+
+Add a custom text snippet to email/slack notifications
+
+
+=item --notify-text-module ARG
+
+=item --notify-text-module=ARG
+
+=item --notify-message-module ARG
+
+=item --notify-message-module=ARG
+
+=item --no-notify-text-module
+
+Use the specified module to generate messages for emails and/or slack.
+
+
+=back
+
 
 =head1 SOURCE
 

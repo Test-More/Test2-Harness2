@@ -23,7 +23,67 @@ App::Yath2::Options::Workspace - Options for specifying the yath work dir.
 
 Options regarding the yath working directory.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Workspace Options
+
+=over 4
+
+=item -C
+
+=item --clear
+
+=item --no-clear
+
+Clear the work directory if it is not already empty
+
+
+=item -tARG
+
+=item -t ARG
+
+=item -t=ARG
+
+=item --tmpdir ARG
+
+=item --tmpdir=ARG
+
+=item --tmp-dir ARG
+
+=item --tmp-dir=ARG
+
+=item --tmp-dir ARG
+
+=item --tmp-dir=ARG
+
+=item --no-tmp-dir
+
+Use a specific temp directory (Default: use system temp dir)
+
+Can also be set with the following environment variables: C<T2_HARNESS_TEMP_DIR>, C<YATH_TEMP_DIR>, C<TMPDIR>, C<TEMPDIR>, C<TMP_DIR>, C<TEMP_DIR>
+
+
+=item -wARG
+
+=item -w ARG
+
+=item -w=ARG
+
+=item --workdir ARG
+
+=item --workdir=ARG
+
+=item --no-workdir
+
+Set the work directory (Default: new temp directory)
+
+Can also be set with the following environment variables: C<T2_WORKDIR>, C<YATH_WORKDIR>
+
+The following environment variables will be cleared after arguments are processed: C<T2_WORKDIR>, C<YATH_WORKDIR>
+
+
+=back
+
 
 =cut
 

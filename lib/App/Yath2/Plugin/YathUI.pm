@@ -325,7 +325,107 @@ App::Yath2::Plugin::YathUI - Plugin to interact with a YathUI server
 If you have a Yath-UI L<Test2::Harness2::UI> server, you can use this module to
 have yath automatically upload logs or retrieve durations data
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 YathUI Options
+
+=over 4
+
+=item --yathui-api-key ARG
+
+=item --yathui-api-key=ARG
+
+=item --no-yathui-api-key
+
+Yath-UI API key. This is not necessary if your Yath-UI instance is set to single-user
+
+
+=item --yathui-coverage
+
+=item --no-yathui-coverage
+
+Poll coverage data from Yath-UI to determine what tests should be run for changed files
+
+
+=item --yathui-durations
+
+=item --no-yathui-durations
+
+Poll duration data from Yath-UI to help order tests efficiently
+
+
+=item --yathui-grace
+
+=item --no-yathui-grace
+
+If yath cannot connect to yath-ui it normally throws an error, use this to make it fail gracefully. You get a warning, but things keep going.
+
+
+=item --yathui-long-duration 10
+
+=item --no-yathui-long-duration
+
+Minimum duration length (seconds) before a test goes from MEDIUM to LONG
+
+
+=item --yathui-medium-duration 5
+
+=item --no-yathui-medium-duration
+
+Minimum duration length (seconds) before a test goes from SHORT to MEDIUM
+
+
+=item --yathui-mode qvf
+
+=item --yathui-mode qvfd
+
+=item --yathui-mode summary
+
+=item --yathui-mode complete
+
+=item --no-yathui-mode
+
+Set the upload mode (default 'qvfd')
+
+
+=item --yathui-project ARG
+
+=item --yathui-project=ARG
+
+=item --no-yathui-project
+
+The Yath-UI project for your test results
+
+
+=item --yathui-retry
+
+=item --yathui-retry=COUNT
+
+=item --no-yathui-retry
+
+How many times to try an operation before giving up
+
+Note: Can be specified multiple times, counter bumps each time it is used.
+
+
+=item --yathui-upload
+
+=item --no-yathui-upload
+
+Upload the log to Yath-UI
+
+
+=item --yathui-url http://my-yath-ui.com/...
+
+=item --yathui-uri http://my-yath-ui.com/...
+
+=item --no-yathui-url
+
+Yath-UI url
+
+
+=back
+
 
 =head1 SOURCE
 

@@ -21,7 +21,106 @@ App::Yath2::Options::PreCommand - Options for yath before a command is specified
 This is where many pre-command options are defined, including plugin loading,
 developer library paths, project identity, and persistence configuration.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Developer
+
+=over 4
+
+=item -D
+
+=item -Dlib
+
+=item -D=lib
+
+=item --dev-lib
+
+=item --dev-lib=lib
+
+=item --no-dev-lib
+
+Add paths to @INC before loading ANYTHING. This is what you use if you are developing yath or yath plugins to make sure the yath script finds the local code instead of the installed versions of the same code. You can provide an argument (-Dfoo) to provide a custom path, or you can just use -D without and arg to add lib, blib/lib and blib/arch.
+
+Note: Can be specified multiple times
+
+
+=back
+
+=head3 Environment
+
+=over 4
+
+=item --persist-dir ARG
+
+=item --persist-dir=ARG
+
+=item --no-persist-dir
+
+Where to find persistence files.
+
+
+=item --pfile ARG
+
+=item --pfile=ARG
+
+=item --persist-file ARG
+
+=item --persist-file=ARG
+
+=item --no-persist-file
+
+Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.
+
+
+=item --project ARG
+
+=item --project=ARG
+
+=item --project-name ARG
+
+=item --project-name=ARG
+
+=item --no-project
+
+This lets you provide a label for your current project/codebase. This is best used in a .yath.rc file. This is necessary for a persistent runner.
+
+
+=back
+
+=head3 Plugins
+
+=over 4
+
+=item --no-scan-plugins
+
+=item --no-no-scan-plugins
+
+Normally yath scans for and loads all App::Yath2::Plugin::* modules in order to bring in command-line options they may provide. This flag will disable that. This is useful if you have a naughty plugin that is loading other modules when it should not.
+
+
+=item -pPLUGIN
+
+=item --plugin PLUGIN
+
+=item --plugins PLUGIN
+
+=item --plugin PLUGIN=arg1,arg2,...
+
+=item --plugins PLUGIN=arg1,arg2,...
+
+=item --plugin +App::Yath2::Plugin::PLUGIN
+
+=item --plugins +App::Yath2::Plugin::PLUGIN
+
+=item --no-plugins
+
+Load a yath plugin.
+
+Note: Can be specified multiple times
+
+
+=back
+
 
 =cut
 
@@ -47,10 +146,9 @@ option_group {group => 'harness', category => 'Yath Options'} => sub {
         # Trigger: require the plugin module and pull in its options.
         # We do this manually (instead of mod_adds_options) so we can split
         # the class name from any =args suffix before calling mod2file().
-        # Note: plugins still on the old App::Yath2::Options machinery will
-        # have a ->options method that returns an App::Yath2::Options object,
-        # not a Getopt::Yath::Instance.  We guard against that by only calling
-        # include() when the returned object is a Getopt::Yath::Instance.
+        # Note: a plugin's options() might not return a Getopt::Yath::Instance.
+        # We guard against that by only calling include() when the returned
+        # object is a Getopt::Yath::Instance.
         trigger => sub ($opt, %params) {
             return unless $params{action} eq 'set';
 

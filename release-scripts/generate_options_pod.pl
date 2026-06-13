@@ -8,8 +8,6 @@ chdir($ARGV[0]) or die "Could not chdir to $ARGV[0]";
 
 unshift @INC => './lib';
 
-require App::Yath2::Command;
-
 for my $base ('./lib/App/Yath2/Options', './lib/App/Yath2/Plugin') {
     opendir(my $dh, $base) or die "Could not open dir '$base': $!";
 
@@ -28,27 +26,14 @@ for my $base ('./lib/App/Yath2/Options', './lib/App/Yath2/Plugin') {
 
         next unless $pkg->can('options');
         my $options = $pkg->options or next;
-        delete $_->{applicable} for @{$options->all};
-        $options->set_command_class('App::Yath2::Command');
-        my $pre_opts = $options->pre_docs('pod', 3);
-        my $cmd_opts = $options->cmd_docs('pod', 3);
-        die "No option docs for $file?" unless $pre_opts || $cmd_opts;
 
-        my $pod = "=head1 PROVIDED OPTIONS\n\n";
+        # $options is a Getopt::Yath::Instance. Render every option group it
+        # owns; 'applicable => 1' forces all options to render without needing a
+        # settings object to gate them.
+        my $opt_docs = $options->docs('pod', head => 3, applicable => 1);
+        die "No option docs for $file?" unless $opt_docs;
 
-        if ($pre_opts) {
-            $pod .= "=head2 YATH OPTIONS (PRE-COMMAND)\n\n";
-            $pod .= $pre_opts;
-        }
-
-        $pod .= "\n\n" if $pre_opts && $cmd_opts;
-
-        if ($cmd_opts) {
-            $pod .= "=head2 COMMAND OPTIONS\n\n";
-            $pod .= $cmd_opts;
-        }
-
-        $pod .= "\n";
+        my $pod = "=head1 PROVIDED OPTIONS\n\n" . $opt_docs . "\n";
 
         my $found;
         my @lines;

@@ -20,7 +20,229 @@ App::Yath2::Options::Run - Run options for Yath.
 
 This is where command line options for a single test run are defined.
 
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+=head1 PROVIDED OPTIONS
+
+=head3 Run Options
+
+=over 4
+
+=item -A
+
+=item --author-testing
+
+=item --no-author-testing
+
+This will set the AUTHOR_TESTING environment to true
+
+Can also be set with the following environment variables: C<AUTHOR_TESTING>
+
+The following environment variables will be set after arguments are processed: C<AUTHOR_TESTING>
+
+
+=item --dbi-profiling
+
+=item --no-dbi-profiling
+
+Use Test2::Plugin::DBIProfile to collect database profiling data
+
+
+=item -EVAR=VAL
+
+=item -E VAR=VAL
+
+=item --env-var VAR=VAL
+
+=item --no-env-var
+
+Set environment variables to set when each test is run.
+
+Note: Can be specified multiple times
+
+
+=item --uuids
+
+=item --event-uuids
+
+=item --no-event-uuids
+
+Use Test2::Plugin::UUID inside tests (default: on)
+
+
+=item -f JSON_STRING
+
+=item -f name:details
+
+=item --fields JSON_STRING
+
+=item --fields name:details
+
+=item --no-fields
+
+Add custom data to the harness run
+
+Note: Can be specified multiple times
+
+
+=item --input ARG
+
+=item --input=ARG
+
+=item --no-input
+
+Input string to be used as standard input for ALL tests. See also: --input-file
+
+
+=item --input-file ARG
+
+=item --input-file=ARG
+
+=item --no-input-file
+
+Use the specified file as standard input to ALL tests
+
+
+=item --io-events
+
+=item --no-io-events
+
+Use Test2::Plugin::IOEvents inside tests to turn all prints into test2 events (default: off)
+
+
+=item --link 'https://jenkins.work/job/42'
+
+=item --link 'https://travis.work/builds/42'
+
+=item --link 'https://buildbot.work/builders/foo/builds/42'
+
+=item --no-link
+
+Provide one or more links people can follow to see more about this run.
+
+Note: Can be specified multiple times
+
+
+=item -m ARG
+
+=item -m=ARG
+
+=item -m '["json","list"]'
+
+=item -m='["json","list"]'
+
+=item --load ARG
+
+=item --load=ARG
+
+=item --load-module ARG
+
+=item --load-module=ARG
+
+=item --load '["json","list"]'
+
+=item --load='["json","list"]'
+
+=item --load-module '["json","list"]'
+
+=item --load-module='["json","list"]'
+
+=item --no-load
+
+Load a module in each test (after fork). The "import" method is not called.
+
+Note: Can be specified multiple times
+
+
+=item -M Module
+
+=item -M Module=import_arg1,arg2,...
+
+=item --loadim Module
+
+=item --load-import Module
+
+=item --loadim Module=import_arg1,arg2,...
+
+=item --load-import Module=import_arg1,arg2,...
+
+=item --no-load-import
+
+Load a module in each test (after fork). Import is called.
+
+Note: Can be specified multiple times
+
+
+=item --mem-usage
+
+=item --no-mem-usage
+
+Use Test2::Plugin::MemUsage inside tests (default: on)
+
+
+=item -rARG
+
+=item -r ARG
+
+=item -r=ARG
+
+=item --retry ARG
+
+=item --retry=ARG
+
+=item --no-retry
+
+Run any jobs that failed a second time. NOTE: --retry=1 means failing tests will be attempted twice!
+
+
+=item --retry-iso
+
+=item --retry-isolated
+
+=item --no-retry-isolated
+
+If true then any job retries will be done in isolation (as though -j1 was set)
+
+
+=item --id ARG
+
+=item --id=ARG
+
+=item --run-id ARG
+
+=item --run-id=ARG
+
+=item --no-run-id
+
+Set a specific run-id. (Default: a UUID)
+
+
+=item --stream
+
+=item --use-stream
+
+=item --no-stream
+
+=item --TAP
+
+The TAP format is lossy and clunky. Test2::Harness2 normally uses a newer streaming format to receive test results. There are old/legacy tests where this causes problems, in which case setting --TAP or --no-stream can help.
+
+
+=item --test-args ARG
+
+=item --test-args=ARG
+
+=item --test-args '["json","list"]'
+
+=item --test-args='["json","list"]'
+
+=item --no-test-args
+
+Arguments to pass in as @ARGV for all tests that are run. These can be provided easier using the '::'  argument separator.
+
+Note: Can be specified multiple times
+
+
+=back
+
 
 =cut
 
