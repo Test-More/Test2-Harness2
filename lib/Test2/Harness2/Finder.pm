@@ -771,10 +771,10 @@ By default C<Test2::Harness2::Finder::> is prefixed onto your custom finder, use
 
     # Custom finders may provide their own options if desired.
     # This is optional.
-    use App::Yath2::Options;
-    option foo => (
-        ...
-    );
+    use Getopt::Yath;
+    option_group {group => 'myfinder'} => sub {
+        option foo => (type => 'Bool', ...);
+    };
 
     # This is the main method to override.
     sub find_project_files {

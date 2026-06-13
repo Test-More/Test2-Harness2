@@ -39,9 +39,8 @@ sub _options_for_docs ($class, $settings = undef) {
 
     my $options = $app->options;
 
-    # TODO(Task 10): commands are still on the old App::Yath2::Options
-    # machinery. Include their options only once they hand back a
-    # Getopt::Yath::Instance.
+    # Only include the command's options when options() hands back a
+    # Getopt::Yath::Instance; skip anything else as a safety check.
     if ($class->can('options')) {
         my $add = $class->options;
         $options->include($add) if blessed($add) && $add->isa('Getopt::Yath::Instance');

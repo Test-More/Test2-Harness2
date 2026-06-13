@@ -120,9 +120,8 @@ sub options ($self) {
         next unless $lib->can('options');
         my $add = $lib->options or next;
 
-        # TODO(Task 12): plugins/resources are still on the old
-        # App::Yath2::Options machinery. Skip anything that does not hand
-        # back a Getopt::Yath::Instance until they are converted.
+        # Skip anything whose options() does not hand back a
+        # Getopt::Yath::Instance, as a safety check.
         next unless blessed($add) && $add->isa('Getopt::Yath::Instance');
 
         $options->include($add);
