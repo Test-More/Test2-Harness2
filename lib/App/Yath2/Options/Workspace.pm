@@ -70,10 +70,16 @@ option_post_process 0 => sub ($options, $state) {
 
     my $template = join '-' => ("yath", $$, "XXXXXX");
 
+    # The command class is recorded in settings->harness->command by
+    # App::Yath2->load_command() before the command-stage parse runs the
+    # posts. Getopt::Yath's parse state has no 'command' key, but keep it
+    # as a fallback for direct callers.
+    my $command = $settings->maybe(harness => 'command') // $state->{command};
+
     my $tmpdir = tempdir(
         $template,
         DIR     => $settings->workspace->tmp_dir,
-        CLEANUP => !($settings->debug->keep_dirs || ($state->{command} && $state->{command}->always_keep_dir)),
+        CLEANUP => !($settings->debug->keep_dirs || ($command && $command->always_keep_dir)),
     );
     chmod_tmp($tmpdir);
 
