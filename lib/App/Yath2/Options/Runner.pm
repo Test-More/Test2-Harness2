@@ -1,252 +1,280 @@
 package App::Yath2::Options::Runner;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
-use List::Util qw/min/;
 use Test2::Util qw/IS_WIN32/;
-use App::Yath2::Util qw/find_in_updir/;
-use Test2::Harness2::Util qw/clean_path mod2file/;
+use Test2::Harness2::Util qw/mod2file/;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use File::Spec;
 
-use App::Yath2::Options;
+use Getopt::Yath;
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+App::Yath2::Options::Runner - Runner options for Yath.
+
+=head1 DESCRIPTION
+
+This is where command line options for the runner are defined.
+
+=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
+
+=cut
 
 my $DEFAULT_COVER_ARGS = '-silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl';
 
-option_group {prefix => 'runner', category => "Runner Options"} => sub {
+option_group {group => 'runner', category => "Runner Options"} => sub {
+
     option use_fork => (
-        alt         => ['fork'],
-        description => "(default: on, except on windows) Normally tests are run by forking, which allows for features like preloading. This will turn off the behavior globally (which is not compatible with preloading). This is slower, it is better to tag misbehaving tests with the '# HARNESS-NO-PRELOAD' comment in their header to disable forking only for those tests.",
-        env_vars => [qw/!T2_NO_FORK T2_HARNESS_FORK !T2_HARNESS_NO_FORK YATH_FORK !YATH_NO_FORK/],
-        default     => sub {
+        type          => 'Bool',
+        alt           => ['fork'],
+        from_env_vars => [qw/!T2_NO_FORK T2_HARNESS_FORK !T2_HARNESS_NO_FORK YATH_FORK !YATH_NO_FORK/],
+        default       => sub {
             return 0 if IS_WIN32;
             return 1;
         },
+        description => "(default: on, except on windows) Normally tests are run by forking, which allows for features like preloading. This will turn off the behavior globally (which is not compatible with preloading). This is slower, it is better to tag misbehaving tests with the '# HARNESS-NO-PRELOAD' comment in their header to disable forking only for those tests.",
     );
 
     option abort_on_bail => (
-        type => 'b',
-        default => 1,
+        type        => 'Bool',
+        default     => 1,
         description => "Abort all testing if a bail-out is encountered (default: on)",
     );
 
     option use_timeout => (
+        type        => 'Bool',
         alt         => ['timeout'],
-        description => "(default: on) Enable/disable timeouts",
         default     => 1,
+        description => "(default: on) Enable/disable timeouts",
     );
 
     option shared_jobs_config => (
-        type => 's',
-        description => 'Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.',
-        default => '.sharedjobslots.yml',
-        long_examples => [ ' .sharedjobslots.yml', ' relative/path/.sharedjobslots.yml', ' /absolute/path/.sharedjobslots.yml' ],
+        type          => 'Scalar',
+        default       => '.sharedjobslots.yml',
+        long_examples => [' .sharedjobslots.yml', ' relative/path/.sharedjobslots.yml', ' /absolute/path/.sharedjobslots.yml'],
+        description   => 'Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.',
     );
 
-    post \&jobs_post_process;
+    # jobs_post_process is registered before cover_post_process to preserve live
+    # execution order: both are weight=0, and Instance.pm preserves push-order
+    # within a weight bucket.
+    option_post_process 0 => \&jobs_post_process;
+
     option job_count => (
-        type           => 's',
+        type           => 'Scalar',
         short          => 'j',
         alt            => ['jobs'],
-        description    => 'Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.',
-        env_vars       => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
-        clear_env_vars => 1,
+        from_env_vars  => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
+        clear_env_vars => [qw/YATH_JOB_COUNT T2_HARNESS_JOB_COUNT HARNESS_JOB_COUNT/],
         long_examples  => [' 4', ' 8:2'],
-        short_examples => ['4', '8:2'],
+        short_examples => ['4',  '8:2'],
+        description    => 'Set the number of concurrent jobs to run. Add a :# if you also wish to designate multiple slots per test. 8:2 means 8 slots, but each test gets 2 slots, so 4 tests run concurrently. Tests can find their concurrency assignemnt in the "T2_HARNESS_MY_JOB_CONCURRENCY" environment variable.',
 
-        action => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings, $handler) = @_;
+        # The '8:2' form RESHAPES the stored value: mutate @{$params{val}} to keep
+        # only the jobs portion and side-channel the slots_per_job.
+        # fix_job_resources is deferred to jobs_post_process (runs after all args
+        # are processed) so that the full settings context is available.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
 
-            my ($jobs, $slots) = split /:/, $norm;
+            my ($val) = @{$params{val}};
+            return unless $val && $val =~ m/:/;
 
-            $$slot = $jobs;
-
-            $settings->runner->slots_per_job($slots) if defined $slots;
-
-            fix_job_resources($settings);
+            my ($jobs, $slots) = split /:/, $val;
+            @{$params{val}} = ($jobs);
+            $params{settings}->runner->create_option(slots_per_job => $slots) if defined $slots;
         },
     );
 
     option slots_per_job => (
-        type => 's',
-        short => 'x',
-        description => "This sets the number of slots each job will use (default 1). This is normally set by the ':#' in '-j#:#'.",
-        env_vars => ['T2_HARNESS_JOB_CONCURRENCY'],
-        clear_env_vars => 1,
-        long_examples => [' 2'],
+        type           => 'Scalar',
+        short          => 'x',
+        from_env_vars  => ['T2_HARNESS_JOB_CONCURRENCY'],
+        clear_env_vars => ['T2_HARNESS_JOB_CONCURRENCY'],
+        long_examples  => [' 2'],
         short_examples => ['2'],
+        description    => "This sets the number of slots each job will use (default 1). This is normally set by the ':#' in '-j#:#'.",
     );
 
     option dump_depmap => (
-        type => 'b',
+        type        => 'Bool',
+        default     => 0,
         description => "When using staged preload, dump the depmap for each stage as json files",
-        default => 0,
     );
 
     option includes => (
+        type        => 'List',
         name        => 'include',
         short       => 'I',
-        type        => 'm',
         description => "Add a directory to your include paths",
     );
 
     option resources => (
-        name => 'resource',
-        short => 'R',
-        type => 'm',
-        description => "Use a resource module to assign resource assignments to individual tests",
+        type           => 'List',
+        name           => 'resource',
+        short          => 'R',
         long_examples  => [' Port', ' +Test2::Harness2::Runner::Resource::Port'],
         short_examples => [' Port'],
+        description    => "Use a resource module to assign resource assignments to individual tests",
 
-        normalize => sub {
-            my $val = shift;
-
+        normalize => sub ($val) {
             $val = "Test2::Harness2::Runner::Resource::$val"
-            unless $val =~ s/^\+//;
-
+                unless $val =~ s/^\+//;
             return $val;
         },
     );
 
     option tlib => (
-        description => "(Default: off) Include 't/lib' in your module path",
+        type        => 'Bool',
         default     => 0,
-        action => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings, $handler) = @_;
-            push @{$settings->runner->includes} => File::Spec->catdir('t', 'lib');
+        description => "(Default: off) Include 't/lib' in your module path",
+
+        # Same pattern as lib/blib: path lands in includes, flag is suppressed
+        # so Test2::Harness2::Runner::all_libs doesn't double-add t/lib when
+        # it sees tlib true.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+            push @{$params{settings}->runner->includes} => File::Spec->catdir('t', 'lib');
+            @{$params{val}} = (0);    # suppress flag storage
         },
     );
 
     option lib => (
-        short => 'l',
-        description => "(Default: include if it exists) Include 'lib' in your module path",
+        type        => 'Bool',
+        short       => 'l',
         default     => 1,
-        action => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings, $handler) = @_;
-            push @{$settings->runner->includes} => 'lib';
-            $settings->runner->lib(0);
-            $settings->runner->blib(0);
+        description => "(Default: include if it exists) Include 'lib' in your module path",
+
+        # Trigger fires before add_value stores the result.  Mutating
+        # @{$params{val}} to (0) suppresses the flag being set to 1
+        # (the path lands in includes instead).  blib is also zeroed so
+        # all lib-path resolution goes through includes.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+            push @{$params{settings}->runner->includes} => 'lib';
+            @{$params{val}} = (0);    # suppress flag storage
+            $params{settings}->runner->option(blib => 0);
         },
     );
 
     option blib => (
-        short => 'b',
-        description => "(Default: include if it exists) Include 'blib/lib' and 'blib/arch' in your module path",
+        type        => 'Bool',
+        short       => 'b',
         default     => 1,
-        action => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings, $handler) = @_;
+        description => "(Default: include if it exists) Include 'blib/lib' and 'blib/arch' in your module path",
 
-            push @{$settings->runner->includes} => (
+        # Same pattern as lib above: paths land in includes, flag is suppressed.
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+            push @{$params{settings}->runner->includes} => (
                 File::Spec->catdir('blib', 'lib'),
                 File::Spec->catdir('blib', 'arch'),
             );
-
-            $settings->runner->lib(0);
-            $settings->runner->blib(0);
+            @{$params{val}} = (0);    # suppress flag storage
+            $params{settings}->runner->option(lib => 0);
         },
     );
 
     option unsafe_inc => (
-        description => "perl is removing '.' from \@INC as a security concern. This option keeps things from breaking for now.",
-        env_vars    => [qw/PERL_USE_UNSAFE_INC/],
-        default     => 0,
+        type          => 'Bool',
+        from_env_vars => [qw/PERL_USE_UNSAFE_INC/],
+        default       => 0,
+        description   => "perl is removing '.' from \@INC as a security concern. This option keeps things from breaking for now.",
     );
 
     option preloads => (
-        type        => 'm',
+        type        => 'List',
         alt         => ['preload'],
         short       => 'P',
         description => 'Preload a module before running tests',
     );
 
     option preload_threshold => (
-        short => 'W',
-        alt => ['Pt'],
-        type => 's',
-        default => 0,
-        description => "Only do preload if at least N tests are going to be run. In some cases a full preload takes longer than simply running the tests, this lets you specify a minimum number of test jobs that will be run for preload to happen. This has no effect for a persistent runner. The default is 0, and it means always preload."
+        type        => 'Scalar',
+        short       => 'W',
+        alt         => ['Pt'],
+        default     => 0,
+        description => "Only do preload if at least N tests are going to be run. In some cases a full preload takes longer than simply running the tests, this lets you specify a minimum number of test jobs that will be run for preload to happen. This has no effect for a persistent runner. The default is 0, and it means always preload.",
     );
 
     option nytprof => (
-        type => 'b',
-        description => "Use Devel::NYTProf on tests. This will set addpid=1 for you. This works with or without fork.",
+        type          => 'Bool',
         long_examples => [''],
+        description   => "Use Devel::NYTProf on tests. This will set addpid=1 for you. This works with or without fork.",
     );
 
-    post \&cover_post_process;
-    option cover => (
-        type        => 'd',
-        description => "Use Devel::Cover to calculate test coverage. This disables forking. If no args are specified the following are used: $DEFAULT_COVER_ARGS",
-        long_examples => ['', '=-silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl'],
-        action      => sub {
-            my ($prefix, $field, $raw, $norm, $slot, $settings) = @_;
+    # cover_post_process registered after jobs_post_process to maintain live
+    # execution order within weight=0.
+    option_post_process 0 => \&cover_post_process;
 
-            return $$slot = $DEFAULT_COVER_ARGS if $norm eq '1';
-            return $$slot = $norm;
-        },
+    option cover => (
+        type          => 'Auto',
+        from_env_vars => [qw/T2_DEVEL_COVER/],
+        set_env_vars  => [qw/T2_DEVEL_COVER/],
+        autofill      => $DEFAULT_COVER_ARGS,
+        long_examples => ['', "=-silent,1,+ignore,^t/,+ignore,^t2/,+ignore,^xt,+ignore,^test.pl"],
+        description   => "Use Devel::Cover to calculate test coverage. This disables forking. If no args are specified the following are used: $DEFAULT_COVER_ARGS",
     );
 
     option switch => (
-        field        => 'switches',
-        short        => 'S',
-        type         => 'm',
-        description  => 'Pass the specified switch to perl for each test. This is not compatible with preload.',
+        type        => 'List',
+        field       => 'switches',
+        short       => 'S',
+        description => 'Pass the specified switch to perl for each test. This is not compatible with preload.',
     );
 
     option fail_on_resource_skip => (
-        type => 'b',
-        default => 0,
-        description => 'Treat resource-skipped tests as failures instead of skips. When enabled, tests that would be skipped due to unavailable resources will be marked as failing.',
+        type          => 'Bool',
+        default       => 0,
         long_examples => [''],
+        description   => 'Treat resource-skipped tests as failures instead of skips. When enabled, tests that would be skipped due to unavailable resources will be marked as failing.',
     );
 
     option resource_timeout => (
-        alt => ['rt'],
-
-        type => 's',
-        default => 0,
-
+        type           => 'Scalar',
+        alt            => ['rt'],
+        default        => 0,
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
         description    => 'Abort the test run if no tests have been able to start for SECONDS seconds while there are pending tests and none running. This is useful when a resource class is broken and always claims a resource will become available, preventing yath from ever finishing. (Default: 0, meaning no timeout)',
     );
 
     option event_timeout => (
-        alt => ['et'],
-
-        type => 's',
-        default => 60,
-
+        type           => 'Scalar',
+        alt            => ['et'],
+        default        => 60,
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
         description    => 'Kill test if no output is received within timeout period. (Default: 60 seconds). Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis. This prevents a hung test from running forever.',
     );
 
     option post_exit_timeout => (
-        alt => ['pet'],
-
-        type => 's',
-        default => 15,
-
+        type           => 'Scalar',
+        alt            => ['pet'],
+        default        => 15,
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
-        description    => 'Stop waiting post-exit after the timeout period. (Default: 15 seconds) Some tests fork and allow the parent to exit before writing all their output. If Test2::Harness2 detects an incomplete plan after the test exits it will monitor for more events until the timeout period. Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis.'
+        description    => 'Stop waiting post-exit after the timeout period. (Default: 15 seconds) Some tests fork and allow the parent to exit before writing all their output. If Test2::Harness2 detects an incomplete plan after the test exits it will monitor for more events until the timeout period. Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis.',
     );
 
     option runner_id => (
-        type => 's',
-        default => sub { gen_uuid() },
+        type        => 'Scalar',
+        initialize  => \&gen_uuid,
         description => 'Runner ID (usually a generated uuid)',
     );
 };
 
-sub jobs_post_process {
-    my %params   = @_;
-    my $settings = $params{settings};
+sub jobs_post_process ($options, $state) {
+    my $settings = $state->{settings};
 
-    my $runner = $settings->runner or return;
+    my $runner = $settings->check_group('runner') ? $settings->runner : undef;
+    return unless $runner;
 
     fix_job_resources($settings);
 
@@ -254,9 +282,7 @@ sub jobs_post_process {
     $ENV{T2_HARNESS_MY_MAX_JOB_CONCURRENCY} = $runner->slots_per_job;
 }
 
-sub fix_job_resources {
-    my ($settings) = @_;
-
+sub fix_job_resources ($settings) {
     my $runner = $settings->runner;
 
     require Test2::Harness2::Runner::Resource::SharedJobSlots::Config;
@@ -286,8 +312,8 @@ sub fix_job_resources {
     }
 
     if ($found{'Test2::Harness2::Runner::Resource::SharedJobSlots'} && $sconf) {
-        $runner->field(job_count     => $sconf->default_slots_per_run || $sconf->max_slots_per_run) if $runner && !$runner->job_count;
-        $runner->field(slots_per_job => $sconf->default_slots_per_job || $sconf->max_slots_per_job) if $runner && !$runner->slots_per_job;
+        $runner->create_option(job_count     => $sconf->default_slots_per_run || $sconf->max_slots_per_run) if $runner && !$runner->job_count;
+        $runner->create_option(slots_per_job => $sconf->default_slots_per_job || $sconf->max_slots_per_job) if $runner && !$runner->slots_per_job;
 
         my $run_slots = $runner->job_count;
         my $job_slots = $runner->slots_per_job;
@@ -299,8 +325,8 @@ sub fix_job_resources {
             if $job_slots > $sconf->max_slots_per_job;
     }
 
-    $runner->field(job_count     => 1) if $runner && !$runner->job_count;
-    $runner->field(slots_per_job => 1) if $runner && !$runner->slots_per_job;
+    $runner->create_option(job_count     => 1) if $runner && !$runner->job_count;
+    $runner->create_option(slots_per_job => 1) if $runner && !$runner->slots_per_job;
 
     my $run_slots = $runner->job_count;
     my $job_slots = $runner->slots_per_job;
@@ -308,44 +334,39 @@ sub fix_job_resources {
     die "The slots_per_job (set to $job_slots) must not be larger than the job_count (set to $run_slots).\n" if $job_slots > $run_slots;
 }
 
-sub cover_post_process {
-    my %params   = @_;
-    my $settings = $params{settings};
+sub cover_post_process ($options, $state) {
+    my $settings = $state->{settings};
 
-    if ($ENV{T2_DEVEL_COVER} && !$settings->runner->cover) {
-        $settings->runner->field(cover => $ENV{T2_DEVEL_COVER} eq '1' ? $ENV{T2_DEVEL_COVER} : $DEFAULT_COVER_ARGS);
-    }
+    my $runner = $settings->check_group('runner') ? $settings->runner : undef;
+    return unless $runner;
 
-    return unless $settings->runner->cover;
+    # T2_DEVEL_COVER is consumed via from_env_vars on the cover option; no env fallback needed here.
+    return unless $runner->cover;
 
     # For nested things
-    $ENV{T2_NO_FORK} = 1;
-    $ENV{T2_DEVEL_COVER} = $settings->runner->cover;
-    $settings->runner->field(use_fork => 0);
+    $ENV{T2_NO_FORK}     = 1;
+    $ENV{T2_DEVEL_COVER} = $runner->cover;
+    $runner->create_option(use_fork => 0);
 
-    return unless $settings->check_prefix('run');
-    push @{$settings->run->load_import->{'@'}} => 'Devel::Cover';
-    $settings->run->load_import->{'Devel::Cover'} = [split(/,/, $settings->runner->cover)];
+    return unless $settings->check_group('run');
+
+    # Maintain the '@' insertion-order key that Job.pm iterates over —
+    # same pattern as Run.pm's dbi_profiling post and the load_import trigger.
+    $settings->run->create_option(load_import => {}) unless defined $settings->run->load_import;
+    my $load_import = $settings->run->load_import;
+    unless ($load_import->{'Devel::Cover'}) {
+        push @{$load_import->{'@'}} => 'Devel::Cover';
+        $load_import->{'Devel::Cover'} = [split(/,/, $runner->cover)];
+    }
 }
 
 1;
 
 __END__
 
-
 =pod
 
 =encoding UTF-8
-
-=head1 NAME
-
-App::Yath2::Options::Runner - Runner options for Yath.
-
-=head1 DESCRIPTION
-
-This is where command line options for the runner are defined.
-
-=head1 PROVIDED OPTIONS POD IS AUTO-GENERATED
 
 =head1 SOURCE
 

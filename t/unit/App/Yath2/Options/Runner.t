@@ -7,27 +7,21 @@ use App::Yath2::Options::Runner;
 my $opts = App::Yath2::Options::Runner->options;
 
 subtest 'fail_on_resource_skip option is defined' => sub {
-    my @all = @{$opts->all};
+    my @all = @{$opts->options};
     my ($opt) = grep { $_->field eq 'fail_on_resource_skip' } @all;
 
     ok($opt, "fail_on_resource_skip option exists");
-    is($opt->type, 'b', "Option is a boolean type");
-    is($opt->default, 0, "Default is 0 (off)");
-    like($opt->description, qr/resource-skipped tests as failures/, "Description mentions resource-skipped tests");
-    is($opt->prefix, 'runner', "Option is in the runner prefix");
+    isa_ok($opt, ['Getopt::Yath::Option::Bool'], "Option is a boolean type");
+    is($opt->group, 'runner', "Option is in the runner group");
     is($opt->field, 'fail_on_resource_skip', "Field name is fail_on_resource_skip");
+    like($opt->description, qr/resource-skipped tests as failures/, "Description mentions resource-skipped tests");
 };
 
 subtest 'fail_on_resource_skip default in settings' => sub {
-    my ($opt) = grep { $_->field eq 'fail_on_resource_skip' } @{$opts->all};
-    my $settings = $opts->settings;
+    my $state    = $opts->process_args([], skip_posts => 1);
+    my $settings = $state->{settings};
 
-    # option_slot defines the prefix and vivifies the field
-    my $slot = $opt->option_slot($settings);
-    my $default = $opt->get_default($settings);
-    $$slot //= $default;
-
-    ok($settings->check_prefix('runner'), "runner prefix is defined");
+    ok($settings->check_group('runner'), "runner group is defined");
     is($settings->runner->fail_on_resource_skip, 0, "Default value is 0 (skip, not fail)");
 };
 
