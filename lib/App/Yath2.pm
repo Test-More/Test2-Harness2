@@ -156,7 +156,18 @@ sub process_argv ($self) {
         @$tail,
     );
 
-    my $cmd_state = $self->_process_command_args(\@cmd_args, cmd => $cmd_name);
+    # When --help or --version fired the stage-1 shortcut the debug posts will
+    # exit(0) during stage-2 processing, so @{$self->{+_ARGV}} is never
+    # populated and any trailing args (e.g. `yath --help test`) are silently
+    # lost.  Fix: skip posts during _process_command_args, build @argv first,
+    # then replay the posts so they see the correct argv.
+    my $replay_posts = $settings->debug->help || $settings->debug->version;
+
+    my $cmd_state = $self->_process_command_args(
+        \@cmd_args,
+        cmd        => $cmd_name,
+        $replay_posts ? (skip_posts => 1) : (),
+    );
     $self->{+OPTION_STATE} = $cmd_state;
 
     # Final argv for the command: non-option args, plus any stop token
@@ -171,6 +182,18 @@ sub process_argv ($self) {
     $self->clear_env();
 
     $self->_instantiate_plugins();
+
+    # Replay the posts now that @{$self->{+_ARGV}} is fully populated.  The
+    # help/version posts exit(0) here, which is intentional.
+    if ($replay_posts) {
+        my $options = $self->options;
+        for my $weight (sort { $a <=> $b } keys %{$options->posts}) {
+            for my $set (@{$options->posts->{$weight}}) {
+                next if $set->{applicable} && !$set->{applicable}->($set, $options, $settings);
+                $set->{callback}->($options, $cmd_state);
+            }
+        }
+    }
 
     return $self->{+_ARGV};
 }
