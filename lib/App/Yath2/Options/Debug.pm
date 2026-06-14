@@ -246,8 +246,13 @@ sub _post_process_show_opts ($options, $state) {
 
     _print_command_banner($settings);
 
-    my $remains = $state->{remains} // [];
-    print "\nCommand args: " . join(', ' => @$remains) . "\n" if @$remains;
+    # Mirror the final argv assembly in App::Yath2::process_argv(): ordinary
+    # positional args land in 'skipped' under skip_non_opts, only post-stop
+    # args land in 'remains'. Reading 'remains' alone dropped the command args.
+    my @cmd_args = @{$state->{skipped} // []};
+    push @cmd_args => $state->{stop} if defined $state->{stop};
+    push @cmd_args => @{$state->{remains} // []};
+    print "\nCommand args: " . join(', ' => @cmd_args) . "\n" if @cmd_args;
 
     my $group = $settings->debug->show_opts;
     my $out =
