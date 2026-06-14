@@ -33,6 +33,7 @@ use Test2::Harness2::Util::HashBase qw{
     +pending
     +verdicts
     +tries
+    +try_will_retry
 
     <wait_time
     <action
@@ -51,6 +52,7 @@ sub init {
     $self->{+WAIT_TIME} //= 0.02;
     $self->{+VERDICTS} //= {};
     $self->{+TRIES}    //= {};
+    $self->{+TRY_WILL_RETRY} //= {};
 
     $self->{+ACTION}->($self->_harness_event(0, undef, time, harness_run => $self->{+RUN}, harness_settings => $self->settings, about => {no_display => 1}));
 }
@@ -120,7 +122,17 @@ sub process {
             }
 
             delete $jobs->{$job_try};
-            delete $self->{+PENDING}->{$jdir->job_id} unless $done->{retry};
+
+            # The JobReader tails one try and cannot know retry intent (its
+            # done->{retry} is hardcoded 0), so consult the gatherer's own
+            # decision recorded in _note_verdict. If this try failed with retry
+            # budget left, a retry is coming: keep the job_id in PENDING so a
+            # persistent run (which completes on empty PENDING) does not emit
+            # harness_final and exit before the retry runs. The next try's job
+            # entry will decrement PENDING in jobs(); only delete here once the
+            # job has settled (passed, or failed with no budget).
+            my $job_id = $jdir->job_id;
+            delete $self->{+PENDING}->{$job_id} unless delete $self->{+TRY_WILL_RETRY}->{$job_id};
         }
 
         last if !$count && $self->runner_exited;
@@ -385,9 +397,17 @@ sub _note_verdict {
         # failure while budget remains (Runner: is_try < retry => retry_task), so
         # a failing try with budget left WILL be retried. Mark it so the renderer
         # shows "TO RETRY" instead of "FAILED" for a non-final try.
-        if ($end->{fail} && ($self->{+PENDING}{$job_id} // 0) > 0) {
+        my $will_retry = $end->{fail} && ($self->{+PENDING}{$job_id} // 0) > 0;
+        if ($will_retry) {
             $end->{retry} = 1;
         }
+
+        # Remember the retry decision so the process loop keeps this job_id
+        # "unsettled" in PENDING until the retry's try has been read (otherwise a
+        # persistent run, which gates completion on runner_done -> empty PENDING,
+        # would emit harness_final and exit before the retry ever ran). Settled on
+        # the final try (pass, or fail with no budget left).
+        $self->{+TRY_WILL_RETRY}{$job_id} = $will_retry ? 1 : 0;
 
         # VERDICTS is last-try-wins (keyed by job_id, overwritten each try) so it
         # always holds the FINAL verdict for the job. TRIES counts every
