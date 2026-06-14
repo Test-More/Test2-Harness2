@@ -12,6 +12,11 @@ use Test2::Harness2::Util::HashBase qw{<log_file};
 
 use Getopt::Yath;
 
+# POD documents that 'failed' accepts the same renderer/formatter options as
+# 'test'. Getopt::Yath instances are per-package (unlike 1.0's global option
+# registry), so pull the Display group in explicitly to honor that contract.
+include_options('App::Yath2::Options::Display');
+
 option_group {group => 'display', category => 'Display Options'} => sub {
     option brief => (
         type        => 'Bool',

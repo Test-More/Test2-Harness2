@@ -407,6 +407,16 @@ sub _instantiate_plugins ($self) {
 }
 
 sub clear_env {
+    # Color is a per-process display choice (decided from each process's own
+    # STDOUT), never inherited. Strip it so a TTY parent (or an externally-set
+    # value) does not force ANSI color into captured child / nested-yath output.
+    # This runs after option processing, so the harness's own color (read into
+    # settings already) is unaffected. NOTE: TABLE_TERM_SIZE is intentionally
+    # NOT cleared -- Term::Table reads it at render time, so clearing it would
+    # break --term-width for the harness itself.
+    delete $ENV{YATH_COLOR};
+    delete $ENV{CLICOLOR_FORCE};
+
     delete $ENV{HARNESS_IS_VERBOSE};
     delete $ENV{T2_FORMATTER};
     delete $ENV{T2_HARNESS_FORKED};

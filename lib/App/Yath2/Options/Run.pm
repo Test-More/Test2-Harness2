@@ -386,11 +386,17 @@ option_group {group => 'run', category => "Run Options"} => sub {
         trigger => sub ($opt, %params) {
             return unless $params{action} eq 'set';
 
-            my $mod = $params{val}->[0];
             my $ref = $params{ref};
             $$ref //= {};
-            # Trigger fires before the class key is stored, so 'exists' is false exactly on first insertion.
-            push @{$$ref->{'@'}} => $mod unless exists $$ref->{$mod};
+
+            # val is a flat (key, val, key, val, ...) list -- one pair per -M for
+            # CLI use, but multiple pairs for a single JSON-hashref invocation.
+            # Walk every pair so all modules land in the insertion-ordered '@'.
+            my @val = @{$params{val}};
+            while (my ($mod, $mod_args) = splice(@val, 0, 2)) {
+                # Trigger fires before the class key is stored, so 'exists' is false exactly on first insertion.
+                push @{$$ref->{'@'}} => $mod unless exists $$ref->{$mod};
+            }
         },
     );
 

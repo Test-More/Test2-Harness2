@@ -211,7 +211,13 @@ option_group {group => 'display', category => "Display Options"} => sub {
         description   => "Turn color on, default is true if STDOUT is a TTY.",
         default       => sub { -t STDOUT ? 1 : 0 },
         from_env_vars => ['YATH_COLOR', 'CLICOLOR_FORCE'],
-        set_env_vars  => ['YATH_COLOR'],
+        # Deliberately NO set_env_vars: color must NOT propagate to child or
+        # nested processes. Each process decides color from its own STDOUT (a
+        # nested yath's output is captured -> not a TTY -> must stay un-colored).
+        # Exporting YATH_COLOR=1 from a TTY parent forced ANSI into captured
+        # nested-yath output and broke the integration tests that compare it.
+        # clear_env() also strips YATH_COLOR/CLICOLOR_FORCE so an externally-set
+        # value cannot leak into children either.
     );
 
     option quiet => (
@@ -292,12 +298,18 @@ option_group {group => 'display', category => "Display Options"} => sub {
         trigger => sub ($self, %args) {
             return unless $args{action} eq 'set';
             my $ref = $args{ref};
-            my ($class) = @{$args{val}};
             $$ref //= {};
-            # Maintain legacy '@' key: insertion-ordered class list consumed by
-            # Command/test.pm. Trigger fires before the class key is stored, so
-            # 'exists' is false exactly on first insertion.
-            push @{$$ref->{'@'}} => $class unless exists $$ref->{$class};
+
+            # val is a flat (key, val, key, val, ...) list -- one pair per
+            # --renderer for CLI use, but multiple pairs for a single JSON-hashref
+            # invocation. Walk every pair so all renderers land in '@'.
+            my @val = @{$args{val}};
+            while (my ($class, $class_args) = splice(@val, 0, 2)) {
+                # Maintain legacy '@' key: insertion-ordered class list consumed by
+                # Command/test.pm. Trigger fires before the class key is stored, so
+                # 'exists' is false exactly on first insertion.
+                push @{$$ref->{'@'}} => $class unless exists $$ref->{$class};
+            }
         },
     );
 };
