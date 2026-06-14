@@ -75,9 +75,13 @@ sub run {
 
             next unless $f->{harness_job_end};
 
+            # Test2-Collector's TimeTracker records the phase totals
+            # (startup/events/cleanup/total) directly as the harness_job_end
+            # `times` hash. The pre-swap shape nested them under a `totals` key
+            # (alongside `source`); the new shape IS the totals hash.
             my $job = {};
-            $job->{file} = $f->{harness_job_end}->{rel_file}        if $f->{harness_job_end} && $f->{harness_job_end}->{rel_file};
-            $job->{time} = $f->{harness_job_end}->{times}->{totals} if $f->{harness_job_end} && $f->{harness_job_end}->{times};
+            $job->{file} = $f->{harness_job_end}->{rel_file} if $f->{harness_job_end} && $f->{harness_job_end}->{rel_file};
+            $job->{time} = $f->{harness_job_end}->{times}     if $f->{harness_job_end} && $f->{harness_job_end}->{times};
 
             push @jobs => $job;
         }
@@ -89,9 +93,9 @@ sub run {
     @jobs = sort { $self->sort_compare($a, $b) } @jobs;
 
     for my $job (@jobs) {
-        my $data = $job->{time};
+        my $data = $job->{time} // {};
         push @rows => $self->build_row({%$data, file => $job->{file}});
-        $totals->{$_} += $data->{$_} for @NUMERIC;
+        $totals->{$_} += $data->{$_} for grep { defined $data->{$_} } @NUMERIC;
     }
 
     push @rows => [map { '--' } @fields];
