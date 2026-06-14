@@ -53,7 +53,7 @@ use Test2::Harness2::Util::HashBase(
     # From Construction
     qw{
         <dir <settings <fork_job_callback <fork_spawn_callback <respawn_runner_callback <monitor_preloads
-        <jobs_todo <dump_depmap
+        <jobs_todo <dump_depmap <persist
     },
     # Other
     qw {
@@ -520,8 +520,31 @@ sub run_job {
     return $pid;
 }
 
+sub orphaned {
+    my $self = shift;
+
+    # A persistent runner whose workdir or persistence file has been removed has
+    # lost its owner (a `yath stop`, or a starter that died and got cleaned up).
+    # Nothing will ever drive it again, so shut down instead of idling forever
+    # and respawning preload stages. Already-signalled shutdowns are left alone.
+    return 0 if $self->{+SIGNAL};
+
+    my $dir = $self->{+DIR};
+    return 1 if $dir && !-d $dir;
+
+    my $pfile = $self->{+PERSIST};
+    return 1 if $pfile && !-e $pfile;
+
+    return 0;
+}
+
 sub end_test_loop {
     my $self = shift;
+
+    if ($self->orphaned) {
+        $self->{+SIGNAL} //= 'TERM';
+        return 1;
+    }
 
     my $state = $self->state;
 
