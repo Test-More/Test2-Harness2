@@ -162,6 +162,14 @@ sub process_argv ($self) {
     # then replay the posts so they see the correct argv.
     my $replay_posts = $settings->debug->help || $settings->debug->version;
 
+    # Some options (finder via --finder, external plugins via -p+Foo) pull in
+    # additional option groups from their trigger. process_args() snapshots the
+    # applicable option set once at its start, so those late includes would be
+    # invisible to the rest of the same parse and their options rejected. Run a
+    # throwaway discovery parse first to fire those includes, then parse for real
+    # with the grown option set. See _preload_dynamic_options.
+    $self->_preload_dynamic_options(\@cmd_args);
+
     my $cmd_state = $self->_process_command_args(
         \@cmd_args,
         cmd => $cmd_name,
@@ -241,6 +249,39 @@ sub _process_command_args ($self, $args, %params) {
             exit 255;
         },
     );
+}
+
+sub _preload_dynamic_options ($self, $cmd_args) {
+    # process_args() snapshots the applicable option set once at its start, so
+    # options pulled in mid-parse by a trigger (a finder's options via --finder,
+    # an external plugin's via -p+Foo) are invisible to the rest of THAT parse
+    # and get rejected. Run a throwaway discovery parse first whose only lasting
+    # effect is those include() calls -- which are idempotent via
+    # Getopt::Yath::Instance's DEDUP, so the real stage-2 parse re-runs the same
+    # triggers harmlessly. Every other side effect is suppressed here: a discard
+    # settings object absorbs values, and skip_posts/no_set_env prevent
+    # post-processing and %ENV mutation. Discovery is best-effort -- any real
+    # parse error surfaces (with command-specific messaging) from the stage-2
+    # parse, so swallow failures here.
+    my $discard = Getopt::Yath::Settings->new(harness => {});
+
+    eval {
+        $self->options->process_args(
+            [@$cmd_args],
+            settings          => $discard,
+            env               => {},
+            cleared           => {},
+            modules           => {},
+            stops             => ['--', '::'],
+            skip_posts        => 1,
+            skip_non_opts     => 1,
+            skip_invalid_opts => 1,
+            no_set_env        => 1,
+        );
+        1;
+    };
+
+    return;
 }
 
 sub command_class {

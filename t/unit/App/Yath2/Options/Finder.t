@@ -31,6 +31,35 @@ subtest munge_settings_invoked => sub {
     ok($Test2::Harness2::Finder::TestMunge::MUNGED, "finder->munge_settings() was invoked during option processing");
 };
 
+# Inline custom finder that contributes its OWN option. Its options are only
+# included from the finder trigger (mid-parse), exercising the dynamic-include
+# preload path.
+{
+    package Test2::Harness2::Finder::TestOpt;
+    use Getopt::Yath;
+    option_group {group => 'testopt', category => 'TestOpt'} => sub {
+        option zz_thing => (type => 'Scalar', description => 'zz');
+    };
+    our @ISA = ('Test2::Harness2::Finder');
+    $INC{'Test2/Harness2/Finder/TestOpt.pm'} = __FILE__;
+}
+
+subtest dynamic_finder_option => sub {
+    my $settings = Getopt::Yath::Settings->new(harness => {});
+    my $app = App::Yath2->new(
+        argv     => ['test', '--finder', 'TestOpt', '--zz-thing', 'hello', __FILE__],
+        config   => {},
+        settings => $settings,
+    );
+
+    my $ok;
+    my @ignore = warns { $ok = eval { $app->process_argv; 1 } };
+    my $err = $@;
+
+    ok($ok, "A custom finder's own option parses after --finder") or diag($err);
+    is($settings->testopt->zz_thing, 'hello', "finder-contributed option value captured");
+};
+
 subtest rerun_conflicting_logs => sub {
     my $run = sub {
         my (@argv) = @_;
