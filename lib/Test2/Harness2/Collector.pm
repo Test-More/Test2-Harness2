@@ -375,6 +375,20 @@ sub _note_verdict {
     if (my $end = $fd->{harness_job_end}) {
         my $job_id = $event->job_id;
 
+        # Retry intent: the JobReader tails a single try's events file and cannot
+        # know whether the runner will retry this try, so it hardcodes retry=0.
+        # The gatherer DOES know: PENDING->{$job_id} is the remaining retry budget
+        # (it starts at 1 + retry-count in process_tasks and is decremented in
+        # jobs() each time a new try's job entry is read). At the moment a FAILING
+        # job_end arrives, the current try's entry has already been read, so a
+        # non-zero PENDING means more tries are budgeted; the runner retries every
+        # failure while budget remains (Runner: is_try < retry => retry_task), so
+        # a failing try with budget left WILL be retried. Mark it so the renderer
+        # shows "TO RETRY" instead of "FAILED" for a non-final try.
+        if ($end->{fail} && ($self->{+PENDING}{$job_id} // 0) > 0) {
+            $end->{retry} = 1;
+        }
+
         # VERDICTS is last-try-wins (keyed by job_id, overwritten each try) so it
         # always holds the FINAL verdict for the job. TRIES counts every
         # harness_job_end seen for the job_id, giving the total attempt count
