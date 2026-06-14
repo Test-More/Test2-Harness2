@@ -630,6 +630,15 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
             if (defined $val) {
                 $val =~ s/^=//;
+
+                # Reject conflicting log selections, restoring the 1.0
+                # _post_process guard. A bare --rerun-MODE sets rerun to 1 (just
+                # an activation flag), so only a *different* explicit path is a
+                # real conflict; the same path twice is harmless.
+                my $cur = $state->{settings}->finder->rerun;
+                die "Multiple runs specified for rerun ('$cur' and '$val').\n"
+                    if defined($cur) && "$cur" ne '1' && "$cur" ne "$val";
+
                 $state->{settings}->finder->rerun($val);
             }
 

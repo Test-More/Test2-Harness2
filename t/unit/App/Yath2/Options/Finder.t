@@ -31,4 +31,23 @@ subtest munge_settings_invoked => sub {
     ok($Test2::Harness2::Finder::TestMunge::MUNGED, "finder->munge_settings() was invoked during option processing");
 };
 
+subtest rerun_conflicting_logs => sub {
+    my $run = sub {
+        my (@argv) = @_;
+        my $settings = Getopt::Yath::Settings->new(harness => {});
+        my $app = App::Yath2->new(argv => [@argv], config => {}, settings => $settings);
+        my ($err, $ok);
+        my @ignore = warns { $ok = eval { $app->process_argv; 1 }; $err = $@ };
+        return ($ok, $err, $settings);
+    };
+
+    my ($ok, $err) = $run->('test', '--rerun-failed=a.jsonl', '--rerun-passed=b.jsonl', __FILE__);
+    ok(!$ok, "Conflicting rerun log paths are rejected");
+    like($err, qr/Multiple runs specified for rerun/, "Got the expected error message");
+
+    (my $ok2, my $err2, my $settings) = $run->('test', '--rerun-failed=a.jsonl', '--rerun-passed=a.jsonl', __FILE__);
+    ok($ok2, "Same rerun log path for two modes is fine") or diag($err2);
+    is($settings->finder->rerun, 'a.jsonl', "rerun set to the shared log path");
+};
+
 done_testing;
