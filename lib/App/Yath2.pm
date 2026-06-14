@@ -252,18 +252,15 @@ sub _process_command_args ($self, $args, %params) {
 }
 
 sub _preload_dynamic_options ($self, $cmd_args) {
-    # process_args() snapshots the applicable option set once at its start, so
-    # options pulled in mid-parse by a trigger (a finder's options via --finder,
-    # an external plugin's via -p+Foo) are invisible to the rest of THAT parse
-    # and get rejected. Run a throwaway discovery parse first whose only lasting
-    # effect is those include() calls -- which are idempotent via
-    # Getopt::Yath::Instance's DEDUP, so the real stage-2 parse re-runs the same
-    # triggers harmlessly. Every other side effect is suppressed here: a discard
-    # settings object absorbs values, and skip_posts/no_set_env prevent
-    # post-processing and %ENV mutation. Unknown options are skipped (not fatal)
-    # at this stage, so the only way this dies is a content error from a trigger
-    # (e.g. an unloadable finder) -- which the stage-2 parse would raise anyway,
-    # so we let it propagate here rather than hide it.
+    # process_args() snapshots the applicable options once at its start, so a
+    # group pulled in mid-parse by a trigger (--finder's, or -p+Foo's) is unseen
+    # by the rest of THAT parse and its options get rejected. This throwaway
+    # discovery parse fires those include()s up front; they are idempotent
+    # (Getopt::Yath::Instance DEDUP), so the real stage-2 parse re-runs the same
+    # triggers harmlessly. A discard settings plus skip_posts/no_set_env suppress
+    # every other side effect. Unknown options are skipped here, so the only
+    # possible death is a trigger content error (e.g. an unloadable finder) that
+    # stage 2 would raise anyway -- let it propagate, don't hide it.
     my $discard = Getopt::Yath::Settings->new(harness => {});
 
     $self->options->process_args(
@@ -295,20 +292,15 @@ sub _command_from_argv ($self, $state) {
 
     my @args = grep { defined($_) } $state->{stop}, @{$state->{remains} // []};
 
-    # --version is an option now, consumed by the stage 1 parse. When it is
-    # set we resolve to the (option-less) 'help' command so we never load a
-    # real command module; the version post-processing prints and exits.
+    # --version (a stage-1 option) resolves to the option-less 'help' command;
+    # its post-processing prints and exits before any real command loads.
     return (help => \@args) if $settings->debug->version;
 
-    # --help is also an option consumed in stage 1. Unlike --version we still
-    # attempt to resolve a real command from the remaining args so that
-    # `yath --help test` renders the TEST command's help (the help post sees
-    # the command's option groups). Only when NO real command is present do we
-    # fall through to the 'help' command (bare `yath --help` -> command table,
-    # via the help post deferring when the resolved command isa help).
+    # --help still resolves a real command when present (so `yath --help test`
+    # renders test's help); only bare `yath --help` falls through to 'help'.
 
-    # Track the first bareword that is neither a registered command nor a path,
-    # in case no real command shows up (see the fallback after the loop).
+    # First bareword that is neither a registered command nor a path; used as a
+    # typo'd-command fallback if no real command turns up.
     my $fallback_idx;
 
     for (my $idx = 0; $idx < @args; $idx++) {
@@ -332,34 +324,27 @@ sub _command_from_argv ($self, $state) {
             return (replay => \@args);
         }
 
-        # A real command anywhere in the stream wins. This is what lets an
-        # unknown command-scoped option that took a *separated* value (e.g.
-        # `yath --formatter Test2 test`) not be mistaken for the command:
-        # 'Test2' is not a registered command, so we keep scanning, find 'test',
-        # and the leftover 'Test2' rides along to the stage-2 parse where the
-        # real --formatter option consumes it.
+        # A real command anywhere wins, so a separated value for an unknown
+        # option (`--formatter Test2 test`) is not mistaken for the command --
+        # 'Test2' is skipped, 'test' is found, and 'Test2' rides along to stage 2.
         if ($self->load_command($arg, check_only => 1)) {
             splice(@args, $idx, 1);
             return ($arg => \@args);
         }
 
-        # Not a registered command. Remember the first such bareword that is not
-        # a path: if no real command turns up it is most likely a typo'd command
-        # and we surface it as one (preserving the clear "command not found"
-        # error). Paths are skipped so a leading file falls through to defaults.
+        # Paths fall through to defaults; the first other bareword is a likely
+        # typo'd command, remembered for the post-loop fallback.
         next if -f $arg || -d $arg;
         $fallback_idx //= $idx;
     }
 
-    # No registered command found. Use the remembered bareword (typo'd command)
-    # if there was one; load_command will report it as invalid.
+    # Surface a remembered bareword as the command (load_command reports it
+    # invalid) when no real command was found.
     if (defined $fallback_idx) {
         my $cmd = splice(@args, $fallback_idx, 1);
         return ($cmd => \@args);
     }
 
-    # Bare `yath --help` (no command word) resolves to the help command, which
-    # prints the command table. The help post defers for this case.
     return (help => \@args) if $settings->debug->help;
 
     if (find_pfile($settings, no_checks => 1)) {
