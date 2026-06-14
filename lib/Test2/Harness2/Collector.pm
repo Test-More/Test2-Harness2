@@ -64,14 +64,23 @@ sub process {
     my $settings = $self->settings;
 
     while (1) {
-        my $count = 0;
-        $count += $self->process_runner_output if $self->{+SHOW_RUNNER_OUTPUT};
-        $count += $self->process_tasks();
+        # $progress counts GENUINE forward motion this cycle: runner-output
+        # lines, task-queue records, events emitted from a job, and jobs
+        # completed/removed/aborted. A job that merely EXISTS or is STALLED
+        # (poll returned nothing and it isn't done) is NOT progress -- counting
+        # those is what made the old loop spin at 100% CPU between events on any
+        # in-flight job (count was always > 0, so it never slept). $pending
+        # tracks stalled-but-alive jobs separately so we know whether to keep
+        # waiting (runner alive) or abort (runner dead).
+        my $progress = 0;
+        my $pending  = 0;
+        $progress += $self->process_runner_output if $self->{+SHOW_RUNNER_OUTPUT};
+        $progress += $self->process_tasks();
 
         my $jobs = $self->jobs;
 
         unless (keys %$jobs) {
-            next if $count;
+            next if $progress;
 
             if ($self->persistent_runner) {
                 last if $self->{+JOBS_DONE};
@@ -82,7 +91,6 @@ sub process {
         }
 
         while(my ($job_try, $jdir) = each %$jobs) {
-            $count++;
             my $e_count = 0;
             for my $event ($jdir->poll($self->settings->collector->max_poll_events // 1000)) {
                 $self->_note_verdict($event);
@@ -90,15 +98,17 @@ sub process {
                 $e_count++;
             }
 
-            $count += $e_count;
+            $progress += $e_count;
             next if $e_count;
             my $done = $jdir->done;
             unless ($done) {
-                $count++;
+                # Stalled job: no new events and not done. Not progress -- just
+                # something we're still waiting on. Track it so the no-progress
+                # branch below can decide whether to keep waiting or abort.
+                $pending++;
                 next;
             }
 
-            delete $jobs->{$job_try};
             unless ($settings->debug->keep_dirs) {
                 my $job_path = File::Spec->catdir($self->{+RUN_DIR}, $job_try);
                 # Needed because we set the perms so that a tmpdir under it can be used.
@@ -111,7 +121,9 @@ sub process {
                 };
                 my $err = $@;
                 unless ($ok) {
-                    $count++;
+                    # Cleanup failed: real work happened (we'll retry), so count
+                    # it as progress and keep the job around for the next pass.
+                    $progress++;
                     unless ($warning_seen{$job_path}++) {
                         my $msg = "NON-FATAL Error deleting job dir ($job_path) will try again...: $err";
                         my $e = $self->_harness_event(0, undef, time, info => [{details => $msg, tag => "INTERNAL", debug => 1, important => 1}]);
@@ -122,6 +134,7 @@ sub process {
             }
 
             delete $jobs->{$job_try};
+            $progress++;
 
             # The JobReader tails one try and cannot know retry intent (its
             # done->{retry} is hardcoded 0), so consult the gatherer's own
@@ -135,8 +148,24 @@ sub process {
             delete $self->{+PENDING}->{$job_id} unless delete $self->{+TRY_WILL_RETRY}->{$job_id};
         }
 
-        last if !$count && $self->runner_exited;
-        sleep $self->{+WAIT_TIME} unless $count;
+        # No forward motion this cycle. Either the runner is alive and we just
+        # need to wait for more output, or the runner is dead and the stalled
+        # jobs will NEVER finish (no more events will ever be written to their
+        # events files, so poll() returns () forever and done is never set).
+        if (!$progress) {
+            if ($pending && $self->runner_exited) {
+                # Runner/scheduler is gone -- abort every stalled job so the run
+                # rolls them up as failed instead of spinning forever waiting
+                # for a harness_process_exit that will never come. After this
+                # the next iteration sees empty %$jobs and exits via the
+                # empty-jobs / runner_exited path above.
+                $self->_abort_stalled_jobs($jobs);
+                next;
+            }
+
+            last if $self->runner_exited && !$pending;
+            sleep $self->{+WAIT_TIME};
+        }
     }
 
     # One last slurp
@@ -159,6 +188,77 @@ sub process {
     }
 
     remove_tree($self->{+RUN_DIR}, {safe => 1, keep_root => 0}) unless $settings->debug->keep_dirs;
+
+    return;
+}
+
+# Called only when a cycle made no progress AND the runner process is gone.
+# The stalled jobs left in %$jobs were queued (and possibly started) but their
+# events files will never receive a harness_process_exit, so the JobReader will
+# never set done. Synthesize the harness_job_exit + harness_job_end facets the
+# renderer/rollup consume (matching JobReader::_job_exit_facet / _job_end_facet
+# shapes) so each lost job renders sanely and counts as a failure, note the
+# verdict so harness_final reflects it, then remove the job and clear PENDING.
+sub _abort_stalled_jobs {
+    my $self = shift;
+    my ($jobs) = @_;
+
+    for my $job_try (keys %$jobs) {
+        my $jdir   = $jobs->{$job_try};
+        my $job_id = $jdir->job_id;
+        my $try    = $jdir->job_try;
+        my $stamp  = time;
+
+        my $task = $self->{+TASKS}->{$job_id};
+        my $file = $jdir->file // ($task ? $task->{file} : undef);
+
+        my $details = "Runner/scheduler exited before this job completed";
+
+        # harness_job_exit: mirror JobReader::_job_exit_facet, but flag it as an
+        # abort. exit/code = -1, signal/dumped = 0.
+        my $exit_facet = {
+            details => $details,
+            exit    => -1,
+            code    => -1,
+            signal  => 0,
+            dumped  => 0,
+            retry   => 0,
+            aborted => 1,
+            job_id  => $job_id,
+            job_try => $try,
+            stamp   => $stamp,
+        };
+
+        # harness_job_end: mirror JobReader::_job_end_facet with fail => 1 so the
+        # run-level rollup (_final_event / _note_verdict) counts it as failed.
+        my $end_facet = {
+            file     => $file,
+            rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
+            abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
+            retry    => 0,
+            fail     => 1,
+            aborted  => 1,
+            stamp    => $stamp,
+        };
+
+        my $event = $self->_harness_event(
+            $job_id, $try, $stamp,
+            harness_job_exit => $exit_facet,
+            harness_job_end  => $end_facet,
+            info             => [{details => $details, tag => "INTERNAL", debug => 1, important => 1}],
+        );
+
+        # The runner is dead; there will be no retry regardless of budget. Clear
+        # PENDING BEFORE _note_verdict so it does not see leftover budget and
+        # flag this failing end as "TO RETRY" (will_retry keys on PENDING).
+        delete $self->{+TRY_WILL_RETRY}->{$job_id};
+        delete $self->{+PENDING}->{$job_id};
+
+        $self->_note_verdict($event);
+        $self->{+ACTION}->($event);
+
+        delete $jobs->{$job_try};
+    }
 
     return;
 }
