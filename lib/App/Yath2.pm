@@ -260,26 +260,24 @@ sub _preload_dynamic_options ($self, $cmd_args) {
     # Getopt::Yath::Instance's DEDUP, so the real stage-2 parse re-runs the same
     # triggers harmlessly. Every other side effect is suppressed here: a discard
     # settings object absorbs values, and skip_posts/no_set_env prevent
-    # post-processing and %ENV mutation. Discovery is best-effort -- any real
-    # parse error surfaces (with command-specific messaging) from the stage-2
-    # parse, so swallow failures here.
+    # post-processing and %ENV mutation. Unknown options are skipped (not fatal)
+    # at this stage, so the only way this dies is a content error from a trigger
+    # (e.g. an unloadable finder) -- which the stage-2 parse would raise anyway,
+    # so we let it propagate here rather than hide it.
     my $discard = Getopt::Yath::Settings->new(harness => {});
 
-    eval {
-        $self->options->process_args(
-            [@$cmd_args],
-            settings          => $discard,
-            env               => {},
-            cleared           => {},
-            modules           => {},
-            stops             => ['--', '::'],
-            skip_posts        => 1,
-            skip_non_opts     => 1,
-            skip_invalid_opts => 1,
-            no_set_env        => 1,
-        );
-        1;
-    };
+    $self->options->process_args(
+        [@$cmd_args],
+        settings          => $discard,
+        env               => {},
+        cleared           => {},
+        modules           => {},
+        stops             => ['--', '::'],
+        skip_posts        => 1,
+        skip_non_opts     => 1,
+        skip_invalid_opts => 1,
+        no_set_env        => 1,
+    );
 
     return;
 }
