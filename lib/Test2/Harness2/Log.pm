@@ -183,8 +183,9 @@ stored in this hash when the original object does not directly store them.
         times => $TIMING_DATA,     # See below
     }
 
-The C<times> field is populated by calling C<data_dump()> on an
-L<Test2::Harness2::Auditor::TimeTracker> Object.
+The C<times> field is sourced from the timing data the Test2-Collector records
+on its C<harness_process_exit> / C<harness_final_state> facets (wall time plus
+child and collector CPU usage).
 
 =item harness_job_exit
 

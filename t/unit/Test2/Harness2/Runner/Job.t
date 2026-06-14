@@ -96,6 +96,13 @@ my $mock = mock $CLASS => (
     ],
 );
 
+# collector_target returns a (exec => \@cmd) list. Pull the exec arrayref out.
+sub target_exec {
+    my $job = shift;
+    my %target = $job->collector_target;
+    return $target{exec};
+}
+
 subtest 'via returns undef for resource_skip' => sub {
     my $job = make_job(
         task_overrides     => {resource_skip => ['SomeResource']},
@@ -105,37 +112,35 @@ subtest 'via returns undef for resource_skip' => sub {
     is($job->via, undef, "via() returns undef when task has resource_skip");
 };
 
-subtest 'spawn_params with resource_skip (default: skip)' => sub {
+subtest 'collector_target with resource_skip (default: skip)' => sub {
     my $job = make_job(
         task_overrides     => {resource_skip => ['Port', 'Database']},
         settings_overrides => {fail_on_resource_skip => 0},
     );
 
-    my $params = $job->spawn_params;
-    my $command = $params->{command};
+    my $command = target_exec($job);
 
-    # Find the -e argument in the command array
+    # Find the -e argument in the exec array
     my ($e_idx) = grep { !ref($command->[$_]) && $command->[$_] eq '-e' } 0 .. $#$command;
 
-    ok(defined $e_idx, "Found -e flag in command");
+    ok(defined $e_idx, "Found -e flag in exec command");
     my $script = $command->[$e_idx + 1];
     like($script, qr/1\.\.0 # SKIP/, "Generates TAP skip output");
     like($script, qr/Some resources are not available: Port, Database/, "Skip message lists unavailable resources");
     unlike($script, qr/not ok/, "Does not contain a failure");
 };
 
-subtest 'spawn_params with resource_skip and --fail-on-resource-skip' => sub {
+subtest 'collector_target with resource_skip and --fail-on-resource-skip' => sub {
     my $job = make_job(
         task_overrides     => {resource_skip => ['Port', 'Database']},
         settings_overrides => {fail_on_resource_skip => 1},
     );
 
-    my $params = $job->spawn_params;
-    my $command = $params->{command};
+    my $command = target_exec($job);
 
     my ($e_idx) = grep { !ref($command->[$_]) && $command->[$_] eq '-e' } 0 .. $#$command;
 
-    ok(defined $e_idx, "Found -e flag in command");
+    ok(defined $e_idx, "Found -e flag in exec command");
     my $script = $command->[$e_idx + 1];
     like($script, qr/1\.\.1/, "Generates TAP with 1 test planned");
     like($script, qr/not ok 1/, "Generates a TAP failure");
@@ -143,50 +148,50 @@ subtest 'spawn_params with resource_skip and --fail-on-resource-skip' => sub {
     unlike($script, qr/# SKIP/, "Does not contain a skip directive");
 };
 
-subtest 'spawn_params with no resource_skip runs test normally' => sub {
+subtest 'collector_target with no resource_skip runs test normally' => sub {
     my $job = make_job(
         settings_overrides => {fail_on_resource_skip => 1},
     );
 
-    my $params = $job->spawn_params;
-    my $command = $params->{command};
+    my $command = target_exec($job);
 
-    # Should contain a coderef (the run_file callback), not -e
-    my $has_coderef = grep { ref($_) eq 'CODE' } @$command;
-    ok($has_coderef, "Command contains a CODE ref (run_file) when no resource_skip");
+    # First element is the perl interpreter, and the run_file (rel_file) is
+    # included as the script to run -- no -e short-circuit.
+    is($command->[0], $^X, "exec starts with the perl interpreter");
 
     my $has_e = grep { !ref($_) && $_ eq '-e' } @$command;
-    ok(!$has_e, "Command does not contain -e flag");
+    ok(!$has_e, "exec command does not contain -e flag when no resource_skip");
+
+    my $run_file = $job->run_file;
+    ok((grep { !ref($_) && $_ eq $run_file } @$command), "exec command runs the run_file");
 };
 
-subtest 'spawn_params dummy mode still skips even with fail_on_resource_skip' => sub {
+subtest 'collector_target dummy mode still skips even with fail_on_resource_skip' => sub {
     my $job = make_job(
         settings_overrides => {dummy => 1, fail_on_resource_skip => 1},
     );
 
-    my $params = $job->spawn_params;
-    my $command = $params->{command};
+    my $command = target_exec($job);
 
     my ($e_idx) = grep { !ref($command->[$_]) && $command->[$_] eq '-e' } 0 .. $#$command;
 
-    ok(defined $e_idx, "Found -e flag in command");
+    ok(defined $e_idx, "Found -e flag in exec command");
     my $script = $command->[$e_idx + 1];
     like($script, qr/1\.\.0 # SKIP dummy mode/, "Dummy mode produces a skip, not a failure");
     unlike($script, qr/not ok/, "No failure for dummy mode");
 };
 
-subtest 'spawn_params resource_skip with single resource' => sub {
+subtest 'collector_target resource_skip with single resource' => sub {
     my $job = make_job(
         task_overrides     => {resource_skip => ['Port']},
         settings_overrides => {fail_on_resource_skip => 1},
     );
 
-    my $params = $job->spawn_params;
-    my $command = $params->{command};
+    my $command = target_exec($job);
 
     my ($e_idx) = grep { !ref($command->[$_]) && $command->[$_] eq '-e' } 0 .. $#$command;
 
-    ok(defined $e_idx, "Found -e flag in command");
+    ok(defined $e_idx, "Found -e flag in exec command");
     my $script = $command->[$e_idx + 1];
     like($script, qr/not ok 1 - Some resources are not available: Port/, "Failure message with single resource");
 };
@@ -200,8 +205,7 @@ subtest 'TAP output is valid when executed' => sub {
             settings_overrides => {fail_on_resource_skip => 0},
         );
 
-        my $params = $job->spawn_params;
-        my $command = $params->{command};
+        my $command = target_exec($job);
         my ($e_idx) = grep { !ref($command->[$_]) && $command->[$_] eq '-e' } 0 .. $#$command;
         my $script = $command->[$e_idx + 1];
 
@@ -215,14 +219,52 @@ subtest 'TAP output is valid when executed' => sub {
             settings_overrides => {fail_on_resource_skip => 1},
         );
 
-        my $params = $job->spawn_params;
-        my $command = $params->{command};
+        my $command = target_exec($job);
         my ($e_idx) = grep { !ref($command->[$_]) && $command->[$_] eq '-e' } 0 .. $#$command;
         my $script = $command->[$e_idx + 1];
 
         my $output = `$^X -e '$script'`;
         like($output, qr/^1\.\.1\nnot ok 1 - Some resources are not available: Port$/s, "Fail TAP output is correct");
     };
+};
+
+subtest '_collector_exit_code maps collect() info to an exit code' => sub {
+    my $job = make_job();
+
+    # Collector itself failed -> 255 (harness/collector error, not a test result)
+    is(
+        $job->_collector_exit_code({collector => {ok => 0, errors => []}}),
+        255,
+        "collector failure -> 255",
+    );
+    is($job->_collector_exit_code(undef),  255, "missing info -> 255");
+    is($job->_collector_exit_code({}),     255, "no collector key -> 255");
+
+    # Collector ok + clean test pass -> 0
+    is(
+        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}}),
+        0,
+        "clean pass -> 0",
+    );
+    is(
+        $job->_collector_exit_code({collector => {ok => 1}, exit => {}}),
+        0,
+        "missing exit fields -> 0",
+    );
+
+    # Collector ok + test failed (non-zero exit) -> that exit code
+    is(
+        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 3, sig => 0}}),
+        3,
+        "test failure -> test's exit code",
+    );
+
+    # Collector ok + test killed by a signal (no err) -> 1
+    is(
+        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 9}}),
+        1,
+        "signal death -> 1",
+    );
 };
 
 done_testing;

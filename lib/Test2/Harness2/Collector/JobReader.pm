@@ -166,8 +166,8 @@ file and emit wrapped harness events.
 Reads a C<.jsonl.zst> file produced by L<Test2::Collector::Recorder::Zstd> and
 turns each record into a L<Test2::Harness2::Event>, synthesizing the
 C<harness_job_exit> and C<harness_job_end> facets that the renderer and rollup
-expect. Replaces the old L<Test2::Harness2::Collector::JobDir> approach of
-scraping stdout/stderr/exit files and parsing TAP.
+expect. This replaces the old JobDir approach of scraping stdout/stderr/exit
+files and parsing TAP.
 
 =head1 SYNOPSIS
 
