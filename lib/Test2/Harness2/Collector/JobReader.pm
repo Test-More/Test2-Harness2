@@ -56,20 +56,28 @@ sub poll {
 
         my $fd = $rec->{facet_data} or next;
 
-        push @out => $self->_wrap($fd);
-
-        # Synthesize harness facets the renderer/rollup expect.
-        if (my $fs = $fd->{harness_final_state}) {
-            $self->{+FINAL_STATE} = $fs;
-            push @out => $self->_wrap({harness_job_end => $self->_job_end_facet($fs)});
-        }
-
+        # Test2-Collector already attaches its own harness_job_exit facet to the
+        # process-exit record (Test2::Collector::Auditor::_subtest_process_exit),
+        # but in the collector's own shape. The harness renderer/rollup expect
+        # the harness-canonical shape (job_id, retry, code/signal, ...). Replace
+        # it in-place on the SAME record from the harness_process_exit data, so
+        # there is exactly ONE harness_job_exit per job and it carries the shape
+        # the harness consumes. (Emitting a second event here is what made
+        # concurrency.t see two exits per job.)
         if (my $px = $fd->{harness_process_exit}) {
-            push @out => $self->_wrap({harness_job_exit => $self->_job_exit_facet($px)});
+            $fd->{harness_job_exit} = $self->_job_exit_facet($px);
             # TODO(Task 4): retry intent is not represented in the events file
             # yet; the collector model must thread retry through the gatherer
             # (the gatherer keys on done->{retry} to keep a job PENDING).
             $self->{+DONE} = {retry => 0};
+        }
+
+        push @out => $self->_wrap($fd);
+
+        # Synthesize the harness_job_end facet the renderer/rollup expect.
+        if (my $fs = $fd->{harness_final_state}) {
+            $self->{+FINAL_STATE} = $fs;
+            push @out => $self->_wrap({harness_job_end => $self->_job_end_facet($fs)});
         }
     }
 
