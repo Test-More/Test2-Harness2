@@ -292,13 +292,19 @@ sub launch_via_fork {
         setpgrp(0, 0) if Test2::Harness2::IPC::USE_P_GROUPS();
         $runner->stop();
 
-        $stage->do_post_fork($job) if $stage;
-
         unless ($collected) {
+            # Non-collected (spawn) path: this child IS the test process, so
+            # post_fork fires here, in the same PID that will run.
+            $stage->do_post_fork($job) if $stage;
             longjump "Test-Runner" => ('run_test', $job, $stage);
             return 1;
         }
 
+        # Collected path: this child is the collector PARENT, not the test
+        # process. The collector forks the real test child internally; post_fork
+        # (and pre_launch) must fire in THAT grandchild so they share the test's
+        # PID (preload contract: POST_FORK and PRE_LAUNCH are in the same PID).
+        # Fire post_fork inside the collector's run sub, after the inner fork.
         my $info = $job->run_under_collector(
             run => sub {
                 my ($guard) = @_;
@@ -306,6 +312,7 @@ sub launch_via_fork {
                 # and resume the harness's own launch path, which goto::file's
                 # the test in-process.
                 $guard->dismiss;
+                $stage->do_post_fork($job) if $stage;
                 longjump "Test-Runner" => ('run_test', $job, $stage);
             },
         );
