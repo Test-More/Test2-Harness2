@@ -9,6 +9,7 @@ use Test2::Tools::Compare qw/is/;
 
 use Carp qw/croak/;
 use File::Spec;
+use File::Find ();
 use File::Temp qw/tempfile tempdir/;
 use POSIX;
 use Fcntl qw/SEEK_CUR/;
@@ -17,11 +18,49 @@ use App::Yath2::Util qw/find_yath/;
 use Test2::Harness2::Util qw/clean_path apply_encoding/;
 use Test2::Harness2::Util::IPC qw/run_cmd/;
 use Test2::Harness2::Util::File::JSONL;
+use Test2::Harness2::Util::File::JSON;
 
 use Importer Importer => 'import';
 our @EXPORT = qw/yath make_example_dir/;
 
 my $pdir = tempdir(CLEANUP => 1);
+
+# A persistent runner started during a test (yath start) detaches and outlives
+# the command that started it. If the test dies, times out, or is signalled
+# before its `yath stop`, that runner would leak -- and keep respawning its
+# preload stages forever. Stop every runner whose persistence file lives under
+# our $pdir on the way out, however we exit. Registered after File::Temp's
+# tempdir cleanup so (LIFO) this runs first, while the pfiles still exist. A
+# SIGKILL of the test process bypasses both this and File::Temp; the runner's
+# own orphan guard (it self-exits when its workdir/pfile vanishes) is the
+# backstop for that case.
+sub _shutdown_persistent_runners {
+    return unless -d $pdir;
+
+    my @pfiles;
+    File::Find::find(
+        {no_chdir => 1, wanted => sub { push @pfiles => $_ if m/yath-persist\.json\z/ && -f $_ }},
+        $pdir,
+    );
+
+    for my $pfile (@pfiles) {
+        my $data = Test2::Harness2::Util::File::JSON->new(name => $pfile)->maybe_read or next;
+        my $pid = $data->{pid} or next;
+        next unless kill(0 => $pid);
+        kill('TERM', $pid);
+    }
+}
+
+END { _shutdown_persistent_runners() }
+
+for my $sig (qw/INT TERM/) {
+    my $prev = $SIG{$sig};
+    $SIG{$sig} = sub {
+        _shutdown_persistent_runners();
+        if   (ref $prev) { $prev->(@_) }
+        else             { $SIG{$sig} = 'DEFAULT'; kill($sig => $$) }
+    };
+}
 
 require App::Yath2;
 my $apppath = App::Yath2->app_path;
