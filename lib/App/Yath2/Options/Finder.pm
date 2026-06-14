@@ -385,12 +385,19 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
                 my $err  = $@;
                 die "Failed to load finder '$class': $err" unless $ok;
 
-                next unless $class->can('options');
-                my $finder_opts = $class->options;
-                # Guard: only include if it is a Getopt::Yath::Instance;
-                # anything else cannot be passed to include().
-                next unless ref($finder_opts) && $finder_opts->isa('Getopt::Yath::Instance');
-                $params{options}->include($finder_opts);
+                if ($class->can('options')) {
+                    my $finder_opts = $class->options;
+                    # Guard: only include if it is a Getopt::Yath::Instance;
+                    # anything else cannot be passed to include().
+                    $params{options}->include($finder_opts)
+                        if ref($finder_opts) && $finder_opts->isa('Getopt::Yath::Instance');
+                }
+
+                # Restore the 1.0 extension point (App::Yath::Options::Finder
+                # finder_action): let the finder mutate settings/options once its
+                # class and options are loaded. Base impl is a no-op.
+                $class->munge_settings($params{settings}, $params{options})
+                    if $class->can('munge_settings');
             }
         },
     );
