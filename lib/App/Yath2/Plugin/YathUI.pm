@@ -51,7 +51,7 @@ option_group {group => 'yathui', prefix => 'yathui', category => "YathUI Options
     option retry => (
         type => 'Count',
         description => "How many times to try an operation before giving up",
-        default => 0,
+        initialize => 0,
     );
 
     option grace => (
