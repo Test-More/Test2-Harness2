@@ -242,6 +242,17 @@ subtest command_from_argv => sub {
     is($cmd, "hfajhdajshfj", "Found 'hfajhdajshfj' command");
     is($tail, ['-b', '--bar'], "Trailing args after the command are returned");
 
+    # A separated value for an unknown (command-scoped) option must not be
+    # mistaken for the command. 'Test2'/'90' are not registered commands, so the
+    # real 'test' command wins and the leftover value rides along to stage 2.
+    ($cmd, $tail) = $resolve->(['--formatter', 'Test2', 'test', 't/foo.t']);
+    is($cmd, "test", "Separated option value before command not taken as command");
+    is($tail, ['Test2', 't/foo.t'], "Skipped option value rides along to the stage-2 parse");
+
+    ($cmd, $tail) = $resolve->(['--term-width', '90', 'test', 't/foo.t']);
+    is($cmd, "test", "Found 'test' past a separated numeric option value");
+    is($tail, ['90', 't/foo.t'], "Numeric option value preserved for stage 2");
+
     ($cmd, $tail) = $resolve->(['-f', '--foo', '--help', '-b', '--bar']);
     is($cmd, "help", "Found 'help' command");
 

@@ -268,6 +268,10 @@ sub _command_from_argv ($self, $state) {
     # fall through to the 'help' command (bare `yath --help` -> command table,
     # via the help post deferring when the resolved command isa help).
 
+    # Track the first bareword that is neither a registered command nor a path,
+    # in case no real command shows up (see the fallback after the loop).
+    my $fallback_idx;
+
     for (my $idx = 0; $idx < @args; $idx++) {
         my $arg = $args[$idx];
 
@@ -289,18 +293,30 @@ sub _command_from_argv ($self, $state) {
             return (replay => \@args);
         }
 
+        # A real command anywhere in the stream wins. This is what lets an
+        # unknown command-scoped option that took a *separated* value (e.g.
+        # `yath --formatter Test2 test`) not be mistaken for the command:
+        # 'Test2' is not a registered command, so we keep scanning, find 'test',
+        # and the leftover 'Test2' rides along to the stage-2 parse where the
+        # real --formatter option consumes it.
         if ($self->load_command($arg, check_only => 1)) {
             splice(@args, $idx, 1);
             return ($arg => \@args);
         }
 
-        my $is_path = (-f $arg || -d $arg) ? 1 : 0;
+        # Not a registered command. Remember the first such bareword that is not
+        # a path: if no real command turns up it is most likely a typo'd command
+        # and we surface it as one (preserving the clear "command not found"
+        # error). Paths are skipped so a leading file falls through to defaults.
+        next if -f $arg || -d $arg;
+        $fallback_idx //= $idx;
+    }
 
-        # Assume it is a command, but an invalid one (load_command reports it).
-        unless ($is_path) {
-            splice(@args, $idx, 1);
-            return ($arg => \@args);
-        }
+    # No registered command found. Use the remembered bareword (typo'd command)
+    # if there was one; load_command will report it as invalid.
+    if (defined $fallback_idx) {
+        my $cmd = splice(@args, $fallback_idx, 1);
+        return ($cmd => \@args);
     }
 
     # Bare `yath --help` (no command word) resolves to the help command, which
