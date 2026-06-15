@@ -254,6 +254,11 @@ Test layout:
 - `t/AI/scripts/` — helper scripts invoked by AI-generated tests.
 - Tests copied from `reference/` count as human-authored even when
   the copy is done by AI.
+- `js-tests/` — dev-only Playwright JS/CSS tests that drive the
+  inlined web UI in a headless browser against a real yath server.
+  NOT part of `prove`; needs Node + npm + Chromium. Run with
+  `cd js-tests && npm install && npx playwright install chromium && npm test`.
+  See `js-tests/README.md`.
 
 It is OK to add throwaway scripts under `agent_scripts/` to verify
 in-progress functionality. Anything an agent (human- or AI-driven)

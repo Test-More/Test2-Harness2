@@ -1,0 +1,14 @@
+{
+  "name": "test2-harness-ui-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright end-to-end tests for the inlined Test2-Harness web UI (jQuery / DataTables / Chart.js front-end).",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

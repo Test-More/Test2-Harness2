@@ -264,13 +264,24 @@ sub handle_request {
         my $dt = DateTime->now(time_zone => 'local');
 
         my $tx      = Text::Xslate->new(path => [share_dir('templates')]);
+
+        # main.tx references these flags as $config.<flag> and inlines some of
+        # them straight into <script> tags (single_user / show_user), so they
+        # MUST be defined (0/1) - an empty value renders broken JavaScript that
+        # kills the whole front-end bootstrap. Pass them under a `config` key to
+        # match the template, normalized to 0/1.
+        my %config = (
+            single_user => $self->single_user ? 1 : 0,
+            single_run  => $self->single_run  ? 1 : 0,
+            no_upload   => $schema->config('no_upload') ? 1 : 0,
+            show_user   => ($self->single_user ? ($schema->config('show_user') ? 1 : 0) : 1),
+        );
+
         my $wrapped = $tx->render(
             'main.tx',
             {
-                single_user => $self->single_user // 0,
-                single_run  => $self->single_run  // 0,
-                no_upload   => $schema->config('no_upload') // 0,
-                show_user   => $self->single_user ? $schema->config('show_user') // 0 : 1,
+                config => \%config,
+                %config,
 
                 user     => $req->user     || undef,
                 errors   => $res->errors   || [],

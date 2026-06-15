@@ -42,3 +42,8 @@ docs
 
 # Test2::Plugin::Immiscible serialization lock (test artifact).
 .immiscible-test.lock
+
+# Playwright JS/CSS UI tests (dev-only; see js-tests/README.md).
+/js-tests/node_modules/
+/js-tests/test-results/
+/js-tests/playwright-report/
