@@ -1,6 +1,6 @@
 use utf8;
 package App::Yath2::Schema::PostgreSQL::Binary;
-our $VERSION = '2.000011';
+our $VERSION = '2.000000';
 
 package
     App::Yath2::Schema::Result::Binary;

@@ -1,5 +1,5 @@
 package App::Yath2::Schema::Overlay::Job;
-our $VERSION = '2.000011';
+our $VERSION = '2.000000';
 
 package
     App::Yath2::Schema::Result::Job;
