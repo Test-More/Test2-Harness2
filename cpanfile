@@ -33,6 +33,7 @@ requires "Term::Table" => "0.015";
 requires "Test2" => "1.302170";
 requires "Test2::API" => "1.302170";
 requires "Test2::Bundle::Extended" => "0.000127";
+requires "Test2::Collector" => "0.000001";
 requires "Test2::Event" => "1.302170";
 requires "Test2::Event::V2" => "1.302170";
 requires "Test2::Formatter" => "1.302170";
