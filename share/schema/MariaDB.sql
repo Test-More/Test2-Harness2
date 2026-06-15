@@ -1,37 +1,7 @@
-CREATE EXTENSION "citext";
-CREATE EXTENSION "uuid-ossp";
-
-CREATE TYPE queue_stat AS ENUM(
-    'pending',
-    'running',
-    'complete',
-    'broken',
-    'canceled'
-);
-
-CREATE TYPE api_key_status AS ENUM(
-    'active',
-    'disabled',
-    'revoked'
-);
-
-CREATE TYPE run_modes AS ENUM(
-    'summary',
-    'qvfds',
-    'qvfd',
-    'qvf',
-    'complete'
-);
-
-CREATE TYPE user_type AS ENUM(
-    'admin',    -- Can add users and set permissions
-    'user'     -- Can manage reports for their projects
-);
-
 CREATE TABLE versions(
     version     NUMERIC(10,6)   NOT NULL,
-    version_id  SERIAL          NOT NULL PRIMARY KEY,
-    updated     TIMESTAMPTZ(6)  NOT NULL DEFAULT now(),
+    version_id  INT             NOT NULL    PRIMARY KEY AUTO_INCREMENT,
+    updated     TIMESTAMP(6)    NOT NULL    DEFAULT now(),
 
     UNIQUE(version)
 );
@@ -39,7 +9,7 @@ CREATE TABLE versions(
 INSERT INTO versions(version) VALUES('2.000000');
 
 CREATE TABLE config(
-    config_id   SERIAL          NOT NULL PRIMARY KEY,
+    config_id   INT             NOT NULL PRIMARY KEY AUTO_INCREMENT,
     setting     VARCHAR(128)    NOT NULL,
     value       VARCHAR(256)    NOT NULL,
 
@@ -47,36 +17,40 @@ CREATE TABLE config(
 );
 
 CREATE TABLE users (
-    user_id     BIGSERIAL   NOT NULL PRIMARY KEY,
+    user_id     BIGINT      NOT NULL        PRIMARY KEY AUTO_INCREMENT,
     pw_hash     VARCHAR(31) DEFAULT NULL,
     pw_salt     VARCHAR(22) DEFAULT NULL,
-    role        user_type   NOT NULL DEFAULT 'user',
-    username    CITEXT      NOT NULL,
+
+    role        ENUM('admin', 'user')
+                            NOT NULL        DEFAULT 'user',
+
+    username    VARCHAR(64) NOT NULL,
     realname    TEXT        DEFAULT NULL,
 
     UNIQUE(username)
 );
 
 CREATE TABLE email (
-    email_id    BIGSERIAL   NOT NULL PRIMARY KEY,
-    user_id     BIGINT      NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    verified    BOOL        NOT NULL DEFAULT FALSE,
-    local       CITEXT      NOT NULL,
-    domain      CITEXT      NOT NULL,
+    email_id    BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    user_id     BIGINT          NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    verified    BOOL            NOT NULL DEFAULT FALSE,
+
+    local       VARCHAR(128)    NOT NULL,
+    domain      VARCHAR(128)    NOT NULL,
 
     UNIQUE(local, domain)
 );
 CREATE INDEX IF NOT EXISTS email_user ON email(user_id);
 
 CREATE TABLE primary_email (
-    user_id     BIGINT  NOT NULL REFERENCES users(user_id)  ON DELETE CASCADE PRIMARY KEY,
-    email_id    BIGINT  NOT NULL REFERENCES email(email_id) ON DELETE CASCADE,
+    user_id     BIGINT  NOT NULL PRIMARY KEY REFERENCES users(user_id)  ON DELETE CASCADE,
+    email_id    BIGINT  NOT NULL             REFERENCES email(email_id) ON DELETE CASCADE,
 
     unique(email_id)
 );
 
 CREATE TABLE hosts (
-    host_id     BIGSERIAL       NOT NULL PRIMARY KEY,
+    host_id     BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
     hostname    VARCHAR(512)    NOT NULL,
 
     unique(hostname)
@@ -84,37 +58,40 @@ CREATE TABLE hosts (
 
 CREATE TABLE email_verification_codes (
     evcode      UUID    NOT NULL,
-    email_id    BIGINT  NOT NULL REFERENCES email(email_id) ON DELETE CASCADE PRIMARY KEY
+    email_id    BIGINT  NOT NULL PRIMARY KEY REFERENCES email(email_id) ON DELETE CASCADE
 );
 
 CREATE TABLE sessions (
     session_uuid    UUID        NOT NULL,
-    session_id      BIGSERIAL   NOT NULL PRIMARY KEY,
-    active          BOOL        DEFAULT TRUE,
+    session_id      BIGINT      NOT NULL    PRIMARY KEY AUTO_INCREMENT,
+    active          BOOL                    DEFAULT TRUE,
 
     UNIQUE(session_uuid)
 );
 
 CREATE TABLE session_hosts (
-    session_host_id     BIGSERIAL       NOT NULL PRIMARY KEY,
-    user_id             BIGINT          REFERENCES users(user_id) ON DELETE CASCADE,
+    session_host_id     BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    user_id             BIGINT                   REFERENCES users(user_id)       ON DELETE CASCADE,
     session_id          BIGINT          NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
 
-    created             TIMESTAMPTZ(6)  NOT NULL DEFAULT now(),
-    accessed            TIMESTAMPTZ(6)  NOT NULL DEFAULT now(),
+    created             TIMESTAMP(6)    NOT NULL DEFAULT now(),
+    accessed            TIMESTAMP(6)    NOT NULL DEFAULT now(),
 
     address             TEXT            NOT NULL,
     agent               TEXT            NOT NULL,
 
-    UNIQUE(session_id, address, agent)
+    UNIQUE(address, agent, session_id)
 );
 CREATE INDEX IF NOT EXISTS session_hosts_session ON session_hosts(session_id);
 
 CREATE TABLE api_keys (
     value       UUID            NOT NULL,
-    api_key_id  BIGSERIAL       NOT NULL PRIMARY KEY,
+    api_key_id  BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
     user_id     BIGINT          NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    status      api_key_status  NOT NULL DEFAULT 'active',
+
+    status      ENUM( 'active', 'disabled', 'revoked')
+                                NOT NULL DEFAULT 'active',
+
     name        VARCHAR(128)    NOT NULL,
 
     UNIQUE(value)
@@ -122,25 +99,25 @@ CREATE TABLE api_keys (
 CREATE INDEX IF NOT EXISTS api_key_user ON api_keys(user_id);
 
 CREATE TABLE log_files (
-    log_file_id     BIGSERIAL   NOT NULL PRIMARY KEY,
+    log_file_id     BIGINT      NOT NULL PRIMARY KEY AUTO_INCREMENT,
     name            TEXT        NOT NULL,
     local_file      TEXT,
-    data            BYTEA
+    data            LONGBLOB
 );
 
 CREATE TABLE projects (
-    project_id      BIGSERIAL   NOT NULL PRIMARY KEY,
-    owner           BIGINT      DEFAULT NULL REFERENCES users(user_id) ON DELETE SET NULL,
-    name            CITEXT      NOT NULL,
+    project_id      BIGINT          NOT NULL        PRIMARY KEY AUTO_INCREMENT,
+    owner           BIGINT          DEFAULT NULL    REFERENCES users(user_id) ON DELETE SET NULL,
+    name            VARCHAR(128)    NOT NULL,
 
     UNIQUE(name)
 );
 
 CREATE TABLE permissions (
-    permission_id   BIGSERIAL       NOT NULL PRIMARY KEY,
+    permission_id   BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
     project_id      BIGINT          NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     user_id         BIGINT          NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    updated         TIMESTAMPTZ(6)  NOT NULL DEFAULT now(),
+    updated         TIMESTAMP(6)    NOT NULL DEFAULT now(),
 
     UNIQUE(project_id, user_id)
 );
@@ -148,10 +125,10 @@ CREATE TABLE permissions (
 CREATE TABLE runs (
     run_uuid        UUID            NOT NULL,
 
-    run_id          BIGSERIAL       NOT NULL     PRIMARY KEY,
-    user_id         BIGINT          NOT NULL     REFERENCES users(user_id)          ON DELETE CASCADE,
-    project_id      BIGINT          NOT NULL     REFERENCES projects(project_id)    ON DELETE CASCADE,
-    log_file_id     BIGINT          DEFAULT NULL REFERENCES log_files(log_file_id)  ON DELETE SET NULL,
+    run_id          BIGINT          NOT NULL        PRIMARY KEY AUTO_INCREMENT,
+    user_id         BIGINT          NOT NULL        REFERENCES users(user_id)          ON DELETE CASCADE,
+    project_id      BIGINT          NOT NULL        REFERENCES projects(project_id)    ON DELETE CASCADE,
+    log_file_id     BIGINT          DEFAULT NULL    REFERENCES log_files(log_file_id)  ON DELETE SET NULL,
 
     passed          INTEGER         DEFAULT NULL,
     failed          INTEGER         DEFAULT NULL,
@@ -159,17 +136,20 @@ CREATE TABLE runs (
     retried         INTEGER         DEFAULT NULL,
     concurrency_j   INTEGER         DEFAULT NULL,
     concurrency_x   INTEGER         DEFAULT NULL,
-    added           TIMESTAMPTZ(6)  NOT NULL DEFAULT now(),
+    added           TIMESTAMP(6)    NOT NULL        DEFAULT now(),
 
-    status          queue_stat      NOT NULL DEFAULT 'pending',
-    mode            run_modes       NOT NULL DEFAULT 'qvfd',
+    status          ENUM('pending', 'running', 'complete', 'broken', 'canceled')
+                                    NOT NULL        DEFAULT 'pending',
+
+    mode            ENUM('qvfds', 'qvfd', 'qvf', 'summary', 'complete')
+                                    NOT NULL        DEFAULT 'qvfd',
 
     canon           BOOL            NOT NULL,
-    pinned          BOOL            NOT NULL DEFAULT FALSE,
+    pinned          BOOL            NOT NULL        DEFAULT FALSE,
     has_coverage    BOOL            DEFAULT NULL,
     has_resources   BOOL            DEFAULT NULL,
 
-    parameters      JSONB           DEFAULT NULL,
+    parameters      JSON            DEFAULT NULL,
     worker_id       TEXT            DEFAULT NULL,
     error           TEXT            DEFAULT NULL,
     duration        NUMERIC(14,4)   DEFAULT NULL,
@@ -182,7 +162,7 @@ CREATE INDEX IF NOT EXISTS run_user     ON runs(user_id);
 CREATE INDEX IF NOT EXISTS run_canon    ON runs(run_id, canon);
 
 CREATE TABLE sweeps (
-    sweep_id        BIGSERIAL       NOT NULL PRIMARY KEY,
+    sweep_id        BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
     run_id          BIGINT          NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
     name            VARCHAR(64)     NOT NULL,
 
@@ -191,7 +171,7 @@ CREATE TABLE sweeps (
 CREATE INDEX IF NOT EXISTS sweep_runs ON sweeps(run_id);
 
 CREATE TABLE test_files (
-    test_file_id    BIGSERIAL       NOT NULL PRIMARY KEY,
+    test_file_id    BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
     filename        VARCHAR(255)    NOT NULL,
 
     UNIQUE(filename)
@@ -202,7 +182,7 @@ INSERT INTO test_files(filename) VALUES('HARNESS INTERNAL LOG');
 CREATE TABLE jobs (
     job_uuid        UUID        NOT NULL,
 
-    job_id          BIGSERIAL   NOT NULL    PRIMARY KEY,
+    job_id          BIGINT      NOT NULL    PRIMARY KEY AUTO_INCREMENT,
     run_id          BIGINT      NOT NULL    REFERENCES runs(run_id)             ON DELETE CASCADE,
     test_file_id    BIGINT      NOT NULL    REFERENCES test_files(test_file_id) ON DELETE CASCADE,
 
@@ -217,17 +197,19 @@ CREATE INDEX IF NOT EXISTS job_file ON jobs(test_file_id);
 
 CREATE TABLE job_tries (
     job_try_uuid    UUID            NOT NULL,
-    job_try_id      BIGSERIAL       NOT NULL    PRIMARY KEY,
+    job_try_id      BIGINT          NOT NULL    PRIMARY KEY AUTO_INCREMENT,
     job_id          BIGINT          NOT NULL    REFERENCES jobs(job_id) ON DELETE CASCADE,
     pass_count      BIGINT          DEFAULT NULL,
     fail_count      BIGINT          DEFAULT NULL,
 
     exit_code       INTEGER         DEFAULT NULL,
-    launch          TIMESTAMPTZ(6)  DEFAULT NULL,
-    start           TIMESTAMPTZ(6)  DEFAULT NULL,
-    ended           TIMESTAMPTZ(6)  DEFAULT NULL,
+    launch          TIMESTAMP(6)    DEFAULT NULL,
+    start           TIMESTAMP(6)    DEFAULT NULL,
+    ended           TIMESTAMP(6)    DEFAULT NULL,
 
-    status          queue_stat      NOT NULL DEFAULT 'pending',
+
+    status          ENUM('pending', 'running', 'complete', 'broken', 'canceled')
+                                    NOT NULL    DEFAULT 'pending',
 
     job_try_ord     SMALLINT        NOT NULL,
 
@@ -235,7 +217,7 @@ CREATE TABLE job_tries (
     retry           BOOL            DEFAULT NULL,
     duration        NUMERIC(14,4)   DEFAULT NULL,
 
-    parameters      JSONB           DEFAULT NULL,
+    parameters      JSON            DEFAULT NULL,
     stdout          TEXT            DEFAULT NULL,
     stderr          TEXT            DEFAULT NULL,
 
@@ -249,13 +231,13 @@ CREATE TABLE events (
     trace_uuid      UUID            DEFAULT NULL,
     parent_uuid     UUID            DEFAULT NULL    REFERENCES events(event_uuid),
 
-    event_id        BIGSERIAL       NOT NULL        PRIMARY KEY,
+    event_id        BIGINT          NOT NULL        PRIMARY KEY AUTO_INCREMENT,
     job_try_id      BIGINT          NOT NULL        REFERENCES job_tries(job_try_id) ON DELETE CASCADE,
     parent_id       BIGINT          DEFAULT NULL    REFERENCES events(event_id)      ON DELETE CASCADE,
 
     event_idx       INTEGER         NOT NULL, -- Line number from log, or event number from stream
     event_sdx       INTEGER         NOT NULL, -- Event sequence number from the line (IE parent + subtest events)
-    stamp           TIMESTAMPTZ(6)  DEFAULT NULL,
+    stamp           TIMESTAMP(6)    DEFAULT NULL,
 
     nested          SMALLINT        NOT NULL,
 
@@ -270,8 +252,8 @@ CREATE TABLE events (
     has_facets      BOOL            NOT NULL,
     has_binary      BOOL            NOT NULL,
 
-    facets          JSONB           DEFAULT NULL,
-    rendered        JSONB           DEFAULT NULL,
+    facets          JSON            DEFAULT NULL,
+    rendered        JSON            DEFAULT NULL,
 
     UNIQUE(job_try_id, event_idx, event_sdx),
     UNIQUE(event_uuid)
@@ -283,25 +265,25 @@ CREATE INDEX IF NOT EXISTS event_job_st ON events(job_try_id, is_subtest);
 CREATE TABLE binaries (
     event_uuid      UUID            NOT NULL,
 
-    binary_id       BIGSERIAL       NOT NULL     PRIMARY KEY,
-    event_id        BIGINT          DEFAULT NULL REFERENCES events(event_id) ON DELETE CASCADE,
+    binary_id       BIGINT          NOT NULL        PRIMARY KEY AUTO_INCREMENT,
+    event_id        BIGINT          DEFAULT NULL    REFERENCES events(event_id) ON DELETE CASCADE,
 
     is_image        BOOL            NOT NULL DEFAULT FALSE,
 
     filename        VARCHAR(512)    NOT NULL,
     description     TEXT            DEFAULT NULL,
-    data            BYTEA           NOT NULL
+    data            LONGBLOB        NOT NULL
 );
 CREATE INDEX IF NOT EXISTS binaries_event ON binaries(event_id);
 
 CREATE TABLE run_fields (
     event_uuid      UUID            NOT NULL,
 
-    run_field_id    BIGSERIAL       NOT NULL     PRIMARY KEY,
-    run_id          BIGINT          NOT NULL     REFERENCES runs(run_id)     ON DELETE CASCADE,
+    run_field_id    BIGINT          NOT NULL    PRIMARY KEY AUTO_INCREMENT,
+    run_id          BIGINT          NOT NULL    REFERENCES runs(run_id)     ON DELETE CASCADE,
 
     name            VARCHAR(64)     NOT NULL,
-    data            JSONB           DEFAULT NULL,
+    data            JSON            DEFAULT NULL,
     details         TEXT            DEFAULT NULL,
     raw             TEXT            DEFAULT NULL,
     link            TEXT            DEFAULT NULL
@@ -312,11 +294,11 @@ CREATE INDEX IF NOT EXISTS run_fields_name   ON run_fields(name);
 CREATE TABLE job_try_fields (
     event_uuid          UUID            NOT NULL,
 
-    job_try_field_id    BIGSERIAL       NOT NULL     PRIMARY KEY,
+    job_try_field_id    BIGINT          NOT NULL    PRIMARY KEY AUTO_INCREMENT,
     job_try_id          BIGINT          NOT NULL     REFERENCES job_tries(job_try_id) ON DELETE CASCADE,
 
     name                VARCHAR(64)     NOT NULL,
-    data                JSONB           DEFAULT NULL,
+    data                JSON            DEFAULT NULL,
     details             TEXT            DEFAULT NULL,
     raw                 TEXT            DEFAULT NULL,
     link                TEXT            DEFAULT NULL
@@ -325,21 +307,21 @@ CREATE INDEX IF NOT EXISTS job_try_fields_job_id ON job_try_fields(job_try_id);
 CREATE INDEX IF NOT EXISTS job_try_fields_name   ON job_try_fields(name);
 
 CREATE TABLE source_files (
-    source_file_id  BIGSERIAL       NOT NULL PRIMARY KEY,
+    source_file_id  BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
     filename        VARCHAR(512)    NOT NULL,
 
     UNIQUE(filename)
 );
 
 CREATE TABLE source_subs (
-    source_sub_id   BIGSERIAL       NOT NULL PRIMARY KEY,
+    source_sub_id   BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
     subname         VARCHAR(512)    NOT NULL,
 
     UNIQUE(subname)
 );
 
 CREATE TABLE resource_types(
-    resource_type_id    BIGSERIAL       NOT NULL PRIMARY KEY,
+    resource_type_id    BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
     name                VARCHAR(512)    NOT NULL,
 
     UNIQUE(name)
@@ -348,15 +330,15 @@ CREATE TABLE resource_types(
 CREATE TABLE resources (
     event_uuid          UUID            NOT NULL,
 
-    resource_id         BIGSERIAL       NOT NULL    PRIMARY KEY,
+    resource_id         BIGINT          NOT NULL    PRIMARY KEY AUTO_INCREMENT,
     resource_type_id    BIGINT          NOT NULL    REFERENCES resource_types(resource_type_id) ON DELETE CASCADE,
     run_id              BIGINT          NOT NULL    REFERENCES runs(run_id)                     ON DELETE CASCADE,
     host_id             BIGINT                      REFERENCES hosts(host_id)                   ON DELETE SET NULL,
 
-    stamp               TIMESTAMPTZ(6)  NOT NULL,
+    stamp               TIMESTAMP(6)    NOT NULL,
     resource_ord        INTEGER         NOT NULL,
 
-    data                JSONB           NOT NULL,
+    data                JSON            NOT NULL,
 
     UNIQUE(run_id, resource_ord)
 );
@@ -366,7 +348,7 @@ CREATE INDEX IF NOT EXISTS res_data_res          ON resources(resource_type_id);
 CREATE INDEX IF NOT EXISTS res_data_runs_and_res ON resources(run_id, resource_type_id);
 
 CREATE TABLE coverage_manager (
-    coverage_manager_id   BIGSERIAL     NOT NULL PRIMARY KEY,
+    coverage_manager_id   BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
     package               VARCHAR(256)  NOT NULL,
 
     UNIQUE(package)
@@ -375,17 +357,17 @@ CREATE TABLE coverage_manager (
 CREATE TABLE coverage (
     event_uuid              UUID        NOT NULL,
 
-    coverage_id             BIGSERIAL   NOT NULL PRIMARY KEY,
+    coverage_id             BIGINT      NOT NULL        PRIMARY KEY AUTO_INCREMENT,
 
-    job_try_id              BIGINT      DEFAULT NULL REFERENCES job_tries(job_try_id)                   ON DELETE SET NULL,
-    coverage_manager_id     BIGINT      DEFAULT NULL REFERENCES coverage_manager(coverage_manager_id)   ON DELETE CASCADE,
+    job_try_id              BIGINT      DEFAULT NULL    REFERENCES job_tries(job_try_id)                   ON DELETE SET NULL,
+    coverage_manager_id     BIGINT      DEFAULT NULL    REFERENCES coverage_manager(coverage_manager_id)   ON DELETE CASCADE,
 
-    run_id                  BIGINT      NOT NULL     REFERENCES runs(run_id)                            ON DELETE CASCADE,
-    test_file_id            BIGINT      NOT NULL     REFERENCES test_files(test_file_id)                ON DELETE CASCADE,
-    source_file_id          BIGINT      NOT NULL     REFERENCES source_files(source_file_id)            ON DELETE CASCADE,
-    source_sub_id           BIGINT      NOT NULL     REFERENCES source_subs(source_sub_id)              ON DELETE CASCADE,
+    run_id                  BIGINT      NOT NULL        REFERENCES runs(run_id)                            ON DELETE CASCADE,
+    test_file_id            BIGINT      NOT NULL        REFERENCES test_files(test_file_id)                ON DELETE CASCADE,
+    source_file_id          BIGINT      NOT NULL        REFERENCES source_files(source_file_id)            ON DELETE CASCADE,
+    source_sub_id           BIGINT      NOT NULL        REFERENCES source_subs(source_sub_id)              ON DELETE CASCADE,
 
-    metadata                JSONB       DEFAULT NULL,
+    metadata                JSON        DEFAULT NULL,
 
     UNIQUE(run_id, job_try_id, test_file_id, source_file_id, source_sub_id)
 );
@@ -394,14 +376,14 @@ CREATE INDEX IF NOT EXISTS coverage_from_run_source ON coverage(run_id, source_f
 CREATE INDEX IF NOT EXISTS coverage_from_job        ON coverage(job_try_id);
 
 CREATE TABLE reporting (
-    reporting_id    BIGSERIAL       NOT NULL PRIMARY KEY,
+    reporting_id    BIGINT          NOT NULL        PRIMARY KEY AUTO_INCREMENT,
 
-    job_try_id      BIGINT          DEFAULT NULL REFERENCES job_tries(job_try_id)       ON DELETE SET NULL,
-    test_file_id    BIGINT          DEFAULT NULL REFERENCES test_files(test_file_id)    ON DELETE CASCADE,
+    job_try_id      BIGINT          DEFAULT NULL    REFERENCES job_tries(job_try_id)       ON DELETE SET NULL,
+    test_file_id    BIGINT          DEFAULT NULL    REFERENCES test_files(test_file_id)    ON DELETE CASCADE,
 
-    project_id      BIGINT          NOT NULL     REFERENCES projects(project_id)        ON DELETE CASCADE,
-    user_id         BIGINT          NOT NULL     REFERENCES users(user_id)              ON DELETE CASCADE,
-    run_id          BIGINT          NOT NULL     REFERENCES runs(run_id)                ON DELETE CASCADE,
+    project_id      BIGINT          NOT NULL        REFERENCES projects(project_id)        ON DELETE CASCADE,
+    user_id         BIGINT          NOT NULL        REFERENCES users(user_id)              ON DELETE CASCADE,
+    run_id          BIGINT          NOT NULL        REFERENCES runs(run_id)                ON DELETE CASCADE,
 
     job_try         SMALLINT        DEFAULT NULL,
 
