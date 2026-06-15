@@ -11,21 +11,35 @@ use Getopt::Yath;
 # App::Yath2::Options::PreCommand and App::Yath2::Options::Debug (version,
 # help, show-opts, dev-libs, etc). Porting it wholesale would duplicate those
 # options. The DB/server/client commands only consume the 'project' and 'user'
-# values from the 'yath' group, so this shim provides exactly those two and
-# nothing else.
+# values from the 'yath' group.
+#
+# '--project' already belongs to App::Yath2::Options::PreCommand (group
+# 'harness'); defining it here too would be a duplicate option form. So we mirror
+# the harness value into a 'yath' group field via post-process instead of owning
+# the CLI flag. Only 'user' (which has no other home) is a real option here.
 option_group {group => 'yath', category => 'Yath Options'} => sub {
-    option project => (
-        type        => 'Scalar',
-        alt         => ['project-name'],
-        description => 'This lets you provide a label for your current project/codebase. This is best used in a .yath.rc file.',
-    );
-
     option user => (
         type          => 'Scalar',
         description   => 'Username to associate with logs, database entries, and yath servers.',
         from_env_vars => [qw/YATH_USER USER/],
     );
 };
+
+option_post_process 0 => \&_mirror_project;
+
+sub _mirror_project {
+    my ($options, $state) = @_;
+    my $settings = $state->{settings};
+
+    return unless $settings->check_group('yath');
+    my $yath = $settings->yath;
+    return if $yath->check_option('project');
+
+    # Always create the field (even undef) so $settings->yath->project is a safe
+    # read for consumers; value mirrors the canonical harness project.
+    my $project = $settings->check_group('harness') ? $settings->harness->project : undef;
+    $yath->create_option(project => $project);
+}
 
 1;
 
