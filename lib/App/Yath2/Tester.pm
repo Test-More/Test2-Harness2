@@ -25,6 +25,15 @@ our @EXPORT = qw/yath make_example_dir/;
 
 my $pdir = tempdir(CLEANUP => 1);
 
+# Route every persistent runner's persistence file into our process-unique $pdir
+# (find_pfile honors YATH_PERSISTENCE_DIR). Without this the default location is
+# $TMPDIR/.<user>-<host>-<project>-yath-persist.json -- shared by EVERY
+# persistent-runner test in the suite (same project, same /tmp) -- so concurrent
+# tests under `prove -j` collide ("Persistent harness appears to be running")
+# and flake (notably reload.t). Per-process isolation removes the collision, and
+# it is what _shutdown_persistent_runners (which scans $pdir) already assumes.
+$ENV{YATH_PERSISTENCE_DIR} //= $pdir;
+
 # A persistent runner started during a test (yath start) detaches and outlives
 # the command that started it. If the test dies, times out, or is signalled
 # before its `yath stop`, that runner would leak -- and keep respawning its
