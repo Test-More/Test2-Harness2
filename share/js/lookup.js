@@ -1,4 +1,6 @@
 $(function() {
+    var users     = $('div#run_list');
+    var projectss = $('div#run_list');
     var runs      = $('div#run_list');
     var jobs      = $('div#job_list');
     var events    = $('div#event_list');
@@ -30,7 +32,7 @@ $(function() {
                     state.event_table    = event_table;
                 }
 
-                state.event_table.render_item(item.data, item.data.event_id);
+                state.event_table.render_item(item.data, item.data.event_uuid);
             }
             else if (item.type === 'job') {
                 if (!state.job_table) {
@@ -39,7 +41,7 @@ $(function() {
                     jobs.append(job_table.render());
                     state.job_table = job_table;
                 }
-                state.job_table.render_item(item.data, item.data.job_key);
+                state.job_table.render_item(item.data, item.data.job_uuid);
             }
             else if (item.type === 'run') {
                 if (!state.run_table) {
@@ -48,7 +50,7 @@ $(function() {
                     runs.append(run_table.render());
                     state.run_table = run_table;
                 }
-                state.run_table.render_item(item.data, item.data.run_id);
+                state.run_table.render_item(item.data, item.data.run_uuid);
             }
         }
     );

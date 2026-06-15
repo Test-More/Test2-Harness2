@@ -56,7 +56,6 @@ t2hui.fetch = function(url, args, cb) {
             var len = items.length;
 
             var counter = 0;
-            var batchStart = performance.now();
             for (var i = 0; i < len; i++) {
                 var json = items[i];
                 if (!json) { continue }
@@ -65,9 +64,8 @@ t2hui.fetch = function(url, args, cb) {
                 var item = JSON.parse(json);
                 cb(item);
 
-                if (performance.now() - batchStart > 16) {
-                    await new Promise(function(resolve) { requestAnimationFrame(resolve) });
-                    batchStart = performance.now();
+                if (!(counter % 25)) {
+                    await t2hui.sleep(50);
                 }
             };
 
@@ -151,7 +149,7 @@ t2hui.sanitize_class = function(text) {
 }
 
 t2hui.build_tooltip = function(box, text) {
-    var ddd = $('<span class="tooltip-expand"><img src="/img/dotdotdot.png" /></span>');
+    var ddd = $('<span class="tooltip-expand"><img src="/img/dotdotdot.png" /></span');
 
     var tooltip;
     var locked = false;

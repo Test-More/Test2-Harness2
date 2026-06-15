@@ -73,7 +73,7 @@ function FieldTable(spec) {
         else {
             return me._render_item(item, id, params);
         }
-    };
+    },
 
     me._render_item = function(item, id, params) {
         var row = me.render_row(item, id, params);
@@ -185,7 +185,7 @@ function FieldTable(spec) {
                         row.columns[row.columns.length - 1].after(col);
                     }
                     else {
-                        row.html.prepend(col);
+                        row.prepend(col);
                     }
 
                     row.dynamic_columns.push(col);
@@ -221,7 +221,7 @@ function FieldTable(spec) {
             toolrow.prepend(td);
         }
 
-        if (field.data) {
+        if (field.has_data) {
             var viewer = $('<div class="tool etoggle" title="Extended Data"><img src="/img/data.png" /></div>');
             var td = $('<td></td>');
             td.append(viewer);
@@ -319,6 +319,9 @@ function FieldTable(spec) {
         var col = $('<th class="field-table-header-col ' + me.column_class(data) + '"></th>');
         col.append(inner);
         inner.click(function() { col.trigger('click'); });
+        if (data.tooltip) {
+            inner.attr('title', data.tooltip);
+        }
         return col;
     }
 
@@ -377,9 +380,10 @@ function FieldTable(spec) {
         else {
             me.header.prepend(col);
 
+            var row;
             Object.values(me.rows).forEach(function(row) {
                 var td = $('<td class="' + cclass + '"></td>');
-                row.html.append(td);
+                row.append(td);
                 row.dynamic_columns.push(td);
             });
         }

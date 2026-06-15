@@ -45,6 +45,11 @@ div.live {
     scroll-snap-align: end;
 }
 
+tr.stuck_orphan {
+    background: #FFF0E0 !important;
+    border: 2px dashed #FF90F0 !important;
+}
+
 tr.temp_orphan {
     background: #C0E0FF;
 }
@@ -204,4 +209,25 @@ td.project a:hover, td.user a:hover {
     border-radius: 8px;
     cursor: pointer;
     background: #EEEEFF;
+}
+
+div#run_pager {
+    display: block;
+}
+
+div#run_pager span#run_pager_prev, div#run_pager span#run_pager_next {
+    padding-left: 10px;
+    padding-right: 10px;
+    cursor: pointer;
+}
+
+div#run_pager span#run_pager_prev:hover, div#run_pager span#run_pager_next:hover {
+    color: #1030A0;
+}
+
+div#run_pager span#run_pager_page {
+    border-left: 1px solid #909090;
+    border-right: 1px solid #909090;
+    padding-left: 10px;
+    padding-right: 10px;
 }
