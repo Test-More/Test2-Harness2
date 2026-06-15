@@ -517,6 +517,7 @@ sub _note_verdict {
             file => $end->{file},
             fail => $end->{fail} ? 1 : 0,
             try  => $event->job_try,
+            halt => $end->{halt},
         };
 
         $self->{+TRIES}{$job_id}++;
@@ -557,16 +558,17 @@ sub _final_event {
             if ($tries > 1) {
                 push @{$final_data->{retried}} => [$job_id, $tries, $file, ($verdict->{fail} ? 'NO' : 'YES')];
             }
+
+            # A bail-out / halt reason rides through on the audited final state
+            # (JobReader threads it into harness_job_end). Surface it under the
+            # renderer's "Halted" section: [job_id, file, reason].
+            push @{$final_data->{halted}} => [$job_id, $file, $verdict->{halt}]
+                if defined($verdict->{halt}) && length($verdict->{halt});
         }
         else {
             push @{$final_data->{unseen}} => [$job_id, $task->{file}];
         }
     }
-
-    # NOTE: 'halted' cannot be reconstructed yet. The events file produced by
-    # Test2-Collector does not thread a run-halt signal, so the gatherer has no
-    # source for it. Threading it is a cross-chunk follow-up. Left empty to keep
-    # parity with what flows.
 
     $final_data->{pass} = 0 if $final_data->{failed} or $final_data->{unseen};
 

@@ -153,8 +153,26 @@ sub _collector_exit_code {
         return 255;
     }
 
+    # A bail-out (or any other halt) lives only in the audited final_state, not
+    # in the OS exit status. Persist the reason so the runner's bailed_out() can
+    # see it (--abort-on-bail) now that there is no stdout file to scan.
+    my $fs = $info->{final_state};
+    if ($fs && defined($fs->{halt}) && length($fs->{halt})) {
+        write_file($self->bail_file, $fs->{halt});
+    }
+
     my $exit = $info->{exit} // {};
-    return $exit->{err} || ($exit->{sig} ? 1 : 0);
+    my $code = $exit->{err} || ($exit->{sig} ? 1 : 0);
+    return $code if $code;
+
+    # Test2-Collector can audit a test as FAILED while the process exits zero
+    # (raw TAP "not ok", a missing/invalid plan, --fail-on-resource-skip TAP, a
+    # bail-out). The runner drives retry/fail off this wait status, so a clean OS
+    # exit must still report failure when the audited verdict failed -- otherwise
+    # an audit-only failure is silently treated as a pass and never retried.
+    return 1 if $fs && !$fs->{pass};
+
+    return 0;
 }
 
 # Build the exec target (and any skip/fail short-circuit) for the spawn path.
@@ -218,6 +236,21 @@ sub run_under_collector {
 
     my $in_file = $self->in_file;
 
+    # Timeout mapping to Test2::Collector:
+    #   event_timeout     -> silence_timeout (kill the child after this long with
+    #                        no output -- "no activity" timeout).
+    #   post_exit_timeout -> orphan_timeout  (quiet window after the child is
+    #                        reaped before still-open pipes are declared orphaned
+    #                        -- the post-exit grace period for descendants that
+    #                        keep writing after the parent exits).
+    # NOT lifetime_timeout: that caps TOTAL runtime, which would kill any healthy
+    # test running longer than post_exit_timeout (15s default). The harness has no
+    # absolute-lifetime option, so lifetime_timeout is left at the collector's
+    # default (0/disabled). When a timeout is disabled (HARNESS-NO-TIMEOUT, or
+    # --no-post-exit-timeout) pass 0 explicitly so the collector waits for EOF
+    # rather than falling back to its own 30s orphan default.
+    my $orphan_timeout = ($self->use_timeout && $self->post_exit_timeout) ? $self->post_exit_timeout : 0;
+
     my %common = (
         name               => $self->rel_file,
         is_test            => 1,
@@ -228,9 +261,9 @@ sub run_under_collector {
         child_env          => $self->env_vars,
         chdir              => ($self->ch_dir || undef),
         io_events          => ($self->io_events ? 1 : 0),
-        ($in_file                                          ? (stdin            => $in_file)               : ()),
-        ($self->use_timeout && $self->event_timeout)       ? (silence_timeout  => $self->event_timeout)    : (),
-        ($self->use_timeout && $self->post_exit_timeout)   ? (lifetime_timeout => $self->post_exit_timeout) : (),
+        orphan_timeout     => $orphan_timeout,
+        ($in_file                                    ? (stdin           => $in_file)            : ()),
+        ($self->use_timeout && $self->event_timeout) ? (silence_timeout => $self->event_timeout) : (),
     );
 
     return Test2::Collector::collect(%common, @target);

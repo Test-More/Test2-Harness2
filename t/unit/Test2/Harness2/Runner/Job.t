@@ -265,6 +265,31 @@ subtest '_collector_exit_code maps collect() info to an exit code' => sub {
         1,
         "signal death -> 1",
     );
+
+    # Collector ok + clean OS exit but the audited verdict FAILED -> 1, so the
+    # runner retries/fails an audit-only failure (raw "not ok", bad plan, ...).
+    is(
+        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}, final_state => {pass => 0}}),
+        1,
+        "audited failure with exit 0 -> 1",
+    );
+
+    # Audited pass with clean exit stays 0 (final_state present must not break it).
+    is(
+        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}, final_state => {pass => 1}}),
+        0,
+        "audited pass with exit 0 -> 0",
+    );
+};
+
+subtest '_collector_exit_code records a bail reason for abort-on-bail' => sub {
+    my $job = make_job();
+
+    # A halt on the audited final_state is written to the bail file so the
+    # runner's bailed_out() can see it (no stdout file is scanned anymore).
+    $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}, final_state => {pass => 0, halt => 'stop now'}});
+
+    is($job->bailed_out, 'stop now', "bail reason persisted and read back");
 };
 
 done_testing;

@@ -1,9 +1,9 @@
 package Test2::Harness2::Collector::JobReader;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
+use Carp qw/croak/;
 use File::Spec();
 use Test2::Collector::Util::Zstd qw/open_zstd_reader/;
 use Test2::Collector::Util::JSON qw/decode_json/;
@@ -15,27 +15,22 @@ use Test2::Harness2::Util::HashBase qw{
     +reader +done +last_stamp +final_state
 };
 
-sub init {
-    my $self = shift;
-    die "job_id is required"      unless defined $self->{+JOB_ID};
-    die "events_file is required" unless defined $self->{+EVENTS_FILE};
+sub init ($self) {
+    croak "job_id is required"      unless defined $self->{+JOB_ID};
+    croak "events_file is required" unless defined $self->{+EVENTS_FILE};
     $self->{+JOB_TRY} //= 0;
 }
 
-sub done { $_[0]->{+DONE} }
+sub done ($self) { $self->{+DONE} }
 
-sub reader {
-    my $self = shift;
+sub reader ($self) {
     return $self->{+READER} if $self->{+READER};
     return undef unless -e $self->{+EVENTS_FILE};
     return $self->{+READER} = open_zstd_reader($self->{+EVENTS_FILE});
 }
 
 # Return up to $max wrapped harness events; empty list if nothing new yet.
-sub poll {
-    my $self = shift;
-    my ($max) = @_;
-
+sub poll ($self, $max = undef) {
     return () if $self->{+DONE};
 
     my $reader = $self->reader or return ();
@@ -47,9 +42,10 @@ sub poll {
 
         # The file may still be being written; a corrupt/partial record must not
         # abort the poll. Surface it as a diagnostic event and carry on.
-        my $rec = eval { decode_json($line) };
+        my $rec;
+        my $ok  = eval { $rec = decode_json($line); 1 };
         my $err = $@;
-        unless ($rec) {
+        unless ($ok) {
             push @out => $self->_wrap({info => [{tag => 'INTERNAL', debug => 1, important => 1, details => "Failed to decode events record: $err"}]});
             next;
         }
@@ -64,30 +60,33 @@ sub poll {
         # there is exactly ONE harness_job_exit per job and it carries the shape
         # the harness consumes. (Emitting a second event here is what made
         # concurrency.t see two exits per job.)
+        #
+        # NOTE: do NOT mark the reader done here. Test2-Collector records
+        # harness_final_state AFTER harness_process_exit (Auditor: process-exit
+        # event, then 'completed' transition, then the final-state event). If
+        # process-exit lands on the last slot of a bounded poll batch, ending on
+        # it would skip final_state on the next call (DONE short-circuits poll),
+        # so no harness_job_end would ever be emitted and the run would report a
+        # completed job as "never ran". Completion is keyed to final_state below.
         if (my $px = $fd->{harness_process_exit}) {
             $fd->{harness_job_exit} = $self->_job_exit_facet($px);
-            # TODO(Task 4): retry intent is not represented in the events file
-            # yet; the collector model must thread retry through the gatherer
-            # (the gatherer keys on done->{retry} to keep a job PENDING).
-            $self->{+DONE} = {retry => 0};
         }
 
         push @out => $self->_wrap($fd);
 
-        # Synthesize the harness_job_end facet the renderer/rollup expect.
+        # final_state is the true terminal record. Synthesize the
+        # harness_job_end facet the renderer/rollup expect and mark done.
         if (my $fs = $fd->{harness_final_state}) {
             $self->{+FINAL_STATE} = $fs;
             push @out => $self->_wrap({harness_job_end => $self->_job_end_facet($fs)});
+            $self->{+DONE} = {retry => 0};
         }
     }
 
     return @out;
 }
 
-sub _wrap {
-    my $self = shift;
-    my ($fd) = @_;
-
+sub _wrap ($self, $fd) {
     my $stamp = $self->_stamp_for($fd);
 
     return Test2::Harness2::Event->new(
@@ -100,9 +99,7 @@ sub _wrap {
     );
 }
 
-sub _stamp_for {
-    my $self = shift;
-    my ($fd) = @_;
+sub _stamp_for ($self, $fd) {
     for my $f (qw/harness_process_exit harness_final_state harness_state_transition/) {
         return $self->{+LAST_STAMP} = $fd->{$f}{stamp} if $fd->{$f} && defined $fd->{$f}{stamp};
     }
@@ -110,9 +107,7 @@ sub _stamp_for {
     return $self->{+LAST_STAMP};
 }
 
-sub _job_exit_facet {
-    my $self = shift;
-    my ($px) = @_;
+sub _job_exit_facet ($self, $px) {
     return {
         details => "Test script exited " . ($px->{all} // 0),
         exit    => $px->{all} // 0,
@@ -127,9 +122,7 @@ sub _job_exit_facet {
     };
 }
 
-sub _job_end_facet {
-    my $self = shift;
-    my ($fs) = @_;
+sub _job_end_facet ($self, $fs) {
     my $file = $self->{+FILE};
 
     # A skip-all test declares a plan with a zero count (e.g. "1..0 # SKIP
@@ -151,6 +144,9 @@ sub _job_end_facet {
         retry    => 0,
         fail     => $fs->{pass} ? 0 : 1,
         skip     => $skip,
+        # A bail-out / halt reason rides through on the audited final state. Carry
+        # it so the gatherer rollup can list the job under "Halted".
+        halt     => $fs->{halt},
         stamp    => $fs->{stamp},
         times    => $fs->{times},
     };
