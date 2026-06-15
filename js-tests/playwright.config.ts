@@ -15,7 +15,9 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 // Repo root is the parent of js-tests/. The yath server resolves share/ and
 // demo/ relative to its cwd, so the webServer must run from the repo root.
-const REPO_ROOT = path.resolve(__dirname, '..');
+// YATH_REPO_ROOT lets a copied-to-tempdir config (see t/playwright.t) point the
+// server back at the real checkout while node_modules live in the temp dir.
+const REPO_ROOT = process.env.YATH_REPO_ROOT || path.resolve(__dirname, '..');
 
 // Locate the yath launcher. Prefer an explicit override, else rely on PATH.
 const YATH = process.env.YATH_BIN || 'yath';
