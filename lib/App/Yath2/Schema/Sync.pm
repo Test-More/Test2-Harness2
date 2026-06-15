@@ -505,6 +505,12 @@ sub render_binaries {
     return map {$self->parse_date_time($dbh, $_); +{binary => $_} } @$binaries;
 }
 
+# TODO(DBIx::QuickORM): run-level data loss. reporting rows can have NULL
+# job_try_id / test_file_id (e.g. the run-duration finish row), but the inner
+# JOINs on job_tries/test_files below silently drop them, so sync loses
+# run-level reporting. Fix needs LEFT JOINs plus enough natural keys to reattach
+# rows when those FKs are absent, and matching import-side null handling. Defer
+# to the QuickORM conversion. Same applies to render_coverage below.
 sub render_reporting {
     my $self = shift;
     my ($dbh, $run_uuid, $run_id) = @_;
@@ -528,6 +534,9 @@ sub render_reporting {
     return map { $_->{run_uuid} = $run_uuid; $self->parse_date_time($dbh, $_); +{reporting => $_} } @$reporting;
 }
 
+# TODO(DBIx::QuickORM): see render_reporting above. Run-level coverage rows can
+# have a NULL job_try_id; the inner JOINs here drop them, losing run-level
+# coverage during sync. Defer the LEFT JOIN + null-handling fix to QuickORM.
 sub render_coverage {
     my $self = shift;
     my ($dbh, $run_uuid, $run_id) = @_;

@@ -11,6 +11,15 @@ use Carp qw/confess/;
 confess "You must first load a App::Yath2::Schema::NAME module"
     unless $App::Yath2::Schema::LOADED;
 
+# TODO(DBIx::QuickORM): the binary-UUID flavors (Percona/MySQL/MariaDB) store
+# api_keys.value as BINARY(16), but unlike Run.run_uuid / Session.session_uuid
+# this column has no inflate/deflate hook, and the lookup paths
+# (Controller/Upload, Controller/User, Overlay/User) search with the raw
+# user-supplied string. So API-key create + auth are inconsistent on those
+# flavors. A plain inflate_column is not enough (DBIC does not deflate
+# where-clause values), so the search boundaries must also route through
+# format_uuid_for_db. Defer the full fix to the QuickORM conversion.
+
 1;
 
 __END__

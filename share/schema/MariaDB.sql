@@ -1,3 +1,9 @@
+-- TODO(DBIx::QuickORM): this DDL is not valid MariaDB. It uses a `UUID` column
+-- type and `CREATE INDEX IF NOT EXISTS`, neither supported here. Percona.sql is
+-- correct (BINARY(16) + plain CREATE INDEX). The MySQL/MariaDB result classes
+-- also lack the UUID inflate/deflate hooks the Percona ones have. Regenerate the
+-- MySQL-family DDL and inflate hooks during the QuickORM conversion before
+-- claiming MySQL/MariaDB support.
 CREATE TABLE versions(
     version     NUMERIC(10,6)   NOT NULL,
     version_id  INT             NOT NULL    PRIMARY KEY AUTO_INCREMENT,
