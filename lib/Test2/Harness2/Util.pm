@@ -145,6 +145,15 @@ sub parse_exit {
     };
 }
 
+# The stable path of the events file recorded by the non-test collector that
+# wraps the `yath test` runner. The producer (App::Yath2::Command::test
+# start_runner) and the consumer (Test2::Harness2::Collector) must agree on it,
+# so it lives here as a single shared accessor next to the workdir.
+sub runner_events_file {
+    my ($workdir) = @_;
+    return File::Spec->catfile($workdir, 'runner-events.jsonl.zst');
+}
+
 # Map a Test2::Collector::collect() info hash to the exit code the collector
 # PARENT should _exit() with, so the process that reaps it (the runner reaping a
 # job, or the harness IPC reaping the runner) observes the CHILD's verdict, not
@@ -158,15 +167,6 @@ sub parse_exit {
 # delegating here) and the non-test runner collector wrapper in
 # App::Yath2::Command::test (which has no auditor/final_state). Keeping it in one
 # place guarantees exit-status fidelity does not diverge between the two paths.
-# The stable path of the events file recorded by the non-test collector that
-# wraps the `yath test` runner. The producer (App::Yath2::Command::test
-# start_runner) and the consumer (Test2::Harness2::Collector) must agree on it,
-# so it lives here as a single shared accessor next to the workdir.
-sub runner_events_file {
-    my ($workdir) = @_;
-    return File::Spec->catfile($workdir, 'runner-events.jsonl.zst');
-}
-
 sub collector_exit_code {
     my ($info) = @_;
 
