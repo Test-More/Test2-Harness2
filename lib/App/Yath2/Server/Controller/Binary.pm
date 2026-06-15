@@ -22,12 +22,10 @@ sub handle {
     die error(404 => 'Missing route') unless $route;
     my $binary_id = $route->{binary_id} or die error(404 => "Invalid Route");
 
-    error(404 => 'No id') unless $binary_id;
-
     my $schema = $self->schema;
     my $binary = $schema->resultset('Binary')->find({binary_id => $binary_id});
 
-    error(404 => 'No such binary file') unless $binary_id;
+    die error(404 => 'No such binary file') unless $binary;
 
     my $filename = $binary->filename;
 
