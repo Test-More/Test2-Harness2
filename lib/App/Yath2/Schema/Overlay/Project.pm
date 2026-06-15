@@ -103,7 +103,6 @@ sub durations {
 
     for my $file (keys %$data) {
         my $set  = delete $data->{$file} or next;
-        my $time = median($set);
         $data->{$file} = median($set);
     }
 
