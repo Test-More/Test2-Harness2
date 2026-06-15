@@ -34,9 +34,6 @@ lastlog.*
 .testsharedjobslots.yml
 docs
 
-# Symlink to the unreleased Test2-Collector checkout (machine-specific).
-/t2clib
-
 # Scratch / holding dir for files pending review or deletion.
 /xxx/
 

@@ -4,48 +4,33 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Test2::Harness2::Util::UUID qw/gen_uuid/;
-
 use App::Yath2::Tester qw/make_example_dir/;
 
 use Importer Importer => qw/import/;
 our @EXPORT_OK = qw/make_example_dir summarize_events/;
 
-my $HARNESS_ID = 1;
 sub summarize_events {
     my ($events) = @_;
 
-    my @caller = caller(0);
+    require Test2::Collector::Auditor;
+    require Test2::Collector::Event;
 
-    my $id     = $HARNESS_ID++;
-    my $run_id = "run-$id";
-    my $job_id = "job-$id";
+    my $auditor = Test2::Collector::Auditor->new;
 
-    require Test2::Harness2::Auditor::Watcher;
-    my $watcher = Test2::Harness2::Auditor::Watcher->new(job => 1, try => 0);
-
-    require Test2::Harness2::Event;
     for my $e (@$events) {
-        my $fd = $e->facet_data;
-        my $he = Test2::Harness2::Event->new(
-            facet_data => $fd,
-            event_id   => gen_uuid(),
-            run_id     => $run_id,
-            job_id     => $job_id,
-            stamp      => time,
-            job_try    => 0,
-        );
-
-        $watcher->process($he);
+        my $ev = Test2::Collector::Event->new(facet_data => $e->facet_data);
+        $auditor->process_event($ev);
     }
 
+    my $state = $auditor->final_state;
+
     return {
-        plan       => $watcher->plan,
-        pass       => $watcher->pass ? 1 : 0,
-        fail       => $watcher->fail ? 1 : 0,
-        errors     => $watcher->_errors,
-        failures   => $watcher->_failures,
-        assertions => $watcher->assertion_count,
+        plan       => $state->{plan},
+        pass       => $state->{pass} ? 1 : 0,
+        fail       => $state->{pass} ? 0 : 1,
+        errors     => $state->{errors},
+        failures   => $state->{failures},
+        assertions => $state->{assertion_count},
     };
 }
 
@@ -63,7 +48,7 @@ Test2::Tools::HarnessTester - Run events through a harness for a summary
 
 =head1 DESCRIPTION
 
-This tool allows you to process events through the L<Test2::Harness2> auditor.
+This tool allows you to process events through the L<Test2::Collector::Auditor>.
 The main benefit here is to get a pass/fail result, as well as counts for
 assertions, failures, and errors.
 
@@ -102,8 +87,7 @@ assertions, failures, and errors.
 
 This takes an arrayref of events, such as that produced by C<intercept {...}>
 from L<Test2::API>. The result is a hashref that summarizes the results of the
-events as processed by L<Test2::Harness2>, specifically the
-L<Test2::Harness2::Auditor::Watcher> module.
+events as processed by L<Test2::Collector::Auditor>.
 
 Fields in the summary hash:
 

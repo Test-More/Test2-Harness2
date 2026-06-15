@@ -15,19 +15,24 @@ my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;
 $dir =~ s{^\./}{};
 
+# Test2-Collector intentionally releases STDERR before STDOUT within a flush
+# (see Test2::Collector::StreamBuffer: "release order within a flush is always
+# stderr before stdout"), so the stdout/stderr lines that the test source emits
+# back-to-back render stderr-first. The point of this test is the codepoints;
+# the cross-stream order reflects the collector's documented behavior.
 my $want = <<"EOT";
 (  NOTE  )  job  1    valid note [\x{201c}\x{201d}\x{ff}\x{ff}]
 (  NOTE  )  job  1    valid note [\x{201c}\x{201d}]
 (  DIAG  )  job  1    valid diag [\x{201c}\x{201d}\x{ff}\x{ff}]
 (  DIAG  )  job  1    valid diag [\x{201c}\x{201d}]
-( STDOUT )  job  1    valid stdout [\x{201c}\x{201d}\x{ff}\x{ff}]
-( STDOUT )  job  1    valid stdout [\x{201c}\x{201d}]
 ( STDERR )  job  1    valid stderr [\x{201c}\x{201d}\x{ff}\x{ff}]
 ( STDERR )  job  1    valid stderr [\x{201c}\x{201d}]
+( STDOUT )  job  1    valid stdout [\x{201c}\x{201d}\x{ff}\x{ff}]
+( STDOUT )  job  1    valid stdout [\x{201c}\x{201d}]
 [  PASS  ]  job  1  + valid ok [\x{201c}\x{201d}\x{ff}\x{ff}]
 [  PASS  ]  job  1  + valid ok [\x{201c}\x{201d}]
-( STDOUT )  job  1    STDOUT: M\x{101}kaha
 ( STDERR )  job  1    STDERR: M\x{101}kaha
+( STDOUT )  job  1    STDOUT: M\x{101}kaha
 (  DIAG  )  job  1    DIAG: M\x{101}kaha
 (  NOTE  )  job  1    NOTE: M\x{101}kaha
 [  PASS  ]  job  1  + ASSERT: M\x{101}kaha

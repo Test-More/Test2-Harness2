@@ -819,8 +819,9 @@ This implies HARNESS-NO-PRELOAD.
 
 =head3 HARNESS-NO-STREAM
 
-C<yath> usually uses the L<Test2::Formatter::Stream> formatter instead of TAP.
-Some tests depend on using a TAP formatter. This option will make C<yath> use
+C<yath> usually runs tests under L<Test2::Collector>, which uses the
+L<Test2::Formatter::Collector> formatter instead of TAP. Some tests depend on
+using a TAP formatter. This option will make C<yath> use
 L<Test2::Formatter::TAP> or L<Test::Builder::Formatter>.
 
 =head3 HARNESS-NO-IO-EVENTS

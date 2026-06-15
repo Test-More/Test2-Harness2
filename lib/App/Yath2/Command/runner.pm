@@ -274,15 +274,53 @@ sub launch_via_fork {
     # In parent
     return $pid if $pid;
 
-    # In Child
+    # In Child: this process becomes the Test2-Collector collector PARENT. The
+    # collector forks the actual test child internally; that child runs the
+    # run_sub below, which unwinds back to the Test-Runner setjump (in
+    # generate_run_sub) and goto::file's in the real test -- so the test still
+    # runs in-process with everything preloaded, but now under the collector's
+    # stream formatter, and its full event stream is recorded to
+    # events.jsonl.zst.
+    # Spawn jobs are infrastructure processes (the persistent `spawn` command's
+    # workers), not test files; they must not be wrapped in a test collector.
+    # Only real test Jobs become collector parents.
+    my $collected = !$job->isa('Test2::Harness2::Runner::Spawn');
+
     my $ok = eval {
-        $0 = 'yath-pending-test';
+        require POSIX;
+        $0 = $collected ? 'yath-collector' : 'yath-pending-test';
         setpgrp(0, 0) if Test2::Harness2::IPC::USE_P_GROUPS();
         $runner->stop();
 
-        $stage->do_post_fork($job) if $stage;
+        unless ($collected) {
+            # Non-collected (spawn) path: this child IS the test process, so
+            # post_fork fires here, in the same PID that will run.
+            $stage->do_post_fork($job) if $stage;
+            longjump "Test-Runner" => ('run_test', $job, $stage);
+            return 1;
+        }
 
-        longjump "Test-Runner" => ('run_test', $job, $stage);
+        # Collected path: this child is the collector PARENT, not the test
+        # process. The collector forks the real test child internally; post_fork
+        # (and pre_launch) must fire in THAT grandchild so they share the test's
+        # PID (preload contract: POST_FORK and PRE_LAUNCH are in the same PID).
+        # Fire post_fork inside the collector's run sub, after the inner fork.
+        my $info = $job->run_under_collector(
+            run => sub {
+                my ($guard) = @_;
+                # The collector's child: unwind out of the collector's run_sub
+                # and resume the harness's own launch path, which goto::file's
+                # the test in-process.
+                $guard->dismiss;
+                $stage->do_post_fork($job) if $stage;
+                longjump "Test-Runner" => ('run_test', $job, $stage);
+            },
+        );
+
+        # Exit with the TEST child's verdict (not the collector's own health) so
+        # the runner's retry/fail logic sees the real result. See
+        # Test2::Harness2::Runner::Job::_collector_exit_code.
+        POSIX::_exit($job->_collector_exit_code($info));
 
         1;
     };
@@ -295,15 +333,21 @@ sub cleanup_process {
     my $class = shift;
     my ($job, $stage) = @_;
 
-    $class->update_io($job);           # Get the correct filehandles in place early
-    $class->set_env($job);             # Set up the necessary env vars
-    $class->build_init_state($job);    # Lots of 'misc' stuff.
-    $class->do_loads($job);            # Modules that we wanted loaded/imported post fork
-    $class->test2_state($job);         # Normalize the Test2 state
+    # When running under a Test2-Collector collector the collector owns the
+    # child's STDOUT/STDERR (swapped onto its capture pipes) and has already
+    # selected its own stream formatter (T2_FORMATTER=Collector). Skip the
+    # harness's own IO redirect and Stream-formatter setup in that case.
+    my $collected = ($ENV{T2_FORMATTER} // '') eq 'Collector';
+
+    $class->update_io($job) unless $collected;    # Get the correct filehandles in place early
+    $class->set_env($job);                        # Set up the necessary env vars
+    $class->build_init_state($job);               # Lots of 'misc' stuff.
+    $class->do_loads($job);                       # Modules that we wanted loaded/imported post fork
+    $class->test2_state($job);                    # Normalize the Test2 state
 
     $stage->do_pre_launch($job) if $stage;
 
-    $class->final_state($job);         # Important final cleanup
+    $class->final_state($job);                    # Important final cleanup
 }
 
 sub test2_state {
@@ -315,11 +359,12 @@ sub test2_state {
         Test2::API::test2_post_preload_reset();
     }
 
-    if ($job->use_stream) {
-        $ENV{T2_FORMATTER} = 'Stream';
-        require Test2::Formatter::Stream;
-        Test2::Formatter::Stream->import(dir => $job->event_dir, job_id => $job->job_id);
-    }
+    # Under a Test2-Collector collector the collector selects its own stream
+    # formatter (T2_FORMATTER=Collector, set in the collector child before this
+    # runs) and folds in io-events itself; the harness must not install the
+    # IOEvents plugin here. Real test jobs are always collected now, so there is
+    # no non-collected stream-formatter fallback.
+    my $collected = ($ENV{T2_FORMATTER} // '') eq 'Collector';
 
     if ($job->event_uuids) {
         require Test2::Plugin::UUID;
@@ -331,7 +376,7 @@ sub test2_state {
         Test2::Plugin::MemUsage->import();
     }
 
-    if ($job->io_events) {
+    if (!$collected && $job->io_events) {
         require Test2::Plugin::IOEvents;
         Test2::Plugin::IOEvents->import();
     }

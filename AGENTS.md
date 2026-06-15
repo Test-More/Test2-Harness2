@@ -232,10 +232,9 @@ run via:
 prove -Ilib -j16 -r t/
 ```
 
-Until `Test2-Collector` is installed, the `t2clib` symlink must exist
-at the repository root (`ln -s ../Test2-Collector/lib t2clib`) —
-scripts and the tests that need `Test2::Collector*` load it from
-there.
+`Test2-Collector` is a hard dependency and must be installed (it
+provides the `Test2::Collector*` namespace the collector pipeline
+loads).
 
 Eventually yath will be self-hosting and the runner moves to:
 
@@ -276,14 +275,10 @@ guide; walk it before declaring work ready for review.
   options that explicitly request `App::Yath2*` functionality.
 - The collector pipeline comes from the external `Test2-Collector`
   distribution (`Test2::Collector` namespace; checkout at
-  `~/projects/Test2/Test2-Collector`). It is a hard dependency, but it
-  is **not yet released or installed**, so it is loaded from the
-  `t2clib` symlink at the repository root (gitignored; points at the
-  sibling checkout's `lib/`). Scripts under `scripts/` add it to
-  `@INC` themselves; a test that loads `Test2::Collector*` needs a
-  `use lib 't2clib';` line. This scaffolding goes away once the dist
-  is installed. The dependency points one way: `Test2::Collector`
-  never loads `Test2::Harness2*` or `App::Yath2*`.
+  `~/projects/Test2/Test2-Collector`). It is a hard dependency and
+  must be installed (declared in `dist.ini`). The dependency points
+  one way: `Test2::Collector` never loads `Test2::Harness2*` or
+  `App::Yath2*`.
 - Hard-required CPAN deps for `Test2::Harness2` are fine. Non-default
   database drivers (Postgres, MySQL, MariaDB, Percona) are loaded only when
   the caller points the harness at a matching DSN, so their
@@ -338,8 +333,8 @@ must internalise before writing any code (all are documented in
   reference doc or piece of `reference/` code calls for
   `IPC::Manager`, treat that as outdated.
 - **The collector comes from `Test2-Collector`** (`Test2::Collector`
-  namespace; external, unreleased — loaded via the `t2clib` symlink
-  until installed). The yath-side collector is simplified to read the
+  namespace; external, installed hard dependency). The yath-side
+  collector is simplified to read the
   `jsonl.zst` files the collector writes rather than parsing and
   auditing raw events itself. See `ARCHITECTURE.md` §2.8 and §4.1.
 - **The harness orchestrates collectors** (`ARCHITECTURE.md` §4.2,

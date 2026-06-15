@@ -52,7 +52,18 @@ the start command for details on how to launch a persistant instance.
     EOT
 }
 
-sub terminate_queue   { }
+# A persistent `run` must NOT call state->end_queue() (that sets QUEUE_ENDED and
+# would shut the persistent runner down), but it MUST still end its own per-run
+# queue.jsonl. That per-run queue is read ONLY by this run's collector (the
+# persistent runner pulls tasks from the shared State, not from queue.jsonl), so
+# ending it writes the terminator that lets the collector set TASKS_DONE and emit
+# the run-level harness_final. Without it the collector loops until the runner
+# exits and the command dies "Final data never received from collector!".
+sub terminate_queue {
+    my $self = shift;
+    $self->tasks_queue->end();
+}
+
 sub write_settings_to { }
 sub setup_plugins     { }
 sub setup_resources   { }

@@ -201,13 +201,9 @@ distribution (`Test2::Collector` namespace; working checkout at
 is the authoritative spec for the collector contract; §4.1 here documents only
 the boundary the harness consumes.
 
-`Test2-Collector` is **not yet released or installed**. Until it is, it is
-loaded from the `t2clib` symlink at the repository root (gitignored; points at
-the sibling checkout's `lib/`). Scripts under `scripts/` add it to `@INC`
-themselves; a test that loads `Test2::Collector*` carries a `use lib 't2clib';`
-line. This scaffolding goes away once the dist is installed. The dependency
-points one way: `Test2::Collector` never loads `Test2::Harness2*` or
-`App::Yath2*`.
+`Test2-Collector` is a hard dependency and must be installed (declared in
+`dist.ini`). The dependency points one way: `Test2::Collector` never loads
+`Test2::Harness2*` or `App::Yath2*`.
 
 ## 3. Repository layout `[migrating]`
 

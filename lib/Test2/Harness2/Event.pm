@@ -171,9 +171,9 @@ A unix timestamp for when the event was created.
 
 =item $id = $event->stream_id
 
-This is an implementation detail of L<Test2::Formatter::Stream>, do not rely on
+This is an implementation detail of the streamed-event capture, do not rely on
 it. This is used to prevent parsing errors when stream output is nested in
-other stream output, which can happen if you are writing tests for the stream
+other stream output, which can happen if you are writing tests for the
 formatter itself.
 
 =item $trace = $event->trace

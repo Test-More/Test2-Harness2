@@ -34,10 +34,8 @@ use Test2::Harness2::Util::HashBase qw/
 
     +run <run_id
 
-    +auditor_reader
     +collector_writer
     +renderer_reader
-    +auditor_writer
 
     +renderers
     +logger
@@ -145,18 +143,10 @@ sub _resize_pipe {
     fcntl($fh, Fcntl::F_SETPIPE_SZ(), $size);
 }
 
-sub auditor_reader {
-    my $self = shift;
-    return $self->{+AUDITOR_READER} if $self->{+AUDITOR_READER};
-    pipe($self->{+AUDITOR_READER}, $self->{+COLLECTOR_WRITER}) or die "Could not create pipe: $!";
-    _resize_pipe($self->{+COLLECTOR_WRITER});
-    return $self->{+AUDITOR_READER};
-}
-
 sub collector_writer {
     my $self = shift;
     return $self->{+COLLECTOR_WRITER} if $self->{+COLLECTOR_WRITER};
-    pipe($self->{+AUDITOR_READER}, $self->{+COLLECTOR_WRITER}) or die "Could not create pipe: $!";
+    pipe($self->{+RENDERER_READER}, $self->{+COLLECTOR_WRITER}) or die "Could not create pipe: $!";
     _resize_pipe($self->{+COLLECTOR_WRITER});
     return $self->{+COLLECTOR_WRITER};
 }
@@ -164,17 +154,9 @@ sub collector_writer {
 sub renderer_reader {
     my $self = shift;
     return $self->{+RENDERER_READER} if $self->{+RENDERER_READER};
-    pipe($self->{+RENDERER_READER}, $self->{+AUDITOR_WRITER}) or die "Could not create pipe: $!";
-    _resize_pipe($self->{+AUDITOR_WRITER});
+    pipe($self->{+RENDERER_READER}, $self->{+COLLECTOR_WRITER}) or die "Could not create pipe: $!";
+    _resize_pipe($self->{+COLLECTOR_WRITER});
     return $self->{+RENDERER_READER};
-}
-
-sub auditor_writer {
-    my $self = shift;
-    return $self->{+AUDITOR_WRITER} if $self->{+AUDITOR_WRITER};
-    pipe($self->{+RENDERER_READER}, $self->{+AUDITOR_WRITER}) or die "Could not create pipe: $!";
-    _resize_pipe($self->{+AUDITOR_WRITER});
-    return $self->{+AUDITOR_WRITER};
 }
 
 sub workdir {
@@ -221,7 +203,7 @@ sub run {
         $self->render();
         $self->stop();
 
-        my $final_data = $self->{+FINAL_DATA} or die "Final data never received from auditor!\n";
+        my $final_data = $self->{+FINAL_DATA} or die "Final data never received from collector!\n";
         my $pass       = $self->{+TESTS_SEEN} && $final_data->{pass};
         $self->render_final_data($final_data);
         $self->produce_summary($pass);
@@ -296,7 +278,6 @@ sub start {
 
     $self->start_runner(jobs_todo => $pop);
     $self->start_collector();
-    $self->start_auditor();
 
     return 1;
 }
@@ -869,30 +850,6 @@ sub renderers {
     }
 
     return $self->{+RENDERERS} = \@renderers;
-}
-
-sub start_auditor {
-    my $self = shift;
-
-    my $run      = $self->build_run();
-    my $settings = $self->settings;
-
-    my $ipc = $self->ipc;
-    $ipc->spawn(
-        stdin       => $self->auditor_reader(),
-        stdout      => $self->auditor_writer(),
-        no_set_pgrp => 1,
-        command     => [
-            $^X, $self->spawn_args($settings), $settings->harness->script,
-            (map { "-D$_" } @{$settings->harness->dev_libs}),
-            '--no-scan-plugins',    # Do not preload any plugin modules
-            auditor => 'Test2::Harness2::Auditor',
-            $run->run_id,
-            procname_prefix => $settings->debug->procname_prefix,
-        ],
-    );
-
-    close($self->auditor_writer());
 }
 
 sub collector_options { () }

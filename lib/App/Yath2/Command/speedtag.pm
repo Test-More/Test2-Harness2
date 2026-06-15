@@ -115,9 +115,12 @@ sub run {
 
             next unless $f->{harness_job_end};
 
+            # Test2-Collector's TimeTracker records the phase totals directly as
+            # the harness_job_end `times` hash; `total` is the wall duration.
+            # (The pre-swap shape nested this under times->{totals}->{total}.)
             my $job = {};
-            $job->{file} = clean_path($f->{harness_job_end}->{file})         if $f->{harness_job_end} && $f->{harness_job_end}->{file};
-            $job->{time} = $f->{harness_job_end}->{times}->{totals}->{total} if $f->{harness_job_end} && $f->{harness_job_end}->{times};
+            $job->{file} = clean_path($f->{harness_job_end}->{file}) if $f->{harness_job_end} && $f->{harness_job_end}->{file};
+            $job->{time} = $f->{harness_job_end}->{times}->{total}   if $f->{harness_job_end} && $f->{harness_job_end}->{times};
 
             next unless $job->{file} && $job->{time};
 
