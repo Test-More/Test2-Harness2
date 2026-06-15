@@ -93,7 +93,7 @@ sub schema_config_from_settings {
     my $group = $params{settings_group} // 'db';
     my $db = $settings->group($group);
     unless($db) {
-        return App::Yath2::Schema::Config->new(%params) if $params{ephemeral};
+        return $config_class->new(%params) if $params{ephemeral};
         confess "No database settings";
     }
 
@@ -134,7 +134,7 @@ sub schema_config_from_settings {
     }
 
     if ($dsn) {
-        return App::Yath2::Schema::Config->new(
+        return $config_class->new(
             %params,
             dbi_dsn  => $dsn,
             dbi_user => $db->user // '',
@@ -144,7 +144,7 @@ sub schema_config_from_settings {
 
     confess "Could not find a DSN" unless $params{ephemeral};
 
-    return App::Yath2::Schema::Config->new(%params);
+    return $config_class->new(%params);
 }
 
 {
