@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use File::Spec;
+use File::ShareDir();
 use Sys::Hostname qw/hostname/;
 
 use Test2::Harness2::Util qw/clean_path/;
@@ -22,7 +23,35 @@ our @EXPORT_OK = qw{
     fit_to_width
     isolate_stdout
     find_yath
+    share_dir
+    share_file
 };
+
+sub share_file {
+    my ($file) = @_;
+
+    # Prefer the in-repo share/ dir during development.
+    my $path = "share/$file";
+    return $path if -d 'share' && -f $path;
+
+    return File::ShareDir::dist_file('Test2-Harness2' => $file);
+}
+
+sub share_dir {
+    my ($dir) = @_;
+
+    # Prefer the in-repo share/ dir during development.
+    my $path = "share/$dir";
+    return $path if -d $path;
+
+    my $root = File::ShareDir::dist_dir('Test2-Harness2');
+
+    $path = "$root/$dir";
+
+    croak "Could not find '$dir'" unless -d $path;
+
+    return $path;
+}
 
 sub find_yath {
     return $App::Yath::Script::SCRIPT if defined $App::Yath::Script::SCRIPT;
@@ -276,6 +305,8 @@ any other package.
         fit_to_width
         isolate_stdout
         find_yath
+        share_dir
+        share_file
     };
 
 =head1 EXPORTS
@@ -333,6 +364,19 @@ Note: The result is cached so that subsequent calls will return the same path
 even if something installs a new yath script in another location that would
 otherwise be found first. This guarentees that a single process will not switch
 scripts.
+
+=item $path = share_file($relative_file)
+
+Resolve a file inside the distribution's C<share/> directory. In a development
+checkout this prefers the in-repo C<share/> directory; otherwise it falls back
+to L<File::ShareDir/dist_file> for the C<Test2-Harness2> distribution.
+
+=item $path = share_dir($relative_dir)
+
+Resolve a directory inside the distribution's C<share/> directory. In a
+development checkout this prefers the in-repo C<share/> directory; otherwise it
+falls back to L<File::ShareDir/dist_dir> for the C<Test2-Harness2>
+distribution.
 
 =back
 

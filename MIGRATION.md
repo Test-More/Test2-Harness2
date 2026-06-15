@@ -71,7 +71,8 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 5 | Transition-only pipelining + Monitor-style state sync | ⬜ | — |
 | 6 | Renderer rewrite (base finds `.jsonl.zst`) | ⬜ | — |
 | 7 | System-load service (gate concurrency on cpu/mem) | ⬜ | — |
-| 8 | Database + UI inline (`DBIx::QuickORM`, sqlite logs) | ⬜ | — |
+| 8a | Database + UI inline (DBIx::Class, SQLite logs) | 🚧 | branch `harness-ui-inline` |
+| 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ | — |
 
 ## Done so far
 
@@ -117,6 +118,15 @@ this task):
   are `[target]` in `ARCHITECTURE.md`.
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
   `App::Yath::Script`.
+- **UI inline (branch `harness-ui-inline`, not yet merged):** the
+  Test2-Harness web UI is inlined under `App::Yath2::Server*` / `App::Yath2::Schema*`
+  (+ `Command::{server,db/*,client/*}`, `Options::{DB,WebServer,Server,WebClient,Publish,Yath}`,
+  `Plugin::DB`, `Renderer::{DB,Server}`), following the pre_ai_2.0 layout, on
+  **DBIx::Class** (5 drivers; SQLite default for ephemeral/tests), retargeted to
+  our event facets. Web assets in `share/`, samples in `demo/`. New tests:
+  Perl unit + an in-process HTTP smoke (`t/AI/integration/ui_server.t`) + a
+  Playwright JS/CSS suite (`js-tests/`). The **QuickORM conversion is chunk 8b**
+  (deferred); this is chunk 8a. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-14-*`.
 
 ## Next
 

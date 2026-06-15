@@ -1,0 +1,290 @@
+package App::Yath2::Renderer::DB;
+use strict;
+use warnings;
+
+our $VERSION = '2.000000';
+
+# This module does not directly use these, but the process it spawns does. Load
+# them here anyway so that any errors can be reported before we fork.
+use Getopt::Yath::Settings;
+use App::Yath2::Schema::RunProcessor;
+use Consumer::NonBlock;
+use App::Yath2::Schema::Util;
+
+use Atomic::Pipe;
+use YAML::Tiny;
+
+use Carp qw/confess/;
+use POSIX();
+use File::Temp qw/tempfile/;
+use Time::HiRes qw/time/;
+
+use Test2::Harness2::Util qw/clean_path/;
+use App::Yath2::Util qw/find_in_updir/;
+use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+use Test2::Harness2::Util::File::JSON();
+use Test2::Util::UUID qw/gen_uuid/;
+
+use parent 'Test2::Harness2::Renderer';
+use Test2::Harness2::Util::HashBase qw{
+    <pid
+    <writer
+    <stopped
+};
+
+use Getopt::Yath;
+
+include_options(
+    'App::Yath2::Options::Yath',
+    'App::Yath2::Options::DB',
+    'App::Yath2::Options::Publish',
+    'App::Yath2::Options::WebClient' => [qw/url/],
+);
+
+option_post_process 1000 => sub {
+    my ($options, $state) = @_;
+    my $settings = $state->{settings};
+
+    return if $settings->yath->project;
+
+    my $project;
+
+    if (my $meta_json = find_in_updir('META.json')) {
+        open(my $fh, '<', $meta_json) or die "Could not open '$meta_json': $!";
+        my $content = do { local $/; <$fh> };
+        close($fh);
+        my $json = decode_json($content);
+        $project = $json->{name};
+    }
+    elsif (my $meta_yml = find_in_updir('META.yml')) {
+        my $yml = YAML::Tiny->read($meta_yml) or die "Could not read '$meta_yml'";
+        $project = $yml->[0]->{name};
+    }
+    elsif (my $dist_ini = find_in_updir('dist.ini')) {
+        open(my $fh, '<', $dist_ini) or die "Could not open '$dist_ini': $!";
+        while (my $line = <$fh>) {
+            next unless $line =~ m/^name\s*=\s*(.*)$/;
+            $project = $1;
+            last;
+        }
+    }
+    else {
+        for my $sc ('.git', '.svn','.cvs') {
+            my $path = find_in_updir($sc) or next;
+
+            $path = clean_path($path);
+            $path =~ m{([^-/]+)(-\d.*)?/\Q$sc\E$} or next;
+
+            $project = $1;
+            last if $project;
+        }
+    }
+
+    $settings->yath->project($project) if $project;
+};
+
+# pre_ai's renderer base provided start()/step()/exit_hook() and the harness
+# called them explicitly. OUR pipeline (App::Yath2::Command::test) only calls
+# render_event/finish/signal, and constructs renderers via new(). So we spin up
+# the importer subprocess here in init() (the HashBase construction hook)
+# instead of in a separate start() phase.
+sub init {
+    my $self = shift;
+
+    die "Could not determine project, please specify with the --project option.\n"
+        unless $self->{+SETTINGS}->yath->project;
+
+    $self->start();
+}
+
+sub start {
+    my $self = shift;
+
+    App::Yath2::Schema::Util::schema_config_from_settings($self->{+SETTINGS});
+
+    # Do not use the yath workdir for these things, it will get cleaned up too soon.
+    my ($dir) = grep { $_ && -d $_ } '/dev/shm', $ENV{SYSTEM_TMPDIR}, '/tmp', $ENV{TMP_DIR}, $ENV{TMPDIR};
+    local $ENV{TMPDIR} = $dir;
+    local $ENV{TMP_DIR} = $dir;
+    local $ENV{TEMP_DIR} = $dir;
+
+    my ($r, $w) = Consumer::NonBlock->pair(batch_size => 1000, $dir ? (base_dir => $dir) : ());
+
+    $self->{+WRITER} = $w;
+
+    my $settings_file = $self->_write_settings_file($self->{+SETTINGS}, $dir);
+
+    my %seen;
+    $self->{+PID} = $self->_start_process(
+        [
+            $^X,                                                       # perl
+            (map { ("-I$_") } grep { -d $_ && !$seen{$_}++ } @INC),    # Use the dev libs specified
+            "-mApp::Yath2::Schema::RunProcessor",                      # Load processor
+            "-mGetopt::Yath::Settings",                                # Load settings lib
+            '-e' => <<"            EOT",                               # Run it.
+exit(
+    App::Yath2::Schema::RunProcessor->process_csnb(
+        Getopt::Yath::Settings->FROM_JSON_FILE(\$ARGV[0], unlink => 1),
+    )
+);
+            EOT
+            $settings_file,                                            # Pass settings in as arg
+        ],
+        sub {
+            $r->set_env_var;
+            $w->weaken;
+            $w->close;
+        }
+    );
+
+    $r->weaken();
+    $r->close();
+
+    return;
+}
+
+# Inlined equivalent of pre_ai Test2::Harness::Util::JSON::encode_json_file --
+# write the settings to a temp JSON file and return its path. The spawned
+# process reads it with FROM_JSON_FILE(unlink => 1).
+sub _write_settings_file {
+    my $self = shift;
+    my ($settings, $dir) = @_;
+
+    my ($fh, $file) = tempfile("$$-XXXXXX", $dir ? (DIR => $dir) : (TMPDIR => 1), SUFFIX => '.json', UNLINK => 0);
+    close($fh);
+
+    Test2::Harness2::Util::File::JSON->new(name => $file)->write($settings->TO_JSON);
+
+    return $file;
+}
+
+# Inlined equivalent of pre_ai Test2::Harness::IPC::Util::start_process.
+sub _start_process {
+    my $self = shift;
+    my ($cmd, $post_fork) = @_;
+
+    confess "cmd is required, and must be populated" unless $cmd && @$cmd;
+    confess "cmd may not contain undefined values" if grep { !defined($_) } @$cmd;
+
+    my $pid = fork // die "Could not fork: $!";
+    return $pid if $pid;
+
+    $post_fork->() if $post_fork;
+
+    no warnings;
+    eval { exec(@$cmd); 1 };
+    print STDERR "Failed to exec " . join(' ', @$cmd) . " . ($!) $@\n";
+    POSIX::_exit(255);
+}
+
+sub render_event {
+    my $self = shift;
+    my ($e) = @_;
+
+    return if $self->{+STOPPED};
+
+    $self->{+WRITER}->write_line(encode_json($e));
+
+    return;
+}
+
+sub signal {
+    my $self = shift;
+    my ($sig) = @_;
+
+    return if $self->{+STOPPED};
+
+    $self->_stop("SIG$sig");
+    $self->_close();
+
+    kill($sig, $self->{+PID});
+
+    $self->_wait();
+
+    return $sig;
+}
+
+sub _stop {
+    my $self = shift;
+    my ($why) = @_;
+
+    push @{$self->{+STOPPED} //= []} => $why;
+}
+
+sub _close {
+    my $self = shift;
+
+    my $p = delete $self->{+WRITER} or return;
+    $p->close;
+}
+
+sub _wait {
+    my $self = shift;
+
+    my $pid = delete $self->{+PID} or return;
+    waitpid($pid, 0);
+}
+
+sub finish {
+    my $self = shift;
+
+    $self->_stop('finish');
+    $self->_close();
+    $self->_wait();
+
+    return;
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+App::Yath2::Renderer::DB - Renderer that publishes events into a yath database.
+
+=head1 DESCRIPTION
+
+=head1 SYNOPSIS
+
+=head1 EXPORTS
+
+=over 4
+
+=back
+
+=head1 SOURCE
+
+The source code repository for Test2-Harness can be found at
+L<http://github.com/Test-More/Test2-Harness/>.
+
+=head1 MAINTAINERS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 AUTHORS
+
+=over 4
+
+=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+
+=back
+
+=head1 COPYRIGHT
+
+Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
+
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+See L<http://dev.perl.org/licenses/>
+
+=cut
