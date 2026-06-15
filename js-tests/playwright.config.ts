@@ -25,7 +25,7 @@ const DEMO_LOG = process.env.YATH_UI_DEMO_LOG || 'demo/simple-fail.jsonl.bz2';
 
 // NOTE: foreground (no --daemon) so Playwright owns the process lifecycle.
 const SERVER_CMD = [
-  'perl -Dlib "$(command -v',
+  'perl -Ilib "$(command -v',
   YATH + ')"',
   'server',
   '--ephemeral=SQLite',
