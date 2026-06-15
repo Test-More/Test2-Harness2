@@ -155,11 +155,13 @@ sub build_stat {
 
     $stat->{users} //= [];
 
-    eval {
+    my $ok = eval {
         my $meth = "_build_stat_$type";
         $self->$meth($project => $stat);
         1;
-    } or return {%$stat, error => $@};
+    };
+    my $err = $@;
+    return {%$stat, error => $err} unless $ok;
 
     return $stat;
 }
