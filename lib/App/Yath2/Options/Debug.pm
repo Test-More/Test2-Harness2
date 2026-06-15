@@ -229,6 +229,10 @@ sub _post_process_help ($options, $state) {
     my $err = $@;
     if ($ok) {
         local $SIG{PIPE} = sub { };
+        # The help text is ANSI-colored; tell less to pass color through (-R)
+        # or it renders the raw escapes literally ("ESC[1;4;37m..."). Preserve
+        # any LESS the user already set.
+        local $ENV{LESS} = join ' ', grep { defined && length } ($ENV{LESS}, '-R');
         my $pager = IO::Pager->new(*STDOUT);
         $pager->print($help);
     }
