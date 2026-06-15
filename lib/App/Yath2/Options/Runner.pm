@@ -444,14 +444,15 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         description => "(Default: include if it exists) Include 'lib' in your module path",
 
         # Trigger fires before add_value stores the result.  Mutating
-        # @{$params{val}} to (0) suppresses the flag being set to 1
-        # (the path lands in includes instead).  blib is also zeroed so
-        # all lib-path resolution goes through includes.
+        # @{$params{val}} to (0) suppresses this flag being set to 1
+        # (the path lands in includes instead).  Only THIS flag is
+        # suppressed: blib is independent and stays at its own default,
+        # so `--lib` adds lib without dropping blib (matching 1.0, where
+        # lib/blib are additive and both default-on).
         trigger => sub ($opt, %params) {
             return unless $params{action} eq 'set';
             push @{$params{settings}->runner->includes} => 'lib';
             @{$params{val}} = (0);    # suppress flag storage
-            $params{settings}->runner->option(blib => 0);
         },
     );
 
@@ -461,7 +462,8 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         default     => 1,
         description => "(Default: include if it exists) Include 'blib/lib' and 'blib/arch' in your module path",
 
-        # Same pattern as lib above: paths land in includes, flag is suppressed.
+        # Same pattern as lib above: paths land in includes, only this flag
+        # is suppressed; lib is independent and stays at its own default.
         trigger => sub ($opt, %params) {
             return unless $params{action} eq 'set';
             push @{$params{settings}->runner->includes} => (
@@ -469,7 +471,6 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
                 File::Spec->catdir('blib', 'arch'),
             );
             @{$params{val}} = (0);    # suppress flag storage
-            $params{settings}->runner->option(lib => 0);
         },
     );
 
