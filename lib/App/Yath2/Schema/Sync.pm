@@ -642,7 +642,7 @@ sub import_binary {
     my $cache = $params{cache};
     my $binary = $params{item};
 
-    $binary->{event_id} = $self->get_or_create_id($cache, $dbh, 'events' => 'event_id', event_uuid => $binary->{job_try_uuid});
+    $binary->{event_id} = $self->get_or_create_id($cache, $dbh, 'events' => 'event_id', event_uuid => delete $binary->{event_uuid});
 
     $self->insert($dbh, binaries => $binary);
 }
