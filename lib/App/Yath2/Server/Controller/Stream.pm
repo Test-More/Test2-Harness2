@@ -253,7 +253,7 @@ sub stream_set {
 
     my $order_by = $params{order_by} // $sort_field ? {$sort_dir => $sort_field} : croak "Must specify either 'order_by' or 'sort_field'";
 
-    my $offset = int($limit * ($page - 1));
+    my $offset = $limit ? int($limit * ($page - 1)) : 0;
 
     my $items = $search_base->search($custom_query, {%$custom_opts, offset => $offset, order_by => $order_by, $limit ? (rows => $limit) : ()});
     my (@buffer, $buffer_item);

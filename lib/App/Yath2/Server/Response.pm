@@ -103,6 +103,12 @@ sub stream {
         push @headers => ('Content-Type' => $ct);
         push @headers => ('Cache-Control' => 'no-store') unless $cache;
 
+        # Some PSGI backends (and Plack::Test's MockHTTP) do not provide a live
+        # 'psgix.io' socket; treat a missing socket as "still connected" so the
+        # stream simply runs to completion instead of dereferencing undef.
+        my $io = $env->{'psgix.io'};
+        my $connected = sub { $io ? $io->connected : 1 };
+
         my $last_write = time;
         $self->{stream} = sub {
             my $responder = shift;
@@ -115,7 +121,7 @@ sub stream {
                 my $seen = 0;
                 for my $item ($fetch->()) {
                     $writer->write($item);
-                    last unless $env->{'psgix.io'}->connected;
+                    last unless $connected->();
                     $last_write = time;
                     $seen++;
                 }
@@ -123,7 +129,7 @@ sub stream {
                 unless ($seen || $end) {
                     if (time - $last_write > 1) {
                         $writer->write("\n");
-                        last unless $env->{'psgix.io'}->connected;
+                        last unless $connected->();
                     }
                     sleep $wait;
                 }

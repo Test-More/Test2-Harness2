@@ -64,15 +64,15 @@ sub session_host {
     my $host = $schema->resultset('SessionHost')->find(
         {
             session_id => $session->session_id,
-            address    => $self->address // 'SOCKET',
-            agent      => $self->user_agent,
+            address    => $self->address    // 'SOCKET',
+            agent      => $self->user_agent  // 'UNKNOWN',
         }
     );
 
     $host //= $schema->resultset('SessionHost')->create({
         session_id      => $session->session_id,
-        address         => $self->address // 'SOCKET',
-        agent           => $self->user_agent,
+        address         => $self->address    // 'SOCKET',
+        agent           => $self->user_agent // 'UNKNOWN',
     });
 
     $schema->txn_commit;

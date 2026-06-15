@@ -108,7 +108,9 @@ sub stats {
     my ($req, $project, $n) = @_;
 
     my $json = $req->content;
-    my $stats = decode_json($json);
+    # The browser POSTs a JSON array describing which stats to build; an empty
+    # body (e.g. a bare GET) means "nothing to do" rather than an error.
+    my $stats = (defined($json) && length($json)) ? decode_json($json) : [];
 
     my $res = resp(200);
 
