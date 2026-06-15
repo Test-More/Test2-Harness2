@@ -66,13 +66,13 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 |---|-------|--------|------|
 | 1 | Mechanical renames + version bump | ✅ | `2ea678e`, `aa6e5eb` |
 | 2 | Argument processing → `Getopt::Yath` | ✅ | `3270b30`..`213b5bd` + this task's deletion/POD/docs commits |
-| 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ⬜ | — |
-| 4 | Collectors wrap every yath-started process | ⬜ | — |
+| 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ✅ | `fa49f2b65` (merge) |
+| 4 | Collectors wrap every yath-started process | 🚧 | — |
 | 5 | Transition-only pipelining + Monitor-style state sync | ⬜ | — |
 | 6 | Renderer rewrite (base finds `.jsonl.zst`) | ⬜ | — |
 | 7 | System-load service (gate concurrency on cpu/mem) | ⬜ | — |
-| 8a | Database + UI inline (DBIx::Class, SQLite logs) | 🚧 | branch `harness-ui-inline` |
-| 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ | — |
+| 8a | Database + UI inline (DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
+| 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ (deferred) | — |
 
 ## Done so far
 
@@ -112,25 +112,27 @@ this task):
 - **Option handling:** now `Getopt::Yath`. The settings object is
   `Getopt::Yath::Settings` (the 1.0 `App::Yath2::Options` / `App::Yath2::Option`
   / `Test2::Harness2::Settings` machinery is deleted).
-- **Logic:** otherwise still 1.0. The collector pipeline is still the in-tree
-  1.0 implementation (not yet `Test2-Collector`). No harness service,
-  transition channel, system-load service, or QuickORM DB layer yet — those
-  are `[target]` in `ARCHITECTURE.md`.
+- **Collector pipeline:** swapped to `Test2-Collector` (chunk 3, merged
+  `fa49f2b65`). Each test job runs under its own collector and writes
+  `events.jsonl.zst`; the yath-side gatherer (`Test2::Harness2::Collector` via
+  `JobReader`) reads those files and re-attaches run/job/event UUIDs. No harness
+  service, transition channel, or system-load service yet — those are `[target]`
+  in `ARCHITECTURE.md`.
+- **Web UI:** inlined (chunk 8a, merged `2d09d348a`) under `App::Yath2::Server*`
+  / `App::Yath2::Schema*` (+ `Command::{server,db/*,client/*}`,
+  `Options::{DB,WebServer,Server,WebClient,Publish,Yath}`, `Plugin::DB`,
+  `Renderer::{DB,Server}`), following the pre_ai_2.0 layout, on **DBIx::Class**
+  (5 drivers; SQLite default for ephemeral/tests). Assets in `share/`, samples in
+  `demo/`. Tests: Perl unit + HTTP smoke (`t/AI/integration/ui_server.t`) +
+  Playwright (`js-tests/`, run from `t/playwright.t`). The QuickORM conversion is
+  **chunk 8b (deferred)**.
+- **Logic:** otherwise still 1.0 for the not-yet-migrated chunks (4-7).
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
   `App::Yath::Script`.
-- **UI inline (branch `harness-ui-inline`, not yet merged):** the
-  Test2-Harness web UI is inlined under `App::Yath2::Server*` / `App::Yath2::Schema*`
-  (+ `Command::{server,db/*,client/*}`, `Options::{DB,WebServer,Server,WebClient,Publish,Yath}`,
-  `Plugin::DB`, `Renderer::{DB,Server}`), following the pre_ai_2.0 layout, on
-  **DBIx::Class** (5 drivers; SQLite default for ephemeral/tests), retargeted to
-  our event facets. Web assets in `share/`, samples in `demo/`. New tests:
-  Perl unit + an in-process HTTP smoke (`t/AI/integration/ui_server.t`) + a
-  Playwright JS/CSS suite (`js-tests/`). The **QuickORM conversion is chunk 8b**
-  (deferred); this is chunk 8a. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-14-*`.
 
 ## Next
 
-**Chunk 3 — collector swap → `Test2-Collector`** (`ARCHITECTURE.md` §4).
-The yath collector should read `.jsonl.zst` produced by the external
-`Test2-Collector` dist in place of the in-tree 1.0 collector pipeline.
-Reference: `reference/2.0b` (collector swap + harness-service MVP).
+**Chunk 4 — collectors everywhere** (`ARCHITECTURE.md` §4.1/§4.2).
+Wrap every yath-started process in a `Test2::Collector`, not just test jobs
+(the runner and other helper processes), extending the chunk-3 collector swap.
+Reference: `reference/2.0b` and the unmerged `harness_service` worktree work.
