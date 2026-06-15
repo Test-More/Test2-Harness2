@@ -51,9 +51,8 @@ architecture* lives in `ARCHITECTURE.md`; the *how-to-work* rules live in
   1.0 (`Test2::Formatter::*` / `Test2::Tools::*` collide by name with the
   installed dist; `-Ilib` wins). Not self-hosting yet, so `yath test` is not
   used to run our own suite.
-- **`Test2-Collector`** is unreleased; loaded via the `t2clib` symlink at the
-  repo root (gitignored). Tests that load `Test2::Collector*` need
-  `use lib 't2clib';`.
+- **`Test2-Collector`** is a hard dependency and must be installed (declared
+  in `dist.ini`).
 - Each chunk stays small and keeps the suite green.
 - **Do not rename** (decided): `Test2::Formatter::*` and `Test2::Tools::*`
   (much becomes obsolete with the collector swap), and the `App::Yath::Script`
@@ -123,6 +122,5 @@ this task):
 
 **Chunk 3 — collector swap → `Test2-Collector`** (`ARCHITECTURE.md` §4).
 The yath collector should read `.jsonl.zst` produced by the external
-`Test2-Collector` dist (loaded via the `t2clib` symlink) in place of the
-in-tree 1.0 collector pipeline. Reference: `reference/2.0b` (collector swap +
-harness-service MVP).
+`Test2-Collector` dist in place of the in-tree 1.0 collector pipeline.
+Reference: `reference/2.0b` (collector swap + harness-service MVP).
