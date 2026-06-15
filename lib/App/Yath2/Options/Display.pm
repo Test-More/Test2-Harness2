@@ -208,6 +208,7 @@ Show the run configuration when a run starts. (Default: off, unless -vv)
 option_group {group => 'display', category => "Display Options"} => sub {
     option color => (
         type          => 'Bool',
+        short         => 'c',
         description   => "Turn color on, default is true if STDOUT is a TTY.",
         default       => sub { -t STDOUT ? 1 : 0 },
         from_env_vars => ['YATH_COLOR', 'CLICOLOR_FORCE'],

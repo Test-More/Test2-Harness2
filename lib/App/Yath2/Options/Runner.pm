@@ -401,7 +401,7 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
     );
 
     option includes => (
-        type        => 'List',
+        type        => 'PathList',
         name        => 'include',
         short       => 'I',
         description => "Add a directory to your include paths",

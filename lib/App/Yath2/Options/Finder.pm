@@ -463,7 +463,8 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
     );
 
     option changed => (
-        type          => 'List',
+        type          => 'PathList',
+        split_on      => ',',
         applicable    => \&changes_applicable,
         description   => "Specify one or more files as having been changed.",
         long_examples => [' path/to/file'],
@@ -471,15 +472,19 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
     # Intentional renames: singular -> plural (singular kept as alt).
     option changes_exclude_files => (
-        type          => 'List',
+        type          => 'PathList',
+        split_on      => ',',
         alt           => ['changes-exclude-file'],
         applicable    => \&changes_applicable,
         description   => 'Specify one or more files to ignore when looking at changes',
         long_examples => [' path/to/file'],
     );
 
+    # Pattern options stay plain List: values are regexes, not paths, so glob
+    # expansion must NOT apply. split_on still lets one flag carry a comma list.
     option changes_exclude_patterns => (
         type          => 'List',
+        split_on      => ',',
         alt           => ['changes-exclude-pattern'],
         applicable    => \&changes_applicable,
         description   => 'Ignore files matching this pattern when looking for changes. Your pattern will be inserted unmodified into a `$file =~ m/$pattern/` check.',
@@ -487,7 +492,8 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
     );
 
     option changes_filter_files => (
-        type          => 'List',
+        type          => 'PathList',
+        split_on      => ',',
         alt           => ['changes-filter-file'],
         applicable    => \&changes_applicable,
         description   => 'Specify one or more files to check for changes. Changes to other files will be ignored',
@@ -496,6 +502,7 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
     option changes_filter_patterns => (
         type          => 'List',
+        split_on      => ',',
         alt           => ['changes-filter-pattern'],
         applicable    => \&changes_applicable,
         description   => 'Specify a pattern for change checking. When only running tests for changed files this will limit which files are checked for changes. Only files that match this pattern will be checked. Your pattern will be inserted unmodified into a `$file =~ m/$pattern/` check.',
@@ -562,10 +569,16 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
     # Intentional rename: rerun_plugin -> rerun_plugins (singular kept as alt).
     option rerun_plugins => (
-        type          => 'List',
-        alt           => ['rerun-plugin'],
-        description   => "What plugin(s) should be used for rerun (will fallback to other plugins if the listed ones decline the value, this is just used to set an order of priority)",
-        long_examples => [' Foo', ' +App::Yath2::Plugin::Foo'],
+        type             => 'List',
+        alt              => ['rerun-plugin'],
+        description      => "What plugin(s) should be used for rerun (will fallback to other plugins if the listed ones decline the value, this is just used to set an order of priority)",
+        long_examples    => [' Foo', ' +App::Yath2::Plugin::Foo'],
+
+        # Fully-qualify the short name at parse time ('Foo' -> the plugin class,
+        # '+Full::Class' kept as-is) and pull the named plugin's own options into
+        # the parse so plugin-specific flags are recognized.
+        mod_adds_options => 1,
+        normalize        => sub ($val) { fqmod('App::Yath2::Plugin', $val) },
     );
 
     # BoolMap replaces the live rerun_modes (List) + five generated rerun_all/
@@ -683,7 +696,7 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
     # Intentional renames: singular -> plural (singular kept as alt).
     option exclude_files => (
-        type => 'List',
+        type => 'PathList',
         alt  => ['exclude-file'],
 
         long_examples  => [' t/nope.t'],
@@ -703,7 +716,7 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
     );
 
     option exclude_lists => (
-        type => 'List',
+        type => 'PathList',
         alt  => ['exclude-list'],
 
         long_examples  => [' file.txt', ' http://example.com/exclusions.txt'],
@@ -717,12 +730,12 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
     # -------------------------------------------------------------------------
 
     option default_search => (
-        type        => 'List',
+        type        => 'PathList',
         description => "Specify the default file/dir search. defaults to './t', './t2', and 'test.pl'. The default search is only used if no files were specified at the command line",
     );
 
     option default_at_search => (
-        type        => 'List',
+        type        => 'PathList',
         description => "Specify the default file/dir search when 'AUTHOR_TESTING' is set. Defaults to './xt'. The default AT search is only used if no files were specified at the command line",
     );
 
