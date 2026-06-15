@@ -59,8 +59,6 @@ sub run {
         seek($fh, 0, 0);
     }
 
-    my $user = $settings->yath->user;
-
     my $is_term = -t STDOUT ? 1 : 0;
 
     print "\n" if $is_term;
