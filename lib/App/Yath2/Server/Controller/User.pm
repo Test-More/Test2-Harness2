@@ -164,8 +164,9 @@ sub process_form {
         return $res->add_error("Invalid Email") unless $email;
 
         if ($action eq 'make primary') {
-            my $pri = $schema->resultset('PrimaryEmail')->update_or_create({user_id => $user->user_id, email_id => $email_id});
-            return $res->add_error("Could not make email primary: $@") unless $pri;
+            my $pri = eval { $schema->resultset('PrimaryEmail')->update_or_create({user_id => $user->user_id, email_id => $email_id}) };
+            my $err = $@;
+            return $res->add_error("Could not make email primary: $err") unless $pri;
             return $res->add_msg("Set primary email address.");
         }
         elsif ($action eq 'delete') {
