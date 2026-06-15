@@ -30,6 +30,10 @@ sub command_info_hash {
 
     my %commands;
     my $command_libs = find_libraries('App::Yath2::Command::*');
+    # Nested subcommands live one level deeper (e.g. db/importer.pm, invoked as
+    # `yath db importer` / `yath db-importer`); include them in the listing.
+    my $nested_libs = find_libraries('App::Yath2::Command::*::*');
+    $command_libs = {%$command_libs, %$nested_libs};
     for my $lib (sort keys %$command_libs) {
         my $ok = eval { require $command_libs->{$lib}; 1 };
         unless ($ok) {

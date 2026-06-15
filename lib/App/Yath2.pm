@@ -324,6 +324,18 @@ sub _command_from_argv ($self, $state) {
             return (replay => \@args);
         }
 
+        # Nested subcommands: `yath db importer` -> the db-importer command
+        # (App::Yath2::Command::db::importer). Prefer the nested command when the
+        # combined "$arg-$next" resolves; a bare `yath db` (next is an option,
+        # path, or non-subcommand) still falls through to the plain command.
+        if ($idx + 1 < @args) {
+            my $next = $args[$idx + 1];
+            if ($next !~ m/^-/ && $self->load_command("$arg-$next", check_only => 1)) {
+                splice(@args, $idx, 2);
+                return ("$arg-$next" => \@args);
+            }
+        }
+
         # A real command anywhere wins, so a separated value for an unknown
         # option (`--formatter Test2 test`) is not mistaken for the command --
         # 'Test2' is skipped, 'test' is found, and 'Test2' rides along to stage 2.
@@ -357,8 +369,13 @@ sub _command_from_argv ($self, $state) {
 }
 
 sub load_command ($self, $cmd_name, %params) {
-    my $cmd_class = "App::Yath2::Command::$cmd_name";
-    my $cmd_file  = "App/Yath2/Command/$cmd_name.pm";
+    # Command names may be nested (e.g. db-importer, client-publish), which live
+    # under a Command subdir (db/importer.pm => App::Yath2::Command::db::importer).
+    # Map '-' / '/' / '::' separators to the subdir path + class. Top-level
+    # command files carry no '-', so this is a no-op for them.
+    my @parts     = split m{-|/|::}, $cmd_name;
+    my $cmd_class = join('::', 'App::Yath2::Command', @parts);
+    my $cmd_file  = join('/',  'App/Yath2/Command',   @parts) . '.pm';
 
     my $ok  = eval { require $cmd_file; 1 };
     my $err = $@;
