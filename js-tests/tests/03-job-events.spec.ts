@@ -1,10 +1,12 @@
 import { test, expect, Page } from '@playwright/test';
 import { waitForRunRows, runIdFromTable, waitForEventRows } from './helpers';
 
-// Discover the failing job's uuid by reading the run-scoped JSONL stream
-// directly (the same data the front-end consumes). We do NOT click through the
-// job table's "Open Job" link on purpose: see FRONT-END BUG note in README -
-// the job stream records do not carry a job_key, so that link is broken.
+// Discover the *failing* job's uuid by reading the run-scoped JSONL stream
+// directly (the same data the front-end consumes). This is just a convenient,
+// deterministic way to single out the failing job (it carries data.fail) so the
+// subtest/filter assertions below have a known target; the "Open Job" link
+// itself is exercised (and asserted correct) by the regression spec in
+// 06-jobtable-regression.spec.ts.
 async function failingJobUuid(page: Page, runId: string): Promise<string> {
   const res = await page.request.get(
     `/stream/${runId}?content-type=application/x-jsonl`,

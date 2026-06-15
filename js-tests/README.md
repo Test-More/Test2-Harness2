@@ -18,6 +18,7 @@ run by the Perl test suite. CI for the distribution does not depend on Node.
 | `03-job-events.spec.ts` | Opening a failing job (`/view/<id>/<job_uuid>`) renders the event table; a failing subtest auto-expands into nested `data-parent-id` rows; clicking a tag filter hides the matching event rows (click → DOM change). |
 | `04-interactions.spec.ts` | The run "parameters" tool opens the `#free_modal` rendered by JSONFormatter and the close control hides it; the UUID lookup form submits to `/lookup`. |
 | `05-css-and-chart.spec.ts` | CSS sanity: header/layout wrappers visible and positioned, stylesheets applied (computed `background-color`, `font-size`, table `border-collapse`), the run table is styled; a full-page screenshot snapshot of the main view; Chart.js is loaded and constructable. |
+| `06-jobtable-regression.spec.ts` | Regression guard for the jobtable field-name bug: the run view lists every DISTINCT job row (no collapse/replace), each "Open Job" link is a real `view/<run_uuid>/<job_uuid>/<try>` URL (never `undefined`), and clicking a job row navigates to a job/events view that loads (HTTP 200). Fails on the old 1.0 assets. |
 
 ## Requirements
 
@@ -75,12 +76,20 @@ npx playwright test --update-snapshots       # (re)bless the screenshot baseline
   live updates and never "completes", so on `/` the DataTables `done` hook never
   fires. The tests therefore exercise DataTables sorting on the **run-scoped**
   view (`/view/<id>`), whose stream terminates once the run is complete.
-- **Known front-end issue surfaced by these tests:** job stream records do not
-  carry a `job_key`, but `jobtable.js` uses `item.job_key` as the row id and as
-  the "Open Job" link target (`view/<run>/<job_key>`). The link is therefore
-  broken (`view/<run>/undefined`). `03-job-events.spec.ts` deliberately avoids
-  that link and navigates by `job_uuid` discovered from the run stream instead.
-  This looks like a real backend/frontend contract mismatch worth fixing.
+- **Fixed front-end bug (now regression-guarded):** the original `share/` assets
+  were copied from the 1.0 UI, whose `jobtable.js`/`view.js` used `item.job_key`
+  as the per-row DOM id and as the "Open Job" link target — but the inlined
+  pre_ai server never emits `job_key`. Every job row therefore got
+  `id=undefined` and collapsed to a single row (each row `replaceWith`'d the
+  previous), and the open link became `view/<run>/undefined` (errored on click).
+  The assets were corrected to the pre_ai contract: row id = `job_try_id`, link =
+  `view/<run_uuid>/<job_uuid>/<job_try_ord>`. `06-jobtable-regression.spec.ts`
+  guards this (distinct rows + valid links + click navigates to a 200 job view).
+  It is written to FAIL on the old 1.0 assets.
+- The job table pins the harness-internal log row into the table's `<thead>`
+  (`place_row` does `state.header.after(row)`), so a `table.job_table > tbody >
+  tr` count omits it; the regression spec counts job rows table-wide by their
+  rendered `job_try_id`.
 
 ## Screenshot baselines
 

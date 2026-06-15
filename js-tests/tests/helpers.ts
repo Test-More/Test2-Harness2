@@ -37,12 +37,16 @@ export async function expectDataTableInitialized(page: Page, wrapperId: string) 
 }
 
 // In single-run mode the run table's "Open Run" tool is an <a> linking to
-// view/<run_id>. Returns the numeric run id from that link.
+// view/<run_uuid>. (runtable.js builds the link from item.run_uuid, so the id
+// is a UUID, not the numeric run_id - matching the pre_ai server contract.)
+// Returns that run identifier. We capture the whole final path segment rather
+// than a digit run, because a `\d+` regex would clip a UUID at its first
+// non-digit (e.g. "019EC9C6-..." -> "019"), yielding a bogus id that 404s.
 export async function runIdFromTable(page: Page): Promise<string> {
   const goto = page.locator('#runs table.run_table > tbody > tr a[title="Open Run"]').first();
   await expect(goto).toBeVisible({ timeout: 30_000 });
   const href = await goto.getAttribute('href');
-  const m = href && href.match(/view\/(\d+)/);
+  const m = href && href.match(/view\/([^/?#]+)\/?$/);
   if (!m) throw new Error(`could not parse run id from href: ${href}`);
   return m[1];
 }
