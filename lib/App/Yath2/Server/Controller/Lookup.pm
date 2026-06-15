@@ -139,7 +139,7 @@ sub lookup_job_try {
     return () unless $try;
 
     return (
-        $self->lookup_job($try->job_id, $state, try => $try->job_try_id),
+        $self->lookup_job($try->job_id, $state, $try->job_try_id),
     );
 }
 
