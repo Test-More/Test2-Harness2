@@ -151,8 +151,12 @@ sub _collector_exit_code {
     # the one Util helper so exit-status fidelity never diverges. On a 255
     # collector failure return immediately -- the job-specific bail/final_state
     # layering below only makes sense when the collector itself was healthy.
+    # collector_exit_code already returns 255 whenever the collector is
+    # unhealthy, so short-circuit on that same condition: the job-specific
+    # bail/final_state layering below only makes sense when the collector itself
+    # was healthy.
     my $code = collector_exit_code($info);
-    return $code if $code == 255 && !($info && $info->{collector} && $info->{collector}{ok});
+    return $code unless $info && $info->{collector} && $info->{collector}{ok};
 
     # A bail-out (or any other halt) lives only in the audited final_state, not
     # in the OS exit status. Persist the reason so the runner's bailed_out() can
