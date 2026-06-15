@@ -93,11 +93,7 @@ subtest WebClient => sub {
 
     my $d = parse('App::Yath2::Options::WebClient');
     is($d->webclient->grace, 0, "grace defaults to 0");
-    # request_retry is a 'Count' option. Count does NOT honor a scalar 'default'
-    # (Getopt::Yath::Option->allows_default is false for Count), so the declared
-    # 'default => 0' is inert and the populated value starts at 1. Assert the
-    # real behavior rather than the (ineffective) declared default.
-    is($d->webclient->request_retry, 1, "request_retry (Count) populates to 1 with no flag");
+    is($d->webclient->request_retry, 0, "request_retry defaults to 0");
 
     my $k = parse('App::Yath2::Options::WebClient', '--api-key', 'abc123');
     is($k->webclient->api_key, 'abc123', "--api-key captured");
@@ -108,8 +104,7 @@ subtest Publish => sub {
     ok($d->check_group('publish'), "publish group exists");
     is($d->publish->mode,        'qvfd', "mode defaults to qvfd");
     is($d->publish->buffer_size, 100,    "buffer_size defaults to 100");
-    # 'retry' is a Count option; same caveat as WebClient->request_retry above.
-    is($d->publish->retry,       1,      "retry (Count) populates to 1 with no flag");
+    is($d->publish->retry,       0,      "retry defaults to 0");
     is($d->publish->force,       0,      "force defaults to 0");
 
     my $s = parse('App::Yath2::Options::Publish', '--publish-mode', 'summary', '--publish-buffer-size', '50');

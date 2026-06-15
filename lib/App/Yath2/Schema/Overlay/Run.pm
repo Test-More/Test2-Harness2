@@ -19,7 +19,9 @@ __PACKAGE__->belongs_to(
   { is_deferrable => 0, on_delete => "NO ACTION", on_update => "NO ACTION" },
 );
 
-my %COMPLETE_STATUS = (complete => 1, failed => 1, canceled => 1, broken => 1);
+# Terminal run statuses. Must stay within the runs.status CHECK constraint
+# (pending, running, complete, broken, canceled) -- 'failed' is not a run status.
+my %COMPLETE_STATUS = (complete => 1, canceled => 1, broken => 1);
 sub complete { return $COMPLETE_STATUS{$_[0]->status} // 0 }
 
 sub sig {

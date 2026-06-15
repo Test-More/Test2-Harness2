@@ -33,8 +33,9 @@ option_group {group => 'publish', prefix => 'publish', category => "Publish Opti
     );
 
     option retry => (
-        type => 'Count',
+        type => 'Scalar',
         description => "How many times to retry an operation before giving up",
+        long_examples => [' 3'],
         default => 0,
     );
 

@@ -28,8 +28,9 @@ option_group {group => 'webclient', category => "Web Client Options"} => sub {
     );
 
     option request_retry => (
-        type => 'Count',
+        type => 'Scalar',
         description => "How many times to try an operation before giving up",
+        long_examples => [' 3'],
         default => 0,
     );
 };
