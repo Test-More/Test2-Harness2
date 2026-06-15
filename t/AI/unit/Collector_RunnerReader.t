@@ -102,6 +102,31 @@ subtest nonzero_exit_detected => sub {
     ok($freader->done, "done on process-exit");
     my ($fpx) = grep { $_->facet_data->{harness_process_exit} } @fe;
     is($fpx->facet_data->{harness_process_exit}{err}, 3, "non-zero runner exit preserved (err=3)");
+
+    # The raw harness_process_exit facet has no renderer path, so a non-zero
+    # runner exit must also be surfaced as a visible INTERNAL info diagnostic.
+    my ($diag) = grep { ($_->{details} // '') =~ /runner exited abnormally/ } @{$fpx->facet_data->{info} // []};
+    ok($diag, "non-zero runner exit produces a visible INTERNAL diagnostic");
+    is($diag->{tag}, 'INTERNAL', "diagnostic tagged INTERNAL");
+    ok($diag->{important}, "diagnostic marked important");
+    like($diag->{details}, qr/exit: 768/, "diagnostic reports the exit status");
+};
+
+# A clean (zero) runner exit must NOT emit a spurious abnormal-exit diagnostic.
+subtest clean_exit_no_diagnostic => sub {
+    my $cdir  = tempdir(CLEANUP => 1);
+    my $cfile = "$cdir/runner-events.jsonl.zst";
+    my $crec  = Test2::Collector::Recorder::Zstd->new(file => $cfile);
+    $crec->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 1}));
+    $crec->finalize;
+
+    my $creader = Test2::Harness2::Collector::RunnerReader->new(run_id => 'RUN-4', events_file => $cfile);
+    my @ce;
+    for (1 .. 5) { push @ce => $creader->poll(1000); last if $creader->done }
+
+    my ($cpx) = grep { $_->facet_data->{harness_process_exit} } @ce;
+    my ($cdiag) = grep { ($_->{details} // '') =~ /runner exited abnormally/ } @{$cpx->facet_data->{info} // []};
+    ok(!$cdiag, "clean runner exit emits no abnormal-exit diagnostic");
 };
 
 done_testing;

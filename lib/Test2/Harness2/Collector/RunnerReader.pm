@@ -85,11 +85,24 @@ sub poll ($self, $max = undef) {
         }
         delete $fd->{from_stream};
 
-        # The runner's synthetic process-exit is the terminal record. Keep it as
-        # a renderable info line (so a non-zero runner exit is visible) and mark
-        # done -- there are no records after it.
+        # The runner's synthetic process-exit is the terminal record. Mark done
+        # -- there are no records after it.
         if (my $px = $fd->{harness_process_exit}) {
             $self->{+LAST_STAMP} = $px->{stamp} if defined $px->{stamp};
+
+            # The raw harness_process_exit facet has no renderer path (the
+            # Default composer only renders job-level exit/end, not a run-level
+            # process exit), so a non-zero runner exit would otherwise be
+            # invisible. Synthesize an INTERNAL diagnostic info line so a runner
+            # that dies abnormally is actually shown to the user.
+            my $err = $px->{err} // 0;
+            my $sig = $px->{sig} // 0;
+            if ($err || $sig) {
+                my $msg = "yath runner exited abnormally (exit: " . ($px->{all} // $err) . ")";
+                $msg .= " (signal: $sig)" if $sig;
+                push @{$fd->{info}} => {tag => 'INTERNAL', debug => 1, important => 1, details => $msg};
+            }
+
             push @out => $self->_wrap($fd);
             $self->{+DONE} = 1;
             last;
