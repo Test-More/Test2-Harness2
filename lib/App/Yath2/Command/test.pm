@@ -442,8 +442,10 @@ sub render_via_subscription {
         # the subscription (Subscriber::closed) -- or, with no subscription, a
         # dead runner process -- ends the loop. poll() drains all buffered frames
         # before flagging EOF, so the mirror is whole; drain once more before
-        # finalize to fold anything batched with the close.
-        my $done = $sub ? $sub->closed : $self->_runner_gone;
+        # finalize to fold anything batched with the close. The persistent `run`
+        # path overrides subscription_complete to key on its run's announced end
+        # instead (the persistent runner keeps its socket open across runs).
+        my $done = $self->subscription_complete($sub);
 
         if ($done) {
             $sub->poll if $sub;
@@ -457,6 +459,18 @@ sub render_via_subscription {
         $ipc->wait() if $ipc;
         sleep 0.02;
     }
+}
+
+# The subscription render loop's completion test. The transient `yath test`
+# command runs against a runner it spawned that shuts down (and closes the
+# socket) when the single run is done, so a clean socket EOF (Subscriber::closed)
+# -- or a dead runner with no subscription -- is completion. The persistent
+# `yath run` command shares a long-lived runner that keeps its socket open across
+# runs, so it overrides this to key on its own run's announced end.
+sub subscription_complete {
+    my $self = shift;
+    my ($sub) = @_;
+    return $sub ? $sub->closed : $self->_runner_gone;
 }
 
 # True once the runner process is no longer tracked as live. Used as the

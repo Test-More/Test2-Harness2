@@ -295,11 +295,14 @@ sub run_under_collector {
 sub _transition_reporter {
     my $self = shift;
 
-    # Scope the transition channel to the transient (chunk-5) path. The
-    # persistent runner (yath start/run) is gated (ARCH 6.1) and not migrated;
-    # leave its collectors on the file recorder only so the gated path is not put
-    # at risk by the runner.socket dependency.
-    return undef if $self->runner->persist;
+    # Chunk 6.1-2: the transition channel now covers BOTH the transient and the
+    # persistent (yath start/run) paths. A persistent test job is a non-runner
+    # collector exactly like a transient one, so it streams its transitions to the
+    # persistent runner's runner.socket too; the runner folds them into its
+    # per-run canonical state and forwards them to that run's subscriber (the
+    # `yath run` command, which now renders from the subscription). The file
+    # recorder still records the same transitions in parallel, so a missing/
+    # not-yet-accepting socket only costs the reporter, never the events file.
 
     my $workdir = $ENV{T2_HARNESS_WORKDIR} // $self->runner->dir;
     return undef unless defined $workdir && length $workdir;

@@ -81,6 +81,9 @@ use Test2::Harness2::Util::HashBase(
 
         +monitor
         +watchdog
+
+        +announced_runs
+        +active_run
     },
 );
 
@@ -128,6 +131,8 @@ sub init {
 
     $self->{+ROOTPID} = $$;
     $RUNNER_PID = $$;
+
+    $self->{+ANNOUNCED_RUNS} = {};
 
     croak "'dir' is a required attribute"      unless $self->{+DIR};
     croak "'settings' is a required attribute" unless $self->{+SETTINGS};
@@ -626,6 +631,30 @@ sub announce_job {
     return;
 }
 
+# Chunk 6.1-2: the runner originates a run-completion mutation. The persistent
+# runner serves many runs and keeps its socket open, so a run-scoped subscriber
+# (the `yath run` command) cannot key completion on the socket closing the way the
+# transient `yath test` command does. Instead the runner announces each run's end
+# over the socket -- folded into its own monitor (so a later snapshot carries it)
+# and forwarded to that run's subscribers -- when the run leaves the active slot.
+sub announce_run {
+    my $self = shift;
+    my ($run_id) = @_;
+
+    return unless $self->{+ROOTPID} == $$;
+    return unless defined $run_id;
+    return if $self->{+ANNOUNCED_RUNS}->{$run_id}++;
+
+    my $payload = {facet_data => {harness_run_end => {run_id => $run_id, stamp => time}}};
+
+    $self->monitor->feed($payload);
+
+    my $frame = compress_blob(encode_json($payload));
+    $self->forward_frame($frame, $run_id);
+
+    return;
+}
+
 sub service_tick {
     my $self = shift;
 
@@ -665,9 +694,21 @@ sub scheduler_tick {
     my $ok = eval {
         $state->poll;
 
+        # Track the active run across the advance so we can announce its end the
+        # moment it leaves the active slot (chunk 6.1-2 per-run completion). The
+        # run is recorded once it becomes active and announced once it clears.
+        my $before = $state->run ? $state->run->run_id : undef;
+        $self->{+ACTIVE_RUN} //= $before if defined $before;
+
         while (1) {
             next if $state->advance;
             last;
+        }
+
+        my $after = $state->run ? $state->run->run_id : undef;
+        if (defined $self->{+ACTIVE_RUN} && (!defined($after) || $after ne $self->{+ACTIVE_RUN})) {
+            $self->announce_run($self->{+ACTIVE_RUN});
+            $self->{+ACTIVE_RUN} = $after;
         }
 
         # Chunk 5d: hand any task the scheduler just started, whose run-stage is a

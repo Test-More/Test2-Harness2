@@ -11,6 +11,7 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 use Object::HashBase qw{
     +collectors
     +jobs
+    +runs
     +pending_new
     +pending_failing
     +pending_diagnosing
@@ -99,6 +100,7 @@ snapshot-plus-transitions contract, ARCH 4.2-4.3).
 sub init ($self) {
     $self->{+COLLECTORS} = {};
     $self->{+JOBS}       = {};
+    $self->{+RUNS}       = {};
 
     $self->{+PENDING_NEW}        = [];
     $self->{+PENDING_FAILING}    = [];
@@ -193,6 +195,13 @@ the runner synthesized its failure into canonical state.
 =item @job_ids = $mon->job_ids
 
 The ids of all jobs the runner has originated mutations for.
+
+=item $bool = $mon->run_done($run_id)
+
+True once the runner has announced that run as finished (a C<harness_run_end>
+mutation). A run-scoped subscriber keys its completion on this: the persistent
+runner serves many runs and does not close its socket after each one, so the
+socket-close completion signal the transient path uses does not apply.
 
 =item job
 
@@ -303,12 +312,21 @@ sub new_aborted_jobs ($self) { return $self->_drain(PENDING_ABORTED) }
 sub job_ids ($self)          { return keys %{$self->{+JOBS}} }
 sub job     ($self, $job_id) { return $self->{+JOBS}{$job_id} }
 
+sub run_done ($self, $run_id) {
+    return 0 unless defined $run_id;
+    return $self->{+RUNS}{$run_id} ? 1 : 0;
+}
+
 sub run_for_payload ($self, $payload) {
     my $fd = ref($payload) eq 'HASH' ? $payload->{facet_data} : undef;
     return undef unless ref($fd) eq 'HASH';
 
     if (my $rj = $fd->{harness_runner_job}) {
         return $rj->{run_id};
+    }
+
+    if (my $re = $fd->{harness_run_end}) {
+        return $re->{run_id};
     }
 
     my $hc = $fd->{harness_collector} or return undef;
@@ -326,6 +344,7 @@ sub snapshot ($self, $run_id = undef) {
     return {
         collectors => $self->{+COLLECTORS},
         jobs       => $self->{+JOBS},
+        runs       => $self->{+RUNS},
     } unless defined $run_id;
 
     my %collectors;
@@ -342,12 +361,16 @@ sub snapshot ($self, $run_id = undef) {
         $jobs{$job_id} = $j if !defined($run) || $run eq $run_id;
     }
 
-    return {collectors => \%collectors, jobs => \%jobs};
+    my %runs;
+    $runs{$run_id} = $self->{+RUNS}{$run_id} if $self->{+RUNS}{$run_id};
+
+    return {collectors => \%collectors, jobs => \%jobs, runs => \%runs};
 }
 
 sub apply_snapshot ($self, $snapshot) {
     $self->{+COLLECTORS} = $snapshot->{collectors} // {};
     $self->{+JOBS}       = $snapshot->{jobs}       // {};
+    $self->{+RUNS}       = $snapshot->{runs}       // {};
     return;
 }
 
@@ -391,6 +414,15 @@ sub _process ($self, $payload) {
     # It carries no collector identity; fold it into the parallel jobs map.
     if (my $rj = $fd->{harness_runner_job}) {
         $self->_process_runner_job($rj);
+        return;
+    }
+
+    # A runner-originated run-completion mutation: the runner has finished a run
+    # (serialized, one at a time -- chunk 6.1-2). A run-scoped subscriber keys its
+    # completion on this, since the persistent runner does NOT close its socket
+    # after a single run the way the transient runner does.
+    if (my $re = $fd->{harness_run_end}) {
+        $self->{+RUNS}{$re->{run_id}} = $re if defined $re->{run_id};
         return;
     }
 

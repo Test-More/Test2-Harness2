@@ -116,6 +116,15 @@ True once L</poll> has seen the runner close the socket (EOF). On the transient
 path the runner shuts its service down when the run is done, so this is the
 command's completion signal.
 
+=item run_done
+
+=item $bool = $sub->run_done
+
+True once the runner has announced this subscription's run as finished (a
+C<harness_run_end> mutation folded into the mirror). This is the completion
+signal for a run-scoped subscription against a B<persistent> runner, which keeps
+its socket open across runs and so never triggers L</closed>.
+
 =item subscribe
 
 =item $sub->subscribe
@@ -145,6 +154,11 @@ sub monitor ($self) {
 sub subscribed ($self) { return $self->{+SUBSCRIBED} ? 1 : 0 }
 
 sub closed ($self) { return $self->{+CLOSED} ? 1 : 0 }
+
+sub run_done ($self) {
+    return 0 unless defined $self->{+RUN_ID};
+    return $self->monitor->run_done($self->{+RUN_ID});
+}
 
 sub subscribe ($self) {
     my $conn = $self->_connect;
