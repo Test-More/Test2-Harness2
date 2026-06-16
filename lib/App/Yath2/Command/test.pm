@@ -16,8 +16,10 @@ use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 use Test2::Harness2::Runner::State;
 
 use Test2::Harness2::Util::JSON qw/encode_json decode_json JSON/;
-use Test2::Harness2::Util qw/mod2file open_file chmod_tmp/;
+use Test2::Harness2::Util qw/mod2file open_file chmod_tmp collector_exit_code runner_events_file/;
 use Test2::Util::Table qw/table/;
+
+use POSIX();
 
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 
@@ -912,19 +914,48 @@ sub start_runner {
         push @prof => '-d:NYTProf';
     }
 
+    # The runner command that used to be spawned directly (its stdout/stderr
+    # tailed from output.log/error.log). It is now the exec target of a non-test
+    # collector: chunk 4 step 1 wraps the `yath test` runner in a Test2::Collector
+    # (is_test => 0) so its stdout/stderr become first-class, timestamped harness
+    # events in runner-events.jsonl.zst -- the same wire format and reader path as
+    # job events -- instead of flat tailed logs.
+    my @runner_cmd = (
+        $^X, @prof, $self->spawn_args($settings), $settings->harness->script,
+        (map { "-D$_" } @{$settings->harness->dev_libs}),
+        '--no-scan-plugins',    # Do not preload any plugin modules
+        runner => $dir,
+        %args,
+    );
+
+    my $runner_events_file = runner_events_file($dir);
+
     my $ipc  = $self->ipc;
     my $proc = $ipc->spawn(
-        stderr      => File::Spec->catfile($dir, 'error.log'),
-        stdout      => File::Spec->catfile($dir, 'output.log'),
         env_vars    => {@prof ? (NYTPROF => 'start=no:addpid=1') : ()},
         no_set_pgrp => 1,
-        command     => [
-            $^X, @prof, $self->spawn_args($settings), $settings->harness->script,
-            (map { "-D$_" } @{$settings->harness->dev_libs}),
-            '--no-scan-plugins',    # Do not preload any plugin modules
-            runner => $dir,
-            %args,
-        ],
+
+        # The spawned child becomes the collector PARENT and never returns: it
+        # runs the whole collector and POSIX::_exit()s. This mirrors
+        # Test2::Harness2::Runner::Job::spawn_params and only works under the
+        # fork-exec run_cmd (which invokes the coderef in the already-forked
+        # child); the harness only supports fork-capable systems. The collector
+        # forks the actual runner (exec, below), captures its stdout/stderr/exit,
+        # and records the full stream into runner-events.jsonl.zst, so there are
+        # no separate stdout/stderr files anymore. The parent MUST _exit() with
+        # the runner child's verdict (collector_exit_code) so IPC's runner-death
+        # detection / wait-status handling is unchanged.
+        command => sub {
+            require Test2::Collector;
+            require Test2::Collector::Recorder::Zstd;
+            my $info = Test2::Collector::collect(
+                is_test  => 0,
+                name     => 'runner',
+                exec     => [@runner_cmd],
+                recorder => Test2::Collector::Recorder::Zstd->new(file => $runner_events_file),
+            );
+            POSIX::_exit(collector_exit_code($info));
+        },
     );
 
     $self->{+RUNNER_PID} = $proc->pid;

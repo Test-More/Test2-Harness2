@@ -7,7 +7,10 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 
 use Test2::Harness2::Collector::JobReader;
+use Test2::Harness2::Collector::RunnerReader;
 
+use Test2::Harness2::Util qw/runner_events_file/;
+use Test2::Harness2::Util::File::Stream;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::Queue;
 use Time::HiRes qw/sleep time/;
@@ -26,7 +29,7 @@ use Test2::Harness2::Util::HashBase qw{
 
     <backed_up
 
-    +runner_stdout +runner_stderr +runner_aux_dir +runner_aux_handles
+    +runner_reader +runner_stdout +runner_stderr +runner_aux_dir +runner_aux_handles
 
     +task_file +task_queue +tasks_done +tasks
     +jobs_file +jobs_queue +jobs_done  +jobs
@@ -74,7 +77,7 @@ sub process {
         # waiting (runner alive) or abort (runner dead).
         my $progress = 0;
         my $pending  = 0;
-        $progress += $self->process_runner_output if $self->{+SHOW_RUNNER_OUTPUT};
+        $progress += $self->process_runner_events if $self->{+SHOW_RUNNER_OUTPUT};
         $progress += $self->process_tasks();
 
         my $jobs = $self->jobs;
@@ -169,7 +172,7 @@ sub process {
     }
 
     # One last slurp
-    $self->process_runner_output if $self->{+SHOW_RUNNER_OUTPUT};
+    $self->process_runner_events if $self->{+SHOW_RUNNER_OUTPUT};
 
     # The loop above only exits once collection is genuinely complete: every
     # reachable job has been polled to done and removed, so VERDICTS is whole.
@@ -281,7 +284,30 @@ sub runner_exited {
     return $self->{+RUNNER_EXITED} = 1;
 }
 
-sub process_runner_output {
+sub runner_reader {
+    my $self = shift;
+    return $self->{+RUNNER_READER} //= Test2::Harness2::Collector::RunnerReader->new(
+        run_id      => $self->{+RUN_ID},
+        events_file => runner_events_file($self->{+WORKDIR}),
+    );
+}
+
+# Chunk 4 step 1: the `yath test` runner now runs under a non-test collector that
+# records runner-events.jsonl.zst (App::Yath2::Command::test start_runner). This
+# replaces the old output.log/error.log tailer: the runner's own stdout/stderr
+# (and its synthetic process-exit) come from that events file via the
+# RunnerReader, which remaps the IOParser's STDOUT/STDERR info entries to the
+# historical INTERNAL-tagged shape the renderer expects. The reader returns ()
+# gracefully until the runner has created its events file, and reaches done on
+# the runner's harness_process_exit.
+#
+# aux_logs are STILL tailed here: plugin shellcalls (Test2::Harness2::Plugin
+# redirect_io/shellcall, e.g. plugin setup/teardown) fork their own subprocesses
+# and deliberately redirect their STDOUT/STDERR to $workdir/aux_logs/*.log,
+# BYPASSING the runner collector's captured pipe -- so that output will never be
+# in runner-events.jsonl.zst and must be tailed from the flat aux files as
+# before.
+sub process_runner_events {
     my $self = shift;
 
     my $out = 0;
@@ -293,10 +319,42 @@ sub process_runner_output {
         $self->{+TRUNCATED_RUNNER_OUTPUT} = 1;
     }
 
+    # The `yath test` runner runs under a non-test collector and is read from
+    # runner-events.jsonl.zst. The PERSISTENT runner (yath start / yath run /
+    # yath watch) is NOT collector-wrapped this chunk (compatibility shim) -- it
+    # still writes flat output.log/error.log, so tail those instead.
+    if ($self->{+PERSISTENT_RUNNER}) {
+        $out += $self->process_runner_logs($action);
+    }
+    else {
+        my $reader = $self->runner_reader;
+        unless ($reader->done) {
+            for my $e ($reader->poll($self->settings->collector->max_poll_events // 1000)) {
+                $action->($e);
+                $out++;
+            }
+        }
+    }
+
+    $out += $self->process_aux_logs($action);
+
+    return $out;
+}
+
+# Compatibility shim: tail the persistent runner's flat output.log/error.log.
+# The persistent runner (yath start) is not yet wrapped in a collector, so its
+# stdout/stderr still land in flat files. Surface them as INTERNAL-shaped info,
+# exactly as the pre-chunk-4 process_runner_output did (stdout important;
+# stderr important + debug).
+sub process_runner_logs {
+    my $self = shift;
+    my ($action) = @_;
+
+    my $out = 0;
+
     my $stdout = $self->{+RUNNER_STDOUT} //= Test2::Harness2::Util::File::Stream->new(
         name => File::Spec->catfile($self->{+WORKDIR}, 'output.log'),
     );
-
     for my $line ($stdout->poll()) {
         chomp($line);
         my $e = $self->_harness_event(0, undef, time, info => [{details => $line, tag => 'INTERNAL', important => 1}]);
@@ -307,13 +365,25 @@ sub process_runner_output {
     my $stderr = $self->{+RUNNER_STDERR} //= Test2::Harness2::Util::File::Stream->new(
         name => File::Spec->catfile($self->{+WORKDIR}, 'error.log'),
     );
-
     for my $line ($stderr->poll()) {
         chomp($line);
         my $e = $self->_harness_event(0, undef, time, info => [{details => $line, tag => 'INTERNAL', debug => 1, important => 1}]);
         $action->($e);
         $out++;
     }
+
+    return $out;
+}
+
+# Tail $workdir/aux_logs/*.log -- output from plugin shellcall subprocesses that
+# redirect away from the runner collector's captured streams. Filenames encode a
+# tag and (optionally) STDOUT/STDERR; lines are surfaced as INTERNAL-shaped info
+# the same way the old process_runner_output did.
+sub process_aux_logs {
+    my $self = shift;
+    my ($action) = @_;
+
+    my $out = 0;
 
     my $auxdir = $self->{+RUNNER_AUX_DIR} //= File::Spec->catdir($self->{+WORKDIR}, 'aux_logs');
     return $out unless -d $auxdir;

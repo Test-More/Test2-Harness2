@@ -15,7 +15,7 @@ use Time::HiRes qw/time/;
 use File::Spec();
 use File::Temp();
 
-use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp/;
+use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp collector_exit_code/;
 use Test2::Harness2::IPC;
 
 use parent 'Test2::Harness2::IPC::Process';
@@ -146,12 +146,17 @@ sub _collector_exit_code {
     my $self = shift;
     my ($info) = @_;
 
-    unless ($info && $info->{collector} && $info->{collector}{ok}) {
-        if ($info && $info->{collector} && @{$info->{collector}{errors} // []}) {
-            warn "$_\n" for @{$info->{collector}{errors}};
-        }
-        return 255;
-    }
+    # Collector-failure (255) and the err/sig numeric mapping are shared with the
+    # non-test runner collector wrapper (App::Yath2::Command::test); keep them in
+    # the one Util helper so exit-status fidelity never diverges. On a 255
+    # collector failure return immediately -- the job-specific bail/final_state
+    # layering below only makes sense when the collector itself was healthy.
+    # collector_exit_code already returns 255 whenever the collector is
+    # unhealthy, so short-circuit on that same condition: the job-specific
+    # bail/final_state layering below only makes sense when the collector itself
+    # was healthy.
+    my $code = collector_exit_code($info);
+    return $code unless $info && $info->{collector} && $info->{collector}{ok};
 
     # A bail-out (or any other halt) lives only in the audited final_state, not
     # in the OS exit status. Persist the reason so the runner's bailed_out() can
@@ -161,8 +166,6 @@ sub _collector_exit_code {
         write_file($self->bail_file, $fs->{halt});
     }
 
-    my $exit = $info->{exit} // {};
-    my $code = $exit->{err} || ($exit->{sig} ? 1 : 0);
     return $code if $code;
 
     # Test2-Collector can audit a test as FAILED while the process exits zero

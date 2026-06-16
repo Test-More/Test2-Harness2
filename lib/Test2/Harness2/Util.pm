@@ -17,6 +17,8 @@ our @EXPORT_OK = qw{
     clean_path
 
     parse_exit
+    collector_exit_code
+    runner_events_file
     mod2file
     file2mod
     fqmod
@@ -141,6 +143,42 @@ sub parse_exit {
         dmp => $dmp,
         all => $exit,
     };
+}
+
+# The stable path of the events file recorded by the non-test collector that
+# wraps the `yath test` runner. The producer (App::Yath2::Command::test
+# start_runner) and the consumer (Test2::Harness2::Collector) must agree on it,
+# so it lives here as a single shared accessor next to the workdir.
+sub runner_events_file {
+    my ($workdir) = @_;
+    return File::Spec->catfile($workdir, 'runner-events.jsonl.zst');
+}
+
+# Map a Test2::Collector::collect() info hash to the exit code the collector
+# PARENT should _exit() with, so the process that reaps it (the runner reaping a
+# job, or the harness IPC reaping the runner) observes the CHILD's verdict, not
+# merely the collector's own health:
+#   - collector itself failed -> 255 (a harness/collector error; non-zero is
+#     treated as failure, which is correct).
+#   - otherwise               -> the child's exit status: WEXITSTATUS (err) when
+#     non-zero, or 1 if the child died by signal. Zero only on a clean exit.
+# This is the numeric core shared by Test2::Harness2::Runner::Job (which layers
+# its job-specific bail-file / audited-final_state handling on top before
+# delegating here) and the non-test runner collector wrapper in
+# App::Yath2::Command::test (which has no auditor/final_state). Keeping it in one
+# place guarantees exit-status fidelity does not diverge between the two paths.
+sub collector_exit_code {
+    my ($info) = @_;
+
+    unless ($info && $info->{collector} && $info->{collector}{ok}) {
+        if ($info && $info->{collector} && @{$info->{collector}{errors} // []}) {
+            warn "$_\n" for @{$info->{collector}{errors}};
+        }
+        return 255;
+    }
+
+    my $exit = $info->{exit} // {};
+    return $exit->{err} || ($exit->{sig} ? 1 : 0);
 }
 
 sub fqmod {
