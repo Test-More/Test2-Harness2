@@ -14,11 +14,10 @@ use Test2::Harness2::IPC;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Runner::State;
-use Test2::Harness2::Runner::Client;
-use Test2::Harness2::Runner::Subscriber;
 use Test2::Harness2::Renderer::Driver;
 
 use App::Yath2::RunPlan;
+use App::Yath2::Client;
 
 use Test2::Harness2::Util::JSON qw/encode_json decode_json JSON/;
 use Test2::Harness2::Util qw/mod2file open_file collector_exit_code runner_events_file/;
@@ -52,11 +51,10 @@ use Test2::Harness2::Util::HashBase qw/
     +asserts_seen
 
     +state
-    +submitter
+    +client
 
     +pending_tasks
 
-    +subscriber
     +driver
 
     <cleanup_subs
@@ -312,23 +310,25 @@ sub start {
     return 1;
 }
 
-# The run/task/end-queue submission target. The transient `yath test` command
-# submits over runner.socket via a thin client; the persistent run/spawn commands
-# override this to keep submitting through the in-process dispatch.jsonl state.
+# The command-side socket client wrapping the runner.socket submit + subscribe
+# transports (App::Yath2::Client). The transient `yath test` path uses it for
+# both submission and subscription; the persistent run/spawn path overrides
+# submitter() to use the in-process dispatch.jsonl state instead, so it never
+# submits through this client (transport choice stays in the command).
 #
-# The client needs to know if the runner dies before it ever accepts (e.g. a
-# broken preload that takes the runner down during startup). We hand it a liveness
-# check that reaps through our IPC and reports whether the runner is still
-# tracked; if it has gone, the client stops trying and submission becomes a no-op,
-# leaving the gatherer to surface the runner's own failure.
-sub submitter {
+# The submission client needs to know if the runner dies before it ever accepts
+# (e.g. a broken preload that takes the runner down during startup). We hand it a
+# liveness check that reaps through our IPC and reports whether the runner is
+# still tracked; if it has gone, the client stops trying and submission becomes a
+# no-op, leaving the gatherer to surface the runner's own failure.
+sub client {
     my $self = shift;
 
-    return $self->{+SUBMITTER} //= do {
+    return $self->{+CLIENT} //= do {
         my $ipc        = $self->ipc;
         my $runner_pid = $self->runner_pid;
 
-        Test2::Harness2::Runner::Client->new(
+        App::Yath2::Client->new(
             workdir        => $self->workdir,
             liveness_check => sub {
                 # Single non-blocking reap pass (timeout => 0 makes wait do one
@@ -343,6 +343,15 @@ sub submitter {
     };
 }
 
+# The run/task/end-queue submission target. The transient `yath test` command
+# submits over runner.socket via the socket client; the persistent run/spawn
+# commands override this to keep submitting through the in-process dispatch.jsonl
+# state.
+sub submitter {
+    my $self = shift;
+    return $self->client->submitter;
+}
+
 # The runner subscription the transient render path consumes: connect to
 # runner.socket, load the snapshot, and keep a live mirror of the runner's
 # canonical state by polling forwarded transitions.
@@ -354,19 +363,14 @@ sub submitter {
 # back to runner-output tailing plus the gatherer completion seam.
 sub subscriber {
     my $self = shift;
-    return $self->{+SUBSCRIBER};
+    return $self->client->subscriber;
 }
 
 # Attempt the subscription once. Returns the subscriber or undef on failure; the
 # render loop calls this exactly once and tolerates undef.
 sub connect_subscriber {
     my $self = shift;
-
-    my $sub = Test2::Harness2::Runner::Subscriber->new(workdir => $self->workdir);
-    my $ok  = eval { $sub->subscribe; 1 };
-    warn "Could not subscribe to runner socket: $@" unless $ok;
-
-    return $self->{+SUBSCRIBER} = $ok ? $sub : undef;
+    return $self->client->connect_subscriber;
 }
 
 # The command-side renderer driver (chunk 6a). It folds the subscription mirror
