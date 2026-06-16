@@ -18,8 +18,10 @@ use Test2::Harness2::Runner::Client;
 use Test2::Harness2::Runner::Subscriber;
 use Test2::Harness2::Renderer::Driver;
 
+use App::Yath2::RunPlan;
+
 use Test2::Harness2::Util::JSON qw/encode_json decode_json JSON/;
-use Test2::Harness2::Util qw/mod2file open_file chmod_tmp collector_exit_code runner_events_file/;
+use Test2::Harness2::Util qw/mod2file open_file collector_exit_code runner_events_file/;
 use Test2::Util::Table qw/table/;
 
 use POSIX();
@@ -37,7 +39,7 @@ use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/
     <runner_pid +ipc +signal
 
-    +run <run_id
+    +run_plan <run_id
 
     +collector_writer
     +renderer_reader
@@ -49,7 +51,6 @@ use Test2::Harness2::Util::HashBase qw/
     +tests_seen
     +asserts_seen
 
-    +tasks_queue
     +state
     +submitter
 
@@ -654,20 +655,22 @@ sub signal_shutdown {
     return;
 }
 
-sub build_run {
+# The run + task-queue construction now lives in App::Yath2::RunPlan, a plain
+# settings-driven object shared by the transient `test` and persistent `run`
+# paths. The command holds one and delegates run/queue building to it.
+sub run_plan {
     my $self = shift;
 
-    return $self->{+RUN} if $self->{+RUN};
+    return $self->{+RUN_PLAN} //= App::Yath2::RunPlan->new(
+        settings    => $self->settings,
+        workdir     => $self->workdir,
+        finder_args => [$self->finder_args],
+    );
+}
 
-    my $settings = $self->settings;
-    my $dir      = $self->workdir;
-
-    my $run = Test2::Harness2::Run->new($settings->run->all);
-
-    mkdir($run->run_dir($dir)) or die "Could not make run dir: $!";
-    chmod_tmp($dir);
-
-    return $self->{+RUN} = $run;
+sub build_run {
+    my $self = shift;
+    return $self->run_plan->run;
 }
 
 sub state {
@@ -688,64 +691,27 @@ sub job_count {
 
 sub tasks_queue {
     my $self = shift;
-
-    $self->{+TASKS_QUEUE} //= Test2::Harness2::Util::Queue->new(
-        file => File::Spec->catfile($self->build_run->run_dir($self->workdir), 'queue.jsonl'),
-    );
+    return $self->run_plan->tasks_queue;
 }
 
 sub finder_args { () }
 
-# Find the test files and build the task list. The task list is recorded into the
-# per-run queue.jsonl (read by the still-living gatherer to learn the pending
-# jobs) and stashed in PENDING_TASKS for submit_queue(); the run + tasks are NOT
-# submitted to the runner here -- that happens in submit_queue() once the runner
-# is listening (chunk 5c socket submission).
+# Find the test files and build the task list via the run plan. The run id and
+# task list are mirrored onto the command (read directly elsewhere). The per-run
+# queue.jsonl is only written when the gatherer is in play (the transient path
+# renders from the runner subscription and retires that file; the gated
+# persistent path still spawns the gatherer, so it asks for the queue). The run +
+# tasks are NOT submitted to the runner here -- that happens in submit_queue()
+# once the runner is listening (chunk 5c socket submission).
 sub populate_queue {
     my $self = shift;
 
-    my $run = $self->build_run();
-    $self->{+RUN_ID} = $run->run_id;
-    my $settings     = $self->settings;
-    my $finder_class = $settings->finder->finder;
-    require(mod2file($finder_class));
-    my $finder = $finder_class->new($settings->finder->all, $self->finder_args);
+    my $plan = $self->run_plan;
 
-    my $tasks_queue = $self->tasks_queue;
-    my $plugins     = $settings->harness->plugins;
+    my $job_count = $plan->populate(write_queue => $self->use_subscription_renderer ? 0 : 1);
 
-    my @files = @{$finder->find_files($plugins, $self->settings)};
-
-    for my $plugin (@$plugins) {
-        if ($plugin->can('sort_files_2')) {
-            @files = $plugin->sort_files_2(settings => $settings, files => \@files);
-        }
-        elsif ($plugin->can('sort_files')) {
-            @files = $plugin->sort_files(@files);
-        }
-    }
-
-    my @tasks;
-    my $job_count = 0;
-    for my $file (@files) {
-        my $task = $file->queue_item(
-            ++$job_count, $run->run_id,
-            $settings->check_group('display') ? (verbose => $settings->display->verbose) : (),
-        );
-
-        $task->{category} = 'isolation' if $settings->debug->interactive;
-
-        push @tasks => $task;
-
-        # queue.jsonl is consumed ONLY by the yath-side gatherer (it walks the
-        # workdir for events and learns the pending jobs from this file). The
-        # runner pulls tasks from the socket-fed state, not this file. Chunk 5g
-        # retires it on the transient path (the gatherer is gone there); the gated
-        # persistent path still spawns the gatherer, so keep writing it there.
-        $tasks_queue->enqueue($task) unless $self->use_subscription_renderer;
-    }
-
-    $self->{+PENDING_TASKS} = \@tasks;
+    $self->{+RUN_ID}        = $plan->run_id;
+    $self->{+PENDING_TASKS} = $plan->tasks;
 
     return $job_count;
 }
