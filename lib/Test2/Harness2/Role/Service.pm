@@ -48,6 +48,12 @@ back as the response. A handler may return C<undef> to send B<no> response, for
 one-way requests (e.g. streamed reports) whose sender does not read replies. The
 built-in C<request_handler_stop> ends the loop.
 
+A connection can also become a B<subscriber>: a request handler calls
+L</add_subscriber> on the connection, and from then on the service pushes
+forwarded frames to it asynchronously with L</forward_frame> (unlike the
+one-shot request/reply connections). A subscriber whose write fails (it vanished)
+is dropped, mirroring the recorder-socket broken-connection handling.
+
 The same socket also carries B<transition frames>: the Test2 event/facet
 structures a collector's reporter streams (carrying C<harness_collector>,
 C<harness_state_transition>, C<harness_final_state>, or
@@ -139,6 +145,23 @@ hashref (or an error hashref for a missing type / unknown handler).
 
 Built-in handler: stop the loop. Returns C<< {ok =E<gt> 1, stopping =E<gt> 1} >>.
 
+=item add_subscriber
+
+=item $self->add_subscriber($conn)
+
+Register an accepted connection as a subscriber: it stays open and the service
+pushes forwarded frames to it (via L</forward_frame>) as state mutates, rather
+than serving it a single request/reply. A request handler calls this on its
+C<$conn> after sending the snapshot reply.
+
+=item forward_frame
+
+=item $self->forward_frame($frame)
+
+Write one already-compressed frame to every subscriber connection. A subscriber
+whose write fails (it vanished) is closed and dropped, so a gone subscriber does
+not cause a write storm or block the others.
+
 =back
 
 =cut
@@ -166,6 +189,7 @@ sub start_service ($self) {
     $self->{service_listen}  = $listen;
     $self->{service_select}  = IO::Select->new($listen);
     $self->{service_conns}   = {};
+    $self->{service_subs}    = {};
     $self->{service_stopped} = 0;
 
     return;
@@ -224,6 +248,32 @@ sub request_handler_stop ($self, $payload = undef, $conn = undef) {
     return {ok => 1, stopping => 1};
 }
 
+sub add_subscriber ($self, $conn) {
+    $self->{service_subs}{$conn} = $conn;
+    return;
+}
+
+sub forward_frame ($self, $frame) {
+    my $subs = $self->{service_subs} or return;
+    return unless %$subs;
+
+    for my $key (keys %$subs) {
+        my $conn = $subs->{$key};
+
+        # A vanished subscriber must not be retried on every later frame (a warn
+        # storm / fd leak); drop and close it, mirroring the recorder socket's
+        # broken-connection handling.
+        next if eval { write_frame($conn, $frame, 'subscriber'); 1 };
+
+        delete $self->{service_subs}{$key};
+        $self->{service_select}->remove($conn) if $self->{service_select};
+        delete $self->{service_conns}{$conn};
+        eval { close($conn); 1 };
+    }
+
+    return;
+}
+
 =head1 PRIVATE METHODS
 
 =over 4
@@ -275,6 +325,7 @@ sub _service_conn ($self, $fh) {
     if ($n == 0) {
         $self->{service_select}->remove($fh);
         delete $self->{service_conns}{$fh};
+        delete $self->{service_subs}{$fh};
         close($fh);
         return;
     }
@@ -339,6 +390,7 @@ sub reset_service ($self) {
     delete $self->{service_listen};
     delete $self->{service_select};
     $self->{service_conns}   = {};
+    $self->{service_subs}    = {};
     $self->{service_stopped} = 0;
     return;
 }
@@ -351,6 +403,7 @@ sub close_service ($self) {
         }
     }
     $self->{service_conns} = {};
+    $self->{service_subs}  = {};
 
     if (delete $self->{service_listen}) {
         my $path = $self->service_socket_path;

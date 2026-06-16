@@ -10,6 +10,7 @@ use Test2::Harness2::Util::JSON qw/decode_json/;
 
 use Object::HashBase qw{
     +collectors
+    +jobs
     +pending_new
     +pending_failing
     +pending_diagnosing
@@ -49,6 +50,20 @@ This is the per-run baseline: there is a single C<runner.socket> and no
 per-run-uuid fan-out. The C<run_uuid> still rides on every message and is
 tracked per collector, but the monitor does not filter or proxy on it.
 
+Besides collector transitions, the monitor also folds the small set of state
+mutations the B<runner itself originates> -- a job being dispatched to a stage,
+a job being forked (running), a job finishing (done). Those ride as a
+C<harness_runner_job> facet (C<< {job_id, state, ...} >>) on the same wire form,
+so the monitor is the single canonical fold of everything a subscribed client
+needs to mirror the runner's view (ARCH 4.2 "two distinct runner outputs"): the
+collector transitions every other collector reports B<and> the scheduler-origin
+mutations the runner makes locally.
+
+The monitor can serialize its whole canonical state with L</snapshot> and load a
+serialized snapshot with L</apply_snapshot>, so a freshly-connected subscriber
+gets a whole view and then keeps it whole by feeding forwarded frames (the
+snapshot-plus-transitions contract, ARCH 4.2-4.3).
+
 =head1 SYNOPSIS
 
     use Test2::Harness2::Runner::Monitor;
@@ -63,10 +78,17 @@ tracked per collector, but the monitor does not filter or proxy on it.
 
     $_ and free_slot($_) for $mon->new_test_exits;
 
+    # Serialize the whole canonical state for a new subscriber, and rebuild it
+    # on the subscriber side.
+    my $snap   = $mon->snapshot;
+    my $mirror = Test2::Harness2::Runner::Monitor->new;
+    $mirror->apply_snapshot($snap);
+
 =cut
 
 sub init ($self) {
     $self->{+COLLECTORS} = {};
+    $self->{+JOBS}       = {};
 
     $self->{+PENDING_NEW}        = [];
     $self->{+PENDING_FAILING}    = [];
@@ -146,6 +168,35 @@ is available by then); C<new_test_exits> reports tests whose process has exited
 C<new_completed> also covers plain (non-test) collectors, which signal the end
 of their run with an C<exited> transition instead of C<completed>.
 
+=item job_ids
+
+=item @job_ids = $mon->job_ids
+
+The ids of all jobs the runner has originated mutations for.
+
+=item job
+
+=item $state = $mon->job($job_id)
+
+The runner-originated state hashref for one job (or C<undef>): C<job_id>,
+C<state> (C<dispatched> / C<running> / C<done>), and the C<stage>, C<file>, and
+C<run_id> the runner carried on the mutation.
+
+=item snapshot
+
+=item $snapshot = $mon->snapshot
+
+A serializable (plain data) snapshot of the whole canonical state: every tracked
+collector and every tracked job. A subscriber gets this once on connect, then
+keeps it whole by feeding forwarded frames.
+
+=item apply_snapshot
+
+=item $mon->apply_snapshot($snapshot)
+
+Load a serialized L</snapshot> into this (mirror) monitor, replacing its state.
+Used by a subscriber so its local mirror starts from the runner's whole view.
+
 =back
 
 =cut
@@ -209,6 +260,22 @@ sub new_completed  ($self) { return $self->_drain(PENDING_COMPLETED) }
 sub new_test_exits ($self) { return $self->_drain(PENDING_EXITS) }
 sub new_finalized  ($self) { return $self->_drain(PENDING_FINALIZED) }
 
+sub job_ids ($self)          { return keys %{$self->{+JOBS}} }
+sub job     ($self, $job_id) { return $self->{+JOBS}{$job_id} }
+
+sub snapshot ($self) {
+    return {
+        collectors => $self->{+COLLECTORS},
+        jobs       => $self->{+JOBS},
+    };
+}
+
+sub apply_snapshot ($self, $snapshot) {
+    $self->{+COLLECTORS} = $snapshot->{collectors} // {};
+    $self->{+JOBS}       = $snapshot->{jobs}       // {};
+    return;
+}
+
 =head1 PRIVATE METHODS
 
 =over 4
@@ -227,6 +294,11 @@ keyed by the message's collector uuid.
 Apply one C<harness_state_transition> (C<starting> / C<failing> /
 C<diagnosing> / C<completed> / C<exited>) to a collector's state hash.
 
+=item $self->_process_runner_job($rj)
+
+Fold one runner-originated job mutation (a C<harness_runner_job> facet) into the
+jobs map, keyed by C<job_id>.
+
 =back
 
 =cut
@@ -238,7 +310,15 @@ sub _drain ($self, $slot) {
 }
 
 sub _process ($self, $payload) {
-    my $fd   = $payload->{facet_data}   or return;
+    my $fd = $payload->{facet_data} or return;
+
+    # A runner-originated job mutation (scheduler dispatch / fork / completion).
+    # It carries no collector identity; fold it into the parallel jobs map.
+    if (my $rj = $fd->{harness_runner_job}) {
+        $self->_process_runner_job($rj);
+        return;
+    }
+
     my $hc   = $fd->{harness_collector} or return;
     my $uuid = $hc->{uuid} // return;
 
@@ -268,6 +348,19 @@ sub _process ($self, $payload) {
         push @{$self->{+PENDING_FINALIZED}} => $uuid;
         return;
     }
+
+    return;
+}
+
+sub _process_runner_job ($self, $rj) {
+    my $job_id = $rj->{job_id} // return;
+
+    my $j = $self->{+JOBS}{$job_id} //= {job_id => $job_id};
+
+    $j->{state}  = $rj->{state}  if defined $rj->{state};
+    $j->{stage}  = $rj->{stage}  if exists $rj->{stage};
+    $j->{file}   = $rj->{file}   if exists $rj->{file};
+    $j->{run_id} = $rj->{run_id} if exists $rj->{run_id};
 
     return;
 }

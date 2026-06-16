@@ -15,6 +15,8 @@ use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 
+use Test2::Collector::Util::Zstd qw/compress_blob/;
+
 use Test2::Harness2::Runner::Constants;
 
 use Test2::Harness2::Runner::Run();
@@ -83,7 +85,7 @@ use Test2::Harness2::Util::HashBase(
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Service';
 
-sub job_class  { 'Test2::Harness2::Runner::Job' }
+sub job_class { 'Test2::Harness2::Runner::Job' }
 
 # The runner service is the canonical 'runner.socket' in the workdir (ARCH 4.2,
 # 5.3). 'workdir' and 'name' satisfy Test2::Harness2::Role::Service.
@@ -118,6 +120,7 @@ sub is_stage_service {
 sub reap_children { my $self = shift; return }
 
 our $RUNNER_PID;
+
 sub init {
     my $self = shift;
 
@@ -258,7 +261,7 @@ sub check_timeouts {
         my $kill = $signaled->{$pid}++;
 
         my $sigmap = $self->SIG_MAP;
-        my $sig = $kill ? $sigmap->{'KILL'} : $sigmap->{'TERM'};
+        my $sig    = $kill ? $sigmap->{'KILL'} : $sigmap->{'TERM'};
         $sig = "-$sig" if $self->USE_P_GROUPS;
 
         print STDERR "$$ $0 " . $job->file . " collector process-group did not fully exit after the collector was reaped, sending " . ($kill ? 'SIGKILL' : 'SIGTERM') . " to $pid...\n";
@@ -441,6 +444,9 @@ sub request_handler_stop_task {
     my $self = shift;
     my ($payload) = @_;
     $self->state->stop_task($payload->{job_id});
+    # Chunk 5f: a stage-reported job finishing is a runner-originated state
+    # mutation; forward it to subscribers so their mirror releases the job.
+    $self->announce_job($payload->{job_id}, 'done');
     return undef;
 }
 
@@ -448,6 +454,7 @@ sub request_handler_retry_task {
     my $self = shift;
     my ($payload) = @_;
     $self->state->retry_task($payload->{job_id});
+    $self->announce_job($payload->{job_id}, 'retry');
     return undef;
 }
 
@@ -504,6 +511,56 @@ sub service_transition {
     return unless $self->{+ROOTPID} == $$;
 
     $self->monitor->feed($payload);
+
+    # Chunk 5f: forward every state-mutating transition to subscribed clients so
+    # their snapshot-plus-transitions mirror stays whole (ARCH 4.2-4.3). The frame
+    # is forwarded verbatim (no recompress) -- it is already a self-contained zstd
+    # frame the subscriber's mirror folds the same way this monitor just did.
+    $self->forward_frame($frame) if $frame;
+
+    return;
+}
+
+# Chunk 5f: a client subscribes to the runner's canonical state. We register the
+# connection as a persistent subscriber (it stays open and receives forwarded
+# mutation frames asynchronously) and reply with a serialized snapshot of the
+# whole canonical state so the client's local mirror starts whole. Unlike the
+# one-way submission requests this returns a reply (the snapshot). Only the root
+# runner is the state hub; a forked stage service does not serve subscriptions.
+sub request_handler_subscribe {
+    my $self = shift;
+    my ($payload, $conn) = @_;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{+ROOTPID} == $$;
+
+    $self->add_subscriber($conn) if defined $conn;
+
+    return {ok => 1, snapshot => $self->monitor->snapshot};
+}
+
+# Chunk 5f: the runner ORIGINATES some state mutations itself -- it dispatches a
+# job to a stage, forks a job (running), and reaps a job (done). ARCH 4.2 is
+# explicit these must reach subscribers too, not only the folded collector
+# transitions, so the snapshot-plus-transitions contract stays whole. We express
+# one as a harness_runner_job facet on the collector wire form, fold it into our
+# own monitor (so a later snapshot includes it) and forward the same frame to
+# subscribers (so their mirror folds it identically).
+sub announce_job {
+    my $self = shift;
+    my ($job_id, $state, %extra) = @_;
+
+    return unless $self->{+ROOTPID} == $$;
+    return unless defined $job_id;
+
+    my $rj      = {job_id     => $job_id, state => $state, %extra};
+    my $payload = {facet_data => {harness_runner_job => $rj}};
+
+    $self->monitor->feed($payload);
+
+    my $frame = compress_blob(encode_json($payload));
+    $self->forward_frame($frame);
+
     return;
 }
 
@@ -575,7 +632,7 @@ sub scheduler_tick {
         return;
     }
 
-    my $err = $@;
+    my $err   = $@;
     my $count = ++$self->{+SCHEDULER_ERRORS};
     my $max   = $self->SCHEDULER_MAX_ERRORS;
     print STDERR "\n$$ $0 Scheduler error ($count/$max): $err\n";
@@ -658,6 +715,10 @@ sub dispatch_pending {
         my $stage  = $task->{stage};
         my $client = $self->stage_client($stage);
         $client->run_task($task, $run_item);
+
+        # Chunk 5f: dispatching a job to a stage is a runner-originated state
+        # mutation; forward it to subscribers so their mirror sees the job move.
+        $self->announce_job($task->{job_id}, 'dispatched', stage => $stage, file => $task->{file}, run_id => $task->{run_id});
     }
 
     return;
@@ -682,7 +743,7 @@ sub run_tests {
 
     $self->watch($_) for @procs;
 
-    while(1) {
+    while (1) {
         $self->{+CAN_STAGE} = 1;
         my $jump = setjump "Stage-Runner" => sub {
             $self->run_stage($stage);
@@ -853,6 +914,10 @@ sub run_job {
     $json_data->{stamp} = $spawn_time;
     $run->jobs->write($json_data);
 
+    # Chunk 5f: forking a test job is a runner-originated state mutation; forward
+    # it to subscribers so their mirror sees the job go running.
+    $self->announce_job($task->{job_id}, 'running', stage => $task->{stage}, file => $task->{file}, run_id => $task->{run_id});
+
     return $pid;
 }
 
@@ -910,20 +975,24 @@ sub set_proc_exit {
         my $task = $proc->task;
 
         my $timed_out = 0;
-        if ( !$exit && ref $self->{run_reached_timeout} && $self->{run_reached_timeout}->{ $task->{job_id} } ) {
-            delete $self->{run_reached_timeout}->{ $task->{job_id} };
+        if (!$exit && ref $self->{run_reached_timeout} && $self->{run_reached_timeout}->{$task->{job_id}}) {
+            delete $self->{run_reached_timeout}->{$task->{job_id}};
             $timed_out = 1;
         }
 
-        if (($exit || $timed_out) && $proc->is_try < ($proc->retry // 0) ) {
+        if (($exit || $timed_out) && $proc->is_try < ($proc->retry // 0)) {
             $self->state->retry_task($task->{job_id});
             push @args => 'will-retry';
+            # Chunk 5f: a root-forked job finishing is a runner-originated state
+            # mutation; forward it so a subscriber's mirror sees it re-queued.
+            $self->announce_job($task->{job_id}, 'retry', file => $task->{file}, run_id => $task->{run_id});
         }
         else {
             $self->state->stop_task($task->{job_id});
+            $self->announce_job($task->{job_id}, 'done', file => $task->{file}, run_id => $task->{run_id});
         }
 
-        if(my $bail = $exit ? $proc->bailed_out : 0) {
+        if (my $bail = $exit ? $proc->bailed_out : 0) {
             print "$$ $0 BAIL-OUT detected: $bail\n";
             if ($self->settings->runner->abort_on_bail) {
                 print "$$ $0 Aborting the test run...\n";
@@ -935,7 +1004,7 @@ sub set_proc_exit {
         my $stage = $proc->name;
 
         if ($exit != 0) {
-            my $e = parse_exit($exit);
+            my $e   = parse_exit($exit);
             my $err = "$$ $0 Child stage '$stage' did not exit cleanly (sig: $e->{sig}, err: $e->{err})!\n";
             $self->{+MONITOR_PRELOADS} ? warn $err : die $err;
         }
