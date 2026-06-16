@@ -369,6 +369,7 @@ sub render_via_subscription {
 
         if ($done) {
             $sub->poll if $sub;
+            $self->drain_runner_output($driver, $monitor, $sub);
             $driver->finalize($monitor);
             $self->{+FINAL_DATA}   = $driver->final_data;
             $self->{+TESTS_SEEN}   = $driver->tests_seen;
@@ -379,6 +380,54 @@ sub render_via_subscription {
         $ipc->wait() if $ipc;
         sleep 0.02;
     }
+}
+
+# How long to wait, at most, for the runner's collector to flush the runner's
+# trailing stdout into runner-events.jsonl.zst after the runner has signalled
+# completion. The runner closes its runner.socket the instant its service stops,
+# which can beat its collector PARENT flushing the runner's last print (e.g. a
+# resource-cleanup line) into runner-events -- a different channel than the
+# socket. Bounded so a runner whose collector never writes the terminal record
+# (e.g. it was killed) cannot hang the command; the drain is condition-driven
+# (read until the runner-events terminal), this is only the backstop.
+sub DRAIN_RUNNER_OUTPUT_TIMEOUT() { 5 }
+
+# On completion, pull the runner's trailing output into the log before finalizing.
+# The completion trigger is the runner closing its socket (or, with no
+# subscription, the runner process going away), but the runner's own stdout flows
+# through its collector wrapper's pipe into runner-events.jsonl.zst -- a separate
+# channel that may not be flushed when the socket closes. Keep tailing
+# runner-events until its terminal record (the runner collector's
+# harness_process_exit, which RunnerReader treats as done) is read, or a bounded
+# timeout elapses.
+#
+# This drain only blocks when the RUNNER is shutting down: the transient path's
+# completion is the runner closing its socket (Subscriber::closed), and a missing
+# subscription means the runner is already gone. A persistent runner that merely
+# finished THIS run (subscription still open, run_done) keeps running and never
+# writes a runner terminal, so for it we do a single tail pass and return --
+# never waiting the timeout per run (which would regress persist.t timing).
+sub drain_runner_output {
+    my $self = shift;
+    my ($driver, $monitor, $sub) = @_;
+
+    # A single tail pass always; enough on its own when the runner output is
+    # already complete in the file.
+    $driver->step_runner_output($monitor);
+
+    # Persistent runner still serving (socket open) -- it is not exiting, so there
+    # is no runner terminal record to wait for. Do not block.
+    return if $sub && !$sub->closed;
+
+    my $start = time;
+    until ($driver->runner_output_done) {
+        last if (time - $start) > DRAIN_RUNNER_OUTPUT_TIMEOUT;
+        $sub->poll if $sub;
+        $driver->step_runner_output($monitor);
+        sleep 0.02;
+    }
+
+    return;
 }
 
 # The subscription render loop's completion test. The transient `yath test`

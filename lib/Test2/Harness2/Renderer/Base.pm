@@ -176,6 +176,15 @@ file (located from the transition state), dispatching their (INTERNAL-shaped)
 output lines, plus the flat-log + aux-log shims. Gated on
 C<show_runner_output>.
 
+=item $bool = $renderer->runner_output_done
+
+True once the runner's own events file has been tailed (via C<step_runner_output>)
+through its terminal C<harness_process_exit> record. The transient render loop
+uses this to drain late runner output -- output the runner C<print>ed just before
+closing its socket, which its collector parent may not have flushed into
+C<runner-events.jsonl.zst> yet -- before finalizing. Returns false (not done)
+until the runner-events reader has been created and seen its terminal record.
+
 =item $count = $renderer->tests_seen
 
 =item $count = $renderer->asserts_seen
@@ -309,6 +318,29 @@ sub step_runner_output ($self, $monitor) {
     $self->_step_aux_logs;
 
     return;
+}
+
+# True once the runner's OWN events file (runner-events.jsonl.zst) has been read
+# through to its terminal record (the runner collector's synthetic
+# harness_process_exit, which RunnerReader recognizes as done). The runner closes
+# its runner.socket -- the completion signal the transient render loop watches --
+# the moment its service stops, which can be BEFORE its collector parent has
+# flushed the runner's trailing stdout (e.g. a resource-cleanup print) into
+# runner-events. Keying the drain on this predicate, rather than on the socket
+# EOF alone, lets the command pull that late runner output into the log before
+# finalizing.
+#
+# Returns true only once that runner-events reader exists AND has reached done; if
+# the reader has not been created yet (the runner never produced an events file)
+# it returns false so the caller falls back to its bounded timeout instead of
+# spinning forever on a missing terminal.
+sub runner_output_done ($self) {
+    my $dir = $self->{+WORKDIR} or return 1;
+
+    my $rfile  = runner_events_file($dir);
+    my $reader = $self->{+SERVICE_READERS}{$rfile} or return 0;
+
+    return $reader->done ? 1 : 0;
 }
 
 =head1 PRIVATE METHODS
