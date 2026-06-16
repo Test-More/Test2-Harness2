@@ -30,6 +30,7 @@ use Test2::Harness2::Util::HashBase qw{
     <backed_up
 
     +runner_reader +runner_stdout +runner_stderr +runner_aux_dir +runner_aux_handles
+    +stage_readers
 
     +task_file +task_queue +tasks_done +tasks
     +jobs_file +jobs_queue +jobs_done  +jobs
@@ -334,9 +335,60 @@ sub process_runner_events {
                 $out++;
             }
         }
+
+        # The transient runner's preload stages are each wrapped in their own
+        # non-test collector (chunk 4b), writing stage-<name>-events.jsonl.zst
+        # alongside runner-events. Surface that stage stdout/stderr the same way
+        # as runner output (before 4b, stage output shared the runner's captured
+        # pipe and arrived via runner-events). Persistent-runner stages are NOT
+        # collected (they stay on the flat-file shim), so this only runs here.
+        $out += $self->process_stage_events($action);
     }
 
     $out += $self->process_aux_logs($action);
+
+    return $out;
+}
+
+# Discover and tail the per-stage non-test collector events files
+# (stage-<name>-events.jsonl.zst in the workdir) the transient runner's preload
+# stages write. Each is read with the same RunnerReader used for the runner
+# stream (run-level, STDOUT/STDERR remapped to the INTERNAL shape), labelled per
+# stage so an abnormal stage exit is reported against that stage. Stages come up
+# at different times (nested stages, a stage gated behind another), so the
+# workdir is rescanned every pass and a reader is created the first time each
+# distinct stage file appears. Stage respawn (which reuses a file name) is a
+# persistent-runner concern, and persistent stages are not collected, so a
+# given stage file is read exactly once here.
+sub process_stage_events {
+    my $self = shift;
+    my ($action) = @_;
+
+    my $out = 0;
+
+    my $readers = $self->{+STAGE_READERS} //= {};
+
+    opendir(my $dh, $self->{+WORKDIR}) or return $out;
+    for my $file (readdir($dh)) {
+        next unless $file =~ m/^stage-(.+)-events\.jsonl\.zst$/;
+        next if $readers->{$file};
+
+        my $stage = $1;
+        $readers->{$file} = Test2::Harness2::Collector::RunnerReader->new(
+            run_id      => $self->{+RUN_ID},
+            events_file => File::Spec->catfile($self->{+WORKDIR}, $file),
+            label       => "yath stage '$stage'",
+        );
+    }
+    closedir($dh);
+
+    for my $reader (values %$readers) {
+        next if $reader->done;
+        for my $e ($reader->poll($self->settings->collector->max_poll_events // 1000)) {
+            $action->($e);
+            $out++;
+        }
+    }
 
     return $out;
 }

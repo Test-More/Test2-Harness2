@@ -129,4 +129,41 @@ subtest clean_exit_no_diagnostic => sub {
     ok(!$cdiag, "clean runner exit emits no abnormal-exit diagnostic");
 };
 
+# The abnormal-exit diagnostic is labelled. The default label names the runner;
+# a custom label (used by the gatherer when reading per-stage events files, chunk
+# 4b) names that source instead, so a stage that dies is reported as the stage.
+subtest labelled_abnormal_exit => sub {
+    my $ldir = tempdir(CLEANUP => 1);
+
+    my $write_boom = sub {
+        my ($path) = @_;
+        my $r = Test2::Collector::Recorder::Zstd->new(file => $path);
+        $r->record_event($ev->(harness_process_exit => {err => 5, sig => 0, dmp => 0, all => 1280, stamp => 7}));
+        $r->finalize;
+    };
+
+    my $diag_for = sub {
+        my ($reader) = @_;
+        my @e;
+        for (1 .. 5) { push @e => $reader->poll(1000); last if $reader->done }
+        my ($px) = grep { $_->facet_data->{harness_process_exit} } @e;
+        my ($d) = grep { ($_->{details} // '') =~ /exited abnormally/ } @{$px->facet_data->{info} // []};
+        return $d;
+    };
+
+    my $dfile = "$ldir/runner-events.jsonl.zst";
+    $write_boom->($dfile);
+    my $default = Test2::Harness2::Collector::RunnerReader->new(run_id => 'RUN-L1', events_file => $dfile);
+    like($diag_for->($default)->{details}, qr/^yath runner exited abnormally/, "default label names the runner");
+
+    my $sfile = "$ldir/stage-MARK-events.jsonl.zst";
+    $write_boom->($sfile);
+    my $stage = Test2::Harness2::Collector::RunnerReader->new(
+        run_id      => 'RUN-L2',
+        events_file => $sfile,
+        label       => "yath stage 'MARK'",
+    );
+    like($diag_for->($stage)->{details}, qr/^yath stage 'MARK' exited abnormally/, "custom label names the stage");
+};
+
 done_testing;

@@ -19,6 +19,7 @@ our @EXPORT_OK = qw{
     parse_exit
     collector_exit_code
     runner_events_file
+    stage_events_file
     mod2file
     file2mod
     fqmod
@@ -152,6 +153,17 @@ sub parse_exit {
 sub runner_events_file {
     my ($workdir) = @_;
     return File::Spec->catfile($workdir, 'runner-events.jsonl.zst');
+}
+
+# The stable path of the events file recorded by the non-test collector that
+# wraps a single preload stage process. The producer (the stage's collector,
+# launched from Test2::Harness2::Runner::Preloader::launch_stage) and the
+# consumer (Test2::Harness2::Collector, which discovers these by globbing the
+# workdir) must agree on it, so it lives here next to runner_events_file. One
+# file per stage name; stage names are simple identifiers, used verbatim.
+sub stage_events_file {
+    my ($workdir, $stage) = @_;
+    return File::Spec->catfile($workdir, "stage-${stage}-events.jsonl.zst");
 }
 
 # Map a Test2::Collector::collect() info hash to the exit code the collector

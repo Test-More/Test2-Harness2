@@ -70,7 +70,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 1 | Mechanical renames + version bump | ✅ | `2ea678e`, `aa6e5eb` |
 | 2 | Argument processing → `Getopt::Yath` | ✅ | `3270b30`..`213b5bd` + this task's deletion/POD/docs commits |
 | 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ✅ | `fa49f2b65` (merge) |
-| 4 | Collectors everywhere (runner + preload stages) | 🚧 | 4a ✅ `bf1081ab0` (merge) |
+| 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ (this task) |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ⬜ | — |
 | 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ⬜ | — |
 | 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
@@ -111,6 +111,27 @@ this task):
   option/command/plugin POD regenerated.
 - Suite green: `Files=63, Result: PASS`.
 
+**Chunk 4b — wrap each transient preload stage in a collector** (this task):
+- `Test2::Harness2::Runner::Preloader::launch_stage` now wraps each forked
+  preload stage of the **transient** `yath test` runner in its own non-test
+  `Test2::Collector` (`is_test => 0`), writing `stage-<name>-events.jsonl.zst`
+  in the workdir. The stage process escapes the collector's `run_sub` via
+  `Long::Jump` (no added stack frame — the same mechanism preloads/test jobs
+  use) and carries on as the stage; the collector parent `POSIX::_exit`s with
+  the stage's verdict (`collector_exit_code`), so reaping/respawn is unchanged.
+- The gatherer (`Test2::Harness2::Collector`) discovers and tails those per-stage
+  events files (reusing `RunnerReader` with a per-stage `label`), gated on
+  `show_runner_output` exactly like the runner stream — so stage output that
+  used to ride the runner's shared pipe stays visible.
+- The **persistent** runner (`yath start`) is intentionally left on the flat
+  `output.log`/`error.log` shim (chunk-4a parity): its stages are not collected,
+  so `yath watch` still sees their output. `persist` is threaded
+  Runner → Preloader to make that distinction.
+- New `Test2::Harness2::Util::stage_events_file`; `RunnerReader` gained an
+  optional `label`. Tests: `t/AI/integration/stage_collectors.t` (end-to-end
+  stage stdout/stderr visible) + a `RunnerReader` label unit subtest.
+- Suite green: `Files=78, Result: PASS`.
+
 **Chunk 4a — wrap the `yath test` runner in a collector** (`bf1081ab0` merge):
 - The non-test `yath test` runner now runs as the exec target of a
   `Test2::Collector` (`is_test => 0`); its stdout/stderr/exit become first-class
@@ -135,9 +156,11 @@ this task):
   `events.jsonl.zst`; the yath-side gatherer (`Test2::Harness2::Collector` via
   `JobReader`) reads those files and re-attaches run/job/event UUIDs. The
   **`yath test` runner** is also wrapped now (chunk 4a, merged `bf1081ab0`),
-  read via `RunnerReader`. Preload stages are **not** yet wrapped (chunk 4b).
-  This standing gatherer process is itself **removed in chunk 5** (5g) — the
-  runner service replaces it.
+  read via `RunnerReader`. The transient runner's **preload stages** are wrapped
+  too (chunk 4b): each writes `stage-<name>-events.jsonl.zst`, read back by the
+  gatherer via per-stage `RunnerReader`s. The **persistent** runner and its
+  stages stay on the flat-file shim for now. This standing gatherer process is
+  itself **removed in chunk 5** (5g) — the runner service replaces it.
 - **Runner IPC:** still the **1.0 file-polling model** — the runner forks a
   separate scheduler process, run/task submission goes through
   `run_queue.jsonl` / `queue.jsonl`, and the scheduler dispatches to preload
@@ -153,17 +176,20 @@ this task):
   `demo/`. Tests: Perl unit + HTTP smoke (`t/AI/integration/ui_server.t`) +
   Playwright (`js-tests/`, run from `t/playwright.t`). The QuickORM conversion is
   **chunk 8b (deferred)**.
-- **Logic:** otherwise still 1.0 for the not-yet-migrated chunks (4b-7).
+- **Logic:** otherwise still 1.0 for the not-yet-migrated chunks (5-7).
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
   `App::Yath::Script`.
 
 ## Next
 
-**Chunk 4b — wrap preload stages in collectors.** With the runner wrapped (4a),
-the remaining un-collected runner-forked processes are the preload stages. Give
-each stage its own non-test collector (per-stage events file). After 4b every
-process the runner forks runs under a collector. Reference: `reference/2.0b`,
-the unmerged `harness_service` worktree.
+**Chunk 5 — runner service + socket IPC.** Replace the 1.0 file-polling IPC
+(`run_queue.jsonl` / `queue.jsonl` / `dispatch.jsonl` / `dispatch.lock`) with a
+runner service bound to `runner.socket`: runner-as-collected-service (5a),
+in-runner scheduler (5b), socket run submission (5c), preload stages as services
+(5d), the transition channel (5e), client state sync (5f), and retiring the
+yath-side gatherer (5g, sequenced after the command-side renderer 6a). See the
+"Chunks 4-6 detailed plan" below. Reference: `reference/2.0b`,
+`reference/harness_service`.
 
 ## Chunks 4-6 detailed plan
 
@@ -217,10 +243,14 @@ Within a chunk the substep order is a guide, not a contract.
 
 - **4a ✅** (`bf1081ab0`) — `yath test` runner wrapped in a non-test collector;
   read back via `RunnerReader`.
-- **4b ⬜** — wrap **each preload stage** in its own non-test collector
-  (per-stage events file). No-preload path already forks the test job's
-  collector directly; keep that. After 4b: no runner-forked process is without a
-  collector.
+- **4b ✅** — each preload stage of the **transient** `yath test` runner is
+  wrapped in its own non-test collector (`stage-<name>-events.jsonl.zst`),
+  escaping the collector `run_sub` via `Long::Jump` so the stage keeps running
+  in-process with everything preloaded. The gatherer tails those files (per-stage
+  `RunnerReader`, gated on `show_runner_output`). The **persistent** runner's
+  stages stay on the flat-file shim (chunk-4a parity) until the runner service
+  lands. No-preload path still forks the test job's collector directly. After 4b
+  no transient-runner-forked process is without a collector.
 
 ### Chunk 5 — runner service + socket IPC
 

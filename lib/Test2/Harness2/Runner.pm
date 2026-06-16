@@ -125,6 +125,7 @@ sub preloader {
 
     $self->{+PRELOADER} //= Test2::Harness2::Runner::Preloader->new(
         dir             => $self->{+DIR},
+        persist         => $self->{+PERSIST},
         preloads        => $self->preloads,
         monitor         => $self->{+MONITOR_PRELOADS},
         restrict_reload => $self->{+RESTRICT_RELOAD},

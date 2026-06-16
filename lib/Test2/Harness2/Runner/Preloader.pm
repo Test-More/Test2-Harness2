@@ -7,8 +7,10 @@ our $VERSION = '2.000000';
 use B();
 use Carp qw/confess croak/;
 use Fcntl qw/LOCK_EX LOCK_UN/;
+use POSIX();
+use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/time sleep/;
-use Test2::Harness2::Util qw/open_file file2mod mod2file lock_file unlock_file clean_path/;
+use Test2::Harness2::Util qw/open_file file2mod mod2file lock_file unlock_file clean_path collector_exit_code stage_events_file/;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Runner::Reloader;
@@ -20,6 +22,7 @@ use List::Util qw/pairgrep/;
 use Test2::Harness2::Util::HashBase(
     qw{
         <dir
+        <persist
         <preloads
         <done
         <below_threshold
@@ -182,6 +185,12 @@ sub launch_stage {
 
     my $pid = fork // die "Could not fork: $!";
 
+    # Parent (the runner, or a parent stage forking its children): track the
+    # forked pid as the stage process. That process becomes the stage's
+    # collector PARENT below, so reaping its wait status still yields the
+    # stage's verdict (collector_exit_code), and the runner's process-group
+    # signalling reaches the whole stage (the collector parent is the group
+    # leader; the stage runs in its group).
     return Test2::Harness2::Runner::Preloader::Stage->new(
         pid => $pid,
         name => $name,
@@ -191,6 +200,49 @@ sub launch_stage {
     $0 .= "-$name";
     $ENV{T2_HARNESS_STAGE} = $name;
 
+    # Wrap this stage process in its own non-test collector so its
+    # stdout/stderr/exit become first-class timestamped events in a per-stage
+    # events file (chunk 4b: every runner-forked process runs under a
+    # collector). The collector PARENT (this process) drives the pipeline and
+    # POSIX::_exit()s with the stage's verdict; its run_sub child unwinds back
+    # to the setjump below -- the same Long::Jump escape preloads/test jobs use
+    # (App::Yath2::Command::runner launch_via_fork) to add no stack frame -- and
+    # carries on AS the stage (the caller then preloads and runs its dispatch
+    # loop in-process, with everything still loaded).
+    #
+    # Only the transient `yath test` runner is wrapped: that runner is itself a
+    # non-test collector (App::Yath2::Command::test start_runner), and its
+    # gatherer reads these per-stage events files. The PERSISTENT runner (yath
+    # start) is NOT collector-wrapped yet (a chunk-4a compatibility shim) -- its
+    # stages still write their stdout/stderr to the shared flat output.log /
+    # error.log that `yath watch` tails, so wrapping them here would hide that
+    # output. Leave persistent stages un-collected until the runner service
+    # lands.
+    unless ($self->{+PERSIST}) {
+        setjump 'Stage-Collector' => sub {
+            require Test2::Collector;
+            require Test2::Collector::Recorder::Zstd;
+
+            my $info = Test2::Collector::collect(
+                is_test  => 0,
+                name     => "stage-$name",
+                recorder => Test2::Collector::Recorder::Zstd->new(file => stage_events_file($self->{+DIR}, $name)),
+                run      => sub {
+                    my ($guard) = @_;
+                    $guard->dismiss;
+                    longjump 'Stage-Collector' => 1;
+                },
+            );
+
+            POSIX::_exit(collector_exit_code($info));
+        };
+
+        # Only the collector's child reaches here, its stack unwound out of the
+        # collector's run_sub. It IS the stage process.
+    }
+
+    # The stage process; return undef so the caller continues to start_stage()
+    # and the stage dispatch loop.
     return;
 }
 

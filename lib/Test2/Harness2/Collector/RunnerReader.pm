@@ -11,6 +11,7 @@ use Test2::Harness2::Event;
 
 use Test2::Harness2::Util::HashBase qw{
     <run_id <events_file
+    <label
     +reader +done +last_stamp
 };
 
@@ -30,6 +31,7 @@ use Test2::Harness2::Util::HashBase qw{
 
 sub init ($self) {
     croak "events_file is required" unless defined $self->{+EVENTS_FILE};
+    $self->{+LABEL} //= 'yath runner';
 }
 
 sub done ($self) { $self->{+DONE} }
@@ -98,7 +100,7 @@ sub poll ($self, $max = undef) {
             my $err = $px->{err} // 0;
             my $sig = $px->{sig} // 0;
             if ($err || $sig) {
-                my $msg = "yath runner exited abnormally (exit: " . ($px->{all} // $err) . ")";
+                my $msg = "$self->{+LABEL} exited abnormally (exit: " . ($px->{all} // $err) . ")";
                 $msg .= " (signal: $sig)" if $sig;
                 push @{$fd->{info}} => {tag => 'INTERNAL', debug => 1, important => 1, details => $msg};
             }
@@ -155,11 +157,18 @@ This is the runner-stream sibling of L<Test2::Harness2::Collector::JobReader>:
 same C<*.jsonl.zst> reader path, but run-level (no C<job_id>) and with no
 job-completion facet synthesis.
 
+The same reader is used for the per-stage non-test collectors (chunk 4b): the
+gatherer points one at each C<stage-E<lt>nameE<gt>-events.jsonl.zst> with a
+C<label> naming that stage, so an abnormal stage exit is reported against the
+stage rather than the runner. C<label> defaults to C<'yath runner'> and only
+affects the abnormal-exit diagnostic wording.
+
 =head1 SYNOPSIS
 
     my $reader = Test2::Harness2::Collector::RunnerReader->new(
         run_id      => $run_id,
         events_file => "$workdir/runner-events.jsonl.zst",
+        label       => 'yath runner',    # optional; names the abnormal-exit diagnostic
     );
 
     until ($reader->done) {
