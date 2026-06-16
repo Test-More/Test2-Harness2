@@ -406,16 +406,23 @@ archived runs after the fact. A rewrite of 1.0's renderers.
 - Renderers are consumers of the transition channel for liveness and of the
   events files for detail.
 
-**Migration note (interim, not this target).** A stepping-stone step — tracked
-in `MIGRATION.md`, not an end state — puts renderers in the `test` / `run`
-command processes, driven directly by the transition channel plus each job's
-`.jsonl.zst` fetched at completion, guaranteeing only **per-job** ordering
-(that job's transitions, then its events-file events, then its final
-completion). The base-renderer design above (a renderer that locates events
-files from transition state) is the actual target and supersedes that interim
-shape. That interim per-job ordering is **not** the final renderer contract;
-the final ordering guarantees are not pinned here — §4.5 stays authoritative for
-the final shape.
+**Status — base renderer landed.** The base renderer is
+`Test2::Harness2::Renderer::Base`: it holds a transition-state mirror
+(`Runner::Monitor`, fed by `Runner::Subscriber`), locates each collector's
+`.jsonl.zst` from that state, reads it by path (`JobReader` / `RunnerReader`),
+computes the run rollup (`harness_final`), and fans recorded events out to
+concrete `render_event` **sink** renderers (`Renderer::Formatter` →
+`Test2::Formatter::*` for the terminal; `App::Yath2::Renderer::{DB,Server}`) plus
+the logger. `test` / `run` render through it; `yath watch` is a global
+(no-run-id) subscriber that renders runner/stage output through the same base.
+
+**Interim ordering still in place (one follow-up).** The per-job 3-phase ordering
+(a job's transitions live, then its whole events file at completion, then its
+final status) lives in `Renderer::Base`'s thin subclass `Renderer::Driver`, not
+in the base — so a future streaming / cross-job-chronological renderer can sit on
+the same base. That interim per-job ordering is **not** the final renderer
+contract; the final ordering guarantees are not pinned here — §4.5 stays
+authoritative for the final shape.
 
 ### 4.6 Logs and database `[target]`
 

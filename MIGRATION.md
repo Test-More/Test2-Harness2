@@ -72,7 +72,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ✅ | `fa49f2b65` (merge) |
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ `46e75cd55` |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ (transient + persistent; §6.1 serialized+routed) | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g `3b0704488` · §6.1 `e881efa8f`,`f647c84c9`,`944757b05`,`59210f9e2`,`fb5e07174`,`5959fe720`,`6a0fdecc9`,`3a4586b31`,`a9ade9a7b` |
-| 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | 🚧 | 6a `9c3ce01ae` (interim; §4.5 base-renderer rewrite still ⬜) |
+| 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ✅ | 6a `9c3ce01ae` (interim) · §4.5 base renderer `4410c8105` · watch/flat-logs retired `f9142217c` |
 | 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
 | 8a | Database + UI inline (DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
 | 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ (deferred) | — |
@@ -81,6 +81,40 @@ Chunks 4-6 are broken into substeps in the **"Chunks 4-6 detailed plan"**
 section below (the runner-service + socket-IPC design from `migration_revision`).
 
 ## Done so far
+
+**Chunk 6 complete — base-renderer rewrite + finish the socket-IPC end state**
+(`69ae0be63`, `b33162faf`, `4410c8105`, `f9142217c`, `1b5373e1a`, `ddaed0a0c`,
+`3d9152cd1`; on branch `chunk5-runner-service`, **not yet merged**):
+- **§4.5 base renderer** (`4410c8105`): new `Test2::Harness2::Renderer::Base`
+  holds a transition-state mirror (`Runner::Monitor`), locates each collector's
+  `.jsonl.zst` from that state, reads it by path (`JobReader`/`RunnerReader`),
+  rolls up `harness_final`, and fans recorded events to `render_event` **sink**
+  renderers (`Renderer::Formatter` → terminal; `App::Yath2::Renderer::{DB,Server}`)
+  + the logger. The 6a `Renderer::Driver` is now a thin subclass holding ONLY the
+  interim per-job 3-phase ordering (kept out of the base, so a future
+  streaming/cross-job renderer reuses Base).
+- **`watch` + flat-logs retired** (`f9142217c`): the runner collector-wrap moved
+  into `Test2::Harness2::Runner->start_collected` (ARCH §4.2 — both transient and
+  persistent runners wrapped uniformly); persistent preload stages are
+  collector-wrapped too. `yath watch` is now a **global (no-run-id)
+  `runner.socket` subscriber** rendering runner/stage output through `Renderer::Base`;
+  the SIGHUP-reload message surfaces as a recorded runner event. `output.log` /
+  `error.log` are gone — **the only IPC files anywhere are now `events.jsonl.zst`**
+  (the `aux_logs` plugin shell-call path is the lone remaining flat file, by
+  design). (pfile now records the runner's own pid, since the collector ignores HUP.)
+- **`dispatch.jsonl`/observe machinery fully retired** (`1b5373e1a`): `resources`
+  now queries the runner over the socket (`request_handler_resources`, like
+  `status`/`ps`); the dead `dispatch_file`/`poll`-drain/`observe`/`.test_info`
+  State plumbing is deleted.
+- **Cleanups** (`69ae0be63`, `b33162faf`): dead `no_poll` State path removed;
+  `Runner.pm` split (handlers + scheduler → `Runner::Role::*`), 1276 → 844 code
+  lines (under the 1000-line guide).
+- **Flake fixes:** `smoke.t` start-stamp tie (`ddaed0a0c`) and a real
+  trailing-runner-output drop — the socket-close completion racing the runner
+  collector's flush of late stdout into `runner-events` — fixed by draining
+  runner-events to its terminal before finalize (`3d9152cd1`, `resource.t`).
+- Suite reliably green: `Files=91, Tests=1662, Result: PASS` (confirmed across
+  many clean full runs; resource.t 27/27 + smoke.t 10/10 isolated).
 
 **Chunk 5 (5a-5g) + 6a — runner service, socket IPC, command-side renderer**
 (`ceec15894`, `24cb1e798`, `654a742b7`, `c888157ad`, `625079b01`, `c6291a197`,
@@ -241,17 +275,22 @@ this task):
   (`Runner::Monitor`); each client is routed only its run's transitions (stage/
   runner lifecycle broadcasts globally). Both `test` and `run` **render from the
   subscription** via `Renderer::Driver`, fetching each job's `events.jsonl.zst` by
-  path at completion. Stalled-job abort is the runner's (`Runner::Watchdog`); run
-  completion is a `harness_run_end` transition (and, for `test`, the runner closing
-  the socket). All wire traffic reuses
+  path at completion via the **base renderer** `Renderer::Base` (chunk 6 §4.5;
+  `Driver` is the thin interim-ordering subclass). The persistent runner + its
+  stages are collector-wrapped (the runner wrap lives in `Runner->start_collected`,
+  ARCH §4.2), and `yath watch` is a **global `runner.socket` subscriber** rendering
+  runner/stage output through `Renderer::Base` (the SIGHUP-reload message is a
+  recorded runner event). Stalled-job abort is the runner's (`Runner::Watchdog`);
+  run completion is a `harness_run_end` transition (and, for `test`, the runner
+  closing the socket — the command drains `runner-events` to its terminal before
+  finalizing so late runner output isn't lost). All wire traffic reuses
   `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` / `Recorder::Socket`.
-  **The only IPC files are now `events.jsonl.zst`** — `run_queue.jsonl`,
-  `dispatch.jsonl`, `dispatch.lock`, `queue.jsonl`, and `jobs.jsonl` are all gone.
-  **Execution stays serialized** on the persistent runner (one active run at a
-  time) — §6.1 routed runs per-client but did not add concurrent execution. **One
-  flat-file remnant:** `yath watch` still tails the persistent runner's
-  `output.log` / `error.log` shim (runner + stages not yet collector-wrapped;
-  flagged follow-up). The system-load service is still chunk 7.
+  **The only IPC files anywhere are now `events.jsonl.zst`** — `run_queue.jsonl`,
+  `dispatch.jsonl`, `dispatch.lock`, `queue.jsonl`, `jobs.jsonl`, and the
+  `output.log`/`error.log` flat shim are all gone (the `aux_logs` plugin shell-call
+  path is the lone remaining flat file, by design). **Execution stays serialized**
+  on the persistent runner (one active run at a time) — §6.1 routed runs per-client
+  but did not add concurrent execution. The system-load service is still chunk 7.
 - **Web UI:** inlined (chunk 8a, merged `2d09d348a`) under `App::Yath2::Server*`
   / `App::Yath2::Schema*` (+ `Command::{server,db/*,client/*}`,
   `Options::{DB,WebServer,Server,WebClient,Publish,Yath}`, `Plugin::DB`,
@@ -260,41 +299,35 @@ this task):
   `demo/`. Tests: Perl unit + HTTP smoke (`t/AI/integration/ui_server.t`) +
   Playwright (`js-tests/`, run from `t/playwright.t`). The QuickORM conversion is
   **chunk 8b (deferred)**.
-- **Logic:** otherwise still 1.0 for the not-yet-migrated chunks (the §4.5
-  base-renderer rewrite and chunk 7 system-load service).
+- **Logic:** otherwise still 1.0 only for chunk 7 (system-load service) and the
+  deferred multi-run-concurrency / run-scoped-stage follow-ups.
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
   `App::Yath::Script`.
 
 ## Next
 
-Both `yath test` and the persistent `yath start`/`run`/`spawn`/`stop` paths are
-migrated to the socket model with a command-side renderer (chunk 5a-5g + 6a +
-§6.1, serialized + per-run routing); the gatherer and all coordination files are
-gone. Open follow-ups, roughly in order:
+**Chunks 1-6 are complete.** Both `yath test` and the persistent
+`yath start`/`run`/`spawn`/`stop`/`watch` paths run on the socket model with the
+§4.5 base renderer; the gatherer, all coordination files, and the flat-log shim
+are gone — the only IPC files anywhere are `events.jsonl.zst` (plus the `aux_logs`
+plugin path). Remaining work (chunk 7 and post-6 follow-ups):
 
-- **`watch` + flat-log retirement (the last file IPC).** Collector-wrap the
-  persistent runner + its stages and migrate `yath watch` to a global
-  `runner.socket` subscription, then retire `output.log` / `error.log` /
-  `aux_logs`. Landmine: the SIGHUP-reload message `watch` reads from `output.log`
-  (`persist.t` asserts it) must move onto the subscription in the same step.
 - **Chunk 7 — system-load service.** Its own (global) process with a reliable
   tick, emit-only, connecting to `runner.socket`; the in-runner scheduler consumes
   load to gate concurrency. Port `reference/harness_service` `SystemLoad.pm` + its
   sampler service shape (drop the run-vs-global split).
-- **§4.5 base-renderer rewrite.** 6a is the interim command-side renderer; the
-  target is a base renderer/role that locates `.jsonl.zst` files from transition
-  state. Supersedes the 6a per-job ordering.
+- **Final renderer ordering (post-§4.5 interim).** `Renderer::Driver` still pins
+  the interim per-job 3-phase ordering on top of `Renderer::Base`; the final
+  cross-job ordering guarantees are not yet defined (§4.5 stays authoritative).
 - **Concurrent run execution + run-scoped preload stages.** §6.1 routes per run
   but execution stays serialized (single active run); making the persistent runner
   run multiple runs at once, and building run-scoped preload stages as a user
   feature (the `runs/<run_id>/preload-<stage>.socket` naming is reserved), are the
   next multi-run steps.
-- **Cleanups flagged during chunk 5/§6.1:** remove the dead `State`
-  dispatch-file/poll plumbing (the file is never created now); split `Runner.pm`
-  (1426 lines, over the 1000-line guide); move the runner's collector wrap into
-  `Runner->start` (ARCH §4.2; today still in `App::Yath2::Command::test`); and
-  revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if active
-  mid-run stalled detection is wanted.
+- **Minor:** revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if
+  active mid-run stalled detection is wanted; `resources.pm`'s auto-generated
+  `OPTIONS` POD lists its old narrower option set (it now inherits the full
+  run/test set) — refreshed by the author POD-regen tool.
 
 See the "Chunks 4-6 detailed plan" below. Reference: `reference/2.0b`,
 `reference/harness_service`.
@@ -486,10 +519,10 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
   `Test2::Harness2::Renderer::Driver` consumes the snapshot + forwarded
   transitions, fetching each job's `events.jsonl.zst` **by the absolute path the
   transition carries** at completion and computing `harness_final` / summary /
-  exit command-side. `run` (persistent) stays on the gatherer
-  (`use_subscription_renderer => 0`, gated §6.1). Implemented exactly the per-job
-  three-phase ordering below; the §4.5 base-renderer rewrite still supersedes this
-  interim shape later.
+  exit command-side. (At 6a, `run` was still gated on the gatherer; §6.1 then
+  moved it onto this same subscription renderer.) Implemented exactly the per-job
+  three-phase ordering below; the §4.5 base renderer (now landed, see next entry)
+  supersedes this interim shape.
   They are driven by transitions received from the runner; when a job completes,
   the command fetches that job's `events.jsonl.zst` and feeds its events through
   the renderers / loggers. Render transitions in realtime, events at job
@@ -500,9 +533,14 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
   all its events through the renderers / loggers; (3) render the job's final
   completion / status **last**, after its output is fully shown. Cross-job
   chronological ordering is **not** attempted here.
-- **Not the end state.** This interim shape is reworked by the §4.5
-  base-renderer rewrite (a base renderer/role that locates `.jsonl.zst` files
-  from transition state) in a later MIGRATION initiative. The interim per-job
-  ordering is **not** the final renderer contract; the final ordering guarantees
-  are not pinned here. Where this plan and `ARCHITECTURE.md` §4.5 disagree on
-  renderers, §4.5 describes the final target.
+  (Persistent `run` adopted this same subscription renderer in §6.1; the gatherer
+  is gone.)
+- **§4.5 base renderer ✅** (`4410c8105`). The reusable `Test2::Harness2::Renderer::Base`
+  now owns the transition-state mirror, events-file location, rollup, and the
+  `render_event` fan-out to sink renderers + logger; `Renderer::Driver` is a thin
+  subclass holding ONLY the interim per-job 3-phase ordering above. `yath watch`
+  reuses Base as a global `runner.socket` subscriber (`f9142217c`), which let the
+  persistent runner + stages be collector-wrapped and the flat `output.log` /
+  `error.log` shim retired. The interim per-job ordering is **not** the final
+  renderer contract; the final cross-job ordering guarantees are still not pinned
+  — `ARCHITECTURE.md` §4.5 stays authoritative for the final target.
