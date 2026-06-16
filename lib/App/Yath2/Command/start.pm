@@ -111,8 +111,6 @@ file over and over again.
 sub run {
     my $self = shift;
 
-    $ENV{TEST2_HARNESS_NO_WRITE_TEST_INFO} //= 1;
-
     my $settings = $self->settings;
     my $dir      = $settings->workspace->workdir;
 

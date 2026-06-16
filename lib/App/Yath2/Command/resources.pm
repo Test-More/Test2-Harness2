@@ -8,20 +8,10 @@ use Term::Table();
 use File::Spec();
 use Time::HiRes qw/sleep/;
 
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Pfile();
 
-use Getopt::Yath;
-use Test2::Harness2::Runner::State;
-use Test2::Harness2::Util::File::JSON();
-use Test2::Harness2::Util::Queue();
-
-use parent 'App::Yath2::Command';
-use Test2::Harness2::Util::HashBase qw/+state/;
-
-include_options(
-    'App::Yath2::Options::Debug',
-    'App::Yath2::Options::Runner',
-);
+use parent 'App::Yath2::Command::status';
+use Test2::Harness2::Util::HashBase;
 
 sub group { 'state' }
 
@@ -36,58 +26,32 @@ A look at the state and resources used by a runner.
 
 sub pfile_params { (no_fatal => 1) }
 
-sub newest {
-    my ($a, $b) = @_;
-    return $a unless $b;
-    return $b unless $a;
-
-    my @as = stat($a);
-    my @bs = stat($b);
-    return $a if $as[9] > $bs[9];
-    return $b;
-}
-
-sub state {
+# A2: ask the live runner for its resource status over runner.socket (the runner
+# is the resource authority -- it owns the live resource objects in its canonical
+# State) instead of constructing an observe-mode State that drained the
+# never-written dispatch.jsonl. The runner renders each resource's status_lines
+# for us (the resource objects do not serialize) and returns the rendered text.
+sub runner_resources {
     my $self = shift;
 
-    return $self->{+STATE} if $self->{+STATE};
+    my $pfile = App::Yath2::Pfile->find($self->settings, $self->pfile_params) or return undef;
+    my $data  = $pfile->data                                                  or return undef;
+    my $pid   = $data->{pid}                                                  or return undef;
+    return undef unless kill(0, $pid);
 
-    my $info_file;
-    opendir(my $dh, "./") or die "Could not open current dir: $!";
-    for my $file (readdir($dh)) {
-        next unless $file =~ m{^\.test_info\.\S+\.json$};
-        $info_file = newest($info_file, "./$file");
-    }
+    $self->{+RUNNER_PID} = $pid;
 
-    my $pfile = find_pfile($self->settings, no_fatal => 1);
-
-    if (my $use = newest($info_file, $pfile)) {
-        if ($info_file) {
-            my $data = Test2::Harness2::Util::File::JSON->new(name => $info_file)->read;
-            return $self->{+STATE} = Test2::Harness2::Runner::State->new(%$data, observe => 1);
-        }
-
-        if (my $pfile = find_pfile($self->settings, no_fatal => 1)) {
-            my $data     = Test2::Harness2::Util::File::JSON->new(name => $pfile)->read();
-            my $workdir  = $data->{dir};
-            my $settings = Test2::Harness2::Util::File::JSON->new(name => "$workdir/settings.json")->read();
-
-            return $self->{+STATE} = Test2::Harness2::Runner::State->new(
-                observe   => 1,
-                job_count => $settings->{runner}->{job_count} // 1,
-                workdir   => $data->{dir},
-            );
-        }
-    }
-
-    return;
+    return $self->client->resources;
 }
 
-sub shared {
+# Fallback for when there is no running runner: a shared-job-slots config may
+# still describe resource state we can render directly (no runner needed). Built
+# locally and rendered the same way -- as a { class, lines } record.
+sub shared_resources {
     my $self = shift;
 
     my $shared;
-    eval {
+    my $ok = eval {
         require Test2::Harness2::Runner::Resource::SharedJobSlots;
         $shared = Test2::Harness2::Runner::Resource::SharedJobSlots->new(
             settings => $self->settings,
@@ -95,52 +59,37 @@ sub shared {
         1;
     };
 
-    return $shared;
+    return undef unless $ok && $shared;
+
+    my $lines = $shared->status_lines;
+    return undef unless defined $lines && length $lines;
+
+    return [{class => ref($shared), lines => $lines}];
 }
 
 sub run {
     my $self = shift;
 
-    my $res;
-
-    if (my $state = $self->state) {
-        my @list;
-        $res = sub {
-            unless (@list) {
-                $state->poll;
-                @list = (@{$state->resources}, undef);
-            }
-
-            return shift @list;
-        };
-    }
-    elsif (my $shared = $self->shared) {
-        my $alt = 0;
-        $res = sub {
-            if ($alt) {
-                $alt = 0;
-                return undef;
-            }
-
-            $alt = 1;
-            return $shared;
-        };
-    }
+    # Probe up front so we can report "nothing to show" the same way the old
+    # observe-State path did, rather than spinning forever on an empty screen.
+    my $resources = $self->runner_resources // $self->shared_resources;
 
     die "No persistent runner, no running test, and no shared resources found\n"
-        unless $res;
+        unless $resources;
 
     while (1) {
+        $resources = $self->runner_resources // $self->shared_resources // [];
+
         my @out = (
             "\r\e[2J\r\e[1;1H",
             "\n==== Resource state ====\n",
         );
-        while (my $resource = $res->()) {
-            my @lines = $resource->status_lines;
-            next unless @lines;
+        for my $resource (@$resources) {
+            my $lines = $resource->{lines};
+            next unless defined $lines && length $lines;
             push @out => (
-                "\nResource: " . ref($resource) . "\n",
-                join "\n" => @lines,
+                "\nResource: " . $resource->{class} . "\n",
+                $lines,
             );
         }
         push @out => "\n\n";

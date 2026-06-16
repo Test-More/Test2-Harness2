@@ -20,7 +20,6 @@ use Test2::Harness2::Util::HashBase qw{
     <runner_id
     <runner_pid
     <job_limiter_max
-    <observe
 };
 
 sub job_limiter { 1 }
@@ -136,8 +135,6 @@ sub assign {
     my $self = shift;
     my ($task, $state) = @_;
 
-    return if $self->{+OBSERVE};
-
     my $info = $self->{+STATE}->assign_slots(
         job => {
             job_id => $task->{job_id},
@@ -155,8 +152,6 @@ sub record { } # NOOP
 sub release {
     my $self = shift;
     my ($job_id) = @_;
-
-    return if $self->{+OBSERVE};
 
     $self->{+STATE}->release_slots(job_id => $job_id);
 

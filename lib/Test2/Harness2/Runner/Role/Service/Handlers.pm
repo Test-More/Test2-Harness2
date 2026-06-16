@@ -81,15 +81,14 @@ The socket request handlers; see the inline documentation for each.
 =cut
 
 # Run submission moved onto runner.socket (chunk 5c): a transient `yath test`
-# command no longer constructs its own State and writes the run/tasks into
-# dispatch.jsonl itself. It connects to runner.socket and sends one-way
-# request frames; the runner receives them here and enqueues them through the
-# canonical State's public queue_* methods, which append to dispatch.jsonl and
-# poll. dispatch.jsonl is thus still the shared action log, but its WRITER for the
-# run-submission leg has moved from the command to the runner -- which is also the
-# only way forked stage children (separate processes that poll dispatch.jsonl for
-# next_task) learn about the run and its tasks. The persistent run/spawn/abort
-# path still writes dispatch.jsonl directly (gated, not migrated here).
+# command no longer constructs its own State; it connects to runner.socket and
+# sends one-way request frames. The runner receives them here and enqueues them
+# through the canonical State's public queue_* methods, which apply each action
+# in-process. The runner is the sole owner of its scheduling state -- it dispatches
+# tasks to its stage services over sockets and folds their outcomes back in
+# (A2 retired dispatch.jsonl entirely; there is no shared action log or file
+# reader). The persistent run/spawn/abort path submits the same way over the
+# socket.
 #
 # These are one-way requests: the role's _service_conn sends no reply when a
 # handler returns undef. Ordering is preserved because the command sends them
@@ -245,6 +244,29 @@ sub request_handler_truncate {
     $self->state->truncate;
 
     return {ok => 1, running => $running};
+}
+
+# A2: the `resources` command asks the runner for its live resource status over
+# runner.socket instead of constructing an observe-mode State that polled
+# dispatch.jsonl. The runner owns the live resource objects (in its canonical
+# State); it renders each resource's status_lines here -- the resource objects do
+# not serialize, but their already-formatted status text does -- and returns the
+# rendered text per resource so the command can print it verbatim. Two-way:
+# returns the rendered resource list. Only the root runner is the state authority.
+sub request_handler_resources {
+    my $self = shift;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{'rootpid'} == $$;
+
+    my @out;
+    for my $resource (@{$self->state->resources // []}) {
+        my $lines = $resource->status_lines;
+        next unless defined $lines && length $lines;
+        push @out => {class => ref($resource), lines => $lines};
+    }
+
+    return {ok => 1, resources => \@out};
 }
 
 # Chunk 6.1-2: a forked preload stage forks a dispatched test job from its

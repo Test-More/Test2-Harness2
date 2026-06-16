@@ -267,15 +267,14 @@ sub state {
         preloader    => $preloader,
         resources    => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
         settings     => $settings,
-
-        # The runner is the sole writer/reader of its scheduling state now that
-        # stages receive work over sockets instead of polling dispatch.jsonl
-        # (chunk 5d transient, chunk 6.1-2 persistent) and the run/spawn/abort/
-        # status commands submit + query over runner.socket: run it in 'direct'
-        # mode so its actions apply in-process with no dispatch.jsonl round-trip.
-        # dispatch.jsonl has no remaining writer or reader on either path.
-        direct => 1,
     );
+
+    # The runner is the sole writer/reader of its scheduling state: stages receive
+    # work over sockets (chunk 5d transient, chunk 6.1-2 persistent) and the
+    # run/spawn/abort/status/resources commands submit + query over runner.socket.
+    # The State applies every action in-process; dispatch.jsonl (A2) is gone -- it
+    # has no remaining writer or reader on either path.
+    return $self->{+STATE};
 }
 
 # The lightweight in-stage delegate a transient forked preload stage uses in

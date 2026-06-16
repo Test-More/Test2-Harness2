@@ -116,6 +116,15 @@ and return the still-running jobs (with pids) for the caller to signal. Returns
 the running-job arrayref, or C<undef> if the runner could not be reached. Used by
 C<yath abort>.
 
+=item resources
+
+=item $list = $client->resources
+
+Query the runner's live resource status over C<runner.socket> via the submission
+client. Returns an arrayref of C<< { class, lines } >> records (each resource's
+class plus its already-rendered status text), or C<undef> if the runner could not
+be reached. Used by C<yath resources>.
+
 =item subscriber
 
 =item $sub = $client->subscriber
@@ -148,6 +157,8 @@ sub reload_state ($self) { return $self->submitter->reload_state }
 sub status ($self) { return $self->submitter->status }
 
 sub truncate ($self) { return $self->submitter->truncate }
+
+sub resources ($self) { return $self->submitter->resources }
 
 sub subscriber ($self) { return $self->{+SUBSCRIBER} }
 

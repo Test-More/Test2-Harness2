@@ -16,7 +16,6 @@ use Getopt::Yath::Settings;
 use Test2::Harness2::Runner::Constants;
 
 use Test2::Harness2::Runner::Run;
-use Test2::Harness2::Util::Queue;
 
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
@@ -26,14 +25,12 @@ use Test2::Harness2::Util::HashBase(
         <eager_stages
         <workdir
         <preloader
-        <direct
         <resources
         job_count
         +settings
     },
 
     qw{
-        <dispatch_file
         <queue_ended
 
         <pending_tasks <task_lookup
@@ -55,8 +52,6 @@ use Test2::Harness2::Util::HashBase(
 
         <reload_state
 
-        <observe
-
         <last_job_activity
         <total_started
     },
@@ -75,7 +70,7 @@ sub init {
         my $resources = $self->{+RESOURCES} //= [];
         for my $res (@{$self->settings->runner->resources}) {
             require(mod2file($res));
-            push @$resources => $res->new(settings => $self->settings, observe => $self->{+OBSERVE});
+            push @$resources => $res->new(settings => $self->settings);
         }
     }
 
@@ -86,24 +81,7 @@ sub init {
 
     @{$self->{+RESOURCES}} = sort { $a->sort_weight <=> $b->sort_weight } @{$self->{+RESOURCES}};
 
-    # In 'direct' mode (the transient runner, chunk 5d) the runner is the sole
-    # owner of its scheduling state: it dispatches work to its stage services over
-    # sockets and folds their outcome reports back in-process, so there is no
-    # dispatch.jsonl and no shared reader. Actions apply immediately in-process
-    # (see _enqueue) and poll() is a no-op; do not even open the file.
-    #
-    # Otherwise (the persistent mode, gated, not migrated) dispatch.jsonl is still
-    # the runner's action log and the shared medium that forked stage children poll
-    # for next_task. The runner's in-process scheduler round-trips its own actions
-    # through it and drains+advances it each service-loop iteration; the Queue's own
-    # File::JSONL write lock serializes the appends, and the separate scheduler
-    # PROCESS and dispatch.lock flock are gone.
-    $self->{+DISPATCH_FILE} = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($self->{+WORKDIR}, 'dispatch.jsonl'))
-        unless $self->{+DIRECT};
-
     $self->{+RELOAD_STATE} //= {};
-
-    $self->poll;
 }
 
 sub settings {
@@ -237,42 +215,23 @@ my %ACTIONS = (
     reload      => '_reload',
 );
 
-sub poll {
-    my $self = shift;
-
-    # Direct mode applies actions in-process at enqueue time; there is no file to
-    # drain (chunk 5d).
-    return if $self->{+DIRECT};
-
-    my $queue = $self->dispatch_file;
-
-    for my $item ($queue->poll) {
-        my $data   = $item->[-1];
-        my $item   = $data->{item};
-        my $action = $data->{action};
-        my $pid    = $data->{pid};
-
-        my $sub = $ACTIONS{$action} or die "Invalid action '$action'";
-
-        $self->$sub($item, $pid);
-    }
-}
+# A2: the runner owns its scheduling state outright and applies every action
+# in-process at enqueue time (see _enqueue), so there is nothing to drain. The old
+# dispatch.jsonl file-drain (the only remaining reader of the never-written
+# dispatch.jsonl) is gone. poll() survives only as the no-op the scheduling API
+# (run/done/next_task/advance) still calls at its old polling points.
+sub poll { return }
 
 sub _enqueue {
     my $self = shift;
     my ($action, $item) = @_;
 
-    # Direct mode (chunk 5d): the runner owns its state outright, so apply the
-    # action in-process immediately instead of round-tripping it through
-    # dispatch.jsonl. Same dispatch table, same handlers; just no file.
-    if ($self->{+DIRECT}) {
-        my $sub = $ACTIONS{$action} or die "Invalid action '$action'";
-        $self->$sub($item, $$);
-        return;
-    }
+    # The runner owns its state outright, so apply the action in-process
+    # immediately (chunk 5d). There is no dispatch.jsonl round-trip anymore.
+    my $sub = $ACTIONS{$action} or die "Invalid action '$action'";
+    $self->$sub($item, $$);
 
-    $self->{+DISPATCH_FILE}->enqueue({action => $action, item => $item, stamp => time, pid => $$});
-    $self->poll;
+    return;
 }
 
 sub truncate {

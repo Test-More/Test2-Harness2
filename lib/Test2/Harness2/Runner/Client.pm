@@ -163,6 +163,14 @@ still-running jobs (with pids) for the caller to signal. Two-way: returns the
 running-job arrayref, or C<undef> if the runner could not be reached. Used by
 C<yath abort>.
 
+=item $resources = $client->resources
+
+Query the runner's live resource status over the socket. Two-way: returns an
+arrayref of C<< { class =E<gt> $resource_class, lines =E<gt> $rendered_text } >>
+records (the runner renders each live resource's C<status_lines> for us, since the
+resource objects themselves do not serialize), or C<undef> if the runner could not
+be reached. Used by C<yath resources>.
+
 =back
 
 =cut
@@ -249,6 +257,11 @@ sub status ($self) {
 sub truncate ($self) {
     my $reply = $self->_request({request => 'truncate'}) or return undef;
     return $reply->{running} // [];
+}
+
+sub resources ($self) {
+    my $reply = $self->_request({request => 'resources'}) or return undef;
+    return $reply->{resources} // [];
 }
 
 =head1 PRIVATE METHODS
