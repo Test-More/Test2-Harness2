@@ -239,6 +239,8 @@ sub run_under_collector {
 
     my $in_file = $self->in_file;
 
+    # (reporter assembled below; require here keeps the deps together)
+
     # Timeout mapping to Test2::Collector:
     #   event_timeout     -> silence_timeout (kill the child after this long with
     #                        no output -- "no activity" timeout).
@@ -254,6 +256,16 @@ sub run_under_collector {
     # rather than falling back to its own 30s orphan default.
     my $orphan_timeout = ($self->use_timeout && $self->post_exit_timeout) ? $self->post_exit_timeout : 0;
 
+    # Chunk 5e: a test job is a non-runner collector, so its reporter streams its
+    # transitions (start/harness_collector, harness_state_transition,
+    # harness_final_state, harness_collector_finalized) to runner.socket, where
+    # the runner folds them into its canonical state. record_transitions stays 1
+    # so the SAME transitions are ALSO written to the events file -- the still-
+    # living gatherer reads that file, and the socket reporter is an addition, not
+    # a replacement, of the file recorder. The Recorder::Socket spec survives the
+    # fork/exec to the test child via TO_JSON (it carries its socket paths).
+    my $reporter = $self->_transition_reporter;
+
     my %common = (
         name               => $self->rel_file,
         is_test            => 1,
@@ -261,6 +273,7 @@ sub run_under_collector {
         try                => $self->is_try,
         record_transitions => 1,
         recorder           => Test2::Collector::Recorder::Zstd->new(file => $self->events_file),
+        ($reporter ? (reporter => $reporter) : ()),
         child_env          => $self->env_vars,
         chdir              => ($self->ch_dir || undef),
         io_events          => ($self->io_events ? 1 : 0),
@@ -270,6 +283,38 @@ sub run_under_collector {
     );
 
     return Test2::Collector::collect(%common, @target);
+}
+
+# Chunk 5e: build the socket reporter that streams this test collector's
+# transitions to runner.socket, or undef when the workdir/socket cannot be
+# located (so the file recorder still produces a complete stream and the job is
+# never blocked on the transition channel). The workdir comes from
+# T2_HARNESS_WORKDIR (set by the runner, inherited by this collector parent),
+# falling back to the runner's dir. Recorder::Socket connects at construction; if
+# the runner.socket is not accepting yet we skip the reporter rather than die.
+sub _transition_reporter {
+    my $self = shift;
+
+    # Scope the transition channel to the transient (chunk-5) path. The
+    # persistent runner (yath start/run) is gated (ARCH 6.1) and not migrated;
+    # leave its collectors on the file recorder only so the gated path is not put
+    # at risk by the runner.socket dependency.
+    return undef if $self->runner->persist;
+
+    my $workdir = $ENV{T2_HARNESS_WORKDIR} // $self->runner->dir;
+    return undef unless defined $workdir && length $workdir;
+
+    my $socket = File::Spec->catfile($workdir, 'runner.socket');
+    return undef unless -S $socket;
+
+    require Test2::Collector::Recorder::Socket;
+
+    my $reporter;
+    return $reporter
+        if eval { $reporter = Test2::Collector::Recorder::Socket->new(paths => [$socket]); 1 };
+
+    warn "$$ $0 could not connect transition reporter to '$socket': $@";
+    return undef;
 }
 
 sub switches_from_env {

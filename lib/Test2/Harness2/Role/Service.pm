@@ -48,13 +48,25 @@ back as the response. A handler may return C<undef> to send B<no> response, for
 one-way requests (e.g. streamed reports) whose sender does not read replies. The
 built-in C<request_handler_stop> ends the loop.
 
+The same socket also carries B<transition frames>: the Test2 event/facet
+structures a collector's reporter streams (carrying C<harness_collector>,
+C<harness_state_transition>, C<harness_final_state>, or
+C<harness_collector_finalized>). A frame whose decoded payload carries a
+C<facet_data> with any of those facets is recognized as a transition, handed to
+the consumer's optional C<service_transition($payload, $frame, $conn)> hook, and
+produces no reply. Everything else is treated as a request. One connection per
+peer (a collector's connection streams many transition frames) means the two
+kinds never interleave on a single stream.
+
 =head2 Required / optional consumer methods
 
 C<workdir> and C<name> are required. Optional: C<run_ord> (a per-run numeric
 subdir), C<service_on_start> (called once after the socket binds),
 C<service_tick> (called each loop iteration), C<service_on_stop> (called once
-after the loop exits, before the socket is closed), and
-C<service_on_reap($pid, $status)>.
+after the loop exits, before the socket is closed),
+C<service_on_reap($pid, $status)>, and
+C<service_transition($payload, $frame, $conn)> (called for each transition frame
+received on the socket).
 
 A consumer that already manages its own child processes (for example via
 L<Test2::Harness2::IPC>) should override C<reap_children> to a no-op so the two
@@ -225,6 +237,12 @@ the public description above.
 
 The teardown primitive; see the public description above.
 
+=item $bool = $self->_is_transition_frame($payload)
+
+True when a decoded payload is a collector transition frame (a C<facet_data>
+hashref carrying C<harness_collector>, C<harness_state_transition>,
+C<harness_final_state>, or C<harness_collector_finalized>) rather than a request.
+
 =back
 
 =cut
@@ -265,10 +283,27 @@ sub _service_conn ($self, $fh) {
     for my $rec ($fb->drain) {
         my $payload;
         my $ok = eval { $payload = decode_json($rec->{payload}); 1 };
-        my $resp =
-              $ok
-            ? $self->handle_request($payload, $fh)
-            : {ok => 0, error => "undecodable request"};
+
+        unless ($ok) {
+            my $sent = eval { write_frame($fh, compress_blob(encode_json({ok => 0, error => "undecodable request"}))); 1 };
+            warn "service: failed to write response: $@\n" unless $sent;
+            next;
+        }
+
+        # Two kinds of frame share this socket (one connection per peer, ARCH
+        # 5.2): request frames (C<< {request =E<gt> $type, ...} >> -- run/task
+        # submission and stage outcome reports) and transition frames (Test2
+        # event/facet structures a collector's reporter streams, carrying
+        # C<harness_collector> / C<harness_state_transition> / etc). Transitions
+        # are one-way and fold into the consumer's state, never producing a
+        # reply; requests dispatch to C<request_handler_E<lt>typeE<gt>>.
+        if ($self->_is_transition_frame($payload)) {
+            $self->service_transition($payload, $rec->{frame}, $fh)
+                if $self->can('service_transition');
+            next;
+        }
+
+        my $resp = $self->handle_request($payload, $fh);
 
         # A handler may return undef to send no response (one-way requests, e.g.
         # streamed reports), so the sender's socket does not accumulate unread
@@ -280,6 +315,18 @@ sub _service_conn ($self, $fh) {
     }
 
     return;
+}
+
+sub _is_transition_frame ($self, $payload) {
+    return 0 unless ref($payload) eq 'HASH';
+    my $fd = $payload->{facet_data};
+    return 0 unless ref($fd) eq 'HASH';
+    return 1
+        if $fd->{harness_collector}
+        || $fd->{harness_state_transition}
+        || $fd->{harness_final_state}
+        || $fd->{harness_collector_finalized};
+    return 0;
 }
 
 sub reset_service ($self) {

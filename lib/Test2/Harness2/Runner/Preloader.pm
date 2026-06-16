@@ -229,16 +229,28 @@ sub launch_stage {
         # (terminal marker, reader reaches done) is correct.
         my $resumable = $self->{+MONITOR} ? 1 : 0;
 
+        # Chunk 5e: the stage is a non-runner collector, so stream its
+        # transitions to runner.socket for the runner to fold, IN ADDITION to the
+        # per-stage events file (record_transitions => 1) the still-living
+        # gatherer reads. A resumable stage emits no terminal markers across a
+        # monitor/reload restart (its stream continues in the next incarnation),
+        # so the runner simply sees no finalize until the stage truly ends -- the
+        # same semantics the file recorder has. The reporter is skipped (file
+        # recorder only) when runner.socket is not locatable/accepting.
+        my $reporter = $self->_stage_transition_reporter;
+
         setjump 'Stage-Collector' => sub {
             require Test2::Collector;
             require Test2::Collector::Recorder::Zstd;
 
             my $info = Test2::Collector::collect(
-                is_test   => 0,
-                name      => "stage-$name",
-                resumable => $resumable,
-                recorder  => Test2::Collector::Recorder::Zstd->new(file => stage_events_file($self->{+DIR}, $name)),
-                run       => sub {
+                is_test            => 0,
+                name               => "stage-$name",
+                resumable          => $resumable,
+                record_transitions => 1,
+                recorder           => Test2::Collector::Recorder::Zstd->new(file => stage_events_file($self->{+DIR}, $name)),
+                ($reporter ? (reporter => $reporter) : ()),
+                run => sub {
                     my ($guard) = @_;
                     $guard->dismiss;
                     longjump 'Stage-Collector' => 1;
@@ -255,6 +267,31 @@ sub launch_stage {
     # The stage process; return undef so the caller continues to start_stage()
     # and the stage dispatch loop.
     return;
+}
+
+# Chunk 5e: build the socket reporter that streams a stage collector's
+# transitions to runner.socket, or undef when the socket cannot be located (so
+# the per-stage events file still produces a complete stream). The workdir is the
+# preloader's own dir (the root runner's workdir, where it bound runner.socket
+# before forking this stage); T2_HARNESS_WORKDIR is used when set. Connects at
+# construction; skipped if runner.socket is not accepting.
+sub _stage_transition_reporter {
+    my $self = shift;
+
+    my $workdir = $ENV{T2_HARNESS_WORKDIR} // $self->{+DIR};
+    return undef unless defined $workdir && length $workdir;
+
+    my $socket = File::Spec->catfile($workdir, 'runner.socket');
+    return undef unless -S $socket;
+
+    require Test2::Collector::Recorder::Socket;
+
+    my $reporter;
+    return $reporter
+        if eval { $reporter = Test2::Collector::Recorder::Socket->new(paths => [$socket]); 1 };
+
+    warn "$$ $0 could not connect stage transition reporter to '$socket': $@";
+    return undef;
 }
 
 sub start_stage {

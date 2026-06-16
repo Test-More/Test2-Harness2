@@ -27,6 +27,7 @@ use Test2::Harness2::Runner::Preloader::Stage();
 use Test2::Harness2::Runner::DepTracer();
 use Test2::Harness2::Runner::Stage();
 use Test2::Harness2::Runner::Stage::Client();
+use Test2::Harness2::Runner::Monitor();
 
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
@@ -74,6 +75,8 @@ use Test2::Harness2::Util::HashBase(
 
         +stage_clients
         +stage_delegate
+
+        +monitor
     },
 );
 
@@ -473,6 +476,35 @@ sub request_handler_stage_down {
     my ($payload) = @_;
     $self->state->stage_down($payload->{stage});
     return undef;
+}
+
+# Chunk 5e: the runner is the hub of the transition channel. Every non-runner
+# collector (each test job, each transient preload stage, any aux collector)
+# connects its reporter to runner.socket and streams its transitions here; the
+# runner folds them into this canonical in-process state object (uuid, name,
+# category, events_file, try, run_uuid, status, failing/diagnosing, final_state,
+# plus drain-on-call change-lists). The runner's OWN collector (the one
+# App::Yath2::Command::test::start_runner wraps it in) does NOT report here -- it
+# records to its own events file only; the runner is the hub, not its own peer.
+# This state is infrastructure: it is not yet the render source (that swap is
+# deferred to 6a/5g, where the gatherer's independent tree-walk retires).
+sub monitor {
+    my $self = shift;
+    return $self->{+MONITOR} //= Test2::Harness2::Runner::Monitor->new;
+}
+
+# Chunk 5e: Role::Service hands every transition frame here (one-way, no reply).
+# Only the root runner process is the transition hub; a forked stage service does
+# not fold transitions (it dispatches/reaps jobs and reports outcomes back to the
+# root over runner.socket). Fold the already-decoded payload into the monitor.
+sub service_transition {
+    my $self = shift;
+    my ($payload, $frame, $conn) = @_;
+
+    return unless $self->{+ROOTPID} == $$;
+
+    $self->monitor->feed($payload);
+    return;
 }
 
 sub service_tick {
@@ -1026,6 +1058,13 @@ Get the L<Test2::Harness2::Runner::Preloader> instance.
 =item $state = $runner->state
 
 Get the L<Test2::Harness2::Runner::State> instance.
+
+=item $monitor = $runner->monitor
+
+Get the L<Test2::Harness2::Runner::Monitor> instance: the runner-side fold of
+the collector transition channel. Non-runner collectors stream their transitions
+to C<runner.socket> and the runner folds them into this canonical in-process
+state.
 
 =item @list = $runner->all_libs
 
