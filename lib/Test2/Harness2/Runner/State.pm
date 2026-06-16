@@ -26,7 +26,6 @@ use Test2::Harness2::Util::HashBase(
         <eager_stages
         <workdir
         <preloader
-        <no_poll
         <direct
         <resources
         job_count
@@ -93,14 +92,12 @@ sub init {
     # dispatch.jsonl and no shared reader. Actions apply immediately in-process
     # (see _enqueue) and poll() is a no-op; do not even open the file.
     #
-    # Otherwise (the persistent / no_poll modes, gated, not migrated) dispatch.jsonl
-    # is still the runner's action log and the shared medium that forked stage
-    # children poll for next_task. The runner's in-process scheduler round-trips its
-    # own actions through it and drains+advances it each service-loop iteration; the
-    # Queue's own File::JSONL write lock serializes the appends, and the separate
-    # scheduler PROCESS and dispatch.lock flock are gone. The persistent
-    # run/spawn/abort commands submit through this file directly by constructing
-    # their own no_poll State.
+    # Otherwise (the persistent mode, gated, not migrated) dispatch.jsonl is still
+    # the runner's action log and the shared medium that forked stage children poll
+    # for next_task. The runner's in-process scheduler round-trips its own actions
+    # through it and drains+advances it each service-loop iteration; the Queue's own
+    # File::JSONL write lock serializes the appends, and the separate scheduler
+    # PROCESS and dispatch.lock flock are gone.
     $self->{+DISPATCH_FILE} = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($self->{+WORKDIR}, 'dispatch.jsonl'))
         unless $self->{+DIRECT};
 
@@ -242,8 +239,6 @@ my %ACTIONS = (
 
 sub poll {
     my $self = shift;
-
-    return if $self->{+NO_POLL};
 
     # Direct mode applies actions in-process at enqueue time; there is no file to
     # drain (chunk 5d).
@@ -635,8 +630,6 @@ sub task_stage {
 
     my $wants = $task->{stage};
     $wants //= 'NOPRELOAD' unless $task->{use_preload};
-
-    return $wants if $self->{+NO_POLL};
 
     return $wants // 'DEFAULT' unless $self->preloader;
     return $self->preloader->task_stage($task->{file}, $wants);

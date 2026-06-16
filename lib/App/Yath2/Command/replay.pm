@@ -7,6 +7,8 @@ our $VERSION = '2.000000';
 use Getopt::Yath;
 require App::Yath2::Command::test;
 
+use Test2::Harness2::Util::File::JSONL;
+
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/+renderers <final_data <log_file <tests_seen <asserts_seen/;
 

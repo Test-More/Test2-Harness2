@@ -12,7 +12,6 @@ use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
-use Test2::Harness2::Runner::State;
 use Test2::Harness2::Renderer::Driver;
 
 use App::Yath2::RunPlan;
@@ -43,7 +42,6 @@ use Test2::Harness2::Util::HashBase qw/
     +tests_seen
     +asserts_seen
 
-    +state
     +client
 
     +pending_tasks
@@ -512,16 +510,6 @@ sub run_plan {
 sub build_run {
     my $self = shift;
     return $self->run_plan->run;
-}
-
-sub state {
-    my $self = shift;
-
-    $self->{+STATE} //= Test2::Harness2::Runner::State->new(
-        workdir   => $self->workdir,
-        job_count => $self->job_count,
-        no_poll   => 1,
-    );
 }
 
 sub job_count {

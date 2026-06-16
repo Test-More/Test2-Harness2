@@ -420,8 +420,8 @@ sub _drain_transitions {
 }
 
 # Run submission moved onto runner.socket (chunk 5c): a transient `yath test`
-# command no longer constructs its own no_poll State and writes the run/tasks
-# into dispatch.jsonl itself. It connects to runner.socket and sends one-way
+# command no longer constructs its own State and writes the run/tasks into
+# dispatch.jsonl itself. It connects to runner.socket and sends one-way
 # request frames; the runner receives them here and enqueues them through the
 # canonical State's public queue_* methods, which append to dispatch.jsonl and
 # poll. dispatch.jsonl is thus still the shared action log, but its WRITER for the
