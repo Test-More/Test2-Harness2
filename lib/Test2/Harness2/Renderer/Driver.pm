@@ -34,6 +34,7 @@ use Test2::Harness2::Util::HashBase qw{
     +aborted_rendered
     +run_started
     +aux_handles
+    +runner_log_streams
 
     <tests_seen
     <asserts_seen
@@ -119,8 +120,9 @@ sub init ($self) {
     $self->{+BY_UUID}          = {};
     $self->{+JOBS}             = {};
     $self->{+ABORTED_RENDERED} = {};
-    $self->{+SERVICE_READERS} = {};
-    $self->{+AUX_HANDLES}     = {};
+    $self->{+SERVICE_READERS}    = {};
+    $self->{+AUX_HANDLES}        = {};
+    $self->{+RUNNER_LOG_STREAMS} = {};
     $self->{+TESTS_SEEN}   //= 0;
     $self->{+ASSERTS_SEEN} //= 0;
     $self->{+RUN_STARTED} = 0;
@@ -309,6 +311,12 @@ then dispatch the synthesized final C<harness_job_end>.
 Tail the runner's own events file and each non-test service collector's events
 file, dispatching their (INTERNAL-shaped) output lines. Gated on
 C<show_runner_output>.
+
+=item $self->_step_runner_logs
+
+Tail the persistent runner's flat C<output.log> / C<error.log> (the persistent
+runner and its preload stages are not collector-wrapped yet) and dispatch each
+line as INTERNAL-shaped info. A no-op on the transient path (no such files).
 
 =item $self->_step_aux_logs
 
@@ -539,7 +547,38 @@ sub _step_runner_output ($self, $monitor) {
         $self->_dispatch($_) for $reader->poll(1000);
     }
 
+    $self->_step_runner_logs;
     $self->_step_aux_logs;
+
+    return;
+}
+
+# Chunk 6.1-2 compatibility shim: tail the persistent runner's flat
+# output.log/error.log. The persistent runner and its preload stages are not yet
+# collector-wrapped (deferred to 6.1-3 so `yath watch` keeps tailing these flat
+# files), so a stage's stdout/stderr -- e.g. a broken preload's error -- lands
+# only in these files, not in any collector events file. Surface each line as
+# INTERNAL-shaped info, exactly as the gatherer's process_runner_logs did
+# (stdout important; stderr important + debug). The files exist only on the
+# persistent path, so the transient path is a no-op.
+sub _step_runner_logs ($self) {
+    return unless $self->{+SHOW_RUNNER_OUTPUT};
+    my $dir = $self->{+WORKDIR} or return;
+
+    my $streams = $self->{+RUNNER_LOG_STREAMS};
+
+    for my $spec (['output.log', 0], ['error.log', 1]) {
+        my ($name, $debug) = @$spec;
+        my $path = File::Spec->catfile($dir, $name);
+        next unless -f $path;
+
+        my $stream = $streams->{$name} //= Test2::Harness2::Util::File::Stream->new(name => $path);
+        for my $line ($stream->poll()) {
+            chomp($line);
+            my $e = $self->_event(0, undef, time, info => [{details => $line, tag => 'INTERNAL', debug => $debug, important => 1}]);
+            $self->_dispatch($e);
+        }
+    }
 
     return;
 }
