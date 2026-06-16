@@ -210,33 +210,33 @@ sub launch_stage {
     # carries on AS the stage (the caller then preloads and runs its dispatch
     # loop in-process, with everything still loaded).
     #
-    # Only the transient `yath test` runner is wrapped: that runner is itself a
-    # non-test collector (App::Yath2::Command::test start_runner), and its
-    # gatherer reads these per-stage events files. The PERSISTENT runner (yath
-    # start) is NOT collector-wrapped yet (a chunk-4a compatibility shim) -- its
-    # stages still write their stdout/stderr to the shared flat output.log /
-    # error.log that `yath watch` tails, so wrapping them here would hide that
-    # output. Leave persistent stages un-collected until the runner service
-    # lands.
-    unless ($self->{+PERSIST}) {
+    # Chunk 6 (phase D): BOTH the transient (`yath test`) and persistent (`yath
+    # start`) runners are now collector-wrapped (the persistent runner via
+    # Test2::Harness2::Runner->start_collected), so their stages are wrapped here
+    # uniformly -- no more `unless PERSIST` gate. A persistent stage's
+    # stdout/stderr (e.g. a broken preload's error) now lands in its per-stage
+    # events file and streams over runner.socket, which `yath watch` (a global
+    # runner.socket subscriber) renders, replacing the retired flat output.log /
+    # error.log.
+    {
         # Under monitor/reload the runner relaunches a stage when its files
         # change, reusing the same stage-<name>-events.jsonl.zst path. Mark the
         # collector resumable so it closes WITHOUT a terminal marker: the next
         # incarnation appends to the same file (one self-contained frame per
-        # event, recorders open for append) and the gatherer's tail reader keeps
-        # reading across the restart instead of stopping at the first stage's
+        # event, recorders open for append) and the tail reader keeps reading
+        # across the restart instead of stopping at the first stage's
         # process-exit. Without monitor a stage runs once, so a normal finalize
         # (terminal marker, reader reaches done) is correct.
         my $resumable = $self->{+MONITOR} ? 1 : 0;
 
         # Chunk 5e: the stage is a non-runner collector, so stream its
         # transitions to runner.socket for the runner to fold, IN ADDITION to the
-        # per-stage events file (record_transitions => 1) the still-living
-        # gatherer reads. A resumable stage emits no terminal markers across a
-        # monitor/reload restart (its stream continues in the next incarnation),
-        # so the runner simply sees no finalize until the stage truly ends -- the
-        # same semantics the file recorder has. The reporter is skipped (file
-        # recorder only) when runner.socket is not locatable/accepting.
+        # per-stage events file (record_transitions => 1). A resumable stage emits
+        # no terminal markers across a monitor/reload restart (its stream
+        # continues in the next incarnation), so the runner simply sees no
+        # finalize until the stage truly ends -- the same semantics the file
+        # recorder has. The reporter is skipped (file recorder only) when
+        # runner.socket is not locatable/accepting.
         my $reporter = $self->_stage_transition_reporter;
 
         setjump 'Stage-Collector' => sub {

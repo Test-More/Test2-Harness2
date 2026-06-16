@@ -12,9 +12,9 @@ use Getopt::Yath;
 use Test2::Harness2::Run;
 use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
+use Test2::Harness2::Runner;
 
-use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
-use Test2::Harness2::Util qw/mod2file open_file parse_exit clean_path/;
+use Test2::Harness2::Util qw/open_file parse_exit clean_path runner_events_file/;
 use Test2::Util::Table qw/table/;
 
 use Test2::Harness2::Util::IPC qw/run_cmd USE_P_GROUPS/;
@@ -128,80 +128,127 @@ sub run {
     $self->setup_plugins();
     $self->setup_resources();
 
-    my $stderr = File::Spec->catfile($dir, 'error.log');
-    my $stdout = File::Spec->catfile($dir, 'output.log');
-
     my @prof;
     if ($settings->runner->nytprof) {
         push @prof => '-d:NYTProf';
     }
 
-    my $pid = run_cmd(
-        stderr => $stderr,
-        stdout => $stdout,
-
-        no_set_pgrp => !$settings->runner->daemon,
-
-        command => [
-            $^X, @prof, $settings->harness->script,
-            (map { "-D$_" } @{$settings->harness->dev_libs}),
-            '--no-scan-plugins',    # Do not preload any plugin modules
-            runner           => $dir,
-            monitor_preloads => 1,
-            persist          => $pfile,
-            jobs_todo        => 0,
-        ],
+    # Chunk 6 (phase D): the persistent runner is now launched under its own
+    # non-test collector (the same Test2::Harness2::Runner->start_collected wrap
+    # the transient path uses), so its stdout/stderr/exit are recorded as
+    # first-class events in runner-events.jsonl.zst -- read back over runner.socket
+    # by `yath watch` -- instead of flat output.log/error.log files. Its preload
+    # stages are collector-wrapped too (Preloader). No flat logs remain.
+    my @runner_cmd = (
+        $^X, @prof, $settings->harness->script,
+        (map { "-D$_" } @{$settings->harness->dev_libs}),
+        '--no-scan-plugins',    # Do not preload any plugin modules
+        runner           => $dir,
+        monitor_preloads => 1,
+        persist          => $pfile,
+        jobs_todo        => 0,
     );
+
+    # start_collected detaches the daemon collector parent's stdout/stderr to
+    # /dev/null itself (so a daemon does not hold this command's caller pipe open).
+    my $pid = run_cmd(
+        no_set_pgrp => !$settings->runner->daemon,
+        command     => Test2::Harness2::Runner->start_collected(\@runner_cmd, runner_events_file($dir)),
+    );
+
+    my $runner_pid = $self->write_pfile($pfile, $dir, $pid);
 
     unless ($settings->runner->quiet) {
         print "\nPersistent runner started!\n";
 
-        print "Runner PID: $pid\n";
+        print "Runner PID: $runner_pid\n";
         print "Runner dir: $dir\n";
         print "\nUse `yath watch` to monitor the persistent runner\n\n" if $settings->runner->daemon;
     }
-
-    Test2::Harness2::Util::File::JSON->new(name => $pfile)->write({
-        pid      => $pid,
-        dir      => $dir,
-        version  => $VERSION,
-        user     => $ENV{USER},
-        hostname => hostname(),
-    });
 
     return 0 if $settings->runner->daemon;
 
     $SIG{TERM} = sub { kill(TERM => $pid) };
     $SIG{INT}  = sub { kill(INT  => $pid) };
 
-    my $err_fh = open_file($stderr, '<');
-    my $out_fh = open_file($stdout, '<');
-
+    # Foreground (--no-daemon): wait for the runner to exit. Its output is no
+    # longer tailed from flat logs here -- it lives in runner-events.jsonl.zst and
+    # is surfaced over runner.socket by `yath watch`.
     local $?;
     while (1) {
-        my $out   = waitpid($pid, WNOHANG);
-        my $wstat = $?;
+        my $out = waitpid($pid, WNOHANG);
 
-        my $count = 0;
-        seek($out_fh, 0, 1) if eof($out_fh);
-        while (my $line = <$out_fh>) {
-            $count++;
-            print STDOUT $line;
-        }
-        seek($err_fh, 0, 1) if eof($err_fh);
-        while (my $line = <$err_fh>) {
-            $count++;
-            print STDERR $line;
+        if ($out == 0) {
+            sleep(0.05);
+            next;
         }
 
-        sleep(0.02) unless $out || $count;
-
-        next       if $out == 0;
         return 255 if $out < 0;
 
         my $exit = parse_exit($?);
         return $exit->{err} || $exit->{sig} || 0;
     }
+}
+
+# Write the persistence file and return the pid recorded in it. The pid run_cmd
+# returned is the collector PARENT, but the Test2-Collector parent forwards only
+# TERM/INT/QUIT to its child and deliberately IGNORES HUP -- so a SIGHUP for `yath
+# reload` sent to the collector parent would be swallowed and never reach the
+# runner. So the pfile records the RUNNER's own pid (which it writes to $dir/PID as
+# it boots, surviving exec across a reload-respawn) so reload's HUP and the
+# liveness checks (which/status/stop) target the runner directly. The collector
+# parent pid is the fallback.
+#
+# The pfile is written FIRST with the collector parent pid (before discovering the
+# runner pid): the runner checks for it at boot and shuts down as "orphaned" if it
+# is missing, so it must exist by the time the runner reaches its loop.
+sub write_pfile {
+    my $self = shift;
+    my ($pfile, $dir, $parent_pid) = @_;
+
+    my $pfile_obj = Test2::Harness2::Util::File::JSON->new(name => $pfile);
+
+    my %pdata = (
+        pid      => $parent_pid,
+        dir      => $dir,
+        version  => $VERSION,
+        user     => $ENV{USER},
+        hostname => hostname(),
+    );
+    $pfile_obj->write({%pdata});
+
+    my $runner_pid = $self->wait_for_runner_pid($dir) // $parent_pid;
+    if ($runner_pid != $parent_pid) {
+        $pdata{pid} = $runner_pid;
+        $pfile_obj->write({%pdata});
+    }
+
+    return $runner_pid;
+}
+
+# Poll for the runner's own pid, which the runner writes to $dir/PID as it boots
+# (Test2::Harness2::Runner::process). The collector parent ignores SIGHUP, so the
+# persistence file must record this pid for `yath reload` to reach the runner.
+# Returns the pid, or undef if it does not appear within the timeout (the caller
+# then falls back to the collector parent pid).
+sub wait_for_runner_pid {
+    my $self = shift;
+    my ($dir) = @_;
+
+    my $pidfile = File::Spec->catfile($dir, 'PID');
+
+    for (1 .. 600) {
+        if (-f $pidfile) {
+            my $fh  = open_file($pidfile, '<');
+            my $pid = <$fh>;
+            close($fh);
+            chomp($pid) if defined $pid;
+            return $pid if defined($pid) && length($pid) && $pid =~ /^\d+$/;
+        }
+        sleep(0.05);
+    }
+
+    return undef;
 }
 
 1;

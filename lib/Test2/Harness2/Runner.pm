@@ -11,7 +11,7 @@ use POSIX qw/:sys_wait_h/;
 use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/sleep time/;
 
-use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file/;
+use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file collector_exit_code runner_events_file/;
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 
@@ -97,6 +97,47 @@ with 'Test2::Harness2::Runner::Role::Service::Handlers';
 with 'Test2::Harness2::Runner::Role::Scheduler';
 
 sub job_class { 'Test2::Harness2::Runner::Job' }
+
+# Chunk 6 (phase D): launch the runner process under its own non-test collector
+# (ARCH 4.2: "Test2::Harness2::Runner->start (or equivalent) launches the runner
+# process under a non-test collector"). This is the single shared collector-wrap
+# the transient (`yath test`) AND persistent (`yath start`) paths both use, so
+# the runner's stdout/stderr/exit become first-class timestamped events in
+# runner-events.jsonl.zst -- the same wire format and reader path as job/stage
+# events -- instead of flat output.log/error.log files.
+#
+# Returns a coderef suitable as the `command` for a fork-exec spawn (IPC->spawn
+# or run_cmd): it runs in the already-forked child, which becomes the collector
+# PARENT and never returns -- it forks+execs the real runner (capturing its
+# streams), records the full stream, and POSIX::_exit()s with the runner child's
+# verdict (collector_exit_code) so IPC's runner-death detection is unchanged.
+sub start_collected {
+    my $class = shift;
+    my ($cmd, $events_file) = @_;
+
+    return sub {
+        require Test2::Collector;
+        require Test2::Collector::Recorder::Zstd;
+
+        # The collector captures the runner child's OWN stdout/stderr through its
+        # own pipes into the events file, so the collector PARENT's inherited
+        # stdout/stderr are unused. Detach them to /dev/null up front: this child
+        # is invoked by run_cmd BEFORE run_cmd's own stdout/stderr swap, so a
+        # daemon collector parent would otherwise hold the caller's pipe (e.g.
+        # `yath start`'s captured stdout) open for the runner's whole lifetime,
+        # hanging a caller that reads to EOF.
+        open(\*STDOUT, '>', File::Spec->devnull) or die "Could not detach STDOUT: $!";
+        open(\*STDERR, '>', File::Spec->devnull) or die "Could not detach STDERR: $!";
+
+        my $info = Test2::Collector::collect(
+            is_test  => 0,
+            name     => 'runner',
+            exec     => [@$cmd],
+            recorder => Test2::Collector::Recorder::Zstd->new(file => $events_file),
+        );
+        POSIX::_exit(collector_exit_code($info));
+    };
+}
 
 # The runner service is the canonical 'runner.socket' in the workdir (ARCH 4.2,
 # 5.3). 'workdir' and 'name' satisfy Test2::Harness2::Role::Service.

@@ -10,6 +10,7 @@ use Test2::Harness2::Run;
 use Test2::Harness2::Event;
 use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
+use Test2::Harness2::Runner;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Renderer::Driver;
@@ -18,7 +19,7 @@ use App::Yath2::RunPlan;
 use App::Yath2::Client;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
-use Test2::Harness2::Util qw/mod2file open_file collector_exit_code runner_events_file/;
+use Test2::Harness2::Util qw/mod2file open_file runner_events_file/;
 use Test2::Util::Table qw/table/;
 
 use POSIX();
@@ -892,22 +893,12 @@ sub start_runner {
         # Test2::Harness2::Runner::Job::spawn_params and only works under the
         # fork-exec run_cmd (which invokes the coderef in the already-forked
         # child); the harness only supports fork-capable systems. The collector
-        # forks the actual runner (exec, below), captures its stdout/stderr/exit,
-        # and records the full stream into runner-events.jsonl.zst, so there are
-        # no separate stdout/stderr files anymore. The parent MUST _exit() with
-        # the runner child's verdict (collector_exit_code) so IPC's runner-death
-        # detection / wait-status handling is unchanged.
-        command => sub {
-            require Test2::Collector;
-            require Test2::Collector::Recorder::Zstd;
-            my $info = Test2::Collector::collect(
-                is_test  => 0,
-                name     => 'runner',
-                exec     => [@runner_cmd],
-                recorder => Test2::Collector::Recorder::Zstd->new(file => $runner_events_file),
-            );
-            POSIX::_exit(collector_exit_code($info));
-        },
+        # forks the actual runner (exec), captures its stdout/stderr/exit, and
+        # records the full stream into runner-events.jsonl.zst, so there are no
+        # separate stdout/stderr files anymore. The collector-wrap is shared with
+        # the persistent path via Test2::Harness2::Runner->start_collected
+        # (ARCH 4.2).
+        command => Test2::Harness2::Runner->start_collected(\@runner_cmd, $runner_events_file),
     );
 
     $self->{+RUNNER_PID} = $proc->pid;

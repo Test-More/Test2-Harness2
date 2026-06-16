@@ -6,92 +6,106 @@ our $VERSION = '2.000000';
 
 use Time::HiRes qw/sleep/;
 
-use App::Yath2::Pfile;
-use Test2::Harness2::Util qw/open_file/;
+use Test2::Harness2::Renderer::Base;
+use Test2::Harness2::Runner::Monitor;
+use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
-use parent 'App::Yath2::Command';
+use parent 'App::Yath2::Command::run';
 use Test2::Harness2::Util::HashBase;
 
 sub group { 'persist' }
 
-sub summary { "Monitor the persistent test runner" }
+sub summary  { "Monitor the persistent test runner" }
 sub cli_args { "" }
+
+sub pfile_params { (no_fatal => 1) }
 
 sub description {
     return <<"    EOT";
-This command will tail the logs from a persistent instance of yath. STDOUT and
-STDERR will be printed as seen, so may not be in proper order.
+This command will monitor a persistent instance of yath, rendering the runner's
+(and its preload stages') output as it happens. STDOUT and STDERR are surfaced
+from the runner's recorded events over runner.socket, so may not be in strict
+order.
     EOT
 }
 
+# Chunk 6 (phase D): `yath watch` is now a GLOBAL runner.socket subscriber
+# instead of a flat-log tailer. It connects to runner.socket (via the shared
+# App::Yath2::Client, with NO run_id -- the global subscription that mirrors every
+# run plus the global/runner-lifecycle bucket), and renders the runner's and each
+# preload stage's recorded output through the reusable base renderer
+# (Test2::Harness2::Renderer::Base::step_runner_output, which locates the runner
+# events file by the workdir path and each stage's events file from the
+# transition state). This is what surfaces the SIGHUP-reload line the runner
+# prints: it is captured in runner-events.jsonl.zst and tailed here. The flat
+# output.log/error.log are retired.
 sub run {
     my $self = shift;
 
-    my $args     = $self->args;
+    my $args = $self->args;
     shift @$args if @$args && $args->[0] eq '--';
-    my $stop;
-    $stop = 1 if @$args && $args->[0] eq 'STOP';
+    my $stop = (@$args && $args->[0] eq 'STOP') ? 1 : 0;
 
-    my $pfile = App::Yath2::Pfile->find($self->settings, no_fatal => 1)
-        or die "No persistent harness was found for the current path.\n";
+    my $data = $self->pfile_data;    # prints the discovery banner, dies if none
+    $self->{+RUNNER_PID} = $data->{pid};
 
-    print $pfile->describe;
+    my $renderer = $self->runner_renderer;
 
-    my $data = $pfile->data;
-
-    my $err_f = File::Spec->catfile($data->{dir}, 'error.log');
-    my $out_f = File::Spec->catfile($data->{dir}, 'output.log');
-
-    my $err_fh = open_file($err_f, '<');
-    my $out_fh = open_file($out_f, '<');
-
-    my $auxdir = File::Spec->catdir($data->{dir}, 'aux_logs');
-    my %aux;
+    # Global subscription: no run_id, so the runner forwards every run's frames
+    # plus the global/runner-lifecycle frames. If the runner cannot be reached
+    # (it died), fall back to a standalone monitor so step_runner_output still
+    # tails the recorded runner events file by path.
+    my $sub     = $self->client->connect_subscriber;
+    my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
 
     while (1) {
+        $_->step for @{$self->renderers};
+
         my $count = 0;
-        seek($out_fh, 0, 1) if eof($out_fh);
-        while (my $line = <$out_fh>) {
-            $count++;
-            print STDOUT $line;
-        }
-        seek($err_fh, 0, 1) if eof($err_fh);
-        while (my $line = <$err_fh>) {
-            $count++;
-            print STDERR $line;
+        $count += $sub->poll if $sub;
+        $renderer->step_runner_output($monitor);
+
+        # Exit conditions equivalent to the old flat-tail loop: with STOP, exit
+        # as soon as there is nothing new; otherwise keep watching until the
+        # runner goes away (its persist file vanishes / its socket closes).
+        if (!$count) {
+            last if $stop;
+            last if $sub && $sub->closed;
+            last unless -f $self->pfile->path;
         }
 
-        if (-d $auxdir) {
-            opendir(my $dh, $auxdir) or die "Could not open auxdir: $!";
-            for my $file (readdir($dh)) {
-                next if $aux{$file};
-                next unless $file =~ m/\.log$/;
-                my $full = File::Spec->catfile($auxdir, $file);
-                next unless -f $full;
-                $aux{$file} = open_file($full, '<');
-                $count++;
-            }
-        }
-
-        for my $file (sort keys %aux) {
-            my $fh = $aux{$file};
-            my $ofh = $file =~ m/STDERR/ ? \*STDERR : \*STDOUT;
-            seek($fh, 0, 1) if eof($fh);
-            while (my $line = <$fh>) {
-                $count++;
-                print $ofh $line;
-            }
-        }
-
-        next if $count;
-        last if $stop;
-        last unless -f $pfile->path;
         sleep 0.02;
     }
+
+    $_->finish for @{$self->renderers};
 
     return 0;
 }
 
+# A reusable base renderer wired to this command's terminal renderers (Formatter).
+# It owns the events-file-by-path location + runner/stage output tail; watch only
+# drives step_runner_output (it renders runner/global output, not per-job state).
+sub runner_renderer {
+    my $self = shift;
+
+    my $settings = $self->settings;
+
+    my $show_runner_output = 1;
+    $show_runner_output = $settings->display->hide_runner_output ? 0 : 1
+        if $settings->check_group('display');
+
+    # The watch session is a GLOBAL subscriber with no run scope; runner/stage
+    # output is run-level, but the events it dispatches still need a run_id (the
+    # harness Event requires one). Use a synthetic per-session id.
+    return Test2::Harness2::Renderer::Base->new(
+        settings           => $settings,
+        renderers          => $self->renderers,
+        workdir            => $self->workdir,
+        run_id             => gen_uuid(),
+        show_runner_output => $show_runner_output,
+        plugins            => $settings->harness->plugins,
+    );
+}
 
 1;
 
@@ -107,8 +121,10 @@ App::Yath2::Command::watch - Monitor the persistent test runner
 
 =head1 DESCRIPTION
 
-This command will tail the logs from a persistent instance of yath. STDOUT and
-STDERR will be printed as seen, so may not be in proper order.
+This command monitors a persistent instance of yath by subscribing to its
+C<runner.socket> as a global subscriber and rendering the runner's (and its
+preload stages') recorded output as it happens. STDOUT and STDERR are surfaced
+from the runner's recorded events, so may not be in strict order.
 
 
 =head1 USAGE

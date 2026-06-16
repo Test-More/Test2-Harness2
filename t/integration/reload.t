@@ -76,6 +76,12 @@ sub parse_output {
 
     my %by_proc;
     for my $line (split /\n/, $output) {
+        # Chunk 6 (phase D): `yath watch` is now a runner.socket subscriber that
+        # renders runner/stage output through the formatter, which prefixes each
+        # surfaced line with its event tag (e.g. "(INTERNAL)") and indentation,
+        # rather than the old flat-log tailer that printed the raw line. Strip that
+        # leading tag/indent so the per-proc message matching below is unchanged.
+        $line =~ s/^\s*\([A-Z]+\)\s+//;
         next unless $line =~ m/^\s*(\d+) yath-nested-runner(?:-(\S+))? - (.+)$/;
         my ($pid, $proc, $text) = ($1, $2, $3);
         $proc //= '';

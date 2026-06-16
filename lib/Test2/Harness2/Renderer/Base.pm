@@ -33,7 +33,6 @@ use Test2::Harness2::Util::HashBase qw{
     +jobs
     +run_started
     +aux_handles
-    +runner_log_streams
 
     <tests_seen
     <asserts_seen
@@ -127,7 +126,6 @@ sub init ($self) {
     $self->{+JOBS}               = {};
     $self->{+SERVICE_READERS}    = {};
     $self->{+AUX_HANDLES}        = {};
-    $self->{+RUNNER_LOG_STREAMS} = {};
     $self->{+TESTS_SEEN}   //= 0;
     $self->{+ASSERTS_SEEN} //= 0;
     $self->{+RUN_STARTED} = 0;
@@ -264,16 +262,18 @@ sub feed_events_file ($self, $events_file, %args) {
     return @held;
 }
 
-# Surface the runner's own output (runner-events.jsonl.zst) and each transient
-# preload stage's output (the service collectors' events files) the same way the
-# gatherer's process_runner_events did: tail each file with a RunnerReader and
-# dispatch its remapped INTERNAL-shaped info lines. Tailing readers are kept per
-# file across steps so appended frames are picked up live. Gated on
-# show_runner_output (the --hide-runner-output display option).
+# Surface the runner's own output (runner-events.jsonl.zst) and each preload
+# stage's output (the service collectors' events files) the same way the gatherer's
+# process_runner_events did: tail each file with a RunnerReader and dispatch its
+# remapped INTERNAL-shaped info lines. Tailing readers are kept per file across
+# steps so appended frames are picked up live. Gated on show_runner_output (the
+# --hide-runner-output display option).
 #
-# This is the runner/stage events-file location half of §4.5 (the part watch
-# reuses to render runner/global output); the flat-log shim below is the only
-# piece that still reads a non-events file and retires in the next phase.
+# This is the runner/stage events-file location half of §4.5 -- the part `yath
+# watch` reuses to render runner/global output. Chunk 6 (phase D): both the
+# transient and persistent runners (and their stages) are now collector-wrapped,
+# so EVERYTHING the runner and its stages print lands in an events file read here;
+# the flat output.log/error.log shim is retired.
 sub step_runner_output ($self, $monitor) {
     return unless $self->{+SHOW_RUNNER_OUTPUT};
 
@@ -306,7 +306,6 @@ sub step_runner_output ($self, $monitor) {
         $self->dispatch($_) for $reader->poll(1000);
     }
 
-    $self->_step_runner_logs;
     $self->_step_aux_logs;
 
     return;
@@ -315,13 +314,6 @@ sub step_runner_output ($self, $monitor) {
 =head1 PRIVATE METHODS
 
 =over 4
-
-=item $self->_step_runner_logs
-
-Flat-log shim: tail the persistent runner's flat C<output.log> / C<error.log>
-(the persistent runner and its preload stages are not collector-wrapped yet) and
-dispatch each line as INTERNAL-shaped info. A no-op on the transient path (no
-such files). Retires in the next migration phase.
 
 =item $self->_step_aux_logs
 
@@ -358,36 +350,6 @@ Construct a wrapped L<Test2::Harness2::Event>.
 =back
 
 =cut
-
-# Chunk 6.1-2 compatibility shim: tail the persistent runner's flat
-# output.log/error.log. The persistent runner and its preload stages are not yet
-# collector-wrapped (deferred so `yath watch` keeps tailing these flat files), so
-# a stage's stdout/stderr -- e.g. a broken preload's error -- lands only in these
-# files, not in any collector events file. Surface each line as INTERNAL-shaped
-# info, exactly as the gatherer's process_runner_logs did (stdout important;
-# stderr important + debug). The files exist only on the persistent path, so the
-# transient path is a no-op.
-sub _step_runner_logs ($self) {
-    return unless $self->{+SHOW_RUNNER_OUTPUT};
-    my $dir = $self->{+WORKDIR} or return;
-
-    my $streams = $self->{+RUNNER_LOG_STREAMS};
-
-    for my $spec (['output.log', 0], ['error.log', 1]) {
-        my ($name, $debug) = @$spec;
-        my $path = File::Spec->catfile($dir, $name);
-        next unless -f $path;
-
-        my $stream = $streams->{$name} //= Test2::Harness2::Util::File::Stream->new(name => $path);
-        for my $line ($stream->poll()) {
-            chomp($line);
-            my $e = $self->event(0, undef, time, info => [{details => $line, tag => 'INTERNAL', debug => $debug, important => 1}]);
-            $self->dispatch($e);
-        }
-    }
-
-    return;
-}
 
 # Tail $workdir/aux_logs/*.log -- output from plugin shellcall subprocesses that
 # deliberately redirect away from the runner collector's captured streams (so it
