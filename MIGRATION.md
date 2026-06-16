@@ -71,7 +71,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 2 | Argument processing → `Getopt::Yath` | ✅ | `3270b30`..`213b5bd` + this task's deletion/POD/docs commits |
 | 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ✅ | `fa49f2b65` (merge) |
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ `46e75cd55` |
-| 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ (transient; persistent gated §6.1) | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g `3b0704488` |
+| 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ (transient + persistent; §6.1 serialized+routed) | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g `3b0704488` · §6.1 `e881efa8f`,`f647c84c9`,`944757b05`,`59210f9e2`,`fb5e07174`,`5959fe720`,`6a0fdecc9`,`3a4586b31`,`a9ade9a7b` |
 | 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | 🚧 | 6a `9c3ce01ae` (interim; §4.5 base-renderer rewrite still ⬜) |
 | 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
 | 8a | Database + UI inline (DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
@@ -106,13 +106,39 @@ merged**):
   `dispatch.lock`, `queue.jsonl`, `jobs.jsonl`, the scheduler process, the
   gatherer spawn, and the `kill(0)` liveness — **the only transient IPC files left
   are `events.jsonl.zst`.**
-- **Gated / not migrated (§6.1):** the **persistent** path (`yath start` / `run` /
-  `spawn`) keeps the whole 1.0 stack — `dispatch.jsonl` submission, file-polled
-  stages, the `Test2::Harness2::Collector` gatherer (still its render path), and
-  `queue.jsonl` / `jobs.jsonl`. Also not built this run: run-scoped preload stages
-  + run-qualified socket naming, moving the runner's collector wrap into
-  `Runner->start`, and the §4.5 base-renderer rewrite (6a is interim).
-- Suite green at every phase; final `Files=85, Tests=1597, Result: PASS`.
+- **§6.1 (persistent path migrated — serialized + per-run routing)** (`e881efa8f`,
+  `f647c84c9`, `944757b05`, `59210f9e2`, `fb5e07174`, `5959fe720`, `6a0fdecc9`,
+  `3a4586b31`, `a9ade9a7b`): the persistent `yath start` runner now runs the same
+  socket service; `run` / `spawn` submit + subscribe over `runner.socket` (via the
+  command-side `App::Yath2::Client`) and render via the subscription `Driver`;
+  `stop` shuts down over the socket. The runner's canonical state is **keyed by
+  run** and each client is routed only its run's transitions (`run_uuid`==`run_id`
+  key; stage/runner-lifecycle transitions broadcast as a global bucket; no-run-id
+  = global subscriber). Persistent preload **stages are socket-dispatch services**
+  too and State always runs in-memory `direct` mode. `status` / `ps` / `abort` are
+  served over the socket (`Runner::StatusReport`). The **gatherer
+  (`Test2::Harness2::Collector`) is deleted outright**, and `dispatch.jsonl`,
+  `jobs.jsonl`, `queue.jsonl`, `run_queue.jsonl` are all gone — **the only IPC
+  files anywhere are now `events.jsonl.zst`**, except the flat-log shim below.
+- **Refactor — shared command libs** (`2222e3bef`, `b1350c52d`, `84d88f06c`):
+  extracted `App::Yath2::Pfile` (persistent discovery), `App::Yath2::RunPlan`
+  (run/queue construction), and `App::Yath2::Client` (command-side socket
+  submit/subscribe) out of `test`/`run`/`start`, each unit-tested.
+- **Still flat-file (the one remaining non-events IPC):** `watch` tails the
+  persistent runner's `output.log` / `error.log` / `aux_logs`. Retiring it needs
+  the persistent runner + stages collector-wrapped and `watch` migrated to a
+  global socket subscription — coupled to the SIGHUP-reload message `watch` reads
+  from `output.log` (`persist.t` asserts it). Flagged follow-up.
+- **Also not built / deferred:** concurrent run *execution* (persistent stays
+  serialized); run-scoped preload stages as a user feature (only the per-run
+  subdir socket naming `runs/<run_id>/preload-<stage>.socket` foundation exists);
+  moving the runner collector-wrap into `Runner->start`; the §4.5 base-renderer
+  rewrite (6a is interim); dead `State` dispatch-file plumbing (file never created
+  now) to remove; `Runner.pm` is 1426 lines (over the 1000 guide) — split
+  candidate.
+- A pre-existing `smoke.t` flake (start-stamp tie under `-j3`) was fixed
+  (`ddaed0a0c`). Suite green throughout; final `Files=88` (`Result: PASS`,
+  confirmed across 13 consecutive clean full runs).
 
 **Foundations** (pre-chunk):
 - Agent governance docs landed and reconciled to the evolve-from-1.0 plan
@@ -195,34 +221,37 @@ this task):
   `JobReader`) reads those files and re-attaches run/job/event UUIDs. The
   **`yath test` runner** is also wrapped now (chunk 4a, merged `bf1081ab0`),
   read via `RunnerReader`. The transient runner's **preload stages** are wrapped
-  too (chunk 4b): each writes `stage-<name>-events.jsonl.zst`, read back by the
-  gatherer via per-stage `RunnerReader`s. On the **transient** path the gatherer
-  is now **retired** (5g) — see Runner IPC below. The gatherer
-  (`Test2::Harness2::Collector`) survives intact as the **persistent** runner's
-  render path (gated §6.1); the persistent runner + stages stay on the flat-file
-  shim.
-- **Runner IPC (transient `yath test`):** fully on the **socket model** (chunk 5
-  + 6a). The runner runs as a collected **service** bound to `runner.socket` with
-  an **in-process scheduler** (no separate scheduler process, no `dispatch.lock`).
-  `test` is a thin client that **submits runs over the socket**
-  (`Test2::Harness2::Runner::Client`); the runner's State runs in in-memory
-  `direct` mode. Preload **stages are socket services** (`preload-<stage>.socket`):
-  the runner connects out to dispatch jobs and stages report back over
-  `runner.socket`. Every non-runner collector streams its **transitions** to
-  `runner.socket`, folded into the runner's canonical state
-  (`Test2::Harness2::Runner::Monitor`); the `test` command **subscribes**
-  (`Runner::Subscriber`) for a snapshot + forwarded mutations and **renders
-  entirely from it** via the command-side `Test2::Harness2::Renderer::Driver`
-  (6a), fetching each job's `events.jsonl.zst` by path at completion. Stalled-job
-  abort is the runner's (`Runner::Watchdog`); run completion is the runner closing
-  the socket. All wire traffic reuses
-  `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` / `Recorder::Socket`
-  — no harness-local copies. **The only transient IPC files are now
-  `events.jsonl.zst`** — `run_queue.jsonl`, `dispatch.jsonl`, `dispatch.lock`,
-  `queue.jsonl`, and `jobs.jsonl` are all gone from the transient path. The
-  **persistent** path (`yath start` / `run` / `spawn`) is **not migrated** (gated
-  §6.1): it keeps `dispatch.jsonl` submission, file-polled stages, the gatherer,
-  and `queue.jsonl` / `jobs.jsonl`. The system-load service is still chunk 7.
+  too (chunk 4b). The yath-side gatherer (`Test2::Harness2::Collector`) is now
+  **deleted outright** (5g + §6.1): both `yath test` and the persistent
+  `yath run` render from the runner subscription via the command-side
+  `Renderer::Driver`. `JobReader` / `RunnerReader` survive as neutral
+  `Test2::Harness2::*` by-path readers. See Runner IPC below.
+- **Runner IPC (both `yath test` and persistent `yath start`/`run`):** fully on
+  the **socket model** (chunk 5 + 6a + §6.1). The runner runs as a collected
+  **service** bound to `runner.socket` with an **in-process scheduler** (no
+  separate scheduler process, no `dispatch.lock`) and in-memory `direct` State.
+  Commands are thin clients: `test`/`run`/`spawn` **submit over the socket**
+  (`App::Yath2::Client` → `Runner::Client`) and **subscribe** scoped to their
+  `run_id` (`Runner::Subscriber`); `stop` shuts down over the socket;
+  `status`/`ps`/`abort` query the runner over the socket
+  (`Runner::StatusReport`). Preload **stages are socket-dispatch services**
+  (`preload-<stage>.socket`; run-scoped naming `runs/<run_id>/preload-<stage>.socket`
+  reserved). Every non-runner collector streams **transitions** to `runner.socket`,
+  folded into the runner's **per-run-keyed** canonical state
+  (`Runner::Monitor`); each client is routed only its run's transitions (stage/
+  runner lifecycle broadcasts globally). Both `test` and `run` **render from the
+  subscription** via `Renderer::Driver`, fetching each job's `events.jsonl.zst` by
+  path at completion. Stalled-job abort is the runner's (`Runner::Watchdog`); run
+  completion is a `harness_run_end` transition (and, for `test`, the runner closing
+  the socket). All wire traffic reuses
+  `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` / `Recorder::Socket`.
+  **The only IPC files are now `events.jsonl.zst`** — `run_queue.jsonl`,
+  `dispatch.jsonl`, `dispatch.lock`, `queue.jsonl`, and `jobs.jsonl` are all gone.
+  **Execution stays serialized** on the persistent runner (one active run at a
+  time) — §6.1 routed runs per-client but did not add concurrent execution. **One
+  flat-file remnant:** `yath watch` still tails the persistent runner's
+  `output.log` / `error.log` shim (runner + stages not yet collector-wrapped;
+  flagged follow-up). The system-load service is still chunk 7.
 - **Web UI:** inlined (chunk 8a, merged `2d09d348a`) under `App::Yath2::Server*`
   / `App::Yath2::Schema*` (+ `Command::{server,db/*,client/*}`,
   `Options::{DB,WebServer,Server,WebClient,Publish,Yath}`, `Plugin::DB`,
@@ -231,16 +260,23 @@ this task):
   `demo/`. Tests: Perl unit + HTTP smoke (`t/AI/integration/ui_server.t`) +
   Playwright (`js-tests/`, run from `t/playwright.t`). The QuickORM conversion is
   **chunk 8b (deferred)**.
-- **Logic:** otherwise still 1.0 for the not-yet-migrated chunks (6-7) and the
-  gated persistent path.
+- **Logic:** otherwise still 1.0 for the not-yet-migrated chunks (the §4.5
+  base-renderer rewrite and chunk 7 system-load service).
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
   `App::Yath::Script`.
 
 ## Next
 
-The transient `yath test` path is fully migrated to the socket model with a
-command-side renderer (chunk 5a-5g + 6a). Open follow-ups, roughly in order:
+Both `yath test` and the persistent `yath start`/`run`/`spawn`/`stop` paths are
+migrated to the socket model with a command-side renderer (chunk 5a-5g + 6a +
+§6.1, serialized + per-run routing); the gatherer and all coordination files are
+gone. Open follow-ups, roughly in order:
 
+- **`watch` + flat-log retirement (the last file IPC).** Collector-wrap the
+  persistent runner + its stages and migrate `yath watch` to a global
+  `runner.socket` subscription, then retire `output.log` / `error.log` /
+  `aux_logs`. Landmine: the SIGHUP-reload message `watch` reads from `output.log`
+  (`persist.t` asserts it) must move onto the subscription in the same step.
 - **Chunk 7 — system-load service.** Its own (global) process with a reliable
   tick, emit-only, connecting to `runner.socket`; the in-runner scheduler consumes
   load to gate concurrency. Port `reference/harness_service` `SystemLoad.pm` + its
@@ -248,17 +284,17 @@ command-side renderer (chunk 5a-5g + 6a). Open follow-ups, roughly in order:
 - **§4.5 base-renderer rewrite.** 6a is the interim command-side renderer; the
   target is a base renderer/role that locates `.jsonl.zst` files from transition
   state. Supersedes the 6a per-job ordering.
-- **§6.1 multi-run / persistent path.** Migrate `yath start` / `run` / `spawn` off
-  the gatherer + `dispatch.jsonl` / `queue.jsonl` / `jobs.jsonl` onto the socket
-  model: per-run transition routing, run-scoped preload stages + run-qualified
-  socket naming, and what `start` owns vs how `run` discovers/submits. Only after
-  this can the gatherer (`Test2::Harness2::Collector`) and the persistent file IPC
-  be deleted outright.
-- **Cleanups flagged during chunk 5:** move the runner's collector wrap into
-  `Runner->start` (ARCH §4.2; today still in `App::Yath2::Command::test`); revisit
-  the conservative `Runner::Watchdog` (abort-on-wind-down) if active mid-run
-  stalled detection is wanted; `Runner.pm` is over the 1000-line guide (1227,
-  pre-existing) — candidate for a split.
+- **Concurrent run execution + run-scoped preload stages.** §6.1 routes per run
+  but execution stays serialized (single active run); making the persistent runner
+  run multiple runs at once, and building run-scoped preload stages as a user
+  feature (the `runs/<run_id>/preload-<stage>.socket` naming is reserved), are the
+  next multi-run steps.
+- **Cleanups flagged during chunk 5/§6.1:** remove the dead `State`
+  dispatch-file/poll plumbing (the file is never created now); split `Runner.pm`
+  (1426 lines, over the 1000-line guide); move the runner's collector wrap into
+  `Runner->start` (ARCH §4.2; today still in `App::Yath2::Command::test`); and
+  revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if active
+  mid-run stalled detection is wanted.
 
 See the "Chunks 4-6 detailed plan" below. Reference: `reference/2.0b`,
 `reference/harness_service`.

@@ -589,21 +589,51 @@ directly by **preload-stage scope**: global preload stages shared by all runs,
 and run-scoped preload stages brought up/torn down per run (§4.7). No general
 service infrastructure is built for this.
 
-**Still open — multi-run routing/lifecycle.** A persistent runner (`yath start`)
-serves multiple `yath run` clients over time. What remains to design against the
-migrated tree:
+**Resolved — multi-run routing/lifecycle (migrated; "serialized + per-run
+routing").** The persistent path now runs on the socket model alongside the
+transient path. The decision was to **route per run but keep execution
+serialized**: a persistent runner still runs one active run at a time (the single
+in-runner active-run slot is unchanged), but each `yath run` client is routed
+only its own run's data. Concurrent run *execution* (multiple runs progressing at
+once) is a deliberate later step, not part of this resolution.
 
-- **Transition routing.** Each `yath run` client must receive only its own run's
-  transitions (keyed on the run association already on every message, §5.2);
-  global preload-stage lifecycle is shared.
-- **Run-scoped preload lifecycle.** Bringing run-scoped stages up when a run
-  begins and tearing them down when it ends, without disturbing global stages or
-  other runs — including the **run-qualified socket naming** scheme (§5.3) that
-  keeps overlapping runs from colliding.
-- **Service lifecycle / discovery.** What `yath start` owns (establish the
-  workdir, publish `runner.socket`, write persist metadata) and how `yath run`
-  discovers that runner and submits a run to it.
+- **Transition routing — done.** The runner's canonical state
+  (`Test2::Harness2::Runner::Monitor`) is keyed by run. `run_uuid` and `run_id`
+  are the same value (a test collector's `run_uuid` is stamped from its
+  `run->run_id`), so one key routes both collector transitions and
+  runner-originated job mutations. A client `subscribe` request carries a
+  `run_id`; the returned snapshot is filtered to that run plus a **global
+  bucket** (the runner's own and preload-**stage lifecycle** transitions, which
+  have no run association and broadcast to all subscribers). `forward_frame`
+  consults each subscriber's run filter. A subscribe with no `run_id` is a global
+  subscriber (everything) — the basis for a future `watch`-over-socket. This is
+  the narrow surviving piece of the abandoned 2.0b `run_uuid` proxy match, with
+  no proxy framework and no global-vs-run service split.
+- **Run-scoped preload lifecycle — naming decided; feature deferred.** The
+  run-qualified socket scheme is **per-run subdir**:
+  `runs/<run_id>/preload-<stage>.socket` (global stages stay
+  `preload-<stage>.socket`, `runner.socket` stays a single global socket). The
+  `Role::Service` `run_ord` subdir hook implements it. Run-scoped preload stages
+  *as a user feature* (a run requesting extra per-run preload branches) are
+  **not built** — there is no trigger for one and serialized execution needs no
+  concurrent run-scoped stage; only the collision-safe naming foundation is in
+  place.
+- **Service lifecycle / discovery — done.** `yath start` owns the workdir,
+  spawns the persistent runner (which binds `runner.socket` and runs the service
+  loop), and writes `yath-persist.json` (`{pid, dir, ...}`). `yath run` / `spawn`
+  discover the runner via `yath-persist.json` (the existing pfile checks, now in
+  `App::Yath2::Pfile`), connect to `runner.socket` (path derived from `dir`) via
+  `App::Yath2::Client`, submit over the socket, and subscribe scoped to their
+  `run_id`; liveness is socket-connect rather than `kill(0)`. `stop` sends a
+  graceful socket shutdown. The persistent runner's scheduler runs the in-memory
+  `direct` State and dispatches to socket preload-stage services — no
+  `dispatch.jsonl` / `jobs.jsonl` / `queue.jsonl` / `run_queue.jsonl`.
 
-The **per-run baseline** — one `runner.socket` in the workdir (§4.2, §5.3) — is
-settled; the above is the multi-run layer on top. The persistent path must not
-migrate ahead of it. When resolved, this moves into §4.2 / §4.7 / §5.3.
+**Remaining (tracked in `MIGRATION.md`, not blockers for the above):** concurrent
+run *execution* on a persistent runner; run-scoped preload stages as a user
+feature; and `watch` still tails the flat `output.log` / `error.log` shim (the
+persistent runner + its stages are not yet collector-wrapped, so migrating
+`watch` to a global socket subscription is a follow-up — it is coupled to the
+SIGHUP-reload message that `watch` currently reads from `output.log`). This
+section stays here until those land; the settled parts above are authoritative
+and mirrored across §4.2 / §4.7 / §5.3.
