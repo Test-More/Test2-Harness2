@@ -605,6 +605,9 @@ sub env_vars {
 
         PERL5LIB            => $p5l,
         PERL_USE_UNSAFE_INC => $self->unsafe_inc,
+        # Let the test child locate runner.socket without discovery (ARCH 5.3).
+        T2_HARNESS_WORKDIR => $self->runner->dir,
+
         TEST2_JOB_DIR       => $self->job_dir,
         TEST2_RUN_DIR       => $self->run_dir,
         TMPDIR              => $self->tmp_dir,

@@ -74,7 +74,21 @@ use Test2::Harness2::Util::HashBase(
     },
 );
 
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::Service';
+
 sub job_class  { 'Test2::Harness2::Runner::Job' }
+
+# The runner service is the canonical 'runner.socket' in the workdir (ARCH 4.2,
+# 5.3). 'workdir' and 'name' satisfy Test2::Harness2::Role::Service.
+sub name    { 'runner' }
+sub workdir { my $self = shift; return $self->{+DIR} }
+
+# Test2::Harness2::IPC owns child reaping for this process (via wait /
+# _bring_out_yer_dead, which dies on an unexpected waitpid). The service role's
+# own reap_children would race that path, so it is disabled here: the runner
+# polls the socket but reaps through IPC.
+sub reap_children { my $self = shift; return }
 
 our $RUNNER_PID;
 sub init {
@@ -276,6 +290,19 @@ sub process {
     my $pidfile = File::Spec->catfile($self->{+DIR}, 'PID');
     write_file_atomic($pidfile, "$$");
 
+    # Propagate the workdir to every child (collectors, stages, jobs) so they can
+    # locate runner.socket without hardcoded assumptions (ARCH 5.3). Setting it in
+    # the runner process means forked stages inherit it directly, and the
+    # Test2::Collector child_env merge carries it on into test children; jobs also
+    # set it explicitly in their curated env (Runner::Job::env_vars).
+    $ENV{T2_HARNESS_WORKDIR} = $self->{+DIR};
+
+    # Bind runner.socket and run the accept/request loop coexisting with the
+    # existing file-IPC run loop (chunk 5a scaffolding). The separate scheduler
+    # process and dispatch.jsonl/queue.jsonl stay in place this phase; the socket
+    # is bound and a 'stop' request is honored.
+    $self->start_service;
+
     $self->start();
 
     my $ok  = eval { $self->run_tests(); 1 };
@@ -286,7 +313,21 @@ sub process {
 
     $self->stop();
 
+    $self->close_service;
+
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
+}
+
+sub service_tick {
+    my $self = shift;
+
+    # A 'stop' request over runner.socket asks the run loop to wind down. The
+    # role's request_handler_stop sets service_stopped; translate that into the
+    # runner's own shutdown signal so the existing loops (run_stage,
+    # spawn_scheduler) terminate through end_test_loop.
+    $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
+
+    return;
 }
 
 sub spawn_scheduler {
@@ -438,6 +479,13 @@ sub run_stage {
     $self->state->stage_ready($stage);
 
     while (1) {
+        # Service the runner.socket from the root process only: forked stage
+        # children inherit the listen FD but must not accept on it.
+        if ($self->{+ROOTPID} == $$) {
+            $self->service_io;
+            $self->service_tick;
+        }
+
         next if $self->run_job();
 
         next if $self->wait();
