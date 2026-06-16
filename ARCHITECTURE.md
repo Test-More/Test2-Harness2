@@ -115,8 +115,10 @@ order, roughly:
 6. **Renderer rewrite** — a base renderer / role that knows how to locate the
    `.jsonl.zst` files (§4.5). An interim step first moves renderers into the
    `test` / `run` command processes; see `MIGRATION.md`.
-7. **System-load service** — gate concurrency on CPU/memory in addition to or
-   instead of a static `-j` (§4.4).
+7. **System-load service** — a global harness service that samples CPU/memory
+   load on a reliable tick (its own process; the runner loop can exceed the
+   sample interval) and reports it to the runner so the scheduler can gate
+   concurrency in addition to or instead of a static `-j` (§4.4).
 8. **Database + UI inline** — rewrite the former `Test2-Harness-UI` DB+UI
    layer inline in `App::Yath2`, with `DBIx::QuickORM` schema and sqlite log
    files (§4.6).
@@ -259,9 +261,10 @@ reporter`, where the **recorder** sink writes the full event stream to one
   with a standing yath-side **gatherer** process that walks the workdir for
   those files; the end state removes that gatherer — see §4.2 — and reads a
   specific events file **by path on demand**.)
-- **Every yath-started process is a collector.** Not just tests: services,
-  workers, and the main harness process itself run as (non-test) collectors,
-  so every process speaks one wire format and records one kind of events file
+- **Every yath-started process is a collector.** Not just tests: the runner,
+  each preload stage, and auxiliary harness services (e.g. the system-load
+  service, §4.4) all run as (non-test) collectors, so every process speaks one
+  wire format and records one kind of events file
   (§4.2).
 
 ### 4.2 Main harness service `[target]`
@@ -279,11 +282,14 @@ process** — the scheduler is an **object inside it**, not a separate process.
   object**; other components learn state from it (§4.3) rather than
   reconstructing it from raw events.
 - It exposes a **unix socket** (`runner.socket` in the workdir, §5.3) for
-  requests. The `test` and `run` commands are **thin clients**: they connect to
-  the socket and **submit runs as JSON over it** (replacing the 1.0
-  `queue.jsonl` / `run_queue.jsonl` files). The commands do not own run state.
-  Disentangling `test` / `start` / `run` into thin clients of this one service
-  is an explicit goal of the migration.
+  requests. Commands are **thin clients** that connect and **submit runs as JSON
+  over it** (replacing the 1.0 `queue.jsonl` / `run_queue.jsonl` files); they do
+  not own run state. `yath test` is the per-run / transient client and uses this
+  baseline directly. `yath run` / `yath start` are the **persistent** path and
+  are **gated on §6.1** (multi-run scope): they adopt the same client request
+  format but must not migrate ahead of it. Disentangling `test` / `start` /
+  `run` into thin clients of this one service is an explicit goal of the
+  migration.
 - **Lifespan.** Two modes. *Transient* (`yath test`): the service shuts down
   and exits once all submitted runs finish and their transition queues drain.
   *Persistent* (`yath start`): it stays alive listening on `runner.socket`
@@ -351,8 +357,7 @@ everywhere.
   the abandoned 2.0b branch — see `reference/2.0b/`).
 - **The main harness's own transitions go to its events file**, not over the
   channel — it is the hub, not a reporter to itself. Everything *else* (test
-  jobs, preload stages, auxiliary non-test collectors) reports to
-  `runner.socket`.
+  jobs and preload-stage collectors) reports to `runner.socket`.
 - **Other consumers get transitions from the main harness**, not directly from
   every collector. The harness is the hub.
 - **Full detail is pulled on demand.** Transitions carry each collector's
@@ -367,23 +372,26 @@ everywhere.
 ### 4.4 System-load service `[target]`
 
 **Responsibility.** Report system load (CPU, memory) so the scheduler can gate
-how many tests run concurrently — in addition to, or instead of, a static
-`-j`. Prototyped on the abandoned `harness_service` branch (see
-`reference/harness_service/`, `t2h2_sysload`).
+how many tests run concurrently — in addition to, or instead of, a static `-j`.
+Prototyped on the abandoned `harness_service` branch
+(`reference/harness_service/`, `t2h2_sysload`).
 
 **Contract.**
 
-- It is a **non-test collector** that **does not receive requests**, so it has
-  **no socket of its own**. Instead it **connects to the main harness's
-  socket** and streams state changes (load crossed a threshold) as they
-  happen.
-- The scheduler in the main harness (§4.2) consumes those updates to decide
-  when a slot may open, combining the load signal with any static `-j` limit.
+- It runs as its **own (global) harness service process** — *not* folded into
+  the runner. Load sampling needs a **reliable, fixed tick**, and the runner's
+  service loop can have iterations that exceed that interval, so it cannot
+  sample inline.
+- It is a **non-test collector** that **only emits** (it handles no requests),
+  so it has **no socket of its own**; it **connects to `runner.socket`** and
+  streams load state-changes (a threshold crossing) as they happen.
+- The scheduler in the runner (§4.2) consumes those updates to decide when a
+  slot may open, combining the load signal with any static `-j` limit.
 
-This is the general rule for auxiliary processes: a yath-started non-test,
-non-spawn process that needs to *handle* requests gets its own unix socket;
-one that only *emits* state changes connects to the main harness socket
-instead.
+This is the rule for auxiliary harness services: a global yath-started non-test,
+non-spawn process that *handles* requests gets its own unix socket; one that
+only *emits* state changes connects to `runner.socket` instead. All such
+services are **global** — there are no per-run services (§4.7).
 
 ### 4.5 Renderers `[target]`
 
@@ -433,6 +441,24 @@ the former separate `Test2-Harness-UI` distribution, rewritten inline in
 in the workdir, §5.3). A stage holds the preloaded interpreter state from which
 matching tests are forked.
 
+**Scope of services (decided).** All services are **global** harness services;
+there are **no per-run services**. The service kinds are: the runner (§4.2,
+handles requests on `runner.socket`), preload stages (this section, handle
+dispatch on their own sockets), and auxiliary harness services that report to
+the runner (e.g. the system-load service §4.4 — emit-only, no socket of its
+own). What is **dropped** is the earlier run-vs-global service split and
+run-specific *services* — an over-extrapolation from two concrete preload needs.
+Those needs are met directly by **preload-stage scope** (a feature, not a
+service class):
+
+- **Global preload stages** — started with the runner, shared by every run
+  (use case 1; already the inherited 1.0 behavior).
+- **Run-scoped preload stages** — extra preload branches brought up when a run
+  begins and torn down when it ends, applying only to that run's jobs (use
+  case 2). A run-scoped stage is an ordinary preload-stage service whose
+  lifecycle is bound to a run; it is **not** a per-run *service* class or any
+  new service infrastructure.
+
 **Contract.**
 
 - **The runner dispatches jobs to a stage by connecting out to that stage's
@@ -451,6 +477,11 @@ matching tests are forked.
 - **No-preload path.** When there are no preloads there are no stage services:
   the runner forks the test job's collector itself, directly, instead of
   dispatching to a stage.
+- **Run-scoped stage lifecycle is the runner's job.** The runner forks a
+  run-scoped stage's service when its run begins and tears it down when the run
+  ends — a shutdown command frame over the stage's socket (or `SIGTERM`),
+  followed by reaping. Global stages outlive any single run. Run-scoped stage
+  sockets must be run-qualified to avoid collisions (§5.3, §6.1).
 
 ## 5. Cross-cutting concerns
 
@@ -499,16 +530,27 @@ The contract:
   carries the collector name, the events-file path, the run association, and
   (for tests) the try number.
 
-The detailed reader/monitor and proxy-fan-out design from the abandoned 2.0b
-branch is preserved under `reference/2.0b/` and will be adapted as §4.3 lands;
-it is not restated here until it is committed architecture again.
+The detailed reader/monitor design from the abandoned 2.0b branch is preserved
+under `reference/2.0b/` and will be adapted as §4.3 lands; it is not restated
+here until it is committed architecture again. Its `run_uuid` proxy-fan-out was
+built for the abandoned global-vs-run *service* split (§6.1); only the narrow
+piece — routing each client only its own run's transitions on a multi-run
+persistent runner — survives that simplification.
 
 ### 5.3 Socket naming and topology `[target]`
 
 Service sockets live in the **workdir** and are named for their service:
 `runner.socket` for the main runner (§4.2), and `preload-<stage>.socket` for
-each preload stage (§4.7). They use the same wire form as §5.2 — zstd-compressed
-JSON object frames, the collector's wire format.
+each **global** preload stage (§4.7). They use the same wire form as §5.2 —
+zstd-compressed JSON object frames, the collector's wire format.
+
+`preload-<stage>.socket` is only the **global / per-run-baseline** form. A
+**run-scoped** preload stage on a persistent multi-run runner needs a
+**run-qualified** name (e.g. `preload-<run_id>-<stage>.socket`, or a per-run
+subdir `runs/<run_id>/preload-<stage>.socket`) so two runs using the same stage
+name — or a run-scoped name colliding with a global one — do not share or
+clobber a socket. The exact scheme is part of the still-open §6.1 multi-run
+layer.
 
 Direction of connection:
 
@@ -537,22 +579,31 @@ Direction of connection:
 Reserved for architectural questions raised but not yet resolved. Resolved
 entries move into the relevant numbered section above.
 
-### 6.1 Global vs run services for `yath start` / `yath run` `[target]`
+### 6.1 Multi-run scope on a persistent runner `[target]`
 
-The driving case is `yath start` + `yath run`: global services start first
-under a long-lived process, and a `yath run` arrives later with its own tests
-and run-scoped services. A run needs to see global services' state plus its
-own collectors, but not other runs' traffic. The transition channel (§4.3)
-needs a filtering/proxy mechanism keyed on a per-collector run association to
-support this, plus a first-class distinction between **global** and **run**
-services. Prototyped on `reference/2.0b/` (proxy filtering on `run_uuid`); the
-surrounding lifecycle and the `yath start` / `yath run` commands are not yet
-designed against the migrated tree.
+**Resolved part — no run-specific *services*.** The earlier framing of this
+question (a global-vs-run *service* split, with first-class "global" vs "run"
+services and a `run_uuid` proxy framework) is **abandoned** (§4.4, §4.7). It was
+an over-extrapolation from two concrete preload needs, which are now met
+directly by **preload-stage scope**: global preload stages shared by all runs,
+and run-scoped preload stages brought up/torn down per run (§4.7). No general
+service infrastructure is built for this.
 
-The **per-run baseline** — one `runner.socket` in the run's workdir (§4.2,
-§5.3) — is settled; this open question is specifically the **global +
-multi-run** extension layered on top of it. It must be resolved before
-`yath start` / `yath run` migrate to the service model, and should specify what
-`start` owns (create the global service, establish the workdir, write the
-persist metadata, publish its socket) and how `run` discovers that service and
-submits a run to it. When resolved, this moves into §4.2 / §5.3.
+**Still open — multi-run routing/lifecycle.** A persistent runner (`yath start`)
+serves multiple `yath run` clients over time. What remains to design against the
+migrated tree:
+
+- **Transition routing.** Each `yath run` client must receive only its own run's
+  transitions (keyed on the run association already on every message, §5.2);
+  global preload-stage lifecycle is shared.
+- **Run-scoped preload lifecycle.** Bringing run-scoped stages up when a run
+  begins and tearing them down when it ends, without disturbing global stages or
+  other runs — including the **run-qualified socket naming** scheme (§5.3) that
+  keeps overlapping runs from colliding.
+- **Service lifecycle / discovery.** What `yath start` owns (establish the
+  workdir, publish `runner.socket`, write persist metadata) and how `yath run`
+  discovers that runner and submits a run to it.
+
+The **per-run baseline** — one `runner.socket` in the workdir (§4.2, §5.3) — is
+settled; the above is the multi-run layer on top. The persistent path must not
+migrate ahead of it. When resolved, this moves into §4.2 / §4.7 / §5.3.

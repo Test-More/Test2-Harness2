@@ -73,7 +73,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 4 | Collectors everywhere (runner + preload stages) | 🚧 | 4a ✅ `bf1081ab0` (merge) |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ⬜ | — |
 | 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ⬜ | — |
-| 7 | System-load service (gate concurrency on cpu/mem) | ⬜ | — |
+| 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
 | 8a | Database + UI inline (DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
 | 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ (deferred) | — |
 
@@ -171,7 +171,12 @@ Source brief: `migration_revision`. Target topology:
 `ARCHITECTURE.md` §4.2 (runner service), §4.3 (transition channel), §4.7
 (preload stage services), §5.2-5.3 (socket wire form + naming). Reference
 prototypes: `reference/2.0b` (Monitor-style state sync, proxy fan-out),
-`reference/harness_service` (`Role::Service`, scheduler).
+`reference/harness_service` (scheduler, tick, system-load sampler service).
+**Borrow from `harness_service` selectively** — its scheduler/tick, its
+system-load sampler **service**, and `Role::Service` are reusable. What
+`service_revision` removed is the **run-vs-global service split** and
+run-specific services: all services are now global, per-run scope is a preload
+feature (§4.7). Do not reintroduce per-run services.
 
 **End state of chunks 4-6.** Every process the runner forks runs under its own
 collector. The runner and each preload stage are **socket services**. The only
@@ -181,6 +186,21 @@ in the collector wire format (zstd-compressed JSON object frames): runner →
 preload (dispatch jobs), and collector → runner (transition messages). Commands
 queue work by messaging the runner. The 1.0 coordination files
 (`queue.jsonl`, `run_queue.jsonl`, `dispatch.jsonl`, `dispatch.lock`) are gone.
+
+**All services are global harness services; there are no per-run services.** The
+service kinds: the runner, preload stages, and auxiliary harness services that
+report to the runner (e.g. the system-load service, §4.4 — emit-only, connects
+to `runner.socket`, no socket of its own). What is **dropped** is the
+run-vs-global service split and run-specific *services* — an over-extrapolation
+from two preload needs (`ARCHITECTURE.md` §4.4 / §4.7 / §6.1). Per-run needs are
+met by **preload-stage scope** — global stages shared by all runs (use case 1,
+already the 1.0 behavior) and run-scoped stages started/torn down per run (use
+case 2), a feature, not a service class. The system-load service (chunk 7) stays
+its **own process** with a reliable tick (the runner loop can exceed the sample
+interval), reporting load to the runner. Implementation note: port
+`reference/harness_service/lib/Test2/Harness2/SystemLoad.pm` and its sampler
+**service** shape; drop only the run-vs-global-split bits, not the
+process/socket.
 
 This also **eliminates the yath-side gatherer process** — today's
 `Test2::Harness2::Collector` loop (the one distinct from `Test2-Collector`,
@@ -219,13 +239,24 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
   scheduler process + `dispatch.lock` flock into a **scheduler object inside the
   runner**, ticked each service-loop iteration. The loop IO-polls `runner.socket`
   (an arriving transition/request forces a prompt wakeup) plus a time-based tick.
-- **5c ⬜ Run submission over the socket.** `test` / `run` connect to
-  `runner.socket` and send runs as JSON; retire `run_queue.jsonl` / `queue.jsonl`.
-  Canonical run state lives in an in-runner **state object**.
-- **5d ⬜ Preload stages as services.** Each stage gets its own
-  `preload-<stage>.socket`; the **runner connects out** to a stage's socket to
-  dispatch "run test" / "rerun test"; retire `dispatch.jsonl`. No-preload: runner
-  forks test collectors directly instead of dispatching to a stage.
+- **5c ⬜ Run submission over the socket.** `test` connects to `runner.socket`
+  and sends runs as JSON; retire `run_queue.jsonl` / `queue.jsonl`. Canonical run
+  state lives in an in-runner **state object**. This introduces the common
+  client request format; `run` (the persistent client) adopts it later but stays
+  **gated on §6.1** — do not migrate `yath run` ahead of the multi-run layer.
+- **5d ⬜ Preload stages as services.** Each stage gets its own socket; the
+  **runner connects out** to dispatch "run test" / "rerun test"; retire
+  `dispatch.jsonl`. No-preload: runner forks test collectors directly instead of
+  dispatching to a stage. **Two preload scopes:** *global* stages
+  (`preload-<stage>.socket`, started with the runner, shared by all runs — use
+  case 1, already supported) and *run-scoped* stages (extra preload branches
+  applying only to that run's jobs — use case 2). Run-scoped is just lifecycle
+  binding, not a separate service class or new infrastructure: **the runner
+  forks a run-scoped stage when its run begins and tears it down when the run
+  ends** (shutdown frame over its socket, or `SIGTERM` + reap). Run-scoped stage
+  sockets must be **run-qualified** (e.g. `preload-<run_id>-<stage>.socket`, or a
+  per-run subdir) to avoid collisions on a multi-run runner; the exact scheme is
+  part of the still-open §6.1 layer.
 - **5e ⬜ Transition channel.** Every collector except the runner's connects its
   reporter to `runner.socket` and streams transitions there; the runner folds
   them into canonical state. Each transition carries the **absolute** path of
@@ -265,14 +296,15 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
 - **Runner lifespan:** *transient* (`yath test`) — exit once all runs finish and
   transition queues drain; *persistent* (`yath start`) — stay listening on
   `runner.socket` until an explicit shutdown request (e.g. `yath stop`).
-- **Persistent path is gated on §6.1.** The single `runner.socket` in *the
-  workdir* (above) is the per-run / `yath test` baseline. The `yath start` +
-  `yath run` topology — socket per global service vs per run vs both, and how
-  run-scoped collectors attach to the right transition feed — is
-  `ARCHITECTURE.md` open question §6.1. `start` / `run` must **not** migrate to
-  the service model ahead of resolving §6.1 (what `start` owns: create the
-  global service, workdir, persist metadata, publish the socket; how `run`
-  discovers + submits to it).
+- **Persistent path is gated on §6.1 (now smaller).** The single `runner.socket`
+  in *the workdir* (above) is the per-run / `yath test` baseline. The
+  generalized global-vs-run *service* split is dropped; what remains open
+  (`ARCHITECTURE.md` §6.1) is the multi-run layer on a persistent runner:
+  routing each `yath run` client only its own run's transitions, run-scoped
+  preload-stage lifecycle (5d), and what `start` owns (workdir, publish
+  `runner.socket`, persist metadata) / how `run` discovers + submits to it.
+  `start` / `run` must **not** migrate to the service model ahead of resolving
+  it.
 
 ### Chunk 6 — renderer (interim step toward the §4.5 rewrite)
 
