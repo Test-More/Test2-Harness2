@@ -70,7 +70,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 1 | Mechanical renames + version bump | ✅ | `2ea678e`, `aa6e5eb` |
 | 2 | Argument processing → `Getopt::Yath` | ✅ | `3270b30`..`213b5bd` + this task's deletion/POD/docs commits |
 | 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ✅ | `fa49f2b65` (merge) |
-| 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ (this task) |
+| 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ `46e75cd55` |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ⬜ | — |
 | 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ⬜ | — |
 | 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
@@ -111,7 +111,7 @@ this task):
   option/command/plugin POD regenerated.
 - Suite green: `Files=63, Result: PASS`.
 
-**Chunk 4b — wrap each transient preload stage in a collector** (this task):
+**Chunk 4b — wrap each transient preload stage in a collector** (`46e75cd55`):
 - `Test2::Harness2::Runner::Preloader::launch_stage` now wraps each forked
   preload stage of the **transient** `yath test` runner in its own non-test
   `Test2::Collector` (`is_test => 0`), writing `stage-<name>-events.jsonl.zst`
