@@ -130,6 +130,12 @@ this task):
 - New `Test2::Harness2::Util::stage_events_file`; `RunnerReader` gained an
   optional `label`. Tests: `t/AI/integration/stage_collectors.t` (end-to-end
   stage stdout/stderr visible) + a `RunnerReader` label unit subtest.
+- Monitor/reload restart: a stage that restarts reuses its events-file path, so
+  the stage collector is marked **`resumable`** (new `Test2::Collector`
+  attribute, `eabf87e` in Test2-Collector) when the preloader is monitoring — it
+  closes without a terminal `harness_process_exit`, the next incarnation appends
+  to the same file, and the gatherer's tail reader streams across the restart.
+  Without monitor a stage runs once and finalizes normally.
 - Suite green: `Files=78, Result: PASS`.
 
 **Chunk 4a — wrap the `yath test` runner in a collector** (`bf1081ab0` merge):
