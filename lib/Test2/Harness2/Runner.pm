@@ -100,14 +100,15 @@ sub job_class { 'Test2::Harness2::Runner::Job' }
 sub name    { 'runner' }
 sub workdir { my $self = shift; return $self->{+DIR} }
 
-# A transient preload stage is itself a service (chunk 5d): the forked stage child
+# A preload stage is itself a service (chunk 5d/6.1-2): the forked stage child
 # rebinds the service socket to 'preload-<stage>.socket' in the workdir and the
-# runner connects out to it to dispatch jobs. The root process and the
-# (un-migrated, gated) persistent path keep the 'runner' name / runner.socket.
+# runner connects out to it to dispatch jobs. The root process keeps the 'runner'
+# name / runner.socket. This applies to BOTH the transient and persistent paths:
+# a persistent forked stage is a dispatch service too (chunk 6.1-2), so it no
+# longer polls dispatch.jsonl for work.
 sub service_name {
     my $self = shift;
     return 'runner' if $self->{+ROOTPID} == $$;
-    return 'runner' if $self->{+PERSIST};
     my $stage = $self->{+STAGE} // return 'runner';
     return "preload-$stage";
 }
@@ -123,12 +124,13 @@ sub service_name {
 # Stage::Client run-scoped paths) is the seam for the future run-scoped-stage
 # feature; it is intentionally left unbuilt here (no trigger exists).
 
-# True when this process is a forked transient preload stage acting as a
-# socket-dispatch service (not the root runner, not the persistent path).
+# True when this process is a forked preload stage acting as a socket-dispatch
+# service (not the root runner). Applies to the transient AND persistent paths
+# (chunk 6.1-2): every forked stage receives dispatched work over its own socket
+# instead of polling dispatch.jsonl.
 sub is_stage_service {
     my $self = shift;
     return 0 if $self->{+ROOTPID} == $$;
-    return 0 if $self->{+PERSIST};
     return $self->{+STAGE} ? 1 : 0;
 }
 
@@ -222,13 +224,13 @@ sub state {
         resources    => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
         settings     => $settings,
 
-        # The transient runner is the sole writer/reader of its scheduling state
-        # now that stages receive work over sockets instead of polling
-        # dispatch.jsonl (chunk 5d): run it in 'direct' mode so its actions apply
-        # in-process with no dispatch.jsonl round-trip. The persistent path (gated)
-        # still uses the dispatch.jsonl medium so its un-migrated stages and the
-        # persistent run/spawn/abort commands keep coordinating through the file.
-        direct => $self->{+PERSIST} ? 0 : 1,
+        # The runner is the sole writer/reader of its scheduling state now that
+        # stages receive work over sockets instead of polling dispatch.jsonl
+        # (chunk 5d transient, chunk 6.1-2 persistent) and the run/spawn/abort/
+        # status commands submit + query over runner.socket: run it in 'direct'
+        # mode so its actions apply in-process with no dispatch.jsonl round-trip.
+        # dispatch.jsonl has no remaining writer or reader on either path.
+        direct => 1,
     );
 }
 
@@ -824,13 +826,13 @@ sub scheduler_tick {
             $self->{+ACTIVE_RUN} = $after;
         }
 
-        # Chunk 5d: hand any task the scheduler just started, whose run-stage is a
-        # socketed preload stage (i.e. not this root process's own stage), out to
-        # that stage's preload-<stage>.socket. Tasks for the root's own stage stay
-        # in the task list for the root's own run_job (the no-preload path, where
-        # the root forks tests itself). Persistent (gated) and root-stage tasks are
-        # left alone.
-        $self->dispatch_pending if $self->{+PERSIST} ? 0 : 1;
+        # Chunk 5d/6.1-2: hand any task the scheduler just started, whose run-stage
+        # is a socketed preload stage (i.e. not this root process's own stage), out
+        # to that stage's preload-<stage>.socket. Tasks for the root's own stage
+        # stay in the task list for the root's own run_job (the no-preload path,
+        # where the root forks tests itself). This now runs on the persistent path
+        # too (its forked stages are dispatch services).
+        $self->dispatch_pending;
 
         if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
             print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
@@ -1061,12 +1063,14 @@ sub run_stage {
     $self->watchdog->abort_remaining
         if $self->{+ROOTPID} == $$ && !$self->{+PERSIST};
 
-    # Chunk 5d: transient stage services (this process's own stage children, and a
+    # Chunk 5d/6.1-2: stage services (this process's own stage children, and a
     # nested stage's grandchildren) idle waiting for dispatches; unlike the old
     # dispatch.jsonl stages they do not observe the run ending on their own. Tell
     # each live child stage to shut down cleanly before the wait(all=>1) below, so
-    # it does not block forever on an idle stage. Skip on the gated persistent path.
-    $self->stop_stages unless $self->{+PERSIST};
+    # it does not block forever on an idle stage. This runs on the persistent path
+    # too -- a persistent runner stops its stages when its run loop exits (shutdown
+    # or reload-respawn).
+    $self->stop_stages;
 
     $self->killall($self->{+SIGNAL}) if $self->{+SIGNAL};
 
@@ -1135,16 +1139,12 @@ sub run_job {
         $pid = $job->pid;
     }
 
-    # jobs.jsonl is the runner -> gatherer channel (the gatherer reads it to learn
-    # spawned jobs + their pids). Chunk 5g retires it on the transient path: the
-    # runner forwards the same job-start as an announce_job mutation over the
-    # socket instead. The gated persistent path still has a gatherer, so keep
-    # writing the file there.
-    if ($self->{+PERSIST}) {
-        my $json_data = $job->TO_JSON();
-        $json_data->{stamp} = $spawn_time;
-        $run->jobs->write($json_data);
-    }
+    # jobs.jsonl was the runner -> gatherer channel (the gatherer read it to learn
+    # spawned jobs + their pids). Chunk 5g retired it on the transient path and
+    # chunk 6.1 retires it on the persistent path: the runner forwards the
+    # job-start as an announce_job mutation over the socket, and the job's pid
+    # rides the new job_pid report / in-memory map (status/ps/abort), so no
+    # process reads the file any more.
 
     # Chunk 5f: forking a test job is a runner-originated state mutation; forward
     # it to subscribers so their mirror sees the job go running.
@@ -1247,6 +1247,12 @@ sub set_proc_exit {
     }
     elsif ($proc->isa('Test2::Harness2::Runner::Preloader::Stage')) {
         my $stage = $proc->name;
+
+        # Chunk 6.1-2: a stage that exited (a reload/monitor relaunch, or a death)
+        # took its preload-<stage>.socket with it. Drop the cached connect-out
+        # client so the next dispatch reconnects to the relaunched stage's fresh
+        # socket instead of writing to a stale/closed connection.
+        delete $self->{+STAGE_CLIENTS}->{$stage} if $self->{+ROOTPID} == $$;
 
         if ($exit != 0) {
             my $e   = parse_exit($exit);

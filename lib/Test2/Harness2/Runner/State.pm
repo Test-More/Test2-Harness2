@@ -297,13 +297,10 @@ sub halt_run {
     my ($run_id) = @_;
     $self->_enqueue(halt_run => $run_id);
 
-    my $dir = File::Spec->catdir($self->{+WORKDIR}, $run_id);
-    my $file = File::Spec->catfile($dir, 'jobs.jsonl');
-
-    if (-f $file) {
-        my $queue = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($dir, 'jobs.jsonl'));
-        $queue->end;
-    }
+    # Chunk 6.1: the per-run jobs.jsonl (the old runner -> gatherer channel) is
+    # retired. Halting a run no longer needs to append a terminator to it -- the
+    # runner forwards the run's outcome over the socket and the renderer rolls it
+    # up from canonical state.
 }
 
 sub _halt_run {

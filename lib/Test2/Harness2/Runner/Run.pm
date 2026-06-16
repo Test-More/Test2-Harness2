@@ -7,15 +7,11 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 use File::Spec();
 
-use Test2::Harness2::Util::File::JSONL;
-
 use parent 'Test2::Harness2::Run';
 use Test2::Harness2::Util::HashBase qw{
     <workdir
 
     +run_dir
-    +jobs_file
-    +jobs
 };
 
 sub init {
@@ -26,9 +22,7 @@ sub init {
     croak "'workdir' is a required attribute" unless $self->{+WORKDIR};
 }
 
-sub run_dir   { $_[0]->{+RUN_DIR}   //= $_[0]->SUPER::run_dir($_[0]->{+WORKDIR}) }
-sub jobs_file { $_[0]->{+JOBS_FILE} //= File::Spec->catfile($_[0]->run_dir, 'jobs.jsonl') }
-sub jobs      { $_[0]->{+JOBS}      //= Test2::Harness2::Util::File::JSONL->new(name => $_[0]->jobs_file, use_write_lock => 1) }
+sub run_dir { $_[0]->{+RUN_DIR} //= $_[0]->SUPER::run_dir($_[0]->{+WORKDIR}) }
 
 1;
 
@@ -60,14 +54,6 @@ Runner directory.
 =item $dir = $run->run_dir
 
 Directory specific to this run.
-
-=item $path = $run->jobs_file
-
-Path to the C<jobs.jsonl> file.
-
-=item $fh = $run->jobs
-
-Filehandle to C<jobs.jsonl>.
 
 =back
 

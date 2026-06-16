@@ -8,7 +8,6 @@ use Getopt::Yath;
 
 use Test2::Harness2::Run;
 use Test2::Harness2::Event;
-use Test2::Harness2::Util::Queue;
 use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
@@ -26,8 +25,6 @@ use Test2::Util::Table qw/table/;
 use POSIX();
 
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
-
-use File::Spec;
 
 use Time::HiRes qw/sleep time/;
 use List::Util qw/sum max/;
@@ -434,29 +431,6 @@ sub _runner_gone {
     return $ipc->procs->{$runner_pid} ? 0 : 1;
 }
 
-sub get_job_pid {
-    my $self = shift;
-    my ($run_id, $job_id) = @_;
-
-    return undef unless $run_id && $job_id;
-
-    my $run_dir   = File::Spec->catdir($self->workdir, $run_id);
-    my $jobs_file = File::Spec->catfile($run_dir, 'jobs.jsonl');
-
-    return undef unless -f $jobs_file;
-    my $queue = Test2::Harness2::Util::Queue->new(file => $jobs_file);
-
-    my $found;
-    for my $item ($queue->poll) {
-        my $task = $item->[-1];
-        next unless $task->{job_id} && $task->{job_id} eq $job_id;
-        $found = $task;
-    }
-
-    return undef unless $found;
-
-    return $found->{pid} // undef;
-}
 
 sub stop {
     my $self = shift;
