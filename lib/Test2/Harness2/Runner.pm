@@ -25,6 +25,8 @@ use Test2::Harness2::Runner::Preload();
 use Test2::Harness2::Runner::Preloader();
 use Test2::Harness2::Runner::Preloader::Stage();
 use Test2::Harness2::Runner::DepTracer();
+use Test2::Harness2::Runner::Stage();
+use Test2::Harness2::Runner::Stage::Client();
 
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
@@ -69,6 +71,9 @@ use Test2::Harness2::Util::HashBase(
         +scheduler_errors
 
         <rootpid
+
+        +stage_clients
+        +stage_delegate
     },
 );
 
@@ -81,6 +86,27 @@ sub job_class  { 'Test2::Harness2::Runner::Job' }
 # 5.3). 'workdir' and 'name' satisfy Test2::Harness2::Role::Service.
 sub name    { 'runner' }
 sub workdir { my $self = shift; return $self->{+DIR} }
+
+# A transient preload stage is itself a service (chunk 5d): the forked stage child
+# rebinds the service socket to 'preload-<stage>.socket' in the workdir and the
+# runner connects out to it to dispatch jobs. The root process and the
+# (un-migrated, gated) persistent path keep the 'runner' name / runner.socket.
+sub service_name {
+    my $self = shift;
+    return 'runner' if $self->{+ROOTPID} == $$;
+    return 'runner' if $self->{+PERSIST};
+    my $stage = $self->{+STAGE} // return 'runner';
+    return "preload-$stage";
+}
+
+# True when this process is a forked transient preload stage acting as a
+# socket-dispatch service (not the root runner, not the persistent path).
+sub is_stage_service {
+    my $self = shift;
+    return 0 if $self->{+ROOTPID} == $$;
+    return 0 if $self->{+PERSIST};
+    return $self->{+STAGE} ? 1 : 0;
+}
 
 # Test2::Harness2::IPC owns child reaping for this process (via wait /
 # _bring_out_yer_dead, which dies on an unexpected waitpid). The service role's
@@ -151,6 +177,13 @@ sub preloader {
 sub state {
     my $self = shift;
 
+    # A transient forked preload stage no longer polls dispatch.jsonl for work
+    # (chunk 5d): it receives dispatched tasks over its own socket and reports
+    # outcomes back to runner.socket. It uses a lightweight in-stage delegate that
+    # exposes the same next_task/run/stop_task/retry_task API run_job/set_proc_exit
+    # call, so the shared run loop is unchanged.
+    return $self->stage_delegate if $self->is_stage_service;
+
     my $preloader = $self->preloader;
 
     my $settings = $self->settings;
@@ -160,6 +193,25 @@ sub state {
         preloader    => $preloader,
         resources    => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
         settings     => $settings,
+
+        # The transient runner is the sole writer/reader of its scheduling state
+        # now that stages receive work over sockets instead of polling
+        # dispatch.jsonl (chunk 5d): run it in 'direct' mode so its actions apply
+        # in-process with no dispatch.jsonl round-trip. The persistent path (gated)
+        # still uses the dispatch.jsonl medium so its un-migrated stages and the
+        # persistent run/spawn/abort commands keep coordinating through the file.
+        direct => $self->{+PERSIST} ? 0 : 1,
+    );
+}
+
+# The lightweight in-stage delegate a transient forked preload stage uses in
+# place of State (chunk 5d). Built once per stage child; it holds the dispatched
+# task queue and a Runner::Client back to runner.socket for outcome reports.
+sub stage_delegate {
+    my $self = shift;
+    return $self->{+STAGE_DELEGATE} //= Test2::Harness2::Runner::Stage->new(
+        workdir => $self->{+DIR},
+        name    => $self->{+STAGE},
     );
 }
 
@@ -365,6 +417,64 @@ sub request_handler_halt_run {
     return undef;
 }
 
+# Chunk 5d: a forked transient preload stage receives dispatched jobs on its own
+# preload-<stage>.socket. The runner's in-process scheduler connects out and sends
+# the already-resolved task (with the resources merged in) plus the run definition;
+# the stage delegate queues it and the stage's run loop forks it from the preloaded
+# interpreter. One-way: the runner does not read a reply.
+sub request_handler_run_task {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->enqueue_task($payload->{task}, $payload->{run});
+    return undef;
+}
+
+# Chunk 5d: a stage reports a finished dispatched job back to the runner over
+# runner.socket so the runner's canonical scheduler state releases the slot and
+# resources (stop) or re-queues it for dispatch (retry). The retry-vs-stop decision
+# is made by the stage that reaped the job (it owns the proc / is_try / verdict);
+# here we only fold the outcome into state. One-way.
+sub request_handler_stop_task {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->stop_task($payload->{job_id});
+    return undef;
+}
+
+sub request_handler_retry_task {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->retry_task($payload->{job_id});
+    return undef;
+}
+
+# Chunk 5d: a monitored stage forwards a reload/monitor notification so the
+# runner's reload state (diagnostics) stays current without a shared file. One-way.
+sub request_handler_reload {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->reload($payload->{stage}, $payload->{data});
+    return undef;
+}
+
+# Chunk 5d: a transient stage reports it has bound its socket and is ready to be
+# scheduled (or is going down at shutdown). The runner folds this into the same
+# stage-readiness state its scheduler's _stage_order already gates on, replacing
+# the dispatch.jsonl stage_ready/stage_down actions for the transient path. One-way.
+sub request_handler_stage_ready {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->stage_ready($payload->{stage});
+    return undef;
+}
+
+sub request_handler_stage_down {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->stage_down($payload->{stage});
+    return undef;
+}
+
 sub service_tick {
     my $self = shift;
 
@@ -409,6 +519,14 @@ sub scheduler_tick {
             last;
         }
 
+        # Chunk 5d: hand any task the scheduler just started, whose run-stage is a
+        # socketed preload stage (i.e. not this root process's own stage), out to
+        # that stage's preload-<stage>.socket. Tasks for the root's own stage stay
+        # in the task list for the root's own run_job (the no-preload path, where
+        # the root forks tests itself). Persistent (gated) and root-stage tasks are
+        # left alone.
+        $self->dispatch_pending if $self->{+PERSIST} ? 0 : 1;
+
         if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
             print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
             print STDERR "There are pending tests but resources have not become available.\n";
@@ -433,6 +551,81 @@ sub scheduler_tick {
     if ($count >= $max) {
         print STDERR "$$ $0 Scheduler aborting after $count consecutive errors.\n";
         $self->{+SIGNAL} //= 'TERM';
+    }
+
+    return;
+}
+
+# Chunk 5d: the connect-out client to a stage's preload-<stage>.socket, one per
+# stage, lazily built and cached. The liveness check lets the client stop retrying
+# the connect if the stage process has died before it ever bound its socket (e.g. a
+# broken preload), so a dispatch becomes a no-op instead of hanging.
+sub stage_client {
+    my $self = shift;
+    my ($stage) = @_;
+
+    return $self->{+STAGE_CLIENTS}->{$stage} //= Test2::Harness2::Runner::Stage::Client->new(
+        workdir        => $self->{+DIR},
+        stage          => $stage,
+        liveness_check => sub {
+            my $client = shift;
+            # One non-blocking reap sweep so a stage that died during startup
+            # leaves our tracked procs; then report whether any tracked process is
+            # still a stage (a live stage means keep waiting for it to bind).
+            eval { $self->wait(timeout => 0); 1 };
+            for my $proc (values %{$self->{+PROCS} // {}}) {
+                return 1 if $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
+            }
+            return 0;
+        },
+    );
+}
+
+# Chunk 5d: ask each transient stage service to shut down cleanly at run end.
+# Stage children idle waiting for dispatches and (unlike the old dispatch.jsonl
+# stages) never see the run end on their own, so the root must tell them. We send a
+# graceful socket 'stop' to EVERY stage that is still tracked as a live process --
+# matching it to its socket by name -- so each unwinds its own run loop and exits 0
+# (a clean stage verdict), letting the root's wait(all=>1) complete. A stage that
+# already exited (broken preload) is skipped. TERM/KILL escalation for any straggler
+# is left to the runner's normal stop() path.
+sub stop_stages {
+    my $self = shift;
+
+    # Map each still-tracked stage process to its stage name so we stop exactly the
+    # live stages (including nested children) over their own sockets.
+    my %live_stage;
+    for my $proc (values %{$self->{+PROCS} // {}}) {
+        next unless $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
+        $live_stage{$proc->name} = 1;
+    }
+
+    for my $stage (keys %live_stage) {
+        my $client = $self->stage_client($stage);
+        next if $client->stage_gone;
+        eval { $client->stop; 1 };
+    }
+
+    return;
+}
+
+# Chunk 5d: hand started tasks bound for socketed stages out to those stages.
+sub dispatch_pending {
+    my $self = shift;
+
+    return unless $self->{+ROOTPID} == $$;
+
+    my $state      = $self->state;
+    my $root_stage = $self->{+STAGE} // return;
+
+    my @tasks = $state->take_dispatch_tasks($root_stage) or return;
+
+    my $run_item = $state->run_item;
+
+    for my $task (@tasks) {
+        my $stage  = $task->{stage};
+        my $client = $self->stage_client($stage);
+        $client->run_task($task, $run_item);
     }
 
     return;
@@ -485,6 +678,7 @@ sub reset_stage {
     # From Runner
     delete $self->{+STAGE};
     delete $self->{+STATE};
+    delete $self->{+STAGE_DELEGATE};
     delete $self->{+LAST_TIMEOUT_CHECK};
 
     return;
@@ -495,14 +689,41 @@ sub run_stage {
     my ($stage) = @_;
 
     $self->{+STAGE} = $stage;
-    $self->state->stage_ready($stage);
+
+    # A forked transient preload stage (chunk 5d) becomes a dispatch service: it
+    # drops the runner.socket listen descriptor it inherited from the root and
+    # binds its own preload-<stage>.socket. The socket starting to accept is the
+    # readiness signal the runner waits on (Stage::Client connect-retry), which
+    # replaces the dispatch.jsonl-backed stage_ready action for the transient path.
+    my $stage_service = $self->is_stage_service;
+    if ($stage_service) {
+        $self->reset_service;
+        $self->start_service;
+        # The socket is now bound and about to start accepting: tell the runner this
+        # stage is ready to be scheduled. This mirrors the old dispatch.jsonl
+        # stage_ready action over the socket so the runner's _stage_order picks the
+        # stage up (chunk 5d). The socket accepting is the readiness signal; the
+        # explicit report just lets the runner gate scheduling without probing.
+        $self->state->client->stage_ready($stage);
+    }
+    else {
+        $self->state->stage_ready($stage);
+    }
 
     while (1) {
-        # Service the runner.socket from the root process only: forked stage
-        # children inherit the listen FD but must not accept on it.
         if ($self->{+ROOTPID} == $$) {
+            # Root runner: accept run/task submissions and stage outcome reports on
+            # runner.socket, and advance the in-process scheduler (which dispatches
+            # ready tasks out to the stage sockets).
             $self->service_io;
             $self->service_tick;
+        }
+        elsif ($stage_service) {
+            # Stage service: accept dispatched jobs on preload-<stage>.socket. No
+            # scheduler here -- the runner schedules and dispatches; this process
+            # only forks/reaps the jobs it is handed and reports outcomes back.
+            $self->service_io;
+            $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
         }
 
         next if $self->run_job();
@@ -514,7 +735,20 @@ sub run_stage {
         sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
     }
 
-    $self->state->stage_down($stage);
+    if ($stage_service) {
+        my $ok = eval { $self->state->client->stage_down($stage); 1 };
+        $self->close_service;
+    }
+    else {
+        $self->state->stage_down($stage);
+    }
+
+    # Chunk 5d: transient stage services (this process's own stage children, and a
+    # nested stage's grandchildren) idle waiting for dispatches; unlike the old
+    # dispatch.jsonl stages they do not observe the run ending on their own. Tell
+    # each live child stage to shut down cleanly before the wait(all=>1) below, so
+    # it does not block forever on an idle stage. Skip on the gated persistent path.
+    $self->stop_stages unless $self->{+PERSIST};
 
     $self->killall($self->{+SIGNAL}) if $self->{+SIGNAL};
 

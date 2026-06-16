@@ -100,6 +100,30 @@ Signal that no more runs/work will be submitted.
 
 Ask the runner to halt the run (used on a caught signal).
 
+=item $client->stop_task($job_id)
+
+Report (from a preload stage) that a dispatched job finished and its slot/resources
+should be released in the runner's scheduler state.
+
+=item $client->retry_task($job_id)
+
+Report (from a preload stage) that a dispatched job finished but should be retried;
+the runner re-queues it for dispatch.
+
+=item $client->stage_ready($stage)
+
+Report (from a preload stage) that the stage has bound its socket and is ready to
+be scheduled.
+
+=item $client->stage_down($stage)
+
+Report (from a preload stage) that the stage is shutting down.
+
+=item $client->reload($stage, $data)
+
+Forward (from a monitored preload stage) a reload/monitor notification so the
+runner's reload state stays current.
+
 =back
 
 =cut
@@ -130,6 +154,31 @@ sub end_queue ($self) {
 
 sub halt_run ($self, $run_id) {
     $self->_send({request => 'halt_run', run_id => $run_id});
+    return;
+}
+
+sub stop_task ($self, $job_id) {
+    $self->_send({request => 'stop_task', job_id => $job_id});
+    return;
+}
+
+sub retry_task ($self, $job_id) {
+    $self->_send({request => 'retry_task', job_id => $job_id});
+    return;
+}
+
+sub reload ($self, $stage, $data) {
+    $self->_send({request => 'reload', stage => $stage, data => $data});
+    return;
+}
+
+sub stage_ready ($self, $stage) {
+    $self->_send({request => 'stage_ready', stage => $stage});
+    return;
+}
+
+sub stage_down ($self, $stage) {
+    $self->_send({request => 'stage_down', stage => $stage});
     return;
 }
 

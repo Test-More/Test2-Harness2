@@ -27,6 +27,7 @@ use Test2::Harness2::Util::HashBase(
         <workdir
         <preloader
         <no_poll
+        <direct
         <resources
         job_count
         +settings
@@ -38,6 +39,7 @@ use Test2::Harness2::Util::HashBase(
 
         <pending_tasks <task_lookup
         <pending_runs  +run <stopped_runs
+        <run_items
         <pending_spawns
 
         <running
@@ -85,18 +87,22 @@ sub init {
 
     @{$self->{+RESOURCES}} = sort { $a->sort_weight <=> $b->sort_weight } @{$self->{+RESOURCES}};
 
-    # dispatch.jsonl remains the runner's action log and the shared medium that
-    # forked stage children (separate processes) poll for next_task. The runner's
-    # in-process scheduler round-trips its own actions (start_run/start_task/...)
-    # through it and drains+advances it each service-loop iteration (chunk 5b); the
+    # In 'direct' mode (the transient runner, chunk 5d) the runner is the sole
+    # owner of its scheduling state: it dispatches work to its stage services over
+    # sockets and folds their outcome reports back in-process, so there is no
+    # dispatch.jsonl and no shared reader. Actions apply immediately in-process
+    # (see _enqueue) and poll() is a no-op; do not even open the file.
+    #
+    # Otherwise (the persistent / no_poll modes, gated, not migrated) dispatch.jsonl
+    # is still the runner's action log and the shared medium that forked stage
+    # children poll for next_task. The runner's in-process scheduler round-trips its
+    # own actions through it and drains+advances it each service-loop iteration; the
     # Queue's own File::JSONL write lock serializes the appends, and the separate
-    # scheduler PROCESS and dispatch.lock flock are gone. The transient `yath test`
-    # command no longer writes here itself: it submits its run and tasks over
-    # runner.socket, and the runner enqueues them into this file on its behalf via
-    # its request handlers (chunk 5c) so both the runner and its stage children see
-    # them. The persistent run/spawn/abort commands (gated, not migrated) still
-    # submit through this file directly by constructing their own no_poll State.
-    $self->{+DISPATCH_FILE} = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($self->{+WORKDIR}, 'dispatch.jsonl'));
+    # scheduler PROCESS and dispatch.lock flock are gone. The persistent
+    # run/spawn/abort commands submit through this file directly by constructing
+    # their own no_poll State.
+    $self->{+DISPATCH_FILE} = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($self->{+WORKDIR}, 'dispatch.jsonl'))
+        unless $self->{+DIRECT};
 
     $self->{+RELOAD_STATE} //= {};
 
@@ -179,6 +185,31 @@ sub next_task {
     }
 }
 
+# Chunk 5d: pull tasks the scheduler has started whose run-stage is NOT the
+# given (root) stage off the task list, so the runner can dispatch them to the
+# matching stage service. Tasks for the root's own stage are left in place for the
+# root's own run_job (the no-preload path). Returns the removed tasks; their
+# accounting (running counts, resources) was already applied by _start_task, so
+# they are still tracked as running -- the stage reports completion back later.
+sub take_dispatch_tasks {
+    my $self = shift;
+    my ($root_stage) = @_;
+
+    my $list = $self->{+TASK_LIST} //= [];
+    my (@dispatch, @keep);
+    for my $task (@$list) {
+        if (defined($task->{stage}) && $task->{stage} ne $root_stage) {
+            push @dispatch => $task;
+        }
+        else {
+            push @keep => $task;
+        }
+    }
+
+    @$list = @keep;
+    return @dispatch;
+}
+
 sub advance {
     my $self = shift;
     $self->poll();
@@ -214,6 +245,10 @@ sub poll {
 
     return if $self->{+NO_POLL};
 
+    # Direct mode applies actions in-process at enqueue time; there is no file to
+    # drain (chunk 5d).
+    return if $self->{+DIRECT};
+
     my $queue = $self->dispatch_file;
 
     for my $item ($queue->poll) {
@@ -231,6 +266,16 @@ sub poll {
 sub _enqueue {
     my $self = shift;
     my ($action, $item) = @_;
+
+    # Direct mode (chunk 5d): the runner owns its state outright, so apply the
+    # action in-process immediately instead of round-tripping it through
+    # dispatch.jsonl. Same dispatch table, same handlers; just no file.
+    if ($self->{+DIRECT}) {
+        my $sub = $ACTIONS{$action} or die "Invalid action '$action'";
+        $self->$sub($item, $$);
+        return;
+    }
+
     $self->{+DISPATCH_FILE}->enqueue({action => $action, item => $item, stamp => time, pid => $$});
     $self->poll;
 }
@@ -280,12 +325,26 @@ sub _queue_run {
     my $self = shift;
     my ($run) = @_;
 
+    # Keep the raw queued run item so the runner can forward it verbatim when it
+    # dispatches a task to a stage service (chunk 5d): the stage rebuilds its own
+    # Runner::Run from this item rather than from a serialized live object.
+    $self->{+RUN_ITEMS}->{$run->{run_id}} = {%$run} if $run->{run_id};
+
     push @{$self->{+PENDING_RUNS}} => Test2::Harness2::Runner::Run->new(
         %$run,
         workdir => $self->{+WORKDIR},
     );
 
     return;
+}
+
+# The raw queued run item for the active run, for forwarding to a stage on
+# dispatch. Returns undef if there is no active run or its item is not retained
+# (e.g. the gated polling path, which never dispatches over sockets).
+sub run_item {
+    my $self = shift;
+    my $run = $self->{+RUN} or return undef;
+    return $self->{+RUN_ITEMS}->{$run->run_id};
 }
 
 sub start_run {

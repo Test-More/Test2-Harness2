@@ -64,6 +64,13 @@ reaping paths do not race for the same C<waitpid>.
 
 =over 4
 
+=item $name = $self->service_name
+
+The base name used for the listen socket file. Defaults to C<name>; a consumer
+that binds different sockets at different times (e.g. the runner, which is
+C<runner> in its root process but C<preload-E<lt>stageE<gt>> in a forked stage
+child) overrides this to vary the socket without changing its identity.
+
 =item $path = $self->service_socket_path
 
 The listen socket path: C<< $workdir/$name.socket >>, or
@@ -95,6 +102,13 @@ Close the listening socket and all connections, and unlink the socket path. Safe
 to call more than once; a consumer driving its own loop should call this when it
 tears the service down.
 
+=item $self->reset_service
+
+Close and drop the listening socket and all connections B<without> unlinking the
+socket path, then clear the service state so a subsequent C<start_service> binds
+fresh. Used by a forked child that inherited its parent's listen descriptor and
+must drop it (without removing the parent's socket file) before binding its own.
+
 =item $bool = $self->service_stopped
 
 True once C<stop_service> has been requested.
@@ -117,12 +131,14 @@ Built-in handler: stop the loop. Returns C<< {ok =E<gt> 1, stopping =E<gt> 1} >>
 
 =cut
 
+sub service_name ($self) { return $self->name }
+
 sub service_socket_path ($self) {
     my $dir = $self->workdir;
     $dir = File::Spec->catdir($dir, $self->run_ord)
         if $self->can('run_ord') && defined $self->run_ord;
 
-    return File::Spec->catfile($dir, $self->name . '.socket');
+    return File::Spec->catfile($dir, $self->service_name . '.socket');
 }
 
 sub start_service ($self) {
@@ -263,6 +279,20 @@ sub _service_conn ($self, $fh) {
         warn "service: failed to write response: $@\n" unless $sent;
     }
 
+    return;
+}
+
+sub reset_service ($self) {
+    if (my $sel = $self->{service_select}) {
+        for my $fh ($sel->handles) {
+            $sel->remove($fh);
+            close($fh);
+        }
+    }
+    delete $self->{service_listen};
+    delete $self->{service_select};
+    $self->{service_conns}   = {};
+    $self->{service_stopped} = 0;
     return;
 }
 

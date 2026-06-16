@@ -1,0 +1,4 @@
+use Test2::V0;
+ok($StageDispatch::BETA_LOADED, "beta.tx ran in the BETA stage (dispatched to preload-BETA.socket)");
+ok(!$StageDispatch::ALPHA_LOADED, "beta.tx did NOT run in the ALPHA stage");
+done_testing;
