@@ -7,13 +7,11 @@ our $VERSION = '2.000000';
 use File::Spec();
 
 use Carp qw/confess croak/;
-use Fcntl qw/LOCK_EX LOCK_UN/;
 use POSIX qw/:sys_wait_h/;
 use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/sleep time/;
-use Scope::Guard;
 
-use Test2::Harness2::Util qw/clean_path file2mod mod2file open_file parse_exit write_file_atomic process_includes chmod_tmp write_file/;
+use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file/;
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 
@@ -65,12 +63,12 @@ use Test2::Harness2::Util::HashBase(
 
         +last_timeout_check
         +timeout_signaled
-        +dispatch_lock_file
         +can_stage
         <tmp_dir
 
+        +scheduler_errors
+
         <rootpid
-        <scheduler_pid
     },
 );
 
@@ -242,11 +240,6 @@ sub stop {
     $self->SUPER::stop();
 }
 
-sub dispatch_lock_file {
-    my $self = shift;
-    return $self->{+DISPATCH_LOCK_FILE} //= File::Spec->catfile($self->{+DIR}, 'dispatch.lock');
-}
-
 sub handle_sig {
     my $self = shift;
     my ($sig) = @_;
@@ -298,9 +291,10 @@ sub process {
     $ENV{T2_HARNESS_WORKDIR} = $self->{+DIR};
 
     # Bind runner.socket and run the accept/request loop coexisting with the
-    # existing file-IPC run loop (chunk 5a scaffolding). The separate scheduler
-    # process and dispatch.jsonl/queue.jsonl stay in place this phase; the socket
-    # is bound and a 'stop' request is honored.
+    # run loop (chunk 5a scaffolding). The scheduler is now an in-runner object
+    # ticked each service-loop iteration (chunk 5b); dispatch.jsonl/dispatch.lock
+    # are gone. queue.jsonl/jobs.jsonl/run_queue.jsonl stay this phase (socket
+    # run-submission is chunk 5c).
     $self->start_service;
 
     $self->start();
@@ -323,98 +317,72 @@ sub service_tick {
 
     # A 'stop' request over runner.socket asks the run loop to wind down. The
     # role's request_handler_stop sets service_stopped; translate that into the
-    # runner's own shutdown signal so the existing loops (run_stage,
-    # spawn_scheduler) terminate through end_test_loop.
+    # runner's own shutdown signal so the run loop (run_stage) terminates through
+    # end_test_loop.
     $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
+
+    # The scheduler is an in-runner object (chunk 5b): advance it here, on the
+    # same service-loop cadence the socket I/O runs on, instead of in a separate
+    # process polling dispatch.jsonl under a flock.
+    $self->scheduler_tick;
 
     return;
 }
 
-sub spawn_scheduler {
+# How many consecutive scheduler-logic failures the runner tolerates before it
+# gives up and aborts the run. A scheduler used to be a separate process that
+# could die and be detected via waitpid; now that it is in-runner code, a
+# failure (e.g. a resource that dies in tick()) surfaces here directly. We retry
+# a few times so a transient error self-heals, then abort cleanly with a useful
+# diagnostic rather than spinning or silently hanging.
+sub SCHEDULER_MAX_ERRORS { 5 }
+
+sub scheduler_tick {
     my $self = shift;
 
+    # Only the root runner process schedules; forked stage children do not.
     return unless $self->{+ROOTPID} == $$;
 
-    my $pid = fork // die "Could not fork: $!";
-    if ($pid) {
-        $self->{+SCHEDULER_PID} = $pid;
-        return $self->watch_pid($pid);
-    }
-
-    setpgrp(0, 0) if Test2::Harness2::Util::IPC::USE_P_GROUPS();
-
-    my $guard = Scope::Guard->new(sub {
-        my $err = $@;
-        print STDERR "\n\n$$ $0 Scheduler escaped scope!\n";
-        print STDERR "$$ $0 Error: $err\n" if $err;
-        exit 255;
-    });
-
-    $0 =~ s/-runner/-scheduler/i;
+    # Once we are winding down there is no point advancing the scheduler.
+    return if $self->{+SIGNAL};
 
     my $state = $self->state;
 
-    my $lock = open_file($self->dispatch_lock_file, '>>');
+    my $ok = eval {
+        $state->poll;
 
-    my $consecutive_errors = 0;
-    my $max_errors = 5;
-
-    while (1) {
-        my $ok = eval {
-            $state->poll;
-
-            flock($lock, LOCK_EX) or die "Could not get scheduler lock: $!";
-
-            while (1) {
-                next if $state->advance;
-                last;
-            }
-
-            flock($lock, LOCK_UN) or die "Could not release scheduler lock: $!";
-
-            if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
-                print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
-                print STDERR "There are pending tests but resources have not become available.\n";
-                print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
-                $state->truncate();
-                $self->{+SIGNAL} = 'TERM';
-            }
-
-            1;
-        };
-
-        unless ($ok) {
-            my $err = $@;
-            $consecutive_errors++;
-            eval { flock($lock, LOCK_UN) };
-            print STDERR "\n$$ $0 Scheduler error ($consecutive_errors/$max_errors): $err\n";
-
-            if ($consecutive_errors >= $max_errors) {
-                print STDERR "$$ $0 Scheduler aborting after $consecutive_errors consecutive errors.\n";
-                $guard->dismiss;
-                exit 255;
-            }
-        }
-        else {
-            $consecutive_errors = 0;
+        while (1) {
+            next if $state->advance;
+            last;
         }
 
-        if ($self->end_test_loop()) {
-            $guard->dismiss;
-            exit(0);
+        if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
+            print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
+            print STDERR "There are pending tests but resources have not become available.\n";
+            print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
+            $state->truncate();
+            $self->{+SIGNAL} = 'TERM';
         }
 
-        my $slept = 0;
-        if ($self->{+WAIT_TIME}) {
-            # This sleep is often interrupted by signals.
-            while ($slept < $self->{+WAIT_TIME}) {
-                $slept += sleep($self->{+WAIT_TIME} - $slept);
-            }
-        }
+        1;
+    };
+
+    if ($ok) {
+        $self->{+SCHEDULER_ERRORS} = 0;
+        return;
     }
 
-    warn "$$ $0 Escaped scheduler loop";
-    exit 255;
+    my $err = $@;
+    my $count = ++$self->{+SCHEDULER_ERRORS};
+    my $max   = $self->SCHEDULER_MAX_ERRORS;
+    print STDERR "\n$$ $0 Scheduler error ($count/$max): $err\n";
+
+    if ($count >= $max) {
+        print STDERR "$$ $0 Scheduler aborting after $count consecutive errors.\n";
+        $self->{+SIGNAL} //= 'TERM';
+    }
+
+    return;
 }
 
 sub run_tests {
@@ -422,8 +390,6 @@ sub run_tests {
 
     my $preloader = $self->preloader;
     $preloader->preload();
-
-    $self->spawn_scheduler();
 
     my ($stage, @procs) = $preloader->preload_stages();
 
@@ -660,21 +626,6 @@ sub set_proc_exit {
             my ($name, @procs) = $self->preloader->_preload_stages($stage);
             $self->watch($_) for @procs;
             longjump "Stage-Runner" => $name unless $pid == $$;
-        }
-    }
-
-    if ($self->{+SCHEDULER_PID} && $proc->pid == $self->{+SCHEDULER_PID}) {
-        delete $self->{+SCHEDULER_PID};
-
-        if ($exit) {
-            my $e = parse_exit($exit);
-            print STDERR "\n$$ $0 Scheduler process (pid: @{[$proc->pid]}) exited unexpectedly (sig: $e->{sig}, err: $e->{err})!\n";
-            print STDERR "$$ $0 Aborting test run due to scheduler death.\n\n";
-            $self->{+SIGNAL} //= 'TERM';
-        }
-        elsif (!$self->{+SIGNAL} && !$self->state->done) {
-            print STDERR "\n$$ $0 Scheduler process (pid: @{[$proc->pid]}) exited prematurely (exit: 0) with pending work.\n\n";
-            $self->{+SIGNAL} //= 'TERM';
         }
     }
 

@@ -612,15 +612,18 @@ sub _note_verdict {
 
         # Retry intent: the JobReader tails a single try's events file and cannot
         # know whether the runner will retry this try, so it hardcodes retry=0.
-        # The gatherer DOES know: PENDING->{$job_id} is the remaining retry budget
-        # (it starts at 1 + retry-count in process_tasks and is decremented in
-        # jobs() each time a new try's job entry is read). At the moment a FAILING
-        # job_end arrives, the current try's entry has already been read, so a
-        # non-zero PENDING means more tries are budgeted; the runner retries every
-        # failure while budget remains (Runner: is_try < retry => retry_task), so
-        # a failing try with budget left WILL be retried. Mark it so the renderer
-        # shows "TO RETRY" instead of "FAILED" for a non-final try.
-        my $will_retry = $end->{fail} && ($self->{+PENDING}{$job_id} // 0) > 0;
+        # The gatherer DOES know: it mirrors the runner's own rule (Runner
+        # set_proc_exit: retry while is_try < retry-budget). The budget is the
+        # task's retry count (falling back to the run's), and the current try
+        # number rides the event as job_try. A failing non-final try WILL be
+        # retried, so mark it and the renderer shows "TO RETRY" instead of
+        # "FAILED". This is computed from the try number rather than the PENDING
+        # counter so it does not depend on whether the NEXT try's job entry has
+        # already been read (the in-runner scheduler can dispatch the retry, and
+        # thus write its job entry, before this try's job_end is processed).
+        my $task         = $self->{+TASKS}{$job_id};
+        my $retry_budget = ($task ? $task->{retry} : undef) // $self->run->retry // 0;
+        my $will_retry   = $end->{fail} && (($event->job_try // 0) < $retry_budget);
         if ($will_retry) {
             $end->{retry} = 1;
         }

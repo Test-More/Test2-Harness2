@@ -49,50 +49,44 @@ yath(
             }
         }
 
+        # Chunk 5b: the scheduler is now an in-runner object, not a separate
+        # process. The slot bookkeeping that used to be split between a
+        # 'yath-nested-scheduler' process (assign / availability) and the
+        # 'yath-nested-runner' process (record / release / cleanup) now all runs
+        # in the one runner process, so the full, causally-ordered sequence
+        # appears under 'yath-nested-runner' and there is no separate scheduler
+        # process at all.
         is(
             $msgs{"yath-nested-runner"},
             {
                 1 => [
+                    'Assigned',
                     'Record',
+                    'No Slots',
                     'Release',
+                    'Assigned',
                     'Record',
                     'Release',
                     'RESOURCE CLEANUP',
                 ],
                 2 => [
+                    'Assigned',
                     'Record',
+                    'No Slots',
                     'Release',
+                    'Assigned',
                     'Record',
                     'Release',
                     'RESOURCE CLEANUP',
                 ],
             },
-            "The nested runner saw the records and releases, and then cleaned up at the end."
+            "The in-runner scheduler assigned slots, knew when it was out, knew when more were ready, recorded/released, and cleaned up -- all in the runner process."
         );
 
         is(
             $msgs{'yath-nested-scheduler'},
-            {
-                1 => [
-                    'Assigned',
-                    'Record',
-                    'No Slots',
-                    'Release',
-                    'Assigned',
-                    'Record',
-                    'Release',
-                ],
-                2 => [
-                    'Assigned',
-                    'Record',
-                    'No Slots',
-                    'Release',
-                    'Assigned',
-                    'Record',
-                    'Release',
-                ],
-            },
-            "The scheduler handled assigning slots, knew when it was out, then knew when more were ready",
+            undef,
+            "There is no separate scheduler process anymore (scheduler is in-runner)",
         );
     },
 );
