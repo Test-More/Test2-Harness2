@@ -14,6 +14,7 @@ use Test2::Harness2::IPC;
 use App::Yath2::Util qw/find_pfile/;
 use Test2::Harness2::Util qw/open_file/;
 use Test2::Harness2::Util qw/mod2file open_file/;
+use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 use Test2::Util::Table qw/table/;
 
 use File::Spec;
@@ -62,6 +63,39 @@ the start command for details on how to launch a persistant instance.
 sub terminate_queue {
     my $self = shift;
     $self->tasks_queue->end();
+}
+
+# The persistent run/spawn path is NOT migrated to runner.socket (gated): keep
+# submitting the run and its tasks through the in-process dispatch.jsonl state
+# that the persistent runner already polls, rather than the transient socket
+# client.
+sub submitter {
+    my $self = shift;
+    return $self->state;
+}
+
+# Persistent signal shutdown stays on the dispatch.jsonl state: this run shares a
+# long-lived runner with other runs, so we halt only this run and kill its own
+# job pids (read from jobs.jsonl), rather than asking the runner to tear itself
+# down.
+sub signal_shutdown {
+    my $self = shift;
+
+    my $state = $self->state;
+    delete $state->{no_poll};
+    $state->poll;
+    my $running = $state->running_tasks;
+    $state->halt_run($self->{+RUN_ID});
+
+    for my $task (values %$running) {
+        next unless $task->{run_id} && $task->{run_id} eq $self->{+RUN_ID};
+        my $pid  = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
+        my $file = $task->{rel_file};
+        print "Killing test $pid - $file...\n";
+        kill('INT', USE_P_GROUPS ? -$pid : $pid);
+    }
+
+    return;
 }
 
 sub write_settings_to { }

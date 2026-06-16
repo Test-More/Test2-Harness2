@@ -14,6 +14,7 @@ use Test2::Harness2::IPC;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Runner::State;
+use Test2::Harness2::Runner::Client;
 
 use Test2::Harness2::Util::JSON qw/encode_json decode_json JSON/;
 use Test2::Harness2::Util qw/mod2file open_file chmod_tmp collector_exit_code runner_events_file/;
@@ -46,9 +47,11 @@ use Test2::Harness2::Util::HashBase qw/
     +tests_seen
     +asserts_seen
 
-    +run_queue
     +tasks_queue
     +state
+    +submitter
+
+    +pending_tasks
 
     <cleanup_subs
 
@@ -270,8 +273,12 @@ sub start {
     $self->write_settings_to($self->workdir, 'settings.json');
 
     $self->write_test_info();
+
+    # Find the test files and build the task list (also writing the per-run
+    # queue.jsonl the gatherer reads). Submission to the runner happens AFTER the
+    # runner is started, because the transient path now submits over runner.socket
+    # (chunk 5c): the runner must be listening before the client can connect.
     my $pop = $self->populate_queue();
-    $self->terminate_queue();
 
     return unless $pop;
 
@@ -279,9 +286,47 @@ sub start {
     $self->setup_resources();
 
     $self->start_runner(jobs_todo => $pop);
+
+    # Submit the run + its tasks to the runner, then the queue terminator. For
+    # the transient path this is the socket client; the persistent path overrides
+    # the submitter to keep using the dispatch.jsonl state.
+    $self->submit_queue();
+    $self->terminate_queue();
+
     $self->start_collector();
 
     return 1;
+}
+
+# The run/task/end-queue submission target. The transient `yath test` command
+# submits over runner.socket via a thin client; the persistent run/spawn commands
+# override this to keep submitting through the in-process dispatch.jsonl state.
+#
+# The client needs to know if the runner dies before it ever accepts (e.g. a
+# broken preload that takes the runner down during startup). We hand it a liveness
+# check that reaps through our IPC and reports whether the runner is still
+# tracked; if it has gone, the client stops trying and submission becomes a no-op,
+# leaving the gatherer to surface the runner's own failure.
+sub submitter {
+    my $self = shift;
+
+    return $self->{+SUBMITTER} //= do {
+        my $ipc        = $self->ipc;
+        my $runner_pid = $self->runner_pid;
+
+        Test2::Harness2::Runner::Client->new(
+            workdir        => $self->workdir,
+            liveness_check => sub {
+                # Single non-blocking reap pass (timeout => 0 makes wait do one
+                # _bring_out_yer_dead sweep and return), so a runner that died
+                # during startup leaves our tracked procs and the client can stop.
+                # This is IPC's own reap path, so runner-death handling is
+                # unchanged.
+                eval { $ipc->wait(timeout => 0); 1 };
+                return $runner_pid && $ipc->procs->{$runner_pid} ? 1 : 0;
+            },
+        );
+    };
 }
 
 sub render {
@@ -424,21 +469,7 @@ sub stop {
     my $ipc = $self->ipc;
     print STDERR "Waiting for child processes to exit...\n" if $self->{+SIGNAL};
 
-    if ($self->{+SIGNAL}) {
-        my $state = $self->state;
-        delete $state->{no_poll};
-        $state->poll;
-        my $running = $state->running_tasks;
-        $state->halt_run($self->{+RUN_ID});
-
-        for my $task (values %$running) {
-            next unless $task->{run_id} && $task->{run_id} eq $self->{+RUN_ID};
-            my $pid  = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
-            my $file = $task->{rel_file};
-            print "Killing test $pid - $file...\n";
-            kill('INT', USE_P_GROUPS ? -$pid : $pid);
-        }
-    }
+    $self->signal_shutdown() if $self->{+SIGNAL};
 
     $ipc->wait(all => 1);
     $ipc->stop;
@@ -463,7 +494,24 @@ sub terminate_queue {
     my $self = shift;
 
     $self->tasks_queue->end();
-    $self->state->end_queue();
+    $self->submitter->end_queue();
+}
+
+# Shutdown work to do when the transient command itself caught a signal. The run
+# state lives in the runner now (chunk 5c), so rather than reconstructing it from
+# dispatch.jsonl to kill individual job pids, ask the runner to halt the run over
+# the socket. handle_sig already forwarded the signal to the runner (and thus its
+# job children) via ipc->killall, so the running tests are being torn down
+# regardless. The persistent run/spawn path overrides this to use its
+# dispatch.jsonl state.
+sub signal_shutdown {
+    my $self = shift;
+
+    my $ok  = eval { $self->submitter->halt_run($self->{+RUN_ID}); 1 };
+    my $err = $@;
+    warn "Could not halt run over runner socket: $err" unless $ok;
+
+    return;
 }
 
 sub build_run {
@@ -498,12 +546,6 @@ sub job_count {
     return $self->settings->runner->job_count;
 }
 
-sub run_queue {
-    my $self = shift;
-    my $dir  = $self->workdir;
-    return $self->{+RUN_QUEUE} //= Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($dir, 'run_queue.jsonl'));
-}
-
 sub tasks_queue {
     my $self = shift;
 
@@ -514,6 +556,11 @@ sub tasks_queue {
 
 sub finder_args { () }
 
+# Find the test files and build the task list. The task list is recorded into the
+# per-run queue.jsonl (read by the still-living gatherer to learn the pending
+# jobs) and stashed in PENDING_TASKS for submit_queue(); the run + tasks are NOT
+# submitted to the runner here -- that happens in submit_queue() once the runner
+# is listening (chunk 5c socket submission).
 sub populate_queue {
     my $self = shift;
 
@@ -524,11 +571,8 @@ sub populate_queue {
     require(mod2file($finder_class));
     my $finder = $finder_class->new($settings->finder->all, $self->finder_args);
 
-    my $state       = $self->state;
     my $tasks_queue = $self->tasks_queue;
     my $plugins     = $settings->harness->plugins;
-
-    $state->queue_run($run->queue_item($plugins));
 
     my @files = @{$finder->find_files($plugins, $self->settings)};
 
@@ -541,6 +585,7 @@ sub populate_queue {
         }
     }
 
+    my @tasks;
     my $job_count = 0;
     for my $file (@files) {
         my $task = $file->queue_item(
@@ -550,13 +595,37 @@ sub populate_queue {
 
         $task->{category} = 'isolation' if $settings->debug->interactive;
 
-        $state->queue_task($task);
+        push @tasks => $task;
+
+        # queue.jsonl is consumed only by the gatherer (it walks the workdir for
+        # events); the runner pulls tasks from the socket-fed state, not this
+        # file. It retires with the gatherer in 5g.
         $tasks_queue->enqueue($task);
     }
 
-    $state->stop_run($run->run_id);
+    $self->{+PENDING_TASKS} = \@tasks;
 
     return $job_count;
+}
+
+# Submit the run, its tasks, and the run terminator to the runner through the
+# submitter. For the transient path the submitter is a socket client; for the
+# persistent path it is the dispatch.jsonl state.
+sub submit_queue {
+    my $self = shift;
+
+    my $run       = $self->build_run();
+    my $settings  = $self->settings;
+    my $plugins   = $settings->harness->plugins;
+    my $submitter = $self->submitter;
+
+    $submitter->queue_run($run->queue_item($plugins));
+
+    $submitter->queue_task($_) for @{$self->{+PENDING_TASKS} // []};
+
+    $submitter->stop_run($run->run_id);
+
+    return;
 }
 
 sub produce_summary {

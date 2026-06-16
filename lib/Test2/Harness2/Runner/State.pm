@@ -85,14 +85,17 @@ sub init {
 
     @{$self->{+RESOURCES}} = sort { $a->sort_weight <=> $b->sort_weight } @{$self->{+RESOURCES}};
 
-    # The action channel still rides dispatch.jsonl: a yath command process
-    # (test/run/spawn/abort) submits work by constructing its own no_poll State
-    # and enqueuing actions, which the runner's in-process scheduler State polls
-    # and applies. The separate scheduler PROCESS and the dispatch.lock flock that
-    # serialized it against writers are gone (chunk 5b) -- the runner now drains
-    # and advances this queue itself each service-loop iteration, and the Queue's
-    # own File::JSONL write lock already serializes the appends. Socket-based run
-    # submission (which retires dispatch.jsonl) is chunk 5c.
+    # dispatch.jsonl remains the runner's action log and the shared medium that
+    # forked stage children (separate processes) poll for next_task. The runner's
+    # in-process scheduler round-trips its own actions (start_run/start_task/...)
+    # through it and drains+advances it each service-loop iteration (chunk 5b); the
+    # Queue's own File::JSONL write lock serializes the appends, and the separate
+    # scheduler PROCESS and dispatch.lock flock are gone. The transient `yath test`
+    # command no longer writes here itself: it submits its run and tasks over
+    # runner.socket, and the runner enqueues them into this file on its behalf via
+    # its request handlers (chunk 5c) so both the runner and its stage children see
+    # them. The persistent run/spawn/abort commands (gated, not migrated) still
+    # submit through this file directly by constructing their own no_poll State.
     $self->{+DISPATCH_FILE} = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($self->{+WORKDIR}, 'dispatch.jsonl'));
 
     $self->{+RELOAD_STATE} //= {};

@@ -292,9 +292,10 @@ sub process {
 
     # Bind runner.socket and run the accept/request loop coexisting with the
     # run loop (chunk 5a scaffolding). The scheduler is now an in-runner object
-    # ticked each service-loop iteration (chunk 5b); dispatch.jsonl/dispatch.lock
-    # are gone. queue.jsonl/jobs.jsonl/run_queue.jsonl stay this phase (socket
-    # run-submission is chunk 5c).
+    # ticked each service-loop iteration (chunk 5b). The transient `yath test`
+    # command submits its run and tasks over this socket (chunk 5c), which the
+    # request handlers fold into the in-process State. queue.jsonl/jobs.jsonl stay
+    # this phase to feed the still-living gatherer (retired with it in 5g).
     $self->start_service;
 
     $self->start();
@@ -310,6 +311,58 @@ sub process {
     $self->close_service;
 
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
+}
+
+# Run submission moved onto runner.socket (chunk 5c): a transient `yath test`
+# command no longer constructs its own no_poll State and writes the run/tasks
+# into dispatch.jsonl itself. It connects to runner.socket and sends one-way
+# request frames; the runner receives them here and enqueues them through the
+# canonical State's public queue_* methods, which append to dispatch.jsonl and
+# poll. dispatch.jsonl is thus still the shared action log, but its WRITER for the
+# run-submission leg has moved from the command to the runner -- which is also the
+# only way forked stage children (separate processes that poll dispatch.jsonl for
+# next_task) learn about the run and its tasks. The persistent run/spawn/abort
+# path still writes dispatch.jsonl directly (gated, not migrated here).
+#
+# These are one-way requests: the role's _service_conn sends no reply when a
+# handler returns undef. Ordering is preserved because the command sends them
+# over a single connection and the FrameBuffer drains frames in order.
+sub request_handler_queue_run {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->queue_run($payload->{run});
+    return undef;
+}
+
+sub request_handler_queue_task {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->queue_task($payload->{task});
+    return undef;
+}
+
+sub request_handler_stop_run {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->stop_run($payload->{run_id});
+    return undef;
+}
+
+sub request_handler_end_queue {
+    my $self = shift;
+    $self->state->end_queue();
+    return undef;
+}
+
+# A transient command that caught a signal asks the runner to halt the run over
+# the socket (chunk 5c). The runner stops scheduling tasks for the run and
+# terminates its own job children through its normal signal/stop path; the command
+# does not reconstruct state to kill individual job pids.
+sub request_handler_halt_run {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->halt_run($payload->{run_id});
+    return undef;
 }
 
 sub service_tick {
