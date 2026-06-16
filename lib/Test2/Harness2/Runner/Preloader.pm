@@ -219,15 +219,26 @@ sub launch_stage {
     # output. Leave persistent stages un-collected until the runner service
     # lands.
     unless ($self->{+PERSIST}) {
+        # Under monitor/reload the runner relaunches a stage when its files
+        # change, reusing the same stage-<name>-events.jsonl.zst path. Mark the
+        # collector resumable so it closes WITHOUT a terminal marker: the next
+        # incarnation appends to the same file (one self-contained frame per
+        # event, recorders open for append) and the gatherer's tail reader keeps
+        # reading across the restart instead of stopping at the first stage's
+        # process-exit. Without monitor a stage runs once, so a normal finalize
+        # (terminal marker, reader reaches done) is correct.
+        my $resumable = $self->{+MONITOR} ? 1 : 0;
+
         setjump 'Stage-Collector' => sub {
             require Test2::Collector;
             require Test2::Collector::Recorder::Zstd;
 
             my $info = Test2::Collector::collect(
-                is_test  => 0,
-                name     => "stage-$name",
-                recorder => Test2::Collector::Recorder::Zstd->new(file => stage_events_file($self->{+DIR}, $name)),
-                run      => sub {
+                is_test   => 0,
+                name      => "stage-$name",
+                resumable => $resumable,
+                recorder  => Test2::Collector::Recorder::Zstd->new(file => stage_events_file($self->{+DIR}, $name)),
+                run       => sub {
                     my ($guard) = @_;
                     $guard->dismiss;
                     longjump 'Stage-Collector' => 1;

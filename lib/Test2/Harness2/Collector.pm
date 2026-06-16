@@ -357,9 +357,10 @@ sub process_runner_events {
 # stage so an abnormal stage exit is reported against that stage. Stages come up
 # at different times (nested stages, a stage gated behind another), so the
 # workdir is rescanned every pass and a reader is created the first time each
-# distinct stage file appears. Stage respawn (which reuses a file name) is a
-# persistent-runner concern, and persistent stages are not collected, so a
-# given stage file is read exactly once here.
+# distinct stage file appears. One reader is kept per file for the whole run:
+# under monitor/reload a stage restarts and resumes the same file (the stage
+# collector is resumable, so no terminal marker stops the stream), and the
+# tail-style zstd reader picks up the appended frames on later passes.
 sub process_stage_events {
     my $self = shift;
     my ($action) = @_;
