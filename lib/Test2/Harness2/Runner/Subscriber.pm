@@ -17,6 +17,7 @@ use Test2::Harness2::Runner::Monitor();
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
+    <run_id
     +socket_path
     +connection
     +frame_buffer
@@ -40,13 +41,20 @@ state by subscribing to it: snapshot on connect, then forwarded mutations.
 A subscriber is a thin client of the runner service that keeps a local mirror of
 the runner's canonical state. On L</subscribe> it connects to C<runner.socket>,
 sends a C<subscribe> request, and reads back a serialized snapshot of the
-runner's whole state, which it loads into a feed-mode
+runner's state, which it loads into a feed-mode
 L<Test2::Harness2::Runner::Monitor> mirror. The runner thereafter B<forwards
 every state-mutating transition> -- both the collector transitions other
 collectors report and the mutations the runner originates itself (a job
 dispatched / running / done) -- as self-contained zstd frames; L</poll> reads
 them off the socket and feeds them into the mirror so its view stays whole (the
 snapshot-plus-transitions contract).
+
+With a L</run_id> the subscription is B<run-scoped>: the subscribe request
+carries the run_id, the runner filters both the snapshot and the forwarded frames
+to that run (plus the global / run-less bucket), so the mirror only ever holds
+this run's collectors and jobs. With no run_id the subscription is B<global> and
+mirrors every run (the C<watch> path). The transient C<yath test> path has
+exactly one run, so passing its run_id is routing-identity equivalent.
 
 The subscription connection stays open and receives asynchronous pushes, unlike
 the one-shot request/reply submission client
@@ -79,6 +87,13 @@ completion signal.
 =item $path = $sub->socket_path
 
 The runner socket path (C<< $workdir/runner.socket >>).
+
+=item run_id
+
+=item $id = $sub->run_id
+
+The run this subscription is scoped to, or C<undef> for a global subscription
+that mirrors every run.
 
 =item monitor
 
@@ -134,7 +149,9 @@ sub closed ($self) { return $self->{+CLOSED} ? 1 : 0 }
 sub subscribe ($self) {
     my $conn = $self->_connect;
 
-    write_frame($conn, compress_blob(encode_json({request => 'subscribe'})));
+    my $request = {request => 'subscribe'};
+    $request->{run_id} = $self->{+RUN_ID} if defined $self->{+RUN_ID};
+    write_frame($conn, compress_blob(encode_json($request)));
 
     my $reply = $self->_read_one_frame($conn);
     croak "runner did not return a subscribe reply"

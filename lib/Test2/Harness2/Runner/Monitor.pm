@@ -47,9 +47,18 @@ has seen, each one's status, events file, and (once complete) final result, plus
 L</new_test_exits>, and friends -- each of which drains and returns the uuids
 that entered that state since the previous call.
 
-This is the per-run baseline: there is a single C<runner.socket> and no
-per-run-uuid fan-out. The C<run_uuid> still rides on every message and is
-tracked per collector, but the monitor does not filter or proxy on it.
+A single C<runner.socket> serves every run a persistent runner executes; the
+monitor folds them all into one canonical state. To let the runner route each
+subscriber only its own run's data (chunk 6.1 per-run routing), the monitor
+tracks the B<run association> that rides on every message -- the collector
+C<run_uuid> on a collector transition and the C<run_id> on a runner-originated
+job mutation. Those two identifiers are the same value: the runner stamps a test
+collector's C<run_uuid> from the run's C<run_id> (see
+L<Test2::Harness2::Runner::Job>), so a single key routes both kinds. Messages
+with B<no> run association (the runner's own collector, preload-stage lifecycle
+transitions) belong to a shared B<global bucket> that every subscriber sees.
+L</run_for_payload> resolves a payload's run, and L</snapshot> can be filtered to
+one run (plus the global bucket).
 
 Besides collector transitions, the monitor also folds the small set of state
 mutations the B<runner itself originates> -- a job being dispatched to a stage,
@@ -193,13 +202,31 @@ The runner-originated state hashref for one job (or C<undef>): C<job_id>,
 C<state> (C<dispatched> / C<running> / C<done>), and the C<stage>, C<file>, and
 C<run_id> the runner carried on the mutation.
 
+=item run_for_payload
+
+=item $run = $mon->run_for_payload($payload)
+
+Resolve the run association of one decoded transition payload: the
+C<harness_collector.run_uuid> on a collector transition, or the C<run_id> on a
+runner-originated C<harness_runner_job> mutation. Returns C<undef> for a payload
+with no run association (a global / stage-lifecycle message). Used by the runner
+to route a forwarded frame to the right subscribers. A C<starting> collector
+transition carries the C<run_uuid> directly; a later transition (only the uuid
+rides) is resolved against the collector's already-tracked C<run_uuid>.
+
 =item snapshot
 
 =item $snapshot = $mon->snapshot
 
-A serializable (plain data) snapshot of the whole canonical state: every tracked
+=item $snapshot = $mon->snapshot($run_id)
+
+A serializable (plain data) snapshot of the canonical state: every tracked
 collector and every tracked job. A subscriber gets this once on connect, then
-keeps it whole by feeding forwarded frames.
+keeps it whole by feeding forwarded frames. With a C<$run_id> the snapshot is
+B<filtered> to that run plus the global bucket (collectors whose C<run_uuid>
+matches or is undef, jobs whose C<run_id> matches or is undef), so a run-scoped
+subscriber starts from only its own view. With no C<$run_id> the whole state is
+returned (the global / C<watch> subscriber).
 
 =item apply_snapshot
 
@@ -276,11 +303,46 @@ sub new_aborted_jobs ($self) { return $self->_drain(PENDING_ABORTED) }
 sub job_ids ($self)          { return keys %{$self->{+JOBS}} }
 sub job     ($self, $job_id) { return $self->{+JOBS}{$job_id} }
 
-sub snapshot ($self) {
+sub run_for_payload ($self, $payload) {
+    my $fd = ref($payload) eq 'HASH' ? $payload->{facet_data} : undef;
+    return undef unless ref($fd) eq 'HASH';
+
+    if (my $rj = $fd->{harness_runner_job}) {
+        return $rj->{run_id};
+    }
+
+    my $hc = $fd->{harness_collector} or return undef;
+
+    # A 'starting' transition carries run_uuid on the wire; later transitions
+    # carry only the uuid, so fall back to the run_uuid we tracked at start.
+    return $hc->{run_uuid} if defined $hc->{run_uuid};
+
+    my $uuid = $hc->{uuid} // return undef;
+    my $c    = $self->{+COLLECTORS}{$uuid} or return undef;
+    return $c->{run_uuid};
+}
+
+sub snapshot ($self, $run_id = undef) {
     return {
         collectors => $self->{+COLLECTORS},
         jobs       => $self->{+JOBS},
-    };
+    } unless defined $run_id;
+
+    my %collectors;
+    for my $uuid (keys %{$self->{+COLLECTORS}}) {
+        my $c   = $self->{+COLLECTORS}{$uuid};
+        my $run = $c->{run_uuid};
+        $collectors{$uuid} = $c if !defined($run) || $run eq $run_id;
+    }
+
+    my %jobs;
+    for my $job_id (keys %{$self->{+JOBS}}) {
+        my $j   = $self->{+JOBS}{$job_id};
+        my $run = $j->{run_id};
+        $jobs{$job_id} = $j if !defined($run) || $run eq $run_id;
+    }
+
+    return {collectors => \%collectors, jobs => \%jobs};
 }
 
 sub apply_snapshot ($self, $snapshot) {

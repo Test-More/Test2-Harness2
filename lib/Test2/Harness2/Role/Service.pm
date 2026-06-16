@@ -149,18 +149,28 @@ Built-in handler: stop the loop. Returns C<< {ok =E<gt> 1, stopping =E<gt> 1} >>
 
 =item $self->add_subscriber($conn)
 
+=item $self->add_subscriber($conn, $run_id)
+
 Register an accepted connection as a subscriber: it stays open and the service
 pushes forwarded frames to it (via L</forward_frame>) as state mutates, rather
 than serving it a single request/reply. A request handler calls this on its
-C<$conn> after sending the snapshot reply.
+C<$conn> after sending the snapshot reply. With a C<$run_id> the subscriber is
+B<run-scoped>: L</forward_frame> sends it only that run's frames (plus global /
+run-less frames). With no C<$run_id> the subscriber is B<global> and receives
+every frame (what C<watch> uses).
 
 =item forward_frame
 
 =item $self->forward_frame($frame)
 
-Write one already-compressed frame to every subscriber connection. A subscriber
-whose write fails (it vanished) is closed and dropped, so a gone subscriber does
-not cause a write storm or block the others.
+=item $self->forward_frame($frame, $run_id)
+
+Write one already-compressed frame to subscriber connections. C<$run_id> is the
+frame's run association (C<undef> = a global / run-less frame, which goes to
+B<every> subscriber). A run-associated frame goes to the global subscribers plus
+the subscribers scoped to that run. A subscriber whose write fails (it vanished)
+is closed and dropped, so a gone subscriber does not cause a write storm or block
+the others.
 
 =back
 
@@ -248,17 +258,26 @@ sub request_handler_stop ($self, $payload = undef, $conn = undef) {
     return {ok => 1, stopping => 1};
 }
 
-sub add_subscriber ($self, $conn) {
-    $self->{service_subs}{$conn} = $conn;
+sub add_subscriber ($self, $conn, $run_id = undef) {
+    $self->{service_subs}{$conn} = {conn => $conn, run_id => $run_id};
     return;
 }
 
-sub forward_frame ($self, $frame) {
+sub forward_frame ($self, $frame, $run_id = undef) {
     my $subs = $self->{service_subs} or return;
     return unless %$subs;
 
     for my $key (keys %$subs) {
-        my $conn = $subs->{$key};
+        my $sub  = $subs->{$key};
+        my $conn = $sub->{conn};
+
+        # Per-run routing (chunk 6.1): a global subscriber (no run_id) gets every
+        # frame; a run-scoped subscriber gets the global / run-less frames plus the
+        # frames of its own run. A run-associated frame to a different run is
+        # skipped.
+        next if defined $sub->{run_id}
+            && defined $run_id
+            && $sub->{run_id} ne $run_id;
 
         # A vanished subscriber must not be retried on every later frame (a warn
         # storm / fd leak); drop and close it, mirroring the recorder socket's

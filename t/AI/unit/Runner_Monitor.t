@@ -216,4 +216,161 @@ subtest full_lifecycle_over_socket => sub {
     close($listen);
 };
 
+# --- chunk 6.1: per-run routing -----------------------------------------------
+#
+# The runner stamps a test collector's run_uuid from the run's run_id, so the two
+# identifiers are the same value and a single key routes both collector
+# transitions (keyed on run_uuid) and runner-originated job mutations (keyed on
+# run_id). Messages with no run association belong to a shared global bucket.
+
+sub feed_job ($mon, $job_id, $state, %extra) {
+    $mon->feed({facet_data => {harness_runner_job => {job_id => $job_id, state => $state, %extra}}});
+}
+
+subtest run_for_payload => sub {
+    my $mon = new_monitor();
+
+    # A collector start carries run_uuid directly.
+    my $start = payload_for(
+        {harness_state_transition => {state => 'starting', stamp => 1}},
+        uuid => 'T1', name => 't/a.t', events_file => '/tmp/a', try => 1, run_uuid => 'RUN-A',
+    );
+    is($mon->run_for_payload($start), 'RUN-A', "collector start resolves to its run_uuid");
+    $mon->feed($start);
+
+    # A later transition for the same collector carries only the uuid; the run is
+    # resolved against the tracked collector.
+    my $later = payload_for({harness_state_transition => {state => 'completed', stamp => 1}}, uuid => 'T1');
+    is($mon->run_for_payload($later), 'RUN-A', "uuid-only transition resolves run via tracked collector");
+
+    # A runner-originated job mutation carries run_id.
+    my $job = {facet_data => {harness_runner_job => {job_id => 'J1', state => 'dispatched', run_id => 'RUN-B'}}};
+    is($mon->run_for_payload($job), 'RUN-B', "job mutation resolves to its run_id");
+
+    # A run-less message (the runner's own / a stage lifecycle transition).
+    my $global = payload_for({harness_state_transition => {state => 'starting', stamp => 1}}, uuid => 'G1', name => 'stage-base');
+    is($mon->run_for_payload($global), undef, "a collector with no run_uuid is global (undef)");
+};
+
+subtest filtered_snapshot => sub {
+    my $mon = new_monitor();
+
+    feed_start($mon, uuid => 'TA', name => 't/a.t', events_file => '/tmp/a', try => 1, run_uuid => 'RUN-A');
+    feed_start($mon, uuid => 'TB', name => 't/b.t', events_file => '/tmp/b', try => 1, run_uuid => 'RUN-B');
+    feed_start($mon, uuid => 'GS', name => 'stage-base');    # global, no run_uuid
+
+    feed_job($mon, 'JA', 'dispatched', run_id => 'RUN-A', file => 't/a.t');
+    feed_job($mon, 'JB', 'dispatched', run_id => 'RUN-B', file => 't/b.t');
+    feed_job($mon, 'JG', 'dispatched');                     # global, no run_id
+
+    my $all = $mon->snapshot;
+    is([sort keys %{$all->{collectors}}], [qw/GS TA TB/], "unfiltered snapshot has every collector");
+    is([sort keys %{$all->{jobs}}],       [qw/JA JB JG/], "unfiltered snapshot has every job");
+
+    my $a = $mon->snapshot('RUN-A');
+    is([sort keys %{$a->{collectors}}], [qw/GS TA/], "RUN-A snapshot = RUN-A collectors + global");
+    is([sort keys %{$a->{jobs}}],       [qw/JA JG/], "RUN-A snapshot = RUN-A jobs + global");
+
+    my $b = $mon->snapshot('RUN-B');
+    is([sort keys %{$b->{collectors}}], [qw/GS TB/], "RUN-B snapshot = RUN-B collectors + global");
+    is([sort keys %{$b->{jobs}}],       [qw/JB JG/], "RUN-B snapshot = RUN-B jobs + global");
+};
+
+# End-to-end routing through Role::Service: drive two runs' frames into a runner
+# consumer and assert each subscriber's mirror only ever sees its own run + the
+# global bucket, while a no-run-id subscriber sees everything.
+subtest service_forward_routing => sub {
+    require IO::Socket::UNIX;
+
+    # A minimal consumer that folds transitions into a Runner::Monitor and routes
+    # forwarded frames exactly as the real runner does (run_for_payload -> forward
+    # to the matching subscribers).
+    package Harness2::Test::RoutingService {
+        use Test2::Harness2::Util::HashBase qw{<workdir +monitor};
+        use Test2::Collector::Util::Zstd qw/compress_blob/;
+        use Test2::Harness2::Util::JSON qw/encode_json/;
+        use Role::Tiny::With;
+        with 'Test2::Harness2::Role::Service';
+        sub name    { 'runner' }
+        sub monitor { $_[0]->{monitor} //= Test2::Harness2::Runner::Monitor->new }
+
+        sub request_handler_subscribe ($self, $payload, $conn) {
+            $self->add_subscriber($conn, $payload->{run_id});
+            return {ok => 1, snapshot => $self->monitor->snapshot($payload->{run_id})};
+        }
+
+        sub service_transition ($self, $payload, $frame, $conn) {
+            $self->monitor->feed($payload);
+            $self->forward_frame($frame, $self->monitor->run_for_payload($payload));
+        }
+    }
+
+    my $dir = File::Temp::tempdir(CLEANUP => 1);
+    my $svc = Harness2::Test::RoutingService->new(workdir => $dir);
+    $svc->start_service;
+
+    my $path = $svc->service_socket_path;
+
+    # Two run-scoped subscribers and one global subscriber connect + subscribe.
+    # The listen backlog is small, so accept (service_io) after each connect.
+    my %sub;
+    for my $spec (['A', 'RUN-A'], ['B', 'RUN-B'], ['G', undef]) {
+        my ($key, $run) = @$spec;
+        my $c = connect_unix($path);
+        my $req = {request => 'subscribe'};
+        $req->{run_id} = $run if defined $run;
+        write_frame($c, compress_blob(encode_json($req)));
+        $c->blocking(0);
+        $sub{$key} = {conn => $c, fb => Test2::Collector::Util::Zstd::FrameBuffer->new, mon => new_monitor};
+        $svc->service_io for 1 .. 3;
+    }
+
+    # Pump the service so it accepts + replies to the subscribe requests.
+    $svc->service_io for 1 .. 5;
+
+    # Read each subscriber's snapshot reply (the first frame) into its mirror.
+    my $pump = sub ($s) {
+        my $sel = IO::Select->new($s->{conn});
+        for (1 .. 20) {
+            last unless $sel->can_read(0.05);
+            my $buf = '';
+            my $n   = sysread($s->{conn}, $buf, 65536);
+            last unless $n;
+            $s->{fb}->push_bytes($buf);
+        }
+    };
+    for my $key (qw/A B G/) {
+        $pump->($sub{$key});
+        my @recs = $sub{$key}{fb}->drain;
+        my $reply = decode_json(shift(@recs)->{payload});
+        ok($reply->{ok}, "$key got a subscribe reply");
+    }
+
+    # A test job reports its transitions on its own connection (one per peer).
+    my $report = sub ($facet, %c) {
+        my $rep = connect_unix($path);
+        write_frame($rep, frame_for($facet, %c));
+        $svc->service_io for 1 .. 5;
+        close($rep);
+    };
+
+    $report->({harness_state_transition => {state => 'starting', stamp => 1}}, uuid => 'CA', name => 't/a.t', events_file => '/tmp/a', try => 1, run_uuid => 'RUN-A');
+    $report->({harness_state_transition => {state => 'starting', stamp => 1}}, uuid => 'CB', name => 't/b.t', events_file => '/tmp/b', try => 1, run_uuid => 'RUN-B');
+    # A global (run-less) stage lifecycle transition.
+    $report->({harness_state_transition => {state => 'starting', stamp => 1}}, uuid => 'GS', name => 'stage-base');
+
+    # Fold each subscriber's forwarded frames into its mirror.
+    for my $key (qw/A B G/) {
+        $pump->($sub{$key});
+        $sub{$key}{mon}->feed(decode_json($_->{payload})) for $sub{$key}{fb}->drain;
+    }
+
+    is([sort $sub{A}{mon}->collectors], [qw/CA GS/], "run-A subscriber sees only run A + global");
+    is([sort $sub{B}{mon}->collectors], [qw/CB GS/], "run-B subscriber sees only run B + global");
+    is([sort $sub{G}{mon}->collectors], [qw/CA CB GS/], "global subscriber sees every run");
+
+    close($_->{conn}) for values %sub;
+    $svc->close_service;
+};
+
 done_testing;

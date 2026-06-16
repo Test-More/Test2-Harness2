@@ -42,10 +42,10 @@ in-process dispatch state instead, so it overrides the command's submitter and
 never constructs this client for submission. Keeping the transport choice in the
 command preserves that seam.
 
-The interface is deliberately small and forward-looking: a run-scoped subscribe
-is coming (the runner will route each subscriber only its own run's
-transitions), so L</connect_subscriber> already takes a parameter hash that is
-threaded straight through to the subscriber.
+The interface is deliberately small: L</connect_subscriber> takes a parameter
+hash threaded straight through to the subscriber, so the command can pass a
+C<run_id> for a run-scoped subscription (the runner routes each subscriber only
+its own run's transitions) or omit it for a global subscription.
 
 =head1 SYNOPSIS
 
@@ -104,7 +104,7 @@ Build a L<Test2::Harness2::Runner::Subscriber>, attempt the subscription exactly
 once, and cache + return it; returns C<undef> (with a warning) if the runner
 never bound/accepted the socket (e.g. a broken preload that killed the runner
 during startup) so the caller can fall back. C<%params> are threaded into the
-subscriber constructor (e.g. a forthcoming run-scoped C<run_id> filter).
+subscriber constructor (notably a C<run_id> for a run-scoped subscription).
 
 =back
 

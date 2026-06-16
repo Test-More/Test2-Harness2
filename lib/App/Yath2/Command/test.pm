@@ -367,10 +367,13 @@ sub subscriber {
 }
 
 # Attempt the subscription once. Returns the subscriber or undef on failure; the
-# render loop calls this exactly once and tolerates undef.
+# render loop calls this exactly once and tolerates undef. The transient command
+# is a single run, so it subscribes scoped to its own run_id (chunk 6.1 per-run
+# routing): with one run this is routing-identity, but it keeps the command on the
+# run-scoped path the persistent run command uses.
 sub connect_subscriber {
     my $self = shift;
-    return $self->client->connect_subscriber;
+    return $self->client->connect_subscriber(run_id => $self->{+RUN_ID});
 }
 
 # The command-side renderer driver (chunk 6a). It folds the subscription mirror

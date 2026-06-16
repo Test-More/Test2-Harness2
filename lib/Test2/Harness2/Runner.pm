@@ -552,7 +552,14 @@ sub service_transition {
     # their snapshot-plus-transitions mirror stays whole (ARCH 4.2-4.3). The frame
     # is forwarded verbatim (no recompress) -- it is already a self-contained zstd
     # frame the subscriber's mirror folds the same way this monitor just did.
-    $self->forward_frame($frame) if $frame;
+    #
+    # Chunk 6.1: route per-run. Resolve the frame's run association (the
+    # collector run_uuid, == the run's run_id) AFTER feeding the monitor, so a
+    # later transition carrying only the uuid resolves against the tracked
+    # collector. A run-less frame (the runner's own, a preload-stage lifecycle
+    # transition) routes to every subscriber.
+    $self->forward_frame($frame, $self->monitor->run_for_payload($payload))
+        if $frame;
 
     return;
 }
@@ -563,6 +570,12 @@ sub service_transition {
 # whole canonical state so the client's local mirror starts whole. Unlike the
 # one-way submission requests this returns a reply (the snapshot). Only the root
 # runner is the state hub; a forked stage service does not serve subscriptions.
+#
+# Chunk 6.1: per-run routing. The request may carry a run_id; the subscriber is
+# then scoped to that run -- its snapshot is filtered to that run (plus the global
+# bucket) and forward_frame thereafter sends it only that run's frames. A
+# subscribe with no run_id is a global subscriber (the watch path): it gets the
+# whole snapshot and every forwarded frame.
 sub request_handler_subscribe {
     my $self = shift;
     my ($payload, $conn) = @_;
@@ -570,9 +583,11 @@ sub request_handler_subscribe {
     return {ok => 0, error => 'not the runner state hub'}
         unless $self->{+ROOTPID} == $$;
 
-    $self->add_subscriber($conn) if defined $conn;
+    my $run_id = $payload->{run_id};
 
-    return {ok => 1, snapshot => $self->monitor->snapshot};
+    $self->add_subscriber($conn, $run_id) if defined $conn;
+
+    return {ok => 1, snapshot => $self->monitor->snapshot($run_id)};
 }
 
 # Chunk 5f: the runner ORIGINATES some state mutations itself -- it dispatches a
@@ -589,13 +604,24 @@ sub announce_job {
     return unless $self->{+ROOTPID} == $$;
     return unless defined $job_id;
 
-    my $rj      = {job_id     => $job_id, state => $state, %extra};
+    my $rj = {job_id => $job_id, state => $state, %extra};
+
+    # Chunk 6.1: route this runner-originated mutation to its run's subscribers.
+    # 'dispatched'/'running'/'retry'/'done' from the scheduler carry run_id in
+    # %extra; a stage-reported 'done'/'retry' (from the stop_task/retry_task
+    # request handlers) does not, so backfill it from the run_id the monitor
+    # already tracked for the job at dispatch.
+    if (!defined $rj->{run_id}) {
+        my $known = $self->monitor->job($job_id);
+        $rj->{run_id} = $known->{run_id} if $known && defined $known->{run_id};
+    }
+
     my $payload = {facet_data => {harness_runner_job => $rj}};
 
     $self->monitor->feed($payload);
 
     my $frame = compress_blob(encode_json($payload));
-    $self->forward_frame($frame);
+    $self->forward_frame($frame, $rj->{run_id});
 
     return;
 }
