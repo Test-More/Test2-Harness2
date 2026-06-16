@@ -11,6 +11,8 @@ use File::Spec();
 use Test2::Harness2::Util::File::JSON();
 use Test2::Harness2::Util::Queue();
 
+use App::Yath2::Client;
+
 use Test2::Harness2::Util qw/open_file/;
 use File::Path qw/remove_tree/;
 
@@ -30,14 +32,33 @@ This command will stop a persistent instance, and output any log contents.
 
 sub pfile_params { (no_fatal => 1) }
 
+# Chunk 6.1-2: ask the runner to shut down gracefully over runner.socket (the
+# Role::Service built-in 'stop' request, which the runner translates into its own
+# TERM shutdown). The end_queue + workdir/pfile cleanup below remain as the
+# fallback for a runner that never bound the socket (or already went away).
 sub run {
     my $self = shift;
 
-    $self->App::Yath2::Command::test::terminate_queue();
+    my $pid = $self->pfile_data->{pid};
+
+    my $ok = eval {
+        my $client = App::Yath2::Client->new(
+            workdir        => $self->workdir,
+            liveness_check => sub { $pid && kill(0, $pid) ? 1 : 0 },
+        );
+        $client->submitter->stop;
+        1;
+    };
+    warn "Could not send graceful shutdown to runner over socket: $@" unless $ok;
+
+    # Fallback: end the global queue through whatever submission path is wired up,
+    # which also unblocks a runner that is mid-run.
+    my $ended = eval { $self->App::Yath2::Command::test::terminate_queue(); 1 };
+    warn "Could not end runner queue: $@" unless $ended;
 
     $_->teardown($self->settings) for @{$self->settings->harness->plugins};
 
-    sleep(0.02) while kill(0, $self->pfile_data->{pid});
+    sleep(0.02) while kill(0, $pid);
 
     my $pfile_path = $self->pfile->path;
     unlink($pfile_path) if -f $pfile_path;

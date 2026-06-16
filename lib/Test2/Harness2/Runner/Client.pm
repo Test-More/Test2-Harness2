@@ -88,6 +88,10 @@ Submit the run definition.
 
 Submit one task.
 
+=item $client->queue_spawn($spawn)
+
+Submit one spawn request (C<yath spawn>).
+
 =item $client->stop_run($run_id)
 
 Signal that no more tasks will be queued for the given run.
@@ -95,6 +99,12 @@ Signal that no more tasks will be queued for the given run.
 =item $client->end_queue
 
 Signal that no more runs/work will be submitted.
+
+=item $client->stop
+
+Ask the runner service to shut down gracefully (the Role::Service built-in
+C<stop> request). Used by C<yath stop> to wind a persistent runner down over the
+socket.
 
 =item $client->halt_run($run_id)
 
@@ -142,6 +152,11 @@ sub queue_task ($self, $task) {
     return;
 }
 
+sub queue_spawn ($self, $spawn) {
+    $self->_send({request => 'queue_spawn', spawn => $spawn});
+    return;
+}
+
 sub stop_run ($self, $run_id) {
     $self->_send({request => 'stop_run', run_id => $run_id});
     return;
@@ -149,6 +164,11 @@ sub stop_run ($self, $run_id) {
 
 sub end_queue ($self) {
     $self->_send({request => 'end_queue'});
+    return;
+}
+
+sub stop ($self) {
+    $self->_send({request => 'stop'});
     return;
 }
 

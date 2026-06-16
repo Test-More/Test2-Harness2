@@ -109,6 +109,17 @@ sub service_name {
     return "preload-$stage";
 }
 
+# Chunk 6.1-2 SEAM (run-scoped preload stages -- NOT YET TRIGGERED):
+# Test2::Harness2::Role::Service nests a service's socket under runs/<run_ord>/
+# when the consumer provides run_ord, so a per-run preload stage would bind
+# runs/<run_id>/preload-<stage>.socket and two runs on one persistent runner
+# could not collide. The runner deliberately does NOT define run_ord: execution
+# is serialized (one active run) and preload stages are GLOBAL (shared,
+# runner-lifetime, flat preload-<stage>.socket), so there is no per-run stage to
+# scope or tear down. Implementing run_ord (+ a run-end stage teardown, +
+# Stage::Client run-scoped paths) is the seam for the future run-scoped-stage
+# feature; it is intentionally left unbuilt here (no trigger exists).
+
 # True when this process is a forked transient preload stage acting as a
 # socket-dispatch service (not the root runner, not the persistent path).
 sub is_stage_service {
@@ -434,6 +445,16 @@ sub request_handler_stop_run {
     my $self = shift;
     my ($payload) = @_;
     $self->state->stop_run($payload->{run_id});
+    return undef;
+}
+
+# Chunk 6.1-2: `yath spawn` submits its spawn over runner.socket (instead of the
+# in-process dispatch.jsonl State it used while gated). The runner folds it into
+# the canonical State, which the (persistent) stages pick up to launch the script.
+sub request_handler_queue_spawn {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->state->queue_spawn($payload->{spawn});
     return undef;
 }
 

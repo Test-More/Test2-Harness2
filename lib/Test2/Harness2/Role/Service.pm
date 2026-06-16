@@ -92,7 +92,9 @@ child) overrides this to vary the socket without changing its identity.
 =item $path = $self->service_socket_path
 
 The listen socket path: C<< $workdir/$name.socket >>, or
-C<< $workdir/$run_ord/$name.socket >> when the consumer provides a C<run_ord>.
+C<< $workdir/runs/$run_ord/$name.socket >> when the consumer provides a
+C<run_ord> (a per-run subdir, so two runs sharing one persistent runner cannot
+collide on a stage socket -- chunk 6.1-2).
 
 =item $self->start_service
 
@@ -180,7 +182,16 @@ sub service_name ($self) { return $self->name }
 
 sub service_socket_path ($self) {
     my $dir = $self->workdir;
-    $dir = File::Spec->catdir($dir, $self->run_ord)
+
+    # Chunk 6.1-2: a run-scoped service nests its socket under a per-run subdir
+    # (LOCKED: runs/<run_id>/<name>.socket) so two runs sharing one persistent
+    # runner cannot collide on a preload-<stage>.socket. The global runner.socket
+    # and the global (shared, runner-lifetime) preload-<stage>.socket stay flat in
+    # the workdir -- a consumer signals run-scoping by providing run_ord (its
+    # run_id). No consumer triggers a run-scoped stage yet (run-scoped preload
+    # stages are a future feature; see Runner::run_ord), so this is the naming
+    # foundation, exercised by t/AI/unit/Role_Service.t.
+    $dir = File::Spec->catdir($dir, 'runs', $self->run_ord)
         if $self->can('run_ord') && defined $self->run_ord;
 
     return File::Spec->catfile($dir, $self->service_name . '.socket');

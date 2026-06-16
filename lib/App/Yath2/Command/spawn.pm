@@ -79,12 +79,15 @@ sub read_line {
     }
 }
 
-# This is here for subclasses
+# Chunk 6.1-2: submit the spawn over runner.socket (App::Yath2::Client) like the
+# rest of the persistent path, instead of writing the in-process dispatch.jsonl
+# State directly. The State adds id/spawn/use_preload/stage defaults in its
+# _queue_spawn handler runner-side, so the raw args are enough here.
 sub queue_spawn {
     my $self = shift;
     my ($args) = @_;
 
-    $self->state->queue_spawn($args);
+    $self->submitter->queue_spawn($args);
 }
 
 sub run_script { shift @ARGV // die "No script specified" }

@@ -12,6 +12,7 @@ use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
 
 use App::Yath2::Pfile;
+use App::Yath2::Client;
 use Test2::Harness2::Util qw/open_file/;
 use Test2::Harness2::Util qw/mod2file open_file/;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
@@ -53,49 +54,47 @@ the start command for details on how to launch a persistant instance.
     EOT
 }
 
-# A persistent `run` must NOT call state->end_queue() (that sets QUEUE_ENDED and
-# would shut the persistent runner down), but it MUST still end its own per-run
-# queue.jsonl. That per-run queue is read ONLY by this run's collector (the
-# persistent runner pulls tasks from the shared State, not from queue.jsonl), so
-# ending it writes the terminator that lets the collector set TASKS_DONE and emit
-# the run-level harness_final. Without it the collector loops until the runner
-# exits and the command dies "Final data never received from collector!".
-sub terminate_queue {
+# Chunk 6.1-2: the persistent `run` now submits over runner.socket like the
+# transient `test` path (App::Yath2::Client), and renders from the runner
+# subscription. The persistent runner is long-lived and serves many runs, so the
+# persistent semantics are preserved by what we DON'T send:
+#
+#   * terminate_queue is a no-op: the run's completeness is signalled by the
+#     stop_run request submit_queue already sent (the runner marks this run's
+#     queue done). We must NOT send end_queue -- that sets QUEUE_ENDED and would
+#     shut the persistent runner down (the transient path's terminate_queue does
+#     send it, which is why we override).
+sub terminate_queue { return }
+
+# Liveness for the submit/subscribe clients: the persistent runner is a separate,
+# pre-existing process (not one we spawned and track via IPC), so liveness is a
+# plain kill(0) on its pid rather than the transient path's ipc->procs check.
+sub client {
     my $self = shift;
-    $self->tasks_queue->end();
+
+    return $self->{+CLIENT} //= do {
+        my $pid = $self->runner_pid;
+        App::Yath2::Client->new(
+            workdir        => $self->workdir,
+            liveness_check => sub { $pid && kill(0, $pid) ? 1 : 0 },
+        );
+    };
 }
 
-# The persistent run/spawn path is NOT migrated to runner.socket (gated): keep
-# submitting the run and its tasks through the in-process dispatch.jsonl state
-# that the persistent runner already polls, rather than the transient socket
-# client.
-sub submitter {
+# The completion test for a run-scoped subscription against a persistent runner:
+# the runner keeps its socket open across runs, so we key on this run's announced
+# end (harness_run_end) rather than on a socket EOF (which never comes here).
+sub subscription_complete {
     my $self = shift;
-    return $self->state;
-}
+    my ($sub) = @_;
 
-# Persistent signal shutdown stays on the dispatch.jsonl state: this run shares a
-# long-lived runner with other runs, so we halt only this run and kill its own
-# job pids (read from jobs.jsonl), rather than asking the runner to tear itself
-# down.
-sub signal_shutdown {
-    my $self = shift;
+    # No subscription (runner unreachable): fall back to the runner-liveness test
+    # the transient path uses so the loop still terminates.
+    return $self->_runner_gone unless $sub;
 
-    my $state = $self->state;
-    delete $state->{no_poll};
-    $state->poll;
-    my $running = $state->running_tasks;
-    $state->halt_run($self->{+RUN_ID});
-
-    for my $task (values %$running) {
-        next unless $task->{run_id} && $task->{run_id} eq $self->{+RUN_ID};
-        my $pid  = $self->get_job_pid($task->{run_id}, $task->{job_id}) // next;
-        my $file = $task->{rel_file};
-        print "Killing test $pid - $file...\n";
-        kill('INT', USE_P_GROUPS ? -$pid : $pid);
-    }
-
-    return;
+    return 1 if $sub->run_done;
+    return 1 if $sub->closed;
+    return 0;
 }
 
 sub write_settings_to { }
@@ -107,15 +106,6 @@ sub pfile_params      { () }
 
 sub monitor_preloads { 1 }
 sub job_count        { 1 }
-
-# The persistent run/watch path is gated (ARCH 6.1) and not migrated to
-# runner.socket: its test jobs do NOT stream transitions to the runner, so the
-# runner subscription carries no per-job state to render from. Keep rendering
-# from the still-living gatherer's event stream (chunk 6a leaves the gatherer
-# spawned), rather than the transient subscription renderer.
-sub use_subscription_renderer { 0 }
-
-sub collector_options { (persistent_runner => 1) }
 
 sub run {
     my $self = shift;
