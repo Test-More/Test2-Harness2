@@ -5,11 +5,13 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
+use IO::Select();
 use Time::HiRes qw/sleep/;
 
 use Test2::Collector::Util::Socket qw/connect_unix write_frame/;
 use Test2::Collector::Util::Zstd qw/compress_blob/;
-use Test2::Harness2::Util::JSON qw/encode_json/;
+use Test2::Collector::Util::Zstd::FrameBuffer();
+use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
@@ -134,6 +136,14 @@ Report (from a preload stage) that the stage is shutting down.
 Forward (from a monitored preload stage) a reload/monitor notification so the
 runner's reload state stays current.
 
+=item $hash = $client->reload_state
+
+Query the runner's canonical reload state (a per-stage hash of source files with
+reload errors/warnings). Two-way: sends a C<reload_state> request and reads back
+the reply. Returns the reload-state hash (possibly empty), or C<undef> if the
+runner could not be reached. Used by C<yath run> to check for unresolved reload
+errors before starting a run.
+
 =back
 
 =cut
@@ -202,6 +212,11 @@ sub stage_down ($self, $stage) {
     return;
 }
 
+sub reload_state ($self) {
+    my $reply = $self->_request({request => 'reload_state'}) or return undef;
+    return $reply->{reload_state} // {};
+}
+
 =head1 PRIVATE METHODS
 
 =over 4
@@ -222,6 +237,12 @@ Run the C<liveness_check> coderef (true when absent).
 
 Frame, compress, and write one request over the connection (a no-op once the
 runner is gone).
+
+=item $reply = $client->_request($request)
+
+Send one request and read back exactly one reply frame (the decoded payload), for
+the two-way requests. Returns C<undef> if the runner could not be reached. Croaks
+if the runner closes without a reply or the reply cannot be decoded.
 
 =back
 
@@ -278,6 +299,36 @@ sub _send ($self, $request) {
     my $conn = $self->connection or return;
     write_frame($conn, compress_blob(encode_json($request)));
     return;
+}
+
+sub _request ($self, $request) {
+    my $conn = $self->connection or return undef;
+    write_frame($conn, compress_blob(encode_json($request)));
+
+    my $fb    = Test2::Collector::Util::Zstd::FrameBuffer->new;
+    my $sel   = IO::Select->new($conn);
+    my $start = Time::HiRes::time();
+
+    while (1) {
+        if ($sel->can_read(0.05)) {
+            my $buf = '';
+            my $n   = sysread($conn, $buf, 65536);
+            croak "runner closed the connection before sending a reply"
+                if defined $n && $n == 0;
+            $fb->push_bytes($buf) if $n;
+        }
+
+        if (my @recs = $fb->drain) {
+            my $rec = shift @recs;
+            my $payload;
+            croak "could not decode the runner's reply frame"
+                unless eval { $payload = decode_json($rec->{payload}); 1 };
+            return $payload;
+        }
+
+        croak "Timed out waiting for the runner's reply"
+            if (Time::HiRes::time() - $start) > $self->CONNECT_TIMEOUT;
+    }
 }
 
 1;

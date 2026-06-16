@@ -96,25 +96,7 @@ tests run_and_run_id => sub {
     ok(-d File::Spec->catdir($dir, 'RUN-ABC'), "run dir was created");
 };
 
-tests tasks_queue => sub {
-    my $dir = tempdir(CLEANUP => 1);
-
-    my $plan = App::Yath2::RunPlan->new(
-        settings => build_settings(run_id => 'RUN-Q'),
-        workdir  => $dir,
-    );
-
-    my $queue = $plan->tasks_queue;
-    isa_ok($queue, ['Test2::Harness2::Util::Queue'], "got a queue");
-    is(
-        $queue->file,
-        File::Spec->catfile($dir, 'RUN-Q', 'queue.jsonl'),
-        "queue.jsonl is under the run dir",
-    );
-    ref_is($plan->tasks_queue, $queue, "tasks_queue is cached");
-};
-
-tests populate_no_write => sub {
+tests populate => sub {
     local @main::FINDER_FILES = (MockFile->new('t/a.t'), MockFile->new('t/b.t'));
 
     my $dir = tempdir(CLEANUP => 1);
@@ -130,28 +112,6 @@ tests populate_no_write => sub {
     is(scalar(@$tasks), 2, "two tasks stashed");
     is($tasks->[0], {job_id => 1, run_id => 'RUN-P', file => 't/a.t'}, "first task");
     is($tasks->[1], {job_id => 2, run_id => 'RUN-P', file => 't/b.t'}, "second task");
-
-    # write_queue defaulted off: nothing appended to queue.jsonl.
-    my @polled = $plan->tasks_queue->poll;
-    is(scalar(@polled), 0, "queue.jsonl left empty when write_queue is off");
-};
-
-tests populate_with_write => sub {
-    local @main::FINDER_FILES = (MockFile->new('t/a.t'), MockFile->new('t/b.t'));
-
-    my $dir = tempdir(CLEANUP => 1);
-    my $plan = App::Yath2::RunPlan->new(
-        settings => build_settings(run_id => 'RUN-W'),
-        workdir  => $dir,
-    );
-
-    my $count = $plan->populate(write_queue => 1);
-    is($count, 2, "two jobs found");
-
-    my @polled = $plan->tasks_queue->poll;
-    is(scalar(@polled), 2, "both tasks written to queue.jsonl");
-    is($polled[0]->[-1]->{file}, 't/a.t', "first queued task");
-    is($polled[1]->[-1]->{file}, 't/b.t', "second queued task");
 };
 
 tests display_and_interactive => sub {

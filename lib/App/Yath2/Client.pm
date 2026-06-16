@@ -36,16 +36,16 @@ L<Test2::Harness2::Runner::Subscriber> (snapshot-plus-forwarded-transitions
 mirror) -- and exposes them to the command as L</submitter> and
 L</connect_subscriber>.
 
-This is only the I<socket> transport. The command still chooses which transport
-to use: the persistent C<run>/C<spawn> path is gated and submits through the
-in-process dispatch state instead, so it overrides the command's submitter and
-never constructs this client for submission. Keeping the transport choice in the
-command preserves that seam.
+Both the transient C<yath test> and persistent C<yath run>/C<spawn> paths submit
+and subscribe over this socket transport; they differ only in how runner liveness
+is checked (the persistent path uses a plain C<kill(0)> on the pre-existing runner
+pid).
 
 The interface is deliberately small: L</connect_subscriber> takes a parameter
 hash threaded straight through to the subscriber, so the command can pass a
 C<run_id> for a run-scoped subscription (the runner routes each subscriber only
-its own run's transitions) or omit it for a global subscription.
+its own run's transitions) or omit it for a global subscription. L</reload_state>
+queries the runner's canonical reload diagnostics over the same socket.
 
 =head1 SYNOPSIS
 
@@ -90,6 +90,14 @@ L<Test2::Harness2::Runner::Client> bound to C<< $workdir/runner.socket >> and
 given the L</liveness_check>. Exposes C<queue_run>, C<queue_task>, C<stop_run>,
 C<end_queue>, C<halt_run>, and the stage-reporting requests.
 
+=item reload_state
+
+=item $hash = $client->reload_state
+
+Query the runner's canonical reload state (per-stage source files with reload
+errors/warnings) over C<runner.socket> via the submission client. Returns the
+reload-state hash (possibly empty) or C<undef> if the runner could not be reached.
+
 =item subscriber
 
 =item $sub = $client->subscriber
@@ -116,6 +124,8 @@ sub submitter ($self) {
         liveness_check => $self->{+LIVENESS_CHECK},
     );
 }
+
+sub reload_state ($self) { return $self->submitter->reload_state }
 
 sub subscriber ($self) { return $self->{+SUBSCRIBER} }
 

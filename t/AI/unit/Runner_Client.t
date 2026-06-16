@@ -3,7 +3,8 @@ use v5.38;
 
 use File::Temp qw/tempdir/;
 use File::Spec ();
-use Time::HiRes qw/sleep/;
+use POSIX ();
+use Time::HiRes qw/sleep time/;
 
 use Test2::Harness2::Runner::Client;
 
@@ -43,6 +44,11 @@ use Test2::Harness2::Runner::Client;
     sub request_handler_halt_run ($self, $payload, $conn) {
         push @{$self->{+SEEN}} => ['halt_run', $payload->{run_id}];
         return undef;
+    }
+
+    # Two-way request: return a reply payload (chunk 6.1-3 reload_state query).
+    sub request_handler_reload_state ($self, $payload, $conn) {
+        return {ok => 1, reload_state => {default => {'lib/Foo.pm' => {error => 'boom'}}}};
     }
 }
 
@@ -93,5 +99,40 @@ is(
 );
 
 $svc->close_service;
+
+# Two-way request/reply: reload_state. _request blocks reading the reply, so the
+# service must run service_io concurrently -- fork a child that loops service_io
+# and answers the request, while the parent's client makes the synchronous query.
+subtest reload_state_request_reply => sub {
+    my $rdir = tempdir(CLEANUP => 1);
+    my $rsvc = My::Runner->new(workdir => $rdir, name => 'runner');
+    $rsvc->start_service;
+
+    my $kid = fork // die "fork: $!";
+    unless ($kid) {
+        # Child: pump the service until the parent's request is answered (or the
+        # parent TERMs us), then exit.
+        local $SIG{TERM} = sub { POSIX::_exit(0) };
+        my $start = time;
+        while ((time - $start) < 10) {
+            $rsvc->service_io;
+            sleep 0.01;
+        }
+        POSIX::_exit(0);
+    }
+
+    my $rclient = Test2::Harness2::Runner::Client->new(workdir => $rdir);
+    my $got     = $rclient->reload_state;
+
+    is(
+        $got,
+        {default => {'lib/Foo.pm' => {error => 'boom'}}},
+        "reload_state query returns the runner's canonical reload_state hash",
+    );
+
+    kill('TERM', $kid);
+    waitpid($kid, 0);
+    $rsvc->close_service;
+};
 
 done_testing;

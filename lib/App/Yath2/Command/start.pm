@@ -10,7 +10,6 @@ use App::Yath2::Util qw/find_pfile/;
 use Getopt::Yath;
 
 use Test2::Harness2::Run;
-use Test2::Harness2::Util::Queue;
 use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
 
@@ -125,9 +124,6 @@ sub run {
     }
 
     $self->write_settings_to($dir, 'settings.json');
-
-    my $run_queue = Test2::Harness2::Util::Queue->new(file => File::Spec->catfile($dir, 'run_queue.jsonl'));
-    $run_queue->start();
 
     $self->setup_plugins();
     $self->setup_resources();

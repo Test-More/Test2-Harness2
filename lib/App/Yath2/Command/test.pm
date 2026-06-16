@@ -556,11 +556,6 @@ sub job_count {
     return $self->settings->runner->job_count;
 }
 
-sub tasks_queue {
-    my $self = shift;
-    return $self->run_plan->tasks_queue;
-}
-
 sub finder_args { () }
 
 # Find the test files and build the task list via the run plan. The run id and

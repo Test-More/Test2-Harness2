@@ -4,10 +4,8 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
-use File::Spec();
 
 use Test2::Harness2::Run();
-use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util qw/mod2file chmod_tmp/;
 
 use Test2::Harness2::Util::HashBase qw{
@@ -15,7 +13,6 @@ use Test2::Harness2::Util::HashBase qw{
     <workdir
     <finder_args
     +run
-    +tasks_queue
     <tasks
 };
 
@@ -39,8 +36,7 @@ It is a plain L<Object::HashBase> built from a settings object plus the workdir;
 it touches no socket and spawns no runner, so it can be constructed and exercised
 standalone in a unit test. The run object is built lazily (L</run>) -- creating
 its run directory as a side effect, exactly as the inline command code did -- and
-L</populate> finds the files, applies any plugin sort, builds the tasks, and
-optionally writes the per-run C<queue.jsonl> the gatherer reads.
+L</populate> finds the files, applies any plugin sort, and builds the tasks.
 
 =head1 SYNOPSIS
 
@@ -54,11 +50,9 @@ optionally writes the per-run C<queue.jsonl> the gatherer reads.
 
     my $run    = $plan->run;       # build the run + its run dir
     my $run_id = $run->run_id;
-    my $queue  = $plan->tasks_queue;
 
-    # Find + sort the files, build the tasks, return the job count. Pass
-    # write_queue => 1 to also append the tasks to the per-run queue.jsonl.
-    my $job_count = $plan->populate(write_queue => 1);
+    # Find + sort the files, build the tasks, return the job count.
+    my $job_count = $plan->populate();
     my $tasks     = $plan->tasks;
 
 =head1 PUBLIC METHODS
@@ -90,22 +84,12 @@ workdir and C<chmod_tmp>s the workdir, matching the old inline C<build_run>.
 
 Convenience accessor for C<< $plan->run->run_id >>.
 
-=item tasks_queue
-
-=item $queue = $plan->tasks_queue
-
-The per-run C<queue.jsonl> L<Test2::Harness2::Util::Queue> (under the run
-directory). Built (and cached) on first use.
-
 =item populate
 
-=item $job_count = $plan->populate(%params)
+=item $job_count = $plan->populate()
 
 Find the test files, apply any plugin sort, build a task per file, and stash the
-task list (see L</tasks>). Returns the number of tasks (job count). With
-C<< write_queue => 1 >> each task is also appended to L</tasks_queue> as it is
-built (the gatherer-fed C<queue.jsonl>); without it the queue file is left
-untouched.
+task list (see L</tasks>). Returns the number of tasks (job count).
 
 =item tasks
 
@@ -134,23 +118,14 @@ sub run ($self) {
 
 sub run_id ($self) { return $self->run->run_id }
 
-sub tasks_queue ($self) {
-    return $self->{+TASKS_QUEUE} //= Test2::Harness2::Util::Queue->new(
-        file => File::Spec->catfile($self->run->run_dir($self->{+WORKDIR}), 'queue.jsonl'),
-    );
-}
-
-sub populate ($self, %params) {
-    my $write_queue = $params{write_queue} ? 1 : 0;
-
+sub populate ($self) {
     my $run          = $self->run;
     my $settings     = $self->{+SETTINGS};
     my $finder_class = $settings->finder->finder;
     require(mod2file($finder_class));
     my $finder = $finder_class->new($settings->finder->all, @{$self->_finder_args});
 
-    my $tasks_queue = $self->tasks_queue;
-    my $plugins     = $settings->harness->plugins;
+    my $plugins = $settings->harness->plugins;
 
     my @files = @{$finder->find_files($plugins, $settings)};
 
@@ -174,13 +149,6 @@ sub populate ($self, %params) {
         $task->{category} = 'isolation' if $settings->debug->interactive;
 
         push @tasks => $task;
-
-        # queue.jsonl is consumed ONLY by the yath-side gatherer (it walks the
-        # workdir for events and learns the pending jobs from this file). The
-        # runner pulls tasks from the socket-fed state, not this file, so the
-        # transient path leaves it unwritten; the gated persistent path still
-        # spawns the gatherer and asks for it.
-        $tasks_queue->enqueue($task) if $write_queue;
     }
 
     $self->{+TASKS} = \@tasks;

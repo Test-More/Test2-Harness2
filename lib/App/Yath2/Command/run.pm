@@ -126,14 +126,10 @@ sub write_test_info {
 sub check_reload_state {
     my $self = shift;
 
-    my $state = Test2::Harness2::Runner::State->new(
-        workdir => $self->workdir,
-        observe => 1,
-    );
-
-    $state->poll;
-
-    my $reload_status = $state->reload_state // {};
+    # Chunk 6.1-3: ask the persistent runner for its canonical reload state over
+    # runner.socket (App::Yath2::Client), instead of constructing an observe-mode
+    # State that polled dispatch.jsonl. The runner is the reload-state authority.
+    my $reload_status = $self->client->reload_state // {};
 
     my (@out, $errors, $warnings, %seen);
     for my $stage (sort keys %$reload_status) {

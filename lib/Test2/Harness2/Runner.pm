@@ -519,6 +519,20 @@ sub request_handler_reload {
     return undef;
 }
 
+# Chunk 6.1-3: the persistent `yath run` command checks the runner's reload state
+# (per-stage source-file reload errors/warnings) before starting a run, so it can
+# abort or prompt. It used to read this by constructing an observe-mode State that
+# polled dispatch.jsonl; now it asks the runner over the socket. Two-way: returns
+# the canonical reload_state hash. Only the root runner is the state authority.
+sub request_handler_reload_state {
+    my $self = shift;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{+ROOTPID} == $$;
+
+    return {ok => 1, reload_state => $self->state->reload_state // {}};
+}
+
 # Chunk 5d: a transient stage reports it has bound its socket and is ready to be
 # scheduled (or is going down at shutdown). The runner folds this into the same
 # stage-readiness state its scheduler's _stage_order already gates on, replacing
