@@ -19,7 +19,7 @@ use Test2::Harness2::Renderer::Driver;
 use App::Yath2::RunPlan;
 use App::Yath2::Client;
 
-use Test2::Harness2::Util::JSON qw/encode_json decode_json JSON/;
+use Test2::Harness2::Util::JSON qw/JSON/;
 use Test2::Harness2::Util qw/mod2file open_file collector_exit_code runner_events_file/;
 use Test2::Util::Table qw/table/;
 
@@ -28,10 +28,9 @@ use POSIX();
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 
 use File::Spec;
-use Fcntl();
 
 use Time::HiRes qw/sleep time/;
-use List::Util qw/sum max min/;
+use List::Util qw/sum max/;
 use Carp qw/croak/;
 
 use parent 'App::Yath2::Command';
@@ -39,9 +38,6 @@ use Test2::Harness2::Util::HashBase qw/
     <runner_pid +ipc +signal
 
     +run_plan <run_id
-
-    +collector_writer
-    +renderer_reader
 
     +renderers
     +logger
@@ -133,41 +129,6 @@ sub init {
     $self->{+CLEANUP_SUBS} = [];
 }
 
-sub _resize_pipe {
-    return unless defined &Fcntl::F_SETPIPE_SZ;
-    my ($fh) = @_;
-
-    # 1mb if we can
-    my $size = 1024 * 1024 * 1;
-
-    # On linux systems lets go for the smaller of the two between 1mb and
-    # system max.
-    if (-e '/proc/sys/fs/pipe-max-size') {
-        open(my $max, '<', '/proc/sys/fs/pipe-max-size');
-        chomp(my $val = <$max>);
-        close($max);
-        $size = min($size, $val);
-    }
-
-    fcntl($fh, Fcntl::F_SETPIPE_SZ(), $size);
-}
-
-sub collector_writer {
-    my $self = shift;
-    return $self->{+COLLECTOR_WRITER} if $self->{+COLLECTOR_WRITER};
-    pipe($self->{+RENDERER_READER}, $self->{+COLLECTOR_WRITER}) or die "Could not create pipe: $!";
-    _resize_pipe($self->{+COLLECTOR_WRITER});
-    return $self->{+COLLECTOR_WRITER};
-}
-
-sub renderer_reader {
-    my $self = shift;
-    return $self->{+RENDERER_READER} if $self->{+RENDERER_READER};
-    pipe($self->{+RENDERER_READER}, $self->{+COLLECTOR_WRITER}) or die "Could not create pipe: $!";
-    _resize_pipe($self->{+COLLECTOR_WRITER});
-    return $self->{+RENDERER_READER};
-}
-
 sub workdir {
     my $self = shift;
     $self->settings->workspace->workdir;
@@ -201,14 +162,6 @@ sub handle_sig {
 }
 
 sub monitor_preloads { 0 }
-
-# The transient `yath test` command renders from the runner subscription (chunk
-# 6a): it subscribes to runner.socket, mirrors the runner's canonical state, and
-# drives the renderers/loggers itself (per-job 3-phase ordering) plus reads each
-# job's events file by path at completion. The persistent `yath run`/`watch` path
-# is gated (ARCH 6.1) -- its test jobs do NOT report to runner.socket -- so it
-# overrides this to keep rendering from the still-living gatherer's event stream.
-sub use_subscription_renderer { 1 }
 
 sub run {
     my $self = shift;
@@ -286,10 +239,10 @@ sub start {
 
     $self->write_test_info();
 
-    # Find the test files and build the task list (also writing the per-run
-    # queue.jsonl the gatherer reads). Submission to the runner happens AFTER the
-    # runner is started, because the transient path now submits over runner.socket
-    # (chunk 5c): the runner must be listening before the client can connect.
+    # Find the test files and build the task list. Submission to the runner
+    # happens AFTER the runner is started, because submission now goes over
+    # runner.socket (chunk 5c): the runner must be listening before the client can
+    # connect.
     my $pop = $self->populate_queue();
 
     return unless $pop;
@@ -299,28 +252,25 @@ sub start {
 
     $self->start_runner(jobs_todo => $pop);
 
-    # Submit the run + its tasks to the runner, then the queue terminator. For
-    # the transient path this is the socket client; the persistent path overrides
-    # the submitter to keep using the dispatch.jsonl state.
+    # Submit the run + its tasks to the runner over runner.socket, then the queue
+    # terminator (the persistent run command overrides terminate_queue to a no-op,
+    # since its long-lived runner is not shut down per run).
     $self->submit_queue();
     $self->terminate_queue();
-
-    $self->start_collector();
 
     return 1;
 }
 
 # The command-side socket client wrapping the runner.socket submit + subscribe
-# transports (App::Yath2::Client). The transient `yath test` path uses it for
-# both submission and subscription; the persistent run/spawn path overrides
-# submitter() to use the in-process dispatch.jsonl state instead, so it never
-# submits through this client (transport choice stays in the command).
+# transports (App::Yath2::Client). Both the transient `yath test` and persistent
+# `yath run`/`spawn` paths submit and subscribe over runner.socket; they differ
+# only in how runner liveness is checked (see the persistent override in run.pm).
 #
 # The submission client needs to know if the runner dies before it ever accepts
 # (e.g. a broken preload that takes the runner down during startup). We hand it a
 # liveness check that reaps through our IPC and reports whether the runner is
 # still tracked; if it has gone, the client stops trying and submission becomes a
-# no-op, leaving the gatherer to surface the runner's own failure.
+# no-op, and the empty-monitor render fallback surfaces the runner's own failure.
 sub client {
     my $self = shift;
 
@@ -343,10 +293,9 @@ sub client {
     };
 }
 
-# The run/task/end-queue submission target. The transient `yath test` command
-# submits over runner.socket via the socket client; the persistent run/spawn
-# commands override this to keep submitting through the in-process dispatch.jsonl
-# state.
+# The run/task/end-queue submission target: the socket client's submitter, which
+# sends one-way request frames over runner.socket. Both the transient `yath test`
+# and persistent `yath run`/`spawn` paths submit through it.
 sub submitter {
     my $self = shift;
     return $self->client->submitter;
@@ -358,9 +307,10 @@ sub submitter {
 #
 # If the runner dies before it ever binds/accepts on the socket (e.g. a broken
 # preload that takes the runner down during startup), the connect fails. That is
-# not fatal here: the still-living gatherer surfaces the runner's failure and the
-# command reports "no tests seen". Return undef so render_via_subscription falls
-# back to runner-output tailing plus the gatherer completion seam.
+# not fatal here: render_via_subscription falls back to a standalone empty monitor
+# so the driver still tails runner-output (the runner's failure renders from
+# runner-events / "no tests seen") and a dead runner ends the loop. Return undef
+# in that case.
 sub subscriber {
     my $self = shift;
     return $self->client->subscriber;
@@ -404,9 +354,7 @@ sub driver {
 
 sub render {
     my $self = shift;
-
-    return $self->render_via_subscription() if $self->use_subscription_renderer;
-    return $self->render_via_gatherer();
+    return $self->render_via_subscription();
 }
 
 # Chunk 5g transient render path. Drive the renderers/loggers entirely from the
@@ -486,104 +434,6 @@ sub _runner_gone {
     return $ipc->procs->{$runner_pid} ? 0 : 1;
 }
 
-sub render_via_gatherer {
-    my $self = shift;
-
-    my $ipc       = $self->ipc;
-    my $settings  = $self->settings;
-    my $renderers = $self->renderers;
-    my $logger    = $self->logger;
-    my $plugins   = $self->settings->harness->plugins;
-
-    my $handle_plugins   = [grep { $_->can('handle_event') } @$plugins];
-    my $annotate_plugins = [grep { $_->can('annotate_event') } @$plugins];
-
-    # render results from log
-    my $reader = $self->renderer_reader();
-    $reader->blocking(0);
-    my $buffer;
-    while (1) {
-        return if $self->{+SIGNAL};
-        $_->step for @{$renderers};
-
-        my $line = <$reader>;
-        unless (defined $line) {
-            $ipc->wait() if $ipc;
-            sleep 0.02;
-            next;
-        }
-
-        if ($buffer) {
-            $line   = $buffer . $line;
-            $buffer = undef;
-        }
-
-        unless (substr($line, -1, 1) eq "\n") {
-            $buffer //= "";
-            $buffer .= $line;
-            next;
-        }
-
-        my $e = decode_json($line);
-
-        if (defined $e) {
-            bless($e, 'Test2::Harness2::Event');
-            my $fd = $e->{facet_data} //= {};
-
-            my $changed = 0;
-            for my $p (@$annotate_plugins) {
-                my %inject = $p->annotate_event($e, $settings);
-                next unless keys %inject;
-                $changed++;
-
-                # Can add new facets, but not modify existing ones.
-                # Someone could force the issue by modifying the event directly
-                # inside 'annotate_event', this is not supported, but also not
-                # forbidden, user beware.
-                for my $f (keys %inject) {
-                    if (exists $fd->{$f}) {
-                        if ('ARRAY' eq ref($fd->{$f})) {
-                            push @{$fd->{$f}} => @{$inject{$f}};
-                        }
-                        else {
-                            warn "Plugin '$p' tried to add facet '$f' via 'annotate_event()', but it is already present and not a list, ignoring plugin annotation.\n";
-                        }
-                    }
-                    else {
-                        $fd->{$f} = $inject{$f};
-                    }
-                }
-
-            }
-
-            if ($logger) {
-                if ($changed) {
-                    my $newline = $e->as_json;
-                    print $logger $newline, "\n";
-                }
-                else {
-                    print $logger $line;
-                }
-            }
-        }
-        else {
-            last;
-        }
-
-        if (my $final = $e->{facet_data}->{harness_final}) {
-            $self->{+FINAL_DATA} = $final;
-        }
-        $_->render_event($e) for @$renderers;
-
-        $self->{+TESTS_SEEN}++   if $e->{facet_data}->{harness_job_launch};
-        $self->{+ASSERTS_SEEN}++ if $e->{facet_data}->{assert};
-
-        $_->handle_event($e, $settings) for @$handle_plugins;
-
-        $ipc->wait() if $ipc;
-    }
-}
-
 sub get_job_pid {
     my $self = shift;
     my ($run_id, $job_id) = @_;
@@ -650,22 +500,18 @@ sub stop {
 sub terminate_queue {
     my $self = shift;
 
-    # The per-run queue.jsonl terminator is only meaningful to the gatherer (it
-    # sets TASKS_DONE and triggers the run-level rollup). Chunk 5g retires that
-    # file on the transient path; end it only when the gatherer is in play (the
-    # gated persistent run overrides this anyway). The runner's end-of-queue is
-    # the socket end_queue request below.
-    $self->tasks_queue->end() unless $self->use_subscription_renderer;
+    # The runner's end-of-queue signal is the socket end_queue request. The
+    # gatherer-only per-run queue.jsonl terminator is retired (chunk 6.1-3). The
+    # persistent run command overrides this to a no-op (the long-lived runner is
+    # not shut down per run).
     $self->submitter->end_queue();
 }
 
-# Shutdown work to do when the transient command itself caught a signal. The run
-# state lives in the runner now (chunk 5c), so rather than reconstructing it from
-# dispatch.jsonl to kill individual job pids, ask the runner to halt the run over
-# the socket. handle_sig already forwarded the signal to the runner (and thus its
-# job children) via ipc->killall, so the running tests are being torn down
-# regardless. The persistent run/spawn path overrides this to use its
-# dispatch.jsonl state.
+# Shutdown work to do when the command itself caught a signal. The run state lives
+# in the runner now (chunk 5c), so rather than reconstructing it to kill individual
+# job pids, ask the runner to halt the run over the socket. handle_sig already
+# forwarded the signal to the runner (and thus its job children) via ipc->killall,
+# so the running tests are being torn down regardless.
 sub signal_shutdown {
     my $self = shift;
 
@@ -718,18 +564,16 @@ sub tasks_queue {
 sub finder_args { () }
 
 # Find the test files and build the task list via the run plan. The run id and
-# task list are mirrored onto the command (read directly elsewhere). The per-run
-# queue.jsonl is only written when the gatherer is in play (the transient path
-# renders from the runner subscription and retires that file; the gated
-# persistent path still spawns the gatherer, so it asks for the queue). The run +
+# task list are mirrored onto the command (read directly elsewhere). The run +
 # tasks are NOT submitted to the runner here -- that happens in submit_queue()
-# once the runner is listening (chunk 5c socket submission).
+# once the runner is listening (chunk 5c socket submission). The gatherer-only
+# per-run queue.jsonl is no longer written (chunk 6.1-3).
 sub populate_queue {
     my $self = shift;
 
     my $plan = $self->run_plan;
 
-    my $job_count = $plan->populate(write_queue => $self->use_subscription_renderer ? 0 : 1);
+    my $job_count = $plan->populate();
 
     $self->{+RUN_ID}        = $plan->run_id;
     $self->{+PENDING_TASKS} = $plan->tasks;
@@ -738,8 +582,7 @@ sub populate_queue {
 }
 
 # Submit the run, its tasks, and the run terminator to the runner through the
-# submitter. For the transient path the submitter is a socket client; for the
-# persistent path it is the dispatch.jsonl state.
+# submitter (the socket client). Used by both the transient and persistent paths.
 sub submit_queue {
     my $self = shift;
 
@@ -1050,67 +893,6 @@ sub renderers {
     }
 
     return $self->{+RENDERERS} = \@renderers;
-}
-
-# Chunk 6a: when the command renders from the runner subscription it reads each
-# job's events.jsonl.zst BY PATH at completion, so the still-living gatherer must
-# NOT delete the job dirs / run dir out from under it as it walks. The workdir is
-# a File::Temp tempdir with CLEANUP, so deferring the gatherer's incremental
-# remove_tree just leaves final cleanup to the normal workdir teardown.
-sub collector_options {
-    my $self = shift;
-    return ();
-}
-
-# Chunk 5g: the transient `yath test` path no longer spawns the yath-side
-# gatherer at all -- the runner is the completion/stalled/timeout/verdict
-# authority and the command renders from the runner subscription. Only the gated
-# persistent run/start path (use_subscription_renderer => 0) still spawns the
-# gatherer to walk the workdir and roll up its run.
-sub start_collector {
-    my $self = shift;
-
-    return if $self->use_subscription_renderer;
-
-    my $dir        = $self->workdir;
-    my $run        = $self->build_run();
-    my $settings   = $self->settings;
-    my $runner_pid = $self->runner_pid;
-
-    my ($rh, $wh);
-    pipe($rh, $wh) or die "Could not create pipe";
-
-    my %options = (show_runner_output => 1);
-    if ($settings->check_group('display')) {
-        $options{show_runner_output}     = $settings->display->hide_runner_output ? 0 : 1;
-        $options{truncate_runner_output} = $settings->display->truncate_runner_output;
-    }
-
-    %options = (
-        %options,
-        $self->collector_options(),
-    );
-
-    my $ipc = $self->ipc;
-    $ipc->spawn(
-        stdout      => $self->collector_writer,
-        stdin       => $rh,
-        no_set_pgrp => 1,
-        command     => [
-            $^X, $self->spawn_args($settings), $settings->harness->script,
-            (map { "-D$_" } @{$settings->harness->dev_libs}),
-            '--no-scan-plugins',    # Do not preload any plugin modules
-            collector => 'Test2::Harness2::Collector',
-            $dir, $run->run_id, $runner_pid,
-            %options,
-        ],
-    );
-
-    close($rh);
-    print $wh encode_json($run) . "\n";
-    close($wh);
-
-    close($self->collector_writer());
 }
 
 sub start_runner {

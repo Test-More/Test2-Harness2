@@ -148,8 +148,9 @@ sub parse_exit {
 
 # The stable path of the events file recorded by the non-test collector that
 # wraps the `yath test` runner. The producer (App::Yath2::Command::test
-# start_runner) and the consumer (Test2::Harness2::Collector) must agree on it,
-# so it lives here as a single shared accessor next to the workdir.
+# start_runner) and the consumer (Test2::Harness2::Renderer::Driver, via
+# Test2::Harness2::RunnerReader) must agree on it, so it lives here as a single
+# shared accessor next to the workdir.
 sub runner_events_file {
     my ($workdir) = @_;
     return File::Spec->catfile($workdir, 'runner-events.jsonl.zst');
@@ -158,8 +159,8 @@ sub runner_events_file {
 # The stable path of the events file recorded by the non-test collector that
 # wraps a single preload stage process. The producer (the stage's collector,
 # launched from Test2::Harness2::Runner::Preloader::launch_stage) and the
-# consumer (Test2::Harness2::Collector, which discovers these by globbing the
-# workdir) must agree on it, so it lives here next to runner_events_file. One
+# consumer (Test2::Harness2::Renderer::Driver, which discovers these by globbing
+# the workdir) must agree on it, so it lives here next to runner_events_file. One
 # file per stage name; stage names are simple identifiers, used verbatim.
 sub stage_events_file {
     my ($workdir, $stage) = @_;
