@@ -15,6 +15,8 @@ use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Runner::State;
 use Test2::Harness2::Runner::Client;
+use Test2::Harness2::Runner::Subscriber;
+use Test2::Harness2::Renderer::Driver;
 
 use Test2::Harness2::Util::JSON qw/encode_json decode_json JSON/;
 use Test2::Harness2::Util qw/mod2file open_file chmod_tmp collector_exit_code runner_events_file/;
@@ -52,6 +54,10 @@ use Test2::Harness2::Util::HashBase qw/
     +submitter
 
     +pending_tasks
+
+    +subscriber
+    +driver
+    +_gatherer_buffer
 
     <cleanup_subs
 
@@ -198,6 +204,14 @@ sub handle_sig {
 
 sub monitor_preloads { 0 }
 
+# The transient `yath test` command renders from the runner subscription (chunk
+# 6a): it subscribes to runner.socket, mirrors the runner's canonical state, and
+# drives the renderers/loggers itself (per-job 3-phase ordering) plus reads each
+# job's events file by path at completion. The persistent `yath run`/`watch` path
+# is gated (ARCH 6.1) -- its test jobs do NOT report to runner.socket -- so it
+# overrides this to keep rendering from the still-living gatherer's event stream.
+sub use_subscription_renderer { 1 }
+
 sub run {
     my $self = shift;
 
@@ -329,7 +343,147 @@ sub submitter {
     };
 }
 
+# The runner subscription the transient render path consumes: connect to
+# runner.socket, load the snapshot, and keep a live mirror of the runner's
+# canonical state by polling forwarded transitions.
+#
+# If the runner dies before it ever binds/accepts on the socket (e.g. a broken
+# preload that takes the runner down during startup), the connect fails. That is
+# not fatal here: the still-living gatherer surfaces the runner's failure and the
+# command reports "no tests seen". Return undef so render_via_subscription falls
+# back to runner-output tailing plus the gatherer completion seam.
+sub subscriber {
+    my $self = shift;
+    return $self->{+SUBSCRIBER};
+}
+
+# Attempt the subscription once. Returns the subscriber or undef on failure; the
+# render loop calls this exactly once and tolerates undef.
+sub connect_subscriber {
+    my $self = shift;
+
+    my $sub = Test2::Harness2::Runner::Subscriber->new(workdir => $self->workdir);
+    my $ok  = eval { $sub->subscribe; 1 };
+    warn "Could not subscribe to runner socket: $@" unless $ok;
+
+    return $self->{+SUBSCRIBER} = $ok ? $sub : undef;
+}
+
+# The command-side renderer driver (chunk 6a). It folds the subscription mirror
+# into rendered output with per-job ordering and computes the run-level
+# harness_final rollup command-side.
+sub driver {
+    my $self = shift;
+
+    my $logger   = $self->logger;
+    my $settings = $self->settings;
+
+    my $show_runner_output = 1;
+    $show_runner_output = $settings->display->hide_runner_output ? 0 : 1
+        if $settings->check_group('display');
+
+    return $self->{+DRIVER} //= Test2::Harness2::Renderer::Driver->new(
+        settings           => $settings,
+        renderers          => $self->renderers,
+        logger             => $logger,
+        run                => $self->build_run,
+        run_id             => $self->{+RUN_ID},
+        workdir            => $self->workdir,
+        show_runner_output => $show_runner_output,
+        tasks              => $self->{+PENDING_TASKS} // [],
+        plugins            => $settings->harness->plugins,
+    );
+}
+
 sub render {
+    my $self = shift;
+
+    return $self->render_via_subscription() if $self->use_subscription_renderer;
+    return $self->render_via_gatherer();
+}
+
+# Chunk 6a transient render path. Drive the renderers/loggers from the runner
+# subscription (Runner::Subscriber mirrors the runner's canonical state) and from
+# each job's events.jsonl.zst fetched by path at completion. The spawned gatherer
+# is still alive (for its non-walking duties: stalled-job detection, run-timeout
+# abort, completion safety) but its event stream is NOT rendered here -- we only
+# watch its pipe for the terminal sentinel as the completion seam, so there is no
+# double render.
+sub render_via_subscription {
+    my $self = shift;
+
+    my $ipc    = $self->ipc;
+    my $sub    = $self->connect_subscriber;
+    my $driver = $self->driver;
+
+    # The runner may have died before binding its socket (bad preload). Without a
+    # subscription there is no live mirror; use a standalone empty monitor so the
+    # driver still tails runner output and the gatherer terminator still ends the
+    # loop (the runner's failure renders from runner-events / "no tests seen").
+    require Test2::Harness2::Runner::Monitor;
+    my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
+
+    my $reader = $self->renderer_reader();
+    $reader->blocking(0);
+    my $done = 0;
+
+    while (1) {
+        return if $self->{+SIGNAL};
+        $_->step for @{$self->renderers};
+
+        $sub->poll if $sub;
+        $driver->step($monitor);
+
+        # Completion seam: the still-living gatherer emits its terminal undef
+        # sentinel once collection is genuinely complete (TASKS_DONE: every job
+        # polled to done, stalled jobs aborted). Watch its pipe for that sentinel
+        # ONLY -- non-terminal frames are discarded, not rendered, so there is no
+        # double render.
+        $done = 1 if $self->_gatherer_terminated($reader);
+
+        if ($done) {
+            $sub->poll if $sub;
+            $driver->finalize($monitor);
+            $self->{+FINAL_DATA}   = $driver->final_data;
+            $self->{+TESTS_SEEN}   = $driver->tests_seen;
+            $self->{+ASSERTS_SEEN} = $driver->asserts_seen;
+            return;
+        }
+
+        $ipc->wait() if $ipc;
+        sleep 0.02;
+    }
+}
+
+# Drain the gatherer pipe non-blocking; return true once its terminal `null`
+# sentinel line is seen. Frames are decoded only enough to spot the sentinel and
+# are otherwise discarded (the subscription is the render source now).
+sub _gatherer_terminated {
+    my $self = shift;
+    my ($reader) = @_;
+
+    while (1) {
+        my $line = <$reader>;
+        last unless defined $line;
+
+        if ($self->{+_GATHERER_BUFFER}) {
+            $line = $self->{+_GATHERER_BUFFER} . $line;
+            $self->{+_GATHERER_BUFFER} = undef;
+        }
+
+        unless (substr($line, -1, 1) eq "\n") {
+            $self->{+_GATHERER_BUFFER} = $line;
+            last;
+        }
+
+        my $e = decode_json($line);
+        return 1 unless defined $e;
+    }
+
+    return 0;
+}
+
+sub render_via_gatherer {
     my $self = shift;
 
     my $ipc       = $self->ipc;
@@ -923,7 +1077,16 @@ sub renderers {
     return $self->{+RENDERERS} = \@renderers;
 }
 
-sub collector_options { () }
+# Chunk 6a: when the command renders from the runner subscription it reads each
+# job's events.jsonl.zst BY PATH at completion, so the still-living gatherer must
+# NOT delete the job dirs / run dir out from under it as it walks. The workdir is
+# a File::Temp tempdir with CLEANUP, so deferring the gatherer's incremental
+# remove_tree just leaves final cleanup to the normal workdir teardown.
+sub collector_options {
+    my $self = shift;
+    return (defer_cleanup => 1) if $self->use_subscription_renderer;
+    return ();
+}
 
 sub start_collector {
     my $self = shift;

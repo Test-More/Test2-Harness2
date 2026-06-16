@@ -108,6 +108,13 @@ sub pfile_params      { () }
 sub monitor_preloads { 1 }
 sub job_count        { 1 }
 
+# The persistent run/watch path is gated (ARCH 6.1) and not migrated to
+# runner.socket: its test jobs do NOT stream transitions to the runner, so the
+# runner subscription carries no per-job state to render from. Keep rendering
+# from the still-living gatherer's event stream (chunk 6a leaves the gatherer
+# spawned), rather than the transient subscription renderer.
+sub use_subscription_renderer { 0 }
+
 sub collector_options { (persistent_runner => 1) }
 
 sub run {

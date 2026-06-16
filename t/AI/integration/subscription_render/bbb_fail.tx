@@ -1,0 +1,6 @@
+use Test2::V0;
+
+print "SUBRENDER-BODY-MARKER-FAIL\n";
+ok(0, "bbb fail assertion");
+
+done_testing;

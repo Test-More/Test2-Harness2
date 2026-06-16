@@ -1,0 +1,6 @@
+use Test2::V0;
+
+print "SUBRENDER-BODY-MARKER-PASS\n";
+ok(1, "aaa pass assertion");
+
+done_testing;

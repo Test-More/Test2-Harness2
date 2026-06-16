@@ -26,6 +26,7 @@ use Test2::Harness2::Util::HashBase qw{
     <settings
     <run_dir
     <runner_pid +runner_exited <persistent_runner
+    <defer_cleanup
 
     <backed_up
 
@@ -53,9 +54,9 @@ sub init {
     die "Could not find run dir" unless -d $run_dir;
     $self->{+RUN_DIR} = $run_dir;
 
-    $self->{+WAIT_TIME} //= 0.02;
-    $self->{+VERDICTS} //= {};
-    $self->{+TRIES}    //= {};
+    $self->{+WAIT_TIME}      //= 0.02;
+    $self->{+VERDICTS}       //= {};
+    $self->{+TRIES}          //= {};
     $self->{+TRY_WILL_RETRY} //= {};
 
     $self->{+ACTION}->($self->_harness_event(0, undef, time, harness_run => $self->{+RUN}, harness_settings => $self->settings, about => {no_display => 1}));
@@ -94,7 +95,7 @@ sub process {
             last if $self->runner_exited;
         }
 
-        while(my ($job_try, $jdir) = each %$jobs) {
+        while (my ($job_try, $jdir) = each %$jobs) {
             my $e_count = 0;
             for my $event ($jdir->poll($self->settings->collector->max_poll_events // 1000)) {
                 $self->_note_verdict($event);
@@ -113,7 +114,11 @@ sub process {
                 next;
             }
 
-            unless ($settings->debug->keep_dirs) {
+            # Chunk 6a: when the command renders from the runner subscription it
+            # reads each job's events file BY PATH at completion, so the gatherer
+            # must not delete the job dir as it walks (defer_cleanup). The
+            # File::Temp workdir teardown removes everything at exit instead.
+            unless ($settings->debug->keep_dirs || $self->{+DEFER_CLEANUP}) {
                 my $job_path = File::Spec->catdir($self->{+RUN_DIR}, $job_try);
                 # Needed because we set the perms so that a tmpdir under it can be used.
                 # This is the only remove_tree that needs it because it is the
@@ -130,7 +135,7 @@ sub process {
                     $progress++;
                     unless ($warning_seen{$job_path}++) {
                         my $msg = "NON-FATAL Error deleting job dir ($job_path) will try again...: $err";
-                        my $e = $self->_harness_event(0, undef, time, info => [{details => $msg, tag => "INTERNAL", debug => 1, important => 1}]);
+                        my $e   = $self->_harness_event(0, undef, time, info => [{details => $msg, tag => "INTERNAL", debug => 1, important => 1}]);
                         $self->{+ACTION}->($e);
                     }
                     next;
@@ -191,7 +196,8 @@ sub process {
         $self->{+ACTION}->(undef);
     }
 
-    remove_tree($self->{+RUN_DIR}, {safe => 1, keep_root => 0}) unless $settings->debug->keep_dirs;
+    remove_tree($self->{+RUN_DIR}, {safe => 1, keep_root => 0})
+        unless $settings->debug->keep_dirs || $self->{+DEFER_CLEANUP};
 
     return;
 }
@@ -224,10 +230,10 @@ sub _abort_stalled_jobs {
             details => $details,
             exit    => -1,
             code    => -1,
-            signal  => 0,
-            dumped  => 0,
-            retry   => 0,
-            aborted => 1,
+            signal  =>  0,
+            dumped  =>  0,
+            retry   =>  0,
+            aborted =>  1,
             job_id  => $job_id,
             job_try => $try,
             stamp   => $stamp,
@@ -276,7 +282,7 @@ sub runner_done {
 
 sub runner_exited {
     my $self = shift;
-    my $pid = $self->{+RUNNER_PID} or return undef;
+    my $pid  = $self->{+RUNNER_PID} or return undef;
 
     return $self->{+RUNNER_EXITED} if $self->{+RUNNER_EXITED};
 
@@ -316,7 +322,7 @@ sub process_runner_events {
 
     my $action = $self->{+ACTION};
     if ($self->{+TRUNCATE_RUNNER_OUTPUT} && !$self->{+TRUNCATED_RUNNER_OUTPUT}) {
-        $action = sub {};
+        $action = sub { };
         $self->{+TRUNCATED_RUNNER_OUTPUT} = 1;
     }
 
@@ -495,7 +501,7 @@ sub process_tasks {
         }
 
         my $job_id = $task->{job_id} or die "No job id!";
-        $self->{+TASKS}->{$job_id} = $task;
+        $self->{+TASKS}->{$job_id}   = $task;
         $self->{+PENDING}->{$job_id} = 1 + ($task->{retry} || $self->run->retry || 0);
 
         my $e = $self->_harness_event($job_id, $task->{is_try} // 0, $task->{stamp}, 'harness_job_queued' => $task);
@@ -538,9 +544,9 @@ sub jobs {
     # Don't monitor more than 'max_open_jobs' or we might have too many open file handles and crash
     # Max open files handles on a process applies. Usually this is 1024 so we
     # can't have everything open at once when we're behind.
-    my $max_open_jobs = $self->settings->collector->max_open_jobs // 1024;
+    my $max_open_jobs            = $self->settings->collector->max_open_jobs // 1024;
     my $additional_jobs_to_parse = $max_open_jobs - keys %$jobs;
-    if($additional_jobs_to_parse <= 0) {
+    if ($additional_jobs_to_parse <= 0) {
         $self->send_backed_up;
         return $jobs;
     }
@@ -563,16 +569,16 @@ sub jobs {
         delete $self->{+PENDING}->{$job_id} if $self->{+PENDING}->{$job_id} < 1;
 
         my $file = $job->{file};
-        my $e = $self->_harness_event(
+        my $e    = $self->_harness_event(
             $job_id,
             $job->{is_try},
             $job->{stamp},
-            harness_job        => $job,
-            harness_job_start  => {
-                details => "Job $job_id started at $job->{stamp}",
-                job_id  => $job_id,
-                stamp   => $job->{stamp},
-                file    => $file,
+            harness_job       => $job,
+            harness_job_start => {
+                details  => "Job $job_id started at $job->{stamp}",
+                job_id   => $job_id,
+                stamp    => $job->{stamp},
+                file     => $file,
                 rel_file => File::Spec->abs2rel($file),
                 abs_file => File::Spec->rel2abs($file),
             },
@@ -663,7 +669,7 @@ sub _final_event {
     # (harness_job_end) is "seen"; one still left in PENDING with no verdict is
     # "unseen". This mirrors Auditor::finish's watchers-vs-no-watchers split.
     for my $job_id (keys %{$self->{+TASKS}}) {
-        my $task = $self->{+TASKS}{$job_id};
+        my $task    = $self->{+TASKS}{$job_id};
         my $verdict = $self->{+VERDICTS}{$job_id};
 
         if ($verdict) {
@@ -706,7 +712,7 @@ sub _harness_event {
     my ($job_id, $job_try, $stamp, %args) = @_;
 
     croak "Job id is required" unless defined $job_id;
-    croak "Stamp is required" unless defined $stamp;
+    croak "Stamp is required"  unless defined $stamp;
 
     return Test2::Harness2::Event->new(
         stamp      => $stamp,
