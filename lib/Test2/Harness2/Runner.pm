@@ -30,6 +30,7 @@ use Test2::Harness2::Runner::DepTracer();
 use Test2::Harness2::Runner::Stage();
 use Test2::Harness2::Runner::Stage::Client();
 use Test2::Harness2::Runner::Monitor();
+use Test2::Harness2::Runner::Watchdog();
 
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
@@ -79,6 +80,7 @@ use Test2::Harness2::Util::HashBase(
         +stage_delegate
 
         +monitor
+        +watchdog
     },
 );
 
@@ -352,8 +354,9 @@ sub process {
     # run loop (chunk 5a scaffolding). The scheduler is now an in-runner object
     # ticked each service-loop iteration (chunk 5b). The transient `yath test`
     # command submits its run and tasks over this socket (chunk 5c), which the
-    # request handlers fold into the in-process State. queue.jsonl/jobs.jsonl stay
-    # this phase to feed the still-living gatherer (retired with it in 5g).
+    # request handlers fold into the in-process State. As of chunk 5g the
+    # transient path no longer writes queue.jsonl/jobs.jsonl (the gatherer that
+    # read them is retired there); they remain only for the gated persistent path.
     $self->start_service;
 
     $self->start();
@@ -366,9 +369,32 @@ sub process {
 
     $self->stop();
 
+    # Chunk 5g: the transient command's render completion is the runner closing
+    # this socket. Before we close, drain any in-flight transition frames a job
+    # collector flushed late (e.g. a stage's last job, whose final_state can race
+    # the stage's stop_task report) so they are folded and forwarded to the
+    # subscriber. By now stop() has reaped every child (the stages, and through
+    # them their job collectors), so a few non-blocking service passes capture the
+    # remainder. Root / transient only; the gated persistent path has the gatherer.
+    $self->_drain_transitions if $self->{+ROOTPID} == $$ && !$self->{+PERSIST};
+
     $self->close_service;
 
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
+}
+
+# Chunk 5g: final non-blocking sweep of the service socket so transitions that
+# arrived after the run loop ended are folded into the monitor and forwarded to
+# the subscriber before the socket closes (the command's completion signal).
+sub _drain_transitions {
+    my $self = shift;
+
+    for (1 .. 50) {
+        $self->service_io;
+        Time::HiRes::sleep(0.01);
+    }
+
+    return;
 }
 
 # Run submission moved onto runner.socket (chunk 5c): a transient `yath test`
@@ -498,6 +524,16 @@ sub request_handler_stage_down {
 sub monitor {
     my $self = shift;
     return $self->{+MONITOR} //= Test2::Harness2::Runner::Monitor->new;
+}
+
+# Chunk 5g: the runner is the transient completion/stalled/timeout authority now
+# that the yath-side gatherer is retired on the transient path. The watchdog folds
+# the gatherer's non-walking duties (stalled-job detection, abort-on-wind-down)
+# into the scheduler tick over canonical state. The standing gatherer survives
+# only for the gated persistent path.
+sub watchdog {
+    my $self = shift;
+    return $self->{+WATCHDOG} //= Test2::Harness2::Runner::Watchdog->new(runner => $self);
 }
 
 # Chunk 5e: Role::Service hands every transition frame here (one-way, no reply).
@@ -836,6 +872,15 @@ sub run_stage {
         $self->state->stage_down($stage);
     }
 
+    # Chunk 5g: the run loop is ending; any task still tracked as running whose
+    # collector never reported completion (e.g. a job dispatched to a stage that
+    # died, or a job left over on a signal-driven shutdown) will never finish on
+    # its own. Synthesize its abort into canonical state so the command-side
+    # driver rolls it up as failed instead of reporting it as "never ran". Root
+    # process / transient path only; the persistent gatherer owns this otherwise.
+    $self->watchdog->abort_remaining
+        if $self->{+ROOTPID} == $$ && !$self->{+PERSIST};
+
     # Chunk 5d: transient stage services (this process's own stage children, and a
     # nested stage's grandchildren) idle waiting for dispatches; unlike the old
     # dispatch.jsonl stages they do not observe the run ending on their own. Tell
@@ -910,9 +955,16 @@ sub run_job {
         $pid = $job->pid;
     }
 
-    my $json_data = $job->TO_JSON();
-    $json_data->{stamp} = $spawn_time;
-    $run->jobs->write($json_data);
+    # jobs.jsonl is the runner -> gatherer channel (the gatherer reads it to learn
+    # spawned jobs + their pids). Chunk 5g retires it on the transient path: the
+    # runner forwards the same job-start as an announce_job mutation over the
+    # socket instead. The gated persistent path still has a gatherer, so keep
+    # writing the file there.
+    if ($self->{+PERSIST}) {
+        my $json_data = $job->TO_JSON();
+        $json_data->{stamp} = $spawn_time;
+        $run->jobs->write($json_data);
+    }
 
     # Chunk 5f: forking a test job is a runner-originated state mutation; forward
     # it to subscribers so their mirror sees the job go running.

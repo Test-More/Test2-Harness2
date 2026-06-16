@@ -8,8 +8,8 @@ use File::Spec();
 use Time::HiRes qw/time/;
 
 use Test2::Harness2::Event;
-use Test2::Harness2::Collector::JobReader;
-use Test2::Harness2::Collector::RunnerReader;
+use Test2::Harness2::JobReader;
+use Test2::Harness2::RunnerReader;
 use Test2::Harness2::Util::File::Stream;
 use Test2::Harness2::Util qw/runner_events_file/;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
@@ -31,6 +31,7 @@ use Test2::Harness2::Util::HashBase qw{
 
     +by_uuid
     +jobs
+    +aborted_rendered
     +run_started
     +aux_handles
 
@@ -115,8 +116,9 @@ sub init ($self) {
     $self->{+ANNOTATE_PLUGINS} = [grep { $_->can('annotate_event') } @$plugins];
     $self->{+HANDLE_PLUGINS}   = [grep { $_->can('handle_event') } @$plugins];
 
-    $self->{+BY_UUID}         = {};
-    $self->{+JOBS}            = {};
+    $self->{+BY_UUID}          = {};
+    $self->{+JOBS}             = {};
+    $self->{+ABORTED_RENDERED} = {};
     $self->{+SERVICE_READERS} = {};
     $self->{+AUX_HANDLES}     = {};
     $self->{+TESTS_SEEN}   //= 0;
@@ -239,6 +241,14 @@ sub step ($self, $monitor) {
         $self->_render_completion($uuid, $c);
     }
 
+    # Chunk 5g: a job the runner watchdog aborted (its collector will never
+    # report completion) -- render a synthetic failed completion, the way the
+    # gatherer's _abort_stalled_jobs used to. The runner is the completion
+    # authority on the transient path; the driver renders + rolls up its verdict.
+    for my $job_id ($monitor->new_aborted_jobs) {
+        $self->_render_aborted($monitor->job($job_id));
+    }
+
     $monitor->new_finalized;
     $monitor->new_test_exits;
 
@@ -282,6 +292,12 @@ sub finalize ($self, $monitor) {
 Phase 1: synthesize and dispatch the C<harness_job_queued> /
 C<harness_job_launch> / C<harness_job_start> lifecycle for a newly-seen test
 collector.
+
+=item $self->_render_aborted($runner_job)
+
+Render a job the runner watchdog aborted: synthesize its launch (if never seen),
+an aborted C<harness_job_exit>, and a failed C<harness_job_end>, then roll up the
+failure -- the gatherer's C<_abort_stalled_jobs> shape, command-side.
 
 =item $self->_render_completion($uuid, $collector)
 
@@ -356,6 +372,84 @@ sub _render_launch ($self, $uuid, $c) {
     return;
 }
 
+# Chunk 5g: render a job the runner watchdog aborted. There is no collector
+# events file to walk (the collector never finalized, or never started), so we
+# synthesize the launch (if it was never rendered) plus an aborted
+# harness_job_exit and a failed harness_job_end -- the same shapes the gatherer's
+# _abort_stalled_jobs produced -- and roll up the failure command-side.
+sub _render_aborted ($self, $rj) {
+    return unless $rj;
+    my $job_id = $rj->{job_id} // return;
+
+    my $job = $self->{+JOBS}{$job_id};
+    return if $job && $job->{verdict};    # already settled normally
+
+    my $file = $rj->{file} // ($job ? $job->{file} : undef);
+    my $try  = 0;
+    my $reason = $rj->{details} // "Runner aborted this job before it completed";
+
+    # If the launch was never rendered (the collector never started), render it
+    # now so the aborted job has a header line.
+    my $entry = $self->{+ABORTED_RENDERED} //= {};
+    return if $entry->{$job_id}++;
+
+    my $task     = $self->_task_for($job_id);
+    my $job_name = $task ? $task->{job_name} : $job_id;
+    $self->{+TESTS_SEEN}++;
+    $job->{tries}++ if $job;
+
+    my $stamp = time;
+
+    my $launch = $self->_event(
+        $job_id, $try, $stamp,
+        harness_job       => {job_id => $job_id, job_name => $job_name, file => $file, is_try => $try},
+        harness_job_start => {
+            details  => "Job $job_id started",
+            job_id   => $job_id,
+            stamp    => $stamp,
+            file     => $file,
+            rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
+            abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
+        },
+        harness_job_launch => {stamp => $stamp, retry => $try},
+    );
+    $self->_dispatch($launch);
+
+    my $end_facet = {
+        file     => $file,
+        rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
+        abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
+        retry    => 0,
+        fail     => 1,
+        aborted  => 1,
+        stamp    => $stamp,
+    };
+
+    my $e = $self->_event(
+        $job_id, $try, $stamp,
+        harness_job      => {job_id => $job_id, job_name => $job_name, file => $file, is_try => $try},
+        harness_job_exit => {
+            details => $reason,
+            exit    => -1,
+            code    => -1,
+            signal  => 0,
+            dumped  => 0,
+            retry   => 0,
+            aborted => 1,
+            job_id  => $job_id,
+            job_try => $try,
+            stamp   => $stamp,
+        },
+        harness_job_end => $end_facet,
+        info            => [{details => $reason, tag => "INTERNAL", debug => 1, important => 1}],
+    );
+
+    $self->_note_verdict($job, $try, $end_facet);
+    $self->_dispatch($e);
+
+    return;
+}
+
 sub _render_completion ($self, $uuid, $c) {
     my $entry = $self->{+BY_UUID}{$uuid} //= {ended => 0};
     return if $entry->{ended};
@@ -375,7 +469,7 @@ sub _render_completion ($self, $uuid, $c) {
 
     if (defined $events_file && length $events_file) {
         # Phase 2: read the whole events file BY PATH and feed every event.
-        my $reader = Test2::Harness2::Collector::JobReader->new(
+        my $reader = Test2::Harness2::JobReader->new(
             job_id      => $job_id,
             job_try     => $try,
             run_id      => $self->{+RUN_ID},
@@ -422,7 +516,7 @@ sub _step_runner_output ($self, $monitor) {
     # hub), so add its events file explicitly by the known workdir path.
     if (my $dir = $self->{+WORKDIR}) {
         my $rfile = runner_events_file($dir);
-        $readers->{$rfile} //= Test2::Harness2::Collector::RunnerReader->new(
+        $readers->{$rfile} //= Test2::Harness2::RunnerReader->new(
             run_id      => $self->{+RUN_ID},
             events_file => $rfile,
         );
@@ -433,7 +527,7 @@ sub _step_runner_output ($self, $monitor) {
     for my $uuid ($monitor->services) {
         my $c  = $monitor->collector($uuid) or next;
         my $ef = $c->{events_file}          or next;
-        $readers->{$ef} //= Test2::Harness2::Collector::RunnerReader->new(
+        $readers->{$ef} //= Test2::Harness2::RunnerReader->new(
             run_id      => $self->{+RUN_ID},
             events_file => $ef,
             label       => "yath " . ($c->{name} // 'service'),

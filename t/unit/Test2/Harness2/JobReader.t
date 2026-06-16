@@ -3,7 +3,7 @@ use File::Temp qw/tempdir/;
 use Test2::Collector::Event;
 use Test2::Collector::Recorder::Zstd;
 
-use Test2::Harness2::Collector::JobReader;
+use Test2::Harness2::JobReader;
 
 my $dir  = tempdir(CLEANUP => 1);
 my $file = "$dir/events.jsonl.zst";
@@ -20,7 +20,7 @@ $rec->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, 
 $rec->record_event($ev->(harness_final_state => {pass => 1, fail_count => 0, pass_count => 1, assertion_count => 1, exit => 0}));
 $rec->finalize;
 
-my $reader = Test2::Harness2::Collector::JobReader->new(
+my $reader = Test2::Harness2::JobReader->new(
     job_id     => 'JOB-1',
     job_try    => 0,
     run_id     => 'RUN-1',
@@ -68,7 +68,7 @@ subtest failing_job => sub {
     $frec->record_event($ev->(harness_final_state => {pass => 0, fail_count => 1, pass_count => 0, assertion_count => 1, exit => 256}));
     $frec->finalize;
 
-    my $freader = Test2::Harness2::Collector::JobReader->new(
+    my $freader = Test2::Harness2::JobReader->new(
         job_id => 'JOB-2', job_try => 0, run_id => 'RUN-1', events_file => $ffile, file => "t/bar.t",
     );
 
@@ -97,7 +97,7 @@ subtest skip_all_job => sub {
     $srec->record_event($ev->(harness_final_state => {pass => 1, fail_count => 0, pass_count => 0, assertion_count => 0, exit => 0, plan => {count => 0, skip => 1, details => 'no thanks'}}));
     $srec->finalize;
 
-    my $sreader = Test2::Harness2::Collector::JobReader->new(
+    my $sreader = Test2::Harness2::JobReader->new(
         job_id => 'JOB-3', job_try => 0, run_id => 'RUN-1', events_file => $sfile, file => "t/skip.t",
     );
 
@@ -123,7 +123,7 @@ subtest poll_boundary => sub {
     $brec->record_event($ev->(harness_final_state => {pass => 1, fail_count => 0, pass_count => 1, assertion_count => 1, exit => 0}));
     $brec->finalize;
 
-    my $breader = Test2::Harness2::Collector::JobReader->new(
+    my $breader = Test2::Harness2::JobReader->new(
         job_id => 'JOB-B', job_try => 0, run_id => 'RUN-1', events_file => $bfile, file => "t/boundary.t",
     );
 
@@ -147,7 +147,7 @@ subtest halt_threaded => sub {
     $hrec->record_event($ev->(harness_final_state => {pass => 0, fail_count => 1, pass_count => 0, assertion_count => 1, exit => 0, halt => 'review bailout'}));
     $hrec->finalize;
 
-    my $hreader = Test2::Harness2::Collector::JobReader->new(
+    my $hreader = Test2::Harness2::JobReader->new(
         job_id => 'JOB-H', job_try => 0, run_id => 'RUN-1', events_file => $hfile, file => "t/halt.t",
     );
 

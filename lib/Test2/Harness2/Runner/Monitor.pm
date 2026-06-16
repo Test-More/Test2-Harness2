@@ -17,6 +17,7 @@ use Object::HashBase qw{
     +pending_completed
     +pending_exits
     +pending_finalized
+    +pending_aborted
 };
 
 =pod
@@ -96,6 +97,7 @@ sub init ($self) {
     $self->{+PENDING_COMPLETED}  = [];
     $self->{+PENDING_EXITS}      = [];
     $self->{+PENDING_FINALIZED}  = [];
+    $self->{+PENDING_ABORTED}    = [];
 
     return;
 }
@@ -167,6 +169,15 @@ is available by then); C<new_test_exits> reports tests whose process has exited
 (the C<completed> transition), which the scheduler uses to free a slot.
 C<new_completed> also covers plain (non-test) collectors, which signal the end
 of their run with an C<exited> transition instead of C<completed>.
+
+=item new_aborted_jobs
+
+=item @job_ids = $mon->new_aborted_jobs
+
+Drain-on-call change list of job ids the runner watchdog aborted since the
+previous call (a C<harness_runner_job> mutation with C<state> C<aborted>): a job
+that was dispatched/running but whose collector will never report completion, so
+the runner synthesized its failure into canonical state.
 
 =item job_ids
 
@@ -259,6 +270,8 @@ sub new_diagnosing ($self) { return $self->_drain(PENDING_DIAGNOSING) }
 sub new_completed  ($self) { return $self->_drain(PENDING_COMPLETED) }
 sub new_test_exits ($self) { return $self->_drain(PENDING_EXITS) }
 sub new_finalized  ($self) { return $self->_drain(PENDING_FINALIZED) }
+
+sub new_aborted_jobs ($self) { return $self->_drain(PENDING_ABORTED) }
 
 sub job_ids ($self)          { return keys %{$self->{+JOBS}} }
 sub job     ($self, $job_id) { return $self->{+JOBS}{$job_id} }
@@ -357,10 +370,19 @@ sub _process_runner_job ($self, $rj) {
 
     my $j = $self->{+JOBS}{$job_id} //= {job_id => $job_id};
 
-    $j->{state}  = $rj->{state}  if defined $rj->{state};
-    $j->{stage}  = $rj->{stage}  if exists $rj->{stage};
-    $j->{file}   = $rj->{file}   if exists $rj->{file};
-    $j->{run_id} = $rj->{run_id} if exists $rj->{run_id};
+    $j->{state}   = $rj->{state}   if defined $rj->{state};
+    $j->{stage}   = $rj->{stage}   if exists $rj->{stage};
+    $j->{file}    = $rj->{file}    if exists $rj->{file};
+    $j->{run_id}  = $rj->{run_id}  if exists $rj->{run_id};
+    $j->{details} = $rj->{details} if exists $rj->{details};
+
+    # Chunk 5g: a job the runner watchdog aborted (its collector will never
+    # report completion) enters the 'aborted' state. Surface it on a drain-on-call
+    # change list so a subscriber (the command-side driver) can render it as a
+    # failed completion exactly once, the way the gatherer synthesized
+    # harness_job_exit{aborted}/harness_job_end{fail}.
+    push @{$self->{+PENDING_ABORTED}} => $job_id
+        if defined($rj->{state}) && $rj->{state} eq 'aborted';
 
     return;
 }

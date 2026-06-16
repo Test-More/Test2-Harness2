@@ -3,7 +3,7 @@ use File::Temp qw/tempdir/;
 use Test2::Collector::Event;
 use Test2::Collector::Recorder::Zstd;
 
-use Test2::Harness2::Collector::RunnerReader;
+use Test2::Harness2::RunnerReader;
 
 # Build a fixture runner-events.jsonl.zst the way the non-test collector that
 # wraps the `yath test` runner would: the IOParser tags each line with its
@@ -25,7 +25,7 @@ $rec->record_event($ev->(
 $rec->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 123}));
 $rec->finalize;
 
-my $reader = Test2::Harness2::Collector::RunnerReader->new(
+my $reader = Test2::Harness2::RunnerReader->new(
     run_id      => 'RUN-1',
     events_file => $file,
 );
@@ -72,7 +72,7 @@ ok($px_ev, "harness_process_exit surfaced");
 # A reader pointed at a not-yet-created events file must poll gracefully (no die,
 # empty list) until the file appears.
 subtest missing_file_is_graceful => sub {
-    my $mreader = Test2::Harness2::Collector::RunnerReader->new(
+    my $mreader = Test2::Harness2::RunnerReader->new(
         run_id      => 'RUN-2',
         events_file => "$dir/does-not-exist.jsonl.zst",
     );
@@ -95,7 +95,7 @@ subtest nonzero_exit_detected => sub {
     $frec->record_event($ev->(harness_process_exit => {err => 3, sig => 0, dmp => 0, all => 768, stamp => 9}));
     $frec->finalize;
 
-    my $freader = Test2::Harness2::Collector::RunnerReader->new(run_id => 'RUN-3', events_file => $ffile);
+    my $freader = Test2::Harness2::RunnerReader->new(run_id => 'RUN-3', events_file => $ffile);
     my @fe;
     for (1 .. 5) { push @fe => $freader->poll(1000); last if $freader->done }
 
@@ -120,7 +120,7 @@ subtest clean_exit_no_diagnostic => sub {
     $crec->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 1}));
     $crec->finalize;
 
-    my $creader = Test2::Harness2::Collector::RunnerReader->new(run_id => 'RUN-4', events_file => $cfile);
+    my $creader = Test2::Harness2::RunnerReader->new(run_id => 'RUN-4', events_file => $cfile);
     my @ce;
     for (1 .. 5) { push @ce => $creader->poll(1000); last if $creader->done }
 
@@ -153,12 +153,12 @@ subtest labelled_abnormal_exit => sub {
 
     my $dfile = "$ldir/runner-events.jsonl.zst";
     $write_boom->($dfile);
-    my $default = Test2::Harness2::Collector::RunnerReader->new(run_id => 'RUN-L1', events_file => $dfile);
+    my $default = Test2::Harness2::RunnerReader->new(run_id => 'RUN-L1', events_file => $dfile);
     like($diag_for->($default)->{details}, qr/^yath runner exited abnormally/, "default label names the runner");
 
     my $sfile = "$ldir/stage-MARK-events.jsonl.zst";
     $write_boom->($sfile);
-    my $stage = Test2::Harness2::Collector::RunnerReader->new(
+    my $stage = Test2::Harness2::RunnerReader->new(
         run_id      => 'RUN-L2',
         events_file => $sfile,
         label       => "yath stage 'MARK'",
@@ -185,7 +185,7 @@ subtest restart_boundary => sub {
     $rrec->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 5}));
     $rrec->finalize;
 
-    my $reader = Test2::Harness2::Collector::RunnerReader->new(
+    my $reader = Test2::Harness2::RunnerReader->new(
         run_id      => 'RUN-R',
         events_file => $rfile,
         label       => "yath stage 'MARK'",

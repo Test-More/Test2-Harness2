@@ -23,6 +23,7 @@ use Test2::Harness2::Util::HashBase qw{
     +pending_recs
     +monitor
     +subscribed
+    +closed
 };
 
 =pod
@@ -53,9 +54,10 @@ the one-shot request/reply submission client
 from L<Test2-Collector|Test2::Collector>; this class carries no socket or zstd
 copies.
 
-This is infrastructure: it gives a consumer a whole, live mirror of the runner's
-state. It is not (yet) the render path -- the gatherer remains the render source
-until that swap lands in a later chunk.
+This is the transient render source: the C<test> command mirrors the runner's
+state through it and drives the renderers from the mirror plus each job's events
+file (chunks 6a / 5g). The runner closing the socket (L</closed>) is the run's
+completion signal.
 
 =head1 SYNOPSIS
 
@@ -91,6 +93,14 @@ Populated by L</subscribe> and kept current by L</poll>.
 
 True once L</subscribe> has connected and loaded the initial snapshot.
 
+=item closed
+
+=item $bool = $sub->closed
+
+True once L</poll> has seen the runner close the socket (EOF). On the transient
+path the runner shuts its service down when the run is done, so this is the
+command's completion signal.
+
 =item subscribe
 
 =item $sub->subscribe
@@ -118,6 +128,8 @@ sub monitor ($self) {
 }
 
 sub subscribed ($self) { return $self->{+SUBSCRIBED} ? 1 : 0 }
+
+sub closed ($self) { return $self->{+CLOSED} ? 1 : 0 }
 
 sub subscribe ($self) {
     my $conn = $self->_connect;
@@ -152,7 +164,17 @@ sub poll ($self) {
     while ($sel->can_read(0)) {
         my $buf = '';
         my $n   = sysread($conn, $buf, 65536);
-        last unless $n;    # undef would-block (handled by can_read) or EOF
+
+        # EOF: the runner closed the socket. On the transient path the runner
+        # shuts the service down once the run is done and its job children have
+        # been reaped, so a clean EOF is the completion signal the command's
+        # render loop watches for (replacing the retired gatherer's terminal
+        # sentinel). undef is a would-block (already gated by can_read).
+        unless ($n) {
+            $self->{+CLOSED} = 1 if defined $n;
+            last;
+        }
+
         $fb->push_bytes($buf);
     }
 

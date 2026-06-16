@@ -15,12 +15,20 @@ use Test2::Harness2::Util qw/runner_events_file/;
 
 # Codex chunk-4 review #1, end-to-end regression guard.
 #
-# The `yath test` runner runs as the exec target of a non-test Test2::Collector;
-# the gatherer decides the runner is alive with kill(0, RUNNER_PID), where
-# RUNNER_PID is the collector PARENT pid (App::Yath2::Command::test
-# start_runner / Test2::Harness2::Collector::runner_exited). When the runner
-# dies with jobs still pending, the gatherer must see that promptly so it can
-# abort the stalled jobs instead of spinning.
+# SCOPE (chunk 5g): this guards the PERSISTENT gatherer's runner-liveness path.
+# The transient `yath test` path no longer uses the gatherer at all -- it
+# subscribes to runner.socket and detects completion when the runner closes that
+# socket, so its clients never need kill(0). The gatherer (and its kill(0,
+# RUNNER_PID) liveness in Test2::Harness2::Collector::runner_exited) survives only
+# for the gated persistent path (yath start / run), and this test exercises that
+# surviving path directly by constructing a gatherer and calling runner_exited.
+#
+# The `yath` runner runs as the exec target of a non-test Test2::Collector; the
+# gatherer decides the runner is alive with kill(0, RUNNER_PID), where RUNNER_PID
+# is the collector PARENT pid (App::Yath2::Command::test start_runner /
+# Test2::Harness2::Collector::runner_exited). When the runner dies with jobs still
+# pending, the gatherer must see that promptly so it can abort the stalled jobs
+# instead of spinning.
 #
 # A descendant that inherited the runner's STDOUT/STDERR keeps the collector's
 # capture pipes open after the runner is reaped. Before Test2-Collector learned

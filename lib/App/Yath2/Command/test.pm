@@ -57,7 +57,6 @@ use Test2::Harness2::Util::HashBase qw/
 
     +subscriber
     +driver
-    +_gatherer_buffer
 
     <cleanup_subs
 
@@ -402,13 +401,13 @@ sub render {
     return $self->render_via_gatherer();
 }
 
-# Chunk 6a transient render path. Drive the renderers/loggers from the runner
-# subscription (Runner::Subscriber mirrors the runner's canonical state) and from
-# each job's events.jsonl.zst fetched by path at completion. The spawned gatherer
-# is still alive (for its non-walking duties: stalled-job detection, run-timeout
-# abort, completion safety) but its event stream is NOT rendered here -- we only
-# watch its pipe for the terminal sentinel as the completion seam, so there is no
-# double render.
+# Chunk 5g transient render path. Drive the renderers/loggers entirely from the
+# runner subscription (Runner::Subscriber mirrors the runner's canonical state)
+# and from each job's events.jsonl.zst fetched by path at completion. The
+# yath-side gatherer is RETIRED on this path: the runner is the completion /
+# stalled-job / timeout / verdict authority, so completion comes from the runner
+# closing its socket (Subscriber::closed) once the run is done and its jobs are
+# reaped, not from a gatherer sentinel.
 sub render_via_subscription {
     my $self = shift;
 
@@ -418,14 +417,10 @@ sub render_via_subscription {
 
     # The runner may have died before binding its socket (bad preload). Without a
     # subscription there is no live mirror; use a standalone empty monitor so the
-    # driver still tails runner output and the gatherer terminator still ends the
-    # loop (the runner's failure renders from runner-events / "no tests seen").
+    # driver still tails runner output (the runner's failure renders from
+    # runner-events / "no tests seen") and a dead runner ends the loop.
     require Test2::Harness2::Runner::Monitor;
     my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
-
-    my $reader = $self->renderer_reader();
-    $reader->blocking(0);
-    my $done = 0;
 
     while (1) {
         return if $self->{+SIGNAL};
@@ -434,12 +429,13 @@ sub render_via_subscription {
         $sub->poll if $sub;
         $driver->step($monitor);
 
-        # Completion seam: the still-living gatherer emits its terminal undef
-        # sentinel once collection is genuinely complete (TASKS_DONE: every job
-        # polled to done, stalled jobs aborted). Watch its pipe for that sentinel
-        # ONLY -- non-terminal frames are discarded, not rendered, so there is no
-        # double render.
-        $done = 1 if $self->_gatherer_terminated($reader);
+        # Completion: the runner shuts down (and closes the socket) once the
+        # transient run is done and its job children are reaped. A clean EOF on
+        # the subscription (Subscriber::closed) -- or, with no subscription, a
+        # dead runner process -- ends the loop. poll() drains all buffered frames
+        # before flagging EOF, so the mirror is whole; drain once more before
+        # finalize to fold anything batched with the close.
+        my $done = $sub ? $sub->closed : $self->_runner_gone;
 
         if ($done) {
             $sub->poll if $sub;
@@ -455,32 +451,17 @@ sub render_via_subscription {
     }
 }
 
-# Drain the gatherer pipe non-blocking; return true once its terminal `null`
-# sentinel line is seen. Frames are decoded only enough to spot the sentinel and
-# are otherwise discarded (the subscription is the render source now).
-sub _gatherer_terminated {
+# True once the runner process is no longer tracked as live. Used as the
+# completion fallback when there is no subscription (the runner died before it
+# ever bound its socket); the happy path keys completion on the socket EOF.
+sub _runner_gone {
     my $self = shift;
-    my ($reader) = @_;
 
-    while (1) {
-        my $line = <$reader>;
-        last unless defined $line;
+    my $ipc        = $self->ipc;
+    my $runner_pid = $self->runner_pid or return 1;
 
-        if ($self->{+_GATHERER_BUFFER}) {
-            $line = $self->{+_GATHERER_BUFFER} . $line;
-            $self->{+_GATHERER_BUFFER} = undef;
-        }
-
-        unless (substr($line, -1, 1) eq "\n") {
-            $self->{+_GATHERER_BUFFER} = $line;
-            last;
-        }
-
-        my $e = decode_json($line);
-        return 1 unless defined $e;
-    }
-
-    return 0;
+    eval { $ipc->wait(timeout => 0); 1 };
+    return $ipc->procs->{$runner_pid} ? 0 : 1;
 }
 
 sub render_via_gatherer {
@@ -647,7 +628,12 @@ sub stop {
 sub terminate_queue {
     my $self = shift;
 
-    $self->tasks_queue->end();
+    # The per-run queue.jsonl terminator is only meaningful to the gatherer (it
+    # sets TASKS_DONE and triggers the run-level rollup). Chunk 5g retires that
+    # file on the transient path; end it only when the gatherer is in play (the
+    # gated persistent run overrides this anyway). The runner's end-of-queue is
+    # the socket end_queue request below.
+    $self->tasks_queue->end() unless $self->use_subscription_renderer;
     $self->submitter->end_queue();
 }
 
@@ -751,10 +737,12 @@ sub populate_queue {
 
         push @tasks => $task;
 
-        # queue.jsonl is consumed only by the gatherer (it walks the workdir for
-        # events); the runner pulls tasks from the socket-fed state, not this
-        # file. It retires with the gatherer in 5g.
-        $tasks_queue->enqueue($task);
+        # queue.jsonl is consumed ONLY by the yath-side gatherer (it walks the
+        # workdir for events and learns the pending jobs from this file). The
+        # runner pulls tasks from the socket-fed state, not this file. Chunk 5g
+        # retires it on the transient path (the gatherer is gone there); the gated
+        # persistent path still spawns the gatherer, so keep writing it there.
+        $tasks_queue->enqueue($task) unless $self->use_subscription_renderer;
     }
 
     $self->{+PENDING_TASKS} = \@tasks;
@@ -1084,12 +1072,18 @@ sub renderers {
 # remove_tree just leaves final cleanup to the normal workdir teardown.
 sub collector_options {
     my $self = shift;
-    return (defer_cleanup => 1) if $self->use_subscription_renderer;
     return ();
 }
 
+# Chunk 5g: the transient `yath test` path no longer spawns the yath-side
+# gatherer at all -- the runner is the completion/stalled/timeout/verdict
+# authority and the command renders from the runner subscription. Only the gated
+# persistent run/start path (use_subscription_renderer => 0) still spawns the
+# gatherer to walk the workdir and roll up its run.
 sub start_collector {
     my $self = shift;
+
+    return if $self->use_subscription_renderer;
 
     my $dir        = $self->workdir;
     my $run        = $self->build_run();

@@ -1,4 +1,4 @@
-package Test2::Harness2::Collector::JobReader;
+package Test2::Harness2::JobReader;
 use v5.38;
 
 our $VERSION = '2.000000';
@@ -162,7 +162,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Collector::JobReader - Tail a Test2-Collector events.jsonl.zst
+Test2::Harness2::JobReader - Tail a Test2-Collector events.jsonl.zst
 file and emit wrapped harness events.
 
 =head1 DESCRIPTION
@@ -175,7 +175,7 @@ files and parsing TAP.
 
 =head1 SYNOPSIS
 
-    my $reader = Test2::Harness2::Collector::JobReader->new(
+    my $reader = Test2::Harness2::JobReader->new(
         job_id      => $job_id,
         job_try     => $job_try,
         run_id      => $run_id,

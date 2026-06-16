@@ -6,8 +6,8 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Collector::JobReader;
-use Test2::Harness2::Collector::RunnerReader;
+use Test2::Harness2::JobReader;
+use Test2::Harness2::RunnerReader;
 
 use Test2::Harness2::Util qw/runner_events_file/;
 use Test2::Harness2::Util::File::Stream;
@@ -293,7 +293,7 @@ sub runner_exited {
 
 sub runner_reader {
     my $self = shift;
-    return $self->{+RUNNER_READER} //= Test2::Harness2::Collector::RunnerReader->new(
+    return $self->{+RUNNER_READER} //= Test2::Harness2::RunnerReader->new(
         run_id      => $self->{+RUN_ID},
         events_file => runner_events_file($self->{+WORKDIR}),
     );
@@ -381,7 +381,7 @@ sub process_stage_events {
         next if $readers->{$file};
 
         my $stage = $1;
-        $readers->{$file} = Test2::Harness2::Collector::RunnerReader->new(
+        $readers->{$file} = Test2::Harness2::RunnerReader->new(
             run_id      => $self->{+RUN_ID},
             events_file => File::Spec->catfile($self->{+WORKDIR}, $file),
             label       => "yath stage '$stage'",
@@ -592,7 +592,7 @@ sub jobs {
 
         my $job_try = $job_id . '+' . $job->{is_try};
 
-        $jobs->{$job_try} = Test2::Harness2::Collector::JobReader->new(
+        $jobs->{$job_try} = Test2::Harness2::JobReader->new(
             job_id      => $job_id,
             job_try     => $job->{is_try} // 0,
             run_id      => $self->{+RUN_ID},
@@ -765,6 +765,16 @@ an event stream.
 
 This module is responsible for reading and parsing the output produced by
 multiple jobs running under yath.
+
+As of chunk 5g it is the B<gated persistent path only> (C<yath start> /
+C<yath run>). The transient C<yath test> path no longer spawns this gatherer: the
+runner service is the completion / stalled-job / timeout / verdict authority and
+the command renders from the runner subscription
+(L<Test2::Harness2::Renderer::Driver>). This standing tree-walking gatherer --
+which polls C<queue.jsonl> / C<jobs.jsonl> and walks the workdir for
+C<events.jsonl.zst>, deciding completion and rolling up verdicts -- survives only
+for the persistent path, which is gated (ARCH 6.1) and not yet migrated to the
+runner-service model.
 
 This module is not intended for external use, it is an implementation detail
 and can change at any time. Currently instances of this module are not passed

@@ -1,4 +1,4 @@
-package Test2::Harness2::Collector::RunnerReader;
+package Test2::Harness2::RunnerReader;
 use v5.38;
 
 our $VERSION = '2.000000';
@@ -18,7 +18,7 @@ use Test2::Harness2::Util::HashBase qw{
 # Tail the non-test collector that wraps the `yath test` runner
 # (runner-events.jsonl.zst, recorded by App::Yath2::Command::test start_runner)
 # and re-emit its records as run-level harness events. This is the runner-stream
-# sibling of Test2::Harness2::Collector::JobReader: it carries a run_id but no
+# sibling of Test2::Harness2::JobReader: it carries a run_id but no
 # job_id (runner output is run-level, job_id 0 like the gatherer's synthetic
 # _harness_event), produces no harness_job_exit/harness_job_end (those are
 # job-only), and reaches done on the runner's terminal harness_process_exit.
@@ -160,7 +160,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Collector::RunnerReader - Tail the non-test collector that
+Test2::Harness2::RunnerReader - Tail the non-test collector that
 wraps the C<yath test> runner and emit wrapped harness events.
 
 =head1 DESCRIPTION
@@ -172,7 +172,7 @@ by the collector's IOParser as STDOUT/STDERR-tagged C<info> entries) are remappe
 to the historical C<INTERNAL>-tagged shape the renderer expects, and the reader
 reaches C<done> on the runner's synthetic C<harness_process_exit>.
 
-This is the runner-stream sibling of L<Test2::Harness2::Collector::JobReader>:
+This is the runner-stream sibling of L<Test2::Harness2::JobReader>:
 same C<*.jsonl.zst> reader path, but run-level (no C<job_id>) and with no
 job-completion facet synthesis.
 
@@ -189,7 +189,7 @@ terminal C<harness_process_exit> reaches C<done>.
 
 =head1 SYNOPSIS
 
-    my $reader = Test2::Harness2::Collector::RunnerReader->new(
+    my $reader = Test2::Harness2::RunnerReader->new(
         run_id      => $run_id,
         events_file => "$workdir/runner-events.jsonl.zst",
         label       => 'yath runner',    # optional; names the abnormal-exit diagnostic
