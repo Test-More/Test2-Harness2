@@ -87,6 +87,25 @@ sub poll ($self, $max = undef) {
         }
         delete $fd->{from_stream};
 
+        # A resumable collector (a restarting preload stage) records a
+        # harness_process_restart where the process-exit would go: this
+        # incarnation ended (carrying its exit value) but the stream continues in
+        # the next one. Do NOT mark done; surface an INTERNAL diagnostic so the
+        # restart -- and the exit it restarted from -- is visible, mirroring the
+        # abnormal-exit diagnostic below (the raw facet has no renderer path).
+        if (my $rs = $fd->{harness_process_restart}) {
+            $self->{+LAST_STAMP} = $rs->{stamp} if defined $rs->{stamp};
+
+            my $err = $rs->{err} // 0;
+            my $sig = $rs->{sig} // 0;
+            my $msg = "$self->{+LABEL} restarting (exit: " . ($rs->{all} // $err) . ")";
+            $msg .= " (signal: $sig)" if $sig;
+            push @{$fd->{info}} => {tag => 'INTERNAL', debug => 1, important => 1, details => $msg};
+
+            push @out => $self->_wrap($fd);
+            next;
+        }
+
         # The runner's synthetic process-exit is the terminal record. Mark done
         # -- there are no records after it.
         if (my $px = $fd->{harness_process_exit}) {
@@ -160,8 +179,13 @@ job-completion facet synthesis.
 The same reader is used for the per-stage non-test collectors (chunk 4b): the
 gatherer points one at each C<stage-E<lt>nameE<gt>-events.jsonl.zst> with a
 C<label> naming that stage, so an abnormal stage exit is reported against the
-stage rather than the runner. C<label> defaults to C<'yath runner'> and only
-affects the abnormal-exit diagnostic wording.
+stage rather than the runner. C<label> defaults to C<'yath runner'> and prefixes
+the restart / abnormal-exit diagnostics.
+
+A C<harness_process_restart> record (written by a resumable collector when a
+stage restarts and resumes the same file) is surfaced as a visible C<INTERNAL>
+diagnostic carrying the exit value, but does B<not> end the stream -- only the
+terminal C<harness_process_exit> reaches C<done>.
 
 =head1 SYNOPSIS
 

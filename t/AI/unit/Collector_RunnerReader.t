@@ -166,4 +166,43 @@ subtest labelled_abnormal_exit => sub {
     like($diag_for->($stage)->{details}, qr/^yath stage 'MARK' exited abnormally/, "custom label names the stage");
 };
 
+# A harness_process_restart (a resumable collector's restart boundary) must NOT
+# end the stream: the reader stays not-done and surfaces a visible INTERNAL
+# diagnostic carrying the exit value, then keeps reading the resumed output.
+subtest restart_boundary => sub {
+    my $rdir  = tempdir(CLEANUP => 1);
+    my $rfile = "$rdir/stage-MARK-events.jsonl.zst";
+    my $rrec  = Test2::Collector::Recorder::Zstd->new(file => $rfile);
+    $rrec->record_event($ev->(
+        from_stream => {source => 'STDOUT', details => 'before restart'},
+        info        => [{tag => 'STDOUT', debug => 0, details => 'before restart'}],
+    ));
+    $rrec->record_event($ev->(harness_process_restart => {err => 2, sig => 0, dmp => 0, all => 512, stamp => 4}));
+    $rrec->record_event($ev->(
+        from_stream => {source => 'STDOUT', details => 'after restart'},
+        info        => [{tag => 'STDOUT', debug => 0, details => 'after restart'}],
+    ));
+    $rrec->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 5}));
+    $rrec->finalize;
+
+    my $reader = Test2::Harness2::Collector::RunnerReader->new(
+        run_id      => 'RUN-R',
+        events_file => $rfile,
+        label       => "yath stage 'MARK'",
+    );
+    my @e;
+    for (1 .. 8) { push @e => $reader->poll(1000); last if $reader->done }
+
+    my ($rs) = grep { $_->facet_data->{harness_process_restart} } @e;
+    ok($rs, "restart record surfaced");
+    my ($diag) = grep { ($_->{details} // '') =~ /restarting/ } @{$rs->facet_data->{info} // []};
+    ok($diag, "restart produces a visible INTERNAL diagnostic");
+    like($diag->{details}, qr/^yath stage 'MARK' restarting \(exit: 512\)/, "diagnostic labelled, carries the exit value");
+
+    # Output recorded AFTER the restart is still read, and the terminal exit
+    # (not the restart) is what marks done.
+    ok((grep { my $i = $_->facet_data->{info}; $i && grep { ($_->{details} // '') eq 'after restart' } @$i } @e), "post-restart output read");
+    ok($reader->done, "the later harness_process_exit -- not the restart -- ends the stream");
+};
+
 done_testing;
