@@ -98,6 +98,24 @@ Query the runner's canonical reload state (per-stage source files with reload
 errors/warnings) over C<runner.socket> via the submission client. Returns the
 reload-state hash (possibly empty) or C<undef> if the runner could not be reached.
 
+=item status
+
+=item $hash = $client->status
+
+Query the runner's live scheduling status (pending/running tasks with pids, stage
+readiness, reload state) over C<runner.socket> via the submission client. Returns
+the status hash, or C<undef> if the runner could not be reached. Used by
+C<yath status>/C<yath ps>.
+
+=item truncate
+
+=item $running = $client->truncate
+
+Ask the runner to truncate its queue (abort pending work) over C<runner.socket>
+and return the still-running jobs (with pids) for the caller to signal. Returns
+the running-job arrayref, or C<undef> if the runner could not be reached. Used by
+C<yath abort>.
+
 =item subscriber
 
 =item $sub = $client->subscriber
@@ -126,6 +144,10 @@ sub submitter ($self) {
 }
 
 sub reload_state ($self) { return $self->submitter->reload_state }
+
+sub status ($self) { return $self->submitter->status }
+
+sub truncate ($self) { return $self->submitter->truncate }
 
 sub subscriber ($self) { return $self->{+SUBSCRIBER} }
 

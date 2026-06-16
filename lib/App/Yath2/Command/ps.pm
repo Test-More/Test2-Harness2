@@ -9,9 +9,7 @@ use File::Spec();
 
 use App::Yath2::Util qw/find_pfile/;
 
-use Test2::Harness2::Runner::State;
 use Test2::Harness2::Util::File::JSON();
-use Test2::Harness2::Util::Queue();
 
 use parent 'App::Yath2::Command::status';
 use Test2::Harness2::Util::HashBase qw/queue/;
@@ -34,25 +32,21 @@ sub run {
 
     my $data = $self->pfile_data();
 
-    my $state = Test2::Harness2::Runner::State->new(
-        workdir => $self->workdir,
-        observe => 1,
-    );
-
-    $state->poll;
+    # Chunk 6.1-2: ask the runner for its live process list over runner.socket
+    # instead of an observe-mode State (dispatch.jsonl) + jobs.jsonl pids.
+    my $status = $self->client->status // {};
 
     my @jobs;
 
-    my $stage_status = $state->stage_readiness // {};
+    my $stage_status = $status->{stage_readiness} // {};
     for my $stage (keys %$stage_status) {
         my $pid = $stage_status->{$stage} // next;
         $pid = 'N/A' if $pid == 1;
         push @jobs => [$pid, "Runner Stage", $stage];
     }
 
-    my $running = $state->running_tasks;
-    for my $task (values %$running) {
-        my $pid = $self->get_job_pid($task->{run_id}, $task->{job_id}) // 'N/A';
+    for my $task (@{$status->{running} // []}) {
+        my $pid = $task->{pid} // 'N/A';
         my $file = $task->{rel_file};
         push @jobs => [$pid, "Running Test", $file];
     }

@@ -7,9 +7,7 @@ our $VERSION = '2.000000';
 use Term::Table();
 use File::Spec();
 
-use Test2::Harness2::Runner::State;
 use Test2::Harness2::Util::File::JSON();
-use Test2::Harness2::Util::Queue();
 
 use parent 'App::Yath2::Command::run';
 use Test2::Harness2::Util::HashBase;
@@ -32,48 +30,24 @@ sub run {
 
     my $data = $self->pfile_data();
 
-    my $state = Test2::Harness2::Runner::State->new(
-        workdir => $self->workdir,
-        observe => 1,
-    );
-
-    $state->poll;
+    # Chunk 6.1-2: ask the runner for its live scheduling state over
+    # runner.socket instead of constructing an observe-mode State that polled
+    # dispatch.jsonl (+ jobs.jsonl for pids). The runner is the state authority.
+    my $status = $self->client->status // {};
 
     print "\n**** Pending tests: ****\n";
-    my $pending = $state->pending_tasks;
-    for my $run ($state->run, @{$state->pending_runs // []}) {
-        next unless $run;
-        my $run_id =$run->{run_id} or next;
+    for my $run (@{$status->{runs} // []}) {
+        my $run_id = $run->{run_id} or next;
 
         print "\nRun $run_id:\n";
-        my $pending = $pending->{$run_id} // {};
-        my @tasks;
-        my @check = ($pending);
-        while (my $it = shift @check) {
-            my $ref = ref($it);
-
-            if ($ref eq 'ARRAY') {
-                push @check => @$it;
-                next;
-            }
-
-            if ($ref eq 'HASH') {
-                if ($it->{job_id}) {
-                    push @tasks => $it;
-                    next;
-                }
-
-                push @check => values %$it;
-                next;
-            }
-        }
+        my @tasks = @{$run->{pending} // []};
 
         if (!@tasks) {
             print "--No pending tasks for this run--\n";
             next;
         }
 
-        my @rows = map {[$_->{job_id}, $_->{is_try} // $_->{job_try} // 0, $_->{rel_file}, join(', ' => @{$_->{conflicts} // []})]} @tasks;
+        my @rows = map {[$_->{job_id}, $_->{is_try} // 0, $_->{rel_file}, join(', ' => @{$_->{conflicts} // []})]} @tasks;
         my $run_table = Term::Table->new(
             collapse => 1,
             header => [qw/uuid try test conflicts/],
@@ -84,8 +58,8 @@ sub run {
     }
 
     print "\n**** Runner Stages: ****\n";
-    my $stage_status = $state->stage_readiness // {};
-    my $reload_status = $state->reload_state // {};
+    my $stage_status = $status->{stage_readiness} // {};
+    my $reload_status = $status->{reload_state} // {};
     my $reload_issues = 0;
 
     my $rows = [];
@@ -126,9 +100,8 @@ sub run {
     }
 
     print "\n**** Running tests: ****\n";
-    my $running = $state->running_tasks;
-    my $running_tasks = [values %$running];
-    my @rows = map {[$self->get_job_pid($_->{run_id}, $_->{job_id}) // 'N/A', $_->{job_id}, $_->{is_try} // $_->{job_try} // 0, $_->{rel_file}, join(', ' => @{$_->{conflicts} // []})]} @$running_tasks;
+    my $running_tasks = $status->{running} // [];
+    my @rows = map {[$_->{pid} // 'N/A', $_->{job_id}, $_->{is_try} // 0, $_->{rel_file}, join(', ' => @{$_->{conflicts} // []})]} @$running_tasks;
     if (@rows) {
         my $run_table = Term::Table->new(
             collapse => 1,

@@ -144,6 +144,25 @@ the reply. Returns the reload-state hash (possibly empty), or C<undef> if the
 runner could not be reached. Used by C<yath run> to check for unresolved reload
 errors before starting a run.
 
+=item $client->job_pid($job_id, $pid)
+
+Report (from a preload stage) the pid of a job the stage forked, so the runner's
+job-pid map (used by the status/ps/abort report) is complete without a jobs.jsonl
+file. One-way.
+
+=item $hash = $client->status
+
+Query the runner's live scheduling status (pending/running tasks with pids, stage
+readiness, reload state) over the socket. Two-way: returns the status hash, or
+C<undef> if the runner could not be reached. Used by C<yath status>/C<yath ps>.
+
+=item $running = $client->truncate
+
+Ask the runner to truncate its queue (abort pending work) and return the list of
+still-running jobs (with pids) for the caller to signal. Two-way: returns the
+running-job arrayref, or C<undef> if the runner could not be reached. Used by
+C<yath abort>.
+
 =back
 
 =cut
@@ -215,6 +234,21 @@ sub stage_down ($self, $stage) {
 sub reload_state ($self) {
     my $reply = $self->_request({request => 'reload_state'}) or return undef;
     return $reply->{reload_state} // {};
+}
+
+sub job_pid ($self, $job_id, $pid) {
+    $self->_send({request => 'job_pid', job_id => $job_id, pid => $pid});
+    return;
+}
+
+sub status ($self) {
+    my $reply = $self->_request({request => 'status'}) or return undef;
+    return $reply->{status};
+}
+
+sub truncate ($self) {
+    my $reply = $self->_request({request => 'truncate'}) or return undef;
+    return $reply->{running} // [];
 }
 
 =head1 PRIVATE METHODS

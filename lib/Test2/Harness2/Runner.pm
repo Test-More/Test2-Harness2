@@ -31,6 +31,7 @@ use Test2::Harness2::Runner::Stage();
 use Test2::Harness2::Runner::Stage::Client();
 use Test2::Harness2::Runner::Monitor();
 use Test2::Harness2::Runner::Watchdog();
+use Test2::Harness2::Runner::StatusReport();
 
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
@@ -84,6 +85,8 @@ use Test2::Harness2::Util::HashBase(
 
         +announced_runs
         +active_run
+
+        +job_pids
     },
 );
 
@@ -144,6 +147,7 @@ sub init {
     $RUNNER_PID = $$;
 
     $self->{+ANNOUNCED_RUNS} = {};
+    $self->{+JOB_PIDS}       = {};
 
     croak "'dir' is a required attribute"      unless $self->{+DIR};
     croak "'settings' is a required attribute" unless $self->{+SETTINGS};
@@ -496,6 +500,7 @@ sub request_handler_stop_task {
     my $self = shift;
     my ($payload) = @_;
     $self->state->stop_task($payload->{job_id});
+    delete $self->{+JOB_PIDS}->{$payload->{job_id}};
     # Chunk 5f: a stage-reported job finishing is a runner-originated state
     # mutation; forward it to subscribers so their mirror releases the job.
     $self->announce_job($payload->{job_id}, 'done');
@@ -506,6 +511,7 @@ sub request_handler_retry_task {
     my $self = shift;
     my ($payload) = @_;
     $self->state->retry_task($payload->{job_id});
+    delete $self->{+JOB_PIDS}->{$payload->{job_id}};
     $self->announce_job($payload->{job_id}, 'retry');
     return undef;
 }
@@ -531,6 +537,78 @@ sub request_handler_reload_state {
         unless $self->{+ROOTPID} == $$;
 
     return {ok => 1, reload_state => $self->state->reload_state // {}};
+}
+
+# Chunk 6.1-2: the persistent `status`/`ps`/`abort` commands ask the runner for
+# its live scheduling state over runner.socket instead of reading dispatch.jsonl
+# (observe-mode State) + jobs.jsonl (job pids). The runner is the state authority;
+# it builds a serializable report from its canonical State plus its in-memory
+# job-pid map (it knows each job's pid when it forks it, or when a stage reports
+# the pid of a job the stage forked). Two-way: returns the report hash.
+sub request_handler_status {
+    my $self = shift;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{+ROOTPID} == $$;
+
+    my $report = Test2::Harness2::Runner::StatusReport->new(
+        state    => $self->state,
+        job_pids => $self->{+JOB_PIDS},
+    );
+
+    return {ok => 1, status => $report->build};
+}
+
+# Chunk 6.1-2: a transient/persistent root command asks the runner to truncate
+# the queue (abort) over the socket, replacing the observe-State truncate the
+# `abort` command used to do by writing dispatch.jsonl directly. The runner
+# truncates its own canonical state. Two-way: returns the kill list (the
+# still-running jobs and their pids) so the command can signal them. The runner
+# does not signal the jobs itself -- `abort` deliberately leaves the runner alive
+# and only INT's the running tests, matching the historical behavior.
+sub request_handler_truncate {
+    my $self = shift;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{+ROOTPID} == $$;
+
+    my $report = Test2::Harness2::Runner::StatusReport->new(
+        state    => $self->state,
+        job_pids => $self->{+JOB_PIDS},
+    );
+
+    my $running = $report->build->{running};
+
+    $self->state->truncate;
+
+    return {ok => 1, running => $running};
+}
+
+# Chunk 6.1-2: a forked preload stage forks a dispatched test job from its
+# preloaded interpreter, so the stage -- not the runner -- knows the job's pid.
+# It reports the pid back over runner.socket so the runner's job-pid map (used by
+# the status/ps/abort report) is complete without a jobs.jsonl file. One-way.
+sub request_handler_job_pid {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->record_job_pid($payload->{job_id}, $payload->{pid});
+    return undef;
+}
+
+# Record a started job's pid in the runner's in-memory map (the runner's own
+# forked jobs at run_job, a stage's forked jobs via the job_pid request). Cleared
+# when the job's task stops so a future job that reuses a pid does not inherit a
+# stale entry.
+sub record_job_pid {
+    my $self = shift;
+    my ($job_id, $pid) = @_;
+
+    return unless $self->{+ROOTPID} == $$;
+    return unless defined $job_id && defined $pid;
+
+    $self->{+JOB_PIDS}->{$job_id} = $pid;
+
+    return;
 }
 
 # Chunk 5d: a transient stage reports it has bound its socket and is ready to be
@@ -1072,6 +1150,17 @@ sub run_job {
     # it to subscribers so their mirror sees the job go running.
     $self->announce_job($task->{job_id}, 'running', stage => $task->{stage}, file => $task->{file}, run_id => $task->{run_id});
 
+    # Chunk 6.1-2: track the job's pid for the status/ps/abort report. The root
+    # records it directly; a forked stage reports it back to the root over
+    # runner.socket (the root is the job-pid authority), replacing the per-run
+    # jobs.jsonl the status/ps commands used to read.
+    if ($self->{+ROOTPID} == $$) {
+        $self->record_job_pid($task->{job_id}, $pid);
+    }
+    else {
+        eval { $self->state->client->job_pid($task->{job_id}, $pid); 1 };
+    }
+
     return $pid;
 }
 
@@ -1127,6 +1216,8 @@ sub set_proc_exit {
 
     if ($proc->isa('Test2::Harness2::Runner::Job')) {
         my $task = $proc->task;
+
+        delete $self->{+JOB_PIDS}->{$task->{job_id}};
 
         my $timed_out = 0;
         if (!$exit && ref $self->{run_reached_timeout} && $self->{run_reached_timeout}->{$task->{job_id}}) {

@@ -51,6 +51,29 @@ yath(
     },
 );
 
+# Chunk 6.1-2: status/ps now query the runner over runner.socket (the runner is
+# the state authority) instead of reading dispatch.jsonl/jobs.jsonl. Exercise them
+# against the live idle runner: the stage table is served from the runner's
+# canonical state.
+yath(
+    command => 'status',
+    exit    => 0,
+    test    => sub {
+        my $out = shift;
+        like($out->{output}, qr/\*\*\*\* Runner Stages: \*\*\*\*/, "status reports runner stages over the socket");
+    },
+);
+
+yath(
+    command => 'ps',
+    exit    => 0,
+    test    => sub {
+        my $out = shift;
+        like($out->{output}, qr/Running Processes/, "ps reports running processes over the socket");
+        like($out->{output}, qr/Runner Stage/,      "ps lists a runner stage over the socket");
+    },
+);
+
 yath(command => 'reload', exit => 0);
 
 yath(
