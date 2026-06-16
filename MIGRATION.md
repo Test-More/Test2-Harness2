@@ -71,8 +71,8 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 2 | Argument processing → `Getopt::Yath` | ✅ | `3270b30`..`213b5bd` + this task's deletion/POD/docs commits |
 | 3 | Collector swap → `Test2-Collector` (yath collector reads `.jsonl.zst`) | ✅ | `fa49f2b65` (merge) |
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ `46e75cd55` |
-| 5 | Runner service + socket IPC (state sync, transition pipelining) | 🚧 | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g ⬜ deferred (needs 6a) |
-| 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ⬜ | — |
+| 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ (transient; persistent gated §6.1) | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g `3b0704488` |
+| 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | 🚧 | 6a `9c3ce01ae` (interim; §4.5 base-renderer rewrite still ⬜) |
 | 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
 | 8a | Database + UI inline (DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
 | 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ (deferred) | — |
@@ -82,28 +82,37 @@ section below (the runner-service + socket-IPC design from `migration_revision`)
 
 ## Done so far
 
-**Chunk 5 (5a-5f) — runner service + socket IPC** (`ceec15894`, `24cb1e798`,
-`654a742b7`, `c888157ad`, `625079b01`, `c6291a197`; on branch
-`chunk5-runner-service`, not yet merged):
+**Chunk 5 (5a-5g) + 6a — runner service, socket IPC, command-side renderer**
+(`ceec15894`, `24cb1e798`, `654a742b7`, `c888157ad`, `625079b01`, `c6291a197`,
+`9c3ce01ae` (6a), `3b0704488` (5g); on branch `chunk5-runner-service`, **not yet
+merged**):
 - The **transient `yath test`** runner is now a collected **socket service**
   (`runner.socket`) with an **in-process scheduler** (no separate scheduler
-  process, no `dispatch.lock`). New: `Test2::Harness2::Role::Service` and the
-  `Runner::{Client,Stage,Stage::Client,Monitor,Subscriber}` family; all wire
-  traffic reuses `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` /
-  `Recorder::Socket` (no harness-local copies).
+  process, no `dispatch.lock`). New: `Test2::Harness2::Role::Service`, the
+  `Runner::{Client,Stage,Stage::Client,Monitor,Subscriber,Watchdog}` family, the
+  command-side `Test2::Harness2::Renderer::Driver`, and neutral by-path readers
+  `Test2::Harness2::{JobReader,RunnerReader}` (moved out of `Collector::*`). All
+  wire traffic reuses `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` /
+  `Recorder::Socket` — no harness-local copies.
 - `test` submits runs **over the socket**; preload **stages are socket services**
   the runner dispatches to and which report back; every non-runner collector
   streams **transitions** to the runner, folded into canonical state
   (`Runner::Monitor`); clients **subscribe** for a snapshot + forwarded mutations
-  (`Runner::Subscriber`). Retired on the transient path: `run_queue.jsonl`,
-  `dispatch.jsonl`, `dispatch.lock`, the scheduler process.
-- **Deferred / still-on-files:** `5g` (retire the gatherer) is deferred — it
-  needs the chunk-6a command-side renderer. So the gatherer is still the render
-  path and `queue.jsonl` + `jobs.jsonl` remain to feed it; the transition-derived
-  runner state is built and tested but **not yet** the render source. The
-  **persistent** path (`yath start`/`run`/`spawn`) is **not migrated** (gated
-  §6.1) and keeps its file-polling IPC.
-- Suite green at each phase; final `Files=83, Tests=1582, Result: PASS`.
+  (`Runner::Subscriber`). The `test` command **renders entirely from that
+  subscription** + per-job events files (6a `Renderer::Driver`); the **gatherer
+  is retired on the transient path** (5g), with stalled-job abort moved to the
+  runner (`Runner::Watchdog`) and completion signalled by the runner closing the
+  socket. Retired on the transient path: `run_queue.jsonl`, `dispatch.jsonl`,
+  `dispatch.lock`, `queue.jsonl`, `jobs.jsonl`, the scheduler process, the
+  gatherer spawn, and the `kill(0)` liveness — **the only transient IPC files left
+  are `events.jsonl.zst`.**
+- **Gated / not migrated (§6.1):** the **persistent** path (`yath start` / `run` /
+  `spawn`) keeps the whole 1.0 stack — `dispatch.jsonl` submission, file-polled
+  stages, the `Test2::Harness2::Collector` gatherer (still its render path), and
+  `queue.jsonl` / `jobs.jsonl`. Also not built this run: run-scoped preload stages
+  + run-qualified socket naming, moving the runner's collector wrap into
+  `Runner->start`, and the §4.5 base-renderer rewrite (6a is interim).
+- Suite green at every phase; final `Files=85, Tests=1597, Result: PASS`.
 
 **Foundations** (pre-chunk):
 - Agent governance docs landed and reconciled to the evolve-from-1.0 plan
@@ -187,29 +196,33 @@ this task):
   **`yath test` runner** is also wrapped now (chunk 4a, merged `bf1081ab0`),
   read via `RunnerReader`. The transient runner's **preload stages** are wrapped
   too (chunk 4b): each writes `stage-<name>-events.jsonl.zst`, read back by the
-  gatherer via per-stage `RunnerReader`s. The **persistent** runner and its
-  stages stay on the flat-file shim for now. This standing gatherer process is
-  still present (its removal is **5g**, deferred — see below); chunk 5 (5a-5f)
-  built the runner service *alongside* it without yet rewiring the render path.
-- **Runner IPC (transient `yath test`):** now the **socket model** (chunk 5,
-  5a-5f). The runner runs as a collected **service** bound to `runner.socket`
-  with an **in-process scheduler** (no separate scheduler process, no
-  `dispatch.lock`). `test` is a thin client that **submits runs over the
-  socket** (`Test2::Harness2::Runner::Client`); `run_queue.jsonl` is retired and
-  the runner's State runs in in-memory `direct` mode. Preload **stages are
-  socket services** (`preload-<stage>.socket`): the runner connects out to
-  dispatch jobs and stages report back over `runner.socket`, retiring
-  `dispatch.jsonl` on the transient path. Every non-runner collector streams its
-  **transitions** to `runner.socket`, folded into the runner's canonical state
-  (`Test2::Harness2::Runner::Monitor`); clients **subscribe** for a snapshot +
-  forwarded mutations (`Test2::Harness2::Runner::Subscriber`). All wire traffic
-  reuses `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` /
-  `Recorder::Socket` — no harness-local copies. **Still on files (retire in
-  5g/6a):** `queue.jsonl` + `jobs.jsonl`, kept only to feed the still-living
-  gatherer; the transition-derived runner state is **not yet** the render
-  source. The **persistent** path (`yath start` / `run` / `spawn`) is **not
-  migrated** (gated §6.1): it keeps `dispatch.jsonl` submission and file-polled
-  stages. The system-load service is still chunk 7.
+  gatherer via per-stage `RunnerReader`s. On the **transient** path the gatherer
+  is now **retired** (5g) — see Runner IPC below. The gatherer
+  (`Test2::Harness2::Collector`) survives intact as the **persistent** runner's
+  render path (gated §6.1); the persistent runner + stages stay on the flat-file
+  shim.
+- **Runner IPC (transient `yath test`):** fully on the **socket model** (chunk 5
+  + 6a). The runner runs as a collected **service** bound to `runner.socket` with
+  an **in-process scheduler** (no separate scheduler process, no `dispatch.lock`).
+  `test` is a thin client that **submits runs over the socket**
+  (`Test2::Harness2::Runner::Client`); the runner's State runs in in-memory
+  `direct` mode. Preload **stages are socket services** (`preload-<stage>.socket`):
+  the runner connects out to dispatch jobs and stages report back over
+  `runner.socket`. Every non-runner collector streams its **transitions** to
+  `runner.socket`, folded into the runner's canonical state
+  (`Test2::Harness2::Runner::Monitor`); the `test` command **subscribes**
+  (`Runner::Subscriber`) for a snapshot + forwarded mutations and **renders
+  entirely from it** via the command-side `Test2::Harness2::Renderer::Driver`
+  (6a), fetching each job's `events.jsonl.zst` by path at completion. Stalled-job
+  abort is the runner's (`Runner::Watchdog`); run completion is the runner closing
+  the socket. All wire traffic reuses
+  `Test2::Collector::Util::{Socket,Zstd,Zstd::FrameBuffer}` / `Recorder::Socket`
+  — no harness-local copies. **The only transient IPC files are now
+  `events.jsonl.zst`** — `run_queue.jsonl`, `dispatch.jsonl`, `dispatch.lock`,
+  `queue.jsonl`, and `jobs.jsonl` are all gone from the transient path. The
+  **persistent** path (`yath start` / `run` / `spawn`) is **not migrated** (gated
+  §6.1): it keeps `dispatch.jsonl` submission, file-polled stages, the gatherer,
+  and `queue.jsonl` / `jobs.jsonl`. The system-load service is still chunk 7.
 - **Web UI:** inlined (chunk 8a, merged `2d09d348a`) under `App::Yath2::Server*`
   / `App::Yath2::Schema*` (+ `Command::{server,db/*,client/*}`,
   `Options::{DB,WebServer,Server,WebClient,Publish,Yath}`, `Plugin::DB`,
@@ -225,18 +238,30 @@ this task):
 
 ## Next
 
-**Chunk 6a — command-side renderer (interim), then chunk 5g.** The transition
-channel, canonical runner state, and client subscription now exist (chunk 5,
-5a-5f), but the **render path is still the standing gatherer**. Chunk 6a moves
-the renderer/logger + `harness_final` / `FINAL_DATA` path into the `test`
-command, driven by the runner subscription (snapshot + forwarded transitions)
-plus each job's `events.jsonl.zst` fetched at completion. Once 6a exists, **5g**
-removes the gatherer loop, retires `queue.jsonl` / `jobs.jsonl`, moves its
-non-walking duties (stalled-job detection, run-timeout aborts, verdict rollup)
-into the runner tick over canonical state, and moves `JobReader` / `RunnerReader`
-out of the deleted `Test2::Harness2::Collector::*` namespace into a neutral
-`Test2::Harness2::*` namespace as by-path readers. See the "Chunks 4-6 detailed
-plan" below. Reference: `reference/2.0b`, `reference/harness_service`.
+The transient `yath test` path is fully migrated to the socket model with a
+command-side renderer (chunk 5a-5g + 6a). Open follow-ups, roughly in order:
+
+- **Chunk 7 — system-load service.** Its own (global) process with a reliable
+  tick, emit-only, connecting to `runner.socket`; the in-runner scheduler consumes
+  load to gate concurrency. Port `reference/harness_service` `SystemLoad.pm` + its
+  sampler service shape (drop the run-vs-global split).
+- **§4.5 base-renderer rewrite.** 6a is the interim command-side renderer; the
+  target is a base renderer/role that locates `.jsonl.zst` files from transition
+  state. Supersedes the 6a per-job ordering.
+- **§6.1 multi-run / persistent path.** Migrate `yath start` / `run` / `spawn` off
+  the gatherer + `dispatch.jsonl` / `queue.jsonl` / `jobs.jsonl` onto the socket
+  model: per-run transition routing, run-scoped preload stages + run-qualified
+  socket naming, and what `start` owns vs how `run` discovers/submits. Only after
+  this can the gatherer (`Test2::Harness2::Collector`) and the persistent file IPC
+  be deleted outright.
+- **Cleanups flagged during chunk 5:** move the runner's collector wrap into
+  `Runner->start` (ARCH §4.2; today still in `App::Yath2::Command::test`); revisit
+  the conservative `Runner::Watchdog` (abort-on-wind-down) if active mid-run
+  stalled detection is wanted; `Runner.pm` is over the 1000-line guide (1227,
+  pre-existing) — candidate for a split.
+
+See the "Chunks 4-6 detailed plan" below. Reference: `reference/2.0b`,
+`reference/harness_service`.
 
 ## Chunks 4-6 detailed plan
 
@@ -371,28 +396,36 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
   `Monitor`. Single `runner.socket`, no `run_uuid` filter; vanished subscribers
   dropped gracefully. **Infrastructure only** — `test.pm` rendering is **not** yet
   rewired onto this channel (that is 6a); the gatherer remains the render path.
-- **5g ⬜ (deferred — blocked on 6a) Retire the yath-side gatherer.** Explicitly
-  deferred when 5a-5f landed: the gatherer is still the render path, so it stays
-  alive (fed by `queue.jsonl` / `jobs.jsonl`) until 6a replaces it.
-  **Prerequisite: the command-side renderer/logger + final-data path (6a) must
-  already exist.** The gatherer is
-  not just a tree-walker — it is also what `test` reads to render, log, collect
-  `harness_final` / `FINAL_DATA`, and emit summaries
-  (`App::Yath2::Command::test` `start_collector` / `render`). So **sequence 6a
-  before 5g** (or land them together); "retire" means *replace*, not merely
-  delete. With state in the runner (5c), the channel live (5e), clients synced
-  (5f), and the command-side renderer in place (6a), the standing
-  `Test2::Harness2::Collector` gatherer loop (queue/job polling + workdir
-  tree-walk + completion decision) is **removed**.
-  - Its **non-walking duties move into the runner service/scheduler**:
-    stalled-job detection, run-level timeout aborts, and verdict rollup become
-    tick-loop work over the canonical state (per-test silence/lifetime timeouts
-    already live in the `Test2-Collector` parent). `harness_final` / summary
-    handling moves to the command-side renderer (6a).
-  - `JobReader` / `RunnerReader` are kept only as by-path readers of one events
-    file, and **move out of the deleted `Test2::Harness2::Collector::*`
-    namespace** into a neutral `Test2::Harness2::*` namespace (reading recorded
-    events is producing-results data access, consumed by `App::Yath2` display).
+- **5g ✅** (`3b0704488`) **Retire the yath-side gatherer — on the transient path.**
+  Done after 6a. The transient `yath test` path no longer spawns or depends on the
+  gatherer; the runner service is the transient completion / stalled-job / timeout
+  authority, and the command renders entirely from the runner subscription.
+  **Scope correction:** the gatherer is **not deleted** — `Test2::Harness2::Collector`
+  (loop + `_abort_stalled_jobs` + `_note_verdict` + `_final_event` + `kill(0)`
+  liveness) **survives intact for the gated persistent path** (`yath run`/`start`,
+  `use_subscription_renderer => 0`), along with `queue.jsonl` / `jobs.jsonl`. Those
+  retire from the persistent path only when it migrates (gated §6.1).
+  - **Transient duty moves:** stalled-job abort → `Test2::Harness2::Runner::Watchdog`
+    (runner-side, conservative abort-on-wind-down, faithful to the gatherer's actual
+    "abort once the runner is gone" semantics; aggressive mid-run per-stage death
+    detection was tried and dropped — it destabilized the nested-stage scheduler).
+    Run-level timeout aborts already live in `scheduler_tick`. **Verdict rollup
+    stays command-side** in the 6a `Renderer::Driver` (pass/failed/retried/halted/
+    unseen from the subscription mirror + per-job events); the runner owns run
+    completion + the **aborted-job** verdict (announced over the socket, rendered by
+    the Driver). No double-owning.
+  - **Completion (transient):** the runner closes `runner.socket` when the run is
+    done + jobs reaped (after a final transition drain); `Runner::Subscriber` sets a
+    `closed` flag on EOF, ending the command's render loop. No more gatherer sentinel.
+  - **Retired (transient):** gatherer spawn / `start_collector`, `queue.jsonl`,
+    `jobs.jsonl`, the sentinel-pipe reader, `defer_cleanup`, `kill(0)` reliance.
+    After 5g the only IPC files on the transient path are `events.jsonl.zst`.
+  - `JobReader` / `RunnerReader` **moved** to a neutral namespace
+    (`Test2::Harness2::JobReader` / `Test2::Harness2::RunnerReader`) as by-path
+    readers; all callers updated (the 6a Driver + the surviving persistent gatherer).
+  - `runner_death_liveness.t` scoped to the persistent gatherer's `kill(0)`;
+    `Collector.t` unchanged (drives the surviving persistent gatherer); new
+    `Runner_Watchdog.t` covers the runner-side abort path.
   - The codex#1 `kill(0)`-on-the-collector-wrapper liveness concern disappears
     with it — clients connect to the runner service instead.
 - **Throughout:** disentangle `test` / `start` / `run` into thin clients of the
@@ -412,7 +445,15 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
 
 ### Chunk 6 — renderer (interim step toward the §4.5 rewrite)
 
-- **6a ⬜ (interim) Renderers move into the `test` / `run` command processes.**
+- **6a ✅** (`9c3ce01ae`) **(interim) Renderers move into the `test` command.**
+  `test` subscribes to `runner.socket` (`Runner::Subscriber`) and a new
+  `Test2::Harness2::Renderer::Driver` consumes the snapshot + forwarded
+  transitions, fetching each job's `events.jsonl.zst` **by the absolute path the
+  transition carries** at completion and computing `harness_final` / summary /
+  exit command-side. `run` (persistent) stays on the gatherer
+  (`use_subscription_renderer => 0`, gated §6.1). Implemented exactly the per-job
+  three-phase ordering below; the §4.5 base-renderer rewrite still supersedes this
+  interim shape later.
   They are driven by transitions received from the runner; when a job completes,
   the command fetches that job's `events.jsonl.zst` and feeds its events through
   the renderers / loggers. Render transitions in realtime, events at job
