@@ -5,9 +5,8 @@ use warnings;
 our $VERSION = '2.000000';
 
 use File::Spec();
-use Test2::Harness2::Util::File::JSON;
 
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Pfile;
 use Test2::Harness2::Util qw/open_file/;
 
 use parent 'App::Yath2::Command';
@@ -28,10 +27,10 @@ will also clear the blacklist allowing all preloads to load as normal.
 sub run {
     my $self = shift;
 
-    my $pfile = find_pfile($self->settings, no_fatal => 1)
+    my $pfile = App::Yath2::Pfile->find($self->settings, no_fatal => 1)
         or die "Could not find a persistent yath running.\n";
 
-    my $data = Test2::Harness2::Util::File::JSON->new(name => $pfile)->read();
+    my $data = $pfile->data;
 
     my $blacklist = File::Spec->catfile($data->{dir}, 'BLACKLIST');
     if (-e $blacklist) {

@@ -6,9 +6,7 @@ our $VERSION = '2.000000';
 
 use Time::HiRes qw/sleep/;
 
-use Test2::Harness2::Util::File::JSON;
-
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Pfile;
 use Test2::Harness2::Util qw/open_file/;
 
 use parent 'App::Yath2::Command';
@@ -34,14 +32,12 @@ sub run {
     my $stop;
     $stop = 1 if @$args && $args->[0] eq 'STOP';
 
-    my $pfile = find_pfile($self->settings, no_fatal => 1)
+    my $pfile = App::Yath2::Pfile->find($self->settings, no_fatal => 1)
         or die "No persistent harness was found for the current path.\n";
 
-    print "\nFound: $pfile\n";
-    my $data = Test2::Harness2::Util::File::JSON->new(name => $pfile)->read();
-    print "  PID: $data->{pid}\n";
-    print "  Dir: $data->{dir}\n";
-    print "\n";
+    print $pfile->describe;
+
+    my $data = $pfile->data;
 
     my $err_f = File::Spec->catfile($data->{dir}, 'error.log');
     my $out_f = File::Spec->catfile($data->{dir}, 'output.log');
@@ -89,7 +85,7 @@ sub run {
 
         next if $count;
         last if $stop;
-        last unless -f $pfile;
+        last unless -f $pfile->path;
         sleep 0.02;
     }
 

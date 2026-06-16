@@ -11,7 +11,7 @@ use Test2::Harness2::Util::Queue;
 use Test2::Harness2::Util::File::JSON;
 use Test2::Harness2::IPC;
 
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Pfile;
 use Test2::Harness2::Util qw/open_file/;
 use Test2::Harness2::Util qw/mod2file open_file/;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
@@ -22,7 +22,7 @@ use File::Spec;
 use Carp qw/croak/;
 
 use parent 'App::Yath2::Command::test';
-use Test2::Harness2::Util::HashBase qw/+pfile_data +pfile/;
+use Test2::Harness2::Util::HashBase qw/+pfile +banner_printed/;
 
 include_options(
     'App::Yath2::Options::Debug',
@@ -239,30 +239,34 @@ sub init {
     return $self->SUPER::init(@_);
 }
 
+# The shared persistent-runner discovery object. find_pfile (via
+# App::Yath2::Pfile) performs the host/user/version/pid liveness checks; a
+# missing pfile is fatal here (run/spawn require a live runner).
 sub pfile {
     my $self = shift;
-    $self->{+PFILE} //= find_pfile($self->settings, $self->pfile_params) or die "No persistent harness was found for the current path.\n";
+    $self->{+PFILE} //= App::Yath2::Pfile->find($self->settings, $self->pfile_params)
+        or die "No persistent harness was found for the current path.\n";
 }
 
 sub pfile_data {
     my $self = shift;
-    return $self->{+PFILE_DATA} if $self->{+PFILE_DATA};
 
     my $pfile = $self->pfile;
+    my $data  = $pfile->data;
 
-    my $data = Test2::Harness2::Util::File::JSON->new(name => $pfile)->read();
-    $data->{pfile_path} //= $pfile;
+    # Print the discovery banner exactly once (on first read of the data).
+    unless ($self->{+BANNER_PRINTED}++) {
+        print "\nFound: $data->{pfile_path}\n";
+        print "  PID: $data->{pid}\n";
+        print "  Dir: $data->{dir}\n";
+    }
 
-    print "\nFound: $data->{pfile_path}\n";
-    print "  PID: $data->{pid}\n";
-    print "  Dir: $data->{dir}\n";
-
-    return $self->{+PFILE_DATA} = $data;
+    return $data;
 }
 
 sub workdir {
     my $self = shift;
-    return $self->pfile_data->{dir};
+    return $self->pfile->workdir;
 }
 
 sub start_runner {

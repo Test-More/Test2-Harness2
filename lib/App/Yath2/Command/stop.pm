@@ -12,7 +12,6 @@ use Test2::Harness2::Util::File::JSON();
 use Test2::Harness2::Util::Queue();
 
 use Test2::Harness2::Util qw/open_file/;
-use App::Yath2::Util qw/find_pfile/;
 use File::Path qw/remove_tree/;
 
 use parent 'App::Yath2::Command::run';
@@ -40,8 +39,8 @@ sub run {
 
     sleep(0.02) while kill(0, $self->pfile_data->{pid});
 
-    my $pfile = $self->pfile;
-    unlink($pfile) if -f $pfile;
+    my $pfile_path = $self->pfile->path;
+    unlink($pfile_path) if -f $pfile_path;
 
     remove_tree($self->workdir, {safe => 1, keep_root => 0}) if -d $self->workdir;
 
