@@ -9,7 +9,7 @@ use Time::HiRes qw/sleep/;
 use File::Spec ();
 use File::Path qw/make_path/;
 
-use Test2::Collector::Util::Socket qw/open_unix_listen write_frame/;
+use Test2::Collector::Util::Socket qw/open_unix_listen connect_unix write_frame/;
 use Test2::Collector::Util::Zstd qw/compress_blob/;
 use Test2::Collector::Util::Zstd::FrameBuffer();
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
@@ -25,15 +25,17 @@ requires qw/workdir name/;
 =head1 NAME
 
 Test2::Harness2::Role::Service - Common socket-service behavior: a listening
-unix socket, a request/response loop, and child reaping.
+unix socket, one bidirectional connection set, a symmetric request/response
+loop, and child reaping.
 
 =head1 DESCRIPTION
 
 A role for the harness's long-lived services. It owns a listening unix socket
 (C<< $workdir/[$run_ord/]$name.socket >>) and provides the building blocks for a
-service loop: it can accept new client connections, read framed requests and
-dispatch them to C<request_handler_E<lt>typeE<gt>>, give the consumer a chance to
-do its own work (C<service_tick>), and reap exited children.
+service loop: it can accept new client connections, B<connect out> to peer
+services, read framed requests off any connection and dispatch them to
+C<request_handler_E<lt>typeE<gt>>, give the consumer a chance to do its own work
+(C<service_tick>), and reap exited children.
 
 Requests and responses are JSON, each compressed into one self-contained zstd
 frame and written with the same framing the transition channel uses, so a
@@ -42,37 +44,70 @@ wire utilities are reused directly from L<Test2-Collector|Test2::Collector>
 (L<Test2::Collector::Util::Socket> and L<Test2::Collector::Util::Zstd>); this
 role does not carry its own socket or zstd copies.
 
-A request is C<< {request =E<gt> $type, ...} >>; it dispatches to
-C<request_handler_$type($payload, $conn)>, whose return value (a hashref) is sent
-back as the response. A handler may return C<undef> to send B<no> response, for
-one-way requests (e.g. streamed reports) whose sender does not read replies. The
-built-in C<request_handler_stop> ends the loop.
+=head2 One bidirectional connection set (ARCHITECTURE.md §5.2)
+
+Every connection -- whether this service B<accepted> it or B<dialed> it via
+C<service_connect_peer> -- lands in B<one> connection set and the service reads
+framed messages off all of them. A dialed (outbound) connection is therefore not
+write-only: once open, B<either end may send requests>, so a peer the runner
+connects out to (e.g. a preload stage) can send requests back over that same
+connection rather than opening a second one in the opposite direction. This is
+the symmetric, reuse-never-duplicate model: there is never a second channel
+between the same two services.
+
+=head2 Peer identity handshake
+
+A unix C<accept>ed stream carries no service identity, so to reuse a connection
+"by peer" each side must learn who is on the other end. A service connection
+exchanges a B<handshake frame> (C<< {handshake =E<gt> {identity =E<gt> $name}} >>)
+immediately on open -- the dialer sends its identity, the accepter replies with
+its own -- B<before> the connection is treated as a registered peer. The identity
+keys C<service_connect_peer>'s reuse lookup, and resolves the
+B<simultaneous-connect race> (both sides dial at once): both ends deterministically
+keep the connection whose initiator has the lexically-smaller identity and drop
+the duplicate, so they converge on the same single channel.
+
+A connection that never handshakes (a one-way collector reporter, or a plain
+request/reply client) still works exactly as before -- the handshake frame is one
+more discriminated frame kind, not a mandatory preamble.
+
+=head2 Frame kinds
+
+C<_service_conn> reads each connection and dispatches by frame kind:
+
+=over 4
+
+=item * B<Handshake> -- C<< {handshake =E<gt> {...}} >>: register the peer
+identity (replying with our own handshake if we have not yet), no other effect.
+
+=item * B<Transition> -- a C<facet_data> hashref carrying C<harness_collector> /
+C<harness_state_transition> / C<harness_final_state> /
+C<harness_collector_finalized>: handed to the consumer's optional
+C<service_transition($payload, $frame, $conn)> hook, no reply.
+
+=item * B<Request> -- everything else (C<< {request =E<gt> $type, ...} >>):
+dispatched to C<request_handler_$type($payload, $conn)>, whose return value (a
+hashref) is sent back as the response. A handler may return C<undef> to send
+B<no> response, for one-way requests.
+
+=back
 
 A connection can also become a B<subscriber>: a request handler calls
 L</add_subscriber> on the connection, and from then on the service pushes
-forwarded frames to it asynchronously with L</forward_frame> (unlike the
-one-shot request/reply connections). A subscriber whose write fails (it vanished)
-is dropped, mirroring the recorder-socket broken-connection handling.
-
-The same socket also carries B<transition frames>: the Test2 event/facet
-structures a collector's reporter streams (carrying C<harness_collector>,
-C<harness_state_transition>, C<harness_final_state>, or
-C<harness_collector_finalized>). A frame whose decoded payload carries a
-C<facet_data> with any of those facets is recognized as a transition, handed to
-the consumer's optional C<service_transition($payload, $frame, $conn)> hook, and
-produces no reply. Everything else is treated as a request. One connection per
-peer (a collector's connection streams many transition frames) means the two
-kinds never interleave on a single stream.
+forwarded frames to it asynchronously with L</forward_frame>. A subscriber whose
+write fails (it vanished) is dropped, mirroring the recorder-socket
+broken-connection handling.
 
 =head2 Required / optional consumer methods
 
-C<workdir> and C<name> are required. Optional: C<run_ord> (a per-run numeric
-subdir), C<service_on_start> (called once after the socket binds),
-C<service_tick> (called each loop iteration), C<service_on_stop> (called once
-after the loop exits, before the socket is closed),
+C<workdir> and C<name> are required. Optional: C<service_identity> (the name this
+service announces in its handshake; defaults to C<service_name>), C<run_ord> (a
+per-run numeric subdir), C<service_on_start> (called once after the socket
+binds), C<service_tick> (called each loop iteration), C<service_on_stop> (called
+once after the loop exits, before the socket is closed),
 C<service_on_reap($pid, $status)>, and
 C<service_transition($payload, $frame, $conn)> (called for each transition frame
-received on the socket).
+received on a connection).
 
 A consumer that already manages its own child processes (for example via
 L<Test2::Harness2::IPC>) should override C<reap_children> to a no-op so the two
@@ -89,6 +124,11 @@ that binds different sockets at different times (e.g. the runner, which is
 C<runner> in its root process but C<preload-E<lt>stageE<gt>> in a forked stage
 child) overrides this to vary the socket without changing its identity.
 
+=item $id = $self->service_identity
+
+The identity this service announces to peers in its handshake (and the key peers
+reuse its connection by). Defaults to C<service_name>.
+
 =item $path = $self->service_socket_path
 
 The listen socket path: C<< $workdir/$name.socket >>, or
@@ -100,6 +140,24 @@ collide on a stage socket -- chunk 6.1-2).
 
 Open (and bind) the listening socket. Creates the socket's directory if needed.
 
+=item $conn = $self->service_connect_peer($identity, $path)
+
+Return a connection to the peer service named C<$identity>, B<reusing> an existing
+one if this service already has a connection to that peer, otherwise dialing
+C<$path>, adding the connection to the one shared set (so replies/requests from
+the peer are read off it like any other), and sending our handshake. Returns the
+connection filehandle, or C<undef> if the dial failed.
+
+=item $conn = $self->service_peer_conn($identity)
+
+The existing connection to peer C<$identity>, or C<undef>.
+
+=item $bool = $self->service_send($identity, $message)
+
+Frame, compress, and write one message (a hashref) to the peer named C<$identity>
+over the shared connection. Returns true if written, false if there is no live
+connection to that peer.
+
 =item $self->run
 
 Run the service loop until stopped: reap children, service socket I/O, and call
@@ -107,7 +165,7 @@ C<service_tick>, sleeping briefly between iterations.
 
 =item $self->service_io
 
-Accept pending connections, read framed requests off ready connections, dispatch
+Accept pending connections, read framed messages off ready connections, dispatch
 each, and write the response frame back on the same connection. Exposed so a
 consumer with its own loop can poll the socket without delegating its whole loop
 to C<run>.
@@ -180,6 +238,8 @@ the others.
 
 sub service_name ($self) { return $self->name }
 
+sub service_identity ($self) { return $self->service_name }
+
 sub service_socket_path ($self) {
     my $dir = $self->workdir;
 
@@ -210,6 +270,7 @@ sub start_service ($self) {
     $self->{service_listen}  = $listen;
     $self->{service_select}  = IO::Select->new($listen);
     $self->{service_conns}   = {};
+    $self->{service_peers}   = {};
     $self->{service_subs}    = {};
     $self->{service_stopped} = 0;
 
@@ -248,6 +309,48 @@ sub reap_children ($self) {
         $self->$can($pid, $status) if $can;
     }
     return;
+}
+
+sub service_connect_peer ($self, $identity, $path) {
+    # Reuse, never duplicate (ARCH 5.2): if a connection to this peer already
+    # exists -- whether we dialed it or it dialed us and handshaked -- hand it
+    # back rather than opening a second channel.
+    if (my $existing = $self->{service_peers}{$identity}) {
+        return $existing;
+    }
+
+    my $conn;
+    return undef unless eval { $conn = connect_unix($path); 1 } && $conn;
+    $conn->blocking(0);
+
+    # The dialed connection joins the one shared set so the peer's requests /
+    # replies are read off it like any accepted connection (symmetric channel).
+    $self->{service_select}->add($conn);
+    $self->{service_conns}{$conn} = {
+        fh             => $conn,
+        fb             => Test2::Collector::Util::Zstd::FrameBuffer->new,
+        outbound       => 1,
+        identity       => $identity,
+        handshake_sent => 0,
+    };
+
+    # We know who we dialed, so register the peer now; the handshake reply only
+    # confirms it. (A simultaneous reverse-dial is resolved when its handshake
+    # arrives -- see _handle_handshake.)
+    $self->{service_peers}{$identity} = $conn;
+
+    $self->_send_handshake($conn);
+
+    return $conn;
+}
+
+sub service_peer_conn ($self, $identity) {
+    return $self->{service_peers}{$identity};
+}
+
+sub service_send ($self, $identity, $message) {
+    my $conn = $self->{service_peers}{$identity} or return 0;
+    return eval { write_frame($conn, compress_blob(encode_json($message)), 'peer'); 1 } ? 1 : 0;
 }
 
 sub handle_request ($self, $payload, $conn) {
@@ -296,9 +399,7 @@ sub forward_frame ($self, $frame, $run_id = undef) {
         next if eval { write_frame($conn, $frame, 'subscriber'); 1 };
 
         delete $self->{service_subs}{$key};
-        $self->{service_select}->remove($conn) if $self->{service_select};
-        delete $self->{service_conns}{$conn};
-        eval { close($conn); 1 };
+        $self->_drop_conn($conn);
     }
 
     return;
@@ -317,11 +418,34 @@ the public description above.
 
 The teardown primitive; see the public description above.
 
+=item $self->_service_conn($fh)
+
+Read one ready connection and dispatch each complete frame it carries by kind
+(handshake / transition / request).
+
+=item $self->_handle_handshake($fh, $payload)
+
+Register the peer identity a handshake frame carries, reply with our own handshake
+if we have not yet, and resolve a simultaneous-connect duplicate deterministically.
+
+=item $self->_send_handshake($fh)
+
+Write this service's handshake frame on a connection (once).
+
+=item $self->_drop_conn($fh)
+
+Remove a connection from the select set, the connection map, the peer registry,
+and the subscriber set, then close it.
+
 =item $bool = $self->_is_transition_frame($payload)
 
 True when a decoded payload is a collector transition frame (a C<facet_data>
 hashref carrying C<harness_collector>, C<harness_state_transition>,
 C<harness_final_state>, or C<harness_collector_finalized>) rather than a request.
+
+=item $bool = $self->_is_handshake_frame($payload)
+
+True when a decoded payload is a peer-identity handshake frame.
 
 =back
 
@@ -334,7 +458,13 @@ sub service_io ($self) {
     while (my $conn = $listen->accept) {
         $conn->blocking(0);
         $sel->add($conn);
-        $self->{service_conns}{$conn} = Test2::Collector::Util::Zstd::FrameBuffer->new;
+        $self->{service_conns}{$conn} = {
+            fh             => $conn,
+            fb             => Test2::Collector::Util::Zstd::FrameBuffer->new,
+            outbound       => 0,
+            identity       => undef,
+            handshake_sent => 0,
+        };
     }
 
     for my $fh ($sel->can_read(0)) {
@@ -346,17 +476,15 @@ sub service_io ($self) {
 }
 
 sub _service_conn ($self, $fh) {
-    my $fb = $self->{service_conns}{$fh} or return;
+    my $meta = $self->{service_conns}{$fh} or return;
+    my $fb   = $meta->{fb};
 
     my $buf = '';
     my $n   = sysread($fh, $buf, 65536);
     return unless defined $n;
 
     if ($n == 0) {
-        $self->{service_select}->remove($fh);
-        delete $self->{service_conns}{$fh};
-        delete $self->{service_subs}{$fh};
-        close($fh);
+        $self->_drop_conn($fh);
         return;
     }
 
@@ -371,13 +499,22 @@ sub _service_conn ($self, $fh) {
             next;
         }
 
-        # Two kinds of frame share this socket (one connection per peer, ARCH
-        # 5.2): request frames (C<< {request =E<gt> $type, ...} >> -- run/task
-        # submission and stage outcome reports) and transition frames (Test2
-        # event/facet structures a collector's reporter streams, carrying
-        # C<harness_collector> / C<harness_state_transition> / etc). Transitions
-        # are one-way and fold into the consumer's state, never producing a
-        # reply; requests dispatch to C<request_handler_E<lt>typeE<gt>>.
+        # A peer-identity handshake (ARCH 5.2): register who is on the other end
+        # so the connection can be reused by peer, then keep reading -- it carries
+        # no request.
+        if ($self->_is_handshake_frame($payload)) {
+            $self->_handle_handshake($fh, $payload);
+            next;
+        }
+
+        # Two further kinds share every connection (one connection per peer, ARCH
+        # 5.2): transition frames (Test2 event/facet structures a collector's
+        # reporter streams, carrying C<harness_collector> /
+        # C<harness_state_transition> / etc) and request frames
+        # (C<< {request =E<gt> $type, ...} >> -- run/task submission and stage
+        # outcome reports). Transitions are one-way and fold into the consumer's
+        # state, never producing a reply; requests dispatch to
+        # C<request_handler_E<lt>typeE<gt>>.
         if ($self->_is_transition_frame($payload)) {
             $self->service_transition($payload, $rec->{frame}, $fh)
                 if $self->can('service_transition');
@@ -395,6 +532,74 @@ sub _service_conn ($self, $fh) {
         warn "service: failed to write response: $@\n" unless $sent;
     }
 
+    return;
+}
+
+sub _is_handshake_frame ($self, $payload) {
+    return 0 unless ref($payload) eq 'HASH';
+    return ref($payload->{handshake}) eq 'HASH' ? 1 : 0;
+}
+
+sub _send_handshake ($self, $fh) {
+    my $meta = $self->{service_conns}{$fh} or return;
+    return if $meta->{handshake_sent};
+    $meta->{handshake_sent} = 1;
+    eval { write_frame($fh, compress_blob(encode_json({handshake => {identity => $self->service_identity}})), 'handshake'); 1 };
+    return;
+}
+
+sub _handle_handshake ($self, $fh, $payload) {
+    my $meta = $self->{service_conns}{$fh} or return;
+    my $peer = $payload->{handshake}{identity};
+    return unless defined $peer;
+
+    # The accepter learns the dialer's identity here and replies with its own so
+    # the dialer can register us too. (An outbound connection already sent its
+    # handshake in service_connect_peer.)
+    $self->_send_handshake($fh) unless $meta->{handshake_sent};
+
+    my $existing = $self->{service_peers}{$peer};
+
+    # Simultaneous connect: both sides dialed each other, so each holds two
+    # connections to the same peer. Keep the one whose initiator has the
+    # smaller identity -- both ends compute this identically and so converge on
+    # the same single channel -- and drop the other.
+    if ($existing && $existing != $fh) {
+        if ($self->_keep_this_conn($meta, $peer)) {
+            $self->_drop_conn($existing);
+        }
+        else {
+            $self->_drop_conn($fh);
+            return;
+        }
+    }
+
+    $meta->{identity} = $peer;
+    $self->{service_peers}{$peer} = $fh;
+
+    return;
+}
+
+sub _keep_this_conn ($self, $meta, $peer) {
+    my $me = $self->service_identity;
+
+    # The connection's initiator is us when we dialed out, else the peer. Keep the
+    # connection whose initiator sorts first; the other end keeps the same one.
+    my $initiator = $meta->{outbound} ? $me   : $peer;
+    my $other     = $meta->{outbound} ? $peer : $me;
+
+    return $initiator lt $other ? 1 : 0;
+}
+
+sub _drop_conn ($self, $fh) {
+    if (my $meta = delete $self->{service_conns}{$fh}) {
+        my $id = $meta->{identity};
+        delete $self->{service_peers}{$id}
+            if defined $id && ($self->{service_peers}{$id} // 0) == $fh;
+    }
+    $self->{service_select}->remove($fh) if $self->{service_select};
+    delete $self->{service_subs}{$fh};
+    eval { close($fh); 1 };
     return;
 }
 
@@ -420,6 +625,7 @@ sub reset_service ($self) {
     delete $self->{service_listen};
     delete $self->{service_select};
     $self->{service_conns}   = {};
+    $self->{service_peers}   = {};
     $self->{service_subs}    = {};
     $self->{service_stopped} = 0;
     return;
@@ -433,6 +639,7 @@ sub close_service ($self) {
         }
     }
     $self->{service_conns} = {};
+    $self->{service_peers} = {};
     $self->{service_subs}  = {};
 
     if (delete $self->{service_listen}) {
