@@ -153,12 +153,13 @@ receive unrelated messages before the matching response. Correlation is by
 
 - **Identity exchange.** A connection that **dials** announces its identity
   immediately; one that **accepts** replies with its identity only after seeing the
-  peer's. A non-identity first frame, or no identity before the timeout (~5s),
-  drops the connection.
-- **Reporter lane.** A connection whose **first frame is a transition** is a
-  one-way collector reporter (it never identifies, streams transitions only) — so
-  the external `Recorder::Socket` reporters work unchanged without speaking the
-  identity protocol.
+  peer's. **Every** connection must identify first — including collector reporters,
+  which send an identity as their first frame via the `Recorder::Socket` `preamble`.
+  A reporter's identity carries `no_reply` so the runner sends nothing back (the
+  reporter is one-way and never reads — an unread reply would become a TCP-RST on
+  close and discard in-flight transitions); it sets `drain_input` defensively. A
+  non-identity first frame, or no identity before the timeout (~30s), drops the
+  connection.
 - **Bad-frame policy.** After identity, **3 consecutive corrupt/invalid frames**
   (no valid frame between) close the connection; any valid frame resets the count.
   A fatal `sysread` error (ECONNRESET/EBADF) drops it at once.
@@ -186,10 +187,12 @@ stage  --[dials runner.socket, identity 'preload-<stage>']--> runner's set
 ```
 
 Commands (`test`/`run`/`status`/...) are full peers too: each connects, identifies,
-and issues `request`s, matching `response`s by id. The stage's collector
-`Recorder::Socket` reporter is a **separate** reporter-lane connection (transitions
-only). **Subscribers** connect, send a `subscribe` request, get the snapshot as its
-`response`, then receive forwarded transition frames pushed over the same fd
+and issues `request`s, matching `response`s by id. A collector's `Recorder::Socket`
+reporter is a **separate** connection that also identifies first (via its
+`preamble`, with `no_reply` so the runner does not reply) and then streams
+transitions only. **Subscribers** connect, send a `subscribe` request, get the
+snapshot as its `response`, then receive forwarded transition frames pushed over
+the same fd
 (`forward_frame` over `service_subs`).
 
 ---

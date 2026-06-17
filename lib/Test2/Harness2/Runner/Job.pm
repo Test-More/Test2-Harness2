@@ -312,9 +312,21 @@ sub _transition_reporter {
 
     require Test2::Collector::Recorder::Socket;
 
+    # Chunk 9: the reporter identifies first (preamble) like every connection, but
+    # it is one-way -- it only streams transitions and never reads. It sets no_reply
+    # so the runner does NOT send its identity back: an unread reply would, on the
+    # reporter's close, turn into a TCP-RST that discards in-flight transitions. It
+    # still drains+discards input defensively.
     my $reporter;
     return $reporter
-        if eval { $reporter = Test2::Collector::Recorder::Socket->new(paths => [$socket]); 1 };
+        if eval {
+            $reporter = Test2::Collector::Recorder::Socket->new(
+                paths       => [$socket],
+                preamble    => {identity => {name => "collector:job:" . $self->job_id, no_reply => 1}},
+                drain_input => 1,
+            );
+            1;
+        };
 
     warn "$$ $0 could not connect transition reporter to '$socket': $@";
     return undef;

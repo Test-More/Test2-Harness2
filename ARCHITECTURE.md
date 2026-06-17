@@ -633,25 +633,32 @@ mandatory identity exchange on open, `{request=>{request_id,command,...}}` /
 assumption), and a bad-frame policy. It carries the **runner↔stage** channel
 (stage dials, runner dispatches back over it) **and** every command connection
 (commands are full peers, not a separate request/reply lane). Collector reporters
-remain a distinct one-way lane (below), recognized by a transition-first frame so
-they need no identity. The future system-load service (chunk 7) is the next
+also identify first (via the `Test2-Collector` `Recorder::Socket` `preamble` hook,
+which sends an identity frame carrying `no_reply` so the accepter does not reply) —
+there is no identity exemption. The future system-load service (chunk 7) is the next
 consumer.
 
-**Collector reporters (one-way, connect-out).** A per-process collector's
-reporter just streams its transitions; it is not a service.
+**Collector reporters (effectively one-way, connect-out).** A per-process
+collector's reporter streams its transitions and does not act on requests — but it
+still **identifies first** like every other connection (there is no identity
+exemption).
 
 - **One connection per collector.** Frames from different collectors land on
   separate file descriptors and never interleave — atomicity by construction.
-- **The reporter connects out.** The collector's reporter sink is given socket
-  paths, connects to each, and writes to all of them; it makes no assumption
-  about what is on the other end.
-- **Message shape.** Each message is a transition event, JSON-encoded and
-  zstd-compressed once into one self-contained frame, written with a blocking
-  `syswrite` (retried on `EINTR`, `SIGPIPE` ignored so a vanished reader
-  surfaces as a trappable error). The collector `uuid` rides on every message
-  so any multiplexing reader can demultiplex. The start message additionally
-  carries the collector name, the events-file path, the run association, and
-  (for tests) the try number.
+- **The reporter connects out and identifies.** The collector's reporter sink is
+  given socket paths, connects to each, and **sends an identity frame first** (the
+  `Test2-Collector` `Recorder::Socket` `preamble` hook, set by the harness to
+  `{identity=>{name=>"collector:...", no_reply=>1}}`); it then streams transitions.
+  The `no_reply` flag tells the accepter **not** to send its identity back: the
+  reporter is one-way and never reads, so a reply would sit unread and, on close,
+  turn into a TCP-RST that discards transitions the reader has not yet consumed.
+  The reporter also drains+discards input defensively (the `drain_input` hook).
+- **Message shape.** Each transition is JSON-encoded and zstd-compressed once into
+  one self-contained frame, written with a blocking `syswrite` (retried on
+  `EINTR`, `SIGPIPE` ignored so a vanished reader surfaces as a trappable error).
+  The collector `uuid` rides on every message so any multiplexing reader can
+  demultiplex. The start message additionally carries the collector name, the
+  events-file path, the run association, and (for tests) the try number.
 
 **Service channels (one symmetric, reused channel per pair).** Services — the
 runner, preload stages, the system-load service — talk to each other over a
@@ -673,9 +680,10 @@ pools and not a channel per direction:
   peer is on the descriptor. So a connection **exchanges an identity frame**
   (`{identity=>{name=>...}}`) on open — the dialer announces itself, the accepter
   replies — **before** it carries requests. A non-identity first frame, or no
-  identity within a timeout, drops the connection as bad. (A transition-first
-  connection is the exception: a one-way collector reporter, which needs no
-  identity.)
+  identity within a timeout, drops the connection as bad. This applies to **every**
+  connection, collector reporters included (they send their identity via the
+  `Recorder::Socket` `preamble` hook, with `no_reply` so the accepter sends nothing
+  back to a one-way reporter) — there is no exemption.
 - **No ordering; correlation by id.** Either end may have requests in flight at any
   time, so a request carries a `request_id` (a v7 UUID, §2.2) and its response
   echoes it; responses are matched by id, never by arrival order. An endpoint may

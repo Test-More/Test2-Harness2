@@ -20,7 +20,6 @@ use Test2::Harness2::Util::HashBase qw{
     +fb
     +identity
     +ready
-    +reporter
     +sent_identity
     +deadline
     +bad
@@ -67,30 +66,18 @@ response.
 =head2 Lifecycle
 
 A connection that B<dials> (C<outbound>) a peer sends its identity immediately; a
-connection that B<accepts> sends its identity only in reply, once it has seen the
-peer's identity (so it never sends identity to a one-way reporter that does not
-speak the protocol). Each protocol peer thus sends its identity and expects one.
+connection that B<accepts> replies with its identity once it has seen the peer's.
+B<Every> connection must identify first -- there is no exemption: a one-way
+collector reporter announces an identity too (via the recorder's preamble) and
+discards the identity reply it gets back. Until it is established a connection is
+B<pending>, and only an C<identity> frame is accepted; B<anything else> as the
+first frame (a transition, a request, a response, or a corrupt frame) means a bad
+connection and is closed at once.
 
-Until it is established a connection is B<pending>, and the first frame decides its
-kind:
-
-=over 4
-
-=item * an C<identity> frame → a B<peer> (requests / responses / transitions),
-
-=item * a C<transition> / C<facet_data> frame → a B<reporter> (a one-way collector
-stream; no identity, transitions only),
-
-=item * anything else (a request, a response, or a corrupt frame) → B<bad>, closed
-at once.
-
-=back
-
-If no first frame arrives before the timeout the pending connection is dropped.
-Once established, B<3 corrupt / invalid frames in a row> (with no valid frame
-between them) close the connection; any valid frame resets the count. A peer that
-sends a second identity, or a reporter that sends anything but a transition,
-counts as invalid.
+If no identity arrives before the timeout the pending connection is dropped. Once
+established, B<3 corrupt / invalid frames in a row> (with no valid frame between
+them) close the connection; any valid frame resets the count. A second identity on
+an established peer counts as invalid.
 
 =head1 ATTRIBUTES
 
@@ -111,7 +98,7 @@ The identity this side announces.
 =item $secs = $conn->identity_timeout
 
 How long (seconds) to wait for the peer's identity before declaring the connection
-bad. Defaults to 5.
+bad. Defaults to 30.
 
 =back
 
@@ -179,10 +166,14 @@ sub init ($self) {
     $self->{+BAD}     = 0;
     $self->{+READY}   = 0;
     $self->{+CLOSED}  = 0;
-    $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 5);
+    # Generous default: under heavy parallel load a busy service loop may take a
+    # while to first read a freshly-accepted connection, and dropping a legitimate
+    # peer that simply has not been serviced yet would lose its traffic. This only
+    # bounds a peer that connects and never identifies at all.
+    $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 30);
 
-    # A dialer announces itself immediately; an accepter waits and replies only to
-    # a peer's identity, so it never sends identity to a one-way reporter stream.
+    # A dialer announces itself immediately; an accepter waits and replies once it
+    # has seen the peer's identity.
     $self->send_identity if $self->{+OUTBOUND};
 
     return;
@@ -190,7 +181,6 @@ sub init ($self) {
 
 sub identity { $_[0]->{+IDENTITY} }
 sub ready    { $_[0]->{+READY}  ? 1 : 0 }
-sub reporter { $_[0]->{+REPORTER} ? 1 : 0 }
 sub closed   { $_[0]->{+CLOSED} ? 1 : 0 }
 
 sub expired ($self) {
@@ -310,31 +300,23 @@ sub _classify ($self, $payload, $rec) {
             $self->{+READY}    = 1;
             $self->{+BAD}      = 0;
             $self->{+IDENTITY} = $payload->{identity}{name};
-            $self->send_identity;    # accepter replies; dialer already sent (no-op)
+
+            # The accepter replies with its own identity (the dialer already sent
+            # its own, so this is a no-op there) -- UNLESS the peer asked us not to.
+            # A one-way collector reporter sets no_reply: it never reads, so a reply
+            # would sit unread in its socket buffer and, when the reporter closes,
+            # turn the close into a TCP-RST that discards transitions the runner has
+            # not yet read. Honoring no_reply leaves the reporter with nothing to
+            # read, so it closes cleanly and loses no transitions.
+            $self->send_identity unless $payload->{identity}{no_reply};
+
             return {kind => 'identity', name => $self->{+IDENTITY}};
         }
 
-        # A transition as the first frame marks a one-way collector reporter: it
-        # never sends identity and only streams transitions.
-        if ($is_transition) {
-            $self->{+READY}    = 1;
-            $self->{+REPORTER} = 1;
-            $self->{+BAD}      = 0;
-            return {kind => 'transition', payload => $payload, frame => $rec->{frame}};
-        }
-
-        # A request / response / unknown frame before establishment is bad.
+        # Every connection must identify first -- there is no reporter exemption.
+        # A transition, request, response, or corrupt frame before identity is a bad
+        # connection.
         $self->close;
-        return undef;
-    }
-
-    # --- reporter: transitions only -------------------------------------------
-    if ($self->{+REPORTER}) {
-        if ($is_transition) {
-            $self->{+BAD} = 0;
-            return {kind => 'transition', payload => $payload, frame => $rec->{frame}};
-        }
-        $self->_bad_frame;
         return undef;
     }
 

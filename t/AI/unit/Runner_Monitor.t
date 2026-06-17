@@ -352,10 +352,13 @@ subtest service_forward_routing => sub {
         ok($sub{$key}{got_reply}, "$key got a subscribe reply");
     }
 
-    # A test job reports its transitions on its own connection (the reporter lane:
-    # transition-first, no identity).
+    # A test job reports its transitions on its own connection. Every connection
+    # now identifies first (no reporter exemption) — a real collector does this via
+    # the recorder preamble; here we send the identity frame, then stream the
+    # transition.
     my $report = sub ($facet, %c) {
         my $rep = connect_unix($path);
+        write_frame($rep, compress_blob(encode_json({identity => {name => "reporter:" . ($c{uuid} // 'x')}})));
         write_frame($rep, frame_for($facet, %c));
         $svc->service_io for 1 .. 5;
         close($rep);

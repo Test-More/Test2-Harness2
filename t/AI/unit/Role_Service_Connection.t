@@ -111,28 +111,20 @@ subtest non_identity_first_is_bad => sub {
     ok($a->closed, "a non-identity first frame drops the connection");
 };
 
-subtest reporter_lane => sub {
+subtest transition_first_is_bad => sub {
     my ($fa, $fb) = pair();
-    my $a = conn($fa, 'alpha', 0);    # accepter: does not send identity proactively
+    my $a = conn($fa, 'alpha', 0);    # accepter
 
-    # The peer is a one-way collector reporter: it streams a transition first and
-    # never sends an identity.
+    # There is no reporter exemption: a transition as the first frame (no identity)
+    # is a bad connection, exactly like any other non-identity-first frame.
+    # Collectors now identify first (via the recorder preamble), so a bare
+    # transition-first connection no longer happens.
     write_frame($fb, compress_blob(encode_json({facet_data => {harness_collector => {uuid => 'U1'}}})), 'raw');
 
     my @ev = $a->drain;
-    is(scalar(@ev), 1, "got one event");
-    is($ev[0]{kind}, 'transition', "a transition-first connection is a reporter lane");
-    ok($a->ready,        "reporter connection is established");
-    ok($a->reporter,     "flagged as a reporter");
-    ok(!defined $a->identity, "reporter carries no peer identity");
-    ok(!$a->closed,      "reporter not dropped for lacking identity");
-
-    # A reporter that sends a request is misbehaving -> bad.
-    write_frame($fb, compress_blob(encode_json({request => {request_id => 'x', command => 'echo'}})), 'raw');
-    write_frame($fb, compress_blob(encode_json({request => {request_id => 'y', command => 'echo'}})), 'raw');
-    write_frame($fb, compress_blob(encode_json({request => {request_id => 'z', command => 'echo'}})), 'raw');
-    $a->drain;
-    ok($a->closed, "a reporter sending non-transitions is closed as bad");
+    is(\@ev, [], "a transition-first connection yields no event");
+    ok($a->closed, "a transition-first connection (no identity) is dropped as bad");
+    ok(!defined $a->identity, "it never became an identified peer");
 };
 
 subtest three_bad_frames_after_ready => sub {

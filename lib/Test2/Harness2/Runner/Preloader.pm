@@ -237,7 +237,7 @@ sub launch_stage {
         # finalize until the stage truly ends -- the same semantics the file
         # recorder has. The reporter is skipped (file recorder only) when
         # runner.socket is not locatable/accepting.
-        my $reporter = $self->_stage_transition_reporter;
+        my $reporter = $self->_stage_transition_reporter($name);
 
         setjump 'Stage-Collector' => sub {
             require Test2::Collector;
@@ -277,6 +277,7 @@ sub launch_stage {
 # construction; skipped if runner.socket is not accepting.
 sub _stage_transition_reporter {
     my $self = shift;
+    my ($stage_name) = @_;
 
     my $workdir = $ENV{T2_HARNESS_WORKDIR} // $self->{+DIR};
     return undef unless defined $workdir && length $workdir;
@@ -286,9 +287,21 @@ sub _stage_transition_reporter {
 
     require Test2::Collector::Recorder::Socket;
 
+    # Chunk 9: the reporter identifies first (preamble) like every connection, but
+    # it is one-way -- it only streams transitions and never reads. It sets no_reply
+    # so the runner does NOT send its identity back: an unread reply would, on the
+    # reporter's close, turn into a TCP-RST that discards in-flight transitions. It
+    # still drains+discards input defensively.
     my $reporter;
     return $reporter
-        if eval { $reporter = Test2::Collector::Recorder::Socket->new(paths => [$socket]); 1 };
+        if eval {
+            $reporter = Test2::Collector::Recorder::Socket->new(
+                paths       => [$socket],
+                preamble    => {identity => {name => "collector:stage:$stage_name", no_reply => 1}},
+                drain_input => 1,
+            );
+            1;
+        };
 
     warn "$$ $0 could not connect stage transition reporter to '$socket': $@";
     return undef;
