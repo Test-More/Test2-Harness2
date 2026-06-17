@@ -469,11 +469,11 @@ test-file contents. (Currently `Test2::Harness2::TestFile` mixes both roles.)
     ("Pre-review checks" / "Style-guide pass") so the contract cannot silently
     regress. Add the gate **with** the implementation, never before (a failing
     gate must not predate the feature).
-  - **Open question (note, don't assume):** `watch_parent_pid` watches a single
-    pid (the runner). A job collector forked by a stage watches the runner, not
-    the intermediate stage — which satisfies the stated goal. If we also want it
-    to die when its *immediate* stage dies, `Test2::Collector` would need a
-    multi-pid watch list; defer unless a need appears.
+  - **Watch the runner ONLY (decided).** A job collector watches the runner pid,
+    **never** its intermediate stage. A stage may intentionally restart (a preload
+    reload) with a new pid; killing the in-flight test on that would be wrong. So
+    the single-pid `watch_parent_pid` is exactly right — no multi-pid watch list is
+    wanted.
 - **Minor:** revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if
   active mid-run stalled detection is wanted; `resources.pm`'s auto-generated
   `OPTIONS` POD lists its old narrower option set (it now inherits the full

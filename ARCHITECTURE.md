@@ -315,9 +315,13 @@ reporter`, where the **recorder** sink writes the full event stream to one
 
 **Collectors watch the runner and self-terminate (invariant).** Every collector
 spawned **under a runner** (test jobs, preload stages — directly or via a stage)
-is given the **runner's pid to watch** (`Test2::Collector`'s `watch_parent_pid`).
-If the runner process disappears while the collector's child is still running, the
-collector **kills its child and finalizes/exits itself**. This makes collectors
+is given the **runner's pid — and only the runner's pid — to watch**
+(`Test2::Collector`'s `watch_parent_pid`). If the runner process disappears while
+the collector's child is still running, the collector **kills its child and
+finalizes/exits itself**. A collector watches the runner, **never an intermediate
+stage**: a stage may **intentionally restart** (a preload reload) with a new pid,
+and that must **not** take its in-flight test down — only the runner going away
+does. This makes collectors
 reliably self-terminating even when the runner dies *without* getting to signal
 them (a crash, `SIGKILL`, or any uncatchable death) — it is the backstop behind
 the runner's normal process-group `killall`, not a replacement for it. Combined
