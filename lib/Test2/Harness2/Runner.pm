@@ -486,11 +486,15 @@ sub stage_client {
         liveness_check => sub {
             my $client = shift;
             # One non-blocking reap sweep so a stage that died during startup
-            # leaves our tracked procs; then report whether any tracked process is
-            # still a stage (a live stage means keep waiting for it to bind).
+            # leaves our tracked procs; then report whether THIS specific stage is
+            # still a tracked live process (a live target stage means keep waiting
+            # for it to bind). Matching by stage name -- rather than "any stage is
+            # alive" -- means a dead target stage is detected promptly even while
+            # OTHER stages are alive, instead of waiting the full CONNECT_TIMEOUT.
             eval { $self->wait(timeout => 0); 1 };
             for my $proc (values %{$self->{+PROCS} // {}}) {
-                return 1 if $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
+                next unless $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
+                return 1 if $proc->name eq $stage;
             }
             return 0;
         },
@@ -541,7 +545,23 @@ sub dispatch_pending {
     for my $task (@tasks) {
         my $stage  = $task->{stage};
         my $client = $self->stage_client($stage);
-        $client->run_task($task, $run_item);
+        my $sent   = $client->run_task($task, $run_item);
+
+        # take_dispatch_tasks already pulled this task off the list while it stays
+        # tracked as RUNNING (slot + resources consumed). If the dispatch was a
+        # no-op because the stage is gone, no stage will ever run it or report
+        # stop_task/retry_task -- the job is stuck running forever and the run
+        # hangs (clear_finished_run refuses to finish while RUNNING is nonzero).
+        # Abort it NOW through the same machinery the watchdog uses on wind-down:
+        # release its slot / resources and announce it as 'aborted' (failed) with a
+        # diagnostic, instead of announcing a 'dispatched' that never happened.
+        unless ($sent) {
+            $self->watchdog->abort_job(
+                $task->{job_id}, $task,
+                "Stage '$stage' is gone; could not dispatch this job to it",
+            );
+            next;
+        }
 
         # Chunk 5f: dispatching a job to a stage is a runner-originated state
         # mutation; forward it to subscribers so their mirror sees the job move.

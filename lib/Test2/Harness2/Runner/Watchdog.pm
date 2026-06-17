@@ -33,12 +33,16 @@ It is deliberately B<conservative>, matching the gatherer's actual semantics: th
 1.0 gatherer only aborted stalled jobs once the runner/scheduler process itself
 was gone (C<kill(0)> failed) -- its strongest "this can never finish" signal. On
 the transient path the runner B<is> that authority and is alive for the whole
-run, so the only genuinely unfinishable state is the run B<winding down> with
+run, so the only genuinely unfinishable states are the run B<winding down> with
 tasks still tracked as running (a stage that died mid-run, or a signal-driven
-shutdown). Speculative mid-run per-stage death detection is intentionally avoided
--- the nested / eager stage topology makes "is this stage's process gone?"
-unreliable, and a healthy stage's jobs are completed through the runner's normal
-reap / C<set_proc_exit> path.
+shutdown), and a dispatch the runner B<knows> failed because the target stage was
+already gone (C<abort_job>, called from C<dispatch_pending>). Both are confirmed
+unfinishable: in the wind-down case the run loop is ending, and in the failed
+dispatch case the send was a proven no-op so no stage will ever report the job.
+Speculative mid-run per-stage death polling is still intentionally avoided -- the
+nested / eager stage topology makes "is this stage's process gone?" unreliable,
+and a healthy stage's jobs are completed through the runner's normal reap /
+C<set_proc_exit> path.
 
 When the watchdog aborts a job it synthesizes the outcome into canonical state:
 it stops the task in the scheduler (releasing its slot / resources) and announces
@@ -72,9 +76,25 @@ optional C<$reason>. Called when the runner is winding the run down so a job
 whose collector never finalized still rolls up as failed instead of silently
 vanishing. Each job is aborted at most once.
 
+=item $wd->abort_job($job_id, $task, $reason)
+
+Abort one specific still-tracked job, attributing C<$reason>. Used the moment a
+dispatch to a stage is known to have failed (the stage was gone, so the send was
+a no-op): the task is already marked running and has consumed resources but no
+stage will ever report its completion, so it would hang the run. This synthesizes
+its abort into canonical state right away -- releasing its slot / resources and
+rolling it up as failed -- instead of waiting for run wind-down. Each job is
+aborted at most once.
+
 =back
 
 =cut
+
+sub abort_job ($self, $job_id, $task, $reason = undef) {
+    return if $self->{+ABORTED}{$job_id};
+    $self->_abort_job($job_id, $task, $reason // "Runner could not dispatch this job to its stage");
+    return;
+}
 
 sub abort_remaining ($self, $reason = undef) {
     my $runner = $self->{+RUNNER};

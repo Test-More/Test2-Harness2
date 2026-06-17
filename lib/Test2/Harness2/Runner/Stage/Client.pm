@@ -72,10 +72,12 @@ The stage socket path (C<< $workdir/preload-E<lt>stageE<gt>.socket >>).
 
 True once the stage was observed to have exited before the client could connect.
 
-=item $client->run_task($task, $run)
+=item $bool = $client->run_task($task, $run)
 
 Dispatch one resolved task (and the run definition it belongs to) to the stage
-for forking.
+for forking. Returns true if the dispatch was actually written to the stage, and
+false if the stage was gone (the send was a no-op) so the caller can abort the
+job instead of leaving it stuck as running-but-never-dispatched.
 
 =item $client->stop
 
@@ -91,8 +93,7 @@ sub socket_path ($self) {
 }
 
 sub run_task ($self, $task, $run) {
-    $self->_send({request => 'run_task', task => $task, run => $run});
-    return;
+    return $self->_send({request => 'run_task', task => $task, run => $run});
 }
 
 sub stop ($self) {
@@ -116,10 +117,11 @@ stage gone, or the bounded timeout is reached.
 
 Run the C<liveness_check> coderef (true when absent).
 
-=item $client->_send($request)
+=item $bool = $client->_send($request)
 
-Frame, compress, and write one request over the connection (a no-op once the
-stage is gone).
+Frame, compress, and write one request over the connection. Returns true on a
+real write and false once the stage is gone (the connection is undef), so a
+caller can distinguish a dispatched request from a silently-dropped one.
 
 =back
 
@@ -169,9 +171,9 @@ sub connection ($self) {
 }
 
 sub _send ($self, $request) {
-    my $conn = $self->connection or return;
+    my $conn = $self->connection or return 0;
     write_frame($conn, compress_blob(encode_json($request)));
-    return;
+    return 1;
 }
 
 1;
