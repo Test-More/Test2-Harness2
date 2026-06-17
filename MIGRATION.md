@@ -93,7 +93,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | — |
 | 17 | Plugin aux output → collectors (`run_collected`); retire the `aux_logs` flat files | ⬜ | — |
-| 18 | Collectors watch the runner pid → self-terminate if the runner dies (ARCH §4.1); + a code-review gate enforcing it | ⬜ | — |
+| 18 | Collectors watch the runner pid → self-terminate if the runner dies (ARCH §4.1); + a code-review gate enforcing it | ✅ | this task |
 
 Chunks 1-8a have landed. Chunks **9-16 are the post-6 revised-target work**
 (the `thoughts` / `thoughts2` decisions); see "Next" below. Numeric order is
@@ -352,7 +352,7 @@ this task):
 are gone — the only IPC files anywhere are `events.jsonl.zst` (plus the `aux_logs`
 plugin path); the DB/UI layer is inlined on interim `DBIx::Class`; runner↔stage
 runs on the unified §5.2 service channel (chunk 9). Remaining work is chunks
-**7, 8b, 10-18** (see the table for numbering + dependencies). The notes below
+**7, 8b, 10-17** (see the table for numbering + dependencies). The notes below
 flesh out each chunk; the `thoughts` / `thoughts2` decisions they capture are
 restated in `ARCHITECTURE.md` (§1, §4.4/§4.7/§4.8/§5.2/§5.3) so they stand without
 the untracked source notes.
@@ -450,30 +450,26 @@ test-file contents. (Currently `Test2::Harness2::TestFile` mixes both roles.)
   - **Out of scope (note it):** a command that self-daemonizes (its own `setsid`)
     escapes the runner's process group regardless — a general "kill the whole
     tree" concern, not specific to aux.
-- **Chunk 18 — collectors watch the runner pid; enforce it (ARCHITECTURE.md §4.1).**
-  **Audit (2026-06-17): NOT done today** — no harness `collect()` call passes
-  `watch_parent_pid` (checked `Runner.pm` runner-wrap, `Job.pm` test job,
-  `Preloader.pm` stage). `Test2::Collector` already supports `watch_parent_pid`
-  (watch a pid; if it vanishes while the child runs, emit `harness_parent_exit`,
-  kill the child, finalize/exit). Implement the §4.1 invariant: every collector
-  the runner spawns (test jobs + preload stages, including a stage's job
-  collectors) is given the **runner's pid** as `watch_parent_pid`, so a runner
-  that dies without signaling (crash / `SIGKILL`) leaves no orphaned collectors or
-  test processes. The runner's own collector wrap is exempt (its child is the
-  runner); `yath spawn` is exempt (no collector, meant to outlive the harness).
-  - **Code-review gate.** Add `agent_scripts/audit-collector-watch-parent` (a
-    standalone checker, like `audit-methods-not-functions`) that flags any harness
-    `Test2::Collector::collect(...)` / `spawn_collector(...)` whose args do not
-    include `watch_parent_pid` (allowing an explicit annotated exemption for the
-    runner-wrap). Wire it into the mandatory pre-review checks in `AGENTS.md`
-    ("Pre-review checks" / "Style-guide pass") so the contract cannot silently
-    regress. Add the gate **with** the implementation, never before (a failing
-    gate must not predate the feature).
-  - **Watch the runner ONLY (decided).** A job collector watches the runner pid,
-    **never** its intermediate stage. A stage may intentionally restart (a preload
-    reload) with a new pid; killing the in-flight test on that would be wrong. So
-    the single-pid `watch_parent_pid` is exactly right — no multi-pid watch list is
-    wanted.
+- **Chunk 18 — collectors watch the runner pid; enforce it (ARCHITECTURE.md §4.1). ✅ DONE (this task).**
+  Every collector the runner spawns now passes `watch_parent_pid => <root runner
+  pid>`: the test-job collector (`Job::run_under_collector`, via
+  `$self->runner->rootpid`) and the stage collector (`Preloader`, via a new
+  `runner_pid` threaded from `Runner::preloader`). `Test2::Collector` then kills
+  the child and finalizes/exits if the runner vanishes (crash / `SIGKILL`), so no
+  collector or test process outlives a dead runner. The runner-wrap collector is
+  exempt (its child IS the runner — marked `WATCH-PARENT-EXEMPT`); `yath spawn`
+  has no collector.
+  - **Watch the runner ONLY (decided):** a job collector watches the runner pid,
+    never its intermediate stage — a stage may intentionally restart (reload) with
+    a new pid and must not take the in-flight test down. Single-pid is exactly
+    right.
+  - **Code-review gate:** `agent_scripts/audit-collector-watch-parent` flags any
+    harness `collect()` / `spawn_collector()` lacking `watch_parent_pid` (honoring
+    a `WATCH-PARENT-EXEMPT` marker); wired into the mandatory pre-review checks in
+    `AGENTS.md`.
+  - **Follow-up (optional):** a behavioral integration test (kill -9 the runner
+    mid-run, assert the test + collector die) would strengthen this; the
+    `watch_parent_pid` mechanism itself is already tested in `Test2-Collector`.
 - **Minor:** revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if
   active mid-run stalled detection is wanted; `resources.pm`'s auto-generated
   `OPTIONS` POD lists its old narrower option set (it now inherits the full

@@ -26,6 +26,7 @@ use Test2::Harness2::Util::HashBase(
         <preloads
         <done
         <below_threshold
+        <runner_pid
 
         <dtrace <reloader
 
@@ -250,6 +251,10 @@ sub launch_stage {
                 record_transitions => 1,
                 recorder           => Test2::Collector::Recorder::Zstd->new(file => stage_events_file($self->{+DIR}, $name)),
                 ($reporter ? (reporter => $reporter) : ()),
+                # ARCHITECTURE.md §4.1: the stage collector watches the root runner
+                # pid and self-terminates (killing the stage) if the runner dies
+                # without signaling, so no stage outlives a dead runner.
+                watch_parent_pid   => $self->{+RUNNER_PID},
                 run => sub {
                     my ($guard) = @_;
                     $guard->dismiss;

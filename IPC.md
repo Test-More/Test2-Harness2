@@ -110,6 +110,16 @@ canonical state. Reaping is just local cleanup afterward. The runner's
 `Runner::Watchdog` aborts a job whose dispatch to a stage failed (so the run does
 not stall) and aborts any still-running jobs at run wind-down.
 
+**Collectors self-terminate if the runner dies.** Every job and stage collector is
+started with `watch_parent_pid => <root runner pid>` (`Job::run_under_collector`,
+`Preloader`). `Test2::Collector` kills the collector's child and finalizes/exits if
+the runner disappears while the child runs — so a runner that dies without
+signaling (crash / `SIGKILL`) leaves no orphaned collectors or test processes. A
+collector watches the **runner only**, never an intermediate stage (a stage reload
+gets a new pid and must not kill the in-flight test). The runner-wrap collector is
+exempt (its child is the runner). Enforced by
+`agent_scripts/audit-collector-watch-parent`.
+
 ---
 
 ## 5. Sockets

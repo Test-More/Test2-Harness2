@@ -127,6 +127,9 @@ sub start_collected {
         open(\*STDOUT, '>', File::Spec->devnull) or die "Could not detach STDOUT: $!";
         open(\*STDERR, '>', File::Spec->devnull) or die "Could not detach STDERR: $!";
 
+        # WATCH-PARENT-EXEMPT: this collector's child IS the runner, so there is no
+        # runner to watch (ARCHITECTURE.md §4.1 exempts the runner-wrap). It exits
+        # when the runner exits (child EOF), which is the normal finalize path.
         my $info = Test2::Collector::collect(
             is_test  => 0,
             name     => 'runner',
@@ -241,6 +244,10 @@ sub preloader {
         restrict_reload => $self->{+RESTRICT_RELOAD},
         dump_depmap     => $self->{+DUMP_DEPMAP},
         reload          => $self->{+RELOAD},
+
+        # The root runner pid, so each stage collector watches it and
+        # self-terminates if the runner dies (ARCHITECTURE.md §4.1).
+        runner_pid      => $self->{+ROOTPID},
 
         below_threshold => ($self->{+PRELOAD_THRESHOLD} && $self->{+JOBS_TODO} && $self->{+PRELOAD_THRESHOLD} > $self->{+JOBS_TODO}) ? 1 : 0,
     );

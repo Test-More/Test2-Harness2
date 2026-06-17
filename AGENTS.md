@@ -136,11 +136,14 @@ from). Resolve anything they turn up, then re-run the test suite.
    slot ordering, read-only attributes using `<attr` not `-attr`, no
    trailing whitespace, and the "named subs in object modules must be
    methods, not functions" rule (see `STYLE_GUIDE.md` "Naming and
-   structure"). Run `perl agent_scripts/audit-methods-not-functions lib`
-   and `perl agent_scripts/audit-readonly-attrs lib` and resolve every
-   reported hit. These automated gates are mandatory because the
-   equivalent manual checklist items get skipped under pressure -- a hit
-   from either script is a hard stop, not a judgment call.
+   structure"). Run `perl agent_scripts/audit-methods-not-functions lib`,
+   `perl agent_scripts/audit-readonly-attrs lib`, and
+   `perl agent_scripts/audit-collector-watch-parent lib` (every collector
+   the runner starts must pass `watch_parent_pid` so it self-terminates if
+   the runner dies -- `ARCHITECTURE.md` §4.1) and resolve every reported
+   hit. These automated gates are mandatory because the equivalent manual
+   checklist items get skipped under pressure -- a hit from any of these
+   scripts is a hard stop, not a judgment call.
 
 2. **POD pass.** Verify the file follows the POD layout in
    `STYLE_GUIDE.md` ("POD" section): `NAME` / `DESCRIPTION` /

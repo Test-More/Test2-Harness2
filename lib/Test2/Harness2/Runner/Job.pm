@@ -278,6 +278,12 @@ sub run_under_collector {
         chdir              => ($self->ch_dir || undef),
         io_events          => ($self->io_events ? 1 : 0),
         orphan_timeout     => $orphan_timeout,
+        # ARCHITECTURE.md §4.1: a collector spawned under the runner watches the
+        # ROOT runner's pid (never an intermediate stage -- a stage may reload with
+        # a new pid and must not take its test down). If the runner dies without
+        # signaling (crash / SIGKILL), the collector kills its test child and exits
+        # so no orphan survives a dead runner.
+        watch_parent_pid   => $self->runner->rootpid,
         ($in_file                                    ? (stdin           => $in_file)            : ()),
         ($self->use_timeout && $self->event_timeout) ? (silence_timeout => $self->event_timeout) : (),
     );

@@ -1,0 +1,156 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+# ARCHITECTURE.md §4.1 invariant: every collector the runner spawns must watch
+# the runner's pid and self-terminate if the runner dies. In code terms: every
+# Test2::Collector::collect(...) / spawn_collector(...) call in this harness must
+# pass `watch_parent_pid` (the root runner pid), so a runner that dies without
+# signaling (crash / SIGKILL) leaves no orphaned collectors or test processes.
+#
+# The one legitimate exception is the runner-wrap collector, whose child IS the
+# runner (there is no runner to watch). A call may opt out by placing a
+# `WATCH-PARENT-EXEMPT` comment on or within the few lines above the call.
+#
+# Scans lib/ for collect()/spawn_collector() calls and flags any that neither
+# pass watch_parent_pid nor carry an exemption marker. Exits 1 on any hit, 0 when
+# clean. Heuristic: comments are blanked and POD skipped before matching; the
+# call's argument list is taken as the balanced-parenthesis span after the call.
+
+use File::Find ();
+
+my @ROOTS = @ARGV ? @ARGV : ('lib');
+
+# How many lines above a call to look for an exemption marker.
+my $EXEMPT_LOOKBACK = 6;
+
+my @hits;
+
+for my $root (@ROOTS) {
+    File::Find::find(
+        {
+            no_chdir => 1,
+            wanted   => sub {
+                return unless /\.pm\z/ && -f $File::Find::name;
+                _audit_file($File::Find::name);
+            },
+        },
+        $root,
+    );
+}
+
+if (@hits) {
+    print "ARCHITECTURE.md \xC2\xA74.1 violations (collector started without watch_parent_pid):\n";
+    print "  $_\n" for @hits;
+    print "\nEvery Test2::Collector::collect()/spawn_collector() under the runner must\n";
+    print "pass watch_parent_pid (the root runner pid) so the collector self-terminates\n";
+    print "if the runner dies. The runner-wrap is the only exception -- mark it with a\n";
+    print "'WATCH-PARENT-EXEMPT' comment above the call.\n";
+    exit 1;
+}
+
+print "OK: every collector start passes watch_parent_pid (or is marked exempt).\n";
+exit 0;
+
+sub _audit_file {
+    my ($file) = @_;
+
+    open(my $fh, '<', $file) or die "Could not read $file: $!";
+    my @raw = <$fh>;
+    close($fh);
+
+    # Build a comment-blanked, POD-stripped copy line-for-line (so offsets still
+    # map to the original line numbers), used only for finding calls + balancing
+    # parens. The raw lines are kept for the exemption-marker search.
+    my @code;
+    my $in_pod = 0;
+    for my $line (@raw) {
+        if ($in_pod) {
+            $in_pod = 0 if $line =~ /^=cut\b/;
+            push @code => "\n";
+            next;
+        }
+        if ($line =~ /^=[a-zA-Z]/) {
+            $in_pod = 1 unless $line =~ /^=cut\b/;
+            push @code => "\n";
+            next;
+        }
+
+        # Blank a `#` comment (one preceded by start-of-line or whitespace, and not
+        # part of `$#`), keeping the newline so line numbers are preserved.
+        my $c = $line;
+        $c =~ s/(^|\s)#.*$/$1/;
+        push @code => $c;
+    }
+
+    my $code = join('', @code);
+
+    # Find each collect() / spawn_collector() call.
+    while ($code =~ /(Test2::Collector::collect|Test2::Collector::spawn_collector|(?<![\w:])spawn_collector|(?<![\w:>])collect)\s*\(/g) {
+        my $call_name = $1;
+        my $open_pos  = pos($code) - 1;    # index of the '('
+
+        # Skip a bare `collect(` that is not the collector call (e.g. a method on
+        # something else) -- only accept the fully-qualified forms or spawn_collector.
+        next if $call_name eq 'collect';
+
+        my $args = _balanced($code, $open_pos);
+        next unless defined $args;
+
+        my $line = (substr($code, 0, $open_pos) =~ tr/\n//) + 1;
+
+        # OK if watch_parent_pid is passed inline in the call args, OR built into an
+        # args hash earlier in the same sub (e.g. `my %common = (...); collect(%common)`).
+        next if $args =~ /\bwatch_parent_pid\b/;
+        next if _watch_in_enclosing_sub(\@code, $line);
+
+        next if _exempt_near(\@raw, $line);
+
+        push @hits => "$file line $line: $call_name(...) has no watch_parent_pid (and no WATCH-PARENT-EXEMPT marker)";
+    }
+}
+
+# True if `watch_parent_pid` appears between the start of the sub enclosing $line
+# and $line itself (so an args hash built above the call counts). Searches the
+# comment-blanked code lines so a commented mention does not count.
+sub _watch_in_enclosing_sub {
+    my ($code, $line) = @_;
+    my $start = $line;
+    for (my $n = $line; $n >= 1; $n--) {
+        if ($code->[$n - 1] =~ /^\s*sub\b/) { $start = $n; last }
+        $start = $n;
+    }
+    for my $n ($start .. $line) {
+        return 1 if defined $code->[$n - 1] && $code->[$n - 1] =~ /\bwatch_parent_pid\b/;
+    }
+    return 0;
+}
+
+# Return the substring inside the balanced parens starting at $open_pos (the '('),
+# or undef if unbalanced.
+sub _balanced {
+    my ($str, $open_pos) = @_;
+    my $depth = 0;
+    my $start = $open_pos + 1;
+    for (my $i = $open_pos; $i < length($str); $i++) {
+        my $ch = substr($str, $i, 1);
+        $depth++ if $ch eq '(';
+        if ($ch eq ')') {
+            $depth--;
+            return substr($str, $start, $i - $start) if $depth == 0;
+        }
+    }
+    return undef;
+}
+
+# True if a WATCH-PARENT-EXEMPT marker appears on the call line or within the few
+# lines above it (1-based line number).
+sub _exempt_near {
+    my ($raw, $line) = @_;
+    my $from = $line - $EXEMPT_LOOKBACK;
+    $from = 1 if $from < 1;
+    for my $n ($from .. $line) {
+        return 1 if defined $raw->[$n - 1] && $raw->[$n - 1] =~ /WATCH-PARENT-EXEMPT/;
+    }
+    return 0;
+}

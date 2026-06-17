@@ -118,7 +118,11 @@ my $mirror = $sub->monitor;
 # that it is the ONLY collector.)
 ok(scalar(grep { $_ eq 'PRE' } $mirror->tests), "snapshot carried the pre-subscribe collector");
 is($mirror->collector('PRE')->{events_file}, "$dir/pre.jsonl.zst", "snapshot carried collector detail");
-is($mirror->job('JOB-A')->{state}, 'dispatched', "snapshot carried the runner-originated job");
+# JOB-A was 'dispatched' at snapshot time, but a forwarded 'running' mutation can
+# arrive batched with the snapshot reply under load, so assert the job is present
+# (state dispatched OR already advanced to running) rather than pinning the state.
+ok($mirror->job('JOB-A'), "snapshot carried the runner-originated job");
+like($mirror->job('JOB-A')->{state}, qr/^(dispatched|running)$/, "job state is dispatched or already-forwarded running");
 is($mirror->job('JOB-A')->{stage}, 'default', "snapshot carried job detail");
 
 # Poll forwarded mutations until both arrive (or time out).
