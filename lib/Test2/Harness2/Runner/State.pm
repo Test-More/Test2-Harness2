@@ -340,6 +340,22 @@ sub queue_spawn {
     $self->_enqueue(queue_spawn => $spawn);
 }
 
+# Resolve the stage a spawn would be routed to and report whether that stage is
+# currently a live (ready) preload service. Used by the runner's acknowledged
+# queue_spawn handler so a `yath spawn` aimed at a stage that does not exist (or is
+# down) fails promptly instead of the command blocking on its worker tempfile until
+# that wait's own long timeout. Returns ($stage, $ready_bool).
+sub spawn_stage_ready {
+    my $self = shift;
+    my ($spawn) = @_;
+
+    my $stage = $self->task_stage({%$spawn, use_preload => $spawn->{use_preload} // 1});
+
+    my $ready = ($self->{+STAGE_READINESS} //= {})->{$stage} ? 1 : 0;
+
+    return ($stage, $ready);
+}
+
 sub _queue_spawn {
     my $self = shift;
     my ($spawn) = @_;

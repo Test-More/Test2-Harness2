@@ -117,11 +117,32 @@ sub request_handler_stop_run {
 # Chunk 6.1-2: `yath spawn` submits its spawn over runner.socket (instead of the
 # in-process dispatch.jsonl State it used while gated). The runner folds it into
 # the canonical State, which the (persistent) stages pick up to launch the script.
+#
+# Review P2: this is acknowledged (two-way). The command then blocks on a worker
+# tempfile (the legitimate wait while the spawned program runs) whose own timeout
+# is long; if the runner cannot route the spawn -- it is not the state hub, or the
+# target stage does not exist / is not a live ready preload service -- the command
+# would otherwise learn nothing until that long wait expired. So we resolve the
+# spawn's stage and check stage readiness synchronously and return a negative ack
+# in that case, letting `yath spawn` fail promptly with a clear diagnostic. On a
+# live stage we queue the spawn and ack success; the stage launches it and the
+# tempfile wait proceeds as the legitimate run of the spawned program.
 sub request_handler_queue_spawn {
     my $self = shift;
     my ($payload) = @_;
-    $self->state->queue_spawn($payload->{spawn});
-    return undef;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{'rootpid'} == $$;
+
+    my $spawn = $payload->{spawn} // {};
+    my ($stage, $ready) = $self->state->spawn_stage_ready($spawn);
+
+    return {ok => 0, stage => $stage, error => "No live preload stage '$stage' is available to run the spawn"}
+        unless $ready;
+
+    $self->state->queue_spawn($spawn);
+
+    return {ok => 1, queued => 1, stage => $stage};
 }
 
 sub request_handler_end_queue {

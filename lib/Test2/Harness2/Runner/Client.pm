@@ -44,8 +44,11 @@ C<stop_run>, C<end_queue>) so it can substitute for that state object as the
 command's submission target. Each call frames a request as
 C<< {request =E<gt> $type, ...} >>, compresses it into one self-contained zstd
 frame, and writes it with the shared L<Test2::Collector::Util::Socket> framing.
-The requests are one-way (the runner sends no reply); a single connection is
-reused so the runner applies them in send order.
+Most requests are one-way (the runner sends no reply); a single connection is
+reused so the runner applies them in send order. A few requests are two-way
+(acknowledged) and read back a reply frame -- the status/abort/reload queries and
+C<queue_spawn>, which is acknowledged so a spawn submission fails promptly when no
+live stage can run it instead of blocking on the worker tempfile.
 
 The runner is a separate process spawned just before submission, so it may not
 be listening yet when the client first connects; the client retries with a short
@@ -90,9 +93,16 @@ Submit the run definition.
 
 Submit one task.
 
-=item $client->queue_spawn($spawn)
+=item $ack = $client->queue_spawn($spawn)
 
-Submit one spawn request (C<yath spawn>).
+Submit one spawn request (C<yath spawn>). Unlike the other submission calls this
+is two-way (acknowledged): it sends the request and reads back the runner's reply
+so the command learns synchronously whether the spawn was accepted and routed to a
+live stage. Returns the decoded ack hash (C<< {ok =E<gt> 1, queued =E<gt> 1, stage
+=E<gt> $stage} >> on success, or C<< {ok =E<gt> 0, error =E<gt> $msg} >> when no
+live stage exists for it), or C<undef> if the runner could not be reached. This
+keeps a failed submission from blocking on the worker tempfile until that wait's
+own long timeout.
 
 =item $client->stop_run($run_id)
 
@@ -190,8 +200,7 @@ sub queue_task ($self, $task) {
 }
 
 sub queue_spawn ($self, $spawn) {
-    $self->_send({request => 'queue_spawn', spawn => $spawn});
-    return;
+    return $self->_request({request => 'queue_spawn', spawn => $spawn});
 }
 
 sub stop_run ($self, $run_id) {

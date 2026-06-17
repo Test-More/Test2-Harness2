@@ -83,11 +83,17 @@ sub read_line {
 # rest of the persistent path, instead of writing the in-process dispatch.jsonl
 # State directly. The State adds id/spawn/use_preload/stage defaults in its
 # _queue_spawn handler runner-side, so the raw args are enough here.
+#
+# Review P2: the submission is acknowledged (two-way). queue_spawn returns the
+# runner's ack hash (or undef if the runner could not be reached at all). The
+# caller inspects it and fails fast if the spawn was not accepted/queued, instead
+# of blindly opening the worker tempfile and waiting on it (its read timeout is
+# long, so a dropped spawn would otherwise hang the command for minutes).
 sub queue_spawn {
     my $self = shift;
     my ($args) = @_;
 
-    $self->submitter->queue_spawn($args);
+    return $self->submitter->queue_spawn($args);
 }
 
 sub run_script { shift @ARGV // die "No script specified" }
@@ -162,7 +168,7 @@ sub run {
     my ($fh, $name) = tempfile(UNLINK => 1);
     close($fh);
 
-    $self->queue_spawn({
+    my $ack = $self->queue_spawn({
         stage    => $self->stage // 'default',
         file     => $run,
         owner    => $$,
@@ -170,6 +176,18 @@ sub run {
         args     => [@ARGV],
         env_vars => $self->env_vars,
     });
+
+    # Review P2: fail fast on a missing/negative submission ack instead of waiting
+    # on the worker tempfile (whose read timeout is long). undef means the runner
+    # could not be reached at all; ok=>0 means it refused/could not route the spawn
+    # (e.g. no live preload stage to run it).
+    die "Could not submit spawn: no persistent runner is reachable.\n"
+        unless defined $ack;
+
+    unless ($ack->{ok}) {
+        my $why = $ack->{error} // 'the runner rejected the spawn';
+        die "Could not submit spawn: $why.\n";
+    }
 
     open($fh, '<', $name) or die "Could not open ipcfile: $!";
     my $mpid = read_line($fh);
