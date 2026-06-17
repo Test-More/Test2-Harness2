@@ -12,7 +12,9 @@ use Test2::Harness2::Event;
 use Test2::Harness2::Util::HashBase qw{
     <run_id <events_file
     <label
-    +reader +done +last_stamp
+    <tag
+    <tail
+    +reader +done +last_stamp +tailed
 };
 
 # Tail the non-test collector that wraps the `yath test` runner
@@ -50,6 +52,15 @@ sub poll ($self, $max = undef) {
 
     my $reader = $self->reader or return ();
 
+    # Tail mode (chunk 17): skip everything already recorded and emit only records
+    # appended after the reader opened -- used by `yath stop` to render just the
+    # runner's shutdown output (plugin teardown) without re-rendering the whole
+    # persistent runner's prior output.
+    if ($self->{+TAIL} && !$self->{+TAILED}) {
+        1 while defined $reader->readline;
+        $self->{+TAILED} = 1;
+    }
+
     my @out;
     while (!defined($max) || @out < $max) {
         my $line = $reader->readline;
@@ -70,16 +81,20 @@ sub poll ($self, $max = undef) {
         # Map the IOParser's STDOUT/STDERR info entries to the historical runner
         # INTERNAL shape the renderer expects (tag => INTERNAL, important => 1;
         # debug => 1 for stderr). from_stream is internal bookkeeping; drop it.
+        # The runner/stage streams render as INTERNAL; a plugin "aux" collector
+        # (chunk 17) instead renders tagged with its plugin name (via the tag
+        # attribute), so its output keeps the historical "(NAME)" shape.
+        my $out_tag = $self->{+TAG} // 'INTERNAL';
         if (my $info = $fd->{info}) {
             for my $i (@$info) {
                 next unless defined $i->{tag};
                 if ($i->{tag} eq 'STDOUT') {
-                    $i->{tag}       = 'INTERNAL';
+                    $i->{tag}       = $out_tag;
                     $i->{important} = 1;
                     delete $i->{debug};
                 }
                 elsif ($i->{tag} eq 'STDERR') {
-                    $i->{tag}       = 'INTERNAL';
+                    $i->{tag}       = $out_tag;
                     $i->{important} = 1;
                     $i->{debug}     = 1;
                 }

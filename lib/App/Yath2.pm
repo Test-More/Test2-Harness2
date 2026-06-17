@@ -420,11 +420,20 @@ sub _instantiate_plugins ($self) {
     my $specs = $harness->check_option('plugins') ? $harness->plugins : undef;
     $specs //= [];
 
-    my (%seen, @plugins);
+    # The resolved spec strings (Class or Class=arg1,arg2) are stashed below in
+    # harness->plugin_specs so the runner can reconstruct the SAME plugin instances
+    # (chunk 17: plugin setup/teardown now run in the runner). The serialized
+    # harness->plugins is bare class names (Plugin::TO_JSON drops any =args), so the
+    # specs are the faithful round-trip channel.
+    my (%seen, @plugins, @specs);
     for my $spec (@$specs) {
-        # Already an instance? Keep it (deduped by class).
+        # Already an instance? Keep it (deduped by class). We only have its class
+        # name to carry as a spec (an injected instance has no original arg string).
         if (blessed($spec)) {
-            push @plugins => $spec unless $seen{blessed($spec)}++;
+            unless ($seen{blessed($spec)}++) {
+                push @plugins => $spec;
+                push @specs   => blessed($spec);
+            }
             next;
         }
 
@@ -439,6 +448,7 @@ sub _instantiate_plugins ($self) {
         require $file unless $INC{$file};
 
         push @plugins => $class->can('new') ? $class->new(@args) : $class;
+        push @specs   => $spec;
     }
 
     # Restore the 1.0 "used_plugins" behavior: any plugin whose option was
@@ -456,9 +466,11 @@ sub _instantiate_plugins ($self) {
         next if $seen{$module}++;
 
         push @plugins => $module->can('new') ? $module->new() : $module;
+        push @specs   => $module;
     }
 
-    $harness->create_option(plugins => \@plugins);
+    $harness->create_option(plugins      => \@plugins);
+    $harness->create_option(plugin_specs => \@specs);
 
     return \@plugins;
 }

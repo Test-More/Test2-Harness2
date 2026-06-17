@@ -219,7 +219,8 @@ sub start {
 
     return unless $pop;
 
-    $self->setup_plugins();
+    # Chunk 17: plugin setup() now runs in the RUNNER (after runner.socket binds),
+    # not here -- so a plugin's aux work reports to the socket as collector events.
     $self->setup_resources();
 
     $self->start_runner(jobs_todo => $pop);
@@ -463,7 +464,8 @@ sub stop {
     my $renderers = $self->renderers;
     my $logger    = $self->logger;
 
-    $self->teardown_plugins($renderers, $logger);
+    # Chunk 17: plugin teardown() now runs in the RUNNER (when it shuts down), not
+    # here. finalize()/finish() (client/render-side) still run command-side.
     if ($logger) {
         print $logger "null\n";
         close($logger);

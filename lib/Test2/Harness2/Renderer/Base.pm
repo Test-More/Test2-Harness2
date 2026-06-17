@@ -10,7 +10,6 @@ use Time::HiRes qw/time sleep/;
 use Test2::Harness2::Event;
 use Test2::Harness2::JobReader;
 use Test2::Harness2::RunnerReader;
-use Test2::Harness2::Util::File::Stream;
 use Test2::Harness2::Util qw/runner_events_file/;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
@@ -23,6 +22,7 @@ use Test2::Harness2::Util::HashBase qw{
     <run_id
     <workdir
     <show_runner_output
+    <tail
     <tasks
     +service_readers
 
@@ -32,7 +32,6 @@ use Test2::Harness2::Util::HashBase qw{
     +by_uuid
     +jobs
     +run_started
-    +aux_handles
 
     <tests_seen
     <asserts_seen
@@ -125,7 +124,6 @@ sub init ($self) {
     $self->{+BY_UUID}            = {};
     $self->{+JOBS}               = {};
     $self->{+SERVICE_READERS}    = {};
-    $self->{+AUX_HANDLES}        = {};
     $self->{+TESTS_SEEN}   //= 0;
     $self->{+ASSERTS_SEEN} //= 0;
     $self->{+RUN_STARTED} = 0;
@@ -343,18 +341,32 @@ sub step_runner_output ($self, $monitor) {
         $readers->{$rfile} //= Test2::Harness2::RunnerReader->new(
             run_id      => $self->{+RUN_ID},
             events_file => $rfile,
+            tail        => $self->{+TAIL},
         );
     }
 
     # Every other (non-test) service collector announces its events file over the
-    # transition channel; pick those up as they appear.
+    # transition channel; pick those up as they appear. A plugin "aux" collector
+    # (chunk 17) is named "aux:NAME" -- render its output tagged with NAME (the
+    # historical "(NAME)" aux output), other services as plain INTERNAL.
     for my $uuid ($monitor->services) {
         my $c  = $monitor->collector($uuid) or next;
         my $ef = $c->{events_file}          or next;
+        my $name = $c->{name} // 'service';
+
+        my %extra;
+        if (my ($aux) = $name =~ /^aux:(.+)$/) {
+            %extra = (tag => uc($aux), label => "yath $aux");
+        }
+        else {
+            %extra = (label => "yath $name");
+        }
+
         $readers->{$ef} //= Test2::Harness2::RunnerReader->new(
             run_id      => $self->{+RUN_ID},
             events_file => $ef,
-            label       => "yath " . ($c->{name} // 'service'),
+            tail        => $self->{+TAIL},
+            %extra,
         );
     }
 
@@ -362,8 +374,6 @@ sub step_runner_output ($self, $monitor) {
         next if $reader->done;
         $self->dispatch($_) for $reader->poll(1000);
     }
-
-    $self->_step_aux_logs;
 
     return;
 }
@@ -395,11 +405,6 @@ sub runner_output_done ($self) {
 
 =over 4
 
-=item $self->_step_aux_logs
-
-Tail C<< $workdir/aux_logs/*.log >> -- plugin shellcall output that bypasses the
-runner collector -- and dispatch each line as INTERNAL-shaped info.
-
 =item $job = $self->job_for($collector)
 
 Resolve (and cache) the per-job-id rollup record for a collector, keyed by the
@@ -430,50 +435,6 @@ Construct a wrapped L<Test2::Harness2::Event>.
 =back
 
 =cut
-
-# Tail $workdir/aux_logs/*.log -- output from plugin shellcall subprocesses that
-# deliberately redirect away from the runner collector's captured streams (so it
-# never reaches runner-events.jsonl.zst). Surface each line as INTERNAL-shaped
-# info, exactly as the gatherer's process_aux_logs did.
-sub _step_aux_logs ($self) {
-    my $dir    = $self->{+WORKDIR} or return;
-    my $auxdir = File::Spec->catdir($dir, 'aux_logs');
-    return unless -d $auxdir;
-
-    my $handles = $self->{+AUX_HANDLES};
-
-    opendir(my $dh, $auxdir) or return;
-    for my $path (readdir($dh)) {
-        next if $path =~ m/^\.+$/;
-        next if $handles->{$path};
-
-        my $tag = uc($path);
-        next unless $tag =~ s/\.LOG$//;
-
-        my $debug = 0;
-        if ($tag =~ s/\W*(STDERR|STDOUT)\W*//g) {
-            $debug = 1 if $1 && uc($1) eq 'STDERR';
-        }
-
-        $handles->{$path} = {
-            tag    => $tag,
-            debug  => $debug,
-            stream => Test2::Harness2::Util::File::Stream->new(name => File::Spec->catfile($auxdir, $path)),
-        };
-    }
-    closedir($dh);
-
-    for my $file (sort keys %$handles) {
-        my $data = $handles->{$file};
-        for my $line ($data->{stream}->poll()) {
-            chomp($line);
-            my $e = $self->event(0, undef, time, info => [{details => $line, tag => $data->{tag}, debug => $data->{debug}, important => 1}]);
-            $self->dispatch($e);
-        }
-    }
-
-    return;
-}
 
 sub synth_job_end ($self, $job_id, $try, $file, $final_state) {
     my $fs = $final_state // {};

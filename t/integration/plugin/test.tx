@@ -1,6 +1,10 @@
 use Test2::V0;
 
-ok(!$INC{'App/Yath2/Plugin/TestPlugin.pm'}, "Plugin is not loaded for test processes");
+# Chunk 17: plugin setup/teardown now run IN THE RUNNER, so the runner loads the
+# plugin module and test children forked from it inherit it in %INC. (Previously
+# only the command loaded plugins and the runner was a fresh exec, so test children
+# were clean.) The plugin module being present is therefore expected now.
+ok($INC{'App/Yath2/Plugin/TestPlugin.pm'}, "Plugin is loaded in the runner (runs setup/teardown) and inherited by test children");
 
 is($ENV{T2_HARNESS_JOB_DURATION}, 'long');
 

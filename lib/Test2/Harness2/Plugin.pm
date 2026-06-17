@@ -6,6 +6,11 @@ use Scalar::Util qw/blessed/;
 
 our $VERSION = '2.000000';
 
+# Chunk 17: plugin setup/teardown run in the RUNNER now. A run_collected aux
+# process pushes its pid here so the runner can stop it at teardown; the runner
+# localizes this to its own list around setup_plugins/teardown_plugins.
+our $AUX_PIDS;
+
 # Document, but do not implement
 #sub changed_files {}
 #sub changed_diff {}
@@ -24,63 +29,107 @@ sub teardown {}
 
 sub TO_JSON { ref($_[0]) || "$_[0]" }
 
-sub redirect_io {
+# Chunk 17: the common Test2::Collector args for a plugin "aux" collector. Its
+# output is captured as collector EVENTS (a file recorder plus a socket reporter to
+# runner.socket) instead of flat aux_logs files, so the runner folds it and the
+# renderer shows it -- tagged with $name. Runs only inside the runner, where the
+# runner workdir (T2_HARNESS_WORKDIR) and runner.socket exist.
+sub _aux_collect_args {
     my $this = shift;
-    my ($settings, $name) = @_;
-
-    my @caller = caller();
-    my $at = "at $caller[1] line $caller[2].\n";
-    die "Invalid settings ($settings) $at" unless blessed($settings) && $settings->isa('Getopt::Yath::Settings');
-    die "No name provided $at"             unless $name;
-    die "This cannot be used without a workspace $at" unless $settings->check_group('workspace');
+    my ($name) = @_;
 
     require File::Spec;
-    require Test2::Harness2::Util::IPC;
+    require Test2::Collector::Recorder::Zstd;
+    require Test2::Harness2::Util::UUID;
 
-    my $dir = $settings->workspace->workdir;
-    my $aux = File::Spec->catdir($dir, 'aux_logs');
-    mkdir($aux) unless -d $aux;
+    my $dir = $ENV{T2_HARNESS_WORKDIR}
+        or die "Plugin aux collection requires a runner workdir; plugin setup/teardown now run in the runner.\n";
 
-    Test2::Harness2::Util::IPC::swap_io(\*STDOUT, File::Spec->catfile($aux, "${name}-STDOUT.log"));
-    Test2::Harness2::Util::IPC::swap_io(\*STDERR, File::Spec->catfile($aux, "${name}-STDERR.log"));
+    my $efile  = File::Spec->catfile($dir, "aux-${name}-" . Test2::Harness2::Util::UUID::gen_uuid() . ".jsonl.zst");
+    my $socket = File::Spec->catfile($dir, 'runner.socket');
 
-    return;
+    my $reporter;
+    if (-S $socket) {
+        require Test2::Collector::Recorder::Socket;
+        # The reporter identifies (preamble) like any collector and is one-way
+        # (no_reply); it streams transitions to runner.socket so the runner folds
+        # the aux collector into canonical state and the renderer finds its events
+        # file by path. A missing/unreachable socket leaves the file recorder.
+        eval {
+            $reporter = Test2::Collector::Recorder::Socket->new(
+                paths       => [$socket],
+                preamble    => {identity => {name => "collector:aux:$name", no_reply => 1}},
+                drain_input => 1,
+            );
+            1;
+        } or undef $reporter;
+    }
+
+    return (
+        is_test            => 0,
+        # "aux:NAME" lets Renderer::Base / RunnerReader tag this collector's output
+        # with NAME -- the historical "(NAME)" aux output shape.
+        name               => "aux:$name",
+        record_transitions => 1,
+        recorder           => Test2::Collector::Recorder::Zstd->new(file => $efile),
+        ($reporter ? (reporter => $reporter) : ()),
+    );
 }
 
 sub shellcall {
     my $this = shift;
     my ($settings, $name, @cmd) = @_;
 
-    require POSIX;
+    my @caller = caller();
+    my $at = "at $caller[1] line $caller[2].\n";
+    die "Invalid settings ($settings) $at" unless blessed($settings) && $settings->isa('Getopt::Yath::Settings');
+    die "No name provided $at"    unless $name;
+    die "No command provided $at" unless @cmd && length($cmd[0]);
+
+    require Test2::Collector;
+    require Test2::Harness2::Util;
+
+    # Synchronous: collect runs the command to completion in a child, capturing its
+    # output as events; we return the command's exit status. watch_parent_pid is the
+    # runner pid ($$ here, in the runner) so the aux collector dies with the runner
+    # (ARCHITECTURE.md §4.1).
+    my $info = Test2::Collector::collect(
+        $this->_aux_collect_args($name),
+        watch_parent_pid => $$,
+        exec             => [@cmd],
+    );
+
+    return Test2::Harness2::Util::collector_exit_code($info);
+}
+
+sub run_collected {
+    my $this = shift;
+    my ($settings, $name, @run) = @_;
 
     my @caller = caller();
     my $at = "at $caller[1] line $caller[2].\n";
     die "Invalid settings ($settings) $at" unless blessed($settings) && $settings->isa('Getopt::Yath::Settings');
-    die "No name provided $at" unless $name;
-    die "No command provided $at" unless @cmd && length($cmd[0]);
+    die "No name provided $at"          unless $name;
+    die "No code or command provided $at" unless @run;
 
-    my $pid = fork // die "Could not fork: $!";
-    if ($pid) {
-        local $?;
-        waitpid($pid, 0);
-        return $?;
-    }
-    else {
-        local $@;
+    require Test2::Collector;
 
-        eval {
-            if ($settings->check_group('workspace')) {
-                $this->redirect_io($settings, $name);
-            }
-            exec(@cmd) if @cmd > 1;
-            exec($cmd[0]);
-        };
+    # Non-blocking: fork a collector that runs the coderef (or execs the command)
+    # and keeps capturing its output for the rest of the run -- e.g. a service the
+    # plugin starts in setup(). Returns the collector pid; the runner tracks it via
+    # AUX_PIDS and stops it at teardown, and watch_parent_pid ($$ = runner) is the
+    # backstop so it dies with the runner. Replaces the old fork + redirect_io.
+    my %target = (ref($run[0]) eq 'CODE') ? (run => $run[0]) : (exec => [@run]);
 
-        chomp(my $err = $@ // "unknown error");
+    my $pid = Test2::Collector::spawn_collector(
+        $this->_aux_collect_args($name),
+        watch_parent_pid => $$,
+        %target,
+    );
 
-        warn "Could not run command ($@) $at";
-        POSIX::_exit(1);
-    }
+    push @$AUX_PIDS => $pid if $AUX_PIDS;
+
+    return $pid;
 }
 
 1;
@@ -227,11 +276,21 @@ This is a callback that lets you run setup logic when the runner starts. Note
 that in a persistent runner this is run once on startup, it is not run for each
 C<run> command against the persistent runner.
 
+B<Runs in the runner> (chunk 17): C<setup>/C<teardown> are invoked by the runner
+after its C<runner.socket> is bound, B<not> in the C<test>/C<start>/C<stop>
+command process. This is what lets C<shellcall>/C<run_collected> report their
+output as collector events over C<runner.socket>, and makes any process you start
+a runner child that dies with the runner. (1.0 split this into C<client_*> +
+C<instance_*> only to keep the 1.0 namespaces back-compatible; the C<*2>
+namespaces have no such constraint, so the single C<setup>/C<teardown> live on the
+runner -- see C<ARCHITECTURE.md>.)
+
 =item $plugin->teardown($settings)
 
 This is a callback that lets you run teardown logic when the runner stops. Note
 that in a persistent runner this is run once on termination, it is not run for
-each C<run> command against the persistent runner.
+each C<run> command against the persistent runner. Like C<setup>, this runs in the
+runner (at shutdown), not the command.
 
 =item @files = $plugin->changed_files($settings)
 
@@ -286,31 +345,30 @@ A filehandle to the diff
 
 =item $exit = $plugin->shellcall($settings, $name, @cmd)
 
-This is essentially the same as C<system()> except that STDERR and STDOUT are
-redirected to files that the yath collector will pick up so that any output
-from the command will be seen as events and will be part of the yath log. If no
-workspace is available this will not redirect IO and it will be identical to
-calling C<system()>.
+Run an external command B<synchronously> and return its exit status (like
+C<system()>). The command's STDOUT/STDERR are captured by a yath collector
+reporting to C<runner.socket>, so its output is seen as events and is part of the
+yath log (tagged with C<$name>) -- no flat files. Must run in the runner
+(C<setup>/C<teardown>); the aux collector watches the runner pid so it dies with
+the runner.
 
-This is particularily useful in C<setup()> and C<teardown()> when running
-external commands, specially any that daemonize and continue to produce output
-after the setup/teardown method has completed.
+$name is required because it is used as the output tag (best to limit it to 8
+characters) and in the collector's events file name.
 
-$name is required because it will be used for filenames, and will be used as
-the output tag (best to limit it to 8 characters).
+=item $pid = $plugin->run_collected($settings, $name, sub { ... })
 
-=item $plugin->redirect_io($settings, $name)
+=item $pid = $plugin->run_collected($settings, $name, @cmd)
 
-B<WARNING:> This must NEVER be called in a primary yath process. Only use this
-in forked processes that you control. If this is used in a main process it
-could hide ALL output.
+Run a coderef (or exec a command) B<non-blocking> in a collector child whose
+output keeps being captured for the rest of the run -- e.g. a service a plugin
+starts in C<setup()> that continues to produce output after C<setup> returns.
+Returns the collector pid. The runner tracks it and stops it at C<teardown>, and
+the collector watches the runner pid so it (and its child) die with the runner.
+This replaces the old C<fork> + C<redirect_io> pattern; there is no detach /
+C<setsid> -- nothing started by the runner survives the runner.
 
-This will redirect STDERR and STDOUT to files that will be picked up by the
-yath collector so that any output appears as proper yath events and will be
-included in the yath log.
-
-$name is required because it will be used for filenames, and will be used as
-the output tag (best to limit it to 8 characters).
+$name is required (output tag + events file name; best to limit it to 8
+characters).
 
 =item $plugin->TO_JSON
 

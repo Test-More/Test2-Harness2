@@ -123,7 +123,8 @@ sub run {
 
     $self->write_settings_to($dir, 'settings.json');
 
-    $self->setup_plugins();
+    # Chunk 17: plugin setup() now runs in the persistent RUNNER (after
+    # runner.socket binds), not here -- aux work reports to the socket as events.
     $self->setup_resources();
 
     my @prof;

@@ -4,12 +4,16 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Time::HiRes qw/sleep/;
+use Time::HiRes qw/sleep time/;
 
 use File::Spec();
 
 use Test2::Harness2::Util::File::JSON();
 use Test2::Harness2::Util::Queue();
+
+use Test2::Harness2::Renderer::Base();
+use Test2::Harness2::Runner::Monitor();
+use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
 use App::Yath2::Client;
 
@@ -41,6 +45,14 @@ sub run {
 
     my $pid = $self->pfile_data->{pid};
 
+    # Chunk 17: plugin teardown() now runs in the RUNNER as it shuts down. PRIME the
+    # shutdown renderer (open the runner-events tail and skip everything already
+    # recorded) BEFORE we trigger shutdown, so its cursor sits at the current end
+    # and it renders ONLY the teardown output the runner is about to write -- not
+    # the whole persistent runner's prior output (which `yath run` already showed).
+    my $render = eval { $self->prime_shutdown };
+    warn "Could not prime runner shutdown renderer: $@" unless defined $render || !$@;
+
     my $ok = eval {
         my $client = App::Yath2::Client->new(
             workdir        => $self->workdir,
@@ -56,7 +68,9 @@ sub run {
     my $ended = eval { $self->App::Yath2::Command::test::terminate_queue(); 1 };
     warn "Could not end runner queue: $@" unless $ended;
 
-    $_->teardown($self->settings) for @{$self->settings->harness->plugins};
+    # Drain the teardown output the runner is now writing.
+    my $rendered = eval { $self->drain_shutdown($render, $pid) if $render; 1 };
+    warn "Could not render runner shutdown output: $@" unless $rendered;
 
     sleep(0.02) while kill(0, $pid);
 
@@ -67,6 +81,74 @@ sub run {
 
     print "\n\nRunner stopped\n\n" unless $self->settings->display->quiet;
     return 0;
+}
+
+# Build the shutdown renderer in TAIL mode and prime its cursor: one step skips
+# everything already recorded so later steps render only newly-appended output.
+# A best-effort global subscription also surfaces any teardown aux collector.
+# Returns a context hashref (or undef when runner output is hidden).
+sub prime_shutdown {
+    my $self = shift;
+
+    my $settings = $self->settings;
+
+    my $show = 1;
+    $show = $settings->display->hide_runner_output ? 0 : 1
+        if $settings->check_group('display');
+
+    return undef unless $show;
+
+    my $renderer = Test2::Harness2::Renderer::Base->new(
+        settings           => $settings,
+        renderers          => $self->renderers,
+        workdir            => $self->workdir,
+        run_id             => gen_uuid(),
+        show_runner_output => $show,
+        tail               => 1,
+        plugins            => $settings->harness->plugins,
+    );
+
+    my $sub     = eval { $self->client->connect_subscriber };
+    my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
+
+    # Prime: open the readers and skip to the current end of the runner stream.
+    $sub->poll if $sub;
+    $renderer->step_runner_output($monitor);
+
+    return {renderer => $renderer, sub => $sub, monitor => $monitor};
+}
+
+# Drain until the runner's events stream reaches its terminal (the wrapping
+# collector finalized after the runner exited and flushed teardown), NOT until the
+# inner runner pid dies -- the collector outlives that pid by the moment it takes
+# to write the final events, and we must read them before the caller removes the
+# workdir. A grace window past pid-death bounds the crash case.
+sub drain_shutdown {
+    my $self = shift;
+    my ($ctx, $pid) = @_;
+
+    my $renderer = $ctx->{renderer};
+    my $sub      = $ctx->{sub};
+    my $monitor  = $ctx->{monitor};
+
+    my $deadline = time + 30;
+    my $dead_at;
+    while (time < $deadline) {
+        $sub->poll if $sub;
+        $renderer->step_runner_output($monitor);
+
+        last if $renderer->runner_output_done;
+
+        my $alive = $pid && kill(0, $pid);
+        $dead_at //= time unless $alive;
+        last if $dead_at && (time - $dead_at) > 5;
+
+        sleep 0.02;
+    }
+
+    $_->finish for @{$self->renderers};
+
+    return;
 }
 
 1;

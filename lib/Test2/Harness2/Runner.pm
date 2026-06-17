@@ -33,6 +33,8 @@ use Test2::Harness2::Runner::StatusReport();
 use Test2::Harness2::Runner::Role::Service::Handlers();
 use Test2::Harness2::Runner::Role::Scheduler();
 
+use Test2::Harness2::Plugin();    # chunk 17: $AUX_PIDS registry + run_collected/shellcall
+
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
     # Fields from settings
@@ -86,6 +88,9 @@ use Test2::Harness2::Util::HashBase(
         +active_run
 
         +job_pids
+
+        +plugins
+        +aux_pids
     },
 );
 
@@ -430,6 +435,13 @@ sub process {
     # read them is retired there); they remain only for the gated persistent path.
     $self->start_service;
 
+    # Chunk 17: plugin setup() runs HERE, in the runner, after runner.socket is
+    # bound -- so a plugin's aux work (shellcall / run_collected) reports to the
+    # socket as collector events instead of flat aux_logs files, and any aux
+    # process is a runner child that dies with the runner. teardown() runs below,
+    # after the run loop, before stop().
+    $self->setup_plugins;
+
     $self->start();
 
     my $ok  = eval { $self->run_tests(); 1 };
@@ -437,6 +449,8 @@ sub process {
     $self->{+CAN_STAGE} = 0;
 
     warn $err unless $ok;
+
+    $self->teardown_plugins;
 
     $self->stop();
 
@@ -464,6 +478,98 @@ sub _drain_transitions {
         $self->service_io;
         Time::HiRes::sleep(0.01);
     }
+
+    return;
+}
+
+# Chunk 17: plugin setup/teardown run in the runner (not the command). The command
+# serializes plugins to bare class names, so the runner reconstructs the SAME
+# instances from the resolved specs (Class or Class=arg1,arg2) the command stashed
+# in settings->harness->plugin_specs. Loading App::Yath2::Plugin::* is user-driven
+# (the -p the user passed), which the dependency rule permits.
+sub plugins {
+    my $self = shift;
+    return $self->{+PLUGINS} //= $self->_build_plugins;
+}
+
+sub _build_plugins {
+    my $self = shift;
+
+    my $harness = $self->settings->harness;
+    my $specs = $harness->check_option('plugin_specs') ? $harness->plugin_specs : undef;
+    $specs //= [];
+
+    my (%seen, @plugins);
+    for my $spec (@$specs) {
+        my ($class, $args) = split /=/, $spec, 2;
+        next if $seen{$class}++;
+        my @args = defined($args) ? (split /,/, $args) : ();
+
+        my $file = mod2file($class);
+        my $ok = eval { require $file unless $INC{$file}; 1 };
+        unless ($ok) {
+            warn "$$ $0 Runner could not load plugin '$class': $@";
+            next;
+        }
+
+        push @plugins => $class->can('new') ? $class->new(@args) : $class;
+    }
+
+    return \@plugins;
+}
+
+# Run each plugin's setup() / teardown() in the runner root. A run_collected aux
+# process registers its pid through the Test2::Harness2::Plugin::AUX_PIDS package
+# registry we localize here, so the runner can stop it at teardown; it is
+# deliberately NOT in {+PROCS} (so it never blocks the runner's wait(all=>1)).
+sub setup_plugins {
+    my $self = shift;
+    return unless $self->{+ROOTPID} == $$;
+
+    $self->{+AUX_PIDS} //= [];
+    local $Test2::Harness2::Plugin::AUX_PIDS = $self->{+AUX_PIDS};
+    $_->setup($self->settings) for @{$self->plugins};
+
+    return;
+}
+
+sub teardown_plugins {
+    my $self = shift;
+    return unless $self->{+ROOTPID} == $$;
+
+    $self->{+AUX_PIDS} //= [];
+    {
+        local $Test2::Harness2::Plugin::AUX_PIDS = $self->{+AUX_PIDS};
+        $_->teardown($self->settings) for reverse @{$self->plugins};
+    }
+
+    $self->stop_aux;
+
+    return;
+}
+
+# Stop every aux process started under this runner (a run_collected daemon). They
+# are not in {+PROCS}, so signal + reap them directly; their collector also watches
+# the runner pid (ARCHITECTURE.md §4.1) as the backstop if the runner dies hard.
+sub stop_aux {
+    my $self = shift;
+    my $pids = $self->{+AUX_PIDS} or return;
+    return unless @$pids;
+
+    kill('TERM', $_) for grep { kill(0, $_) } @$pids;
+
+    for (1 .. 50) {
+        @$pids = grep { (waitpid($_, POSIX::WNOHANG) != $_) && kill(0, $_) } @$pids;
+        last unless @$pids;
+        Time::HiRes::sleep(0.1);
+    }
+
+    for my $pid (@$pids) {
+        kill('KILL', $pid) if kill(0, $pid);
+        waitpid($pid, 0);
+    }
+
+    @{$self->{+AUX_PIDS}} = ();
 
     return;
 }
