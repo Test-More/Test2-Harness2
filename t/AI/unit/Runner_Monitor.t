@@ -11,6 +11,7 @@ use Test2::Collector::Util::Zstd::FrameBuffer;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use Test2::Harness2::Runner::Monitor;
+use Test2::Harness2::Role::Service::Connection();
 
 # The runner-side monitor folds the transition messages a collector's reporter
 # streams (start/harness_collector, harness_state_transition,
@@ -313,40 +314,46 @@ subtest service_forward_routing => sub {
 
     # Two run-scoped subscribers and one global subscriber connect + subscribe.
     # The listen backlog is small, so accept (service_io) after each connect.
+    # Each subscriber speaks the service-channel protocol: a Connection (identity
+    # on connect) then a subscribe request matched to its response by id.
     my %sub;
     for my $spec (['A', 'RUN-A'], ['B', 'RUN-B'], ['G', undef]) {
         my ($key, $run) = @$spec;
         my $c = connect_unix($path);
-        my $req = {request => 'subscribe'};
-        $req->{run_id} = $run if defined $run;
-        write_frame($c, compress_blob(encode_json($req)));
         $c->blocking(0);
-        $sub{$key} = {conn => $c, fb => Test2::Collector::Util::Zstd::FrameBuffer->new, mon => new_monitor};
+        my $conn = Test2::Harness2::Role::Service::Connection->new(fh => $c, outbound => 1, my_identity => "sub-$key");
+        my %args; $args{run_id} = $run if defined $run;
+        my $id = $conn->send_request('subscribe', %args);
+        $sub{$key} = {conn => $conn, id => $id, mon => new_monitor};
         $svc->service_io for 1 .. 3;
     }
 
-    # Pump the service so it accepts + replies to the subscribe requests.
-    $svc->service_io for 1 .. 5;
-
-    # Read each subscriber's snapshot reply (the first frame) into its mirror.
-    my $pump = sub ($s) {
-        my $sel = IO::Select->new($s->{conn});
-        for (1 .. 20) {
-            last unless $sel->can_read(0.05);
-            my $buf = '';
-            my $n   = sysread($s->{conn}, $buf, 65536);
-            last unless $n;
-            $s->{fb}->push_bytes($buf);
+    # Drain a subscriber: route the snapshot response into the mirror, fold any
+    # forwarded transitions.
+    my $drain_sub = sub ($s) {
+        for my $ev ($s->{conn}->drain) {
+            if ($ev->{kind} eq 'response' && $ev->{request_id} eq $s->{id}) {
+                $s->{mon}->apply_snapshot($ev->{payload}{snapshot}) if $ev->{payload}{snapshot};
+                $s->{got_reply} = 1;
+            }
+            elsif ($ev->{kind} eq 'transition') {
+                $s->{mon}->feed($ev->{payload});
+            }
         }
     };
+
     for my $key (qw/A B G/) {
-        $pump->($sub{$key});
-        my @recs = $sub{$key}{fb}->drain;
-        my $reply = decode_json(shift(@recs)->{payload});
-        ok($reply->{ok}, "$key got a subscribe reply");
+        for (1 .. 40) {
+            $svc->service_io;
+            $drain_sub->($sub{$key});
+            last if $sub{$key}{got_reply};
+            sleep 0.01;
+        }
+        ok($sub{$key}{got_reply}, "$key got a subscribe reply");
     }
 
-    # A test job reports its transitions on its own connection (one per peer).
+    # A test job reports its transitions on its own connection (the reporter lane:
+    # transition-first, no identity).
     my $report = sub ($facet, %c) {
         my $rep = connect_unix($path);
         write_frame($rep, frame_for($facet, %c));
@@ -361,15 +368,14 @@ subtest service_forward_routing => sub {
 
     # Fold each subscriber's forwarded frames into its mirror.
     for my $key (qw/A B G/) {
-        $pump->($sub{$key});
-        $sub{$key}{mon}->feed(decode_json($_->{payload})) for $sub{$key}{fb}->drain;
+        for (1 .. 5) { $svc->service_io; $drain_sub->($sub{$key}); sleep 0.005 }
     }
 
     is([sort $sub{A}{mon}->collectors], [qw/CA GS/], "run-A subscriber sees only run A + global");
     is([sort $sub{B}{mon}->collectors], [qw/CB GS/], "run-B subscriber sees only run B + global");
     is([sort $sub{G}{mon}->collectors], [qw/CA CB GS/], "global subscriber sees every run");
 
-    close($_->{conn}) for values %sub;
+    $_->{conn}->close for values %sub;
     $svc->close_service;
 };
 

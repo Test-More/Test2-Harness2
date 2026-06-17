@@ -510,7 +510,7 @@ sub stop_stages {
     }
 
     for my $stage (keys %live_stage) {
-        eval { $self->service_send("preload-$stage", {request => 'stop'}); 1 };
+        eval { $self->service_send("preload-$stage", 'stop'); 1 };
     }
 
     return;
@@ -538,7 +538,7 @@ sub dispatch_pending {
         # connection, so the peer normally exists; if the stage has since died its
         # connection dropped (EOF) and service_send reports no peer -- the same
         # "stage gone" signal the old connect-out client surfaced.
-        my $sent = $self->service_send("preload-$stage", {request => 'run_task', task => $task, run => $run_item});
+        my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item);
 
         # take_dispatch_tasks already pulled this task off the list while it stays
         # tracked as RUNNING (slot + resources consumed). If the dispatch was a
@@ -644,7 +644,7 @@ sub run_stage {
         # binds its own preload-<stage>.socket, but it is reserved for `yath spawn`
         # (ARCHITECTURE.md §4.8), not used by the runner for dispatch.
         $self->_connect_runner;
-        $self->service_send('runner', {request => 'stage_ready', stage => $stage});
+        $self->service_send('runner', 'stage_ready', stage => $stage);
     }
     else {
         $self->state->stage_ready($stage);
@@ -676,7 +676,7 @@ sub run_stage {
     }
 
     if ($stage_service) {
-        eval { $self->service_send('runner', {request => 'stage_down', stage => $stage}); 1 };
+        eval { $self->service_send('runner', 'stage_down', stage => $stage); 1 };
         $self->close_service;
     }
     else {

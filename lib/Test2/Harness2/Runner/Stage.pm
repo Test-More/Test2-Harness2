@@ -109,10 +109,11 @@ sub init ($self) {
 # Chunk 9: report one outcome to the runner over the single registered service
 # channel (the connection this stage opened to send stage_ready), instead of a
 # second connect-out to runner.socket. The runner reads it off that connection
-# and folds it into canonical state via its request handlers.
-sub _report ($self, $message) {
+# and folds it into canonical state via its request handlers. One-way (the runner
+# sends no response).
+sub _report ($self, $command, %args) {
     my $runner = $self->{+RUNNER} or return;
-    $runner->service_send('runner', $message);
+    $runner->service_send('runner', $command, %args);
     return;
 }
 
@@ -137,22 +138,22 @@ sub next_task ($self, $stage = undef) {
 sub run ($self) { return $self->{+CURRENT_RUN} }
 
 sub stop_task ($self, $job_id) {
-    $self->_report({request => 'stop_task', job_id => $job_id});
+    $self->_report('stop_task', job_id => $job_id);
     return;
 }
 
 sub retry_task ($self, $job_id) {
-    $self->_report({request => 'retry_task', job_id => $job_id});
+    $self->_report('retry_task', job_id => $job_id);
     return;
 }
 
 sub halt_run ($self, $run_id) {
-    $self->_report({request => 'halt_run', run_id => $run_id});
+    $self->_report('halt_run', run_id => $run_id);
     return;
 }
 
 sub job_pid ($self, $job_id, $pid) {
-    $self->_report({request => 'job_pid', job_id => $job_id, pid => $pid});
+    $self->_report('job_pid', job_id => $job_id, pid => $pid);
     return;
 }
 
@@ -167,7 +168,7 @@ sub done ($self, @) { return 0 }
 # Forward a reload/monitor notification to the runner so its reload state (used for
 # diagnostics) stays current; the stage itself keeps no scheduler state.
 sub reload ($self, $stage, $data) {
-    $self->_report({request => 'reload', stage => $stage, data => $data});
+    $self->_report('reload', stage => $stage, data => $data);
     return;
 }
 

@@ -68,12 +68,12 @@ use Test2::Harness2::Runner::Monitor;
     sub monitor  { $_[0]->{monitor} }
     sub watchdog { $_[0]->{watchdog} //= Test2::Harness2::Runner::Watchdog->new(runner => $_[0]) }
 
-    # Mirror Role::Service::service_send: write to the named peer, false if there
-    # is no live connection to it. Here we record the send and return the
-    # per-identity result the test set up.
+    # Mirror Role::Service::service_send($identity, $command, %args): send to the
+    # named peer, false if there is no live connection to it. Record the send and
+    # return the per-identity result the test set up.
     sub service_send {
-        my ($self, $identity, $message) = @_;
-        push @{$self->{sent}} => [$identity, $message];
+        my ($self, $identity, $command, %args) = @_;
+        push @{$self->{sent}} => [$identity, $command, \%args];
         return $self->{send_ok}{$identity} ? 1 : 0;
     }
 
@@ -130,8 +130,8 @@ subtest successful_dispatch_announces_dispatched => sub {
     is($state->{stopped}, [], "a healthy dispatch is NOT aborted");
     is(
         $runner->{sent},
-        [['preload-BETA', {request => 'run_task', task => $task, run => {run_id => 'R1'}}]],
-        "the run_task frame was sent down the stage's peer channel",
+        [['preload-BETA', 'run_task', {task => $task, run => {run_id => 'R1'}}]],
+        "the run_task request was sent down the stage's peer channel",
     );
 
     my @states = map { $_->{state} } @{$runner->{announced}};

@@ -9,6 +9,7 @@ use Test2::Collector::Util::Socket qw/connect_unix write_frame/;
 use Test2::Collector::Util::Zstd qw/compress_blob/;
 use Test2::Collector::Util::Zstd::FrameBuffer();
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+use Test2::Harness2::Role::Service::Connection();
 
 # A minimal consumer of the role: provides the required workdir/name and a
 # custom request handler, plus a one-way handler that returns undef.
@@ -46,56 +47,52 @@ $svc->start_service;
 ok(-S $svc->service_socket_path, "socket bound after start_service");
 ok(!$svc->service_stopped, "not stopped yet");
 
-# Drive a request/response round trip over the wire.
-my $client = connect_unix($svc->service_socket_path);
-$client->blocking(0);
+# Drive a request/response round trip over the wire, through a real Connection
+# (identity exchange + request_id-correlated response).
+my $cfh = connect_unix($svc->service_socket_path);
+$cfh->blocking(0);
+my $client = Test2::Harness2::Role::Service::Connection->new(fh => $cfh, outbound => 1, my_identity => 'client');
 
-my $send = sub ($req) {
-    write_frame($client, compress_blob(encode_json($req)));
-};
-
-my $recv = sub {
-    my $fb = Test2::Collector::Util::Zstd::FrameBuffer->new;
+# Send a request and pump the service until its correlated response arrives.
+my $request = sub ($command, %args) {
+    my $id = $client->send_request($command, %args);
     for (1 .. 200) {
         $svc->service_io;
-        my $buf = '';
-        my $n   = sysread($client, $buf, 65536);
-        $fb->push_bytes($buf) if $n;
-        if (my ($rec) = $fb->drain) {
-            return decode_json($rec->{payload});
+        for my $ev ($client->drain) {
+            return $ev->{payload} if $ev->{kind} eq 'response' && $ev->{request_id} eq $id;
         }
         sleep 0.01;
     }
     return undef;
 };
 
-$send->({request => 'echo', msg => 'hello'});
-my $resp = $recv->();
-is($resp, {ok => 1, msg => 'hello'}, "echo handler round-trips a response");
+my $resp = $request->('echo', msg => 'hello');
+is($resp->{ok},  1,       "echo handler returns ok");
+is($resp->{msg}, 'hello', "echo handler round-trips the payload");
 is($svc->seen, ['hello'], "handler saw the payload");
 
-# Unknown request type is reported, loop is not stopped.
-$send->({request => 'nope'});
-my $err = $recv->();
-is($resp = $err, {ok => 0, error => "unknown request 'nope'"}, "unknown request reported");
+# Unknown command is reported, loop is not stopped.
+my $err = $request->('nope');
+is($err->{ok}, 0, "unknown command not ok");
+like($err->{error}, qr/invalid command: nope/, "unknown command reported");
 
 # One-way request: handler returns undef, so no reply is written.
-$send->({request => 'oneway'});
+my $oneway_id = $client->send_request('oneway');
 my $got_reply = 0;
 for (1 .. 30) {
     $svc->service_io;
-    my $buf = '';
-    my $n = sysread($client, $buf, 65536);
-    $got_reply++ if $n;
+    for my $ev ($client->drain) {
+        $got_reply++ if $ev->{kind} eq 'response' && $ev->{request_id} eq $oneway_id;
+    }
     sleep 0.01;
 }
 ok(!$got_reply, "one-way request produced no reply");
 ok((grep { $_ eq 'oneway' } @{$svc->seen}), "one-way handler still ran");
 
 # Built-in stop request stops the service.
-$send->({request => 'stop'});
-my $stop_resp = $recv->();
-is($stop_resp, {ok => 1, stopping => 1}, "stop handler acknowledges");
+my $stop_resp = $request->('stop');
+is($stop_resp->{ok},       1, "stop handler acknowledges");
+is($stop_resp->{stopping}, 1, "stop handler reports stopping");
 ok($svc->service_stopped, "service marked stopped");
 
 $svc->close_service;

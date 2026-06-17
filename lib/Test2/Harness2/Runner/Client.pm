@@ -5,18 +5,16 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
-use IO::Select();
-use POSIX qw/:errno_h/;
-use Time::HiRes qw/sleep/;
+use Time::HiRes qw/sleep time/;
 
-use Test2::Collector::Util::Socket qw/connect_unix write_frame/;
-use Test2::Collector::Util::Zstd qw/compress_blob/;
-use Test2::Collector::Util::Zstd::FrameBuffer();
-use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+use Test2::Collector::Util::Socket qw/connect_unix/;
+
+use Test2::Harness2::Role::Service::Connection();
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
     <liveness_check
+    +identity
     +socket_path
     +connection
     +runner_gone
@@ -33,42 +31,26 @@ to a runner over its unix socket.
 
 =head1 DESCRIPTION
 
-A transient C<yath test> command is a thin client of the runner service: instead
-of writing the run, its tasks, and the queue terminator into C<dispatch.jsonl>
-for a runner to poll, it connects to the runner's C<runner.socket> and sends them
-as request frames. The runner's request handlers fold them into its canonical
-in-process state object.
+A command (C<yath test> / C<run> / C<spawn> / C<status> / ...) is a thin client of
+the runner service: it connects to the runner's C<runner.socket> and exchanges the
+mandatory identity handshake (ARCHITECTURE.md §5.2), then submits run/task
+requests and issues queries. The transport is a
+L<Test2::Harness2::Role::Service::Connection>, which owns the framing, the identity
+exchange, and request/response correlation, so this class only maps the command's
+API onto C<send_request>.
 
-This class exposes the same submission API the runner's
-L<Test2::Harness2::Runner::State> does (C<queue_run>, C<queue_task>,
-C<stop_run>, C<end_queue>) so it can substitute for that state object as the
-command's submission target. Each call frames a request as
-C<< {request =E<gt> $type, ...} >>, compresses it into one self-contained zstd
-frame, and writes it with the shared L<Test2::Collector::Util::Socket> framing.
-Most requests are one-way (the runner sends no reply); a single connection is
-reused so the runner applies them in send order. A few requests are two-way
-(acknowledged) and read back a reply frame -- the status/abort/reload queries and
-C<queue_spawn>, which is acknowledged so a spawn submission fails promptly when no
-live stage can run it instead of blocking on the worker tempfile.
+Most submissions are B<one-way>: the runner's handler returns no response and the
+client moves on. A few are B<two-way> (acknowledged): they send a request and wait
+for the response whose C<request_id> matches -- the status/abort/reload queries and
+C<queue_spawn> (acknowledged so a spawn submission fails promptly when no live stage
+can run it). Because the protocol makes no ordering assumption, the wait drains the
+connection and matches the reply by id.
 
-The runner is a separate process spawned just before submission, so it may not
-be listening yet when the client first connects; the client retries with a short
-backoff. An optional C<liveness_check> coderef lets the caller tell the client
-the runner has died before it ever accepted (e.g. a broken preload), so the
-client stops trying and submission becomes a no-op rather than hanging or dying.
-
-=head1 SYNOPSIS
-
-    my $client = Test2::Harness2::Runner::Client->new(
-        workdir        => $dir,
-        liveness_check => sub { $ipc->wait; $ipc->{PROCS}{$runner_pid} ? 1 : 0 },
-    );
-    $client->queue_run($run_item);
-    $client->queue_task($task) for @tasks;
-    $client->stop_run($run_id);
-    $client->end_queue;
-
-    warn "runner died before accepting" if $client->runner_gone;
+The runner is a separate process spawned just before submission, so it may not be
+listening yet; the connect retries with a short backoff. An optional
+C<liveness_check> coderef lets the caller tell the client the runner has died
+before it ever accepted, so the client stops trying and submission becomes a no-op
+rather than hanging.
 
 =head1 PUBLIC METHODS
 
@@ -77,6 +59,10 @@ client stops trying and submission becomes a no-op rather than hanging or dying.
 =item $path = $client->socket_path
 
 The runner socket path (C<< $workdir/runner.socket >>).
+
+=item $id = $client->identity
+
+The identity this client announces (C<command-E<lt>pidE<gt>> by default).
 
 =item $bool = $client->runner_gone
 
@@ -96,14 +82,10 @@ Submit one task.
 
 =item $ack = $client->queue_spawn($spawn)
 
-Submit one spawn request (C<yath spawn>). Unlike the other submission calls this
-is two-way (acknowledged): it sends the request and reads back the runner's reply
-so the command learns synchronously whether the spawn was accepted and routed to a
-live stage. Returns the decoded ack hash (C<< {ok =E<gt> 1, queued =E<gt> 1, stage
-=E<gt> $stage} >> on success, or C<< {ok =E<gt> 0, error =E<gt> $msg} >> when no
-live stage exists for it), or C<undef> if the runner could not be reached. This
-keeps a failed submission from blocking on the worker tempfile until that wait's
-own long timeout.
+Submit one spawn request (C<yath spawn>). Two-way (acknowledged): returns the
+decoded ack hash (C<< {ok =E<gt> 1, queued =E<gt> 1, stage =E<gt> $stage} >> on
+success, or C<< {ok =E<gt> 0, error =E<gt> $msg} >> when no live stage exists), or
+C<undef> if the runner could not be reached.
 
 =item $client->stop_run($run_id)
 
@@ -115,9 +97,7 @@ Signal that no more runs/work will be submitted.
 
 =item $client->stop
 
-Ask the runner service to shut down gracefully (the Role::Service built-in
-C<stop> request). Used by C<yath stop> to wind a persistent runner down over the
-socket.
+Ask the runner service to shut down gracefully (used by C<yath stop>).
 
 =item $client->halt_run($run_id)
 
@@ -126,17 +106,15 @@ Ask the runner to halt the run (used on a caught signal).
 =item $client->stop_task($job_id)
 
 Report (from a preload stage) that a dispatched job finished and its slot/resources
-should be released in the runner's scheduler state.
+should be released.
 
 =item $client->retry_task($job_id)
 
-Report (from a preload stage) that a dispatched job finished but should be retried;
-the runner re-queues it for dispatch.
+Report (from a preload stage) that a dispatched job finished but should be retried.
 
 =item $client->stage_ready($stage)
 
-Report (from a preload stage) that the stage has bound its socket and is ready to
-be scheduled.
+Report (from a preload stage) that the stage is ready to be scheduled.
 
 =item $client->stage_down($stage)
 
@@ -144,43 +122,31 @@ Report (from a preload stage) that the stage is shutting down.
 
 =item $client->reload($stage, $data)
 
-Forward (from a monitored preload stage) a reload/monitor notification so the
-runner's reload state stays current.
+Forward (from a monitored preload stage) a reload/monitor notification.
 
 =item $hash = $client->reload_state
 
-Query the runner's canonical reload state (a per-stage hash of source files with
-reload errors/warnings). Two-way: sends a C<reload_state> request and reads back
-the reply. Returns the reload-state hash (possibly empty), or C<undef> if the
-runner could not be reached. Used by C<yath run> to check for unresolved reload
-errors before starting a run.
+Query the runner's canonical reload state. Two-way: returns the reload-state hash
+(possibly empty), or C<undef> if the runner could not be reached.
 
 =item $client->job_pid($job_id, $pid)
 
-Report (from a preload stage) the pid of a job the stage forked, so the runner's
-job-pid map (used by the status/ps/abort report) is complete without a jobs.jsonl
-file. One-way.
+Report (from a preload stage) the pid of a job the stage forked. One-way.
 
 =item $hash = $client->status
 
-Query the runner's live scheduling status (pending/running tasks with pids, stage
-readiness, reload state) over the socket. Two-way: returns the status hash, or
-C<undef> if the runner could not be reached. Used by C<yath status>/C<yath ps>.
+Query the runner's live scheduling status. Two-way: returns the status hash, or
+C<undef> if the runner could not be reached.
 
 =item $running = $client->truncate
 
 Ask the runner to truncate its queue (abort pending work) and return the list of
-still-running jobs (with pids) for the caller to signal. Two-way: returns the
-running-job arrayref, or C<undef> if the runner could not be reached. Used by
-C<yath abort>.
+still-running jobs (with pids). Two-way.
 
 =item $resources = $client->resources
 
-Query the runner's live resource status over the socket. Two-way: returns an
-arrayref of C<< { class =E<gt> $resource_class, lines =E<gt> $rendered_text } >>
-records (the runner renders each live resource's C<status_lines> for us, since the
-resource objects themselves do not serialize), or C<undef> if the runner could not
-be reached. Used by C<yath resources>.
+Query the runner's live resource status. Two-way: returns the rendered resource
+list, or C<undef> if the runner could not be reached.
 
 =back
 
@@ -190,87 +156,41 @@ sub socket_path ($self) {
     return $self->{+SOCKET_PATH} //= File::Spec->catfile($self->{+WORKDIR}, 'runner.socket');
 }
 
-sub queue_run ($self, $run) {
-    $self->_send({request => 'queue_run', run => $run});
-    return;
+sub identity ($self) {
+    return $self->{+IDENTITY} //= "command-$$";
 }
 
-sub queue_task ($self, $task) {
-    $self->_send({request => 'queue_task', task => $task});
-    return;
-}
-
-sub queue_spawn ($self, $spawn) {
-    return $self->_request({request => 'queue_spawn', spawn => $spawn});
-}
-
-sub stop_run ($self, $run_id) {
-    $self->_send({request => 'stop_run', run_id => $run_id});
-    return;
-}
-
-sub end_queue ($self) {
-    $self->_send({request => 'end_queue'});
-    return;
-}
-
-sub stop ($self) {
-    $self->_send({request => 'stop'});
-    return;
-}
-
-sub halt_run ($self, $run_id) {
-    $self->_send({request => 'halt_run', run_id => $run_id});
-    return;
-}
-
-sub stop_task ($self, $job_id) {
-    $self->_send({request => 'stop_task', job_id => $job_id});
-    return;
-}
-
-sub retry_task ($self, $job_id) {
-    $self->_send({request => 'retry_task', job_id => $job_id});
-    return;
-}
-
-sub reload ($self, $stage, $data) {
-    $self->_send({request => 'reload', stage => $stage, data => $data});
-    return;
-}
-
-sub stage_ready ($self, $stage) {
-    $self->_send({request => 'stage_ready', stage => $stage});
-    return;
-}
-
-sub stage_down ($self, $stage) {
-    $self->_send({request => 'stage_down', stage => $stage});
-    return;
-}
+sub queue_run    ($self, $run)     { $self->_send('queue_run', run => $run);     return }
+sub queue_task   ($self, $task)    { $self->_send('queue_task', task => $task);  return }
+sub queue_spawn  ($self, $spawn)   { return $self->_request('queue_spawn', spawn => $spawn) }
+sub stop_run     ($self, $run_id)  { $self->_send('stop_run', run_id => $run_id); return }
+sub end_queue    ($self)           { $self->_send('end_queue');                  return }
+sub stop         ($self)           { $self->_send('stop');                       return }
+sub halt_run     ($self, $run_id)  { $self->_send('halt_run', run_id => $run_id); return }
+sub stop_task    ($self, $job_id)  { $self->_send('stop_task', job_id => $job_id); return }
+sub retry_task   ($self, $job_id)  { $self->_send('retry_task', job_id => $job_id); return }
+sub reload       ($self, $s, $d)   { $self->_send('reload', stage => $s, data => $d); return }
+sub stage_ready  ($self, $stage)   { $self->_send('stage_ready', stage => $stage); return }
+sub stage_down   ($self, $stage)   { $self->_send('stage_down', stage => $stage); return }
+sub job_pid      ($self, $j, $p)   { $self->_send('job_pid', job_id => $j, pid => $p); return }
 
 sub reload_state ($self) {
-    my $reply = $self->_request({request => 'reload_state'}) or return undef;
+    my $reply = $self->_request('reload_state') or return undef;
     return $reply->{reload_state} // {};
 }
 
-sub job_pid ($self, $job_id, $pid) {
-    $self->_send({request => 'job_pid', job_id => $job_id, pid => $pid});
-    return;
-}
-
 sub status ($self) {
-    my $reply = $self->_request({request => 'status'}) or return undef;
+    my $reply = $self->_request('status') or return undef;
     return $reply->{status};
 }
 
 sub truncate ($self) {
-    my $reply = $self->_request({request => 'truncate'}) or return undef;
+    my $reply = $self->_request('truncate') or return undef;
     return $reply->{running} // [];
 }
 
 sub resources ($self) {
-    my $reply = $self->_request({request => 'resources'}) or return undef;
+    my $reply = $self->_request('resources') or return undef;
     return $reply->{resources} // [];
 }
 
@@ -278,45 +198,34 @@ sub resources ($self) {
 
 =over 4
 
-=item $fh = $client->connection
+=item $conn = $client->connection
 
-The (lazily opened) connection to the runner socket, or C<undef> if the runner
-was observed to have exited before it accepted. The runner is spawned separately
-and may not be listening yet, so this retries with a short backoff until the
-socket accepts, the liveness check reports the runner gone, or the bounded
-timeout is reached.
+The (lazily opened) L<Test2::Harness2::Role::Service::Connection> to the runner,
+or C<undef> if the runner was observed to have exited before it accepted. Retries
+the connect with a short backoff, then exchanges identity before returning.
 
 =item $bool = $client->_runner_alive
 
 Run the C<liveness_check> coderef (true when absent).
 
-=item $client->_send($request)
+=item $client->_send($command, %args)
 
-Frame, compress, and write one request over the connection (a no-op once the
-runner is gone).
+Send one one-way request (a no-op once the runner is gone).
 
-=item $reply = $client->_request($request)
+=item $reply = $client->_request($command, %args)
 
-Send one request and read back exactly one reply frame (the decoded payload), for
-the two-way requests. Returns C<undef> if the runner could not be reached. Croaks
-if the runner closes without a reply or the reply cannot be decoded.
+Send one request and wait for the response whose C<request_id> matches, draining
+the connection meanwhile. Returns the response payload, or C<undef> if the runner
+could not be reached. Croaks on a closed connection or timeout.
 
 =back
 
 =cut
 
-# How long to wait for the runner to bind and start accepting on its socket
-# before giving up when we cannot otherwise tell the runner is gone. The runner
-# is a separate process spawned just before submission, so a brief window where
-# the socket does not yet exist (or is bound but not yet accepting, e.g. while the
-# runner is still preloading) is expected; back off in sub-second steps rather
-# than racing.
+# How long to wait for the runner to bind/accept (and to reply) before giving up
+# when we cannot otherwise tell the runner is gone.
 sub CONNECT_TIMEOUT { 30 }
 
-# True once the runner is known to have exited before we could connect (e.g. a
-# broken preload that killed the runner during startup). In that case there is no
-# state to submit to; the caller should stop submitting and let the gatherer
-# surface the runner's own failure.
 sub runner_gone ($self) { return $self->{+RUNNER_GONE} ? 1 : 0 }
 
 sub _runner_alive ($self) {
@@ -325,73 +234,69 @@ sub _runner_alive ($self) {
 }
 
 sub connection ($self) {
-    return $self->{+CONNECTION} if $self->{+CONNECTION};
+    my $conn = $self->{+CONNECTION};
+    return $conn if $conn && !$conn->closed;
 
     my $path  = $self->socket_path;
-    my $start = Time::HiRes::time();
+    my $start = time;
 
+    my $fh;
     while (1) {
         if (-S $path) {
-            my $conn;
-            my $ok = eval { $conn = connect_unix($path); 1 };
-            return $self->{+CONNECTION} = $conn if $ok && $conn;
+            last if eval { $fh = connect_unix($path); 1 } && $fh;
         }
 
-        # If the runner died before it ever started accepting connections there
-        # is nothing to connect to; stop trying so submission becomes a no-op and
-        # the gatherer can report the runner's failure instead of us hanging.
+        # If the runner died before it ever started accepting there is nothing to
+        # connect to; stop trying so submission becomes a no-op.
         unless ($self->_runner_alive) {
             $self->{+RUNNER_GONE} = 1;
             return undef;
         }
 
         croak "Timed out waiting for runner socket '$path' to accept connections"
-            if (Time::HiRes::time() - $start) > $self->CONNECT_TIMEOUT;
+            if (time - $start) > $self->CONNECT_TIMEOUT;
 
         sleep 0.05;
     }
+
+    $fh->blocking(0);
+    $conn = Test2::Harness2::Role::Service::Connection->new(
+        fh          => $fh,
+        outbound    => 1,
+        my_identity => $self->identity,
+    );
+
+    # The Connection has already sent our identity (the runner needs it before any
+    # request). We do NOT block waiting for the runner's identity in return: the
+    # client matches responses by request_id, never by peer identity, so it needs
+    # nothing back to proceed. (Blocking here would also deadlock a single-threaded
+    # caller that pumps the runner only after this returns.) Two-way _request drains
+    # the reply -- and the runner's identity -- when it waits for its response.
+    return $self->{+CONNECTION} = $conn;
 }
 
-sub _send ($self, $request) {
+sub _send ($self, $command, %args) {
     my $conn = $self->connection or return;
-    write_frame($conn, compress_blob(encode_json($request)));
+    $conn->send_request($command, %args);
     return;
 }
 
-sub _request ($self, $request) {
+sub _request ($self, $command, %args) {
     my $conn = $self->connection or return undef;
-    write_frame($conn, compress_blob(encode_json($request)));
+    my $id   = $conn->send_request($command, %args);
 
-    my $fb    = Test2::Collector::Util::Zstd::FrameBuffer->new;
-    my $sel   = IO::Select->new($conn);
-    my $start = Time::HiRes::time();
-
+    my $start = time;
     while (1) {
-        if ($sel->can_read(0.05)) {
-            my $buf = '';
-            my $n   = sysread($conn, $buf, 65536);
-            croak "runner closed the connection before sending a reply"
-                if defined $n && $n == 0;
-
-            # A fatal sysread error (anything other than the retryable
-            # EINTR/EAGAIN/EWOULDBLOCK -- e.g. ECONNRESET) is permanent; croak now
-            # instead of looping on can_read until CONNECT_TIMEOUT expires.
-            croak "fatal error reading from runner socket: $!"
-                if !defined($n) && $! != EINTR && $! != EAGAIN && $! != EWOULDBLOCK;
-
-            $fb->push_bytes($buf) if $n;
+        for my $event ($conn->drain) {
+            next unless $event->{kind} eq 'response';
+            return $event->{payload} if $event->{request_id} eq $id;
         }
 
-        if (my @recs = $fb->drain) {
-            my $rec = shift @recs;
-            my $payload;
-            croak "could not decode the runner's reply frame"
-                unless eval { $payload = decode_json($rec->{payload}); 1 };
-            return $payload;
-        }
-
+        croak "runner closed the connection before sending a reply" if $conn->closed;
         croak "Timed out waiting for the runner's reply"
-            if (Time::HiRes::time() - $start) > $self->CONNECT_TIMEOUT;
+            if (time - $start) > $self->CONNECT_TIMEOUT;
+
+        sleep 0.01;
     }
 }
 

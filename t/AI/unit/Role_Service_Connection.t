@@ -42,8 +42,9 @@ subtest identity_exchange => sub {
 
     ok(!$a->ready, "alpha not ready before exchange");
 
-    $a->drain for 1 .. 3;
-    $b->drain for 1 .. 3;
+    # Interleave: alpha (dialer) already sent identity; beta (accepter) replies
+    # only after it reads alpha's, so beta must drain before alpha can finish.
+    for (1 .. 3) { $b->drain; $a->drain }
 
     ok($a->ready, "alpha ready after receiving beta's identity");
     ok($b->ready, "beta ready after receiving alpha's identity");
@@ -108,6 +109,30 @@ subtest non_identity_first_is_bad => sub {
 
     $a->drain;
     ok($a->closed, "a non-identity first frame drops the connection");
+};
+
+subtest reporter_lane => sub {
+    my ($fa, $fb) = pair();
+    my $a = conn($fa, 'alpha', 0);    # accepter: does not send identity proactively
+
+    # The peer is a one-way collector reporter: it streams a transition first and
+    # never sends an identity.
+    write_frame($fb, compress_blob(encode_json({facet_data => {harness_collector => {uuid => 'U1'}}})), 'raw');
+
+    my @ev = $a->drain;
+    is(scalar(@ev), 1, "got one event");
+    is($ev[0]{kind}, 'transition', "a transition-first connection is a reporter lane");
+    ok($a->ready,        "reporter connection is established");
+    ok($a->reporter,     "flagged as a reporter");
+    ok(!defined $a->identity, "reporter carries no peer identity");
+    ok(!$a->closed,      "reporter not dropped for lacking identity");
+
+    # A reporter that sends a request is misbehaving -> bad.
+    write_frame($fb, compress_blob(encode_json({request => {request_id => 'x', command => 'echo'}})), 'raw');
+    write_frame($fb, compress_blob(encode_json({request => {request_id => 'y', command => 'echo'}})), 'raw');
+    write_frame($fb, compress_blob(encode_json({request => {request_id => 'z', command => 'echo'}})), 'raw');
+    $a->drain;
+    ok($a->closed, "a reporter sending non-transitions is closed as bad");
 };
 
 subtest three_bad_frames_after_ready => sub {

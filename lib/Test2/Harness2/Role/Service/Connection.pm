@@ -4,6 +4,7 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Time::HiRes qw/time/;
+use POSIX qw/:errno_h/;
 
 use Test2::Collector::Util::Socket qw/write_frame/;
 use Test2::Collector::Util::Zstd qw/compress_blob/;
@@ -19,6 +20,7 @@ use Test2::Harness2::Util::HashBase qw{
     +fb
     +identity
     +ready
+    +reporter
     +sent_identity
     +deadline
     +bad
@@ -64,13 +66,31 @@ response.
 
 =head2 Lifecycle
 
-On open (whether this side dialed or accepted) each end B<sends its identity>
-frame and B<expects to read one>. Until the peer's identity arrives the connection
-is B<pending>: C<drain> only accepts an C<identity> frame. If anything else
-arrives first, or no identity arrives before the timeout, the connection is bad
-and is closed. After identity, if a connection produces B<3 corrupt / invalid
-frames in a row> with no valid frame between them it is closed as bad (any valid
-frame resets the count).
+A connection that B<dials> (C<outbound>) a peer sends its identity immediately; a
+connection that B<accepts> sends its identity only in reply, once it has seen the
+peer's identity (so it never sends identity to a one-way reporter that does not
+speak the protocol). Each protocol peer thus sends its identity and expects one.
+
+Until it is established a connection is B<pending>, and the first frame decides its
+kind:
+
+=over 4
+
+=item * an C<identity> frame → a B<peer> (requests / responses / transitions),
+
+=item * a C<transition> / C<facet_data> frame → a B<reporter> (a one-way collector
+stream; no identity, transitions only),
+
+=item * anything else (a request, a response, or a corrupt frame) → B<bad>, closed
+at once.
+
+=back
+
+If no first frame arrives before the timeout the pending connection is dropped.
+Once established, B<3 corrupt / invalid frames in a row> (with no valid frame
+between them) close the connection; any valid frame resets the count. A peer that
+sends a second identity, or a reporter that sends anything but a transition,
+counts as invalid.
 
 =head1 ATTRIBUTES
 
@@ -160,12 +180,17 @@ sub init ($self) {
     $self->{+READY}   = 0;
     $self->{+CLOSED}  = 0;
     $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 5);
-    $self->send_identity;
+
+    # A dialer announces itself immediately; an accepter waits and replies only to
+    # a peer's identity, so it never sends identity to a one-way reporter stream.
+    $self->send_identity if $self->{+OUTBOUND};
+
     return;
 }
 
 sub identity { $_[0]->{+IDENTITY} }
 sub ready    { $_[0]->{+READY}  ? 1 : 0 }
+sub reporter { $_[0]->{+REPORTER} ? 1 : 0 }
 sub closed   { $_[0]->{+CLOSED} ? 1 : 0 }
 
 sub expired ($self) {
@@ -207,8 +232,14 @@ sub drain ($self) {
     my $buf = '';
     my $n   = sysread($fh, $buf, 65536);
 
-    # undef => would-block (already gated by the caller's select); leave it.
-    return () unless defined $n;
+    unless (defined $n) {
+        # A retryable would-block: nothing to read right now.
+        return () if $! == EAGAIN || $! == EWOULDBLOCK || $! == EINTR;
+        # A fatal read error (e.g. ECONNRESET): the connection is dead, drop it so
+        # the owner stops waiting on it.
+        $self->close;
+        return ();
+    }
 
     if ($n == 0) {    # EOF
         $self->close;
@@ -268,33 +299,53 @@ sub _write ($self, $message) {
 }
 
 sub _classify ($self, $payload, $rec) {
-    # Identity: the only frame allowed before the peer is identified.
-    if (ref($payload->{identity}) eq 'HASH') {
-        if ($self->{+READY}) {
-            # A second identity on an established connection is a protocol error.
-            $self->_bad_frame;
-            return undef;
-        }
-        $self->{+READY}    = 1;
-        $self->{+BAD}      = 0;
-        $self->{+IDENTITY} = $payload->{identity}{name};
-        return {kind => 'identity', name => $self->{+IDENTITY}};
-    }
+    my $is_identity   = ref($payload->{identity}) eq 'HASH';
+    my $is_request    = ref($payload->{request})  eq 'HASH';
+    my $is_response   = ref($payload->{response}) eq 'HASH';
+    my $is_transition = ref($payload->{facet_data}) eq 'HASH' || exists $payload->{transition};
 
-    # Nothing else may precede identity: a non-identity first frame is a bad
-    # connection.
+    # --- pending: the first frame decides the connection's kind ---------------
     unless ($self->{+READY}) {
+        if ($is_identity) {
+            $self->{+READY}    = 1;
+            $self->{+BAD}      = 0;
+            $self->{+IDENTITY} = $payload->{identity}{name};
+            $self->send_identity;    # accepter replies; dialer already sent (no-op)
+            return {kind => 'identity', name => $self->{+IDENTITY}};
+        }
+
+        # A transition as the first frame marks a one-way collector reporter: it
+        # never sends identity and only streams transitions.
+        if ($is_transition) {
+            $self->{+READY}    = 1;
+            $self->{+REPORTER} = 1;
+            $self->{+BAD}      = 0;
+            return {kind => 'transition', payload => $payload, frame => $rec->{frame}};
+        }
+
+        # A request / response / unknown frame before establishment is bad.
         $self->close;
         return undef;
     }
 
-    if (ref($payload->{request}) eq 'HASH') {
+    # --- reporter: transitions only -------------------------------------------
+    if ($self->{+REPORTER}) {
+        if ($is_transition) {
+            $self->{+BAD} = 0;
+            return {kind => 'transition', payload => $payload, frame => $rec->{frame}};
+        }
+        $self->_bad_frame;
+        return undef;
+    }
+
+    # --- established peer ------------------------------------------------------
+    if ($is_request) {
         my $req = $payload->{request};
         $self->{+BAD} = 0;
         return {kind => 'request', request_id => $req->{request_id}, command => $req->{command}, payload => $req};
     }
 
-    if (ref($payload->{response}) eq 'HASH') {
+    if ($is_response) {
         my $res = $payload->{response};
         $self->{+BAD} = 0;
         my $id = $res->{request_id};
@@ -304,13 +355,12 @@ sub _classify ($self, $payload, $rec) {
         return {kind => 'response', request_id => $id, payload => $res};
     }
 
-    # Collector transition / event frames pass through unchanged.
-    if (ref($payload->{facet_data}) eq 'HASH' || exists $payload->{transition}) {
+    if ($is_transition) {
         $self->{+BAD} = 0;
         return {kind => 'transition', payload => $payload, frame => $rec->{frame}};
     }
 
-    # A well-formed JSON object that is none of the known envelopes is invalid.
+    # A second identity, or any unknown envelope, on an established peer is invalid.
     $self->_bad_frame;
     return undef;
 }

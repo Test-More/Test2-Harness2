@@ -113,8 +113,10 @@ ok($sub->subscribed, "subscribed to the runner");
 
 my $mirror = $sub->monitor;
 
-# Snapshot reconstructed the pre-subscribe state.
-is([$mirror->tests], ['PRE'], "snapshot carried the pre-subscribe collector");
+# Snapshot reconstructed the pre-subscribe state. (A forwarded mutation may already
+# have arrived batched with the snapshot reply, so assert PRE is present rather than
+# that it is the ONLY collector.)
+ok(scalar(grep { $_ eq 'PRE' } $mirror->tests), "snapshot carried the pre-subscribe collector");
 is($mirror->collector('PRE')->{events_file}, "$dir/pre.jsonl.zst", "snapshot carried collector detail");
 is($mirror->job('JOB-A')->{state}, 'dispatched', "snapshot carried the runner-originated job");
 is($mirror->job('JOB-A')->{stage}, 'default', "snapshot carried job detail");
