@@ -467,9 +467,10 @@ test-file contents. (Currently `Test2::Harness2::TestFile` mixes both roles.)
     harness `collect()` / `spawn_collector()` lacking `watch_parent_pid` (honoring
     a `WATCH-PARENT-EXEMPT` marker); wired into the mandatory pre-review checks in
     `AGENTS.md`.
-  - **Follow-up (optional):** a behavioral integration test (kill -9 the runner
-    mid-run, assert the test + collector die) would strengthen this; the
-    `watch_parent_pid` mechanism itself is already tested in `Test2-Collector`.
+  - **Behavioral test:** `t/AI/integration/runner_death_kills_collectors.t` starts
+    a persistent runner, backgrounds a `yath run` of a sleeping test, `SIGKILL`s the
+    runner (which does not signal its children), and asserts the test process
+    self-terminates — proving the contract end-to-end (stable 5/5).
 - **Minor:** revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if
   active mid-run stalled detection is wanted; `resources.pm`'s auto-generated
   `OPTIONS` POD lists its old narrower option set (it now inherits the full

@@ -1,0 +1,20 @@
+use Test2::V0;
+
+# Behavioral fixture for runner_death_kills_collectors.t: record this test
+# process's pid where the parent test can find it, then sleep "forever". The
+# parent kills the runner with SIGKILL (which does NOT signal this process); the
+# job's collector watches the runner pid (ARCHITECTURE.md §4.1) and must kill this
+# process and exit when the runner disappears. If the contract holds we are killed
+# during the sleep and never reach the assertion below.
+
+my $pidfile = $ENV{KILL_PIDFILE} or die "KILL_PIDFILE not set in the test env";
+
+open(my $fh, '>', $pidfile) or die "Could not write pidfile '$pidfile': $!";
+print $fh "$$\n";
+close($fh);
+
+# Sleep well past the parent's kill+observe window. We expect to be killed first.
+sleep 600;
+
+ok(1, "should never get here -- the collector should have killed us");
+done_testing;
