@@ -610,6 +610,43 @@ fallback).
   spawned process runs under **no collector** — it is not a harness-tracked
   result, just a process the user asked to start with preloads in place.
 
+### 4.9 Plugin lifecycle (`setup`/`teardown`, aux output) `[target]`
+
+**Responsibility.** A plugin's `setup`/`teardown` are **runner-environment** hooks
+— start/stop services the tests need, prepare/clean shared state — distinct from
+the client/render-side `finalize`/`finish` hooks.
+
+**Contract.**
+
+- **`setup`/`teardown` run in the runner, not the command.** The runner invokes
+  `setup` after its `runner.socket` is bound (before the run loop) and `teardown`
+  after the run loop ends (transient end / persistent shutdown), root-process only.
+  Running them in the command — before the runner (and its socket) exist — was the
+  1.0-era mistake that forced flat `aux_logs` files; on the runner, aux output is a
+  normal collector stream and any aux process is a runner child.
+- **The runner reconstructs plugin instances from specs.** Plugins serialize to
+  bare class names (`Plugin::TO_JSON`), so the command stashes the resolved specs
+  (`Class` or `Class=arg1,arg2`) in `harness->plugin_specs`; the runner rebuilds the
+  same instances (`require` + `->new(@args)`). Loading `App::Yath2::Plugin::*` in the
+  runner is user-driven (the `-p` the user passed), which §2.8's dependency rule
+  permits. (Consequence: the runner loads plugin modules, so test children forked
+  from it inherit them in `%INC` — unlike 1.0, where the runner was a fresh `exec`.)
+- **Aux output is collector events, not flat files.** `shellcall` (synchronous) and
+  `run_collected` (non-blocking / daemon — replaces the old `fork` + `redirect_io`)
+  run the command/coderef under a collector whose reporter streams to `runner.socket`
+  and whose recorder writes an events file; the renderer tags its output with the
+  plugin-chosen name (the historical `(NAME)` shape). Each aux collector watches the
+  runner pid (§4.1), so it and its child die with the runner — there is **no detach**
+  (unlike `yath spawn`, §4.8): nothing a plugin starts survives the runner.
+- **Aux processes do not gate the runner.** A `run_collected` daemon's pid is tracked
+  in a separate list (**not** the runner's child-wait set), so it never blocks the
+  runner's `wait(all=>1)`; the runner `TERM`→`KILL`s and reaps it at `teardown`.
+
+**Divergence from 1.0.** `reference/pre_ai_2.0/` split this into `client_*` (command)
+and `instance_*` (runner) hooks purely to keep the 1.0 `Test2::Harness`/`App::Yath`
+namespaces back-compatible. The `*2` namespaces have no such constraint, so a single
+`setup`/`teardown` pair lives on the runner.
+
 ## 5. Cross-cutting concerns
 
 ### 5.1 Event compression: measured conclusions

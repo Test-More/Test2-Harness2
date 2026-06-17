@@ -92,7 +92,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only Harness2 object (§1) | ⬜ | — |
 | 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | — |
-| 17 | Plugin aux output → collectors (`run_collected`); retire the `aux_logs` flat files | ⬜ | — |
+| 17 | Plugin `setup`/`teardown` move to the runner; aux output → collectors (`run_collected`); retire the `aux_logs` flat files | ✅ | this task |
 | 18 | Collectors watch the runner pid → self-terminate if the runner dies (ARCH §4.1); + a code-review gate enforcing it | ✅ | this task |
 
 Chunks 1-8a have landed. Chunks **9-16 are the post-6 revised-target work**
@@ -125,8 +125,8 @@ revise it, the substeps are annotated below.
   `runner.socket` subscriber** rendering runner/stage output through `Renderer::Base`;
   the SIGHUP-reload message surfaces as a recorded runner event. `output.log` /
   `error.log` are gone — **the only IPC files anywhere are now `events.jsonl.zst`**
-  (the `aux_logs` plugin shell-call path is the lone remaining flat file, by
-  design). (pfile now records the runner's own pid, since the collector ignores HUP.)
+  (chunk 17 retired the last exception, the `aux_logs` plugin shell-call path).
+  (pfile now records the runner's own pid, since the collector ignores HUP.)
 - **`dispatch.jsonl`/observe machinery fully retired** (`1b5373e1a`): `resources`
   now queries the runner over the socket (`request_handler_resources`, like
   `status`/`ps`); the dead `dispatch_file`/`poll`-drain/`observe`/`.test_info`
@@ -349,10 +349,11 @@ this task):
 **Chunks 1-8a and 9 are complete.** Both `yath test` and the persistent
 `yath start`/`run`/`spawn`/`stop`/`watch` paths run on the socket model with the
 §4.5 base renderer; the gatherer, all coordination files, and the flat-log shim
-are gone — the only IPC files anywhere are `events.jsonl.zst` (plus the `aux_logs`
-plugin path); the DB/UI layer is inlined on interim `DBIx::Class`; runner↔stage
-runs on the unified §5.2 service channel (chunk 9). Remaining work is chunks
-**7, 8b, 10-17** (see the table for numbering + dependencies). The notes below
+are gone — the only IPC files anywhere are `events.jsonl.zst` (chunk 17 retired the
+last exception, the `aux_logs` plugin path); the DB/UI layer is inlined on interim
+`DBIx::Class`; runner↔stage runs on the unified §5.2 service channel (chunk 9).
+Remaining work is chunks **7, 8b, 10-16** (see the table for numbering +
+dependencies). The notes below
 flesh out each chunk; the `thoughts` / `thoughts2` decisions they capture are
 restated in `ARCHITECTURE.md` (§1, §4.4/§4.7/§4.8/§5.2/§5.3) so they stand without
 the untracked source notes.
@@ -424,29 +425,43 @@ test-file contents. (Currently `Test2::Harness2::TestFile` mixes both roles.)
   the persistent runner run multiple runs at once, and building run-scoped preload
   stages as a user feature (the `runs/<run_id>/preload-<stage>.socket` naming is
   reserved), are the next multi-run steps.
-- **Chunk 17 — plugin aux output → collectors; retire `aux_logs`.** The plugin
-  `Test2::Harness2::Plugin` helpers `redirect_io` / `shellcall` write a forked
-  process's STDOUT/STDERR to flat `$workdir/aux_logs/<name>-STD{OUT,ERR}.log`
-  files (the **last** non-events flat-file IPC path), which `Renderer::Base::_step_aux_logs`
-  tails and re-emits as INTERNAL info events. Replace this with the collector
-  pipeline: a renamed `run_collected` routes the work through
-  `Test2::Collector::spawn_collector` (`run` => the plugin sub, or `exec` => the
-  command) with a `Recorder::Socket` reporter (identity preamble + `no_reply`,
-  like every other collector) → output becomes real events on `runner.socket`,
-  folded + rendered + archived like job/stage output. Delete `aux_logs`,
-  `_step_aux_logs`, and the `File::Stream` tail.
-  - **No detach / no double-fork.** Confirmed `redirect_io` is just a dup2 and
-    `shellcall` is a single fork + waitpid — neither reparents; the POD's "daemon"
-    means an *external* self-backgrounding command, not harness intent. Per policy
-    the runner must kill all its children except `spawn`, so the aux collector must
-    stay a runner child (dies with the runner via the process-group killall) — do
-    NOT add a detached/`setsid` collector mode. `spawn_collector` is a single fork
-    today (already correct); reuse it as-is.
-  - **shellcall** (synchronous) maps to `collect()` / `spawn_collector` + `waitpid`
-    (returns the command exit). **redirect_io / non-blocking** maps to
-    `spawn_collector` returning a pid the runner tracks + reaps.
-  - **Harness work:** track these as **run-less, non-job collectors that do NOT
-    gate run completion** (a long-lived service's collector must not hang the run).
+- **Chunk 17 — plugin `setup`/`teardown` move to the runner; aux output →
+  collectors; retire `aux_logs`. ✅ DONE (this task).** `setup`/`teardown` now run
+  **in the runner** (ARCH §4.9): the runner invokes `setup` after `runner.socket`
+  binds and `teardown` after the run loop ends (`Runner::process`, root-only). They
+  ran in the *command* before — before the runner existed — which is exactly what
+  forced the flat-file workaround. The runner rebuilds plugin instances from the
+  resolved specs the command stashes in `harness->plugin_specs`
+  (`App::Yath2::_instantiate_plugins`), since `Plugin::TO_JSON` serializes to bare
+  class names.
+  - **Aux output is collector events.** `shellcall` (synchronous) now wraps the
+    command in `Test2::Collector::collect` (returns `collector_exit_code`);
+    `run_collected` (non-blocking, replaces `fork` + `redirect_io`) uses
+    `spawn_collector` (`run` => the plugin sub, or `exec` => the command) and returns
+    a pid. Both build a `Recorder::Socket` reporter (identity preamble + `no_reply`)
+    to `runner.socket` **plus** a file recorder, and pass `watch_parent_pid => <runner
+    pid>` (chunk 18 / ARCH §4.1; the audit gate stays green). Output is folded +
+    rendered + archived like job/stage output, tagged with the plugin-chosen name.
+    `redirect_io`, `aux_logs`, `_step_aux_logs`, `AUX_HANDLES`, and the `File::Stream`
+    tail are deleted.
+  - **No detach / no double-fork.** The aux collector stays a runner child and dies
+    with the runner (no `setsid`); a `run_collected` daemon's pid is tracked in a
+    **separate** list (NOT the runner's child-wait set, so it never blocks
+    `wait(all=>1)`) and `TERM`→`KILL`+reaped at `teardown`; `watch_parent_pid` is the
+    backstop.
+  - **Rendering tag.** `RunnerReader` gained a `tag` (aux collectors are named
+    `aux:<name>`; `step_runner_output` tags their output with `<name>` — the
+    historical `(NAME)` shape — instead of `INTERNAL`).
+  - **`yath stop` renders the runner's shutdown output.** Since `teardown` runs in
+    the runner at stop, `stop` primes a TAIL-mode renderer (cursor at the current end
+    of `runner-events`) **before** sending the stop request, then drains until the
+    runner-events terminal — so it shows only the new teardown output without
+    re-rendering the persistent runner's history, and the cleanup does not race the
+    final write. `RunnerReader`/`Renderer::Base` gained a `tail` mode.
+  - **Divergence from 1.0:** `reference/pre_ai_2.0/` split this into
+    `client_*`/`instance_*` purely for 1.0-namespace back-compat; the `*2` namespaces
+    keep a single `setup`/`teardown` on the runner. (Consequence: the runner loads
+    plugin modules, so test children inherit them in `%INC` — see `test.tx`.)
   - **Out of scope (note it):** a command that self-daemonizes (its own `setsid`)
     escapes the runner's process group regardless — a general "kill the whole
     tree" concern, not specific to aux.

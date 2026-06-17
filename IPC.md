@@ -269,14 +269,15 @@ do not discover or orchestrate.
 | `runner-events.jsonl.zst` | the runner's non-test collector | workdir | the command renderer (`RunnerReader`, by path); `watch` | runner stdout/stderr/exit as events |
 | `stage-<name>-events.jsonl.zst` | each preload stage's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | stage stdout/stderr/exit as events |
 | `events.jsonl.zst` (per job) | each test job's test collector | the job's run dir | the command renderer (`JobReader`, by the path a transition carries) | the test's full event stream |
-| `aux_logs/*.log` | plugin shell-call paths (outside the collector pipeline) | `workdir/aux_logs` | the renderer's aux-log tail; `watch` | plugin-emitted output |
+| `aux-<name>-<uuid>.jsonl.zst` | a plugin's `shellcall`/`run_collected` aux collector (chunk 17) | workdir | the command renderer (`RunnerReader`, by the path a transition announces); `watch` | plugin-emitted aux output as events |
 | `yath-persist.json` | `yath start` | workdir | `run`/`spawn`/`stop`/`which`/`watch`/`reload` via `App::Yath2::Pfile` | persistent-runner discovery: `{pid, dir, ...}` |
 | `PID` file | the runner | workdir | discovery / liveness; `start` records the runner pid into `yath-persist.json` | the runner's own pid |
 | `settings.json` | `yath start` (persistent) | workdir | `yath run` (merged into its settings on connect) | run configuration carried to clients |
 
 The `*.jsonl.zst` events files are the only files on the IPC/detail path; all
-decision and dispatch traffic is on the sockets in §5. (`aux_logs` is a plugin
-shell-call side channel, not part of socket IPC.)
+decision and dispatch traffic is on the sockets in §5. (Chunk 17 retired the last
+non-events flat file: plugin `shellcall`/`run_collected` aux output is now a
+collector events stream like any other, reported over `runner.socket`.)
 
 ---
 
