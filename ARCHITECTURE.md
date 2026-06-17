@@ -626,15 +626,16 @@ The wire is **unix-domain stream sockets** (`SOCK_STREAM`), not `Atomic::Pipe`,
 everywhere. There are **two connection patterns**: short-lived **collector
 reporters** (below) and long-lived **service channels** (next).
 
-**Status.** The symmetric service-channel model below is implemented in
-`Test2::Harness2::Role::Service` and carries the **runner↔stage** pair as one
-bidirectional, handshaked, reused connection (the stage dials the runner and the
-runner dispatches back over it). The future system-load service (chunk 7) is the
-remaining consumer. Request/response **correlation ids** are not implemented yet:
-the symmetric traffic in place is all one-way, and the two-way requests
-(`status` / `truncate` / `subscribe` / …) are single-initiator and read their one
-reply, so no correlation is needed until a service issues concurrent two-way
-requests on a shared channel.
+**Status.** Implemented in `Test2::Harness2::Role::Service` +
+`Test2::Harness2::Role::Service::Connection` as a full bidirectional RPC: a
+mandatory identity exchange on open, `{request=>{request_id,command,...}}` /
+`{response=>{request_id,...}}` frames **correlated by id** (no ordering
+assumption), and a bad-frame policy. It carries the **runner↔stage** channel
+(stage dials, runner dispatches back over it) **and** every command connection
+(commands are full peers, not a separate request/reply lane). Collector reporters
+remain a distinct one-way lane (below), recognized by a transition-first frame so
+they need no identity. The future system-load service (chunk 7) is the next
+consumer.
 
 **Collector reporters (one-way, connect-out).** A per-process collector's
 reporter just streams its transitions; it is not a service.
@@ -667,20 +668,26 @@ pools and not a channel per direction:
 - **Symmetric.** Once connected, **either end may send requests and responses**.
   (So, e.g., a preload stage connects to the runner to register, and the runner
   then sends job dispatch back over that same connection — §4.7.)
-- **Identity handshake on connect.** A `SOCK_STREAM` connection accepted via
-  `accept` carries no service identity, yet "reuse, never duplicate" requires each
-  side to know **which** peer is on the descriptor. So a connection **exchanges a
-  handshake frame identifying the peer** (stage name / system-load identifier /
-  client type) immediately on connect, **before** it is registered in the
-  connection set. The handshake also resolves the **simultaneous-connect race**
-  (both sides dial at once): the identities let both ends detect the duplicate and
-  converge on one channel (e.g. lowest identity wins) before either sends a
-  request.
-- **One reusable implementation.** This model is provided by a shared **Role
-  and/or base class** that every service (runner, preload stages, the future
-  system-load service §4.4) consumes — not re-implemented per service. It owns the
-  handshake, the dedup/race resolution, and request/response correlation on the
-  shared stream.
+- **Identity exchange on connect.** A `SOCK_STREAM` accepted via `accept` carries
+  no service identity, yet reuse and addressing require each side to know **which**
+  peer is on the descriptor. So a connection **exchanges an identity frame**
+  (`{identity=>{name=>...}}`) on open — the dialer announces itself, the accepter
+  replies — **before** it carries requests. A non-identity first frame, or no
+  identity within a timeout, drops the connection as bad. (A transition-first
+  connection is the exception: a one-way collector reporter, which needs no
+  identity.)
+- **No ordering; correlation by id.** Either end may have requests in flight at any
+  time, so a request carries a `request_id` (a v7 UUID, §2.2) and its response
+  echoes it; responses are matched by id, never by arrival order. An endpoint may
+  receive unrelated messages between sending a request and its response.
+- **Bad-frame policy.** After identity, three consecutive corrupt/invalid frames
+  (no valid frame between) close the connection; a fatal read error drops it at
+  once.
+- **One reusable implementation.** The per-connection transport (framing, identity,
+  correlation, bad-frame policy) is `Test2::Harness2::Role::Service::Connection`;
+  `Test2::Harness2::Role::Service` drives a set of them. Every service (runner,
+  preload stages, the future system-load service §4.4) and every command client
+  reuses it — not re-implemented per peer.
 
 The detailed reader/monitor design from the abandoned 2.0b branch is preserved
 under `reference/2.0b/` and will be adapted as §4.3 lands; it is not restated

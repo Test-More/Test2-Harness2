@@ -84,7 +84,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ (9 done; rides §5.2) | — |
 | 8a | Database + UI inline (**interim**, DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
 | 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` (the §2.4/§4.6 target) | ⬜ (deferred) | — |
-| 9 | Unified symmetric service channel — one bidirectional reused connection/pair, shared Role/base + handshake (§5.2); collapsed runner↔stage onto it | ✅ | `ba9bde35a` (infra) · `55c21a227` (runner↔stage) |
+| 9 | Unified service channel — full bidirectional RPC (identity + request_id-correlated request/response, no ordering), `Service::Connection` + `Role::Service` (§5.2); collapsed runner↔stage onto it; commands are peers | ✅ | `ba9bde35a` · `55c21a227` · `4baf34996` (Connection) · `9dc30a408` (RPC protocol) |
 | 10 | Preload stage lifecycle states (`starting`/`restarting`/`down`) + stage-owned restart (§4.7) — registration + dispatch-over-registered-channel landed in 9 | ⬜ (residual) | — |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10 | ⬜ | — |
 | 12 | Discovery via runner-socket symlink + `PID`-file signal fallback (§5.3) | ⬜ | — |
@@ -357,18 +357,21 @@ the untracked source notes.
 
 **Service-IPC redesign (chunks 9-13 — see `ARCHITECTURE.md` §4.4/§4.7/§4.8/§5.2/§5.3).**
 
-- **Chunk 9 — unified, symmetric service channel (§5.2). ✅ DONE**
-  (`ba9bde35a`, `55c21a227`; AI_DOC `AI_DOCS/2026-06-16-chunk9-unified-service-channel.md`).
-  `Test2::Harness2::Role::Service` now keeps **one** connection set covering both
-  accepted and dialed connections, with a peer-identity **handshake** on connect
-  (`service_connect_peer` / `service_peer_conn` / `service_send`), reuse-never-
-  duplicate, and deterministic simultaneous-connect dedup. **runner↔stage is
-  collapsed onto it:** the stage dials `runner.socket`, registers as
-  `preload-<stage>`, reports up that one channel and receives `run_task`/`stop`
-  dispatch back down it; the runner no longer connects out to
-  `preload-<stage>.socket` (reserved for `spawn`). `Runner::Stage::Client` deleted.
-  Correlation ids are **not** built (all symmetric traffic is one-way; two-way
-  requests stay single-initiator — see `ARCHITECTURE.md` §5.2 status).
+- **Chunk 9 — unified service channel, full RPC (§5.2). ✅ DONE**
+  (`ba9bde35a`, `55c21a227`, `4baf34996`, `9dc30a408`; AI_DOC
+  `AI_DOCS/2026-06-16-chunk9-unified-service-channel.md`).
+  `Test2::Harness2::Role::Service::Connection` owns a full bidirectional RPC: a
+  **mandatory identity exchange** on open, `{request=>{request_id,command,...}}` /
+  `{response=>{request_id,...}}` frames **correlated by id** with **no ordering
+  assumption**, and a bad-frame policy (non-identity-first / timeout / 3-strikes /
+  fatal-read drops). `Role::Service` keeps **one** connection set and drives them
+  (`service_connect_peer` / `service_peer_conn` / `service_send($id,$cmd,%args)`),
+  reuse-never-duplicate. **runner↔stage is collapsed onto it** (the stage dials
+  `runner.socket`, identifies as `preload-<stage>`, reports up and receives
+  dispatch down the one channel; `preload-<stage>.socket` reserved for `spawn`;
+  `Runner::Stage::Client` deleted). **Commands are full peers** (`Runner::Client` /
+  `Runner::Subscriber` wrap a `Connection`). Collector reporters stay a one-way
+  reporter lane (transition-first, no identity).
 - **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7).**
   Registration and dispatch-over-the-registered-channel **landed in chunk 9**
   (the stage initiates and the runner treats it unavailable until `stage_ready`).

@@ -50,7 +50,7 @@ yath test                          COMMAND: client + renderer host
                                  │  dispatches to each stage over the ONE channel the stage opened to it
                                  │
                                  ├─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
-                                 │                                     │  dials runner.socket, registers (handshake 'preload-<name>'),
+                                 │                                     │  dials runner.socket, identifies as 'preload-<name>',
                                  │                                     │  reports up + receives dispatch down that one channel
                                  │                                     └─ fork ─ [collector:job] ─► test job ─ exec test file
                                  │
@@ -129,57 +129,68 @@ The runner is the **server** on `runner.socket`. It no longer connects out to th
 `preload-<stage>.socket`s; a stage dials the runner and the runner dispatches back
 over that one channel.
 
-### Frame discrimination on `runner.socket`
+### Wire protocol (`Test2::Harness2::Role::Service::Connection`)
 
-`Role::Service` distinguishes two frame kinds on the one socket:
+Every connection is a `Connection` object that owns the framing. Five frame kinds,
+distinguished by their top-level key:
 
-- **Request frame:** `{ request => <type>, ... }` → dispatched to
-  `request_handler_<type>` (a reply frame is written back for two-way requests;
-  one-way requests get no reply).
-- **Transition frame:** carries `facet_data` with one of `harness_collector` /
-  `harness_state_transition` / `harness_final_state` / `harness_collector_finalized`
-  → folded into `Runner::Monitor` and forwarded to subscribers.
+- **`{ identity => { name => <id> } }`** — sent on open (see lifecycle below).
+- **`{ request => { request_id => <uuid>, command => <cmd>, ... } }`** → dispatched
+  to `request_handler_<cmd>`; the handler's return value is sent back as a
+  `response` echoing the `request_id`, or no reply when the handler returns `undef`
+  (one-way).
+- **`{ response => { request_id => <uuid>, ... } }`** → matched to the outstanding
+  request by `request_id`. An unmatched response (fire-and-forget reply) is
+  discarded.
+- **`{ transition => ... }` / `{ facet_data => { ... } }`** — a collector
+  transition/event; folded into `Runner::Monitor` and forwarded to subscribers.
 
-Requests carry no `facet_data`, so the two never collide.
+There is **no ordering assumption**: an endpoint may send a request and then
+receive unrelated messages before the matching response. Correlation is by
+`request_id` (a v7 UUID), never by arrival order.
+
+### Connection lifecycle
+
+- **Identity exchange.** A connection that **dials** announces its identity
+  immediately; one that **accepts** replies with its identity only after seeing the
+  peer's. A non-identity first frame, or no identity before the timeout (~5s),
+  drops the connection.
+- **Reporter lane.** A connection whose **first frame is a transition** is a
+  one-way collector reporter (it never identifies, streams transitions only) — so
+  the external `Recorder::Socket` reporters work unchanged without speaking the
+  identity protocol.
+- **Bad-frame policy.** After identity, **3 consecutive corrupt/invalid frames**
+  (no valid frame between) close the connection; any valid frame resets the count.
+  A fatal `sysread` error (ECONNRESET/EBADF) drops it at once.
 
 ### Connection model — one bidirectional set (ARCHITECTURE.md §5.2)
 
 `Role::Service` keeps **one** connection set. Every connection — whether the
 service **accepted** it or **dialed** it via `service_connect_peer` — lives in the
-same `service_select` (`IO::Select`) and `service_conns` (each fd → per-connection
-metadata: its `FrameBuffer`, peer `identity`, and an `outbound` flag), and the
-service reads framed messages off all of them. A dialed connection is therefore
-**not** write-only: once open, **either end may send requests**. `service_subs` is
-still the subset of connections flagged as subscribers (pushed `forward_frame`
-deltas).
-
-- **Peer-identity handshake.** A service connection exchanges a handshake frame
-  (`{handshake => {identity => <name>}}`) on open — the dialer sends its identity,
-  the accepter replies with its own — before it is treated as a registered peer
-  (`service_peers{<identity>} = fd`). `service_connect_peer` reuses an existing
-  peer connection instead of opening a second one; a simultaneous reverse-connect
-  collapses to a single channel (keep the connection whose initiator has the
-  smaller identity). A connection that never handshakes (a collector reporter, a
-  plain request/reply command client) is unaffected — the handshake is one more
-  discriminated frame kind, not a mandatory preamble.
+same `service_select` (`IO::Select`) and `service_conns` (each fd → its
+`Connection`), and the service reads off all of them. A dialed connection is
+**not** write-only: **either end may send requests**. The peer registry
+(`service_peers{<identity>}`) backs `service_send($identity, $command, %args)` and
+`service_connect_peer`'s reuse (an existing connection to a peer is reused, never
+duplicated). `service_subs` is the subset flagged as subscribers (pushed
+`forward_frame` deltas).
 
 So **runner ↔ stage is one bidirectional channel**, not two one-way ones. The
-stage dials `runner.socket`, registers as `preload-<stage>`, and that single
+stage dials `runner.socket`, identifies as `preload-<stage>`, and that single
 connection carries both directions:
 
 ```
-stage  --[dials runner.socket, handshake 'preload-<stage>']--> runner's set
+stage  --[dials runner.socket, identity 'preload-<stage>']--> runner's set
         reports UP   (stage_ready / stage_down / stop_task / retry_task / job_pid / reload / halt_run)
         dispatch DOWN (run_task / stop)  — runner service_send's by peer identity over the SAME fd
 ```
 
-The stage's collector `Recorder::Socket` reporter is a **separate**, anonymous,
-one-way connection to `runner.socket` (it streams transitions and never
-handshakes) — that reporter lane is unchanged.
-
-**Subscribers** are the other bidirectional case: a command connects *out* to
-`runner.socket`, sends `subscribe`, and the runner **pushes** forwarded frames
-back over that same fd (`forward_frame` over `service_subs`).
+Commands (`test`/`run`/`status`/...) are full peers too: each connects, identifies,
+and issues `request`s, matching `response`s by id. The stage's collector
+`Recorder::Socket` reporter is a **separate** reporter-lane connection (transitions
+only). **Subscribers** connect, send a `subscribe` request, get the snapshot as its
+`response`, then receive forwarded transition frames pushed over the same fd
+(`forward_frame` over `service_subs`).
 
 ---
 
