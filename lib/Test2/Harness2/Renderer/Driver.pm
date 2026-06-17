@@ -158,13 +158,30 @@ sub step ($self, $monitor) {
 sub finalize ($self, $monitor) {
     $self->step($monitor);
 
-    # Any collector that completed but whose 'completed' transition was already
-    # drained without us having rendered it (race on the last poll) is caught by
-    # a final sweep over every known test collector.
+    # Any completed-but-not-yet-rendered test collector is caught by a final sweep
+    # over every known test collector. This covers two finalize races:
+    #
+    #   1. Its 'completed' transition was drained off new_completed on the last
+    #      loop poll without us rendering it.
+    #
+    #   2. The persistent `run` path leaves this loop on run_done (the scheduler
+    #      cleared the run) WITHOUT proving every per-job harness_final_state +
+    #      events-file terminal was forwarded/read, so a late job can still be
+    #      sitting 'complete' with no folded final_state.
+    #
+    # Key the sweep on the collector having reached a terminal STATUS (complete /
+    # finalized), not on final_state being folded -- the final_state transition
+    # may lag, and _render_completion's bounded wait_terminal read settles the
+    # verdict from the events-file terminal regardless. Rendering off final_state
+    # alone here would drop a still-unfolded late job (review P1 persistent
+    # compounding).
     for my $uuid ($monitor->tests) {
         my $c = $monitor->collector($uuid) or next;
-        next unless $c->{final_state};
         next if $self->{+BY_UUID}{$uuid}{ended};
+
+        my $status = $c->{status} // '';
+        next unless $c->{final_state} || $status eq 'complete' || $status eq 'finalized';
+
         $self->_render_completion($uuid, $c);
     }
 
@@ -338,12 +355,22 @@ sub _render_completion ($self, $uuid, $c) {
 
     # Phase 2: read the whole events file BY PATH and feed every event, holding
     # the synthesized harness_job_end so it renders LAST (phase 3).
+    #
+    # The 'completed' transition that put this uuid on new_completed arrives
+    # BEFORE the separate, later harness_final_state record + the events file's
+    # terminal (see Test2::Harness2::JobReader). So bounded-wait for the file's
+    # terminal (wait_terminal) before settling the verdict: settling off the
+    # transient EOF here -- with $c->{final_state} also not yet folded -- would
+    # synth an empty-final-state harness_job_end, which synth_job_end treats as
+    # fail=1, and once $entry->{ended} is set the real final-state can never
+    # correct it. The healthy path (terminal already flushed) does not wait.
     my ($job_end) = $self->feed_events_file(
         $c->{events_file},
-        job_id  => $job_id,
-        job_try => $try,
-        file    => $file,
-        hold    => sub ($e) { $e->{facet_data}{harness_job_end} ? 1 : 0 },
+        job_id        => $job_id,
+        job_try       => $try,
+        file          => $file,
+        wait_terminal => 1,
+        hold          => sub ($e) { $e->{facet_data}{harness_job_end} ? 1 : 0 },
     );
 
     $job_end //= $self->synth_job_end($job_id, $try, $file, $c->{final_state});

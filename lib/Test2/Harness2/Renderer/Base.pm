@@ -5,7 +5,7 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
-use Time::HiRes qw/time/;
+use Time::HiRes qw/time sleep/;
 
 use Test2::Harness2::Event;
 use Test2::Harness2::JobReader;
@@ -169,6 +169,19 @@ when it returns true, the event is withheld from dispatch and returned to the
 caller instead (used by a subclass to hold a job's final C<harness_job_end> for
 last-place rendering). Returns the list of held events.
 
+When C<wait_terminal> is true the read B<bounded-waits> for the reader's terminal
+record (the C<harness_process_exit> / C<harness_final_state> that marks the job
+done) instead of stopping on the first temporarily-empty poll. A job's FINAL
+verdict is settled from this terminal, so settling it off a transient EOF (the
+events file not yet flushed with its terminal records, which happens because the
+C<completed> transition the driver keys on arrives B<before> the separate, later
+C<harness_final_state> record -- see L<Test2::Harness2::JobReader>) would
+mis-render a passing job as FAILED. The wait is condition-driven with
+C<Time::HiRes::sleep> backoff and a bounded cap (C<FEED_TERMINAL_TIMEOUT>), and
+returns the moment the terminal arrives, so the healthy path (terminal already in
+the file) does not wait at all. Every other caller (a runner/stage output tail)
+leaves C<wait_terminal> false and gets the original poll-until-empty behavior.
+
 =item $renderer->step_runner_output($monitor)
 
 Tail the runner's own events file and each non-test service collector's events
@@ -237,15 +250,35 @@ sub render_run_start ($self) {
     return;
 }
 
+# How long to bounded-wait, at most, for a job's events file to flush its terminal
+# record (harness_process_exit / harness_final_state) when settling that job's
+# FINAL verdict (wait_terminal). The driver keys a job's completion on the
+# 'completed' transition, which the JobReader ordering comment notes arrives
+# BEFORE the separate, later harness_final_state record + the file's terminal; if
+# we settled the verdict on the transient EOF that gap produces, a passing job
+# would render FAILED (empty final-state == fail=1 in synth_job_end). So wait for
+# the real terminal. Bounded so a collector that died without ever writing its
+# terminal (killed/aborted) cannot hang the command -- past the cap we fall back
+# to the synthesized end. Mirrors DRAIN_RUNNER_OUTPUT_TIMEOUT in Command::test.
+sub FEED_TERMINAL_TIMEOUT() { 5 }
+
 # Read one collector's recorded events file BY PATH and feed every event through
 # the renderers/logger. This is the §4.5 events-file location mechanic, promoted
 # out of the command-only Driver so watch + archived replay can reuse it. The
 # optional `hold` coderef lets a subclass withhold specific events (e.g. the
 # job's final harness_job_end) for its own ordering policy.
+#
+# With wait_terminal set the read bounded-waits for the reader's terminal record
+# instead of stopping on the first empty poll, so a job's FINAL verdict is settled
+# from the recorded terminal rather than a transient EOF (review P1: a passing job
+# rendered FAILED because feed bailed before its harness_final_state had flushed).
+# The healthy path (terminal already present) never sleeps. Other callers (output
+# tails) leave wait_terminal false and keep the original poll-until-empty shape.
 sub feed_events_file ($self, $events_file, %args) {
     return () unless defined $events_file && length $events_file;
 
-    my $hold = $args{hold};
+    my $hold          = $args{hold};
+    my $wait_terminal = $args{wait_terminal};
 
     my $reader = Test2::Harness2::JobReader->new(
         job_id      => $args{job_id},
@@ -256,9 +289,24 @@ sub feed_events_file ($self, $events_file, %args) {
     );
 
     my @held;
+    my $start = time;
+    my $delay = 0.001;
     until ($reader->done) {
         my @events = $reader->poll(1000);
-        last unless @events;
+
+        unless (@events) {
+            # No new events this poll. Without wait_terminal keep the original
+            # behavior (stop -- a tail picks up later). With wait_terminal we are
+            # settling a final verdict, so bounded-wait for the terminal to flush
+            # rather than settle off a transient EOF.
+            last unless $wait_terminal;
+            last if (time - $start) > FEED_TERMINAL_TIMEOUT;
+            sleep $delay;
+            $delay = $delay * 2 < 0.05 ? $delay * 2 : 0.05;
+            next;
+        }
+
+        $delay = 0.001;
         for my $e (@events) {
             if ($hold && $hold->($e)) {
                 push @held => $e;
