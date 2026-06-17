@@ -1,0 +1,10 @@
+use Test2::V0;
+use Time::HiRes qw/sleep/;
+
+# Stay alive long enough for the run_collected daemon (ticking every 0.2s) to emit
+# several lines that the runner captures and renders while the run is in progress.
+sleep(1.5);
+
+ok(1, "daemon plugin test ran");
+
+done_testing;
