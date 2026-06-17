@@ -131,7 +131,42 @@ order, roughly:
    concurrency in addition to or instead of a static `-j` (§4.4).
 8. **Database + UI inline** — rewrite the former `Test2-Harness-UI` DB+UI
    layer inline in `App::Yath2`, with `DBIx::QuickORM` schema and sqlite log
-   files (§4.6).
+   files (§4.6). Landed as an interim `DBIx::Class` import (8a); the
+   `DBIx::QuickORM` conversion is 8b.
+
+The chunks above (1-8a) have landed; the items below are the **post-6
+revised-target** work, settled after chunks 1-8a shipped (the `thoughts` /
+`thoughts2` decisions, §4.4/§4.7/§4.8/§5.2/§5.3 and §1). They re-shape several
+already-shipped mechanisms, so they are planned changes, not done. Numeric order
+is **not** execution order here — dependencies are noted inline:
+
+9. **Unified symmetric service channel** (§5.2) — replace the separate
+   inbound/outbound pools and the two one-way runner↔stage channels with **one
+   bidirectional, reused connection per process-pair**, in a single connection
+   set, behind a shared Role/base class. **Prerequisite for 7, 10, 13, 16.**
+10. **Preload stage self-registration + lifecycle** (§4.7) — a stage connects to
+    the runner, registers, reports its own state, and owns its restarts; the
+    runner dispatches over that registered channel. Depends on 9.
+11. **Preload as a resource** (§4.7a) — model preload availability as a scheduler
+    resource so jobs gate on it like any other resource. Depends on 10.
+12. **Discovery via runner-socket symlink** (§5.3) — replace `yath-persist.json`
+    with a well-known symlink to `runner.socket`; clients read the workdir `PID`
+    file as a signal-fallback when the socket is unresponsive.
+13. **`spawn` bypasses the runner** (§4.8) — connect directly to a stage socket,
+    share IO over the socket (dup2 onto the child's std streams), double-fork the
+    child with no collector. Depends on 9, 10, 12.
+14. **Split `Test2::Harness2::TestFile`** (§1) — move file-reading/decision logic
+    into `App::Yath2` (alongside `App::Yath2::RunPlan`); leave a state-only
+    object in `Test2::Harness2`; queue jobs carrying the pre-computed state.
+15. **Final renderer ordering** — the cross-job ordering guarantees on top of the
+    §4.5 base renderer (the current `Renderer::Driver` per-job ordering is interim).
+16. **Concurrent run execution + run-scoped preload stages** — multiple runs
+    progressing at once on a persistent runner, and run-scoped preload stages as
+    a user feature (naming `runs/<run_id>/preload-<stage>.socket` is reserved,
+    §6.1). Depends on 9, 10.
+
+Note **chunk 7 (system-load service) depends on chunk 9** — it is a full service
+on the unified connection model.
 
 The order is a guide, not a contract; chunks may be reordered or split as the
 work demands.
@@ -297,20 +332,20 @@ process** — the scheduler is an **object inside it**, not a separate process.
   over it** (replacing the 1.0 `queue.jsonl` / `run_queue.jsonl` files); they do
   not own run state. `yath test` is the per-run / transient client and uses this
   baseline directly. `yath run` / `yath start` are the **persistent** path and
-  are **gated on §6.1** (multi-run scope): they adopt the same client request
-  format but must not migrate ahead of it. Disentangling `test` / `start` /
-  `run` into thin clients of this one service is an explicit goal of the
-  migration.
+  now run on the same socket model — **routed per run, execution serialized**
+  (§6.1 resolved). Disentangling `test` / `start` / `run` into thin clients of
+  this one service is an explicit goal of the migration.
 - **Lifespan.** Two modes. *Transient* (`yath test`): the service shuts down
   and exits once all submitted runs finish and their transition queues drain.
   *Persistent* (`yath start`): it stays alive listening on `runner.socket`
   until a client sends an explicit shutdown request (e.g. a future `yath stop`).
-- **Scope (per-run vs global) is not fully settled.** The single `runner.socket`
-  in *the workdir* described here is the per-run / `yath test` baseline. The
-  persistent `yath start` + `yath run` topology — whether a socket is per global
-  service, per run, or both, and how run-scoped collectors associate with the
-  right transition feed — is the **open** §6.1; the persistent path must not
-  migrate to this model ahead of resolving it.
+- **Scope (per-run vs global) — resolved (§6.1).** A single `runner.socket` in
+  *the workdir* serves both the transient `yath test` baseline and the persistent
+  `yath start` + `yath run` path. The persistent runner runs **one active run at a
+  time** but **routes each client only its own run's** transitions (canonical
+  state keyed by run; stage/runner-lifecycle transitions broadcast as a global
+  bucket). Concurrent run *execution* and run-scoped preload stages remain future
+  work (chunk 16, §6.1).
 - **The scheduler is an in-runner object, ticked each service-loop iteration.**
   The loop IO-polls the socket (an arriving transition or request forces a
   prompt wakeup) and also ticks on a timer; on each tick the scheduler advances
@@ -495,6 +530,12 @@ service class):
   It marks state — `starting` / `up` / `restarting` / `down` — and the stage
   itself decides when to restart (e.g. on a preload-file change). The runner
   consumes those state updates; it does not drive the stage's restarts.
+- **Restart is stage-initiated; the runner does not relaunch.** On its own
+  restart trigger the stage announces `restarting` / `down`, closes its channel,
+  and **exits**. The runner marks the preload resource unavailable (§4.7a) and
+  its process reaper detects the exit and spawns a **fresh** stage instance, which
+  reconnects and registers a new `up`. The runner never reaches in to restart a
+  live stage — it only respawns one that has exited.
 - **Dispatch rides the same channel.** While a stage is `up`, the runner sends
   job-start / rerun requests over the **same** registered channel (not a second
   connection). Job results still arrive as transitions from each test job's own
@@ -535,10 +576,16 @@ fallback).
   symlink (§5.3), follows it to the workdir, inspects which
   `preload-<stage>.socket`s are available, and **connects directly to the chosen
   preload stage** to request the spawn. It does not go through the runner.
-- **IO is shared over the socket.** The spawned process's stdin/stdout/stderr are
-  carried over the socket connection (fd passing / socket-backed IO), replacing
-  the 1.0 `/proc/<pid>/fd` IO-proxying. All IO is connected to the `yath spawn`
-  command's terminal.
+  "Available" means the stage's socket accepts a connection; a socket file whose
+  stage is `starting` / `restarting` / `down` (or whose connect fails) is not a
+  spawn target. When multiple stages match, stage selection follows the command
+  options / run-plan match (the implementation pins the exact rule).
+- **IO is shared over the socket — no fd-passing dependency.** Rather than native
+  descriptor passing (`SCM_RIGHTS` via `Socket::MsgHdr` / `IO::FDPass`), the stage
+  **`dup2`s the accepted socket descriptor onto the child's `STDIN` / `STDOUT` /
+  `STDERR`** before exec, and `yath spawn` streams its own terminal IO to/from its
+  end of the socket. This gives full bidirectional IO sharing with no
+  platform-dependent CPAN module, replacing the 1.0 `/proc/<pid>/fd` IO-proxying.
 - **The child is detached: double-fork, no collector.** The stage **double-forks**
   the spawned process so it is reparented away and outlives neither the runner
   nor the stage once started. Unlike every other yath-started process (§4.1), a
@@ -610,9 +657,20 @@ pools and not a channel per direction:
 - **Symmetric.** Once connected, **either end may send requests and responses**.
   (So, e.g., a preload stage connects to the runner to register, and the runner
   then sends job dispatch back over that same connection — §4.7.)
+- **Identity handshake on connect.** A `SOCK_STREAM` connection accepted via
+  `accept` carries no service identity, yet "reuse, never duplicate" requires each
+  side to know **which** peer is on the descriptor. So a connection **exchanges a
+  handshake frame identifying the peer** (stage name / system-load identifier /
+  client type) immediately on connect, **before** it is registered in the
+  connection set. The handshake also resolves the **simultaneous-connect race**
+  (both sides dial at once): the identities let both ends detect the duplicate and
+  converge on one channel (e.g. lowest identity wins) before either sends a
+  request.
 - **One reusable implementation.** This model is provided by a shared **Role
   and/or base class** that every service (runner, preload stages, the future
-  system-load service §4.4) consumes — not re-implemented per service.
+  system-load service §4.4) consumes — not re-implemented per service. It owns the
+  handshake, the dedup/race resolution, and request/response correlation on the
+  shared stream.
 
 The detailed reader/monitor design from the abandoned 2.0b branch is preserved
 under `reference/2.0b/` and will be adapted as §4.3 lands; it is not restated
@@ -635,13 +693,27 @@ runner, and follows it to the socket's directory to locate the **workdir** (and
 from there the available `preload-<stage>.socket`s). This replaces the
 `yath-persist.json` discovery file.
 
+- **PID fallback for signals.** `yath-persist.json` also carried the runner PID,
+  which clients (`status` / `stop` / `abort`) need to signal a **wedged** runner
+  whose socket no longer accepts/responds. The runner already writes a flat `PID`
+  file in its workdir (`Runner.pm`, the workdir `PID` file). The contract: a client
+  queries liveness/PID **over the socket** in normal operation, and resolves the
+  workdir via the symlink and **reads the `PID` file** as the fallback for
+  signal-based termination when the socket is unresponsive.
+- **Failure semantics.** A dangling symlink (or one whose `connect` fails) means
+  no live runner: the client treats the harness as absent and cleans the stale
+  symlink, rather than blocking. (Owner/permission, version, and
+  multiple-harness-per-project handling are settled at implementation time and
+  tracked in `MIGRATION.md`.)
+
 `preload-<stage>.socket` is only the **global / per-run-baseline** form. A
 **run-scoped** preload stage on a persistent multi-run runner needs a
-**run-qualified** name (e.g. `preload-<run_id>-<stage>.socket`, or a per-run
-subdir `runs/<run_id>/preload-<stage>.socket`) so two runs using the same stage
-name — or a run-scoped name colliding with a global one — do not share or
-clobber a socket. The exact scheme is part of the still-open §6.1 multi-run
-layer.
+**run-qualified** name so two runs using the same stage name — or a run-scoped
+name colliding with a global one — do not share or clobber a socket. The scheme
+is **decided** (§6.1): a per-run subdir `runs/<run_id>/preload-<stage>.socket`
+(global stages stay `preload-<stage>.socket`, `runner.socket` stays a single
+global socket). The collision-safe naming foundation is in place; run-scoped
+stages *as a user feature* are deferred (chunk 16).
 
 Direction of connection (the symmetric service model, §5.2):
 
@@ -714,21 +786,17 @@ once) is a deliberate later step, not part of this resolution.
   **not built** — there is no trigger for one and serialized execution needs no
   concurrent run-scoped stage; only the collision-safe naming foundation is in
   place.
-- **Service lifecycle / discovery — done.** `yath start` owns the workdir,
-  spawns the persistent runner (which binds `runner.socket` and runs the service
-  loop), and writes `yath-persist.json` (`{pid, dir, ...}`). `yath run` / `spawn`
-  discover the runner via `yath-persist.json` (the existing pfile checks, now in
-  `App::Yath2::Pfile`), connect to `runner.socket` (path derived from `dir`) via
-  `App::Yath2::Client`, submit over the socket, and subscribe scoped to their
-  `run_id`; liveness is socket-connect rather than `kill(0)`. `stop` sends a
-  graceful socket shutdown. The persistent runner's scheduler runs the in-memory
-  `direct` State and dispatches to socket preload-stage services — no
-  `dispatch.jsonl` / `jobs.jsonl` / `queue.jsonl` / `run_queue.jsonl`.
-  **Superseded targets:** discovery moves from `yath-persist.json` to a
-  **runner-socket symlink** (§5.3), and dispatch direction reverses to
-  **stage-registers-with-runner** over one shared channel (§4.7, §5.2); the
-  current code above uses the older `yath-persist.json` + runner-initiated
-  dispatch pending that migration (tracked in `MIGRATION.md`).
+- **Service lifecycle / discovery — decided.** `yath start` owns the workdir and
+  spawns the persistent runner (binds `runner.socket`, runs the service loop);
+  `yath run` / `spawn` discover it, connect to `runner.socket`, submit, and
+  subscribe scoped to their `run_id`; `stop` sends a graceful socket shutdown.
+  Liveness is socket-connect (with the `PID`-file signal fallback, §5.3). The
+  runner's scheduler runs the in-memory `direct` State and dispatches to socket
+  preload-stage services — none of the 1.0 `dispatch.jsonl` / `jobs.jsonl` /
+  `queue.jsonl` / `run_queue.jsonl` files. The **target** discovery + dispatch
+  shape lives in §5.3 (runner-socket symlink) and §4.7 / §5.2
+  (stage-registers-with-runner over one shared channel); the as-shipped form and
+  the remaining gap to that target are tracked in `MIGRATION.md` (chunks 9, 10, 12).
 
 **Remaining (tracked in `MIGRATION.md`, not blockers for the above):** concurrent
 run *execution* on a persistent runner; run-scoped preload stages as a user

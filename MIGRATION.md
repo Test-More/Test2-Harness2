@@ -40,6 +40,9 @@ architecture* lives in `ARCHITECTURE.md`; the *how-to-work* rules live in
 - **`migration_revision`** — the brief that fleshes out chunks 4-6 into the
   runner-service + socket-IPC design. Its content is folded into the
   "Chunks 4-6 detailed plan" section below.
+- **`AI_DOCS/2026-06-16-post6-redesign-source-notes.md`** — durable copy of the
+  `thoughts` / `thoughts2` briefs that drive the post-6 chunks (9-16); their
+  decisions are restated in `ARCHITECTURE.md` and mapped in the table above.
 - **`reference/`** — read-only prior iterations (immutable; copy out to reuse).
   Beyond `legacy`/`old2`/`old3`/`old4`/`botched`, the abandoned 2.0 feature
   branches are snapshotted as the best reference for their subsystems:
@@ -78,12 +81,27 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ `46e75cd55` |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ (transient + persistent; §6.1 serialized+routed) | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g `3b0704488` · §6.1 `e881efa8f`,`f647c84c9`,`944757b05`,`59210f9e2`,`fb5e07174`,`5959fe720`,`6a0fdecc9`,`3a4586b31`,`a9ade9a7b` |
 | 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ✅ | 6a `9c3ce01ae` (interim) · §4.5 base renderer `4410c8105` · watch/flat-logs retired `f9142217c` |
-| 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ | — |
-| 8a | Database + UI inline (DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
-| 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` | ⬜ (deferred) | — |
+| 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ (needs 9) | — |
+| 8a | Database + UI inline (**interim**, DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
+| 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` (the §2.4/§4.6 target) | ⬜ (deferred) | — |
+| 9 | Unified symmetric service channel — one bidirectional reused connection/pair, shared Role/base (§5.2) | ⬜ | — |
+| 10 | Preload stage self-registration + lifecycle; runner dispatches over registered channel (§4.7) — needs 9 | ⬜ | — |
+| 11 | Preload as a scheduler resource (§4.7a) — needs 10 | ⬜ | — |
+| 12 | Discovery via runner-socket symlink + `PID`-file signal fallback (§5.3) | ⬜ | — |
+| 13 | `spawn` bypasses runner: direct stage socket, dup2 IO, double-fork no collector (§4.8) — needs 9,10,12 | ⬜ | — |
+| 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only Harness2 object (§1) | ⬜ | — |
+| 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
+| 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | — |
+
+Chunks 1-8a have landed. Chunks **9-16 are the post-6 revised-target work**
+(the `thoughts` / `thoughts2` decisions); see "Next" below. Numeric order is
+**not** execution order — dependencies are noted per row. Chunk 7 (system-load)
+also depends on chunk 9 (the unified channel it rides).
 
 Chunks 4-6 are broken into substeps in the **"Chunks 4-6 detailed plan"**
 section below (the runner-service + socket-IPC design from `migration_revision`).
+That section describes the **as-shipped** end state of 4-6; where chunks 9-16
+revise it, the substeps are annotated below.
 
 ## Done so far
 
@@ -125,6 +143,11 @@ section below (the runner-service + socket-IPC design from `migration_revision`)
 (`ceec15894`, `24cb1e798`, `654a742b7`, `c888157ad`, `625079b01`, `c6291a197`,
 `9c3ce01ae` (6a), `3b0704488` (5g); on branch `chunk5-runner-service`, **not yet
 merged**):
+
+> **Historical snapshot — state as of 5g+6a.** The "Still flat-file" and "Also
+> not built / deferred" bullets below were the gaps *at that point*; chunk 6
+> (above) later closed most of them. Resolved items are annotated inline — read
+> the chunk-6 block and "Current state" for what is true now.
 - The **transient `yath test`** runner is now a collected **socket service**
   (`runner.socket`) with an **in-process scheduler** (no separate scheduler
   process, no `dispatch.lock`). New: `Test2::Harness2::Role::Service`, the
@@ -168,6 +191,9 @@ merged**):
   the persistent runner + stages collector-wrapped and `watch` migrated to a
   global socket subscription — coupled to the SIGHUP-reload message `watch` reads
   from `output.log` (`persist.t` asserts it). Flagged follow-up.
+  **→ RESOLVED in chunk 6 (`f9142217c`):** `output.log` / `error.log` are gone;
+  `watch` is a global `runner.socket` subscriber and the reload message is a
+  recorded runner event.
 - **Also not built / deferred:** concurrent run *execution* (persistent stays
   serialized); run-scoped preload stages as a user feature (only the per-run
   subdir socket naming `runs/<run_id>/preload-<stage>.socket` foundation exists);
@@ -175,6 +201,10 @@ merged**):
   rewrite (6a is interim); dead `State` dispatch-file plumbing (file never created
   now) to remove; `Runner.pm` is 1426 lines (over the 1000 guide) — split
   candidate.
+  **→ chunk 6 closed most:** collector-wrap moved into `Runner->start_collected`,
+  the §4.5 base renderer landed (`4410c8105`), and `Runner.pm` was split to 844
+  lines. **Still open:** concurrent run execution + run-scoped stages (now
+  chunk 16); see "Next".
 - A pre-existing `smoke.t` flake (start-stamp tie under `-j3`) was fixed
   (`ddaed0a0c`). Suite green throughout; final `Files=88` (`Result: PASS`,
   confirmed across 13 consecutive clean full runs).
@@ -256,15 +286,15 @@ this task):
   / `Test2::Harness2::Settings` machinery is deleted).
 - **Collector pipeline:** swapped to `Test2-Collector` (chunk 3, merged
   `fa49f2b65`). Each test job runs under its own collector and writes
-  `events.jsonl.zst`; the yath-side gatherer (`Test2::Harness2::Collector` via
-  `JobReader`) reads those files and re-attaches run/job/event UUIDs. The
-  **`yath test` runner** is also wrapped now (chunk 4a, merged `bf1081ab0`),
-  read via `RunnerReader`. The transient runner's **preload stages** are wrapped
-  too (chunk 4b). The yath-side gatherer (`Test2::Harness2::Collector`) is now
-  **deleted outright** (5g + §6.1): both `yath test` and the persistent
-  `yath run` render from the runner subscription via the command-side
-  `Renderer::Driver`. `JobReader` / `RunnerReader` survive as neutral
-  `Test2::Harness2::*` by-path readers. See Runner IPC below.
+  `events.jsonl.zst`. The **`yath test` runner** is wrapped too (chunk 4a, merged
+  `bf1081ab0`, read via `RunnerReader`), as are the transient runner's **preload
+  stages** (chunk 4b). The standing yath-side gatherer
+  (`Test2::Harness2::Collector`) — which in the chunk-3 era walked the workdir,
+  read those files via `JobReader`, and re-attached UUIDs — is **now deleted
+  outright** (5g + §6.1): both `yath test` and persistent `yath run` render from
+  the runner subscription via the command-side `Renderer::Driver`. `JobReader` /
+  `RunnerReader` survive only as neutral `Test2::Harness2::*` **by-path** readers.
+  See Runner IPC below.
 - **Runner IPC (both `yath test` and persistent `yath start`/`run`):** fully on
   the **socket model** (chunk 5 + 6a + §6.1). The runner runs as a collected
   **service** bound to `runner.socket` with an **in-process scheduler** (no
@@ -304,68 +334,91 @@ this task):
   `demo/`. Tests: Perl unit + HTTP smoke (`t/AI/integration/ui_server.t`) +
   Playwright (`js-tests/`, run from `t/playwright.t`). The QuickORM conversion is
   **chunk 8b (deferred)**.
-- **Logic:** otherwise still 1.0 only for chunk 7 (system-load service) and the
-  deferred multi-run-concurrency / run-scoped-stage follow-ups.
+- **Logic:** otherwise still 1.0 only for chunk 7 (system-load service), the
+  8b QuickORM conversion, and the post-6 revised-target chunks 9-16 (unified
+  service channel, stage self-registration, preload-as-resource, symlink
+  discovery, spawn-bypass, TestFile split, final renderer, multi-run). The
+  *currently-shipped* service IPC diverges from chunks 9-13's target (see "Next").
 - **Not renamed (intentional):** `Test2::Formatter::*`, `Test2::Tools::*`,
   `App::Yath::Script`.
 
 ## Next
 
-**Chunks 1-6 are complete.** Both `yath test` and the persistent
+**Chunks 1-8a are complete.** Both `yath test` and the persistent
 `yath start`/`run`/`spawn`/`stop`/`watch` paths run on the socket model with the
 §4.5 base renderer; the gatherer, all coordination files, and the flat-log shim
 are gone — the only IPC files anywhere are `events.jsonl.zst` (plus the `aux_logs`
-plugin path). Remaining work (chunk 7 and post-6 follow-ups):
+plugin path); the DB/UI layer is inlined on interim `DBIx::Class`. Remaining work
+is chunks **7-16** (see the table for numbering + dependencies). The notes below
+flesh out each chunk; the `thoughts` / `thoughts2` decisions they capture are
+restated in `ARCHITECTURE.md` (§1, §4.4/§4.7/§4.8/§5.2/§5.3) so they stand without
+the untracked source notes.
 
-**Service-IPC redesign (revised target — see `ARCHITECTURE.md` §4.4/§4.7/§4.8/§5.2/§5.3).**
-A round of decisions (captured from `thoughts`) revises the target and makes
-several *currently-shipped* mechanisms divergent — these are planned changes, not
-done:
+**Service-IPC redesign (chunks 9-13 — see `ARCHITECTURE.md` §4.4/§4.7/§4.8/§5.2/§5.3).**
+These revise *currently-shipped* mechanisms — planned changes, not done:
 
-- **Unified, symmetric service connection model (§5.2).** Replace the current
-  separate inbound/outbound pools + two one-way runner↔stage channels with **one
-  bidirectional channel per process-pair**, reused regardless of which side
-  connected, in a single connection set — provided by a reusable Role/base class
-  shared by runner, preload stages, and the system-load service. (Reverses the
-  connection model now described in `IPC.md` §5.)
-- **Preload stages register with the runner (§4.7).** Reverse the
+- **Chunk 9 — unified, symmetric service connection model (§5.2).** Replace the
+  current separate inbound/outbound pools + two one-way runner↔stage channels with
+  **one bidirectional channel per process-pair**, reused regardless of which side
+  connected, in a single connection set — a reusable Role/base class shared by
+  runner, preload stages, and the system-load service. (Reverses the connection
+  model now described in `IPC.md` §5.) **Adds an identity handshake** on connect
+  (an `accept`ed `SOCK_STREAM` carries no peer identity): each connection exchanges
+  a frame naming the peer (stage name / sysload id / client type) **before** it
+  joins the set, which also resolves the simultaneous-connect race (dedup to one
+  channel). **Prereq for chunks 7, 10, 13, 16.**
+- **Chunk 10 — preload stages register with the runner (§4.7).** Reverse the
   runner-connects-out-to-dispatch direction: a stage connects to the runner on
   start, reports its own state (`starting`/`up`/`restarting`/`down`), owns its
   restart decisions, and the runner dispatches over that same registered channel;
-  the runner treats a stage as unavailable until it registers.
-- **Discovery via a runner-socket symlink (§5.3).** Replace `yath-persist.json`
-  with a well-known symlink to `runner.socket` (follow it to the socket and to the
-  workdir).
-- **`spawn` bypasses the runner (§4.8).** `spawn` connects **directly** to a
-  preload stage's socket, shares IO over the socket (retiring the `/proc` IO
-  proxying), and the stage **double-forks** the child with **no collector** so it
-  detaches from the harness, IO wired to the `yath spawn` terminal.
-- **Preload as a resource (§4.7a).** Model preload availability (expected +
-  current state) as a resource so jobs gate on it like any other resource.
+  the runner treats a stage as unavailable until it registers. **Restart is
+  stage-initiated:** the stage announces `restarting`/`down`, closes its channel,
+  and exits; the runner's reaper detects the exit and spawns a fresh instance that
+  re-registers — the runner never relaunches a live stage. Needs 9.
+- **Chunk 11 — preload as a resource (§4.7a).** Model preload availability
+  (expected + current state) as a scheduler resource so jobs gate on it like any
+  other resource. Needs 10.
+- **Chunk 12 — discovery via a runner-socket symlink (§5.3).** Replace
+  `yath-persist.json` with a well-known symlink to `runner.socket` (follow it to
+  the socket and to the workdir). **Keep a PID fallback:** clients query liveness/
+  PID over the socket normally, but read the flat workdir `PID` file
+  (`Runner.pm:408`) to signal a wedged runner whose socket is unresponsive.
+- **Chunk 13 — `spawn` bypasses the runner (§4.8).** `spawn` connects **directly**
+  to an available preload stage's socket (stage chosen by command options / run
+  match; an unconnectable or non-`up` socket is not a target), and the stage
+  **double-forks** the child with **no collector**, detached. **IO sharing uses
+  `dup2`** of the accepted socket onto the child's STDIN/OUT/ERR (no `SCM_RIGHTS` /
+  `Socket::MsgHdr` dependency), retiring the 1.0 `/proc` IO proxying. Needs 9,10,12.
 
-**Namespace scoping — split `Test2::Harness2::TestFile` (`ARCHITECTURE.md` §1).**
+**Chunk 14 — split `Test2::Harness2::TestFile` (`ARCHITECTURE.md` §1).**
 Reading test files to decide how they run is a UI/input concern. Move the
 file-gathering + per-file decision logic into `App::Yath2` (the `test` / `run`
-commands compute the state, likely alongside `App::Yath2::RunPlan`), leave a
-**state-only** representation in `Test2::Harness2`, and queue the run with jobs
-carrying that already-computed state so the runner does no file reading to plan a
-run. (Currently `Test2::Harness2::TestFile` mixes both roles.)
+commands compute the state in / alongside `App::Yath2::RunPlan`), leave a
+**state-only** object in `Test2::Harness2`, and queue jobs carrying that
+already-computed state in the task payload so the runner reads/parses **no** test
+files to plan a run. Add a test proving the runner queues jobs without touching
+test-file contents. (Currently `Test2::Harness2::TestFile` mixes both roles.)
 
-- **Chunk 7 — system-load service.** Its own (global) process with a reliable
-  tick. Per the revised §4.4 it is a **full service on the unified connection
-  model**: its own listen socket, connects to the runner on startup to push
-  updates, and broadcasts load state-changes to all connected peers; the in-runner
-  scheduler consumes them to gate concurrency. Port `reference/harness_service`
-  `SystemLoad.pm` + its sampler service shape (drop the run-vs-global split; adopt
-  the §5.2 channel rather than the old emit-only/no-socket shape).
-- **Final renderer ordering (post-§4.5 interim).** `Renderer::Driver` still pins
-  the interim per-job 3-phase ordering on top of `Renderer::Base`; the final
-  cross-job ordering guarantees are not yet defined (§4.5 stays authoritative).
-- **Concurrent run execution + run-scoped preload stages.** §6.1 routes per run
-  but execution stays serialized (single active run); making the persistent runner
-  run multiple runs at once, and building run-scoped preload stages as a user
-  feature (the `runs/<run_id>/preload-<stage>.socket` naming is reserved), are the
-  next multi-run steps.
+- **Chunk 7 — system-load service (needs 9).** Its own (global) process with a
+  reliable tick. Per the revised §4.4 it is a **full service on the unified
+  connection model**: its own listen socket, connects to the runner on startup to
+  push updates, and broadcasts load state-changes to all connected peers; the
+  in-runner scheduler consumes them to gate concurrency. Port
+  `reference/harness_service` `SystemLoad.pm` + its sampler service shape (drop the
+  run-vs-global split; adopt the §5.2 channel rather than the old
+  emit-only/no-socket shape).
+- **Chunk 15 — final renderer ordering (post-§4.5 interim).** `Renderer::Driver`
+  still pins the interim per-job 3-phase ordering on top of `Renderer::Base`; the
+  final cross-job ordering guarantees are not yet defined (§4.5 stays authoritative).
+- **Chunk 8b — QuickORM conversion.** Migrate the inlined DB/UI schema from interim
+  `DBIx::Class` to `DBIx::QuickORM` (§2.4/§4.6), keeping the default SQLite path on
+  `DBD::SQLite` directly. Until this lands, `DBIx::Class` is an interim import, not
+  accepted long-term architecture.
+- **Chunk 16 — concurrent run execution + run-scoped preload stages (needs 9,10).**
+  §6.1 routes per run but execution stays serialized (single active run); making
+  the persistent runner run multiple runs at once, and building run-scoped preload
+  stages as a user feature (the `runs/<run_id>/preload-<stage>.socket` naming is
+  reserved), are the next multi-run steps.
 - **Minor:** revisit the conservative `Runner::Watchdog` (abort-on-wind-down) if
   active mid-run stalled detection is wanted; `resources.pm`'s auto-generated
   `OPTIONS` POD lists its old narrower option set (it now inherits the full
@@ -387,19 +440,31 @@ system-load sampler **service**, and `Role::Service` are reusable. What
 run-specific services: all services are now global, per-run scope is a preload
 feature (§4.7). Do not reintroduce per-run services.
 
+> **As-shipped design — partly superseded by chunks 9-16.** This section is the
+> end state *of chunks 4-6 as they landed*. The post-6 redesign (chunks 9-16,
+> §4.7/§5.2) reverses two things stated below: dispatch direction
+> (**stage registers with the runner**, then the runner dispatches over that
+> registered channel — not runner-connects-out) and the system-load service shape
+> (**a full service with its own listen socket** on the unified channel — not
+> emit-only/no-socket). Those points are annotated inline; the rest still holds.
+
 **End state of chunks 4-6.** Every process the runner forks runs under its own
 collector. The runner and each preload stage are **socket services**. The only
 files on the IPC path are the per-collector `events.jsonl.zst` files, used to
 feed display to renderers — all decision/dispatch data moves over unix sockets
 in the collector wire format (zstd-compressed JSON object frames): runner →
-preload (dispatch jobs), and collector → runner (transition messages). Commands
-queue work by messaging the runner. The 1.0 coordination files
-(`queue.jsonl`, `run_queue.jsonl`, `dispatch.jsonl`, `dispatch.lock`) are gone.
+preload (dispatch jobs — **reversed in chunk 10**: the stage registers with the
+runner and the runner dispatches over that registered channel), and collector →
+runner (transition messages). Commands queue work by messaging the runner. The
+1.0 coordination files (`queue.jsonl`, `run_queue.jsonl`, `dispatch.jsonl`,
+`dispatch.lock`) are gone.
 
 **All services are global harness services; there are no per-run services.** The
 service kinds: the runner, preload stages, and auxiliary harness services that
-report to the runner (e.g. the system-load service, §4.4 — emit-only, connects
-to `runner.socket`, no socket of its own). What is **dropped** is the
+report to the runner (e.g. the system-load service, §4.4 — **reversed in
+chunks 7/9**: it is now a full service with its **own** listen socket on the
+unified channel (§5.2), connecting to the runner to push updates *and* accepting
+peers, not the emit-only/no-socket shape described here). What is **dropped** is the
 run-vs-global service split and run-specific *services* — an over-extrapolation
 from two preload needs (`ARCHITECTURE.md` §4.4 / §4.7 / §6.1). Per-run needs are
 met by **preload-stage scope** — global stages shared by all runs (use case 1,
@@ -544,15 +609,15 @@ Replaces the 1.0 file-polling IPC with sockets. (Subsumes the former
 - **Runner lifespan:** *transient* (`yath test`) — exit once all runs finish and
   transition queues drain; *persistent* (`yath start`) — stay listening on
   `runner.socket` until an explicit shutdown request (e.g. `yath stop`).
-- **Persistent path is gated on §6.1 (now smaller).** The single `runner.socket`
-  in *the workdir* (above) is the per-run / `yath test` baseline. The
-  generalized global-vs-run *service* split is dropped; what remains open
-  (`ARCHITECTURE.md` §6.1) is the multi-run layer on a persistent runner:
-  routing each `yath run` client only its own run's transitions, run-scoped
-  preload-stage lifecycle (5d), and what `start` owns (workdir, publish
-  `runner.socket`, persist metadata) / how `run` discovers + submits to it.
-  `start` / `run` must **not** migrate to the service model ahead of resolving
-  it.
+- **Persistent path was gated on §6.1 — now RESOLVED + migrated.** The single
+  `runner.socket` in *the workdir* (above) is the per-run / `yath test` baseline.
+  The generalized global-vs-run *service* split was dropped, and the multi-run
+  layer (`ARCHITECTURE.md` §6.1) resolved to **"serialized + per-run routing"**:
+  each `yath run` client is routed only its own run's transitions, the persistent
+  runner runs one active run at a time, and `start`/`run`/`stop` run on the socket
+  model. Run-scoped preload-stage naming is decided
+  (`runs/<run_id>/preload-<stage>.socket`). What's left is **future** chunks, not
+  a gate: concurrent run execution + run-scoped stages as a feature (chunk 16).
 
 ### Chunk 6 — renderer (interim step toward the §4.5 rewrite)
 
