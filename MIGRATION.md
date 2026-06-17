@@ -317,10 +317,39 @@ this task):
 are gone — the only IPC files anywhere are `events.jsonl.zst` (plus the `aux_logs`
 plugin path). Remaining work (chunk 7 and post-6 follow-ups):
 
+**Service-IPC redesign (revised target — see `ARCHITECTURE.md` §4.4/§4.7/§4.8/§5.2/§5.3).**
+A round of decisions (captured from `thoughts`) revises the target and makes
+several *currently-shipped* mechanisms divergent — these are planned changes, not
+done:
+
+- **Unified, symmetric service connection model (§5.2).** Replace the current
+  separate inbound/outbound pools + two one-way runner↔stage channels with **one
+  bidirectional channel per process-pair**, reused regardless of which side
+  connected, in a single connection set — provided by a reusable Role/base class
+  shared by runner, preload stages, and the system-load service. (Reverses the
+  connection model now described in `IPC.md` §5.)
+- **Preload stages register with the runner (§4.7).** Reverse the
+  runner-connects-out-to-dispatch direction: a stage connects to the runner on
+  start, reports its own state (`starting`/`up`/`restarting`/`down`), owns its
+  restart decisions, and the runner dispatches over that same registered channel;
+  the runner treats a stage as unavailable until it registers.
+- **Discovery via a runner-socket symlink (§5.3).** Replace `yath-persist.json`
+  with a well-known symlink to `runner.socket` (follow it to the socket and to the
+  workdir).
+- **`spawn` bypasses the runner (§4.8).** `spawn` connects **directly** to a
+  preload stage's socket, shares IO over the socket (retiring the `/proc` IO
+  proxying), and the stage **double-forks** the child with **no collector** so it
+  detaches from the harness, IO wired to the `yath spawn` terminal.
+- **Preload as a resource (§4.7a).** Model preload availability (expected +
+  current state) as a resource so jobs gate on it like any other resource.
+
 - **Chunk 7 — system-load service.** Its own (global) process with a reliable
-  tick, emit-only, connecting to `runner.socket`; the in-runner scheduler consumes
-  load to gate concurrency. Port `reference/harness_service` `SystemLoad.pm` + its
-  sampler service shape (drop the run-vs-global split).
+  tick. Per the revised §4.4 it is a **full service on the unified connection
+  model**: its own listen socket, connects to the runner on startup to push
+  updates, and broadcasts load state-changes to all connected peers; the in-runner
+  scheduler consumes them to gate concurrency. Port `reference/harness_service`
+  `SystemLoad.pm` + its sampler service shape (drop the run-vs-global split; adopt
+  the §5.2 channel rather than the old emit-only/no-socket shape).
 - **Final renderer ordering (post-§4.5 interim).** `Renderer::Driver` still pins
   the interim per-job 3-phase ordering on top of `Renderer::Base`; the final
   cross-job ordering guarantees are not yet defined (§4.5 stays authoritative).

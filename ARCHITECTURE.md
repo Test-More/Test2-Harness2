@@ -261,11 +261,12 @@ reporter`, where the **recorder** sink writes the full event stream to one
   with a standing yath-side **gatherer** process that walks the workdir for
   those files; the end state removes that gatherer — see §4.2 — and reads a
   specific events file **by path on demand**.)
-- **Every yath-started process is a collector.** Not just tests: the runner,
-  each preload stage, and auxiliary harness services (e.g. the system-load
-  service, §4.4) all run as (non-test) collectors, so every process speaks one
-  wire format and records one kind of events file
-  (§4.2).
+- **Every yath-started process is a collector** — with one exception. The
+  runner, each preload stage, and auxiliary harness services (e.g. the
+  system-load service, §4.4) all run as (non-test) collectors, so every process
+  speaks one wire format and records one kind of events file (§4.2). The
+  exception is a **`yath spawn`** child, which runs under **no collector** (§4.8):
+  it is detached from the harness and not a harness-tracked result.
 
 ### 4.2 Main harness service `[target]`
 
@@ -382,16 +383,21 @@ Prototyped on the abandoned `harness_service` branch
   the runner. Load sampling needs a **reliable, fixed tick**, and the runner's
   service loop can have iterations that exceed that interval, so it cannot
   sample inline.
-- It is a **non-test collector** that **only emits** (it handles no requests),
-  so it has **no socket of its own**; it **connects to `runner.socket`** and
-  streams load state-changes (a threshold crossing) as they happen.
+- It is a non-test collector and a **full service on the shared connection model
+  (§5.2)**: it has **its own listen socket** and, on startup, **connects to the
+  runner** so it can immediately push load updates there. Any other process may
+  also connect to the system-load service's socket to receive updates; the
+  service **broadcasts each load state-change (a threshold crossing) to all
+  connected peers**. Because the connection model is symmetric (§5.2), the same
+  channel a peer opened (or that the service opened to the runner) carries the
+  updates regardless of which side connected.
 - The scheduler in the runner (§4.2) consumes those updates to decide when a
   slot may open, combining the load signal with any static `-j` limit.
 
-This is the rule for auxiliary harness services: a global yath-started non-test,
-non-spawn process that *handles* requests gets its own unix socket; one that
-only *emits* state changes connects to `runner.socket` instead. All such
-services are **global** — there are no per-run services (§4.7).
+All such services are **global** — there are no per-run services (§4.7). The
+older rule that an emit-only auxiliary service has *no socket of its own* is
+superseded by the unified connection model (§5.2): every service has one listen
+socket, and reaching out vs being reached are the same channel.
 
 ### 4.5 Renderers `[target]`
 
@@ -449,11 +455,12 @@ in the workdir, §5.3). A stage holds the preloaded interpreter state from which
 matching tests are forked.
 
 **Scope of services (decided).** All services are **global** harness services;
-there are **no per-run services**. The service kinds are: the runner (§4.2,
-handles requests on `runner.socket`), preload stages (this section, handle
-dispatch on their own sockets), and auxiliary harness services that report to
-the runner (e.g. the system-load service §4.4 — emit-only, no socket of its
-own). What is **dropped** is the earlier run-vs-global service split and
+there are **no per-run services**. The service kinds are: the runner (§4.2),
+preload stages (this section), and auxiliary harness services (e.g. the
+system-load service §4.4). Every service has **one listen socket** and speaks
+the **unified, symmetric connection model** (§5.2) — there are no separate
+inbound/outbound channels and no service that lacks a socket. What is **dropped**
+is the earlier run-vs-global service split and
 run-specific *services* — an over-extrapolation from two concrete preload needs.
 Those needs are met directly by **preload-stage scope** (a feature, not a
 service class):
@@ -468,27 +475,62 @@ service class):
 
 **Contract.**
 
-- **The runner dispatches jobs to a stage by connecting out to that stage's
-  socket** and sending the request (run a test, rerun a test) in the collector
-  wire format (§5.2) — replacing the 1.0 `dispatch.jsonl` queue. The runner is
-  the client here; the stage is the server (§5.3).
-- **Stage *service logic* is silent to the runner; the stage *process's
-  collector* is not.** The stage's request/response service loop opens no
-  connection to `runner.socket` and sends it no application-level reports — the
-  job results the runner needs arrive as transitions from each test job's own
-  collector (§4.3). But the stage process, like every yath-started process, runs
-  under its own non-test collector (§4.1), and *that collector's reporter*
-  streams the stage's own **lifecycle** transitions (start, ready, exit) to
-  `runner.socket`. So: no separate application report channel from the stage,
-  but its lifecycle still reaches the runner via its collector.
+- **A stage registers itself with the runner (the stage initiates).** When a
+  stage's preload is ready it **connects to the runner** and registers, opening
+  the one shared bidirectional channel between them (§5.2). The runner may know
+  it *tried* to start a stage, but **treats a stage as unavailable until it
+  registers**. (This reverses the earlier "runner connects out to dispatch"
+  direction.)
+- **The stage owns its own lifecycle/state and reports it over that channel.**
+  It marks state — `starting` / `up` / `restarting` / `down` — and the stage
+  itself decides when to restart (e.g. on a preload-file change). The runner
+  consumes those state updates; it does not drive the stage's restarts.
+- **Dispatch rides the same channel.** While a stage is `up`, the runner sends
+  job-start / rerun requests over the **same** registered channel (not a second
+  connection). Job results still arrive as transitions from each test job's own
+  collector (§4.3).
+- **The stage's listen socket is for `spawn`, not the runner.** A stage keeps
+  its own `preload-<stage>.socket`, but it is used by `yath spawn` connecting
+  **directly** to a stage (§4.8), bypassing the runner — not by the runner for
+  dispatch.
+- **Preload availability is a resource (§4.7a).** A stage's expected existence
+  plus its current state (`up` etc.) is modeled as a **resource**, so jobs that
+  need a given preload are gated on that resource the same way as any other
+  resource, rather than through ad-hoc stage checks.
 - **No-preload path.** When there are no preloads there are no stage services:
-  the runner forks the test job's collector itself, directly, instead of
-  dispatching to a stage.
-- **Run-scoped stage lifecycle is the runner's job.** The runner forks a
-  run-scoped stage's service when its run begins and tears it down when the run
-  ends — a shutdown command frame over the stage's socket (or `SIGTERM`),
-  followed by reaping. Global stages outlive any single run. Run-scoped stage
-  sockets must be run-qualified to avoid collisions (§5.3, §6.1).
+  the runner forks the test job's collector itself, directly.
+- **Run-scoped stage lifecycle.** A run-scoped stage is brought up when its run
+  begins and torn down when it ends (the stage still registers with the runner
+  as above). Global stages outlive any single run. Run-scoped stage sockets must
+  be run-qualified to avoid collisions (§5.3, §6.1).
+
+**§4.7a Preload as a resource `[target]`.** Preload availability is expressed
+through the resource system: a resource representing "stage `<name>` is expected
+and currently `up`" gates the jobs that require it. This unifies preload
+readiness with the existing resource-gating the scheduler already does, instead
+of a separate stage-readiness code path.
+
+### 4.8 Spawn (`yath spawn`) `[target]`
+
+**Responsibility.** `yath spawn` starts a single process from a preloaded
+interpreter and attaches it to the caller's terminal — without coupling it to
+the harness lifecycle.
+
+**Contract.**
+
+- **Spawn bypasses the runner.** It discovers the harness via the runner-socket
+  symlink (§5.3), follows it to the workdir, inspects which
+  `preload-<stage>.socket`s are available, and **connects directly to the chosen
+  preload stage** to request the spawn. It does not go through the runner.
+- **IO is shared over the socket.** The spawned process's stdin/stdout/stderr are
+  carried over the socket connection (fd passing / socket-backed IO), replacing
+  the 1.0 `/proc/<pid>/fd` IO-proxying. All IO is connected to the `yath spawn`
+  command's terminal.
+- **The child is detached: double-fork, no collector.** The stage **double-forks**
+  the spawned process so it is reparented away and outlives neither the runner
+  nor the stage once started. Unlike every other yath-started process (§4.1), a
+  spawned process runs under **no collector** — it is not a harness-tracked
+  result, just a process the user asked to start with preloads in place.
 
 ## 5. Cross-cutting concerns
 
@@ -520,9 +562,12 @@ relitigated.
 
 ### 5.2 Transition channel: unix sockets `[target]`
 
-The transition channel (§4.3) is **unix-domain stream sockets**
-(`SOCK_STREAM`), not `Atomic::Pipe`. Each collector gets its own connection.
-The contract:
+The wire is **unix-domain stream sockets** (`SOCK_STREAM`), not `Atomic::Pipe`,
+everywhere. There are **two connection patterns**: short-lived **collector
+reporters** (below) and long-lived **service channels** (next).
+
+**Collector reporters (one-way, connect-out).** A per-process collector's
+reporter just streams its transitions; it is not a service.
 
 - **One connection per collector.** Frames from different collectors land on
   separate file descriptors and never interleave — atomicity by construction.
@@ -536,6 +581,25 @@ The contract:
   so any multiplexing reader can demultiplex. The start message additionally
   carries the collector name, the events-file path, the run association, and
   (for tests) the try number.
+
+**Service channels (one symmetric, reused channel per pair).** Services — the
+runner, preload stages, the system-load service — talk to each other over a
+**single, bidirectional, reused** connection, not separate inbound/outbound
+pools and not a channel per direction:
+
+- **One listen socket per service; one connection set.** A service accepts new
+  connections on its socket and adds them to its connection set. When it needs to
+  reach another service it opens a connection and puts it in the **same** set.
+- **Reuse, never duplicate.** If a connection between two processes already
+  exists, it is reused. There is **never a second channel** between the same two
+  processes — one channel carries traffic both ways regardless of which side
+  established it.
+- **Symmetric.** Once connected, **either end may send requests and responses**.
+  (So, e.g., a preload stage connects to the runner to register, and the runner
+  then sends job dispatch back over that same connection — §4.7.)
+- **One reusable implementation.** This model is provided by a shared **Role
+  and/or base class** that every service (runner, preload stages, the future
+  system-load service §4.4) consumes — not re-implemented per service.
 
 The detailed reader/monitor design from the abandoned 2.0b branch is preserved
 under `reference/2.0b/` and will be adapted as §4.3 lands; it is not restated
@@ -551,6 +615,13 @@ Service sockets live in the **workdir** and are named for their service:
 each **global** preload stage (§4.7). They use the same wire form as §5.2 —
 zstd-compressed JSON object frames, the collector's wire format.
 
+**Discovery is a symlink to the runner socket.** A persistent harness publishes a
+well-known **symlink that points at its `runner.socket`** (rather than a
+`yath-persist.json` metadata file). A client follows the symlink to reach the
+runner, and follows it to the socket's directory to locate the **workdir** (and
+from there the available `preload-<stage>.socket`s). This replaces the
+`yath-persist.json` discovery file.
+
 `preload-<stage>.socket` is only the **global / per-run-baseline** form. A
 **run-scoped** preload stage on a persistent multi-run runner needs a
 **run-qualified** name (e.g. `preload-<run_id>-<stage>.socket`, or a per-run
@@ -559,14 +630,19 @@ name — or a run-scoped name colliding with a global one — do not share or
 clobber a socket. The exact scheme is part of the still-open §6.1 multi-run
 layer.
 
-Direction of connection:
+Direction of connection (the symmetric service model, §5.2):
 
-- **Services accept; collectors and commands connect out.** The runner service
-  and each preload-stage service *accept* connections; a collector's reporter
-  and the `test` / `run` commands *connect to* them.
-- **The runner is itself a client to the preload-stage services**, connecting
-  out to each `preload-<stage>.socket` to dispatch jobs (§4.7). So the runner
-  both accepts (on `runner.socket`) and connects (to the stage sockets).
+- **Every service accepts on its one socket; any side may initiate.** Once a
+  connection exists between two services it is reused for both directions — there
+  is no fixed "X always connects to Y".
+- **Preload stages initiate to the runner.** A stage connects to `runner.socket`
+  to register and report state; the runner then dispatches jobs back over that
+  same connection (§4.7). The runner does **not** open a separate connection to a
+  stage to dispatch.
+- **A stage's `preload-<stage>.socket` is for `spawn`.** `yath spawn` connects to
+  it directly (§4.8); the runner does not use it for dispatch.
+- **Commands connect to the runner**, and **collector reporters connect out** to
+  the sockets they report to (the one-way pattern in §5.2).
 - The only files on the IPC path are the per-collector `.jsonl.zst` events
   files, read for display/archival (§4.5); all decision and dispatch traffic is
   on sockets (§2.5).
@@ -635,12 +711,16 @@ once) is a deliberate later step, not part of this resolution.
   graceful socket shutdown. The persistent runner's scheduler runs the in-memory
   `direct` State and dispatches to socket preload-stage services — no
   `dispatch.jsonl` / `jobs.jsonl` / `queue.jsonl` / `run_queue.jsonl`.
+  **Superseded targets:** discovery moves from `yath-persist.json` to a
+  **runner-socket symlink** (§5.3), and dispatch direction reverses to
+  **stage-registers-with-runner** over one shared channel (§4.7, §5.2); the
+  current code above uses the older `yath-persist.json` + runner-initiated
+  dispatch pending that migration (tracked in `MIGRATION.md`).
 
 **Remaining (tracked in `MIGRATION.md`, not blockers for the above):** concurrent
 run *execution* on a persistent runner; run-scoped preload stages as a user
-feature; and `watch` still tails the flat `output.log` / `error.log` shim (the
-persistent runner + its stages are not yet collector-wrapped, so migrating
-`watch` to a global socket subscription is a follow-up — it is coupled to the
-SIGHUP-reload message that `watch` currently reads from `output.log`). This
-section stays here until those land; the settled parts above are authoritative
-and mirrored across §4.2 / §4.7 / §5.3.
+feature; and the connection-model / discovery / spawn / preload-as-resource
+redesign now folded into §4.4 / §4.7 / §4.8 / §5.2 / §5.3. (The earlier
+`watch` / flat-log item is **done** — the persistent runner + stages are
+collector-wrapped and `watch` is a global socket subscriber.) The settled parts
+above are authoritative and mirrored across §4.2 / §4.7 / §5.3.
