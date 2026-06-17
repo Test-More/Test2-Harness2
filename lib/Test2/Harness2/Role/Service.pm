@@ -359,18 +359,22 @@ sub service_io ($self) {
         );
     }
 
-    # Drop connections that never identified within the timeout.
-    for my $fh (keys %{$self->{service_conns}}) {
-        my $conn = $self->{service_conns}{$fh};
-        $self->_drop_conn($conn) if $conn->expired;
-    }
-
+    # Read first: always drain whatever is readable before judging a connection
+    # silent, so a peer whose identity has arrived (or just arrived this iteration)
+    # is never dropped with its data still unread.
     for my $fh ($sel->can_read(0)) {
         next if $fh == $listen;
         my $conn = $self->{service_conns}{$fh} or next;
         my @events = $conn->drain;
         $self->_handle_events($conn, @events) if @events;
         $self->_drop_conn($conn) if $conn->closed;
+    }
+
+    # Then drop connections that connected but never identified within the timeout
+    # (a genuinely silent / stuck peer -- it had nothing readable above).
+    for my $fh (keys %{$self->{service_conns}}) {
+        my $conn = $self->{service_conns}{$fh};
+        $self->_drop_conn($conn) if $conn->expired;
     }
 
     return;

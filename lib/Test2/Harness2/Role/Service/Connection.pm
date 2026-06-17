@@ -98,7 +98,7 @@ The identity this side announces.
 =item $secs = $conn->identity_timeout
 
 How long (seconds) to wait for the peer's identity before declaring the connection
-bad. Defaults to 30.
+bad. Defaults to 5.
 
 =back
 
@@ -166,11 +166,11 @@ sub init ($self) {
     $self->{+BAD}     = 0;
     $self->{+READY}   = 0;
     $self->{+CLOSED}  = 0;
-    # Generous default: under heavy parallel load a busy service loop may take a
-    # while to first read a freshly-accepted connection, and dropping a legitimate
-    # peer that simply has not been serviced yet would lose its traffic. This only
-    # bounds a peer that connects and never identifies at all.
-    $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 30);
+    # Bounds a peer that connects but never identifies at all. The service reads
+    # before it checks expiry (see Role::Service::service_io), so a slow-but-present
+    # identity is always read before this can fire -- this only catches a genuinely
+    # silent / stuck peer, never a busy-loop timing gap.
+    $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 5);
 
     # A dialer announces itself immediately; an accepter waits and replies once it
     # has seen the peer's identity.

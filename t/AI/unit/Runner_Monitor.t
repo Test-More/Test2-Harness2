@@ -354,11 +354,12 @@ subtest service_forward_routing => sub {
 
     # A test job reports its transitions on its own connection. Every connection
     # now identifies first (no reporter exemption) — a real collector does this via
-    # the recorder preamble; here we send the identity frame, then stream the
-    # transition.
+    # the recorder preamble, with no_reply so the runner does NOT reply (an unread
+    # reply would become a TCP-RST on close and drop the transition). We model that
+    # here: send the identity (no_reply), then stream the transition.
     my $report = sub ($facet, %c) {
         my $rep = connect_unix($path);
-        write_frame($rep, compress_blob(encode_json({identity => {name => "reporter:" . ($c{uuid} // 'x')}})));
+        write_frame($rep, compress_blob(encode_json({identity => {name => "reporter:" . ($c{uuid} // 'x'), no_reply => 1}})));
         write_frame($rep, frame_for($facet, %c));
         $svc->service_io for 1 .. 5;
         close($rep);
