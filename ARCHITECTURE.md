@@ -77,6 +77,16 @@ designs, but the live tree starts from 1.0 and is migrated forward.
     displaying results (live render, archived render, querying past runs). The
     database + UI layer that used to be the separate `Test2-Harness-UI`
     distribution is rewritten **inline** here.
+  - **Reading test files is a UI/input concern, not a producing-results one.**
+    Discovering test files and reading each one (its header directives / metadata)
+    to decide how it runs belongs in **`App::Yath2`**. `Test2::Harness2` holds only
+    a **state-only** representation of that per-file decision data. The `test` /
+    `run` commands gather the files, compute that state in `App::Yath2`, then
+    **queue the run with jobs carrying the already-computed state** — the runner
+    consumes pre-decided state and does no file reading/parsing to plan a run.
+    (`Test2::Harness2::TestFile` currently mixes both roles and is split to match
+    this: the file-reading/decision logic moves to `App::Yath2`, leaving a plain
+    state object in `Test2::Harness2`.)
 - **Versions.** Every module's version moves to **`2.000000`**.
 - **The `yath` script** is provided by `App::Yath::Script` (an external module
   that discovers and loads our implementation). A `V2` entry point
@@ -512,9 +522,12 @@ of a separate stage-readiness code path.
 
 ### 4.8 Spawn (`yath spawn`) `[target]`
 
-**Responsibility.** `yath spawn` starts a single process from a preloaded
-interpreter and attaches it to the caller's terminal — without coupling it to
-the harness lifecycle.
+**Responsibility.** `yath spawn` starts a single process **from a preloaded
+interpreter** and attaches it to the caller's terminal — without coupling it to
+the harness lifecycle. **Spawn requires a preload:** its entire purpose is to
+start a process out of an existing preload stage, so with no preload available it
+has nothing to do (it is meaningless / an error, not a fork-from-scratch
+fallback).
 
 **Contract.**
 

@@ -343,6 +343,14 @@ done:
 - **Preload as a resource (§4.7a).** Model preload availability (expected +
   current state) as a resource so jobs gate on it like any other resource.
 
+**Namespace scoping — split `Test2::Harness2::TestFile` (`ARCHITECTURE.md` §1).**
+Reading test files to decide how they run is a UI/input concern. Move the
+file-gathering + per-file decision logic into `App::Yath2` (the `test` / `run`
+commands compute the state, likely alongside `App::Yath2::RunPlan`), leave a
+**state-only** representation in `Test2::Harness2`, and queue the run with jobs
+carrying that already-computed state so the runner does no file reading to plan a
+run. (Currently `Test2::Harness2::TestFile` mixes both roles.)
+
 - **Chunk 7 — system-load service.** Its own (global) process with a reliable
   tick. Per the revised §4.4 it is a **full service on the unified connection
   model**: its own listen socket, connects to the runner on startup to push
