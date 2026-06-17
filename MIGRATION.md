@@ -27,6 +27,11 @@ architecture* lives in `ARCHITECTURE.md`; the *how-to-work* rules live in
 - **`ARCHITECTURE.md`** — authoritative aspirational target-state spec.
   §1.1 holds the migration order; each subsystem section carries a status tag
   (`[1.0]` / `[migrating]` / `[target]`).
+- **`IPC.md`** — living **current-state** map of IPC, the process tree, reaping,
+  sockets, and on-disk artifacts + their consumers (the counterpart to
+  `ARCHITECTURE.md`'s target view). Shows only what is true now — nothing removed,
+  nothing aspirational. **Keep it current in the same change** whenever a chunk
+  alters IPC, process topology, reaping, sockets, or files created/consumed.
 - **`AGENTS.md`** — per-repo workflow, pre-review checks, dependency rules,
   commit/worktree policy, testing instructions.
 - **`STYLE_GUIDE.md`** + **`STYLE_GUIDE_AGENT_CHECKLIST.md`** — code style and

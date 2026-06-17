@@ -107,6 +107,13 @@ docs win — flag the conflict if it is non-trivial.
 5. **`MIGRATION.md`** — Living status tracker for the 1.0 → 2.0
    transition. Read it before doing transition work; update it after
    landing a chunk.
+6. **`IPC.md`** — Living **current-state** map of IPC, the process
+   tree, who reaps whom, the sockets, and the on-disk artifacts and
+   their consumers. Unlike `ARCHITECTURE.md` (the aspirational
+   target), `IPC.md` describes only what is true **right now** — it
+   shows nothing removed and nothing aspirational. **Keep it up to
+   date in the same change** whenever you alter IPC, the process
+   topology, reaping, the sockets, or the files created/consumed.
 
 If you are about to implement something that seems to conflict with
 `ARCHITECTURE.md`, stop and verify. The most common cause is that
