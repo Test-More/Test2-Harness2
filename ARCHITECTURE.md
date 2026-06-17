@@ -313,6 +313,20 @@ reporter`, where the **recorder** sink writes the full event stream to one
   exception is a **`yath spawn`** child, which runs under **no collector** (§4.8):
   it is detached from the harness and not a harness-tracked result.
 
+**Collectors watch the runner and self-terminate (invariant).** Every collector
+spawned **under a runner** (test jobs, preload stages — directly or via a stage)
+is given the **runner's pid to watch** (`Test2::Collector`'s `watch_parent_pid`).
+If the runner process disappears while the collector's child is still running, the
+collector **kills its child and finalizes/exits itself**. This makes collectors
+reliably self-terminating even when the runner dies *without* getting to signal
+them (a crash, `SIGKILL`, or any uncatchable death) — it is the backstop behind
+the runner's normal process-group `killall`, not a replacement for it. Combined
+with the rule that **no harness child (except `yath spawn`) may survive the
+runner**, this guarantees a dead runner leaves no orphaned collectors or test
+processes. The runner's *own* collector wrap is exempt (its child *is* the
+runner). A `yath spawn` child is exempt (§4.8): it has no collector and is the one
+process meant to outlive the harness.
+
 ### 4.2 Main harness service `[target]`
 
 **Responsibility.** One long-running **runner** service owns the canonical run
