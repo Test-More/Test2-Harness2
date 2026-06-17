@@ -438,6 +438,8 @@ Test2::Harness2::Util - General utiliy functions.
 
 =head1 DESCRIPTION
 
+A grab-bag of general-purpose utility functions used across Test2::Harness2.
+
 =head1 METHODS
 
 =head2 MISC

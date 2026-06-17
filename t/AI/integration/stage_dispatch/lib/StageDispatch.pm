@@ -27,3 +27,13 @@ stage BETA => sub {
 };
 
 1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+StageDispatch - Test fixture preload defining ALPHA/BETA stages for stage dispatch.
+
+=cut
