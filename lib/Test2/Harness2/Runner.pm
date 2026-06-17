@@ -26,7 +26,6 @@ use Test2::Harness2::Runner::Preloader();
 use Test2::Harness2::Runner::Preloader::Stage();
 use Test2::Harness2::Runner::DepTracer();
 use Test2::Harness2::Runner::Stage();
-use Test2::Harness2::Runner::Stage::Client();
 use Test2::Harness2::Runner::Monitor();
 use Test2::Harness2::Runner::Watchdog();
 use Test2::Harness2::Runner::StatusReport();
@@ -78,7 +77,6 @@ use Test2::Harness2::Util::HashBase(
 
         <rootpid
 
-        +stage_clients
         +stage_delegate
 
         +monitor
@@ -165,7 +163,7 @@ sub service_name {
 # is serialized (one active run) and preload stages are GLOBAL (shared,
 # runner-lifetime, flat preload-<stage>.socket), so there is no per-run stage to
 # scope or tear down. Implementing run_ord (+ a run-end stage teardown, +
-# Stage::Client run-scoped paths) is the seam for the future run-scoped-stage
+# run-scoped peer identities) is the seam for the future run-scoped-stage
 # feature; it is intentionally left unbuilt here (no trigger exists).
 
 # True when this process is a forked preload stage acting as a socket-dispatch
@@ -285,6 +283,7 @@ sub stage_delegate {
     return $self->{+STAGE_DELEGATE} //= Test2::Harness2::Runner::Stage->new(
         workdir => $self->{+DIR},
         name    => $self->{+STAGE},
+        runner  => $self,
     );
 }
 
@@ -472,48 +471,38 @@ sub watchdog {
     return $self->{+WATCHDOG} //= Test2::Harness2::Runner::Watchdog->new(runner => $self);
 }
 
-# Chunk 5d: the connect-out client to a stage's preload-<stage>.socket, one per
-# stage, lazily built and cached. The liveness check lets the client stop retrying
-# the connect if the stage process has died before it ever bound its socket (e.g. a
-# broken preload), so a dispatch becomes a no-op instead of hanging.
-sub stage_client {
+# Chunk 9: the stage child dials the runner's one service channel. runner.socket is
+# the global flat socket in the workdir (bound by the root long before any stage
+# forks), so a single connect normally succeeds; retry briefly in case the stage
+# forked during a momentary accept gap. The dialed connection joins this process's
+# service set, so the runner's dispatches (run_task / stop) are read off it and the
+# stage's reports ride back up it -- one channel both ways (ARCHITECTURE.md §5.2).
+sub _connect_runner {
     my $self = shift;
-    my ($stage) = @_;
 
-    return $self->{+STAGE_CLIENTS}->{$stage} //= Test2::Harness2::Runner::Stage::Client->new(
-        workdir        => $self->{+DIR},
-        stage          => $stage,
-        liveness_check => sub {
-            my $client = shift;
-            # One non-blocking reap sweep so a stage that died during startup
-            # leaves our tracked procs; then report whether THIS specific stage is
-            # still a tracked live process (a live target stage means keep waiting
-            # for it to bind). Matching by stage name -- rather than "any stage is
-            # alive" -- means a dead target stage is detected promptly even while
-            # OTHER stages are alive, instead of waiting the full CONNECT_TIMEOUT.
-            eval { $self->wait(timeout => 0); 1 };
-            for my $proc (values %{$self->{+PROCS} // {}}) {
-                next unless $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
-                return 1 if $proc->name eq $stage;
-            }
-            return 0;
-        },
-    );
+    my $path  = File::Spec->catfile($self->{+DIR}, 'runner.socket');
+    my $start = time();
+
+    while (1) {
+        return 1 if $self->service_connect_peer('runner', $path);
+        croak "Timed out connecting to runner.socket from stage '$self->{+STAGE}'"
+            if (time() - $start) > 30;
+        sleep 0.05;
+    }
 }
 
-# Chunk 5d: ask each transient stage service to shut down cleanly at run end.
-# Stage children idle waiting for dispatches and (unlike the old dispatch.jsonl
-# stages) never see the run end on their own, so the root must tell them. We send a
-# graceful socket 'stop' to EVERY stage that is still tracked as a live process --
-# matching it to its socket by name -- so each unwinds its own run loop and exits 0
-# (a clean stage verdict), letting the root's wait(all=>1) complete. A stage that
-# already exited (broken preload) is skipped. TERM/KILL escalation for any straggler
-# is left to the runner's normal stop() path.
+# Chunk 9: ask each transient stage service to shut down cleanly at run end. Stage
+# children idle waiting for dispatches and never see the run end on their own, so
+# the root must tell them. We send a graceful 'stop' down the SAME registered
+# channel each stage opened to us, to every stage still tracked as a live process.
+# A stage whose channel has already dropped (it exited -- a broken preload) has no
+# peer connection and is skipped. TERM/KILL escalation for any straggler is left to
+# the runner's normal stop() path.
 sub stop_stages {
     my $self = shift;
 
     # Map each still-tracked stage process to its stage name so we stop exactly the
-    # live stages (including nested children) over their own sockets.
+    # live stages (including nested children) over their own channels.
     my %live_stage;
     for my $proc (values %{$self->{+PROCS} // {}}) {
         next unless $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
@@ -521,9 +510,7 @@ sub stop_stages {
     }
 
     for my $stage (keys %live_stage) {
-        my $client = $self->stage_client($stage);
-        next if $client->stage_gone;
-        eval { $client->stop; 1 };
+        eval { $self->service_send("preload-$stage", {request => 'stop'}); 1 };
     }
 
     return;
@@ -543,9 +530,15 @@ sub dispatch_pending {
     my $run_item = $state->run_item;
 
     for my $task (@tasks) {
-        my $stage  = $task->{stage};
-        my $client = $self->stage_client($stage);
-        my $sent   = $client->run_task($task, $run_item);
+        my $stage = $task->{stage};
+
+        # Chunk 9: dispatch down the registered channel the stage opened to us
+        # (service_send by peer identity), instead of dialing the stage's socket.
+        # The stage is only schedulable after its stage_ready arrived on that
+        # connection, so the peer normally exists; if the stage has since died its
+        # connection dropped (EOF) and service_send reports no peer -- the same
+        # "stage gone" signal the old connect-out client surfaced.
+        my $sent = $self->service_send("preload-$stage", {request => 'run_task', task => $task, run => $run_item});
 
         # take_dispatch_tasks already pulled this task off the list while it stays
         # tracked as RUNNING (slot + resources consumed). If the dispatch was a
@@ -630,21 +623,28 @@ sub run_stage {
 
     $self->{+STAGE} = $stage;
 
-    # A forked transient preload stage (chunk 5d) becomes a dispatch service: it
-    # drops the runner.socket listen descriptor it inherited from the root and
-    # binds its own preload-<stage>.socket. The socket starting to accept is the
-    # readiness signal the runner waits on (Stage::Client connect-retry), which
-    # replaces the dispatch.jsonl-backed stage_ready action for the transient path.
+    # A forked preload stage becomes a dispatch service: it drops the runner.socket
+    # listen descriptor it inherited from the root and binds its own
+    # preload-<stage>.socket (reserved for `yath spawn`, ARCHITECTURE.md §4.8). It
+    # then opens the one registered service channel to the runner and announces
+    # readiness over it (chunk 9, below), replacing the dispatch.jsonl-backed
+    # stage_ready action.
     my $stage_service = $self->is_stage_service;
     if ($stage_service) {
         $self->reset_service;
         $self->start_service;
-        # The socket is now bound and about to start accepting: tell the runner this
-        # stage is ready to be scheduled. This mirrors the old dispatch.jsonl
-        # stage_ready action over the socket so the runner's _stage_order picks the
-        # stage up (chunk 5d). The socket accepting is the readiness signal; the
-        # explicit report just lets the runner gate scheduling without probing.
-        $self->state->client->stage_ready($stage);
+
+        # Chunk 9 (ARCHITECTURE.md §5.2): open the ONE registered service channel
+        # to the runner and announce readiness over it. The stage dials runner.socket
+        # (already bound long before any stage forks) and handshakes as
+        # 'preload-<stage>'; the runner reads stage_ready / outcome reports off this
+        # connection AND dispatches jobs back down it -- one bidirectional channel per
+        # runner/stage pair, replacing the old two one-way channels (runner -> stage
+        # dispatch socket + stage -> runner.socket report client). The stage still
+        # binds its own preload-<stage>.socket, but it is reserved for `yath spawn`
+        # (ARCHITECTURE.md §4.8), not used by the runner for dispatch.
+        $self->_connect_runner;
+        $self->service_send('runner', {request => 'stage_ready', stage => $stage});
     }
     else {
         $self->state->stage_ready($stage);
@@ -676,7 +676,7 @@ sub run_stage {
     }
 
     if ($stage_service) {
-        my $ok = eval { $self->state->client->stage_down($stage); 1 };
+        eval { $self->service_send('runner', {request => 'stage_down', stage => $stage}); 1 };
         $self->close_service;
     }
     else {
@@ -787,7 +787,9 @@ sub run_job {
         $self->record_job_pid($task->{job_id}, $pid);
     }
     else {
-        eval { $self->state->client->job_pid($task->{job_id}, $pid); 1 };
+        # Chunk 9: the stage reports the forked job's pid back up its one registered
+        # channel (the stage delegate's job_pid -> service_send('runner', ...)).
+        eval { $self->state->job_pid($task->{job_id}, $pid); 1 };
     }
 
     return $pid;
@@ -877,11 +879,17 @@ sub set_proc_exit {
     elsif ($proc->isa('Test2::Harness2::Runner::Preloader::Stage')) {
         my $stage = $proc->name;
 
-        # Chunk 6.1-2: a stage that exited (a reload/monitor relaunch, or a death)
-        # took its preload-<stage>.socket with it. Drop the cached connect-out
-        # client so the next dispatch reconnects to the relaunched stage's fresh
-        # socket instead of writing to a stale/closed connection.
-        delete $self->{+STAGE_CLIENTS}->{$stage} if $self->{+ROOTPID} == $$;
+        # Chunk 9: a stage that exited (a reload/monitor relaunch, or a death) took
+        # its end of the registered service channel with it. Drop the peer
+        # connection so a relaunched stage's fresh dial registers cleanly and a
+        # dispatch to a dead stage reports no-peer (handled as "stage gone") instead
+        # of writing to a stale fd. A normal EOF already drops it; this covers the
+        # reap-before-EOF ordering.
+        if ($self->{+ROOTPID} == $$) {
+            if (my $conn = $self->service_peer_conn("preload-$stage")) {
+                $self->_drop_conn($conn);
+            }
+        }
 
         if ($exit != 0) {
             my $e   = parse_exit($exit);

@@ -4,14 +4,14 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
+use Scalar::Util qw/weaken/;
 
 use Test2::Harness2::Runner::Run();
-use Test2::Harness2::Runner::Client();
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
     <name
-    +client
+    <runner
     +pending
     +runs
     +current_run
@@ -38,9 +38,17 @@ The stage's service loop hands each dispatched C<run_task> request to
 C<enqueue_task>; the stage's run loop pops them via C<next_task> (the same
 method name the runner's State exposes, so the shared C<run_job> code is
 unchanged) and forks the job. When a job finishes the stage reports the outcome
-back to the runner over C<runner.socket> via C<stop_task> / C<retry_task> /
-C<halt_run>, so the runner's canonical in-process state stays authoritative for
-scheduling without a shared file.
+back to the runner via C<stop_task> / C<retry_task> / C<halt_run>, so the
+runner's canonical in-process state stays authoritative for scheduling without a
+shared file.
+
+Chunk 9 (ARCHITECTURE.md §5.2): those reports ride the B<one> registered service
+channel the stage opened to the runner (the connection it dials to send
+C<stage_ready>), not a second connect-out to C<runner.socket>. The stage sends
+each report with the runner's C<service_send> to the C<runner> peer; the runner
+reads it off that same connection and dispatches it to its request handlers. The
+runner dispatches jobs B<down> the same channel, so there is one connection per
+runner/stage pair carrying both directions.
 
 =head1 PUBLIC METHODS
 
@@ -73,6 +81,11 @@ Report a finished-but-should-retry job to the runner.
 
 Ask the runner to halt the run (e.g. a bail-out under --abort-on-bail).
 
+=item $stage->job_pid($job_id, $pid)
+
+Report the pid of a job this stage forked so the runner's job-pid map (used by the
+status / ps / abort report) is complete.
+
 =item $stage->stage_ready / $stage->stage_down
 
 No-ops: stage readiness is signalled to the runner by the socket accepting a
@@ -86,13 +99,21 @@ call them uniformly.
 sub init ($self) {
     croak "'workdir' is a required attribute" unless defined $self->{+WORKDIR};
     croak "'name' is a required attribute"    unless defined $self->{+NAME};
+    croak "'runner' is a required attribute"  unless defined $self->{+RUNNER};
+    weaken($self->{+RUNNER});
     $self->{+PENDING} //= [];
     $self->{+RUNS}    //= {};
     return;
 }
 
-sub client ($self) {
-    return $self->{+CLIENT} //= Test2::Harness2::Runner::Client->new(workdir => $self->{+WORKDIR});
+# Chunk 9: report one outcome to the runner over the single registered service
+# channel (the connection this stage opened to send stage_ready), instead of a
+# second connect-out to runner.socket. The runner reads it off that connection
+# and folds it into canonical state via its request handlers.
+sub _report ($self, $message) {
+    my $runner = $self->{+RUNNER} or return;
+    $runner->service_send('runner', $message);
+    return;
 }
 
 sub enqueue_task ($self, $task, $run_item) {
@@ -116,17 +137,22 @@ sub next_task ($self, $stage = undef) {
 sub run ($self) { return $self->{+CURRENT_RUN} }
 
 sub stop_task ($self, $job_id) {
-    $self->client->stop_task($job_id);
+    $self->_report({request => 'stop_task', job_id => $job_id});
     return;
 }
 
 sub retry_task ($self, $job_id) {
-    $self->client->retry_task($job_id);
+    $self->_report({request => 'retry_task', job_id => $job_id});
     return;
 }
 
 sub halt_run ($self, $run_id) {
-    $self->client->halt_run($run_id);
+    $self->_report({request => 'halt_run', run_id => $run_id});
+    return;
+}
+
+sub job_pid ($self, $job_id, $pid) {
+    $self->_report({request => 'job_pid', job_id => $job_id, pid => $pid});
     return;
 }
 
@@ -141,7 +167,7 @@ sub done ($self, @) { return 0 }
 # Forward a reload/monitor notification to the runner so its reload state (used for
 # diagnostics) stays current; the stage itself keeps no scheduler state.
 sub reload ($self, $stage, $data) {
-    $self->client->reload($stage, $data);
+    $self->_report({request => 'reload', stage => $stage, data => $data});
     return;
 }
 

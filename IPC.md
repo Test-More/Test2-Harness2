@@ -47,9 +47,11 @@ yath test                          COMMAND: client + renderer host
 └─ spawn ─ [collector:runner] ─► runner  (service; binds runner.socket)
                                  │  in-process scheduler (in-memory State)
                                  │  Runner::Monitor = canonical state
-                                 │  connects OUT to each preload-<stage>.socket
+                                 │  dispatches to each stage over the ONE channel the stage opened to it
                                  │
-                                 ├─ fork ─ [collector:stage-<name>] ─► preload stage  (service; binds preload-<name>.socket)
+                                 ├─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
+                                 │                                     │  dials runner.socket, registers (handshake 'preload-<name>'),
+                                 │                                     │  reports up + receives dispatch down that one channel
                                  │                                     └─ fork ─ [collector:job] ─► test job ─ exec test file
                                  │
                                  └─ no-preload path: fork ─ [collector:job] ─► test job   (runner forks the job collector itself)
@@ -69,7 +71,8 @@ yath start  (writes yath-persist.json {pid,dir}; spawns the runner; then exits)
    └─ [collector:runner] ─► persistent runner  (service; stays up on runner.socket)
                             │  serialized: one active run at a time
                             │  Runner::Monitor keyed by run; routes each client only its run
-                            ├─ [collector:stage-<name>] ─► preload stage (service on preload-<name>.socket)
+                            ├─ [collector:stage-<name>] ─► preload stage (dials runner.socket to register;
+                            │                              │              binds preload-<name>.socket, reserved for spawn)
                             │                              └─ [collector:job] ─► test job
                             └─ ...
 
@@ -99,7 +102,7 @@ Reaping is local to whichever process forked the (collector-wrapped) child;
 |---|---|---|
 | `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner |
 | runner | each preload stage (its collector); on the no-preload path, the test job (its collector) it forked directly | |
-| preload stage | each test job (its collector) it forked | the stage reports the job's `stop_task`/`retry_task` back to `runner.socket` |
+| preload stage | each test job (its collector) it forked | the stage reports the job's `stop_task`/`retry_task` up the one service channel it opened to the runner |
 
 **Completion is learned from transitions, not from reaping.** A job's collector
 emits its final-state transition to `runner.socket`; the runner folds it into
@@ -119,11 +122,12 @@ self-contained frame, via `Test2::Collector::Util::Socket` (`open_unix_listen` /
 
 | Socket | Server (accepts) | Clients (connect out) | Carries |
 |---|---|---|---|
-| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; every non-runner collector's reporter; each preload stage (reporting back) | control **requests** (+ replies); **transitions** from job & stage collectors; stage→runner `stop_task`/`retry_task`/`stage_ready`/`stage_down` |
-| `preload-<stage>.socket` (one per preload stage) | that preload stage | the runner (via `Runner::Stage::Client`) | job dispatch: `run_task`, `stop` |
+| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from job & stage collectors; the bidirectional runner↔stage channel (see below) |
+| `preload-<stage>.socket` (one per preload stage) | that preload stage | nothing yet (**reserved** for `yath spawn`, ARCHITECTURE.md §4.8) | — |
 
-The runner is both a **server** (on `runner.socket`) and a **client** (out to each
-`preload-<stage>.socket`).
+The runner is the **server** on `runner.socket`. It no longer connects out to the
+`preload-<stage>.socket`s; a stage dials the runner and the runner dispatches back
+over that one channel.
 
 ### Frame discrimination on `runner.socket`
 
@@ -138,45 +142,44 @@ The runner is both a **server** (on `runner.socket`) and a **client** (out to ea
 
 Requests carry no `facet_data`, so the two never collide.
 
-### Connection model — inbound vs outbound are separate
+### Connection model — one bidirectional set (ARCHITECTURE.md §5.2)
 
-A process that both serves a socket and connects out to others keeps **two
-unrelated connection structures**; they are not one shared pool, and a connection
-is never reused for the opposite direction.
+`Role::Service` keeps **one** connection set. Every connection — whether the
+service **accepted** it or **dialed** it via `service_connect_peer` — lives in the
+same `service_select` (`IO::Select`) and `service_conns` (each fd → per-connection
+metadata: its `FrameBuffer`, peer `identity`, and an `outbound` flag), and the
+service reads framed messages off all of them. A dialed connection is therefore
+**not** write-only: once open, **either end may send requests**. `service_subs` is
+still the subset of connections flagged as subscribers (pushed `forward_frame`
+deltas).
 
-- **Inbound (server side, from `Role::Service`):** `service_select` (an
-  `IO::Select`), `service_conns` (each accepted fd → its `FrameBuffer`), and
-  `service_subs` (the subset of accepted conns that sent `subscribe`). Every peer
-  that connects *to* this process lands here, multiplexed by `select`. The server
-  only **reads** framed requests/transitions off these — except subscriber conns,
-  which it also **pushes** forwarded frames to (the one bidirectional case, see
-  below).
-- **Outbound (client side):** discrete cached client objects, one per peer, each
-  holding a single connection this process opened *out*. They are **not** in the
-  select set and are write-only (their requests are one-way / read only an
-  explicit reply). On the runner: `stage_clients` (`stage → Runner::Stage::Client`,
-  out to each `preload-<stage>.socket`). On a stage: one `Runner::Client` (out to
-  `runner.socket`) plus its collector's `Recorder::Socket` reporter (also out to
-  `runner.socket`).
+- **Peer-identity handshake.** A service connection exchanges a handshake frame
+  (`{handshake => {identity => <name>}}`) on open — the dialer sends its identity,
+  the accepter replies with its own — before it is treated as a registered peer
+  (`service_peers{<identity>} = fd`). `service_connect_peer` reuses an existing
+  peer connection instead of opening a second one; a simultaneous reverse-connect
+  collapses to a single channel (keep the connection whose initiator has the
+  smaller identity). A connection that never handshakes (a collector reporter, a
+  plain request/reply command client) is unaffected — the handshake is one more
+  discriminated frame kind, not a mandatory preamble.
 
-So runner ↔ stage traffic is **two independent one-way channels**, each its own
-connect-out → accept pair — not one bidirectional connection reused both ways:
+So **runner ↔ stage is one bidirectional channel**, not two one-way ones. The
+stage dials `runner.socket`, registers as `preload-<stage>`, and that single
+connection carries both directions:
 
 ```
-runner --[Stage::Client: connect-out, one-way run_task/stop]--> stage's accept set   (dispatch)
-stage  --[Runner::Client: connect-out, one-way stop_task/...]--> runner's accept set  (report back)
+stage  --[dials runner.socket, handshake 'preload-<stage>']--> runner's set
+        reports UP   (stage_ready / stage_down / stop_task / retry_task / job_pid / reload / halt_run)
+        dispatch DOWN (run_task / stop)  — runner service_send's by peer identity over the SAME fd
 ```
 
-The runner never reads from its outbound stage connection; the stage never writes
-back on the inbound dispatch connection it accepted. Each fd is single-purpose and
-single-direction.
+The stage's collector `Recorder::Socket` reporter is a **separate**, anonymous,
+one-way connection to `runner.socket` (it streams transitions and never
+handshakes) — that reporter lane is unchanged.
 
-**The one bidirectional fd — subscribers.** A subscriber connects *out* to
-`runner.socket` (inbound to the runner), sends `subscribe`, and the runner then
-**pushes** forwarded transition frames back over that same fd (`forward_frame`
-over `service_subs`). So a subscriber connection carries both directions on one
-accepted fd — but it still lives in the inbound accept set, just flagged in
-`service_subs`.
+**Subscribers** are the other bidirectional case: a command connects *out* to
+`runner.socket`, sends `subscribe`, and the runner **pushes** forwarded frames
+back over that same fd (`forward_frame` over `service_subs`).
 
 ---
 
