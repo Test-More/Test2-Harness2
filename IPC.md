@@ -138,6 +138,46 @@ The runner is both a **server** (on `runner.socket`) and a **client** (out to ea
 
 Requests carry no `facet_data`, so the two never collide.
 
+### Connection model — inbound vs outbound are separate
+
+A process that both serves a socket and connects out to others keeps **two
+unrelated connection structures**; they are not one shared pool, and a connection
+is never reused for the opposite direction.
+
+- **Inbound (server side, from `Role::Service`):** `service_select` (an
+  `IO::Select`), `service_conns` (each accepted fd → its `FrameBuffer`), and
+  `service_subs` (the subset of accepted conns that sent `subscribe`). Every peer
+  that connects *to* this process lands here, multiplexed by `select`. The server
+  only **reads** framed requests/transitions off these — except subscriber conns,
+  which it also **pushes** forwarded frames to (the one bidirectional case, see
+  below).
+- **Outbound (client side):** discrete cached client objects, one per peer, each
+  holding a single connection this process opened *out*. They are **not** in the
+  select set and are write-only (their requests are one-way / read only an
+  explicit reply). On the runner: `stage_clients` (`stage → Runner::Stage::Client`,
+  out to each `preload-<stage>.socket`). On a stage: one `Runner::Client` (out to
+  `runner.socket`) plus its collector's `Recorder::Socket` reporter (also out to
+  `runner.socket`).
+
+So runner ↔ stage traffic is **two independent one-way channels**, each its own
+connect-out → accept pair — not one bidirectional connection reused both ways:
+
+```
+runner --[Stage::Client: connect-out, one-way run_task/stop]--> stage's accept set   (dispatch)
+stage  --[Runner::Client: connect-out, one-way stop_task/...]--> runner's accept set  (report back)
+```
+
+The runner never reads from its outbound stage connection; the stage never writes
+back on the inbound dispatch connection it accepted. Each fd is single-purpose and
+single-direction.
+
+**The one bidirectional fd — subscribers.** A subscriber connects *out* to
+`runner.socket` (inbound to the runner), sends `subscribe`, and the runner then
+**pushes** forwarded transition frames back over that same fd (`forward_frame`
+over `service_subs`). So a subscriber connection carries both directions on one
+accepted fd — but it still lives in the inbound accept set, just flagged in
+`service_subs`.
+
 ---
 
 ## 6. Transition channel, canonical state, and subscriptions
