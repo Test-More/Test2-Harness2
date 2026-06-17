@@ -492,7 +492,7 @@ the former separate `Test2-Harness-UI` distribution, rewritten inline in
   it is **not** the live cross-process coordination substrate (that is the
   transition channel, §4.3).
 
-### 4.7 Preload stage services `[target]`
+### 4.7 Preload stage services `[migrating]`
 
 **Responsibility.** Each preload stage runs as its own (non-test) collector
 (§4.1) **and** as a service with its own unix socket (`preload-<stage>.socket`
@@ -620,11 +620,21 @@ relitigated.
   the one-frame-per-record file format every reader depends on. The recorder
   writes one zstd frame per event, immediately, with no buffer.
 
-### 5.2 Transition channel: unix sockets `[target]`
+### 5.2 Transition channel: unix sockets `[migrating]`
 
 The wire is **unix-domain stream sockets** (`SOCK_STREAM`), not `Atomic::Pipe`,
 everywhere. There are **two connection patterns**: short-lived **collector
 reporters** (below) and long-lived **service channels** (next).
+
+**Status.** The symmetric service-channel model below is implemented in
+`Test2::Harness2::Role::Service` and carries the **runner↔stage** pair as one
+bidirectional, handshaked, reused connection (the stage dials the runner and the
+runner dispatches back over it). The future system-load service (chunk 7) is the
+remaining consumer. Request/response **correlation ids** are not implemented yet:
+the symmetric traffic in place is all one-way, and the two-way requests
+(`status` / `truncate` / `subscribe` / …) are single-initiator and read their one
+reply, so no correlation is needed until a service issues concurrent two-way
+requests on a shared channel.
 
 **Collector reporters (one-way, connect-out).** A per-process collector's
 reporter just streams its transitions; it is not a service.

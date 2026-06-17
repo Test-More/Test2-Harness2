@@ -81,11 +81,11 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | 4a ✅ `bf1081ab0` (merge) · 4b ✅ `46e75cd55` |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ (transient + persistent; §6.1 serialized+routed) | 5a `ceec15894` · 5b `24cb1e798` · 5c `654a742b7` · 5d `c888157ad` · 5e `625079b01` · 5f `c6291a197` · 5g `3b0704488` · §6.1 `e881efa8f`,`f647c84c9`,`944757b05`,`59210f9e2`,`fb5e07174`,`5959fe720`,`6a0fdecc9`,`3a4586b31`,`a9ade9a7b` |
 | 6 | Renderer: interim (commands own renderers) → base-renderer rewrite | ✅ | 6a `9c3ce01ae` (interim) · §4.5 base renderer `4410c8105` · watch/flat-logs retired `f9142217c` |
-| 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ (needs 9) | — |
+| 7 | System-load service (own process, reliable tick → reports load to runner) | ⬜ (9 done; rides §5.2) | — |
 | 8a | Database + UI inline (**interim**, DBIx::Class, SQLite logs) | ✅ | `2d09d348a` (merge) |
 | 8b | Convert inlined UI schema `DBIx::Class` → `DBIx::QuickORM` (the §2.4/§4.6 target) | ⬜ (deferred) | — |
-| 9 | Unified symmetric service channel — one bidirectional reused connection/pair, shared Role/base (§5.2) | ⬜ | — |
-| 10 | Preload stage self-registration + lifecycle; runner dispatches over registered channel (§4.7) — needs 9 | ⬜ | — |
+| 9 | Unified symmetric service channel — one bidirectional reused connection/pair, shared Role/base + handshake (§5.2); collapsed runner↔stage onto it | ✅ | `ba9bde35a` (infra) · `55c21a227` (runner↔stage) |
+| 10 | Preload stage lifecycle states (`starting`/`restarting`/`down`) + stage-owned restart (§4.7) — registration + dispatch-over-registered-channel landed in 9 | ⬜ (residual) | — |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10 | ⬜ | — |
 | 12 | Discovery via runner-socket symlink + `PID`-file signal fallback (§5.3) | ⬜ | — |
 | 13 | `spawn` bypasses runner: direct stage socket, dup2 IO, double-fork no collector (§4.8) — needs 9,10,12 | ⬜ | — |
@@ -344,37 +344,37 @@ this task):
 
 ## Next
 
-**Chunks 1-8a are complete.** Both `yath test` and the persistent
+**Chunks 1-8a and 9 are complete.** Both `yath test` and the persistent
 `yath start`/`run`/`spawn`/`stop`/`watch` paths run on the socket model with the
 §4.5 base renderer; the gatherer, all coordination files, and the flat-log shim
 are gone — the only IPC files anywhere are `events.jsonl.zst` (plus the `aux_logs`
-plugin path); the DB/UI layer is inlined on interim `DBIx::Class`. Remaining work
-is chunks **7-16** (see the table for numbering + dependencies). The notes below
+plugin path); the DB/UI layer is inlined on interim `DBIx::Class`; runner↔stage
+runs on the unified §5.2 service channel (chunk 9). Remaining work is chunks
+**7, 8b, 10-16** (see the table for numbering + dependencies). The notes below
 flesh out each chunk; the `thoughts` / `thoughts2` decisions they capture are
 restated in `ARCHITECTURE.md` (§1, §4.4/§4.7/§4.8/§5.2/§5.3) so they stand without
 the untracked source notes.
 
 **Service-IPC redesign (chunks 9-13 — see `ARCHITECTURE.md` §4.4/§4.7/§4.8/§5.2/§5.3).**
-These revise *currently-shipped* mechanisms — planned changes, not done:
 
-- **Chunk 9 — unified, symmetric service connection model (§5.2).** Replace the
-  current separate inbound/outbound pools + two one-way runner↔stage channels with
-  **one bidirectional channel per process-pair**, reused regardless of which side
-  connected, in a single connection set — a reusable Role/base class shared by
-  runner, preload stages, and the system-load service. (Reverses the connection
-  model now described in `IPC.md` §5.) **Adds an identity handshake** on connect
-  (an `accept`ed `SOCK_STREAM` carries no peer identity): each connection exchanges
-  a frame naming the peer (stage name / sysload id / client type) **before** it
-  joins the set, which also resolves the simultaneous-connect race (dedup to one
-  channel). **Prereq for chunks 7, 10, 13, 16.**
-- **Chunk 10 — preload stages register with the runner (§4.7).** Reverse the
-  runner-connects-out-to-dispatch direction: a stage connects to the runner on
-  start, reports its own state (`starting`/`up`/`restarting`/`down`), owns its
-  restart decisions, and the runner dispatches over that same registered channel;
-  the runner treats a stage as unavailable until it registers. **Restart is
-  stage-initiated:** the stage announces `restarting`/`down`, closes its channel,
-  and exits; the runner's reaper detects the exit and spawns a fresh instance that
-  re-registers — the runner never relaunches a live stage. Needs 9.
+- **Chunk 9 — unified, symmetric service channel (§5.2). ✅ DONE**
+  (`ba9bde35a`, `55c21a227`; AI_DOC `AI_DOCS/2026-06-16-chunk9-unified-service-channel.md`).
+  `Test2::Harness2::Role::Service` now keeps **one** connection set covering both
+  accepted and dialed connections, with a peer-identity **handshake** on connect
+  (`service_connect_peer` / `service_peer_conn` / `service_send`), reuse-never-
+  duplicate, and deterministic simultaneous-connect dedup. **runner↔stage is
+  collapsed onto it:** the stage dials `runner.socket`, registers as
+  `preload-<stage>`, reports up that one channel and receives `run_task`/`stop`
+  dispatch back down it; the runner no longer connects out to
+  `preload-<stage>.socket` (reserved for `spawn`). `Runner::Stage::Client` deleted.
+  Correlation ids are **not** built (all symmetric traffic is one-way; two-way
+  requests stay single-initiator — see `ARCHITECTURE.md` §5.2 status).
+- **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7).**
+  Registration and dispatch-over-the-registered-channel **landed in chunk 9**
+  (the stage initiates and the runner treats it unavailable until `stage_ready`).
+  Residual: the explicit `starting`/`restarting`/`down` lifecycle states and
+  giving the stage ownership of its restart decision (today the preloader monitor
+  still drives reload-respawn through the runner's `set_proc_exit` longjump).
 - **Chunk 11 — preload as a resource (§4.7a).** Model preload availability
   (expected + current state) as a scheduler resource so jobs gate on it like any
   other resource. Needs 10.
