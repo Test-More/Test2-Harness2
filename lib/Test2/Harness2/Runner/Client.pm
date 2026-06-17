@@ -6,6 +6,7 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 use File::Spec();
 use IO::Select();
+use POSIX qw/:errno_h/;
 use Time::HiRes qw/sleep/;
 
 use Test2::Collector::Util::Socket qw/connect_unix write_frame/;
@@ -371,6 +372,13 @@ sub _request ($self, $request) {
             my $n   = sysread($conn, $buf, 65536);
             croak "runner closed the connection before sending a reply"
                 if defined $n && $n == 0;
+
+            # A fatal sysread error (anything other than the retryable
+            # EINTR/EAGAIN/EWOULDBLOCK -- e.g. ECONNRESET) is permanent; croak now
+            # instead of looping on can_read until CONNECT_TIMEOUT expires.
+            croak "fatal error reading from runner socket: $!"
+                if !defined($n) && $! != EINTR && $! != EAGAIN && $! != EWOULDBLOCK;
+
             $fb->push_bytes($buf) if $n;
         }
 
