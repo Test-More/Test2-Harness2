@@ -93,24 +93,28 @@ The socket request handlers; see the inline documentation for each.
 # These are one-way requests: the role's _service_conn sends no reply when a
 # handler returns undef. Ordering is preserved because the command sends them
 # over a single connection and the FrameBuffer drains frames in order.
+# Chunk 19.3: run/task submissions go through submit_action, which applies them to
+# State immediately on every path EXCEPT the scheduler-only preload-root path before
+# the stage map + base-stage resolver are ready -- there it buffers them and replays
+# them in order once ready (a task cannot be bucketed by stage until then).
 sub request_handler_queue_run {
     my $self = shift;
     my ($payload) = @_;
-    $self->state->queue_run($payload->{run});
+    $self->submit_action('queue_run', $payload->{run});
     return undef;
 }
 
 sub request_handler_queue_task {
     my $self = shift;
     my ($payload) = @_;
-    $self->state->queue_task($payload->{task});
+    $self->submit_action('queue_task', $payload->{task});
     return undef;
 }
 
 sub request_handler_stop_run {
     my $self = shift;
     my ($payload) = @_;
-    $self->state->stop_run($payload->{run_id});
+    $self->submit_action('stop_run', $payload->{run_id});
     return undef;
 }
 
@@ -147,7 +151,7 @@ sub request_handler_queue_spawn {
 
 sub request_handler_end_queue {
     my $self = shift;
-    $self->state->end_queue();
+    $self->submit_action('end_queue');
     return undef;
 }
 
@@ -370,7 +374,43 @@ sub request_handler_set_stage_data {
 
     $self->{'reported_stage_data'} = $payload->{stage_data} // {};
 
+    # Chunk 19.3: if the scheduler-only State was already built (e.g. an early status
+    # request) it captured an empty map; refresh its eager fan-out + stage map now
+    # that the real data has arrived, before any task is bucketed (submit_action
+    # buffers tasks until the map + base stage are ready, so this lands first).
+    if (my $state = $self->{'state'}) {
+        if ($self->_preload_root_hosts_stages) {
+            $state->set_eager_stages($self->eager_from_stage_map);
+            $state->set_stage_map($self->{'reported_stage_data'});
+        }
+    }
+
     return {ok => 1};
+}
+
+# Chunk 19.3: the scheduler-only runner has no loaded preloader, so it asks the base
+# stage (the process holding the merged preload meta) to resolve test files' stages
+# via the preload's file_stage callbacks, falling back to the default stage. Served
+# only where a preloader is loaded (the base stage). Precedence mirrors
+# Runner::Preloader::task_stage; the directive stage and NOPRELOAD are resolved
+# runner-side, so only file_stage // default reaches here. Two-way.
+sub request_handler_resolve_file_stages {
+    my $self = shift;
+    my ($payload) = @_;
+
+    my $files = $payload->{files} || [];
+
+    my $preloader = $self->can('preloader') ? $self->preloader : undef;
+    my $staged    = $preloader ? $preloader->staged : undef;
+
+    my %stages;
+    for my $file (@$files) {
+        next unless $staged;
+        my $stage = $staged->file_stage($file) // $staged->default_stage;
+        $stages{$file} = $stage if defined $stage;
+    }
+
+    return {ok => 1, stages => \%stages};
 }
 
 # The stage map the preload root reported (chunk 19.1), or undef before it has
@@ -379,6 +419,22 @@ sub request_handler_set_stage_data {
 # existing in-runner dispatch path.
 sub reported_stage_data     { $_[0]->{'reported_stage_data'} }
 sub has_reported_stage_data { defined $_[0]->{'reported_stage_data'} ? 1 : 0 }
+
+# Chunk 19.3: the preload-root reports that its stage-host Runner has finished. If
+# the scheduler-only runner is still waiting for a stage to register (a broken
+# preload that died before any stage came up), this is the signal to stop waiting,
+# fail the run, and surface the preload-root's captured error output. On a normal run
+# the runner has long since passed that wait, so this just records the fact. One-way.
+sub request_handler_stage_host_exited {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->{'stage_host_exited'} = 1;
+    $self->{'stage_host_errors'} = $payload->{errors} if $payload && $payload->{errors};
+    return undef;
+}
+
+sub stage_host_exited { $_[0]->{'stage_host_exited'} ? 1 : 0 }
+sub stage_host_errors { $_[0]->{'stage_host_errors'} // [] }
 
 # Chunk 5e: the runner is the hub of the transition channel. Every non-runner
 # collector (each test job, each transient preload stage, any aux collector)

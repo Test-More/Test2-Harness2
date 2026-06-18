@@ -278,9 +278,28 @@ sub state {
     # call, so the shared run loop is unchanged.
     return $self->stage_delegate if $self->is_stage_service;
 
+    my $settings = $self->settings;
+
+    # Chunk 19.3: when the preload-root hosts the stages this runner is
+    # scheduler-only and holds NO preloader. State resolves a task's stage from the
+    # reported stage map (eager fan-out rebuilt from the map's can_run) and, for
+    # file_stage / default resolution, a resolve_file_stages round-trip to the base
+    # stage (the only process with the loaded preload meta). set_stage_data refreshes
+    # eager_stages / stage_map on the built State when the map arrives.
+    if ($self->_preload_root_hosts_stages) {
+        $self->{+STATE} //= Test2::Harness2::Runner::State->new(
+            workdir             => $self->{+DIR},
+            eager_stages        => $self->eager_from_stage_map,
+            stage_map           => $self->reported_stage_data // {},
+            file_stage_resolver => sub { $self->resolve_file_stage($_[0]) },
+            resources           => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
+            settings            => $settings,
+        );
+        return $self->{+STATE};
+    }
+
     my $preloader = $self->preloader;
 
-    my $settings = $self->settings;
     $self->{+STATE} //= Test2::Harness2::Runner::State->new(
         workdir      => $self->{+DIR},
         eager_stages => $preloader->eager_stages // {},
@@ -426,8 +445,12 @@ sub process {
         clean           => 1,
     );
 
-    my $pidfile = File::Spec->catfile($self->{+DIR}, 'PID');
-    write_file_atomic($pidfile, "$$");
+    # Root-only: the workdir PID file names the real runner. A stage-host Runner
+    # (the preload-root, rootpid != $$) must not clobber it.
+    if ($self->{+ROOTPID} == $$) {
+        my $pidfile = File::Spec->catfile($self->{+DIR}, 'PID');
+        write_file_atomic($pidfile, "$$");
+    }
 
     # Propagate the workdir to every child (collectors, stages, jobs) so they can
     # locate runner.socket without hardcoded assumptions (ARCH 5.3). Setting it in
@@ -443,7 +466,12 @@ sub process {
     # request handlers fold into the in-process State. As of chunk 5g the
     # transient path no longer writes queue.jsonl/jobs.jsonl (the gatherer that
     # read them is retired there); they remain only for the gated persistent path.
-    $self->start_service;
+    #
+    # Root-only: this binds runner.socket. A stage-host Runner (the preload-root,
+    # rootpid != $$) must NOT bind runner.socket (it would collide with the real
+    # runner); its stages bind their own preload-<stage>.socket in run_stage and
+    # dial the real runner.socket from there.
+    $self->start_service if $self->{+ROOTPID} == $$;
 
     # Chunk 17: plugin setup() runs HERE, in the runner, after runner.socket is
     # bound -- so a plugin's aux work (shellcall / run_collected) reports to the
@@ -483,7 +511,11 @@ sub process {
     # remainder. Root / transient only; the gated persistent path has the gatherer.
     $self->_drain_transitions if $self->{+ROOTPID} == $$ && !$self->{+PERSIST};
 
-    $self->close_service;
+    # Root-only: the real runner closes runner.socket here (its close is the
+    # transient command's completion signal). A stage-host Runner's services
+    # (its stages' preload-<stage>.socket) are closed by run_stage as each stage
+    # ends; it never bound runner.socket, so there is nothing to close here.
+    $self->close_service if $self->{+ROOTPID} == $$;
 
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
 }
@@ -626,6 +658,207 @@ sub _preload_root_hosts_stages {
     return $self->{+PRELOAD_ROOT_HOSTS} ? 1 : 0;
 }
 
+# Chunk 19.3: rebuild the eager-stage fan-out from the stage data the preload-root
+# reported. The reported map is { <stage> => { can_run => [...], default => 0|1 } };
+# State::_stage_order wants { <stage> => [<eager children>] } for stages whose
+# can_run is non-empty (an eager stage runs its nested stages' tests when it would
+# otherwise idle). The scheduler-only runner has no preloader to ask, so it derives
+# this from the reported map instead of preloader->eager_stages.
+sub eager_from_stage_map {
+    my $self = shift;
+
+    my $map = $self->reported_stage_data or return {};
+
+    my %eager;
+    for my $name (keys %$map) {
+        my $can = $map->{$name}->{can_run} or next;
+        next unless @$can;
+        $eager{$name} = [@$can];
+    }
+
+    return \%eager;
+}
+
+# Chunk 19.3: an identity of a connected preload STAGE peer (any 'preload-<name>'
+# except the preload-root handshake peer). Every stage is forked from the base and
+# so inherits the full merged preload meta (with its file_stage callbacks), so ANY
+# live stage can resolve a file's stage. The base stage's own name varies ('base'
+# for a staged preload, 'default' for a non-staged one), so we never hardcode it.
+sub _resolver_identity {
+    my $self = shift;
+
+    my $peers = $self->{service_peers} or return undef;
+    for my $id (sort keys %$peers) {
+        next if $id eq 'preload-root';
+        next unless $id =~ m/^preload-/;
+        my $conn = $peers->{$id};
+        next unless $conn && !$conn->closed;
+        return $id;
+    }
+
+    return undef;
+}
+
+# Chunk 19.3: resolve a test file's stage via a live preload stage -- the only kind
+# of process holding the merged preload meta (and its file_stage callbacks). The
+# scheduler-only runner has no preloader, so it asks a stage over the channel that
+# stage registered and caches the answer per file. Returns the resolved stage name,
+# or undef when no stage is reachable (the caller falls back to the default stage).
+sub resolve_file_stage {
+    my $self = shift;
+    my ($file) = @_;
+
+    my $cache = $self->{file_stage_cache} //= {};
+    return $cache->{$file} if exists $cache->{$file};
+
+    my $identity = $self->_resolver_identity or return undef;
+    my $resp = $self->request_preload_sync($identity, 'resolve_file_stages', files => [$file]);
+    my $stage = ($resp && $resp->{stages}) ? $resp->{stages}->{$file} : undef;
+
+    return $cache->{$file} = $stage;
+}
+
+# Chunk 19.3: send a request to a preload peer and pump the service loop until its
+# correlated response arrives (or a timeout). Used by the scheduler-only runner to
+# resolve file_stage from the base stage synchronously during scheduling. Matched
+# responses are stashed by request_id in service_on_response.
+sub request_preload_sync {
+    my $self = shift;
+    my ($identity, $command, %args) = @_;
+
+    my $conn = $self->service_peer_conn($identity) or return undef;
+    my $request_id = $conn->send_request($command, %args);
+
+    $self->{preload_responses} //= {};
+
+    my $deadline = time + 30;
+    until (exists $self->{preload_responses}->{$request_id}) {
+        return undef if time > $deadline;
+        $self->service_io;
+        Time::HiRes::sleep(0.01);
+    }
+
+    return delete $self->{preload_responses}->{$request_id};
+}
+
+# Role::Service hands matched responses here; the scheduler-only runner stashes them
+# by request id for request_preload_sync (resolve_file_stages).
+sub service_on_response {
+    my $self = shift;
+    my ($conn, $event) = @_;
+
+    ($self->{preload_responses} //= {})->{$event->{request_id}} = $event->{payload};
+
+    return;
+}
+
+# Chunk 19.3: the scheduler-only runner cannot bucket a preload task by stage until
+# the stage map is reported AND the base stage (the file_stage resolver) is
+# connected -- task_stage resolves through both. A command may submit its run +
+# tasks before the preload-root finishes its handshake and the base stage registers.
+sub _ready_to_schedule {
+    my $self = shift;
+
+    return 1 unless $self->_preload_root_hosts_stages;
+    return 0 unless $self->has_reported_stage_data;
+    return 0 unless $self->_resolver_identity;
+
+    return 1;
+}
+
+# Chunk 19.3: true if the preload-root process has exited (reaped here, since it is
+# not in {+PROCS}). Used while waiting for stages to register so a preload-root that
+# dies outright does not hang the run until the deadline.
+sub _preload_root_dead {
+    my $self = shift;
+
+    my $pid = $self->{+PRELOAD_ROOT_PID} or return 0;
+    return 0 unless waitpid($pid, POSIX::WNOHANG()) == $pid;
+
+    delete $self->{+PRELOAD_ROOT_PID};
+    return 1;
+}
+
+# Chunk 19.3: surface the preload-root's (and its stages') captured STDERR when the
+# preloads fail to come up, so the broken-preload diagnostic (a die in a preload, a
+# stage that did not exit cleanly) reaches the command's output instead of being
+# swallowed in the preload-root's events file. Best-effort: any read error is
+# ignored.
+sub _emit_preload_failure_output {
+    my $self = shift;
+
+    # Prefer the warnings the preload-root handed us with stage_host_exited (no
+    # events-file read race); these carry the broken-preload diagnostic.
+    my $errors = $self->stage_host_errors;
+    if ($errors && @$errors) {
+        print STDERR $_ for @$errors;
+        return;
+    }
+
+    require Test2::Collector::Util::Zstd::FrameBuffer;
+
+    my @files = (File::Spec->catfile($self->{+DIR}, 'preload-root-events.jsonl.zst'));
+    push @files => glob(File::Spec->catfile($self->{+DIR}, 'stage-*-events.jsonl.zst'));
+
+    for my $file (@files) {
+        next unless -f $file;
+
+        my $ok = eval {
+            my $fb = Test2::Collector::Util::Zstd::FrameBuffer->new;
+            open(my $fh, '<', $file) or return 1;
+            binmode $fh;
+            local $/;
+            my $data = <$fh>;
+            close($fh);
+            $fb->push_bytes($data);
+
+            while (my $rec = $fb->next_frame) {
+                my $facets = $rec->{payload}->{facet_data} or next;
+                for my $info (@{$facets->{info} // []}) {
+                    next unless ($info->{tag} // '') eq 'STDERR';
+                    my $details = $info->{details};
+                    next unless defined $details && length $details;
+                    print STDERR "$details\n";
+                }
+            }
+            1;
+        };
+        warn $@ if !$ok && $@;
+    }
+
+    return;
+}
+
+# Chunk 19.3: apply a run/task submission, or buffer it until the scheduler is ready
+# (see _ready_to_schedule). On every non-scheduler-only path there is no preload-root
+# and this is a straight passthrough to State.
+sub submit_action {
+    my $self = shift;
+    my ($method, @args) = @_;
+
+    if ($self->_preload_root_hosts_stages && !$self->_ready_to_schedule) {
+        push @{$self->{submit_buffer} //= []} => [$method, @args];
+        return;
+    }
+
+    $self->state->$method(@args);
+
+    return;
+}
+
+# Chunk 19.3: replay buffered submissions in order once the scheduler is ready.
+sub flush_submit_buffer {
+    my $self = shift;
+
+    my $buf = delete $self->{submit_buffer} or return;
+    for my $item (@$buf) {
+        my ($method, @args) = @$item;
+        $self->state->$method(@args);
+    }
+
+    return;
+}
+
 # Chunk 19.1: spawn the preload-root process (Test2::Harness2::Preload) -- the
 # separate process that holds the preloaded interpreter state, so the runner does
 # not. It is fork+exec'd under its own non-test collector (recording its
@@ -673,14 +906,15 @@ sub spawn_preload_root {
 
     $self->{+PRELOAD_ROOT_PID} = $pid;
 
-    # NOTE (19.3b, deferred): flipping {+PRELOAD_ROOT_HOSTS} on here is the atomic
-    # step that makes the preload-root host every stage and this runner
-    # scheduler-only. It is NOT flipped yet: it also requires the preload-root to
-    # drive a stage-host Runner (Preload::run_driver) and the scheduler to resolve a
-    # task's stage from the reported stage map -- including file_stage (a new
-    # resolve_file_stages round-trip to the preload-root) and eager fan-out rebuilt
-    # from the map -- instead of from the (now unloaded) in-runner preloader. Until
-    # that lands, the in-runner preload path stays active and the preload-root idles.
+    # Chunk 19.3: the atomic flip. The preload-root now drives a stage-host Runner
+    # (Preload::run_driver) that hosts EVERY stage (base/default/NOPRELOAD + named),
+    # so this runner holds no preloaded state and hosts no stage in-process: it goes
+    # scheduler-only (run_tests -> run_scheduler_only) and dispatches every started
+    # task out over a stage's registered channel. Stage resolution comes from the
+    # reported stage map + a resolve_file_stages round-trip to the base stage (the
+    # scheduler-only runner has no loaded preloader). Only the real root sets this
+    # (spawn_preload_root is root-only via _preload_root_wanted).
+    $self->{+PRELOAD_ROOT_HOSTS} = 1;
 
     return $pid;
 }
@@ -883,12 +1117,54 @@ sub run_tests {
 sub run_scheduler_only {
     my $self = shift;
 
+    # Chunk 19.3: wait until the preload-root has reported the stage map AND the base
+    # stage (the file_stage resolver) is connected, so buffered run/task submissions
+    # can be bucketed and resolved correctly. Submissions that arrive during this
+    # window are buffered by submit_action; flush them once ready. If the preload-root
+    # never becomes ready, wind down rather than hang.
+    my $deadline = time + 60;
+    until ($self->_ready_to_schedule) {
+        $self->service_io;
+
+        # A broken preload can kill the stage host before any stage registers. The
+        # preload-root signals stage_host_exited when its stage-host Runner finishes;
+        # if that arrives (or the preload-root process itself dies) while we are still
+        # waiting, the preloads failed -- stop waiting, surface the preload-root's
+        # captured error output, and fail the run fast instead of hanging.
+        if ($self->stage_host_exited || $self->_preload_root_dead) {
+            $self->_emit_preload_failure_output;
+            $self->{+SIGNAL} //= 'TERM';
+            last;
+        }
+
+        if (time > $deadline) {
+            warn "$$ $0 preload-root never became ready (no stage map / stage); aborting run\n";
+            $self->_emit_preload_failure_output;
+            $self->{+SIGNAL} //= 'TERM';
+            last;
+        }
+        Time::HiRes::sleep(0.01);
+    }
+
+    $self->flush_submit_buffer;
+
     while (1) {
         $self->service_io;
         $self->service_tick;
 
         last if $self->{+SIGNAL};
         last if $self->state->done;
+
+        # A stage host that exits WITH errors mid-run (a stage that died after coming
+        # up -- e.g. a preload that fails inside a stage) cannot finish the run; surface
+        # its diagnostic and wind down rather than spinning. A clean stage-host exit (no
+        # errors) only happens after we have told the stages to stop at wind-down, so it
+        # never lands here.
+        if ($self->stage_host_exited && @{$self->stage_host_errors}) {
+            $self->_emit_preload_failure_output;
+            $self->{+SIGNAL} //= 'TERM';
+            last;
+        }
 
         Time::HiRes::sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
     }

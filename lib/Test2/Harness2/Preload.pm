@@ -21,6 +21,9 @@ use Test2::Harness2::Util::HashBase qw{
     <workdir
     +responses
     +stopped
+    +runner_pid
+    +my_pid
+    +warnings
 };
 
 use Role::Tiny::With;
@@ -127,14 +130,41 @@ sub launch {
     }
 
     my $self = $class->new(runner_socket => $socket, workdir => $workdir);
+    $self->{+MY_PID} = $$;
 
-    # Establish the Long::Jump host frame at the top of the stack, in compile
-    # phase, BEFORE any preloads load -- a future preloaded test launch unwinds
-    # here (with no added stack frame) and is swapped in via goto::file. 19.1 has
-    # no test launches yet, so the driver returns normally and we exit.
-    setjump 'preload-root' => sub { $self->run_driver };
+    # Establish the Long::Jump host frame at the top of the stack, in compile phase,
+    # BEFORE any preloads load. A preloaded test launch (and a reload respawn) unwinds
+    # HERE with no added stack frame: the stage-host Runner's fork_job_callback forks
+    # the test job under a collector and longjumps 'preload-root' from the collector's
+    # child, which lands below and goto::file's the test in-process.
+    my $jump = setjump 'preload-root' => sub { $self->run_driver };
 
-    POSIX::_exit(0);
+    # Normal driver return (no test launch / reload): the run is done, exit cleanly.
+    POSIX::_exit(0) unless $jump;
+
+    my ($action, $job, $stage) = @$jump;
+
+    # Reload (chunk 19.4 territory; wired now so --reload works): the base stage's
+    # reload check asks us to respawn the whole preload tree. Re-exec ourselves so
+    # every stage reloads from a clean interpreter, exactly as the runner command
+    # re-execs on its own reload.
+    if ($action eq 'respawn') {
+        my @inc = grep { !ref($_) && length($_) && $_ ne '.' } @INC;
+        exec($^X, (map { "-I$_" } @inc), "-MTest2::Harness2::Preload=launch,$self->{+RUNNER_SOCKET}", '-e' => '1;')
+            or die "preload-root respawn exec failed: $!";
+    }
+
+    die "preload-root: invalid jump action '$action'" unless $action eq 'run_test';
+
+    # A test launch unwound to us: become the test, in-process, with the stage's
+    # preloads loaded and no added stack frame.
+    if (my $chdir = $job->ch_dir) {
+        chdir($chdir) or die "Could not chdir: $!";
+    }
+
+    require goto::file;
+    goto::file->import($job->run_file);
+    Test2::Harness2::Runner::JobLauncher->cleanup_process($job, $stage);
 }
 
 =item $preload->run_driver
@@ -149,11 +179,42 @@ voluntary exit would race the runner's C<waitpid(-1)> reaper).
 sub run_driver {
     my $self = shift;
 
+    # Capture our own warnings (still printing them to STDERR for the events file) so
+    # a broken-preload diagnostic -- a die in a preload caught during the handshake,
+    # or a stage that "did not exit cleanly" caught by the stage-host Runner -- can be
+    # handed to the runner with stage_host_exited and surfaced in the command's output
+    # without the runner racing to read our events file.
+    $self->{+WARNINGS} = [];
+    local $SIG{__WARN__} = sub {
+        my ($msg) = @_;
+        push @{$self->{+WARNINGS}} => $msg;
+        print STDERR $msg;
+    };
+
     my $ok = eval { $self->_handshake; 1 };
     warn "$$ $0 preload-root handshake failed: $@" unless $ok;
 
-    # Service the channel until the runner sends 'stop'. Even if the handshake
-    # failed we idle here rather than exit: the runner reaps us at wind-down (and
+    # Drive a stage-host Runner that hosts every stage (base/default/NOPRELOAD +
+    # named). It runs the normal in-process preload + stage-fork + run_stage loop,
+    # but with rootpid = the real runner's pid, so each stage becomes a socket service
+    # dialing the real runner instead of an in-process root stage. process() blocks
+    # until the run is done and every stage has stopped.
+    if ($ok && $self->{+RUNNER_PID}) {
+        my $rok = eval { $self->_run_stage_host; 1 };
+        warn "$$ $0 preload-root stage host failed: $@" unless $rok;
+
+        # Tell the runner the stage host has finished. If the runner is still waiting
+        # for a stage to register (a broken preload that died before any stage came
+        # up), this is its signal to stop waiting and fail fast + surface our captured
+        # output (the preload error). On a normal run the runner has long since moved
+        # past that wait, so this is a harmless late note. Hand over our captured
+        # warnings so the runner can surface a broken-preload diagnostic.
+        eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // [])); 1 };
+    }
+
+    # Idle until the runner sends 'stop'. We reach here after the stage host returns
+    # (run done) or if the handshake/host setup failed -- in either case we wait to be
+    # told to stop rather than exit on our own: the runner reaps us at wind-down (and
     # our collector watches the runner pid as the backstop), and a voluntary exit
     # mid-run would trip the runner's waitpid(-1) reaper.
     until ($self->{+STOPPED}) {
@@ -162,6 +223,41 @@ sub run_driver {
     }
 
     $self->close_service;
+
+    return;
+}
+
+# Build and run the stage-host Runner in this (the preload-root) process. It is an
+# ordinary Test2::Harness2::Runner whose rootpid is the REAL runner's pid: because
+# rootpid != $$, run_stage('base') treats the base process as a socket stage (dials
+# the real runner, binds preload-base.socket) rather than the scheduler root, and
+# preload_stages forks the other stages as this process's children. The test-launch
+# fork callback unwinds to our 'preload-root' Long::Jump host (see launch()).
+sub _run_stage_host {
+    my $self = shift;
+
+    require Getopt::Yath::Settings;
+    require Test2::Harness2::Runner;
+    require Test2::Harness2::Runner::JobLauncher;
+
+    my $dir      = $self->{+WORKDIR};
+    my $settings = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
+
+    my $my_pid = $self->{+MY_PID};
+
+    my $runner = Test2::Harness2::Runner->new(
+        $settings->runner->all,
+
+        dir      => $dir,
+        settings => $settings,
+        rootpid  => $self->{+RUNNER_PID},
+
+        fork_job_callback       => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'preload-root') },
+        fork_spawn_callback     => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
+        respawn_runner_callback => sub { return unless $$ == $my_pid; longjump 'preload-root' => 'respawn' },
+    );
+
+    $runner->process();
 
     return;
 }
@@ -236,6 +332,11 @@ sub _handshake {
 
     my $list = $self->_request_sync('runner', 'get_preload_list');
     my @mods = @{($list && $list->{preloads}) || []};
+
+    # The real runner's pid: the stage-host Runner uses it as its rootpid (so it acts
+    # as a stage, not the root) and conveys it down as watch_parent_pid to every
+    # stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
+    $self->{+RUNNER_PID} = $list->{runner_pid} if $list && $list->{runner_pid};
 
     my $meta = $self->_load_preloads(\@mods);
 

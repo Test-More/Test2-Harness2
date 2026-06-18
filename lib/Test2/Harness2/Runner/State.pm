@@ -22,12 +22,21 @@ use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::HashBase(
     # These are construction arguments
     qw{
-        <eager_stages
+        eager_stages
         <workdir
         <preloader
         <resources
         job_count
         +settings
+    },
+
+    # Chunk 19.3: the scheduler-only runner (preload-root hosts the stages) has NO
+    # preloader, so task_stage resolves from the stage map the preload-root reported
+    # plus a file_stage_resolver coderef that asks the base stage. eager_stages is
+    # writable (not <) because set_stage_data refreshes it once the map arrives.
+    qw{
+        stage_map
+        file_stage_resolver
     },
 
     qw{
@@ -609,8 +618,41 @@ sub task_stage {
     my $wants = $task->{stage};
     $wants //= 'NOPRELOAD' unless $task->{use_preload};
 
-    return $wants // 'DEFAULT' unless $self->preloader;
-    return $self->preloader->task_stage($task->{file}, $wants);
+    # In-runner preload path: the loaded preloader resolves directive / file_stage /
+    # default itself.
+    return $self->preloader->task_stage($task->{file}, $wants) if $self->preloader;
+
+    # Chunk 19.3 scheduler-only path: the preload-root hosts the stages, so resolve
+    # from the reported stage map plus a file_stage round-trip to the base stage. With
+    # neither a preloader nor a stage map (no preload at all) keep the legacy fallback.
+    my $map = $self->{+STAGE_MAP};
+    return $wants // 'DEFAULT' unless $map && keys %$map;
+
+    # An explicit, valid directive wins; NOPRELOAD is the synthetic no-preload stage.
+    return $wants if defined($wants) && length($wants) && ($wants eq 'NOPRELOAD' || $map->{$wants});
+
+    # Otherwise the base stage resolves file_stage // default for this file (the only
+    # process with the loaded preload meta + its file_stage callbacks).
+    if (my $resolver = $self->{+FILE_STAGE_RESOLVER}) {
+        my $stage = $resolver->($task->{file});
+        return $stage if defined($stage) && length($stage);
+    }
+
+    return $self->_default_stage_from_map($map);
+}
+
+# Chunk 19.3: the default stage from the reported map -- the one flagged default, or
+# (defensively) the first by name when none is flagged.
+sub _default_stage_from_map {
+    my $self = shift;
+    my ($map) = @_;
+
+    for my $name (sort keys %$map) {
+        return $name if $map->{$name}->{default};
+    }
+
+    my ($first) = sort keys %$map;
+    return $first;
 }
 
 sub task_pending_lookup {
