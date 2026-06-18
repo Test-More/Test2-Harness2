@@ -22,6 +22,7 @@ use Test2::Harness2::Util::HashBase qw{
     +responses
     +stopped
     +runner_pid
+    +monitor_preloads
     +my_pid
     +warnings
 };
@@ -252,6 +253,10 @@ sub _run_stage_host {
         settings => $settings,
         rootpid  => $self->{+RUNNER_PID},
 
+        # Chunk 19.4b: persistent ⇒ monitor on ⇒ the preloader tolerates a broken
+        # preload (warn+skip); transient ⇒ monitor off ⇒ a broken preload is fatal.
+        monitor_preloads => $self->{+MONITOR_PRELOADS},
+
         fork_job_callback       => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'preload-root') },
         fork_spawn_callback     => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
         respawn_runner_callback => sub { return unless $$ == $my_pid; longjump 'preload-root' => 'respawn' },
@@ -338,9 +343,25 @@ sub _handshake {
     # stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
     $self->{+RUNNER_PID} = $list->{runner_pid} if $list && $list->{runner_pid};
 
+    # Chunk 19.4b: the real runner's monitor_preloads (on for persistent, off for
+    # transient). The stage-host Runner uses it so a broken preload is tolerated
+    # (warn+skip) on the persistent path and fatal on the transient path.
+    $self->{+MONITOR_PRELOADS} = $list->{monitor_preloads} ? 1 : 0 if $list;
+
     my $meta = $self->_load_preloads(\@mods);
 
     $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data($meta));
+
+    # Chunk 19.4b: hand any preload-load warnings (e.g. a broken preload tolerated
+    # on the persistent path) to the runner so it can surface them in each run's
+    # output -- on the persistent path the stage host does not exit, so these would
+    # otherwise never reach a `yath run` client. This is ADDITIVE: the transient
+    # fatal path still surfaces the same warnings via stage_host_exited, so WARNINGS
+    # is NOT cleared here (clearing it would race queue_run and drop the transient
+    # diagnostic).
+    if (my @warnings = @{$self->{+WARNINGS} // []}) {
+        $self->service_send('runner', 'preload_warnings', warnings => [@warnings]);
+    }
 
     return;
 }

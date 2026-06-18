@@ -100,7 +100,27 @@ The socket request handlers; see the inline documentation for each.
 sub request_handler_queue_run {
     my $self = shift;
     my ($payload) = @_;
+
+    # Chunk 19.4b: surface any tolerated preload-load warnings (e.g. a broken preload
+    # on the persistent path) at the START of each run, so a `yath run` client sees
+    # them. Emitting to STDERR here lands them in runner-events within the run's
+    # render window, where the run's Driver renders them tagged INTERNAL.
+    if (my $warnings = $self->{'preload_warnings'}) {
+        print STDERR $_ for @$warnings;
+    }
+
     $self->submit_action('queue_run', $payload->{run});
+    return undef;
+}
+
+# Chunk 19.4b: the preload-root reports preload-load warnings it tolerated (a broken
+# preload skipped on the persistent path). Stored and re-emitted at each run start so
+# they reach the run's output (the stage host does not exit, so they cannot ride
+# stage_host_exited the way a transient fatal failure does).
+sub request_handler_preload_warnings {
+    my $self = shift;
+    my ($payload) = @_;
+    $self->{'preload_warnings'} = $payload->{warnings} if $payload && $payload->{warnings};
     return undef;
 }
 
@@ -354,7 +374,17 @@ sub request_handler_get_preload_list {
     # builds a stage-host Runner with this as its rootpid (so that Runner treats
     # itself as a stage, not the root) and conveys it down as watch_parent_pid to
     # every stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
-    return {ok => 1, preloads => [@{$self->preloads // []}], runner_pid => $self->{'rootpid'}};
+    #
+    # Chunk 19.4b: also hand over monitor_preloads. The stage-host Runner uses it so
+    # its preloader TOLERATES a broken preload (warn+skip) on the persistent path
+    # (monitor on) but fails fast on the transient path (monitor off) -- matching the
+    # pre-19 "persistent mode ignores broken preloads" behavior.
+    return {
+        ok               => 1,
+        preloads         => [@{$self->preloads // []}],
+        runner_pid       => $self->{'rootpid'},
+        monitor_preloads => $self->monitor_preloads ? 1 : 0,
+    };
 }
 
 # Chunk 19.1: the preload-root loads the preload libraries, builds the stage map

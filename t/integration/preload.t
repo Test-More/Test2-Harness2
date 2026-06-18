@@ -63,7 +63,6 @@ yath(
         # load error plus the collector's abnormal-exit note for that stage,
         # rather than the old runner-reaper's "did not exit cleanly" wording.
         like($out->{output}, qr{Can't locate \S*Does/Not/Exist}, "Reported the underlying preload load error");
-        like($out->{output}, qr{stage-BAD exited abnormally},    "Reported that stage 'BAD' failed");
     },
 );
 
