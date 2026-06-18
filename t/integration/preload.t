@@ -58,7 +58,12 @@ yath(
     test    => sub {
         my $out = shift;
 
-        like($out->{output}, qr{Child stage 'BAD' did not exit cleanly}, "Reported the error");
+        # Chunk 19: preload stages are forked under their own collectors by the
+        # preload-root, so a stage whose preload fails to load surfaces the real
+        # load error plus the collector's abnormal-exit note for that stage,
+        # rather than the old runner-reaper's "did not exit cleanly" wording.
+        like($out->{output}, qr{Can't locate \S*Does/Not/Exist}, "Reported the underlying preload load error");
+        like($out->{output}, qr{stage-BAD exited abnormally},    "Reported that stage 'BAD' failed");
     },
 );
 
