@@ -66,6 +66,10 @@ use Test2::Harness2::Runner::Monitor;
     }
     sub state    { $_[0]->{state} }
     sub monitor  { $_[0]->{monitor} }
+
+    # This fake mirrors the staged-root path (rootpid == $$, hosts the 'default'
+    # stage in-process), so the preload-root does NOT host stages here.
+    sub _preload_root_hosts_stages { 0 }
     sub watchdog { $_[0]->{watchdog} //= Test2::Harness2::Runner::Watchdog->new(runner => $_[0]) }
 
     # Mirror Role::Service::service_send($identity, $command, %args): send to the

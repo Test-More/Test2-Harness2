@@ -173,7 +173,10 @@ sub take_dispatch_tasks {
     my $list = $self->{+TASK_LIST} //= [];
     my (@dispatch, @keep);
     for my $task (@$list) {
-        if (defined($task->{stage}) && $task->{stage} ne $root_stage) {
+        # Chunk 19.2b: an undef root_stage means the runner hosts no stage of its
+        # own (the preload-root hosts every stage), so dispatch every staged task
+        # out. Otherwise dispatch only tasks NOT bound for the root's own stage.
+        if (defined($task->{stage}) && (!defined($root_stage) || $task->{stage} ne $root_stage)) {
             push @dispatch => $task;
         }
         else {
