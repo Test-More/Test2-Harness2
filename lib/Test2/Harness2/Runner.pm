@@ -198,8 +198,14 @@ our $RUNNER_PID;
 sub init {
     my $self = shift;
 
-    $self->{+ROOTPID} = $$;
-    $RUNNER_PID = $$;
+    # Chunk 19.2a: honor an injected rootpid (the logical root runner's pid),
+    # defaulting to this process when none is given. A process whose $$ differs
+    # from rootpid (the preload-root driving a stage-host Runner, later substeps)
+    # then identifies as a stage rather than the root via is_stage_service /
+    # service_name / scheduler_tick. $RUNNER_PID tracks the logical root so
+    # resource accounting (SharedJobSlots) keys on the real runner, not a child.
+    $self->{+ROOTPID} //= $$;
+    $RUNNER_PID = $self->{+ROOTPID};
 
     $self->{+ANNOUNCED_RUNS} = {};
     $self->{+JOB_PIDS}       = {};
