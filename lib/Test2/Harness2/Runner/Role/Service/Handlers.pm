@@ -335,6 +335,47 @@ sub request_handler_stage_down {
     return undef;
 }
 
+# Chunk 19.1: the preload-root process (Test2::Harness2::Preload) dials the runner
+# and asks for the preload list -- the runner no longer loads the preload
+# libraries itself; the preload root does. Return the resolved -P/--preload module
+# specs the user passed (the runner's `preloads`). Two-way. Only the root runner is
+# the state hub.
+sub request_handler_get_preload_list {
+    my $self = shift;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{'rootpid'} == $$;
+
+    return {ok => 1, preloads => [@{$self->preloads // []}]};
+}
+
+# Chunk 19.1: the preload-root loads the preload libraries, builds the stage map
+# (each stage's eager fan-out + which is default), and reports it here so the
+# runner knows which stages to expect without loading any preload itself
+# (19_spec.md §6.3). The runner stores it (the gate that makes preload-task
+# dispatch wait on it lands with the preload-root-driven dispatch in 19.2; storing
+# it now is additive and does not change the existing in-runner dispatch path).
+# One-way is enough, but we ack so the preload root can confirm receipt. Only the
+# root runner is the state hub.
+sub request_handler_set_stage_data {
+    my $self = shift;
+    my ($payload) = @_;
+
+    return {ok => 0, error => 'not the runner state hub'}
+        unless $self->{'rootpid'} == $$;
+
+    $self->{'reported_stage_data'} = $payload->{stage_data} // {};
+
+    return {ok => 1};
+}
+
+# The stage map the preload root reported (chunk 19.1), or undef before it has
+# arrived. `has_reported_stage_data` is the readiness predicate the 19.2
+# dispatch gate will consult; in 19.1 it is exposed but does not yet gate the
+# existing in-runner dispatch path.
+sub reported_stage_data     { $_[0]->{'reported_stage_data'} }
+sub has_reported_stage_data { defined $_[0]->{'reported_stage_data'} ? 1 : 0 }
+
 # Chunk 5e: the runner is the hub of the transition channel. Every non-runner
 # collector (each test job, each transient preload stage, any aux collector)
 # connects its reporter to runner.socket and streams its transitions here; the

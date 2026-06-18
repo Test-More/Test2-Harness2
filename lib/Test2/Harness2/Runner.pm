@@ -91,6 +91,9 @@ use Test2::Harness2::Util::HashBase(
 
         +plugins
         +aux_pids
+
+        +preload_root_pid
+        +reported_stage_data
     },
 );
 
@@ -442,6 +445,12 @@ sub process {
     # after the run loop, before stop().
     $self->setup_plugins;
 
+    # Chunk 19.1: stand up the separate preload-root process (it dials this socket
+    # and handshakes). Spawned-but-idle alongside the existing in-runner preload
+    # path for now; later substeps move stage forking + test launching into it and
+    # retire the in-runner path.
+    $self->spawn_preload_root if $self->_preload_root_wanted;
+
     $self->start();
 
     my $ok  = eval { $self->run_tests(); 1 };
@@ -449,6 +458,10 @@ sub process {
     $self->{+CAN_STAGE} = 0;
 
     warn $err unless $ok;
+
+    # Chunk 19.1: tear the preload-root down before plugin teardown/stop so it is
+    # reaped while the runner is still servicing its socket.
+    $self->stop_preload_root;
 
     $self->teardown_plugins;
 
@@ -570,6 +583,108 @@ sub stop_aux {
     }
 
     @{$self->{+AUX_PIDS}} = ();
+
+    return;
+}
+
+# Chunk 19.1: the preload root is wanted when this run actually preloads -- there
+# are preload libraries configured AND we are not below the preload threshold
+# (below threshold preloading is disabled and tests run via the clean fork+exec
+# path, 19_spec.md §6.14). Mirrors the below_threshold computation the in-runner
+# preloader() already does.
+sub _preload_root_wanted {
+    my $self = shift;
+
+    return 0 unless $self->{+ROOTPID} == $$;
+
+    my $preloads = $self->{+PRELOADS} // [];
+    return 0 unless @$preloads;
+
+    return 0 if $self->{+PRELOAD_THRESHOLD} && $self->{+JOBS_TODO} && $self->{+PRELOAD_THRESHOLD} > $self->{+JOBS_TODO};
+
+    return 1;
+}
+
+# Chunk 19.1: spawn the preload-root process (Test2::Harness2::Preload) -- the
+# separate process that holds the preloaded interpreter state, so the runner does
+# not. It is fork+exec'd under its own non-test collector (recording its
+# stdout/stderr to preload-root-events.jsonl.zst, the same wire form as the runner
+# and job collectors) and dials runner.socket to handshake (get_preload_list +
+# set_stage_data).
+#
+# It is tracked like an aux process (chunk 17): NOT in {+PROCS}, so it never blocks
+# the runner's wait(all=>1); stop_preload_root tears it down at wind-down, and its
+# collector watches the runner pid (ARCHITECTURE.md §4.1) as the backstop. The
+# preload-root deliberately never exits on its own mid-run, so the runner's
+# waitpid(-1) reaper never trips over it.
+#
+# 19.1 STANDS THE PROCESS UP ONLY: it handshakes then idles. Stage forking (19.2),
+# the test-launch goto-file path (19.3), and removing the in-runner preload path
+# (19.5) are separate substeps; here the existing in-runner preloader still runs
+# the run, and this process is spawned-but-idle alongside it.
+sub spawn_preload_root {
+    my $self = shift;
+
+    return if $self->{+PRELOAD_ROOT_PID};
+
+    require Test2::Collector;
+    require Test2::Collector::Recorder::Zstd;
+
+    my $socket = $self->service_socket_path;
+    my @inc    = grep { !ref($_) && length($_) && $_ ne '.' } @INC;
+
+    my @cmd = (
+        $^X,
+        (map { "-I$_" } @inc),
+        "-MTest2::Harness2::Preload=launch,$socket",
+        '-e' => '1;',
+    );
+
+    my $events = File::Spec->catfile($self->{+DIR}, 'preload-root-events.jsonl.zst');
+
+    my $pid = Test2::Collector::spawn_collector(
+        is_test          => 0,
+        name             => 'preload-root',
+        exec             => \@cmd,
+        recorder         => Test2::Collector::Recorder::Zstd->new(file => $events),
+        watch_parent_pid => $self->{+ROOTPID},
+    );
+
+    $self->{+PRELOAD_ROOT_PID} = $pid;
+
+    return $pid;
+}
+
+# Chunk 19.1: tear the preload root down at runner wind-down. Ask it to stop over
+# the channel it dialed (pumping the socket so the request is delivered and it is
+# reaped), then TERM->KILL+reap by pid as the backstop -- the aux-process teardown
+# shape (it is not in {+PROCS}).
+sub stop_preload_root {
+    my $self = shift;
+
+    my $pid = $self->{+PRELOAD_ROOT_PID} or return;
+
+    eval { $self->service_send('preload-root', 'stop'); 1 };
+
+    for (1 .. 100) {
+        $self->service_io if $self->{+ROOTPID} == $$;
+        last if waitpid($pid, POSIX::WNOHANG) == $pid;
+        Time::HiRes::sleep(0.02);
+    }
+
+    if (kill(0, $pid)) {
+        kill('TERM', $pid);
+        for (1 .. 50) {
+            last if waitpid($pid, POSIX::WNOHANG) == $pid;
+            Time::HiRes::sleep(0.02);
+        }
+        if (kill(0, $pid)) {
+            kill('KILL', $pid);
+            waitpid($pid, 0);
+        }
+    }
+
+    delete $self->{+PRELOAD_ROOT_PID};
 
     return;
 }
