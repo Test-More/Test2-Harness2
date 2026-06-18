@@ -673,6 +673,15 @@ sub spawn_preload_root {
 
     $self->{+PRELOAD_ROOT_PID} = $pid;
 
+    # NOTE (19.3b, deferred): flipping {+PRELOAD_ROOT_HOSTS} on here is the atomic
+    # step that makes the preload-root host every stage and this runner
+    # scheduler-only. It is NOT flipped yet: it also requires the preload-root to
+    # drive a stage-host Runner (Preload::run_driver) and the scheduler to resolve a
+    # task's stage from the reported stage map -- including file_stage (a new
+    # resolve_file_stages round-trip to the preload-root) and eager fan-out rebuilt
+    # from the map -- instead of from the (now unloaded) in-runner preloader. Until
+    # that lands, the in-runner preload path stays active and the preload-root idles.
+
     return $pid;
 }
 
@@ -888,6 +897,30 @@ sub run_scheduler_only {
     # reported completion, so the command-side driver rolls it up as failed rather
     # than "never ran" (the same wind-down duty the staged loop performs).
     $self->watchdog->abort_remaining unless $self->{+PERSIST};
+
+    # Chunk 19.3b: the stages are children of the preload-root, not this runner, so
+    # they are not in {+PROCS}; we only know them as registered `preload-<name>`
+    # peers. The run is done, so tell every stage to stop over the channel it opened
+    # to us. Once all stages stop, the preload-root's own stage-host run loop ends
+    # and that process exits -- stop_preload_root then reaps it.
+    $self->stop_preload_stages;
+
+    return;
+}
+
+# Chunk 19.3b: send a graceful 'stop' to every connected preload stage peer
+# (identities `preload-<name>`, excluding the preload-root's own handshake peer).
+# Used on the scheduler-only path where the stages are the preload-root's children
+# rather than this runner's, so stop_stages's {+PROCS} scan does not see them.
+sub stop_preload_stages {
+    my $self = shift;
+
+    my $peers = $self->{service_peers} or return;
+    for my $identity (keys %$peers) {
+        next unless $identity =~ m/^preload-/;
+        next if $identity eq 'preload-root';
+        eval { $self->service_send($identity, 'stop'); 1 };
+    }
 
     return;
 }

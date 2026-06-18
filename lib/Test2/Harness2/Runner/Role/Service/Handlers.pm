@@ -346,7 +346,11 @@ sub request_handler_get_preload_list {
     return {ok => 0, error => 'not the runner state hub'}
         unless $self->{'rootpid'} == $$;
 
-    return {ok => 1, preloads => [@{$self->preloads // []}]};
+    # Chunk 19.3b: also hand the preload-root the REAL runner's pid. The preload-root
+    # builds a stage-host Runner with this as its rootpid (so that Runner treats
+    # itself as a stage, not the root) and conveys it down as watch_parent_pid to
+    # every stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
+    return {ok => 1, preloads => [@{$self->preloads // []}], runner_pid => $self->{'rootpid'}};
 }
 
 # Chunk 19.1: the preload-root loads the preload libraries, builds the stage map
