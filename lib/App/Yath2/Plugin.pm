@@ -85,7 +85,7 @@ queue. Other things are done later to re-order the files optimally based on
 length or category, so this sort is just for initial job numbering, and to
 define a base order before optimization takes place.
 
-All files to sort will be instances of L<Test2::Harness2::TestFile>.
+All files to sort will be instances of L<App::Yath2::TestFile>.
 
 This method is normally left undefined, but will be called if you define it.
 
@@ -100,7 +100,7 @@ queue. Other things are done later to re-order the files optimally based on
 length or category, so this sort is just for initial job numbering, and to
 define a base order before optimization takes place.
 
-All files to sort will be instances of L<Test2::Harness2::TestFile>.
+All files to sort will be instances of L<App::Yath2::TestFile>.
 
 This method is normally left undefined, but will be called if you define it.
 

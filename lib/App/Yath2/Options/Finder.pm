@@ -252,11 +252,11 @@ Note: Can be specified multiple times
 
 =item --finder MyFinder
 
-=item --finder +Test2::Harness2::Finder::MyFinder
+=item --finder +App::Yath2::Finder::MyFinder
 
 =item --no-finder
 
-Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise Test2::Harness2::Finder::XXX namespace is assumed.
+Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise App::Yath2::Finder::XXX namespace is assumed.
 
 
 =item --maybe-durations file.json
@@ -369,12 +369,12 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
     # a Getopt::Yath::Instance.
     option finder => (
         type    => 'Scalar',
-        default => 'Test2::Harness2::Finder',
+        default => 'App::Yath2::Finder',
 
-        long_examples => [' MyFinder', ' +Test2::Harness2::Finder::MyFinder'],
-        description   => 'Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise Test2::Harness2::Finder::XXX namespace is assumed.',
+        long_examples => [' MyFinder', ' +App::Yath2::Finder::MyFinder'],
+        description   => 'Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise App::Yath2::Finder::XXX namespace is assumed.',
 
-        normalize => sub ($val) { fqmod('Test2::Harness2::Finder', $val) },
+        normalize => sub ($val) { fqmod('App::Yath2::Finder', $val) },
 
         trigger => sub ($opt, %params) {
             return unless $params{action} eq 'set';

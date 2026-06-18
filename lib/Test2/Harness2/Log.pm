@@ -217,7 +217,7 @@ unnecessary...
 =item harness_job_queued
 
 This data is produced by the C<queue_item> method in
-L<Test2::Harness2::TestFile>.
+L<App::Yath2::TestFile>.
 
 This contains the data about a test job conveyed by the queue. This usually
 contains data that will later be used by L<Test2::Harness2::Runner::Job>. It is

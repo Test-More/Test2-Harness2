@@ -882,11 +882,11 @@ Note: Can be specified multiple times
 
 =item --finder MyFinder
 
-=item --finder +Test2::Harness2::Finder::MyFinder
+=item --finder +App::Yath2::Finder::MyFinder
 
 =item --no-finder
 
-Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise Test2::Harness2::Finder::XXX namespace is assumed.
+Specify what Finder subclass to use when searching for files/processing the file list. Use the "+" prefix to specify a fully qualified namespace, otherwise App::Yath2::Finder::XXX namespace is assumed.
 
 
 =item --maybe-durations file.json

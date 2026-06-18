@@ -89,7 +89,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10 | ⬜ | — |
 | 12 | Discovery via runner-socket symlink + `PID`-file signal fallback (§5.3) | ⬜ | — |
 | 13 | `spawn` bypasses runner: direct stage socket, dup2 IO, double-fork no collector (§4.8) — needs 9,10,12 | ⬜ | — |
-| 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only Harness2 object (§1) | ⬜ | — |
+| 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only Harness2 object (§1) | ✅ | this task |
 | 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | — |
 | 17 | Plugin `setup`/`teardown` move to the runner; aux output → collectors (`run_collected`); retire the `aux_logs` flat files | ✅ | this task |
@@ -396,14 +396,27 @@ the untracked source notes.
   `dup2`** of the accepted socket onto the child's STDIN/OUT/ERR (no `SCM_RIGHTS` /
   `Socket::MsgHdr` dependency), retiring the 1.0 `/proc` IO proxying. Needs 9,10,12.
 
-**Chunk 14 — split `Test2::Harness2::TestFile` (`ARCHITECTURE.md` §1).**
-Reading test files to decide how they run is a UI/input concern. Move the
-file-gathering + per-file decision logic into `App::Yath2` (the `test` / `run`
-commands compute the state in / alongside `App::Yath2::RunPlan`), leave a
-**state-only** object in `Test2::Harness2`, and queue jobs carrying that
-already-computed state in the task payload so the runner reads/parses **no** test
-files to plan a run. Add a test proving the runner queues jobs without touching
-test-file contents. (Currently `Test2::Harness2::TestFile` mixes both roles.)
+**Chunk 14 — split `Test2::Harness2::TestFile` ✅ DONE (this task).** Reading test
+files to decide how they run is a UI/input concern, so the file-reading half moved
+to `App::Yath2`:
+- **`App::Yath2::TestFile`** — the reader (file I/O, header/shbang scan, per-file
+  decisions, `queue_item`). Moved out of `Test2::Harness2::TestFile`.
+- **`App::Yath2::Finder`** — moved from `Test2::Harness2::Finder` (it constructs the
+  reader, so the dependency rule — `Test2::Harness2` must not load `App::Yath2*` —
+  forces it onto the `App::Yath2` side). The `--finder` default + auto-prefix is now
+  `App::Yath2::Finder` (was `Test2::Harness2::Finder`); custom-finder subclasses
+  under the old prefix must use the new prefix or a `+`-qualified name.
+- **`Test2::Harness2::TestFile`** — rewritten as a **state-only** object: a typed,
+  read-only, file-free view over the task payload (`from_task` / `TO_JSON` /
+  `task_data` + accessors). It never reads a test file; it is the serializable
+  per-test state the runner consumes (and chunk 19 will ship to the preload-root).
+- The runner already consumed only the task payload hash (mutable scheduler state)
+  and read no files, so its hot path is unchanged. Proven by
+  `t/AI/unit/runner_no_file_read.t` (a job builds from a payload whose file does not
+  exist; the runner side never loads the `App::Yath2` reader/finder).
+- Consumers updated (`Finder`, `RunPlan`, `Plugin::Notify`, POD refs); reader unit
+  test moved to `t/unit/App/Yath2/TestFile.t`; new state-only unit test at
+  `t/unit/Test2/Harness2/TestFile.t`. Suite green: `Files=101, Tests=1718, PASS`.
 
 - **Chunk 7 — system-load service (needs 9).** Its own (global) process with a
   reliable tick. Per the revised §4.4 it is a **full service on the unified

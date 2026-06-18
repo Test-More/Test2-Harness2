@@ -184,14 +184,14 @@ C<$settings> is an instance of L<Getopt::Yath::Settings>
 
 This is a chance for a plugin to claim a test file early, before Test2::Harness2
 takes care of it. If your plugin does not want to claim the file just return
-undef. To claim the file return an instance of L<Test2::Harness2::TestFile>
+undef. To claim the file return an instance of L<App::Yath2::TestFile>
 created with C<$path>.
 
 =item $plugin->munge_files(\@tests, $settings)
 
 This is an opportunity for your plugin to modify the data for any test file
 that will be run. The first argument is an arrayref of
-L<Test2::Harness2::TestFile> objects.
+L<App::Yath2::TestFile> objects.
 
 =item $hashref = $plugin->duration_data($settings, $test_names)
 

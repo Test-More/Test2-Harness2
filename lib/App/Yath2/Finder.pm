@@ -1,4 +1,4 @@
-package Test2::Harness2::Finder;
+package App::Yath2::Finder;
 use strict;
 use warnings;
 
@@ -12,7 +12,7 @@ use Carp qw/croak/;
 use Time::HiRes qw/time/;
 use Text::ParseWords qw/quotewords/;
 
-use Test2::Harness2::TestFile;
+use App::Yath2::TestFile;
 use File::Spec;
 
 use Test2::Harness2::Util::HashBase qw{
@@ -628,7 +628,7 @@ sub find_project_files {
 
         my $test;
         unless (first { $test = $_->claim_file($path, $settings, from => 'listed') } @$plugins) {
-            $test = Test2::Harness2::TestFile->new(file => $path);
+            $test = App::Yath2::TestFile->new(file => $path);
         }
 
         if (my @exclude = $self->exclude_file($test)) {
@@ -666,7 +666,7 @@ sub find_project_files {
                     unless(first { $test = $_->claim_file($file, $settings, from => 'search') } @$plugins) {
                         for my $ext (@{$self->extensions}) {
                             next unless m/\.\Q$ext\E$/;
-                            $test = Test2::Harness2::TestFile->new(file => $file);
+                            $test = App::Yath2::TestFile->new(file => $file);
                             last;
                         }
                     }
@@ -742,18 +742,23 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Finder - Library that searches for test files
+App::Yath2::Finder - Library that searches for test files
 
 =head1 DESCRIPTION
 
 The finder is responsible for locating test files that should be run. You can
 subclass the finder and instruct yath to use your subclass.
 
+Searching for and reading test files is a user-interface / input concern, so the
+finder lives in C<App::Yath2>. It produces L<App::Yath2::TestFile> reader
+instances; the runner-side, file-free state of a queued test is
+L<Test2::Harness2::TestFile>.
+
 =head1 SYNOPSIS
 
 =head2 USING A CUSTOM FINDER
 
-To use Test2::Harness2::Finder::MyFinder:
+To use App::Yath2::Finder::MyFinder:
 
     $ yath test --finder MyFinder
 
@@ -761,13 +766,13 @@ To use Another::Finder
 
     $ yath test --finder +Another::Finder
 
-By default C<Test2::Harness2::Finder::> is prefixed onto your custom finder, use
+By default C<App::Yath2::Finder::> is prefixed onto your custom finder, use
 '+' before the class name or prevent this.
 
 =head2 SUBCLASSING
 
-    use parent 'Test2::Harness2::Finder';
-    use Test2::Harness2::TestFile;
+    use parent 'App::Yath2::Finder';
+    use App::Yath2::TestFile;
 
     # Custom finders may provide their own options if desired.
     # This is optional.
@@ -782,8 +787,8 @@ By default C<Test2::Harness2::Finder::> is prefixed onto your custom finder, use
         my ($plugins, $settings, $search) = @_;
 
         return [
-            Test2::Harness2::TestFile->new(...),
-            Test2::Harness2::TestFile->new(...),
+            App::Yath2::TestFile->new(...),
+            App::Yath2::TestFile->new(...),
             ...,
         ];
     }
@@ -802,7 +807,7 @@ True if the C<yath projects> command was used.
 =item $arrayref = $finder->find_files($plugins, $settings)
 
 This is the main method. This method returns an arrayref of
-L<Test2::Harness2::TestFile> instances, each one representing a single test to
+L<App::Yath2::TestFile> instances, each one representing a single test to
 run.
 
 $plugins is a list of plugins, some may be class names, others may be
@@ -823,7 +828,7 @@ B<Note:> The result is cached, see L<pull_durations()> to refresh the data.
 
 =item @reasons = $finder->exclude_file($test)
 
-The input argument should be an L<Test2::Harness2::Test> instance. This will
+The input argument should be an L<App::Yath2::TestFile> instance. This will
 return a list of human readible reasons a test file should be excluded. If the
 file should not be excluded the list will be empty.
 
@@ -833,7 +838,7 @@ user.
 
 =item $bool = $finder->include_file($test)
 
-The input argument should be an L<Test2::Harness2::Test> instance. This is a
+The input argument should be an L<App::Yath2::TestFile> instance. This is a
 convenience method around C<exclude_file()>, it will return true when
 C<exclude_file()> returns an empty list.
 
@@ -853,7 +858,7 @@ The default C<find_files()> implementation is this:
         return $self->find_project_files($plugins, $settings, $self->search);
     }
 
-Each one returns an arrayref of L<Test2::Harness2::TestFile> instances.
+Each one returns an arrayref of L<App::Yath2::TestFile> instances.
 
 Note that C<find_multi_project_files()> uses C<find_project_files()> internall,
 once per project directory.
