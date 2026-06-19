@@ -109,8 +109,16 @@ revise it, the substeps are annotated below.
 ## Done so far
 
 **Chunk 19 — extract the preload root out of the runner** (`925d82d75`..`0b604f4a1`;
-suite green `Files=103, Tests=1743`, **0 leaked daemons**). The runner is now a pure
-orchestrator: it no longer loads preloads, hosts stages, or runs in `BEGIN`.
+full `-j16` suite green `Files=103, Tests=1743` in ~85s, **0 leaked daemons**). The
+runner is now a pure orchestrator: it no longer loads preloads, hosts stages, or
+runs in `BEGIN`.
+- **Requires a `Test2-Collector` with the `SOMAXCONN` listen-backlog fix**
+  (`Test2-Collector` `b5e3ae5`). Chunk 19 made `runner.socket` a high-fan-in
+  service (the preload-root + every stage + clients all dial it); the old
+  `Listen => 1` backlog **deadlocked the suite under `-j16`** — a blocking unix
+  `connect()` parks in `unix_wait_for_peer` once the backlog of 1 is full. Reinstall
+  `Test2-Collector` from its checkout (or any build ≥ that fix) before running the
+  harness suite, or `-j16` will hang.
 - **Preload-root process.** When preloads are configured (and not below
   `preload_threshold`) the runner spawns a separate `Test2::Harness2::Preload`
   process (`perl -MTest2::Harness2::Preload=launch,<runner.socket> -e 1;`,
