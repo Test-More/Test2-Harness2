@@ -176,12 +176,30 @@ runs in `BEGIN`.
   message (`stage_host_exited`), not the exit status. The preload-root is also
   long-lived, so `collect()` (which would mirror the verdict) cannot be used — it would
   block. So there is nothing to fix.
-- **Residuals (deferred, not done):** the explicit stage lifecycle-state *enum*
-  `starting`/`up`/`restarting`/`down` (§6.8 / chunk 10) — the *behavior* (generation +
-  up/down + stage-owned reload + respawn) works, but the named 4-state enum is unbuilt;
-  and the remaining chunk-19.5 refinements — retiring/reshaping the `yath runner`
-  command's goto-file host (still used by the no-preload path) and the §6.12
-  HUP-protocol redesign.
+- **Mid-run kill de-flake (`1f4ad24ad`).** `preload_root_kill_midrun.t` was flaky under
+  `-j16`: §6.10 recovery (`_drop_preload_peers`) dropped *every* `preload-*` channel,
+  including the orphaned stage still running the in-flight job — and that stage reports
+  its job over that channel via the retry-aware `stop_task`/`retry_task` path (NOT
+  generation-guarded), so dropping it lost the completion → hang (raced report vs drop).
+  Fix: in `_drop_preload_peers`, keep the channel of any stage with an in-flight RUNNING
+  job (drop the preload-root + idle stages); the orphaned stage reports normally and is
+  reaped at run/stop end. (Considered completing from the collector finalized transition
+  per §4.2, but that bypasses stage-driven retry; rejected.) Verified ~10 consecutive
+  `-j16` PASS.
+- **Lifecycle enum (`e74e8402f`)** and **signatures/POD (`ce41ccc17`)** landed (see the
+  chunk-19.5 entries above): explicit `up`/`down`/`restarting` + generation in
+  `STAGE_LIFECYCLE` (+ a `state` column in `yath status`; `starting` deferred — a forking
+  stage has no channel yet); and the four new preload-root modules converted to v5.38
+  signatures (`@_` kept for the goto/longjump/`$_->(@_)` exceptions).
+- **Pre-existing `-j16` flake de-flaked (`156de805b`).** `Runner_Monitor.t`
+  `service_forward_routing` reported each transition over a throwaway reporter, pumped
+  `service_io` a fixed 5×, then closed — under contention the frame could be unread at
+  close (RST drop). Replaced the fixed pump counts with bounded waits on the actual
+  condition (service has folded it / subscriber has its collectors). Not a chunk-19 bug.
+- **Residuals (deferred, not done):** the explicit stage lifecycle-state `starting`
+  transient (§6.8); and the remaining chunk-19.5 refinements — retiring/reshaping the
+  `yath runner` command's goto-file host (still used by the no-preload path) and the
+  §6.12 HUP-protocol redesign. Both refactor working code for low value + real risk.
 - **Code-review follow-ups.** External reviews (codex/gemini) prompted fixes that
   landed: non-staged-preload dispatch (`DEFAULT`→`default`, `6c52e41b1` + unit test),
   the `file_stage` cache cleared on stage-data refresh (`823c2551a`), and POD/comment
