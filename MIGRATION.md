@@ -148,14 +148,25 @@ runs in `BEGIN`.
   the tree. (Hunt for leaked daemons if a suite ever runs long — see `AGENTS.md`
   Testing.)
 - **Prereq:** chunk 14 (the state-only `TestFile` / `App::Yath2` reader split).
-- **Residuals (deferred, not done):** the explicit stage lifecycle-state enum
-  `starting`/`up`/`restarting`/`down` + generation counter (§6.8 / chunk 10) — the
-  *behavior* (stage-owned in-place reload + respawn) works, but the explicit enum is
-  unbuilt; the chunk-19.5 refinements — retiring/reshaping the `yath runner` command's
-  goto-file host (still used by the no-preload path), the §6.12 HUP-protocol redesign,
-  and the §6.10 "preload-root dies but the runner lives → respawn + stale-stage
-  cleanup" case; and the §6.1 verdict-mirroring `spawn_collector` nuance for the
-  preload-root (it currently uses `spawn_collector`, collector-health exit).
+- **§6.10 preload-root crash resilience + §6.8 stage generation — LANDED** (`35c138663`).
+  A monotonic `preload_root_generation` is threaded handshake → stage-host Runner →
+  every `stage_ready`/`stage_down`; the runner drops stale-generation reports. If the
+  preload-root dies mid-run (vs a broken preload that announces `stage_host_exited`,
+  which still fails fast), the runner resets the stale stage map/readiness, respawns a
+  fresh preload-root (new generation, bounded at 3 attempts then clean fail), and the
+  run recovers; in-flight jobs survive (they watch the real runner). Tested by
+  `t/AI/integration/preload_root_crash.t` (deterministic startup-crash, 3×).
+  **Follow-up:** the **mid-run** crash path (crash after stages are up + a job in
+  flight) is *implemented* and mirrors the verified startup path, but lacks a dedicated
+  deterministic test (an external kill is unreliable here — the preload-root renames
+  `$0` to `yath-nested-runner`).
+- **Residuals (deferred, not done):** the explicit stage lifecycle-state *enum*
+  `starting`/`up`/`restarting`/`down` (§6.8 / chunk 10) — the *behavior* (generation +
+  up/down + stage-owned reload + respawn) works, but the named 4-state enum is unbuilt;
+  the remaining chunk-19.5 refinements — retiring/reshaping the `yath runner` command's
+  goto-file host (still used by the no-preload path) and the §6.12 HUP-protocol
+  redesign; and the §6.1 verdict-mirroring `spawn_collector` nuance for the preload-root
+  (it currently uses `spawn_collector`, collector-health exit).
 - **Code-review follow-ups.** External reviews (codex/gemini) prompted fixes that
   landed: non-staged-preload dispatch (`DEFAULT`→`default`, `6c52e41b1` + unit test),
   the `file_stage` cache cleared on stage-data refresh (`823c2551a`), and POD/comment
