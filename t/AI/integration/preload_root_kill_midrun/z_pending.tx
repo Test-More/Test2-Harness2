@@ -1,0 +1,4 @@
+# HARNESS-STAGE-AAA
+use Test2::V0;
+ok(1, "pending test dispatched to the respawned preload-root");
+done_testing;

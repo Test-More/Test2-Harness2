@@ -1,0 +1,26 @@
+# HARNESS-STAGE-AAA
+use Test2::V0;
+use File::Spec;
+
+# Record this test's pid so the harness test can wait until we are actually
+# running before it SIGKILLs the preload-root, then sleep so the kill lands while
+# we (a job in a forked stage, child of the preload-root) are in flight. We must
+# survive the preload-root dying (our collector watches the real runner, not the
+# preload-root) and report normally.
+if (my $pf = $ENV{T2H_INFLIGHT_PIDFILE}) {
+    open(my $fh, '>', $pf) or die $!;
+    print $fh "$$\n";
+    close($fh);
+}
+
+# Wait until the harness test signals (by creating the go-file) that it has killed
+# the preload-root, so the kill is guaranteed to land mid-run; bounded so we never
+# hang the suite.
+my $go = $ENV{T2H_INFLIGHT_GOFILE};
+for (1 .. 200) {
+    last if $go && -e $go;
+    select(undef, undef, undef, 0.1);
+}
+
+ok(1, "in-flight test survived the preload-root crash and reported");
+done_testing;
