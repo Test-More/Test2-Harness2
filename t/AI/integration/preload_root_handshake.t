@@ -23,7 +23,7 @@ use Test2::Harness2::Preload;    # compile-check the bootstrap (no launch args =
 # state stub.
 BEGIN {
     package FakeRunner;
-    use Test2::Harness2::Util::HashBase qw{ <workdir <preloads };
+    use Test2::Harness2::Util::HashBase qw{ <workdir <preloads <monitor_preloads };
     use Role::Tiny::With;
     with 'Test2::Harness2::Role::Service';
     with 'Test2::Harness2::Runner::Role::Service::Handlers';
