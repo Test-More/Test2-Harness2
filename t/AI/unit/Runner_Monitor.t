@@ -361,7 +361,16 @@ subtest service_forward_routing => sub {
         my $rep = connect_unix($path);
         write_frame($rep, compress_blob(encode_json({identity => {name => "reporter:" . ($c{uuid} // 'x'), no_reply => 1}})));
         write_frame($rep, frame_for($facet, %c));
-        $svc->service_io for 1 .. 5;
+        # Pump until the service has actually READ + folded this transition before
+        # closing the reporter. A fixed pump count races under load: closing while
+        # the frame is still unread RSTs it (the very drop this test warns about),
+        # which intermittently lost a collector under -j16 contention.
+        my $uuid = $c{uuid};
+        for (1 .. 500) {
+            $svc->service_io;
+            last if !defined($uuid) || (grep { $_ eq $uuid } $svc->monitor->collectors);
+            sleep 0.005;
+        }
         close($rep);
     };
 
@@ -370,9 +379,17 @@ subtest service_forward_routing => sub {
     # A global (run-less) stage lifecycle transition.
     $report->({harness_state_transition => {state => 'starting', stamp => 1}}, uuid => 'GS', name => 'stage-base');
 
-    # Fold each subscriber's forwarded frames into its mirror.
+    # Fold each subscriber's forwarded frames into its mirror, waiting until it has
+    # received its expected collectors (A/B see their run + the global one; G sees
+    # all three) rather than a fixed pump count that races under load.
+    my %want = (A => 2, B => 2, G => 3);
     for my $key (qw/A B G/) {
-        for (1 .. 5) { $svc->service_io; $drain_sub->($sub{$key}); sleep 0.005 }
+        for (1 .. 500) {
+            $svc->service_io;
+            $drain_sub->($sub{$key});
+            last if scalar($sub{$key}{mon}->collectors) >= $want{$key};
+            sleep 0.005;
+        }
     }
 
     is([sort $sub{A}{mon}->collectors], [qw/CA GS/], "run-A subscriber sees only run A + global");
