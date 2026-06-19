@@ -156,6 +156,15 @@ runs in `BEGIN`.
   and the §6.10 "preload-root dies but the runner lives → respawn + stale-stage
   cleanup" case; and the §6.1 verdict-mirroring `spawn_collector` nuance for the
   preload-root (it currently uses `spawn_collector`, collector-health exit).
+- **Code-review follow-ups.** External reviews (codex/gemini) prompted fixes that
+  landed: non-staged-preload dispatch (`DEFAULT`→`default`, `6c52e41b1` + unit test),
+  the `file_stage` cache cleared on stage-data refresh (`823c2551a`), and POD/comment
+  `.md` references + `eval` forms (`9d81afd58`). **Still deferred:** the preload-root
+  `require`s preload *library* modules during the handshake (`_load_preloads`) before
+  `Test2::API::test2_start_preload()`, so a preload with Test2 state-mutating
+  *require-time* side effects loads outside the preload guard (codex P1; the safe fix
+  restructures the handshake/map-report ordering); and Perl 5.38 signatures / top-of-file
+  POD layout on the new chunk-19 modules (style consistency, gemini).
 
 **Chunk 6 complete — base-renderer rewrite + finish the socket-IPC end state**
 (`69ae0be63`, `b33162faf`, `4410c8105`, `f9142217c`, `1b5373e1a`, `ddaed0a0c`,
