@@ -404,6 +404,12 @@ sub request_handler_set_stage_data {
 
     $self->{'reported_stage_data'} = $payload->{stage_data} // {};
 
+    # A fresh stage map means a (re)started preload root / reload: the file_stage
+    # callbacks that resolve_file_stage memoized may now map a file to a different
+    # stage. Drop the per-file cache so stale resolutions from the prior generation
+    # are not reused (code-review: file_stage cache outliving its preload generation).
+    delete $self->{'file_stage_cache'};
+
     # Chunk 19.3: if the scheduler-only State was already built (e.g. an early status
     # request) it captured an empty map; refresh its eager fan-out + stage map now
     # that the real data has arrived, before any task is bucketed (submit_action
