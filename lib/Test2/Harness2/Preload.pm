@@ -23,6 +23,7 @@ use Test2::Harness2::Util::HashBase qw{
     +stopped
     +runner_pid
     +monitor_preloads
+    +preload_generation
     +my_pid
     +warnings
 };
@@ -268,6 +269,9 @@ sub _run_stage_host {
         # preload (warn+skip); transient ⇒ monitor off ⇒ a broken preload is fatal.
         monitor_preloads => $self->{+MONITOR_PRELOADS},
 
+        # Chunk 19.5 (§6.8): stamp every stage_ready/stage_down with this generation.
+        preload_generation => $self->{+PRELOAD_GENERATION},
+
         fork_job_callback       => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'preload-root') },
         fork_spawn_callback     => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
         respawn_runner_callback => sub { return unless $$ == $my_pid; longjump 'preload-root' => 'respawn' },
@@ -353,6 +357,14 @@ sub _handshake {
     # as a stage, not the root) and conveys it down as watch_parent_pid to every
     # stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
     $self->{+RUNNER_PID} = $list->{runner_pid} if $list && $list->{runner_pid};
+
+    # Chunk 19.5 (§6.8): this preload-root incarnation's generation. The stage-host
+    # Runner stamps it onto every stage_ready / stage_down report so the runner can
+    # ignore reports from a prior, crashed incarnation (§6.10). Capturing it here was
+    # the fix for the earlier hang -- the generation was previously discarded, so
+    # stages reported an undef generation that failed the runner's validation.
+    $self->{+PRELOAD_GENERATION} = $list->{preload_generation}
+        if $list && defined $list->{preload_generation};
 
     # Chunk 19.4b: the real runner's monitor_preloads (on for persistent, off for
     # transient). The stage-host Runner uses it so a broken preload is tolerated

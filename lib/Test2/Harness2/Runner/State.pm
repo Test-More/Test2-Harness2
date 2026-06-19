@@ -570,6 +570,15 @@ sub _stage_down {
     return;
 }
 
+# §6.10: forget every stage's readiness. Used when a crashed preload root is
+# respawned: the dead incarnation's stages are gone (or stale), so the scheduler
+# must wait for the fresh incarnation to re-register before dispatching again.
+sub reset_stage_readiness {
+    my $self = shift;
+    $self->{+STAGE_READINESS} = {};
+    return;
+}
+
 sub reload {
     my $self = shift;
     my ($stage, $data) = @_;

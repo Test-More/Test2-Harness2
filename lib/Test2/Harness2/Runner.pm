@@ -95,8 +95,20 @@ use Test2::Harness2::Util::HashBase(
         +preload_root_pid
         +reported_stage_data
         +preload_root_hosts
+
+        +preload_root_generation
+        +preload_root_respawns
+
+        +preload_generation
     },
 );
+
+# Generation slots (set above): on the real runner, +preload_root_generation is a
+# monotonic counter bumped each time a preload root is spawned (so stage reports from
+# a prior, crashed incarnation are ignored), and +preload_root_respawns bounds crash
+# respawns (§6.10). On a stage-host / forked stage, +preload_generation is the
+# generation that incarnation was spawned with (from get_preload_list), stamped onto
+# every stage_ready / stage_down report (§6.8).
 
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Service';
@@ -779,6 +791,80 @@ sub _preload_root_dead {
     return 1;
 }
 
+# §6.10: how many times we will respawn a crashed preload root before giving up.
+sub preload_root_respawn_limit { 3 }
+
+# §6.10: decide what to do when the preload root has died. Returns:
+#   ''        -- it is not dead, carry on
+#   'fail'    -- a genuine failure (broken preload, or respawn budget exhausted);
+#                SIGNAL is set, the caller should wind the run down
+#   'respawn' -- it crashed and a fresh incarnation has been spawned; the caller
+#                should keep going (re-handshake + re-register happen over the socket)
+# Distinguishing a crash from a broken preload: a broken preload's stage host
+# *returns* and announces stage_host_exited (with its captured errors); a crash
+# (SIGKILL / an abrupt _exit) dies WITHOUT that announcement. We only respawn the
+# crash case -- respawning a genuinely-broken preload would just fail again.
+sub _handle_dead_preload_root {
+    my $self = shift;
+
+    return '' unless $self->_preload_root_dead;
+
+    if ($self->stage_host_exited) {
+        $self->_emit_preload_failure_output;
+        $self->{+SIGNAL} //= 'TERM';
+        return 'fail';
+    }
+
+    my $max  = $self->preload_root_respawn_limit;
+    my $done = $self->{+PRELOAD_ROOT_RESPAWNS} // 0;
+    if ($done >= $max) {
+        warn "$$ $0 preload-root died unexpectedly and exhausted $max respawn attempts; aborting run\n";
+        $self->_emit_preload_failure_output;
+        $self->{+SIGNAL} //= 'TERM';
+        return 'fail';
+    }
+
+    $self->{+PRELOAD_ROOT_RESPAWNS} = $done + 1;
+    warn "$$ $0 preload-root died unexpectedly; respawning (attempt ${\ ($done + 1)}/$max)\n";
+
+    $self->_reset_preload_root_state;
+    $self->spawn_preload_root;
+
+    return 'respawn';
+}
+
+# §6.10: forget a dead preload-root incarnation's stage map / readiness / peer
+# connections so the scheduler gates on (and dispatches only to) the fresh
+# incarnation. The new incarnation's handshake (set_stage_data) refreshes the map
+# and clears the file_stage cache; its stages re-register with the new generation.
+sub _reset_preload_root_state {
+    my $self = shift;
+
+    delete $self->{+REPORTED_STAGE_DATA};
+
+    my $state = $self->state;
+    $state->reset_stage_readiness if $state && $state->can('reset_stage_readiness');
+
+    $self->_drop_preload_peers;
+
+    return;
+}
+
+# Drop the stale service connections to the dead incarnation (the preload-root and
+# its stages) so a later dial reuses nothing stale. The peers reconnect.
+sub _drop_preload_peers {
+    my $self = shift;
+
+    my $peers = $self->{service_peers} or return;
+    for my $id (keys %$peers) {
+        next unless $id eq 'preload-root' || $id =~ m/^preload-/;
+        my $conn = $peers->{$id} or next;
+        $self->_drop_conn($conn);
+    }
+
+    return;
+}
+
 # Chunk 19.3: surface the preload-root's (and its stages') captured STDERR when the
 # preloads fail to come up, so the broken-preload diagnostic (a die in a preload, a
 # stage that did not exit cleanly) reaches the command's output instead of being
@@ -880,6 +966,12 @@ sub spawn_preload_root {
     my $self = shift;
 
     return if $self->{+PRELOAD_ROOT_PID};
+
+    # Each incarnation gets a fresh generation. A stage that registered with (or
+    # reports under) an older generation is from a preload root that has since died
+    # and been respawned (§6.10); the runner ignores those stale reports so they do
+    # not mark the current generation's stage down or corrupt scheduling (§6.8).
+    $self->{+PRELOAD_ROOT_GENERATION} = ($self->{+PRELOAD_ROOT_GENERATION} // 0) + 1;
 
     require Test2::Collector;
     require Test2::Collector::Recorder::Zstd;
@@ -1152,15 +1244,21 @@ sub run_scheduler_only {
     until ($self->_ready_to_schedule) {
         $self->service_io;
 
-        # A broken preload can kill the stage host before any stage registers. The
-        # preload-root signals stage_host_exited when its stage-host Runner finishes;
-        # if that arrives (or the preload-root process itself dies) while we are still
-        # waiting, the preloads failed -- stop waiting, surface the preload-root's
-        # captured error output, and fail the run fast instead of hanging.
-        if ($self->stage_host_exited || $self->_preload_root_dead) {
+        # A broken preload's stage host *returns* and announces stage_host_exited
+        # (with its captured errors): a real failure, fail fast (a respawn would just
+        # fail again).
+        if ($self->stage_host_exited) {
             $self->_emit_preload_failure_output;
             $self->{+SIGNAL} //= 'TERM';
             last;
+        }
+
+        # The preload-root process dying WITHOUT that announcement is a crash (§6.10):
+        # respawn a fresh incarnation (bounded) and keep waiting on a fresh window,
+        # rather than failing or hanging until the deadline.
+        if (my $st = $self->_handle_dead_preload_root) {
+            last if $st eq 'fail';
+            $deadline = time + 60 if $st eq 'respawn';
         }
 
         if (time > $deadline) {
@@ -1190,6 +1288,15 @@ sub run_scheduler_only {
             $self->_emit_preload_failure_output;
             $self->{+SIGNAL} //= 'TERM';
             last;
+        }
+
+        # §6.10: the preload-root crashed mid-run (died without a clean stage_host_exited)
+        # while the run is not yet done. Respawn a fresh incarnation (bounded); it
+        # re-handshakes, re-registers its stages, and the scheduler resumes dispatching
+        # pending tasks to them. In-flight test jobs survive (their collectors watch the
+        # real runner, not the stage). On budget exhaustion this sets SIGNAL and fails.
+        if (my $st = $self->_handle_dead_preload_root) {
+            last if $st eq 'fail';
         }
 
         Time::HiRes::sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
@@ -1273,7 +1380,7 @@ sub run_stage {
         # binds its own preload-<stage>.socket, but it is reserved for `yath spawn`
         # (ARCHITECTURE.md §4.8), not used by the runner for dispatch.
         $self->_connect_runner;
-        $self->service_send('runner', 'stage_ready', stage => $stage);
+        $self->service_send('runner', 'stage_ready', stage => $stage, generation => $self->{+PRELOAD_GENERATION});
     }
     else {
         $self->state->stage_ready($stage);
@@ -1305,7 +1412,7 @@ sub run_stage {
     }
 
     if ($stage_service) {
-        eval { $self->service_send('runner', 'stage_down', stage => $stage); 1 };
+        eval { $self->service_send('runner', 'stage_down', stage => $stage, generation => $self->{+PRELOAD_GENERATION}); 1 };
         $self->close_service;
     }
     else {
