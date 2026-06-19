@@ -625,8 +625,12 @@ sub task_stage {
     # Chunk 19.3 scheduler-only path: the preload-root hosts the stages, so resolve
     # from the reported stage map plus a file_stage round-trip to the base stage. With
     # neither a preloader nor a stage map (no preload at all) keep the legacy fallback.
+    # The base stage always registers as lowercase 'default' (Runner::Preloader),
+    # so a non-staged preload-root reports an empty map and an unstaged task must
+    # resolve to 'default' -- NOT 'DEFAULT', which would dispatch to a
+    # 'preload-DEFAULT' that never registered and abort the jobs as "stage gone".
     my $map = $self->{+STAGE_MAP};
-    return $wants // 'DEFAULT' unless $map && keys %$map;
+    return $wants // 'default' unless $map && keys %$map;
 
     # An explicit, valid directive wins; NOPRELOAD is the synthetic no-preload stage.
     return $wants if defined($wants) && length($wants) && ($wants eq 'NOPRELOAD' || $map->{$wants});
