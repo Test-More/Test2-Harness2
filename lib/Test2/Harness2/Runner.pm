@@ -928,26 +928,29 @@ sub stop_preload_root {
 
     my $pid = $self->{+PRELOAD_ROOT_PID} or return;
 
+    # Graceful: ask the preload-root to stop over the socket and reap it. The
+    # preload-root may still be winding down its stage host when this arrives (it
+    # only services this 'stop' once it reaches its idle loop), so give it a
+    # generous window.
     eval { $self->service_send('preload-root', 'stop'); 1 };
 
-    for (1 .. 100) {
+    for (1 .. 250) {
         $self->service_io if $self->{+ROOTPID} == $$;
         last if waitpid($pid, POSIX::WNOHANG) == $pid;
         Time::HiRes::sleep(0.02);
     }
 
-    if (kill(0, $pid)) {
-        kill('TERM', $pid);
-        for (1 .. 50) {
-            last if waitpid($pid, POSIX::WNOHANG) == $pid;
-            Time::HiRes::sleep(0.02);
-        }
-        if (kill(0, $pid)) {
-            kill('KILL', $pid);
-            waitpid($pid, 0);
-        }
-    }
-
+    # If it did not stop gracefully we must NOT kill the collector parent ($pid):
+    # that collector's ChildMonitor (watch_parent_pid => this runner) is exactly
+    # what kills the preload-root's exec'd child if the runner vanishes. Killing
+    # the collector parent destroys that backstop and ORPHANS its child. Instead,
+    # leave the collector parent alone and let the backstop fire: when this runner
+    # process exits (right after teardown/stop below), the ChildMonitor sees the
+    # runner gone, terminates the preload-root child (and its stage descendants),
+    # and the collector parent finalizes and exits -- reaped by init. The
+    # preload-root is tracked OUTSIDE {+PROCS} (so it never trips the
+    # waitpid(-1) reaper), and it is still alive here, so a non-blocking reaper
+    # sees no dead child to choke on.
     delete $self->{+PRELOAD_ROOT_PID};
 
     return;
