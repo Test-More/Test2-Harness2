@@ -46,6 +46,7 @@ hashref the command turns into its tables and its kill list.
     #   runs           => [ { run_id => ..., pending => [...] }, ... ],
     #   running        => [ { job_id, run_id, pid, rel_file, is_try, conflicts }, ... ],
     #   stage_readiness => { default => $pid, ... },
+    #   stage_lifecycle => { default => { state => 'up', generation => N, pid => $pid, stamp => T }, ... },
     #   reload_state    => { ... },
     # }
 
@@ -82,6 +83,9 @@ sub build ($self) {
         runs            => $self->_runs,
         running         => $self->_running,
         stage_readiness => {%{$state->stage_readiness // {}}},
+        # Chunk 19.5 (§6.8): the richer per-stage lifecycle (state/generation/pid) the
+        # named states feed; stage_readiness is kept as the back-compatible up/down view.
+        stage_lifecycle => {%{$state->stage_lifecycle // {}}},
         reload_state    => $state->reload_state // {},
     };
 }

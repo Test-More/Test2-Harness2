@@ -59,6 +59,7 @@ sub run {
 
     print "\n**** Runner Stages: ****\n";
     my $stage_status = $status->{stage_readiness} // {};
+    my $stage_life   = $status->{stage_lifecycle} // {};
     my $reload_status = $status->{reload_state} // {};
     my $reload_issues = 0;
 
@@ -68,18 +69,22 @@ sub run {
         my $ready = $pid ? 'YES' : 'NO';
         $pid = 'N/A' if $pid && $pid == 1;
 
+        # Chunk 19.5 (§6.8): the named lifecycle state (starting/up/restarting/down),
+        # falling back to the readiness up/down view for any stage without a record yet.
+        my $state = $stage_life->{$stage}{state} // ($ready eq 'YES' ? 'up' : 'down');
+
         my $issues = keys %{$reload_status->{$stage}};
         my $reload = $issues ? 'YES' : 'NO';
         $reload_issues += $issues;
 
-        push @$rows => [$pid, $stage, $ready, $reload];
+        push @$rows => [$pid, $stage, $state, $ready, $reload];
     }
 
     @$rows = sort { $a->[0] <=> $b->[0] } @$rows;
 
     my $stage_table = Term::Table->new(
         collapse => 1,
-        header => [qw/pid stage ready/, 'reload issues'],
+        header => [qw/pid stage state ready/, 'reload issues'],
         rows => $rows,
     );
     print "$_\n" for $stage_table->render;

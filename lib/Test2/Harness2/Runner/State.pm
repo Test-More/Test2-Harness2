@@ -55,6 +55,8 @@ use Test2::Harness2::Util::HashBase(
 
         <stage_readiness
 
+        <stage_lifecycle
+
         <task_list
 
         <halted_runs
@@ -219,8 +221,9 @@ my %ACTIONS = (
     stop_run    => '_stop_run',
     stop_task   => '_stop_task',
     retry_task  => '_retry_task',
-    stage_ready => '_stage_ready',
-    stage_down  => '_stage_down',
+    stage_ready      => '_stage_ready',
+    stage_down       => '_stage_down',
+    stage_restarting => '_stage_restarting',
     end_queue   => '_end_queue',
     halt_run    => '_halt_run',
     truncate    => '_truncate',
@@ -540,32 +543,87 @@ sub _retry_task {
     return;
 }
 
+# Chunk 19.5 (§6.8): named stage lifecycle states. STAGE_READINESS stays the
+# dispatch gate (truthy == 'up'); STAGE_LIFECYCLE is a parallel, richer record
+# {state, generation, pid, stamp} per stage that status/ps surface and that names
+# the transition the scheduler already acted on. 'up' sets readiness truthy;
+# 'down' and 'restarting' clear it (a restarting stage is intentionally reloading
+# and must not be dispatched to until its fresh incarnation re-readies) -- so the
+# gate behavior is unchanged, only the label is richer.
+sub _set_stage_lifecycle {
+    my $self = shift;
+    my ($stage, $state, $generation, $pid) = @_;
+
+    ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} = {
+        state => $state,
+        stamp => time,
+        defined($generation) ? (generation => $generation) : (),
+        defined($pid)        ? (pid        => $pid)         : (),
+    };
+
+    return;
+}
+
+# A stage_ready/stage_down/stage_restarting action carries the stage name and the
+# reporting incarnation's generation (a hashref item); older/in-runner callers may
+# still pass a bare stage string.
+sub _stage_action_parts {
+    my $self = shift;
+    my ($item) = @_;
+    return ref($item) ? @{$item}{qw/stage generation/} : ($item, undef);
+}
+
 sub stage_ready {
     my $self = shift;
-    my ($stage) = @_;
-    $self->_enqueue(stage_ready => $stage);
+    my ($stage, $generation) = @_;
+    $self->_enqueue(stage_ready => {stage => $stage, generation => $generation});
 }
 
 sub _stage_ready {
     my $self = shift;
-    my ($stage, $pid) = @_;
+    my ($item, $pid) = @_;
+    my ($stage, $generation) = $self->_stage_action_parts($item);
 
     $self->{+STAGE_READINESS}->{$stage} = $pid // 1;
+    $self->_set_stage_lifecycle($stage, 'up', $generation, $pid // 1);
 
     return;
 }
 
 sub stage_down {
     my $self = shift;
-    my ($stage) = @_;
-    $self->_enqueue(stage_down => $stage);
+    my ($stage, $generation) = @_;
+    $self->_enqueue(stage_down => {stage => $stage, generation => $generation});
 }
 
 sub _stage_down {
     my $self = shift;
-    my ($stage) = @_;
+    my ($item) = @_;
+    my ($stage, $generation) = $self->_stage_action_parts($item);
 
     $self->{+STAGE_READINESS}->{$stage} = 0;
+    $self->_set_stage_lifecycle($stage, 'down', $generation);
+
+    return;
+}
+
+# §6.8: a stage announces it is intentionally reloading (tearing down on purpose)
+# before it exits and the preload-root respawns it -- distinct from a plain 'down'.
+# Like 'down' it clears the dispatch gate; the fresh incarnation's stage_ready
+# returns it to 'up'.
+sub stage_restarting {
+    my $self = shift;
+    my ($stage, $generation) = @_;
+    $self->_enqueue(stage_restarting => {stage => $stage, generation => $generation});
+}
+
+sub _stage_restarting {
+    my $self = shift;
+    my ($item) = @_;
+    my ($stage, $generation) = $self->_stage_action_parts($item);
+
+    $self->{+STAGE_READINESS}->{$stage} = 0;
+    $self->_set_stage_lifecycle($stage, 'restarting', $generation);
 
     return;
 }
@@ -576,6 +634,7 @@ sub _stage_down {
 sub reset_stage_readiness {
     my $self = shift;
     $self->{+STAGE_READINESS} = {};
+    $self->{+STAGE_LIFECYCLE} = {};
     return;
 }
 

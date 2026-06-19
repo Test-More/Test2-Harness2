@@ -364,7 +364,7 @@ sub request_handler_stage_ready {
     my $self = shift;
     my ($payload) = @_;
     return undef if $self->_stale_stage_generation($payload);
-    $self->state->stage_ready($payload->{stage});
+    $self->state->stage_ready($payload->{stage}, $payload->{generation});
     return undef;
 }
 
@@ -372,7 +372,18 @@ sub request_handler_stage_down {
     my $self = shift;
     my ($payload) = @_;
     return undef if $self->_stale_stage_generation($payload);
-    $self->state->stage_down($payload->{stage});
+    $self->state->stage_down($payload->{stage}, $payload->{generation});
+    return undef;
+}
+
+# Chunk 19.5 (§6.8): a stage announces it is intentionally reloading (restarting)
+# before it exits to be respawned -- a richer label than the plain stage_down it
+# would otherwise send. Same generation guard as ready/down.
+sub request_handler_stage_restarting {
+    my $self = shift;
+    my ($payload) = @_;
+    return undef if $self->_stale_stage_generation($payload);
+    $self->state->stage_restarting($payload->{stage}, $payload->{generation});
     return undef;
 }
 

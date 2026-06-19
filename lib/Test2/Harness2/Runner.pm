@@ -1431,7 +1431,12 @@ sub run_stage {
     }
 
     if ($stage_service) {
-        eval { $self->service_send('runner', 'stage_down', stage => $stage, generation => $self->{+PRELOAD_GENERATION}); 1 };
+        # Chunk 19.5 (§6.8): if this exit is a reload (end_test_loop set SIGNAL=HUP via
+        # preloader->check), announce 'restarting' -- the preload-root will respawn us
+        # and the fresh incarnation re-readies. Any other exit is a plain 'down'.
+        my $reloading = $self->{+SIGNAL} && $self->{+SIGNAL} eq 'HUP';
+        my $report = $reloading ? 'stage_restarting' : 'stage_down';
+        eval { $self->service_send('runner', $report, stage => $stage, generation => $self->{+PRELOAD_GENERATION}); 1 };
         $self->close_service;
     }
     else {
