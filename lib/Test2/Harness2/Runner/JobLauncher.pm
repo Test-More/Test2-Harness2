@@ -1,6 +1,5 @@
 package Test2::Harness2::Runner::JobLauncher;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -95,10 +94,7 @@ use Test2::Harness2::Util::IPC qw/swap_io/;
 # in each host; the host passes its own jump LABEL into launch_via_fork so the
 # unwind lands in the right frame.
 
-sub get_stage {
-    my $class = shift;
-    my ($runner) = @_;
-
+sub get_stage ($class, $runner) {
     return unless $runner->can('stage');
 
     my $stage_name = $runner->stage     or return;
@@ -108,10 +104,7 @@ sub get_stage {
     return $p->stage_lookup->{$stage_name};
 }
 
-sub launch_spawn {
-    my $class = shift;
-    my ($runner, $spawn, $label) = @_;
-
+sub launch_spawn ($class, $runner, $spawn, $label = undef) {
     my $pid = fork() // die $!;
     if ($pid) {
         local $?;
@@ -146,12 +139,7 @@ sub launch_spawn {
     exit(1);
 }
 
-sub launch_via_fork {
-    my $class = shift;
-    my ($runner, $job, $label) = @_;
-
-    $label //= 'Test-Runner';
-
+sub launch_via_fork ($class, $runner, $job, $label = 'Test-Runner') {
     my $stage = $class->get_stage($runner);
 
     $stage->do_pre_fork($job) if $stage;
@@ -216,10 +204,7 @@ sub launch_via_fork {
     exit(1);
 }
 
-sub cleanup_process {
-    my $class = shift;
-    my ($job, $stage) = @_;
-
+sub cleanup_process ($class, $job, $stage) {
     # When running under a Test2-Collector collector the collector owns the
     # child's STDOUT/STDERR (swapped onto its capture pipes) and has already
     # selected its own stream formatter (T2_FORMATTER=Collector). Skip the
@@ -237,10 +222,7 @@ sub cleanup_process {
     $class->final_state($job);                    # Important final cleanup
 }
 
-sub test2_state {
-    my $class = shift;
-    my ($job) = @_;
-
+sub test2_state ($class, $job) {
     if ($INC{'Test2/API.pm'}) {
         Test2::API::test2_stop_preload();
         Test2::API::test2_post_preload_reset();
@@ -271,10 +253,7 @@ sub test2_state {
     return;
 }
 
-sub final_state {
-    my $class = shift;
-    my ($job) = @_;
-
+sub final_state ($class, $job) {
     @ARGV = $job->args;
 
     # toggle -w switch late
@@ -289,10 +268,7 @@ sub final_state {
     return;
 }
 
-sub do_loads {
-    my $class = shift;
-    my ($job) = @_;
-
+sub do_loads ($class, $job) {
     local $@;
     my $importer = eval <<'    EOT' or die $@;
 package main;
@@ -317,10 +293,7 @@ sub { $_[0]->import(@{$_[1]}) }
     return;
 }
 
-sub build_init_state {
-    my $class = shift;
-    my ($job) = @_;
-
+sub build_init_state ($class, $job) {
     $0 = $job->rel_file;
     $class->_reset_DATA();
     @ARGV = ();
@@ -343,10 +316,7 @@ sub build_init_state {
     return;
 }
 
-sub set_env {
-    my $class = shift;
-    my ($job) = @_;
-
+sub set_env ($class, $job) {
     my $env = $job->env_vars;
     {
         no warnings 'uninitialized';
@@ -359,10 +329,7 @@ sub set_env {
     return;
 }
 
-sub update_io {
-    my $class = shift;
-    my ($job) = @_;
-
+sub update_io ($class, $job) {
     my $out_fh = open_file($job->out_file, '>');
     my $err_fh = open_file($job->err_file, '>');
 
@@ -395,9 +362,7 @@ sub update_io {
 }
 
 # Heavily modified from forkprove
-sub _reset_DATA {
-    my $class = shift;
-
+sub _reset_DATA ($class) {
     for my $set (@{$class->preload_list}) {
         my ($mod, $file, $pos) = @$set;
 
@@ -422,9 +387,7 @@ sub _reset_DATA {
 }
 
 # Heavily modified from forkprove
-sub preload_list {
-    my $class = shift;
-
+sub preload_list ($class) {
     my $list = [];
 
     for my $loaded (keys %INC) {

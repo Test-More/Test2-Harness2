@@ -93,10 +93,7 @@ sub name { 'preload-root' }
 # whole process (in BEGIN/compile phase) and exits; with no/other arguments it is
 # an ordinary no-op import so the module can be required/use'd (e.g. in tests)
 # without launching anything.
-sub import {
-    my $class = shift;
-    my @args  = @_;
-
+sub import ($class, @args) {
     return unless @args && $args[0] eq 'launch';
 
     my (undef, $socket) = @args;
@@ -116,10 +113,7 @@ C<POSIX::_exit>s.
 
 =cut
 
-sub launch {
-    my $class = shift;
-    my %params = @_;
-
+sub launch ($class, %params) {
     my $socket = $params{runner_socket}
         or croak "launch requires a runner_socket";
 
@@ -179,8 +173,7 @@ voluntary exit would race the runner's C<waitpid(-1)> reaper).
 
 =cut
 
-sub run_driver {
-    my $self = shift;
+sub run_driver ($self) {
 
     # The preload-root IS the nested runner now (it hosts the base/default stage
     # in-process and forks the named stages). Name it like the old in-runner host
@@ -197,8 +190,7 @@ sub run_driver {
     # handed to the runner with stage_host_exited and surfaced in the command's output
     # without the runner racing to read our events file.
     $self->{+WARNINGS} = [];
-    local $SIG{__WARN__} = sub {
-        my ($msg) = @_;
+    local $SIG{__WARN__} = sub ($msg) {
         push @{$self->{+WARNINGS}} => $msg;
         print STDERR $msg;
     };
@@ -246,8 +238,7 @@ sub run_driver {
 # the real runner, binds preload-base.socket) rather than the scheduler root, and
 # preload_stages forks the other stages as this process's children. The test-launch
 # fork callback unwinds to our 'preload-root' Long::Jump host (see launch()).
-sub _run_stage_host {
-    my $self = shift;
+sub _run_stage_host ($self) {
 
     require Getopt::Yath::Settings;
     require Test2::Harness2::Runner;
@@ -293,9 +284,7 @@ empty hashref when there is no staged preload.
 
 =cut
 
-sub stage_data {
-    my $self = shift;
-    my ($meta) = @_;
+sub stage_data ($self, $meta) {
 
     my $data = {};
     return $data unless $meta;
@@ -342,8 +331,7 @@ request id for C<_request_sync>.
 
 =cut
 
-sub _handshake {
-    my $self = shift;
+sub _handshake ($self) {
 
     $self->start_service;
 
@@ -389,9 +377,7 @@ sub _handshake {
     return;
 }
 
-sub _load_preloads {
-    my $self = shift;
-    my ($mods) = @_;
+sub _load_preloads ($self, $mods) {
 
     my $meta;
     for my $mod (@$mods) {
@@ -412,9 +398,7 @@ sub _load_preloads {
     return $meta;
 }
 
-sub _request_sync {
-    my $self = shift;
-    my ($identity, $command, %args) = @_;
+sub _request_sync ($self, $identity, $command, %args) {
 
     my $conn = $self->service_peer_conn($identity)
         or croak "no connection to peer '$identity'";
@@ -434,9 +418,7 @@ sub _request_sync {
     return delete $self->{+RESPONSES}{$request_id};
 }
 
-sub service_on_response {
-    my $self = shift;
-    my ($conn, $event) = @_;
+sub service_on_response ($self, $conn, $event) {
 
     ($self->{+RESPONSES} //= {})->{$event->{request_id}} = $event->{payload};
 
@@ -446,8 +428,7 @@ sub service_on_response {
 # Role::Service dispatches an inbound 'stop' request through handle_request ->
 # request_handler_stop -> stop_service, which sets the role's stopped flag. Mirror
 # that into our own loop flag so the driver loop ends.
-sub request_handler_stop {
-    my $self = shift;
+sub request_handler_stop ($self, @) {
     $self->{+STOPPED} = 1;
     $self->stop_service;
     return {ok => 1, stopping => 1};

@@ -1,6 +1,5 @@
 package App::Yath2::TestFile;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -27,45 +26,34 @@ use Test2::Harness2::Util::HashBase qw{
     _category _stage _duration _min_slots _max_slots
 };
 
-sub set_duration { $_[0]->set__duration(lc($_[1])) }
-sub set_category { $_[0]->set__category(lc($_[1])) }
+sub set_duration ($self, $val) { $self->set__duration(lc($val)) }
+sub set_category ($self, $val) { $self->set__category(lc($val)) }
 
-sub set_stage     { $_[0]->set__stage($_[1]) }
-sub set_min_slots { $_[0]->set__min_slots($_[1]) }
-sub set_max_slots { $_[0]->set__max_slots($_[1]) }
+sub set_stage     ($self, $val) { $self->set__stage($val) }
+sub set_min_slots ($self, $val) { $self->set__min_slots($val) }
+sub set_max_slots ($self, $val) { $self->set__max_slots($val) }
 
-sub retry { $_[0]->headers->{retry} }
-sub set_retry {
-    my $self = shift;
-    my $val = @_ ? $_[0] : 1;
-
+sub retry ($self) { $self->headers->{retry} }
+sub set_retry ($self, $val = 1) {
     $self->scan;
 
     $self->{+_HEADERS}->{retry} = $val;
 }
 
-sub retry_isolated { $_[0]->headers->{retry_isolated} }
-sub set_retry_isolated {
-    my $self = shift;
-    my $val = @_ ? $_[0] : 1;
-
+sub retry_isolated ($self) { $self->headers->{retry_isolated} }
+sub set_retry_isolated ($self, $val = 1) {
     $self->scan;
 
     $self->{+_HEADERS}->{retry_isolated} = $val;
 }
 
-sub set_smoke {
-    my $self = shift;
-    my $val = @_ ? $_[0] : 1;
-
+sub set_smoke ($self, $val = 1) {
     $self->scan;
 
     $self->{+_HEADERS}->{features}->{smoke} = $val;
 }
 
-sub init {
-    my $self = shift;
-
+sub init ($self) {
     my $file = $self->file;
 
     # We want absolute path
@@ -83,8 +71,7 @@ sub init {
     }
 }
 
-sub relative {
-    my $self = shift;
+sub relative ($self) {
     return $self->{+RELATIVE} //= File::Spec->abs2rel($self->{+FILE});
 }
 
@@ -99,10 +86,7 @@ my %DEFAULTS = (
     io_events => 1,
 );
 
-sub check_feature {
-    my $self = shift;
-    my ($feature, $default) = @_;
-
+sub check_feature ($self, $feature, $default = undef) {
     $default = $DEFAULTS{$feature} unless defined $default;
 
     return $default unless defined $self->headers->{features}->{$feature};
@@ -110,37 +94,28 @@ sub check_feature {
     return 0;
 }
 
-sub check_stage {
-    my $self = shift;
-
+sub check_stage ($self) {
     return $self->{+_STAGE} if $self->{+_STAGE};
 
     $self->_scan unless $self->{+_SCANNED};
     return $self->{+_HEADERS}->{stage} || undef;
 }
 
-sub check_min_slots {
-    my $self = shift;
-
+sub check_min_slots ($self) {
     return $self->{+_MIN_SLOTS} if $self->{+_MIN_SLOTS};
 
     $self->_scan unless $self->{+_SCANNED};
     return $self->{+_HEADERS}->{min_slots} // undef;
 }
 
-sub check_max_slots {
-    my $self = shift;
-
+sub check_max_slots ($self) {
     return $self->{+_MAX_SLOTS} if $self->{+_MAX_SLOTS};
 
     $self->_scan unless $self->{+_SCANNED};
     return $self->{+_HEADERS}->{max_slots} // undef;
 }
 
-sub meta {
-    my $self = shift;
-    my ($key) = @_;
-
+sub meta ($self, $key = undef) {
     $self->_scan unless $self->{+_SCANNED};
     my $meta = $self->{+_HEADERS}->{meta} or return ();
 
@@ -149,9 +124,7 @@ sub meta {
     return @{$meta->{$key}};
 }
 
-sub check_duration {
-    my $self = shift;
-
+sub check_duration ($self) {
     return $self->{+_DURATION} if $self->{+_DURATION};
 
     $self->_scan unless $self->{+_SCANNED};
@@ -166,9 +139,7 @@ sub check_duration {
     return 'medium';
 }
 
-sub check_category {
-    my $self = shift;
-
+sub check_category ($self) {
     return $self->{+_CATEGORY} if $self->{+_CATEGORY};
 
     $self->_scan unless $self->{+_SCANNED};
@@ -184,52 +155,43 @@ sub check_category {
     return 'general';
 }
 
-sub event_timeout    { $_[0]->headers->{timeout}->{event} }
-sub post_exit_timeout { $_[0]->headers->{timeout}->{postexit} }
+sub event_timeout     ($self) { $self->headers->{timeout}->{event} }
+sub post_exit_timeout ($self) { $self->headers->{timeout}->{postexit} }
 
-sub conflicts_list {
-    return $_[0]->headers->{conflicts} || [];    # Assure conflicts is always an array ref.
+sub conflicts_list ($self) {
+    return $self->headers->{conflicts} || [];    # Assure conflicts is always an array ref.
 }
 
-sub headers {
-    my $self = shift;
+sub headers ($self) {
     $self->_scan unless $self->{+_SCANNED};
     return {} unless $self->{+_HEADERS};
     return {%{$self->{+_HEADERS}}};
 }
 
-sub shbang {
-    my $self = shift;
+sub shbang ($self) {
     $self->_scan unless $self->{+_SCANNED};
     return {} unless $self->{+_SHBANG};
     return {%{$self->{+_SHBANG}}};
 }
 
-sub switches {
-    my $self = shift;
-
+sub switches ($self) {
     my $shbang   = $self->shbang       or return [];
     my $switches = $shbang->{switches} or return [];
 
     return $switches;
 }
 
-sub is_executable {
-    my $self = shift;
-    my ($file) = @_;
+sub is_executable ($self, $file = undef) {
     $file //= $self->{+FILE};
     return -x $file;
 }
 
-sub scan {
-    my $self = shift;
+sub scan ($self) {
     $self->_scan();
     return;
 }
 
-sub _scan {
-    my $self = shift;
-
+sub _scan ($self) {
     return if $self->{+_SCANNED}++;
     return if $self->{+IS_BINARY};
 
@@ -369,10 +331,7 @@ sub _scan {
     $self->{+_HEADERS} = \%headers;
 }
 
-sub _parse_shbang {
-    my $self = shift;
-    my $line = shift;
-
+sub _parse_shbang ($self, $line) {
     return {} if !defined $line;
 
     my %shbang;
@@ -400,10 +359,7 @@ sub _parse_shbang {
     return \%shbang;
 }
 
-sub queue_item {
-    my $self = shift;
-    my ($job_name, $run_id, %inject) = @_;
-
+sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     die "The '$self->{+FILE}' test specifies that it should not be run by Test2::Harness2.\n"
         unless $self->check_feature(run => 1);
 
@@ -488,9 +444,7 @@ my %RANK = (
     isolation  => 100,
 );
 
-sub rank {
-    my $self = shift;
-
+sub rank ($self) {
     return $RANK{smoke} if $self->check_feature('smoke');
 
     my $rank = $RANK{$self->check_category};

@@ -1,6 +1,5 @@
 package Test2::Harness2::TestFile;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -35,9 +34,7 @@ my @FIELDS = qw{
     }
 }
 
-sub init {
-    my $self = shift;
-
+sub init ($self) {
     my $task = $self->{+TASK_DATA}
         or croak "'task_data' is a required attribute";
 
@@ -48,23 +45,18 @@ sub init {
         unless defined $task->{file};
 }
 
-sub from_task {
-    my $class = shift;
-    my ($task) = @_;
-
+sub from_task ($class, $task = undef) {
     croak "from_task requires a task hashref"
         unless $task && ref($task) eq 'HASH';
 
     return $class->new(task_data => {%$task});
 }
 
-sub field {
-    my $self = shift;
-    my ($key) = @_;
+sub field ($self, $key) {
     return $self->{+TASK_DATA}->{$key};
 }
 
-sub TO_JSON { return {%{$_[0]->{+TASK_DATA}}} }
+sub TO_JSON ($self) { return {%{$self->{+TASK_DATA}}} }
 
 1;
 
