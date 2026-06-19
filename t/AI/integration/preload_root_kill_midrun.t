@@ -131,12 +131,26 @@ my $ok = eval {
         sleep 0.1;
     }
     $run_pid = undef if defined $exit;
-    ok(defined($exit), "`yath run` completed (did not hang)") or die "run hung\n";
-    is($exit, 0, "the run recovered from the preload-root crash and exited 0");
 
-    my $out = do { open(my $rh, '<', File::Spec->catfile($outdir, 'run.out')) or die $!; local $/; <$rh> };
-    like($out, qr{PASSED.*a_inflight\.tx}, "the in-flight test survived the crash and passed");
-    like($out, qr{PASSED.*z_pending\.tx}, "the pending test ran on the respawned preload-root and passed");
+    my $out = -f File::Spec->catfile($outdir, 'run.out')
+        ? do { open(my $rh, '<', File::Spec->catfile($outdir, 'run.out')); local $/; <$rh> } : '(no run.out)';
+
+    ok(defined($exit), "`yath run` completed (did not hang)")
+        or die "run hung after the preload-root kill; run.out so far:\n$out\n";
+
+    my $diag = sub {
+        diag("run exit=" . (defined($exit) ? $exit : '<undef>'));
+        diag("run.out:\n$out");
+        for my $f (qw/start.out stop.out/) {
+            my $p = File::Spec->catfile($outdir, $f);
+            next unless -f $p;
+            diag("$f:\n" . do { open(my $h, '<', $p); local $/; <$h> });
+        }
+    };
+
+    is($exit, 0, "the run recovered from the preload-root crash and exited 0") or $diag->();
+    like($out, qr{PASSED.*a_inflight\.tx}, "the in-flight test survived the crash and passed") or $diag->();
+    like($out, qr{PASSED.*z_pending\.tx}, "the pending test ran on the respawned preload-root and passed") or $diag->();
 
     # 9. Shut the persistent runner down cleanly.
     my $stop = spawn_to(File::Spec->catfile($outdir, 'stop.out'), @base, 'stop');

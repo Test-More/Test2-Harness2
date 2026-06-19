@@ -871,12 +871,32 @@ sub _reset_preload_root_state {
 
 # Drop the stale service connections to the dead incarnation (the preload-root and
 # its stages) so a later dial reuses nothing stale. The peers reconnect.
+#
+# §6.10: a stage that still has an IN-FLIGHT (running) job is the exception -- keep
+# its channel. When the preload-root is killed mid-run, the orphaned stage process
+# is still alive (its collector watches the real runner, not the dead preload-root)
+# and finishes that job, then reports its outcome (stop_task / retry_task) over THIS
+# channel. Those job reports are NOT generation-guarded, so dropping the channel here
+# would lose the in-flight job's completion and hang the run (this is what made the
+# mid-run-kill recovery flaky under load). The stale stage gets no new dispatch
+# (readiness was just reset; the fresh incarnation's stages serve new work) and is
+# reaped when the run ends / the runner stops.
 sub _drop_preload_peers {
     my $self = shift;
 
     my $peers = $self->{service_peers} or return;
+
+    my %busy;
+    if (my $state = $self->state) {
+        my $running = $state->running_tasks // {};
+        for my $task (values %$running) {
+            $busy{$task->{stage}}++ if defined $task->{stage};
+        }
+    }
+
     for my $id (keys %$peers) {
         next unless $id eq 'preload-root' || $id =~ m/^preload-/;
+        next if $id =~ m/^preload-(.+)$/ && $busy{$1};
         my $conn = $peers->{$id} or next;
         $self->_drop_conn($conn);
     }
