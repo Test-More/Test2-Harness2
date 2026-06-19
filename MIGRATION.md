@@ -162,18 +162,26 @@ runs in `BEGIN`.
   with a single resolver); it now bails the moment the peer's channel closes and
   `resolve_file_stage` fails over to a surviving stage (bounded retry, caches only
   success). Tested by `t/AI/integration/preload_crash_midrun.t` (two stages; the
-  resolver crashes once, the runner fails over). **Still untested deterministically:**
-  the preload-root *process* itself crashing mid-run (with a staged preload no user
-  hook runs in the preload-root post-startup, so only an external kill triggers it, and
-  that is unreliable here — the preload-root renames `$0` to `yath-nested-runner`); the
-  recovery branch for it is implemented and mirrors the verified startup-crash path.
+  resolver crashes once, the runner fails over).
+  **Preload-root PROCESS crash mid-run (`9015442f5`).** Also covered now: a live
+  preload-root SIGKILLed while a job is in flight. `t/AI/integration/preload_root_kill_midrun.t`
+  uses `RootPidPreload` (records the preload-root's own pid, since it loads in the
+  preload-root before stages fork) to kill it reliably; the in-flight job finishes
+  (its collector watches the real runner), the runner respawns the preload-root, the
+  pending test runs on the fresh incarnation, and the run exits 0.
+- **§6.1 verdict-mirroring `spawn_collector` — moot, no change.** `spawn_collector`'s
+  exit is collector-health (`spawn_exit_code`, 0/255), not the preload-root child's
+  verdict. But the runner never uses the preload-root's exit *code*: crash detection is
+  process-gone (`waitpid`), and the crash-vs-broken-preload distinction is a socket
+  message (`stage_host_exited`), not the exit status. The preload-root is also
+  long-lived, so `collect()` (which would mirror the verdict) cannot be used — it would
+  block. So there is nothing to fix.
 - **Residuals (deferred, not done):** the explicit stage lifecycle-state *enum*
   `starting`/`up`/`restarting`/`down` (§6.8 / chunk 10) — the *behavior* (generation +
   up/down + stage-owned reload + respawn) works, but the named 4-state enum is unbuilt;
-  the remaining chunk-19.5 refinements — retiring/reshaping the `yath runner` command's
-  goto-file host (still used by the no-preload path) and the §6.12 HUP-protocol
-  redesign; and the §6.1 verdict-mirroring `spawn_collector` nuance for the preload-root
-  (it currently uses `spawn_collector`, collector-health exit).
+  and the remaining chunk-19.5 refinements — retiring/reshaping the `yath runner`
+  command's goto-file host (still used by the no-preload path) and the §6.12
+  HUP-protocol redesign.
 - **Code-review follow-ups.** External reviews (codex/gemini) prompted fixes that
   landed: non-staged-preload dispatch (`DEFAULT`→`default`, `6c52e41b1` + unit test),
   the `file_stage` cache cleared on stage-data refresh (`823c2551a`), and POD/comment
