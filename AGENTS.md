@@ -93,8 +93,10 @@ docs win — flag the conflict if it is non-trivial.
 
 ## Canonical sources of truth
 
-1. **`ARCHITECTURE.md`** — Authoritative spec for the rewrite. Grown
-   incrementally as architecture is decided.
+1. **`ARCHITECTURE.md`** — Authoritative spec for the rewrite (**where we
+   want to be**). Grown incrementally as architecture is decided. Paired
+   with **`TODO_STEPS.md`** (the broad migration steps/chunks) and
+   **`TODO_TASKS.md`** (specific, decided, ready-to-implement tickets).
 2. **`STYLE_GUIDE.md`** — Style, formatting, and language-feature
    rules for code in this repository.
 3. **`STYLE_GUIDE_AGENT_CHECKLIST.md`** — Self-audit checklist agents
@@ -104,9 +106,10 @@ docs win — flag the conflict if it is non-trivial.
 4. **This file (`AGENTS.md`)** — Per-repository agent / contributor
    workflow, pre-review checks, and project conventions that are
    not pure style.
-5. **`MIGRATION.md`** — Living status tracker for the 1.0 → 2.0
-   transition. Read it before doing transition work; update it after
-   landing a chunk.
+5. **`TODO_STEPS.md`** — The **broad migration steps** (chunks) for the
+   1.0 → 2.0 transition + their status/dependencies. Read it before doing
+   transition work; update a chunk's status after landing it. Specific,
+   decided tickets live in **`TODO_TASKS.md`** (cross-linked per step).
 6. **`IPC.md`** — Living **current-state** map of IPC, the process
    tree, who reaps whom, the sockets, and the on-disk artifacts and
    their consumers. Unlike `ARCHITECTURE.md` (the aspirational
@@ -330,7 +333,7 @@ guide; walk it before declaring work ready for review.
 - **Foundations override (active):** while the 1.0 → 2.0 transition
   foundations are being laid, do **not** create worktrees or feature
   branches. Commit directly to the transition branch (currently
-  `2.0d`, see `MIGRATION.md`). The rules below resume once the user
+  `2.0d`, see `TODO_STEPS.md`). The rules below resume once the user
   declares foundations done.
 - Significant work requires a worktree. Place worktrees in
   `worktrees/`.

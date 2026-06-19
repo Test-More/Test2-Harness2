@@ -2,7 +2,7 @@
 
 Durable copy of Chad's two design notes that drove the **post-6 revised-target**
 work (migration chunks 9-16). The decisions are restated in `ARCHITECTURE.md`
-(§1, §4.4/§4.7/§4.7a/§4.8/§5.2/§5.3) and mapped to chunks in `MIGRATION.md`; this
+(§1, §4.4/§4.7/§4.7a/§4.8/§5.2/§5.3) and mapped to chunks in `TODO_STEPS.md`; this
 file preserves the original briefs verbatim so they survive worktree cleanup.
 
 ## `thoughts` — service IPC, discovery, spawn, preload lifecycle

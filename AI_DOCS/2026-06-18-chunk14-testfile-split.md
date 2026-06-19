@@ -2,7 +2,7 @@
 
 ## Task
 
-Migration chunk 14 (`ARCHITECTURE.md` §1, `MIGRATION.md`): separate the
+Migration chunk 14 (`ARCHITECTURE.md` §1, `TODO_STEPS.md`): separate the
 file-reading/decision half of `Test2::Harness2::TestFile` (a UI/input concern)
 from the runner-side, file-free state half. Prerequisite for chunk 19 (the
 preload-root extraction), which needs a clean serializable per-test state object

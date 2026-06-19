@@ -97,6 +97,6 @@ bolting identity onto an otherwise order-dependent stream.
   connection set).
 - `ARCHITECTURE.md` §4.7 / §5.2 status tags `[target]` → `[migrating]`; §5.2
   rewritten to the identity-exchange + correlation model.
-- The 9/10 boundary shift recorded in `MIGRATION.md`.
+- The 9/10 boundary shift recorded in `TODO_STEPS.md`.
 
 Full suite green throughout (final: Files=97, Tests=1693).

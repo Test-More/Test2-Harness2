@@ -30,9 +30,9 @@ dig.
    (renderers), §4.7 (preload stage services), §5.2–5.3 (wire form + socket
    naming), §6.1 (multi-run — now resolved-in-part) are the sections this branch
    implements.
-4. `MIGRATION.md` — "Done so far" (chunk 5 / §6.1 / chunk 6 entries) and "Current
+4. `TODO_STEPS.md` — "Done so far" (chunk 5 / §6.1 / chunk 6 entries) and "Current
    state" describe the end state in prose; the "Chunks 4-6 detailed plan" has the
-   per-substep intent. Treat MIGRATION.md as the status-of-record.
+   per-substep intent. Treat TODO_STEPS.md as the status-of-record.
 
 ## 2. The architecture delta (the mental model)
 

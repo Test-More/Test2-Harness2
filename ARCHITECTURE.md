@@ -1,6 +1,11 @@
 # ARCHITECTURE.md
 
-Authoritative architectural spec for yath 2.0.
+Authoritative architectural spec for yath 2.0 — **where we want to be**.
+
+The three planning docs: **`ARCHITECTURE.md`** (this — the target state) ·
+**`TODO_STEPS.md`** (the broad migration steps/chunks to get there) ·
+**`TODO_TASKS.md`** (specific, decided, ready-to-implement tickets). Steps and
+tickets cross-reference the §-sections here.
 
 This document is **aspirational**: it describes where the code is going, not
 where it is today. yath 2.0 is built by **evolving the 1.0 codebase in small
@@ -32,7 +37,7 @@ bump, §1.1; argument processing → `Getopt::Yath`, §2.3): the tree carries th
 2.0 names/versions and option handling is `Getopt::Yath`. The remaining target
 subsystems are otherwise still 1.0 logic. Update the tag on a section as its
 migration starts and completes. Current per-chunk migration status lives in
-`MIGRATION.md`, not here.
+`TODO_STEPS.md`, not here.
 
 ## Conventions for this document
 
@@ -101,7 +106,7 @@ designs, but the live tree starts from 1.0 and is migrated forward.
 
 The end state is reached in chunks, each small enough for a human to review
 and each keeping the test suite green. Per-chunk status (done / in progress /
-not started, with commit refs) is tracked in `MIGRATION.md`. The intended
+not started, with commit refs) is tracked in `TODO_STEPS.md`. The intended
 order, roughly:
 
 1. **Mechanical renames** — `App::Yath` → `App::Yath2`,
@@ -124,7 +129,7 @@ order, roughly:
    step.
 6. **Renderer rewrite** — a base renderer / role that knows how to locate the
    `.jsonl.zst` files (§4.5). An interim step first moves renderers into the
-   `test` / `run` command processes; see `MIGRATION.md`.
+   `test` / `run` command processes; see `TODO_STEPS.md`.
 7. **System-load service** — a global harness service that samples CPU/memory
    load on a reliable tick (its own process; the runner loop can exceed the
    sample interval) and reports it to the runner so the scheduler can gate
@@ -624,7 +629,7 @@ service class):
   reports readiness/teardown to the runner; the runner consumes that and does not
   drive the stage's restarts. (The explicit `starting` / `up` / `restarting` /
   `down` enum is the **target**; the behavior is in place but the explicit state
-  enum is a residual — see `MIGRATION.md` chunk 19. **Stale-incarnation reports are
+  enum is a residual — see `TODO_STEPS.md` chunk 19. **Stale-incarnation reports are
   rejected by connection-currency** — a report is honored only from the connection
   currently registered for that stage identity — **not** by a wire generation
   counter; the earlier per-report `generation` is removed, bloat #3.)
@@ -981,7 +986,7 @@ from there the available `preload-<stage>.socket`s). This replaces the
   no live runner: the client treats the harness as absent and cleans the stale
   symlink, rather than blocking. (Owner/permission, version, and
   multiple-harness-per-project handling are settled at implementation time and
-  tracked in `MIGRATION.md`.)
+  tracked in `TODO_STEPS.md`.)
 
 `preload-<stage>.socket` is only the **global / per-run-baseline** form. A
 **run-scoped** preload stage on a persistent multi-run runner needs a
@@ -1111,7 +1116,7 @@ once) is a deliberate later step, not part of this resolution.
   `queue.jsonl` / `run_queue.jsonl` files. The **target** discovery + dispatch
   shape lives in §5.3 (runner-socket symlink) and §4.7 / §5.2
   (stage-registers-with-runner over one shared channel); the as-shipped form and
-  the remaining gap to that target are tracked in `MIGRATION.md` (chunks 9, 10, 12).
+  the remaining gap to that target are tracked in `TODO_STEPS.md` (chunks 9, 10, 12).
 
 **Future goal — concurrent runs with earlier-run priority + backfill.** The later
 step beyond serialized execution is to let a persistent runner progress **multiple
@@ -1125,10 +1130,10 @@ ordering) span runs in priority order rather than operating on a single active
 `RUN`; the per-run scheduling structures (`PENDING_TASKS` keyed by `run_id`, the
 `SORTED` bucket memo, conflict/resource gating) already carry `run_id` but the
 **scheduler loop and its clear/scope points assume one active run** and must be
-revisited then. Not scheduled (no `MIGRATION.md` chunk yet) — recorded here so the
+revisited then. Not scheduled (no `TODO_STEPS.md` chunk yet) — recorded here so the
 single-active-run assumptions are known to be temporary.
 
-**Remaining (tracked in `MIGRATION.md`, not blockers for the above):** concurrent
+**Remaining (tracked in `TODO_STEPS.md`, not blockers for the above):** concurrent
 run *execution* on a persistent runner; run-scoped preload stages as a user
 feature; and the connection-model / discovery / spawn / preload-as-resource
 redesign now folded into §4.4 / §4.7 / §4.8 / §5.2 / §5.3. (The earlier
