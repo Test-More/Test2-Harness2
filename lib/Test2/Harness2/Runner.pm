@@ -723,11 +723,25 @@ sub resolve_file_stage {
     my $cache = $self->{file_stage_cache} //= {};
     return $cache->{$file} if exists $cache->{$file};
 
-    my $identity = $self->_resolver_identity or return undef;
-    my $resp = $self->request_preload_sync($identity, 'resolve_file_stages', files => [$file]);
-    my $stage = ($resp && $resp->{stages}) ? $resp->{stages}->{$file} : undef;
+    # The resolver is a live preload STAGE (not the preload-root). A stage can die
+    # mid-resolve (a crash, a reload); request_preload_sync returns undef promptly
+    # when its resolver's channel drops, so fail over to another live stage and
+    # retry. Bounded by the number of stages plus a little slack. Only a successful
+    # resolution is cached -- a transient "no resolver" must not be memoized, or a
+    # later run would keep the stale miss.
+    my $attempts = $self->preload_root_respawn_limit + 1;
+    for (1 .. $attempts) {
+        my $identity = $self->_resolver_identity or last;
+        my $resp = $self->request_preload_sync($identity, 'resolve_file_stages', files => [$file]);
+        return $cache->{$file} = $resp->{stages}->{$file}
+            if $resp && $resp->{stages};
 
-    return $cache->{$file} = $stage;
+        # No answer (the resolver dropped); let service_io reap its closed channel so
+        # the next _resolver_identity skips it, then retry against a survivor.
+        $self->service_io;
+    }
+
+    return undef;
 }
 
 # Chunk 19.3: send a request to a preload peer and pump the service loop until its
@@ -747,6 +761,11 @@ sub request_preload_sync {
     until (exists $self->{preload_responses}->{$request_id}) {
         return undef if time > $deadline;
         $self->service_io;
+        # The peer answering this request can die mid-resolve (a stage crash /
+        # reload). Once service_io has reaped its closed channel, bail promptly so
+        # the caller can fail over to another live peer instead of spinning to the
+        # 30s deadline.
+        return undef if $conn->closed;
         Time::HiRes::sleep(0.01);
     }
 
