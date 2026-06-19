@@ -95,6 +95,10 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 17 | Plugin `setup`/`teardown` move to the runner; aux output → collectors (`run_collected`); retire the `aux_logs` flat files | ✅ | this task |
 | 18 | Collectors watch the runner pid → self-terminate if the runner dies (ARCH §4.1); + a code-review gate enforcing it | ✅ | this task |
 | 19 | Extract the preload root out of the runner: separate preload-root process hosts the stages; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals below) | this task (`925d82d75`..`0b604f4a1`) |
+| 20 | Interactive mode IO: replace the FIFO IO-proxy with socket-shared client IO (`dup2` socket→test stdio, reusing the `spawn` §4.8 mechanism); forces `-j1` (§4.10). The FIFO patch lives in the goto-file launcher #4 removes, so interactive may be **temporarily disabled / left broken behind a TODO/`xfail`** until this lands (do not block #4 on it) — needs 13 | ⬜ | — |
+| 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4): move no-preload job completion onto the collector socket report, delete `set_proc_exit`/`PROCS_BY_CAT`/`cat`-waits/three-pass death detection/die-on-unmonitored, inline the command's one-child spawn+wait — needs 6 | ⬜ | — |
+| 22 | Run state lifecycle (§4.2): fold the raw queue item onto the `Run` object (drop the leaking `run_items` hash); retain/purge run state per the **queuing client connection** (finished+owner-gone → purge); **abort-on-disconnect** (default true — a vanished `run`/`test` command halts the run + kills its jobs + advances), with a flag to detach (future `yath queue`) — needs 16 | ⬜ | — |
+| 23 | Client-side stage assignment; **eliminate** the file→stage resolver, `resolve_file_stages` round-trip, preload-side `file_stage` callbacks, and **`eager`** stages (§4.7/§4.7a). Stage choice is decided at queue time from test directives (`# HARNESS-NO-PRELOAD`, `# HARNESS-STAGE A B C`, `# HARNESS-STAGE-REQUIRE A B C`) + plugin hooks, written as three validated job fields (`no_preload` bool, `require_preload` bool, `preload_list` array; `no_preload` ⟹ other two empty). Preloads only report the map (stages, `default`, live state) and launch on demand. Runner/preload resource resolves from the **local map** (first listed stage that is `up`; else wait if `starting`/`restarting`; else `default` if advisory, skip/fail if required; **absent-from-map = permanent-unavailable** → `-1` for required) — **no round-trip**. Cleanup sites: delete the `eager` fallback loop in `State::_stage_order`; rewrite/delete `file_stage`/`eager` tests. `HARNESS-STAGE` expanded to multi-arg (1 arg = back-compat). Folds into chunk 11 | ⬜ | — |
 
 Chunks 1-8a have landed. Chunks **9-16 are the post-6 revised-target work**
 (the `thoughts` / `thoughts2` decisions); see "Next" below. Numeric order is
@@ -206,9 +210,17 @@ runs in `BEGIN`.
   `.md` references + `eval` forms (`9d81afd58`). **Still deferred:** the preload-root
   `require`s preload *library* modules during the handshake (`_load_preloads`) before
   `Test2::API::test2_start_preload()`, so a preload with Test2 state-mutating
-  *require-time* side effects loads outside the preload guard (codex P1; the safe fix
-  restructures the handshake/map-report ordering); and Perl 5.38 signatures / top-of-file
-  POD layout on the new chunk-19 modules (style consistency, gemini).
+  *require-time* side effects loads outside the preload guard (codex P1). **Fix
+  (decided):** make the handshake **lightweight** — dial + `get_preload_list` only,
+  **no `_load_preloads`, no `set_stage_data`**. Load preloads **once, under the
+  `test2_start_preload` guard** in the stage-host preload flow (which already builds
+  the `staged` meta), and report `set_stage_data` + preload warnings **after** that
+  guarded load. The runner already blocks scheduling until the map arrives
+  (`_ready_to_schedule`), so no runner-side change. Deletes `Preload::_load_preloads`
+  and the duplicate load; also moves warning capture to the single guarded load
+  (shrinks the §4.7/diagnostics split, bloat #21). See ARCHITECTURE §4.7. Also
+  outstanding: Perl 5.38 signatures / top-of-file POD layout on the new chunk-19
+  modules (style consistency, gemini).
 
 **Chunk 6 complete — base-renderer rewrite + finish the socket-IPC end state**
 (`69ae0be63`, `b33162faf`, `4410c8105`, `f9142217c`, `1b5373e1a`, `ddaed0a0c`,
@@ -484,9 +496,18 @@ the untracked source notes.
   Residual: the explicit `starting`/`restarting`/`down` lifecycle states and
   giving the stage ownership of its restart decision (today the preloader monitor
   still drives reload-respawn through the runner's `set_proc_exit` longjump).
-- **Chunk 11 — preload as a resource (§4.7a).** Model preload availability
-  (expected + current state) as a scheduler resource so jobs gate on it like any
-  other resource. Needs 10.
+- **Chunk 11 — preload as a resource (§4.7a).** Model preload availability **and
+  file→stage selection** as a single scheduler resource (the *preload resource*),
+  subsuming both the stage-readiness checks and the file→stage **resolver**
+  (`State::task_stage` + `resolve_file_stage`) into the standard
+  `available`/`assign`/`release` contract. `available($task)` is tri-state over the
+  stage lifecycle: `1` = stage `up`; `0` = `starting`/`restarting` (will be up);
+  `-1` = `down` permanent (skip/fail). `assign` records the resolved stage on the
+  job (none for no-preload); `release` is ~a no-op (preload is unbounded). The
+  assign→launch race (stage goes down before dispatch) **requeues** the job
+  (re-resolve next tick), it does not abort or consume a retry. Needs 10; needs the
+  requeue primitive (see immediate-work note) and the `starting`/`restarting`/`down`
+  states (chunk 10/§2).
 - **Chunk 12 — discovery via a runner-socket symlink (§5.3).** Replace
   `yath-persist.json` with a well-known symlink to `runner.socket` (follow it to
   the socket and to the workdir). **Keep a PID fallback:** clients query liveness/

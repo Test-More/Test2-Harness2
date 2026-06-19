@@ -417,6 +417,39 @@ no preload-root and the runner forks each test-job collector itself directly
   `Test2::Harness2::Collector::*` namespace** into a neutral `Test2::Harness2::*`
   namespace — reading recorded events is *producing-results* data access
   (`Test2::Harness2`), consumed by `App::Yath2` display code.
+- **Run state is owned by the `Run` object and retained per the queuing client.**
+  A run's data — its raw queue item, its job states, its lifecycle — lives **on the
+  one canonical `Run` object** (no parallel `run_items` hash). Each run records the
+  **connection that queued it** (the command's peer connection + its `peer_pid` from
+  the §5.2 identity handshake, bloat #1) and an **`abort_on_disconnect` flag
+  (default true)**. Retention and teardown are gated on that owner connection,
+  **not** on completion:
+  - **Finished + owner connected** → retained (the command may still query it).
+  - **Finished + owner gone** → purged (Run object + job states + raw item).
+  - **Running + owner drops, `abort_on_disconnect` true (default)** → the runner
+    **aborts the run**: halt its pending tasks, kill its running jobs (signal their
+    collectors → kill the test process groups), mark it aborted, and advance to the
+    next run. A vanished `run`/`test` command means a crash or a user kill, which
+    intends to kill the run.
+  - **Running + owner drops, `abort_on_disconnect` false** → the run is **detached**:
+    it keeps running (results persist to events/DB) and is purged on completion.
+    This flag enables a future queue-and-detach command (e.g. `yath queue`) that
+    exits without watching in real time.
+
+  This bounds a persistent runner's in-memory run state by **live client
+  connections**, not by total runs ever queued, and reuses the watchdog's
+  `abort_remaining` (scoped to the run) for the abort path. A run's control
+  requests (`queue_task`/`stop_run`) are accepted from **any** command connection,
+  not only the owner — only *retention/abort* is tied to the owner.
+- **Preload-root crash terminates a persistent runner.** If the preload-root exits
+  unexpectedly (a crash, not a clean stop) the runner cannot host preloaded runs and
+  does **not** respawn it (bloat #3) — the persistent runner **terminates**
+  (active runs fail; this is not a per-run condition the runner papers over). This is
+  deliberate: it prevents accidentally recreating respawn-like behavior. The narrower
+  resilience that *is* wanted lives in the stages: when **reload is enabled**, a
+  stage with a **broken preload** should catch the load failure, stay alive in an
+  error state, and **reload the module once it is fixed** — rather than letting the
+  whole stage/process die (§4.7).
 
 ### 4.3 Transition channel and state sync `[target]`
 
@@ -535,13 +568,24 @@ forked by the runner; the runner spawns one **preload-root** process (§4.2) and
 the preload-root hosts them. Concretely (`Test2::Harness2::Preload`): the runner
 execs `perl -MTest2::Harness2::Preload=launch,<runner.socket> -e 1;` under a
 collector; that process establishes the `Long::Jump`/goto-file host in `BEGIN`,
-dials `runner.socket` and identifies as **`preload-root`**, fetches the preload
-specs (`get_preload_list`), loads them, reports the stage map (`set_stage_data`),
-and answers per-run `resolve_file_stages` (it owns the `file_stage` callbacks the
-scheduler-only runner cannot run). It then drives a **stage-host `Runner` whose
+dials `runner.socket` and identifies as **`preload-root`**, and fetches the preload
+specs (`get_preload_list`). The handshake is **lightweight — it does not load the
+preloads or build the stage map**. It then drives a **stage-host `Runner` whose
 `rootpid` is the real runner's pid**, so that inner Runner hosts the
 base/default/NOPRELOAD stage **in-process** and forks the named stages as its own
-children. Each stage (in-process base or forked) dials `runner.socket` as
+children. The preloads are loaded **once, inside the `test2_start_preload` guard**
+(the stage-host's preload flow), which also builds the `TEST2_HARNESS_PRELOAD` meta;
+the stage map (`set_stage_data`) and any preload warnings are reported **after** that
+guarded load, not at the handshake. The **map is the only thing the preloads report
+about routing** — which stages exist, which is `default`, and live state
+(`starting`/`up`/`restarting`/`down`). Preloads make **no test-routing decisions**:
+there is no `resolve_file_stages` round-trip, no `file_stage` callbacks, and no
+`eager` stages (§4.7a — stage selection is decided client-side from test directives).
+**The runner blocks scheduling until the map arrives** — it knows preloads are
+configured, so it waits (the existing `_ready_to_schedule` gate) rather than
+scheduling without a stage map. This ordering avoids loading preload modules (and
+their require-time Test2 side effects) *outside* the guard, and removes the duplicate
+handshake-time load. Each stage (in-process base or forked) dials `runner.socket` as
 `preload-<name>` and reports up exactly as below. The **test-job goto-file launch**
 runs in the preload-root/stage via `Test2::Harness2::Runner::JobLauncher` (extracted
 from the `App::Yath2` runner command so `Test2::Harness2` loads no `App::Yath2`).
@@ -579,8 +623,11 @@ service class):
   The stage itself decides when to restart (e.g. on a preload-file change) and
   reports readiness/teardown to the runner; the runner consumes that and does not
   drive the stage's restarts. (The explicit `starting` / `up` / `restarting` /
-  `down` enum + generation counter is the **target**; the behavior is in place but
-  the explicit state enum is a residual — see `MIGRATION.md` chunk 19.)
+  `down` enum is the **target**; the behavior is in place but the explicit state
+  enum is a residual — see `MIGRATION.md` chunk 19. **Stale-incarnation reports are
+  rejected by connection-currency** — a report is honored only from the connection
+  currently registered for that stage identity — **not** by a wire generation
+  counter; the earlier per-report `generation` is removed, bloat #3.)
 - **Restart is stage-initiated; respawned by the preload-root.** On its own
   restart trigger the stage reloads **in-place** (churn) when it can; otherwise it
   closes its channel and **exits**, and the **preload-root** (the stage's parent
@@ -589,6 +636,13 @@ service class):
   Neither the runner nor the preload-root reaches in to restart a live stage — only
   one that has exited is respawned. (Previously the runner forked and respawned
   stages; that moved to the preload-root in chunk 19.)
+- **A broken preload does not kill the stage (reload mode).** When reload is enabled,
+  a stage whose preload **fails to load** (a syntax error / die in a watched module)
+  should **catch the failure, stay alive in an error state, and reload the module
+  once it is fixed** — not let the whole stage/process die. (This is the
+  stage-local resilience that replaces, for the common "I broke a file, let me fix
+  it" case, any urge to respawn the whole tree; preload-root *crash* is still fatal
+  to a persistent runner, §4.2.)
 - **Dispatch rides the same channel.** While a stage is `up`, the runner sends
   job-start / rerun requests over the **same** registered channel (not a second
   connection). Job results still arrive as transitions from each test job's own
@@ -608,11 +662,94 @@ service class):
   as above). Global stages outlive any single run. Run-scoped stage sockets must
   be run-qualified to avoid collisions (§5.3, §6.1).
 
-**§4.7a Preload as a resource `[target]`.** Preload availability is expressed
-through the resource system: a resource representing "stage `<name>` is expected
-and currently `up`" gates the jobs that require it. This unifies preload
-readiness with the existing resource-gating the scheduler already does, instead
-of a separate stage-readiness code path.
+**§4.7a Preload as a resource `[target]`.** When a run has a preload, preload
+availability is modeled as a **scheduler resource** — the *preload resource* —
+implementing the standard `available`/`assign`/`release` contract (§4.4,
+`Test2::Harness2::Runner::Resource`). It **subsumes the ad-hoc stage-readiness
+checks**, so preload-gated jobs flow through the same path as any other resource.
+
+**Preloads make no test-routing decisions (decided).** The stage a test wants is
+decided **entirely client-side, at queue time**, and carried on the test job — there
+is **no file→stage resolver, no `resolve_file_stages` round-trip, no `file_stage`
+callbacks, and no `eager` stages.** (The 1.0 preload-side auto-assignment + eager
+were added but never effectively used; the real-world pattern is the harness
+directive plus a plugin assigning stages at queue time. This codifies that.) The job
+carries three preload fields, set by `App::Yath` test logic from the test's
+directives and overridable by plugin hooks:
+
+- **`no_preload`** (bool) — the test cannot run under a preload. Directive
+  `# HARNESS-NO-PRELOAD` (the existing generic `NO-<feature>` parse → `features.preload=0`).
+- **`require_preload`** (bool) — the listed stages are mandatory; no fallback.
+  Directive `# HARNESS-STAGE-REQUIRE A B C` (parses as `$dir=stage`, leading
+  `REQUIRE` keyword).
+- **`preload_list`** (array, ordered preference) — preferred stages. Directive
+  `# HARNESS-STAGE A B C` (the existing single-arg `HARNESS-STAGE` expanded to a
+  list; one stage is a 1-element list). Empty with the others false ⟹ `default` stage.
+
+**Directive syntax note:** the parser (`App::Yath2::TestFile`) takes the directive
+name as the **first token only** (`split` on the first dash/space), so multi-word
+names like `HARNESS-REQUIRE-PRELOAD` don't work — the required form is
+`HARNESS-STAGE-REQUIRE …` (dir = `stage`). `REQUIRE` is therefore a reserved first
+list element for the stage directive.
+
+**Validation:** `no_preload` true ⟹ `require_preload` false and `preload_list`
+empty. Enforced when the job is built and after plugin overrides.
+
+The resource reads these three fields and resolves against the **local stage map**
+(stages + which is `default` + live `starting`/`up`/`restarting`/`down` state) — no
+communication with the preloads to make the decision:
+
+- **Selection** = the **first stage in `preload_list` that is currently `up`**
+  (first-to-become-available; it does **not** wait for a higher-preference stage).
+  Empty list → the `default` stage. `no_preload` → the no-preload path (fork+exec,
+  §4.1), not gated on this resource.
+- **`available($task)` mapping** (stage lifecycle §4.7: `starting`/`up`/`restarting`/
+  `down`):
+  - **`1`** — a `preload_list` stage is `up` (assign the first such); **or** the
+    list is exhausted/empty and the test is **advisory** (`require_preload` false) so
+    it falls to the `default` stage.
+  - **`0`** — no listed stage is `up` yet but ≥1 is `starting`/`restarting` (coming
+    back) → the job **waits** (whichever becomes available first wins).
+  - **`-1`** — none of the `preload_list` stages will ever be available **and** the
+    test is **`require_preload`** → the job is skipped/failed. (An advisory test never
+    returns `-1`: it falls to `default`.)
+- **"Will never be available" = absent from the map (this is `down`'s setter).** A
+  `preload_list` stage that is **not present in the current stage map** — a stage
+  that was never configured, a misspelled name, or one removed by a map refresh — is
+  **permanently unavailable for that map**: it contributes nothing to selection, and
+  a `require_preload` test with no presentable stage gets `-1` (skip/fail)
+  *deterministically* rather than sitting in `starting` forever. A stage **present in
+  the map but with no current `up` peer** is `starting`/`restarting` (→ `0`, wait),
+  **not** absent. A map refresh (reload) decides per stage whether a now-missing
+  stage is dropped from the map (→ treated absent/permanent for new resolutions) or
+  explicitly marked `down`. So `down`/absent is the concrete permanent-unavailable
+  signal #2 reserved.
+- **`assign($task, $state)` records the chosen stage on the job** (the first
+  available listed stage, or `default` for an advisory miss), so dispatch sends it to
+  the right `preload-<stage>` channel. A `no_preload` task gets no stage and is not
+  gated on this resource.
+- **`release()` is ~a no-op.** Preload is **not a bounded resource** — assigning a
+  job to a stage consumes nothing, so there is nothing to free.
+- **assign→launch is racy; the job is requeued, not failed.** A stage can go
+  `down`/`restarting` between `available`/`assign` and the actual dispatch. When
+  dispatch to the assigned stage finds it gone, the job is **put back in the queue**
+  to be re-resolved and re-assigned on a later tick — *not* aborted, and *not*
+  counted as a retry. This requeue primitive is required by the scheduler
+  regardless (a stage that self-restarts mid-run, §4.7/#3, must not fail its
+  in-flight-but-unlaunched jobs); the resource just makes it the normal path.
+- **Startup-wait is the resource's job, with a configurable backstop.** A stage may
+  legitimately take minutes to preload, so there is **no fixed startup timeout** —
+  tasks for a `starting`/`restarting` stage simply wait (`available` = `0`), and
+  `done()` will not complete a run while tasks are pending. A *crashed* stage is
+  detected by its socket EOF (§4.7/#3), so it never hangs the run. The remaining
+  gap is a stage that is **alive but never reports ready** (hangs during preload **or
+  during a `restarting`/reload**): to bound that, the resource enforces an
+  **optional, configurable per-stage startup timeout** — generous and off-by-default
+  so it never kills a legitimately-slow stage — after which a too-long `starting`
+  **or `restarting`** flips to `available` = `-1` (skip/fail those tasks, or abort
+  the stage). The stage-map / base-stage readiness deadline is likewise a
+  **configurable setting**, not hardcoded (deployments with multi-minute preloads
+  exist).
 
 ### 4.8 Spawn (`yath spawn`) `[target]`
 
@@ -681,6 +818,31 @@ the client/render-side `finalize`/`finish` hooks.
 and `instance_*` (runner) hooks purely to keep the 1.0 `Test2::Harness`/`App::Yath`
 namespaces back-compatible. The `*2` namespaces have no such constraint, so a single
 `setup`/`teardown` pair lives on the runner.
+
+### 4.10 Interactive mode (`--interactive`) `[migrating]`
+
+**Responsibility.** Interactive mode connects the **client** (`yath test` /
+`yath run`) terminal IO to each test as it runs, so a test that prompts, drops into
+a debugger (`perl -d`, `$DB::single`), or otherwise needs a live STDIN/TTY works
+despite running deep in the runner's process tree.
+
+**Contract.**
+
+- **One test at a time.** Interactive forces `-j1` (tasks run in the `isolation`
+  category), so exactly one test owns the client's IO at any moment — there is no
+  contention for the shared terminal.
+- **IO is shared over a socket, reusing the `spawn` mechanism (§4.8).** The process
+  that launches the test (runner on the no-preload path, or the stage on the
+  preload path) **`dup2`s an accepted socket descriptor onto the test's
+  `STDIN`/`STDOUT`/`STDERR`** before exec, and the client streams its own terminal
+  IO to/from its end of the socket. This gives the test a real shared channel to
+  the user's terminal (full bidirectional IO, correct for debuggers), not a byte
+  proxy.
+- **Replaces the FIFO IO-proxy.** The current/1.0 implementation makes a FIFO
+  (`POSIX::mkfifo`, sets `$ENV{YATH_INTERACTIVE}`) and pumps the client's STDIN
+  through the pipe, re-opening the test's STDIN from the fifo in a `goto::file`
+  filter patch (`Runner::JobLauncher`). That proxy — and its broken open-retry loop
+  — is removed in favor of the socket-shared FD path above.
 
 ## 5. Cross-cutting concerns
 
@@ -837,8 +999,8 @@ Direction of connection (the symmetric service model, §5.2):
   is no fixed "X always connects to Y".
 - **The preload-root dials the runner (chunk 19).** The runner spawns the
   preload-root, which connects to `runner.socket`, identifies as `preload-root`,
-  and runs the preload handshake (`get_preload_list` / `set_stage_data` /
-  `resolve_file_stages` / `preload_warnings`, §4.7). The preload-root has **no
+  and runs the preload handshake (`get_preload_list`, then `set_stage_data` /
+  `preload_warnings` after the guarded load, §4.7). The preload-root has **no
   listen socket of its own** — its output rides its collector's reporter to
   `runner.socket` and its `preload-root-events.jsonl.zst`.
 - **Preload stages initiate to the runner.** A stage (the preload-root's in-process
@@ -862,6 +1024,33 @@ Direction of connection (the symmetric service model, §5.2):
   `Test2::Collector::Util::Socket` (`connect_unix`, `open_unix_listen`,
   `write_frame`) for sockets/frames, and `Test2::Collector::Util::Zstd::FrameBuffer`
   for frame-boundary buffering + decompression on reads.
+
+### 5.4 Process spawning and reaping `[migrating]`
+
+**Target.** Process management reduces to two primitives — **spawn a child** and
+**reap a zombie** — because collectors and sockets now carry everything the old
+`Test2::Harness2::IPC` controller existed to do.
+
+- **Results come over the socket, not the reap.** A test's outcome is the
+  collector's `harness_process_exit` event / `stop_task`/`retry_task` report on
+  `runner.socket` (§4.1, §4.7), not the child's `waitpid` status. The runner's
+  scheduler acts on those reports; the only reason it still `waitpid`s a child is to
+  **reap the zombie**. (The no-preload in-runner job path is the last consumer that
+  still schedules off the reap via `Runner::set_proc_exit`; it migrates onto the
+  collector socket report like the preload path, after which `set_proc_exit` is
+  deleted.)
+- **The `IPC` controller base class is dismantled.** Its substantive logic is
+  either dead or superseded: category tracking + `cat`/`all_cat` waits
+  (`PROCS_BY_CAT`), the three-pass death detection (`_bring_out_yer_dead` /
+  `_check_if_dead_yet` group-wait / `_ex_parrots` vanished-sweep), die-on-unmonitored,
+  and reap-driven scheduling all go. Only **2** real consumers ever used it: the
+  Runner (multi-child, now spawn + zombie-reap) and the `yath test` command (a
+  single child — the runner — spawn/`waitpid`/signal, inlined on `Util::IPC`).
+- **What stays.** `Test2::Harness2::Util::IPC` (`run_cmd`/`swap_io`/`USE_P_GROUPS`)
+  is the genuine reusable fork-exec primitive and is kept. `IPC::Process` survives
+  only as a thin value object (and may lose its exit-tracking once collectors own
+  results). The runner keeps a minimal `waitpid` zombie-reaper built on
+  `Util::IPC`; the command inlines its one-child spawn+wait.
 
 ## 6. Open questions
 
@@ -902,11 +1091,16 @@ once) is a deliberate later step, not part of this resolution.
   run-qualified socket scheme is **per-run subdir**:
   `runs/<run_id>/preload-<stage>.socket` (global stages stay
   `preload-<stage>.socket`, `runner.socket` stays a single global socket). The
-  `Role::Service` `run_ord` subdir hook implements it. Run-scoped preload stages
-  *as a user feature* (a run requesting extra per-run preload branches) are
-  **not built** — there is no trigger for one and serialized execution needs no
-  concurrent run-scoped stage; only the collision-safe naming foundation is in
-  place.
+  `Role::Service` optional **`run_id`** consumer hook implements it: a consumer
+  that provides a `run_id` (always the run's UUID — **never** an integer ordinal;
+  the name `run_ord` was rejected because `run_ord` means something different in
+  the UX/DB) nests its socket under `runs/<run_id>/`; a global stage leaves it
+  undefined and binds the flat socket. Run-scoped preload stages *as a user
+  feature* (a run requesting extra per-run preload branches) are **not built** —
+  there is no trigger for one and serialized execution needs no concurrent
+  run-scoped stage; only the collision-safe naming foundation is in place. This
+  hook is what the concurrent-runs future (above) needs once two runs' same-named
+  stages can be live at once.
 - **Service lifecycle / discovery — decided.** `yath start` owns the workdir and
   spawns the persistent runner (binds `runner.socket`, runs the service loop);
   `yath run` / `spawn` discover it, connect to `runner.socket`, submit, and
@@ -918,6 +1112,21 @@ once) is a deliberate later step, not part of this resolution.
   shape lives in §5.3 (runner-socket symlink) and §4.7 / §5.2
   (stage-registers-with-runner over one shared channel); the as-shipped form and
   the remaining gap to that target are tracked in `MIGRATION.md` (chunks 9, 10, 12).
+
+**Future goal — concurrent runs with earlier-run priority + backfill.** The later
+step beyond serialized execution is to let a persistent runner progress **multiple
+runs at once**, with **strict priority to earlier runs**: an earlier (higher
+priority) run always gets first claim on slots/resources, but when it **cannot use
+a free resource** (its remaining jobs are blocked — e.g. waiting on a busy
+resource, a conflict, or a not-yet-`up` preload stage), the scheduler **backfills**
+with jobs from later runs that *can* use that resource. No idle capacity while a
+lower-priority run has runnable work. This makes `_next` (and its per-bucket
+ordering) span runs in priority order rather than operating on a single active
+`RUN`; the per-run scheduling structures (`PENDING_TASKS` keyed by `run_id`, the
+`SORTED` bucket memo, conflict/resource gating) already carry `run_id` but the
+**scheduler loop and its clear/scope points assume one active run** and must be
+revisited then. Not scheduled (no `MIGRATION.md` chunk yet) — recorded here so the
+single-active-run assumptions are known to be temporary.
 
 **Remaining (tracked in `MIGRATION.md`, not blockers for the above):** concurrent
 run *execution* on a persistent runner; run-scoped preload stages as a user
