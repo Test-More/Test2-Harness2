@@ -629,8 +629,8 @@ sub stop_aux {
 # Chunk 19.1: the preload root is wanted when this run actually preloads -- there
 # are preload libraries configured AND we are not below the preload threshold
 # (below threshold preloading is disabled and tests run via the clean fork+exec
-# path, 19_spec.md §6.14). Mirrors the below_threshold computation the in-runner
-# preloader() already does.
+# path). Mirrors the below_threshold computation the in-runner preloader()
+# already does.
 sub _preload_root_wanted {
     my $self = shift;
 
@@ -906,14 +906,15 @@ sub spawn_preload_root {
     my $reporter;
     if (-S $socket) {
         require Test2::Collector::Recorder::Socket;
-        eval {
+        my $ok = eval {
             $reporter = Test2::Collector::Recorder::Socket->new(
                 paths       => [$socket],
                 preamble    => {identity => {name => "collector:preload-root", no_reply => 1}},
                 drain_input => 1,
             );
             1;
-        } or undef $reporter;
+        };
+        undef $reporter unless $ok;
     }
 
     my $pid = Test2::Collector::spawn_collector(

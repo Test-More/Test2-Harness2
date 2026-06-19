@@ -389,8 +389,8 @@ sub request_handler_get_preload_list {
 
 # Chunk 19.1: the preload-root loads the preload libraries, builds the stage map
 # (each stage's eager fan-out + which is default), and reports it here so the
-# runner knows which stages to expect without loading any preload itself
-# (19_spec.md §6.3). The runner stores it (the gate that makes preload-task
+# runner knows which stages to expect without loading any preload itself.
+# The runner stores it (the gate that makes preload-task
 # dispatch wait on it lands with the preload-root-driven dispatch in 19.2; storing
 # it now is additive and does not change the existing in-runner dispatch path).
 # One-way is enough, but we ack so the preload root can confirm receipt. Only the

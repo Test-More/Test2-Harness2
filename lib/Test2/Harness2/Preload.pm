@@ -41,8 +41,9 @@ Test2::Harness2::Preload - The preload-root bootstrap process.
 =head1 DESCRIPTION
 
 This module is the C<-M> bootstrap target for the B<preload root> process the
-runner spawns when a run uses preloads (ARCHITECTURE.md §4.7, 19_spec.md §6.1).
-The runner forks+execs a clean perl:
+runner spawns when a run uses preloads. The preload root hosts the preload
+stages so the runner itself holds no preloaded interpreter state. The runner
+forks+execs a clean perl:
 
     $^X -I... -MTest2::Harness2::Preload=launch,/path/to/runner.socket -e '1;'
 
@@ -219,7 +220,8 @@ sub run_driver {
         # output (the preload error). On a normal run the runner has long since moved
         # past that wait, so this is a harmless late note. Hand over our captured
         # warnings so the runner can surface a broken-preload diagnostic.
-        eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // [])); 1 };
+        warn "$$ $0 preload-root could not report stage_host_exited: $@"
+            unless eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // [])); 1 };
     }
 
     # Idle until the runner sends 'stop'. We reach here after the stage host returns
