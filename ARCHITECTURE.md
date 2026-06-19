@@ -340,6 +340,19 @@ under a non-test collector, then runs a service loop. Each test, and each
 non-test process it starts, runs under its own collector. There is **one runner
 process** — the scheduler is an **object inside it**, not a separate process.
 
+**The runner does not hold preloaded state (chunk 19).** When preloads are
+configured (and not below `preload_threshold`), the runner **spawns a separate
+preload-root process** (`Runner::spawn_preload_root`: a collector running
+`perl -MTest2::Harness2::Preload=launch,<runner.socket> -e 1;`) that loads the
+preloads, hosts the stages, and forks the tests (§4.7). The runner then goes
+**scheduler-only** (`Runner::run_scheduler_only`): it loads no preloads, runs no
+stage, never enters `BEGIN`/goto-file, and simply schedules and dispatches each
+task out over the channel the hosting stage opened to it. The runner reaps the
+preload-root (tracked outside its child-wait set so it never trips the
+`waitpid(-1)` reaper). With **no** preloads — or below the threshold — there is
+no preload-root and the runner forks each test-job collector itself directly
+(unchanged). This keeps preloaded interpreter state out of the orchestrator.
+
 **Contract.**
 
 - The service holds the **canonical state** for a run in an in-process **state
@@ -517,6 +530,24 @@ the former separate `Test2-Harness-UI` distribution, rewritten inline in
 in the workdir, §5.3). A stage holds the preloaded interpreter state from which
 matching tests are forked.
 
+**A separate preload-root hosts the stages (chunk 19).** The stages are **not**
+forked by the runner; the runner spawns one **preload-root** process (§4.2) and
+the preload-root hosts them. Concretely (`Test2::Harness2::Preload`): the runner
+execs `perl -MTest2::Harness2::Preload=launch,<runner.socket> -e 1;` under a
+collector; that process establishes the `Long::Jump`/goto-file host in `BEGIN`,
+dials `runner.socket` and identifies as **`preload-root`**, fetches the preload
+specs (`get_preload_list`), loads them, reports the stage map (`set_stage_data`),
+and answers per-run `resolve_file_stages` (it owns the `file_stage` callbacks the
+scheduler-only runner cannot run). It then drives a **stage-host `Runner` whose
+`rootpid` is the real runner's pid**, so that inner Runner hosts the
+base/default/NOPRELOAD stage **in-process** and forks the named stages as its own
+children. Each stage (in-process base or forked) dials `runner.socket` as
+`preload-<name>` and reports up exactly as below. The **test-job goto-file launch**
+runs in the preload-root/stage via `Test2::Harness2::Runner::JobLauncher` (extracted
+from the `App::Yath2` runner command so `Test2::Harness2` loads no `App::Yath2`).
+The `preload-root` is thus a new service-kind identity that **dials** `runner.socket`
+and does **not** listen on a socket of its own.
+
 **Scope of services (decided).** All services are **global** harness services;
 there are **no per-run services**. The service kinds are: the runner (§4.2),
 preload stages (this section), and auxiliary harness services (e.g. the
@@ -545,15 +576,19 @@ service class):
   registers**. (This reverses the earlier "runner connects out to dispatch"
   direction.)
 - **The stage owns its own lifecycle/state and reports it over that channel.**
-  It marks state — `starting` / `up` / `restarting` / `down` — and the stage
-  itself decides when to restart (e.g. on a preload-file change). The runner
-  consumes those state updates; it does not drive the stage's restarts.
-- **Restart is stage-initiated; the runner does not relaunch.** On its own
-  restart trigger the stage announces `restarting` / `down`, closes its channel,
-  and **exits**. The runner marks the preload resource unavailable (§4.7a) and
-  its process reaper detects the exit and spawns a **fresh** stage instance, which
-  reconnects and registers a new `up`. The runner never reaches in to restart a
-  live stage — it only respawns one that has exited.
+  The stage itself decides when to restart (e.g. on a preload-file change) and
+  reports readiness/teardown to the runner; the runner consumes that and does not
+  drive the stage's restarts. (The explicit `starting` / `up` / `restarting` /
+  `down` enum + generation counter is the **target**; the behavior is in place but
+  the explicit state enum is a residual — see `MIGRATION.md` chunk 19.)
+- **Restart is stage-initiated; respawned by the preload-root.** On its own
+  restart trigger the stage reloads **in-place** (churn) when it can; otherwise it
+  closes its channel and **exits**, and the **preload-root** (the stage's parent
+  and reaper, chunk 19) spawns a **fresh** stage instance that reconnects and
+  re-registers (reusing its `stage-<name>-events.jsonl.zst` for output continuity).
+  Neither the runner nor the preload-root reaches in to restart a live stage — only
+  one that has exited is respawned. (Previously the runner forked and respawned
+  stages; that moved to the preload-root in chunk 19.)
 - **Dispatch rides the same channel.** While a stage is `up`, the runner sends
   job-start / rerun requests over the **same** registered channel (not a second
   connection). Job results still arrive as transitions from each test job's own
@@ -800,10 +835,16 @@ Direction of connection (the symmetric service model, §5.2):
 - **Every service accepts on its one socket; any side may initiate.** Once a
   connection exists between two services it is reused for both directions — there
   is no fixed "X always connects to Y".
-- **Preload stages initiate to the runner.** A stage connects to `runner.socket`
-  to register and report state; the runner then dispatches jobs back over that
-  same connection (§4.7). The runner does **not** open a separate connection to a
-  stage to dispatch.
+- **The preload-root dials the runner (chunk 19).** The runner spawns the
+  preload-root, which connects to `runner.socket`, identifies as `preload-root`,
+  and runs the preload handshake (`get_preload_list` / `set_stage_data` /
+  `resolve_file_stages` / `preload_warnings`, §4.7). The preload-root has **no
+  listen socket of its own** — its output rides its collector's reporter to
+  `runner.socket` and its `preload-root-events.jsonl.zst`.
+- **Preload stages initiate to the runner.** A stage (the preload-root's in-process
+  base stage, or a forked named stage) connects to `runner.socket` to register and
+  report state; the runner then dispatches jobs back over that same connection
+  (§4.7). The runner does **not** open a separate connection to a stage to dispatch.
 - **A stage's `preload-<stage>.socket` is for `spawn`.** `yath spawn` connects to
   it directly (§4.8); the runner does not use it for dispatch.
 - **Commands connect to the runner**, and **collector reporters connect out** to

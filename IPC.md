@@ -45,21 +45,31 @@ yath test                          COMMAND: client + renderer host
 │   renders via Renderer::Driver (reads each *.jsonl.zst by path)
 │
 └─ spawn ─ [collector:runner] ─► runner  (service; binds runner.socket)
-                                 │  in-process scheduler (in-memory State)
-                                 │  Runner::Monitor = canonical state
-                                 │  dispatches to each stage over the ONE channel the stage opened to it
+                                 │  with a preload-root: SCHEDULER-ONLY -- holds NO preloaded state, hosts NO stage;
+                                 │  in-process scheduler (in-memory State); Runner::Monitor = canonical state;
+                                 │  dispatches each task over the ONE channel the hosting stage opened to it
                                  │
-                                 ├─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
-                                 │                                     │  dials runner.socket, identifies as 'preload-<name>',
-                                 │                                     │  reports up + receives dispatch down that one channel
-                                 │                                     └─ fork ─ [collector:job] ─► test job ─ exec test file
+                                 ├─ spawn ─ [collector:preload-root] ─► preload-root
+                                 │     (perl -I... -MTest2::Harness2::Preload=launch,runner.socket -e 1;)
+                                 │     │  dials runner.socket as 'preload-root'; handshake: get_preload_list / set_stage_data
+                                 │     │  drives a stage-host Runner (rootpid = the REAL runner pid), so it is a stage, not the root
+                                 │     │  HOSTS the base/default/NOPRELOAD stage in-process (dials runner.socket as 'preload-<base>')
+                                 │     │
+                                 │     └─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
+                                 │                                           │  dials runner.socket as 'preload-<name>'; reports up + receives dispatch
+                                 │                                           └─ fork ─ [collector:job] ─► test job (longjump+goto-file via JobLauncher)
                                  │
-                                 └─ no-preload path: fork ─ [collector:job] ─► test job   (runner forks the job collector itself)
+                                 └─ no-preload / below-threshold: fork ─ [collector:job] ─► test job   (runner forks the job collector itself)
 ```
+
+The preload-root level exists **only when preloads are configured** (and not below
+`preload_threshold`); otherwise the runner forks the test-job collector itself
+(the no-preload path, unchanged). The base/default/NOPRELOAD stage runs
+**in-process** in the preload-root; named stages are forked as its children.
 
 Lifespan: the transient runner shuts down and closes `runner.socket` once the run
 is done and its job children are reaped; the command's render loop ends on that
-socket EOF.
+socket EOF. The runner reaps the preload-root at wind-down (`stop_preload_root`).
 
 ---
 
@@ -70,11 +80,16 @@ yath start  (writes yath-persist.json {pid,dir}; spawns the runner; then exits)
    │
    └─ [collector:runner] ─► persistent runner  (service; stays up on runner.socket)
                             │  serialized: one active run at a time
+                            │  scheduler-only when a preload-root hosts the stages
                             │  Runner::Monitor keyed by run; routes each client only its run
-                            ├─ [collector:stage-<name>] ─► preload stage (dials runner.socket to register;
-                            │                              │              binds preload-<name>.socket, reserved for spawn)
-                            │                              └─ [collector:job] ─► test job
-                            └─ ...
+                            ├─ [collector:preload-root] ─► preload-root (dials runner.socket as 'preload-root';
+                            │                              │              drives a stage-host Runner, rootpid = real runner)
+                            │                              ├─ in-process base/default/NOPRELOAD stage (dials runner.socket)
+                            │                              └─ fork ─ [collector:stage-<name>] ─► preload stage
+                            │                                        │  dials runner.socket as 'preload-<name>';
+                            │                                        │  binds preload-<name>.socket (reserved for spawn)
+                            │                                        └─ [collector:job] ─► test job
+                            └─ no-preload: ─ [collector:job] ─► test job
 
 clients connecting IN to runner.socket:
    yath run     submit run(run_id) + subscribe(run_id)   → renders its run via Renderer::Driver
@@ -101,8 +116,19 @@ Reaping is local to whichever process forked the (collector-wrapped) child;
 | Forks / spawns | Reaps | Notes |
 |---|---|---|
 | `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner |
-| runner | each preload stage (its collector); on the no-preload path, the test job (its collector) it forked directly | |
+| runner | the **preload-root** (its collector); on the no-preload path, the test job (its collector) it forked directly | the preload-root pid is tracked **outside** the runner's `{+PROCS}` (so it never trips `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root`) |
+| preload-root | each preload stage (its collector) it forked | the base/default/NOPRELOAD stage runs in-process in the preload-root and is not forked/reaped |
 | preload stage | each test job (its collector) it forked | the stage reports the job's `stop_task`/`retry_task` up the one service channel it opened to the runner |
+
+**`stop_preload_root` must not kill the collector parent (leak fix, chunk 19.4d).**
+`spawn_collector` returns the *collector parent* pid; the actual preload-root is the
+`-e` child it exec'd. `stop_preload_root` sends a graceful socket `stop` and reaps
+over a generous window; if that does not land in time it **leaves the collector
+parent alone** rather than `TERM`/`KILL`ing it. Killing the collector parent would
+destroy its `ChildMonitor` (which is exactly what kills the preload-root tree when
+the runner vanishes) and orphan the `-e` child. Instead the runner exits moments
+later; the `ChildMonitor` (watch_parent_pid → runner) then terminates the `-e`
+child + its stage/job descendants, and the collector parent finalizes and exits.
 
 **Completion is learned from transitions, not from reaping.** A job's collector
 emits its final-state transition to `runner.socket`; the runner folds it into
@@ -110,14 +136,16 @@ canonical state. Reaping is just local cleanup afterward. The runner's
 `Runner::Watchdog` aborts a job whose dispatch to a stage failed (so the run does
 not stall) and aborts any still-running jobs at run wind-down.
 
-**Collectors self-terminate if the runner dies.** Every job and stage collector is
-started with `watch_parent_pid => <root runner pid>` (`Job::run_under_collector`,
-`Preloader`). `Test2::Collector` kills the collector's child and finalizes/exits if
-the runner disappears while the child runs — so a runner that dies without
-signaling (crash / `SIGKILL`) leaves no orphaned collectors or test processes. A
-collector watches the **runner only**, never an intermediate stage (a stage reload
-gets a new pid and must not kill the in-flight test). The runner-wrap collector is
-exempt (its child is the runner). Enforced by
+**Collectors self-terminate if the runner dies.** Every preload-root, stage, and
+job collector is started with `watch_parent_pid => <root runner pid>` (the runner
+conveys its pid to the preload-root via `get_preload_list`, and the preload-root
+passes it down to the stage/job collectors it spawns). `Test2::Collector` kills the
+collector's child and finalizes/exits if the runner disappears while the child runs
+— so a runner that dies without signaling (crash / `SIGKILL`) leaves no orphaned
+collectors, stages, preload-root, or test processes. A collector watches the
+**runner only**, never an intermediate stage or the preload-root (a stage reload —
+or a preload-root respawn — gets a new pid and must not kill the in-flight test).
+The runner-wrap collector is exempt (its child is the runner). Enforced by
 `agent_scripts/audit-collector-watch-parent`.
 
 ---
@@ -132,10 +160,13 @@ self-contained frame, via `Test2::Collector::Util::Socket` (`open_unix_listen` /
 
 | Socket | Server (accepts) | Clients (connect out) | Carries |
 |---|---|---|---|
-| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from job & stage collectors; the bidirectional runner↔stage channel (see below) |
+| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; the **preload-root** (handshake: `get_preload_list` / `set_stage_data` / `resolve_file_stages` / `preload_warnings`); every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from preload-root, stage & job collectors; the bidirectional runner↔stage channel (see below) |
 | `preload-<stage>.socket` (one per preload stage) | that preload stage | nothing yet (**reserved** for `yath spawn`, ARCHITECTURE.md §4.8) | — |
 
-The runner is the **server** on `runner.socket`. It no longer connects out to the
+The **preload-root dials** `runner.socket` (it does not listen on a socket of its
+own; its own output goes to `preload-root-events.jsonl.zst` and its collector's
+`Recorder::Socket` reporter streams to `runner.socket`). The runner is the
+**server** on `runner.socket`. It no longer connects out to the
 `preload-<stage>.socket`s; a stage dials the runner and the runner dispatches back
 over that one channel.
 
@@ -267,7 +298,8 @@ do not discover or orchestrate.
 | Artifact | Created by | Where | Consumed by | Purpose |
 |---|---|---|---|---|
 | `runner-events.jsonl.zst` | the runner's non-test collector | workdir | the command renderer (`RunnerReader`, by path); `watch` | runner stdout/stderr/exit as events |
-| `stage-<name>-events.jsonl.zst` | each preload stage's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | stage stdout/stderr/exit as events |
+| `preload-root-events.jsonl.zst` | the preload-root's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | preload-root + in-process base-stage stdout/stderr/exit as events (also streamed to `runner.socket`) |
+| `stage-<name>-events.jsonl.zst` | each forked preload stage's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | stage stdout/stderr/exit as events |
 | `events.jsonl.zst` (per job) | each test job's test collector | the job's run dir | the command renderer (`JobReader`, by the path a transition carries) | the test's full event stream |
 | `aux-<name>-<uuid>.jsonl.zst` | a plugin's `shellcall`/`run_collected` aux collector (chunk 17) | workdir | the command renderer (`RunnerReader`, by the path a transition announces); `watch` | plugin-emitted aux output as events |
 | `yath-persist.json` | `yath start` | workdir | `run`/`spawn`/`stop`/`which`/`watch`/`reload` via `App::Yath2::Pfile` | persistent-runner discovery: `{pid, dir, ...}` |

@@ -94,6 +94,7 @@ Order mirrors `ARCHITECTURE.md` §1.1. Status: ✅ done · 🚧 in progress · �
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | — |
 | 17 | Plugin `setup`/`teardown` move to the runner; aux output → collectors (`run_collected`); retire the `aux_logs` flat files | ✅ | this task |
 | 18 | Collectors watch the runner pid → self-terminate if the runner dies (ARCH §4.1); + a code-review gate enforcing it | ✅ | this task |
+| 19 | Extract the preload root out of the runner: separate preload-root process hosts the stages; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals below) | this task (`925d82d75`..`0b604f4a1`) |
 
 Chunks 1-8a have landed. Chunks **9-16 are the post-6 revised-target work**
 (the `thoughts` / `thoughts2` decisions); see "Next" below. Numeric order is
@@ -106,6 +107,47 @@ That section describes the **as-shipped** end state of 4-6; where chunks 9-16
 revise it, the substeps are annotated below.
 
 ## Done so far
+
+**Chunk 19 — extract the preload root out of the runner** (`925d82d75`..`0b604f4a1`;
+suite green `Files=103, Tests=1743`, **0 leaked daemons**). The runner is now a pure
+orchestrator: it no longer loads preloads, hosts stages, or runs in `BEGIN`.
+- **Preload-root process.** When preloads are configured (and not below
+  `preload_threshold`) the runner spawns a separate `Test2::Harness2::Preload`
+  process (`perl -MTest2::Harness2::Preload=launch,<runner.socket> -e 1;`,
+  `Runner::spawn_preload_root`). It dials `runner.socket` as `preload-root`,
+  handshakes (`get_preload_list` → specs + real-runner-pid + `monitor_preloads`;
+  `set_stage_data` → the stage map; `resolve_file_stages`; `preload_warnings`),
+  then drives a **stage-host `Runner` with `rootpid` = the real runner's pid** —
+  so that inner Runner hosts the base/default/NOPRELOAD stage in-process and forks
+  the named stages as its children. Each stage dials `runner.socket` as
+  `preload-<name>` and keeps its own non-test collector + `stage-<name>-events.jsonl.zst`.
+- **Scheduler-only runner.** When a preload-root hosts the stages the real runner
+  runs `run_scheduler_only`: no preloader, no in-process stage, no goto-file; it
+  dispatches every task over a stage's registered channel and resolves stages from
+  the reported map + `resolve_file_stages`. No-preload / below-threshold paths are
+  unchanged (the runner forks the test-job collector directly).
+- **goto-file launcher** moved to `Test2::Harness2::Runner::JobLauncher` (out of the
+  `App::Yath2` runner command, so `Test2::Harness2` loads no `App::Yath2`).
+- **Per-stage / per-test collectors retained** (§4.1 invariant unchanged — no
+  shared-collector deviation). All stage/job collectors `watch_parent_pid` the real
+  runner (conveyed via `get_preload_list`); the preload-root's collector's
+  `ChildMonitor` reaps the whole tree if the runner vanishes.
+- **Broken preload:** transient `yath test` fails fast; persistent `yath start`
+  tolerates it (`monitor_preloads` on) and surfaces the warning via `preload_warnings`.
+- **Leak fix (19.4d):** `stop_preload_root` must **not** `TERM`/`KILL` the collector
+  *parent* — that orphans the preload-root `-e` child. It sends a graceful socket
+  `stop`, reaps over a window, then lets the runner's exit + the `ChildMonitor` reap
+  the tree. (Hunt for leaked daemons if a suite ever runs long — see `AGENTS.md`
+  Testing.)
+- **Prereq:** chunk 14 (the state-only `TestFile` / `App::Yath2` reader split).
+- **Residuals (deferred, not done):** the explicit stage lifecycle-state enum
+  `starting`/`up`/`restarting`/`down` + generation counter (§6.8 / chunk 10) — the
+  *behavior* (stage-owned in-place reload + respawn) works, but the explicit enum is
+  unbuilt; the chunk-19.5 refinements — retiring/reshaping the `yath runner` command's
+  goto-file host (still used by the no-preload path), the §6.12 HUP-protocol redesign,
+  and the §6.10 "preload-root dies but the runner lives → respawn + stale-stage
+  cleanup" case; and the §6.1 verdict-mirroring `spawn_collector` nuance for the
+  preload-root (it currently uses `spawn_collector`, collector-health exit).
 
 **Chunk 6 complete — base-renderer rewrite + finish the socket-IPC end state**
 (`69ae0be63`, `b33162faf`, `4410c8105`, `f9142217c`, `1b5373e1a`, `ddaed0a0c`,
