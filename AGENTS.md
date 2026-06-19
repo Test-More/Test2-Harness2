@@ -242,6 +242,24 @@ run via:
 prove -Ilib -j16 -r t/
 ```
 
+**Never block on a stuck test run.** The full suite is fast. Enforce a hard
+wall-clock ceiling on any run and treat exceeding it as a failure, not as
+"still going":
+
+- **`-j16` (or any concurrent run): 5 minutes.** If it has not finished in 5
+  minutes, kill it and investigate.
+- **No concurrency (`-j1` / a single serial run): 15 minutes.** Same — kill
+  and investigate past that.
+
+If a run genuinely starts approaching those limits *without* any failing or
+stuck test, that is a signal the suite itself has grown too slow and must be
+sped up — raise it, do not just wait longer. A run that blows past the ceiling
+is almost always a **hung test or a leaked process** (e.g. an orphaned
+`runner` / preload-root / stage daemon holding a socket): kill the run, hunt
+the orphans (`ps`/`pgrep` for `Preload=launch`, `runner`, `yath-nested-runner`,
+`tmp/yath-*`), kill them, then fix the leak. Do **not** sit on a multi-minute
+"maybe it's just slow" run — it is not.
+
 `Test2-Collector` is a hard dependency and must be installed (it
 provides the `Test2::Collector*` namespace the collector pipeline
 loads).
