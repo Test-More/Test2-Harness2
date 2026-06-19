@@ -180,6 +180,15 @@ voluntary exit would race the runner's C<waitpid(-1)> reaper).
 sub run_driver {
     my $self = shift;
 
+    # The preload-root IS the nested runner now (it hosts the base/default stage
+    # in-process and forks the named stages). Name it like the old in-runner host
+    # BEFORE the handshake loads the preload libraries -- the base preload prints
+    # "$$ $0 - Loaded ..." as it loads, and each forked stage appends "-<stage>" to
+    # $0 (Preloader::launch_stage) -- so all of it is tagged `yath-nested-runner`
+    # (base) / `yath-nested-runner-<stage>` for `yath watch`, not the bare `-e` of
+    # the `perl -e` launch.
+    $0 = 'yath-nested-runner';
+
     # Capture our own warnings (still printing them to STDERR for the events file) so
     # a broken-preload diagnostic -- a die in a preload caught during the handshake,
     # or a stage that "did not exit cleanly" caught by the stage-host Runner -- can be

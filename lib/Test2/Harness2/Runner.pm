@@ -896,12 +896,34 @@ sub spawn_preload_root {
 
     my $events = File::Spec->catfile($self->{+DIR}, 'preload-root-events.jsonl.zst');
 
+    # The preload-root hosts the base/default stage IN-PROCESS, so its own
+    # stdout/stderr (e.g. the base preload's "Loaded ..." lines, and any reload
+    # output the base stage produces) is NOT a forked-stage collector's output and
+    # would otherwise never reach `yath watch`. Give its collector a socket reporter
+    # (like the per-stage and aux collectors) so its transitions stream to
+    # runner.socket and the renderer surfaces them -- tagged INTERNAL like the
+    # runner/stage streams, carrying the process's own `yath-nested-runner` $0.
+    my $reporter;
+    if (-S $socket) {
+        require Test2::Collector::Recorder::Socket;
+        eval {
+            $reporter = Test2::Collector::Recorder::Socket->new(
+                paths       => [$socket],
+                preamble    => {identity => {name => "collector:preload-root", no_reply => 1}},
+                drain_input => 1,
+            );
+            1;
+        } or undef $reporter;
+    }
+
     my $pid = Test2::Collector::spawn_collector(
-        is_test          => 0,
-        name             => 'preload-root',
-        exec             => \@cmd,
-        recorder         => Test2::Collector::Recorder::Zstd->new(file => $events),
-        watch_parent_pid => $self->{+ROOTPID},
+        is_test            => 0,
+        name               => 'preload-root',
+        exec               => \@cmd,
+        record_transitions => 1,
+        recorder           => Test2::Collector::Recorder::Zstd->new(file => $events),
+        ($reporter ? (reporter => $reporter) : ()),
+        watch_parent_pid   => $self->{+ROOTPID},
     );
 
     $self->{+PRELOAD_ROOT_PID} = $pid;
