@@ -156,10 +156,17 @@ runs in `BEGIN`.
   fresh preload-root (new generation, bounded at 3 attempts then clean fail), and the
   run recovers; in-flight jobs survive (they watch the real runner). Tested by
   `t/AI/integration/preload_root_crash.t` (deterministic startup-crash, 3×).
-  **Follow-up:** the **mid-run** crash path (crash after stages are up + a job in
-  flight) is *implemented* and mirrors the verified startup path, but lacks a dedicated
-  deterministic test (an external kill is unreliable here — the preload-root renames
-  `$0` to `yath-nested-runner`).
+  **Mid-run resolver crash (`78c81b276`).** A scheduler-only runner resolves a file's
+  stage by asking a live preload stage over `resolve_file_stages` (`request_preload_sync`).
+  If that stage died while answering, the sync wait spun to its 30s deadline (a hang
+  with a single resolver); it now bails the moment the peer's channel closes and
+  `resolve_file_stage` fails over to a surviving stage (bounded retry, caches only
+  success). Tested by `t/AI/integration/preload_crash_midrun.t` (two stages; the
+  resolver crashes once, the runner fails over). **Still untested deterministically:**
+  the preload-root *process* itself crashing mid-run (with a staged preload no user
+  hook runs in the preload-root post-startup, so only an external kill triggers it, and
+  that is unreliable here — the preload-root renames `$0` to `yath-nested-runner`); the
+  recovery branch for it is implemented and mirrors the verified startup-crash path.
 - **Residuals (deferred, not done):** the explicit stage lifecycle-state *enum*
   `starting`/`up`/`restarting`/`down` (§6.8 / chunk 10) — the *behavior* (generation +
   up/down + stage-owned reload + respawn) works, but the named 4-state enum is unbuilt;
