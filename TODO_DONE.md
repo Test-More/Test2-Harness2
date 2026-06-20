@@ -7,6 +7,51 @@ Newest first.
 
 ---
 
+## Batch 6 (2026-06-19) — the preload self-management keystone
+
+Combined suite green: `prove` Files=108 Tests=1740 · `yath test` PASSED.
+
+### #9 follow-up — restore connect-failure warn — DONE (`74ee07d8e`)
+Per review: `Util::socket_reporter` now `warn`s on a connect failure (the file recorder
+still captures the full stream) so a silently-non-connecting reporter is visible.
+
+### #3 — Collector self-termination + connection-currency; `requeue_task` — DONE (core; 2 deferrals)
+Cross-repo. **Test2-Collector** commit `680e751` (`ChildMonitor` `watch_parent_pid` accepts
+a scalar OR list — any gone pid → terminate; version-bumped). **Harness** (`4d83fb849` and
+the 4 before it):
+- **Part 1 (collector DONE; harness preload-root-watch DEFERRED):** the multi-pid capability
+  is in place + the Test2::Collector dep floor bumped to 0.000002. Wiring the **preload-root**
+  into the *stage* collectors' watch list caused a teardown race (the preload-root exits
+  during clean shutdown and races stage finalization → stages TERM'd, sig 15) — deferred. The
+  **crash case is still covered transitively**: a preload-root crash terminates the runner
+  (Part 4) and stages already watch the runner. Test-job collectors watch the runner only.
+- **Part 2 DONE — connection-currency replaces generation.** `_stale_stage_report` checks the
+  report's `$conn` against the registered `preload-<stage>` peer; deleted `_stale_stage_generation`,
+  the per-report `generation`, `PRELOAD_ROOT_GENERATION`/`PRELOAD_GENERATION` (slots + handshake
+  field + Preload capture), and the `generation` field from `STAGE_LIFECYCLE` (now `{state, stamp}`
+  — completing #2's deferral).
+- **Part 3 DONE** — deleted `_drop_preload_peers` + `%busy`.
+- **Part 4 DONE** — preload-root crash is **fatal** (persistent runner terminates); deleted
+  `preload_root_respawn_limit`, the respawn branch, the `'respawn'` paths, the respawns slot;
+  `resolve_file_stage` retry now bounded by mapped-stage-count.
+- **Part 5 DONE (safe subset; explicit-ack DEFERRED):** `State::requeue_task` + `Runner::requeue_task`
+  (RUNNING→PENDING, no retry, clears `job_pids`/`%SORTED` memo, non-terminal `requeued`);
+  `service_send` returns **false** on no-peer/write-fail; `dispatch_pending` requeues (not aborts)
+  on the stage-gone no-send path — safe since a false send means the stage never got the task. The
+  explicit stage-ack (deferring `dispatched` until ack) is **deferred** (the no-send requeue needs
+  no new wire protocol; a successful send still announces `dispatched` immediately).
+- **Part 6** — already satisfied (`reload_syntax_error.t` proves a stage survives a broken-preload
+  reload + recovers).
+- **Tests updated:** `preload_root_crash.t` (startup crash → run fails), `preload_root_kill_midrun.t`
+  (mid-run kill → persistent runner terminates, no respawn), `State_stage_lifecycle.t` ({state,stamp}),
+  `Runner_dispatch_abort.t` (requeue not abort), new `State_requeue_task.t`.
+- **Residual follow-ups (2):** (1) the Part-1 harness preload-root-watch needs the stage/preload-root
+  shutdown ordering reworked so the preload-root reliably outlives stage finalization; (2) the Part-5
+  explicit-ack protocol (full assign→launch requeue safety once a send succeeds). Both noted; the
+  requeue primitive + `service_send` semantics they need are in place.
+
+---
+
 ## Batch 5 (2026-06-19) — run lifecycle + scheduler memo
 
 Combined suite green: `prove` Files=107 Tests=1740 · `yath test` PASSED.

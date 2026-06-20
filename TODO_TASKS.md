@@ -113,7 +113,7 @@ pid" (and `_set_stage_lifecycle` gets the same bogus `$$`).
   `_stage_action_parts` (the dead bare-string branch).
 
 ### #3 — Collector self-termination + connection-currency; `requeue_task`
-**Status:** Decided · **Step:** 10/11 · **Depends:** #1, #2 · needs a `Test2-Collector` change
+**Status:** ✅ DONE core (batch 6, `4d83fb849` + Test2-Collector `680e751`) — see TODO_DONE.md; 2 residuals: harness preload-root-watch wiring + Part-5 explicit-ack · **Step:** 10/11 · **Depends:** #1, #2
 
 **Problem:** chunk-19 grew three overlapping defenses against "reports from a
 dead/replaced preload-root incarnation": generation stamping, `%busy` busy-channel
