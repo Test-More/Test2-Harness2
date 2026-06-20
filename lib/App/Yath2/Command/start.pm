@@ -123,8 +123,8 @@ sub run {
 
     $self->write_settings_to($dir, 'settings.json');
 
-    # Chunk 17: plugin setup() now runs in the persistent RUNNER (after
-    # runner.socket binds), not here -- aux work reports to the socket as events.
+    # Plugin setup() runs in the persistent RUNNER (after runner.socket binds),
+    # not here -- aux work reports to the socket as events.
     $self->setup_resources();
 
     my @prof;
@@ -132,12 +132,11 @@ sub run {
         push @prof => '-d:NYTProf';
     }
 
-    # Chunk 6 (phase D): the persistent runner is now launched under its own
+    # The persistent runner is launched under its own
     # non-test collector (the same Test2::Harness2::Runner->start_collected wrap
     # the transient path uses), so its stdout/stderr/exit are recorded as
     # first-class events in runner-events.jsonl.zst -- read back over runner.socket
-    # by `yath watch` -- instead of flat output.log/error.log files. Its preload
-    # stages are collector-wrapped too (Preloader). No flat logs remain.
+    # by `yath watch`. Its preload stages are collector-wrapped too (Preloader).
     my @runner_cmd = (
         $^X, @prof, $settings->harness->script,
         (map { "-D$_" } @{$settings->harness->dev_libs}),

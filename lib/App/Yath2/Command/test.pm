@@ -293,15 +293,14 @@ sub start {
     $self->write_settings_to($self->workdir, 'settings.json');
 
     # Find the test files and build the task list. Submission to the runner
-    # happens AFTER the runner is started, because submission now goes over
-    # runner.socket (chunk 5c): the runner must be listening before the client can
-    # connect.
+    # happens AFTER the runner is started, because submission goes over
+    # runner.socket: the runner must be listening before the client can connect.
     my $pop = $self->populate_queue();
 
     return unless $pop;
 
-    # Chunk 17: plugin setup() now runs in the RUNNER (after runner.socket binds),
-    # not here -- so a plugin's aux work reports to the socket as collector events.
+    # Plugin setup() runs in the RUNNER (after runner.socket binds), not here --
+    # so a plugin's aux work reports to the socket as collector events.
     $self->setup_resources();
 
     $self->start_runner(jobs_todo => $pop);
@@ -365,15 +364,15 @@ sub subscriber {
 
 # Attempt the subscription once. Returns the subscriber or undef on failure; the
 # render loop calls this exactly once and tolerates undef. The transient command
-# is a single run, so it subscribes scoped to its own run_id (chunk 6.1 per-run
-# routing): with one run this is routing-identity, but it keeps the command on the
+# is a single run, so it subscribes scoped to its own run_id (per-run routing):
+# with one run this is routing-identity, but it keeps the command on the
 # run-scoped path the persistent run command uses.
 sub connect_subscriber {
     my $self = shift;
     return $self->client->connect_subscriber(run_id => $self->{+RUN_ID});
 }
 
-# The command-side renderer driver (chunk 6a). It folds the subscription mirror
+# The command-side renderer driver. It folds the subscription mirror
 # into rendered output with per-job ordering and computes the run-level
 # harness_final rollup command-side.
 sub driver {
@@ -404,10 +403,10 @@ sub render {
     return $self->render_via_subscription();
 }
 
-# Chunk 5g transient render path. Drive the renderers/loggers entirely from the
+# Transient render path. Drive the renderers/loggers entirely from the
 # runner subscription (Runner::Subscriber mirrors the runner's canonical state)
-# and from each job's events.jsonl.zst fetched by path at completion. The
-# yath-side gatherer is RETIRED on this path: the runner is the completion /
+# and from each job's events.jsonl.zst fetched by path at completion. There is
+# no yath-side gatherer on this path: the runner is the completion /
 # stalled-job / timeout / verdict authority, so completion comes from the runner
 # closing its socket (Subscriber::closed) once the run is done and its jobs are
 # reaped, not from a gatherer sentinel.
@@ -534,8 +533,8 @@ sub stop {
     my $renderers = $self->renderers;
     my $logger    = $self->logger;
 
-    # Chunk 17: plugin teardown() now runs in the RUNNER (when it shuts down), not
-    # here. finalize()/finish() (client/render-side) still run command-side.
+    # Plugin teardown() runs in the RUNNER (when it shuts down), not here.
+    # finalize()/finish() (client/render-side) still run command-side.
     if ($logger) {
         print $logger "null\n";
         close($logger);
@@ -570,14 +569,13 @@ sub terminate_queue {
     my $self = shift;
 
     # The runner's end-of-queue signal is the socket end_queue request. The
-    # gatherer-only per-run queue.jsonl terminator is retired (chunk 6.1-3). The
     # persistent run command overrides this to a no-op (the long-lived runner is
     # not shut down per run).
     $self->submitter->end_queue();
 }
 
 # Shutdown work to do when the command itself caught a signal. The run state lives
-# in the runner now (chunk 5c), so rather than reconstructing it to kill individual
+# in the runner, so rather than reconstructing it to kill individual
 # job pids, ask the runner to halt the run over the socket. handle_sig already
 # forwarded the signal to the runner (and thus its job children) via signal_runner,
 # so the running tests are being torn down regardless.
@@ -620,8 +618,7 @@ sub finder_args { () }
 # Find the test files and build the task list via the run plan. The run id and
 # task list are mirrored onto the command (read directly elsewhere). The run +
 # tasks are NOT submitted to the runner here -- that happens in submit_queue()
-# once the runner is listening (chunk 5c socket submission). The gatherer-only
-# per-run queue.jsonl is no longer written (chunk 6.1-3).
+# once the runner is listening (socket submission).
 sub populate_queue {
     my $self = shift;
 
@@ -965,10 +962,10 @@ sub start_runner {
 
     # The runner command that used to be spawned directly (its stdout/stderr
     # tailed from output.log/error.log). It is now the exec target of a non-test
-    # collector: chunk 4 step 1 wraps the `yath test` runner in a Test2::Collector
+    # collector: wraps the `yath test` runner in a Test2::Collector
     # (is_test => 0) so its stdout/stderr become first-class, timestamped harness
     # events in runner-events.jsonl.zst -- the same wire format and reader path as
-    # job events -- instead of flat tailed logs.
+    # job events.
     my @runner_cmd = (
         $^X, @prof, $self->spawn_args($settings), $settings->harness->script,
         (map { "-D$_" } @{$settings->harness->dev_libs}),

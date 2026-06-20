@@ -79,10 +79,10 @@ sub read_line {
     }
 }
 
-# Chunk 6.1-2: submit the spawn over runner.socket (App::Yath2::Client) like the
-# rest of the persistent path, instead of writing the in-process dispatch.jsonl
-# State directly. The State adds id/spawn/use_preload/stage defaults in its
-# _queue_spawn handler runner-side, so the raw args are enough here.
+# Submit the spawn over runner.socket (App::Yath2::Client) like the
+# rest of the persistent path. The State adds id/spawn/use_preload/stage
+# defaults in its _queue_spawn handler runner-side, so the raw args are enough
+# here.
 #
 # Review P2: the submission is acknowledged (two-way). queue_spawn returns the
 # runner's ack hash (or undef if the runner could not be reached at all). The

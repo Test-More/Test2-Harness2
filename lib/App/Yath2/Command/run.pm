@@ -54,7 +54,7 @@ the start command for details on how to launch a persistant instance.
     EOT
 }
 
-# Chunk 6.1-2: the persistent `run` now submits over runner.socket like the
+# The persistent `run` submits over runner.socket like the
 # transient `test` path (App::Yath2::Client), and renders from the runner
 # subscription. The persistent runner is long-lived and serves many runs, so the
 # persistent semantics are preserved by what we DON'T send:
@@ -122,9 +122,9 @@ sub run {
 sub check_reload_state {
     my $self = shift;
 
-    # Chunk 6.1-3: ask the persistent runner for its canonical reload state over
-    # runner.socket (App::Yath2::Client), instead of constructing an observe-mode
-    # State that polled dispatch.jsonl. The runner is the reload-state authority.
+    # Ask the persistent runner for its canonical reload state over
+    # runner.socket (App::Yath2::Client). The runner is the reload-state
+    # authority.
     my $reload_status = $self->client->reload_state // {};
 
     my (@out, $errors, $warnings, %seen);

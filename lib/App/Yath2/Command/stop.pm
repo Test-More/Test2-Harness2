@@ -36,7 +36,7 @@ This command will stop a persistent instance, and output any log contents.
 
 sub pfile_params { (no_fatal => 1) }
 
-# Chunk 6.1-2: ask the runner to shut down gracefully over runner.socket (the
+# Ask the runner to shut down gracefully over runner.socket (the
 # Role::Service built-in 'stop' request, which the runner translates into its own
 # TERM shutdown). The end_queue + workdir/pfile cleanup below remain as the
 # fallback for a runner that never bound the socket (or already went away).
@@ -45,7 +45,7 @@ sub run {
 
     my $pid = $self->pfile_data->{pid};
 
-    # Chunk 17: plugin teardown() now runs in the RUNNER as it shuts down. PRIME the
+    # Plugin teardown() runs in the RUNNER as it shuts down. PRIME the
     # shutdown renderer (open the runner-events tail and skip everything already
     # recorded) BEFORE we trigger shutdown, so its cursor sits at the current end
     # and it renders ONLY the teardown output the runner is about to write -- not

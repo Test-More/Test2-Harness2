@@ -422,7 +422,7 @@ sub _instantiate_plugins ($self) {
 
     # The resolved spec strings (Class or Class=arg1,arg2) are stashed below in
     # harness->plugin_specs so the runner can reconstruct the SAME plugin instances
-    # (chunk 17: plugin setup/teardown now run in the runner). The serialized
+    # (plugin setup/teardown run in the runner). The serialized
     # harness->plugins is bare class names (Plugin::TO_JSON drops any =args), so the
     # specs are the faithful round-trip channel.
     my (%seen, @plugins, @specs);

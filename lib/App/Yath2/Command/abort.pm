@@ -37,11 +37,10 @@ sub run {
     # Get the output from finding the pfile
     $self->pfile_data();
 
-    # Chunk 6.1-2: ask the runner to truncate its queue over runner.socket
-    # (instead of writing an observe-mode State to dispatch.jsonl); it returns the
-    # still-running jobs with their pids (from its in-memory job-pid map, not
-    # jobs.jsonl) for us to INT. The runner stays alive -- abort only clears the
-    # queue and kills the running tests.
+    # Ask the runner to truncate its queue over runner.socket; it returns the
+    # still-running jobs with their pids (from its in-memory job-pid map) for us
+    # to INT. The runner stays alive -- abort only clears the queue and kills the
+    # running tests.
     print "\nTruncating Queue...\n\n";
     my $running = $self->client->truncate // [];
 

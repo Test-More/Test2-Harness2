@@ -32,8 +32,7 @@ sub run {
 
     my $data = $self->pfile_data();
 
-    # Chunk 6.1-2: ask the runner for its live process list over runner.socket
-    # instead of an observe-mode State (dispatch.jsonl) + jobs.jsonl pids.
+    # Ask the runner for its live process list over runner.socket.
     my $status = $self->client->status // {};
 
     my @jobs;

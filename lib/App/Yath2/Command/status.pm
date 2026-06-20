@@ -30,9 +30,8 @@ sub run {
 
     my $data = $self->pfile_data();
 
-    # Chunk 6.1-2: ask the runner for its live scheduling state over
-    # runner.socket instead of constructing an observe-mode State that polled
-    # dispatch.jsonl (+ jobs.jsonl for pids). The runner is the state authority.
+    # Ask the runner for its live scheduling state over runner.socket. The
+    # runner is the state authority.
     my $status = $self->client->status // {};
 
     print "\n**** Pending tests: ****\n";

@@ -29,16 +29,15 @@ order.
     EOT
 }
 
-# Chunk 6 (phase D): `yath watch` is now a GLOBAL runner.socket subscriber
-# instead of a flat-log tailer. It connects to runner.socket (via the shared
-# App::Yath2::Client, with NO run_id -- the global subscription that mirrors every
-# run plus the global/runner-lifecycle bucket), and renders the runner's and each
-# preload stage's recorded output through the reusable base renderer
+# `yath watch` is a GLOBAL runner.socket subscriber. It connects to
+# runner.socket (via the shared App::Yath2::Client, with NO run_id -- the global
+# subscription that mirrors every run plus the global/runner-lifecycle bucket),
+# and renders the runner's and each preload stage's recorded output through the
+# reusable base renderer
 # (Test2::Harness2::Renderer::Base::step_runner_output, which locates the runner
 # events file by the workdir path and each stage's events file from the
 # transition state). This is what surfaces the SIGHUP-reload line the runner
-# prints: it is captured in runner-events.jsonl.zst and tailed here. The flat
-# output.log/error.log are retired.
+# prints: it is captured in runner-events.jsonl.zst and tailed here.
 sub run {
     my $self = shift;
 
