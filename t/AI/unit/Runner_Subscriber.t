@@ -101,7 +101,12 @@ my $pid = fork;
 defined $pid or die "fork failed: $!";
 if (!$pid) {
     $hub->start_service;
-    $hub->run;
+    until ($hub->service_stopped) {
+        $hub->service_io;
+        $hub->service_tick;
+        Time::HiRes::sleep(0.01);
+    }
+    $hub->close_service;
     exit 0;
 }
 

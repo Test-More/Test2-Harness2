@@ -3,9 +3,7 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
-use POSIX qw/WNOHANG/;
 use IO::Select ();
-use Time::HiRes qw/sleep/;
 use File::Spec ();
 use File::Path qw/make_path/;
 
@@ -24,16 +22,17 @@ requires qw/workdir name/;
 =head1 NAME
 
 Test2::Harness2::Role::Service - Common socket-service behavior: a listening
-unix socket, one bidirectional connection set, an identified request/response
-loop, and child reaping.
+unix socket, one bidirectional connection set, and an identified
+request/response loop.
 
 =head1 DESCRIPTION
 
 A role for the harness's long-lived services. It owns a listening unix socket
-(C<< $workdir/[$run_ord/]$name.socket >>) and provides a service loop: accept new
-connections, B<connect out> to peer services, read framed messages off every
-connection and dispatch each by kind, give the consumer a chance to do its own
-work (C<service_tick>), and reap exited children.
+(C<< $workdir/[$run_ord/]$name.socket >>) and the socket-servicing primitive
+(C<service_io>): accept new connections, B<connect out> to peer services, and
+read framed messages off every connection and dispatch each by kind. The
+consumer drives its own loop, calling C<service_io> (and C<service_tick>) each
+iteration.
 
 Each connection is a L<Test2::Harness2::Role::Service::Connection>, which owns the
 wire protocol (ARCHITECTURE.md §5.2): an identity exchange on open, framed
@@ -52,13 +51,8 @@ optional C<service_on_response($conn, $event)> hook.
 
 C<workdir> and C<name> are required. Optional: C<service_identity> (the name this
 service announces; defaults to C<service_name>), C<run_ord> (a per-run numeric
-subdir), C<service_on_start> / C<service_tick> / C<service_on_stop>,
-C<service_on_reap($pid, $status)>, C<service_transition($payload, $frame, $conn)>,
+subdir), C<service_tick>, C<service_transition($payload, $frame, $conn)>,
 and C<service_on_response($conn, $event)>.
-
-A consumer that already manages its own child processes (for example via
-L<Test2::Harness2::IPC>) should override C<reap_children> to a no-op so the two
-reaping paths do not race for the same C<waitpid>.
 
 =head1 PUBLIC METHODS
 
@@ -103,10 +97,6 @@ the request_id (truthy) on success, or false if there is no live connection to t
 peer. The reply, if the handler sends one, arrives later via
 C<service_on_response>; one-way requests need no reply.
 
-=item $self->run
-
-Run the service loop until stopped.
-
 =item $self->service_io
 
 Accept pending connections, read framed messages off ready connections, and
@@ -129,11 +119,6 @@ fresh.
 =item $bool = $self->service_stopped
 
 True once C<stop_service> has been requested.
-
-=item $self->reap_children
-
-Reap every exited child (C<WNOHANG>), calling C<service_on_reap($pid, $status)>
-for each when the consumer provides it.
 
 =item $resp = $self->handle_request($payload, $conn)
 
@@ -198,22 +183,6 @@ sub start_service ($self) {
     return;
 }
 
-sub run ($self) {
-    $self->start_service unless $self->{service_listen};
-    $self->service_on_start if $self->can('service_on_start');
-
-    until ($self->{service_stopped}) {
-        $self->reap_children;
-        $self->service_io;
-        $self->service_tick if $self->can('service_tick');
-        sleep 0.01;
-    }
-
-    $self->service_on_stop if $self->can('service_on_stop');
-    $self->close_service;
-    return;
-}
-
 sub stop_service ($self) {
     $self->{service_stopped} = 1;
     return;
@@ -221,15 +190,6 @@ sub stop_service ($self) {
 
 sub service_stopped ($self) {
     return $self->{service_stopped} ? 1 : 0;
-}
-
-sub reap_children ($self) {
-    my $can = $self->can('service_on_reap');
-    while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
-        my $status = $?;
-        $self->$can($pid, $status) if $can;
-    }
-    return;
 }
 
 sub service_connect_peer ($self, $identity, $path) {
@@ -324,7 +284,7 @@ sub forward_frame ($self, $frame, $run_id = undef) {
 
 =item $self->service_io
 
-The socket-servicing primitive used by both C<run> and consumer-driven loops.
+The socket-servicing primitive a consumer's own loop calls each iteration.
 
 =item $self->_handle_events($conn, @events)
 

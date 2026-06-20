@@ -200,12 +200,6 @@ sub is_stage_service {
     return $self->{+STAGE} ? 1 : 0;
 }
 
-# Test2::Harness2::IPC owns child reaping for this process (via wait /
-# _bring_out_yer_dead, which dies on an unexpected waitpid). The service role's
-# own reap_children would race that path, so it is disabled here: the runner
-# polls the socket but reaps through IPC.
-sub reap_children { my $self = shift; return }
-
 our $RUNNER_PID;
 
 sub init {
