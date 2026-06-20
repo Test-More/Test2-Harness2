@@ -402,7 +402,7 @@ sub process {
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
 }
 
-# Chunk 9: ask each forked stage service to shut down cleanly at run end. Stage
+# Ask each forked stage service to shut down cleanly at run end. Stage
 # children idle waiting for dispatches and never see the run end on their own, so
 # the host must tell them over the SAME registered channel each stage opened to the
 # runner -- these are THIS host's own stage children, stopped via service_send to
@@ -457,7 +457,7 @@ sub run_tests {
     return;
 }
 
-# Chunk 9: the stage child dials the runner's one service channel. runner.socket is
+# The stage child dials the runner's one service channel. runner.socket is
 # the global flat socket in the workdir (bound by the real runner long before any
 # stage forks). The dialed connection joins this process's service set, so the
 # runner's dispatches (run_task / stop) are read off it and the stage's reports ride
@@ -508,9 +508,10 @@ sub run_stage {
         $self->reset_service;
         $self->start_service;
 
-        # Chunk 9 (ARCHITECTURE.md §5.2): open the ONE registered service channel to
-        # the runner and announce readiness over it. The runner reads stage_ready /
-        # outcome reports off this connection AND dispatches jobs back down it.
+        # Open the ONE registered service channel to the runner
+        # (ARCHITECTURE.md §5.2) and announce readiness over it. The runner
+        # reads stage_ready / outcome reports off this connection AND
+        # dispatches jobs back down it.
         $self->_connect_runner;
         $self->service_send('runner', 'stage_ready', stage => $stage);
     }
@@ -615,7 +616,7 @@ sub run_job {
         $pid = $job->pid;
     }
 
-    # Chunk 9: the stage reports the forked job's pid back up its one registered
+    # The stage reports the forked job's pid back up its one registered
     # channel (the stage delegate's job_pid -> service_send('runner', ...)).
     eval { $self->state->job_pid($task->{job_id}, $pid); 1 };
 

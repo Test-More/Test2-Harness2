@@ -255,7 +255,7 @@ sub _run_stage_host ($self) {
         settings => $settings,
         rootpid  => $self->{+RUNNER_PID},
 
-        # Chunk 19.4b: persistent ⇒ monitor on ⇒ the preloader tolerates a broken
+        # persistent ⇒ monitor on ⇒ the preloader tolerates a broken
         # preload (warn+skip); transient ⇒ monitor off ⇒ a broken preload is fatal.
         monitor_preloads => $self->{+MONITOR_PRELOADS},
 
@@ -341,7 +341,7 @@ sub _handshake ($self) {
     # stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
     $self->{+RUNNER_PID} = $list->{runner_pid} if $list && $list->{runner_pid};
 
-    # Chunk 19.4b: the real runner's monitor_preloads (on for persistent, off for
+    # The real runner's monitor_preloads (on for persistent, off for
     # transient). The stage-host Runner uses it so a broken preload is tolerated
     # (warn+skip) on the persistent path and fatal on the transient path.
     $self->{+MONITOR_PRELOADS} = $list->{monitor_preloads} ? 1 : 0 if $list;
@@ -350,7 +350,7 @@ sub _handshake ($self) {
 
     $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data($meta));
 
-    # Chunk 19.4b: hand any preload-load warnings (e.g. a broken preload tolerated
+    # Hand any preload-load warnings (e.g. a broken preload tolerated
     # on the persistent path) to the runner so it can surface them in each run's
     # output -- on the persistent path the stage host does not exit, so these would
     # otherwise never reach a `yath run` client. This is ADDITIVE: the transient

@@ -264,14 +264,13 @@ sub run_under_collector {
     # rather than falling back to its own 30s orphan default.
     my $orphan_timeout = ($self->use_timeout && $self->post_exit_timeout) ? $self->post_exit_timeout : 0;
 
-    # Chunk 5e: a test job is a non-runner collector, so its reporter streams its
+    # A test job is a non-runner collector, so its reporter streams its
     # transitions (start/harness_collector, harness_state_transition,
     # harness_final_state, harness_collector_finalized) to runner.socket, where
     # the runner folds them into its canonical state. record_transitions stays 1
-    # so the SAME transitions are ALSO written to the events file -- the still-
-    # living gatherer reads that file, and the socket reporter is an addition, not
-    # a replacement, of the file recorder. The Recorder::Socket spec survives the
-    # fork/exec to the test child via TO_JSON (it carries its socket paths).
+    # so the SAME transitions are ALSO written to the events file (the gatherer
+    # reads that file on the persistent path). The Recorder::Socket spec survives
+    # the fork/exec to the test child via TO_JSON (it carries its socket paths).
     my $reporter = $self->_transition_reporter;
 
     my %common = (
@@ -299,7 +298,7 @@ sub run_under_collector {
     return Test2::Collector::collect(%common, @target);
 }
 
-# Chunk 5e: build the socket reporter that streams this test collector's
+# Build the socket reporter that streams this test collector's
 # transitions to runner.socket, or undef when the workdir/socket cannot be
 # located (so the file recorder still produces a complete stream and the job is
 # never blocked on the transition channel). The workdir comes from
@@ -309,12 +308,12 @@ sub run_under_collector {
 sub _transition_reporter {
     my $self = shift;
 
-    # Chunk 6.1-2: the transition channel now covers BOTH the transient and the
-    # persistent (yath start/run) paths. A persistent test job is a non-runner
-    # collector exactly like a transient one, so it streams its transitions to the
+    # The transition channel covers BOTH the transient and the persistent
+    # (yath start/run) paths. A persistent test job is a non-runner collector
+    # exactly like a transient one, so it streams its transitions to the
     # persistent runner's runner.socket too; the runner folds them into its
     # per-run canonical state and forwards them to that run's subscriber (the
-    # `yath run` command, which now renders from the subscription). The file
+    # `yath run` command, which renders from the subscription). The file
     # recorder still records the same transitions in parallel, so a missing/
     # not-yet-accepting socket only costs the reporter, never the events file.
 

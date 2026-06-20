@@ -211,14 +211,12 @@ sub launch_stage {
     # carries on AS the stage (the caller then preloads and runs its dispatch
     # loop in-process, with everything still loaded).
     #
-    # Chunk 6 (phase D): BOTH the transient (`yath test`) and persistent (`yath
-    # start`) runners are now collector-wrapped (the persistent runner via
+    # BOTH the transient (`yath test`) and persistent (`yath start`) runners are
+    # collector-wrapped (the persistent runner via
     # Test2::Harness2::Runner->start_collected), so their stages are wrapped here
-    # uniformly -- no more `unless PERSIST` gate. A persistent stage's
-    # stdout/stderr (e.g. a broken preload's error) now lands in its per-stage
-    # events file and streams over runner.socket, which `yath watch` (a global
-    # runner.socket subscriber) renders, replacing the retired flat output.log /
-    # error.log.
+    # uniformly. A persistent stage's stdout/stderr (e.g. a broken preload's
+    # error) lands in its per-stage events file and streams over runner.socket,
+    # which `yath watch` (a global runner.socket subscriber) renders.
     {
         # Under monitor/reload the runner relaunches a stage when its files
         # change, reusing the same stage-<name>-events.jsonl.zst path. Mark the
@@ -230,7 +228,7 @@ sub launch_stage {
         # (terminal marker, reader reaches done) is correct.
         my $resumable = $self->{+MONITOR} ? 1 : 0;
 
-        # Chunk 5e: the stage is a non-runner collector, so stream its
+        # The stage is a non-runner collector, so stream its
         # transitions to runner.socket for the runner to fold, IN ADDITION to the
         # per-stage events file (record_transitions => 1). A resumable stage emits
         # no terminal markers across a monitor/reload restart (its stream
@@ -280,7 +278,7 @@ sub launch_stage {
     return;
 }
 
-# Chunk 5e: build the socket reporter that streams a stage collector's
+# Build the socket reporter that streams a stage collector's
 # transitions to runner.socket, or undef when the socket cannot be located (so
 # the per-stage events file still produces a complete stream). The workdir is the
 # preloader's own dir (the root runner's workdir, where it bound runner.socket
