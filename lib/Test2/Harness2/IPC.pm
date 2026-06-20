@@ -23,6 +23,13 @@ BEGIN {
     }
 
     *SIG_MAP = sub() { \%SIG_MAP };
+
+    # Debug gate for the "should never happen" reaper backstops. These are
+    # benign guards (a tracked process that vanished without being reaped here,
+    # or an unexpectedly-broken wait loop); their warns are noise on the happy
+    # path, so they only print when T2_HARNESS_IPC_DEBUG is set.
+    my $debug = $ENV{T2_HARNESS_IPC_DEBUG} ? 1 : 0;
+    *IPC_DEBUG = sub() { $debug };
 }
 
 use Test2::Harness2::Util::HashBase qw{
@@ -183,7 +190,7 @@ sub _ex_parrots {
         next if $waiting->{$pid};
         next if kill(0, $pid);
         $found++;
-        warn "Process $pid vanished!";
+        warn "Process $pid vanished!" if IPC_DEBUG;
         $waiting->{$pid} = [-1, time()];
     }
 
@@ -225,7 +232,7 @@ sub wait {
         sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
     }
 
-    warn "We escaped the wait cycle";
+    warn "We escaped the wait cycle" if IPC_DEBUG;
     return $found;
 }
 
