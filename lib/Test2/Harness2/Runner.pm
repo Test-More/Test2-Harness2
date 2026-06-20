@@ -228,6 +228,23 @@ sub init {
 
     $self->{+HANDLERS}->{HUP} = sub {
         my $sig = shift;
+
+        # When the preload-root hosts the stages this runner is scheduler-only and
+        # holds NO preloaded interpreter state, so it must NOT wind down on HUP --
+        # reload lives entirely in the preload tree. Forward the reload to the
+        # preload-root and keep scheduling. The preload-root re-execs itself from a
+        # clean interpreter (Test2::Harness2::Preload::request_handler_reload); it
+        # also shares this runner's process group, so a HUP delivered to the group
+        # reaches it directly as well.
+        if ($self->{+ROOTPID} == $$ && $self->{+PRELOAD_ROOT_PID}) {
+            $self->service_send('preload-root', 'reload');
+            return;
+        }
+
+        # Legacy in-runner reload path: the real no-preload runner (self-restart via
+        # the command's setjump "Test-Runner" frame) and a stage-host base/default
+        # runner (rootpid != $$, respawn via longjump 'preload-root') both reload by
+        # setting SIGNAL=HUP, which their stage's end_test_loop turns into a respawn.
         print "$$ $0 ($self->{+STAGE}) Runner caught SIG$sig, reloading...\n";
         $self->{+SIGNAL} = $sig;
     };

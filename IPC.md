@@ -97,7 +97,11 @@ clients connecting IN to runner.socket:
    yath status / ps / abort / resources   request → Runner::StatusReport reply
    yath spawn   submit a spawn over the socket (acknowledged: fails fast if no live stage)
    yath stop    'stop' request (graceful shutdown)
-   yath reload  SIGHUP → the runner's own pid (from yath-persist.json)
+   yath reload  SIGHUP → the runner's own pid (from yath-persist.json). On a
+                preload run the (scheduler-only) runner does NOT wind down: its HUP
+                handler forwards a 'reload' request to the preload-root (which
+                re-execs itself) and keeps scheduling. A no-preload runner still
+                self-restarts on HUP via the command's setjump "Test-Runner" frame.
 ```
 
 `yath run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`/`which`/`watch`
