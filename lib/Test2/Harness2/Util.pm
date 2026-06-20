@@ -77,8 +77,16 @@ sub socket_reporter {
         );
         1;
     };
+    my $err = $@;
 
-    return undef unless $ok;
+    # The file recorder still captures the full stream, so a failed socket
+    # reporter loses only the live transition forward -- but surface it so a
+    # silently-non-connecting reporter (a real socket problem) is visible.
+    unless ($ok) {
+        warn "$$ $0 could not open socket reporter '$identity' on '$socket': $err";
+        return undef;
+    }
+
     return $reporter;
 }
 
