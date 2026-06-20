@@ -1,20 +1,25 @@
 use Test2::V0;
 # HARNESS-DURATION-LONG
 
-# Chunk 19.5 (§6.10): the preload-root PROCESS crashing mid-run, with live stages.
-# This is the case that has no in-process user hook to trigger (named stages fork;
-# nothing user-controlled runs in the preload-root after startup), so we trigger it
-# with a real external SIGKILL -- made reliable by RootPidPreload, which records the
-# preload-root's own pid (it loads IN the preload-root, before stages fork) to a
-# pidfile.
+# bloat #3 (ARCHITECTURE.md §4.2): the preload-root PROCESS crashing mid-run is
+# FATAL -- on a persistent runner an unexpected preload-root exit TERMINATES the
+# runner. The runner does NOT respawn it. This is the case that has no in-process
+# user hook to trigger (named stages fork; nothing user-controlled runs in the
+# preload-root after startup), so we trigger it with a real external SIGKILL --
+# made reliable by RootPidPreload, which records the preload-root's own pid (it
+# loads IN the preload-root, before stages fork) to a pidfile.
 #
 # Orchestration: a persistent runner with the preload, -j1 so a_inflight.tx runs
 # while z_pending.tx waits. Once a_inflight is in flight (it records its pid and
-# blocks on a go-file), we SIGKILL the preload-root, then release a_inflight. The
-# runner must: (1) let the in-flight job finish -- it runs in a forked stage whose
-# collector watches the REAL runner, not the dead preload-root; (2) detect the dead
-# preload-root, respawn a fresh incarnation, and dispatch the still-pending
-# z_pending.tx to it. Both tests pass and `yath run` exits 0.
+# blocks on a go-file), we SIGKILL the preload-root, then release a_inflight.
+#
+# The robust invariant under the no-respawn design is that the persistent runner
+# TERMINATES (it detects the dead preload-root, sets SIGNAL, and winds down) rather
+# than respawning a fresh preload-root and staying alive. The forked stage
+# processes are orphaned-but-alive (their collectors watch the REAL runner, not the
+# dead preload-root), so the in-flight/pending work may still complete on them
+# before the runner finishes winding down -- that race is left unconstrained; what
+# is asserted is that the runner does not respawn and survive.
 
 use File::Temp qw/tempdir/;
 use File::Spec ();
@@ -123,8 +128,8 @@ my $ok = eval {
     # 7. Release the in-flight test so it finishes (it must survive the preload-root death).
     open(my $g, '>', $gofile) or die $!; close($g);
 
-    # 8. `yath run` must complete and exit 0 -- the in-flight test finished and the
-    #    runner respawned the preload-root to run the pending test.
+    # 8. `yath run` must complete (not hang). Its exit code and whether z_pending
+    #    ran are left unconstrained (the orphaned-stage race above).
     my $exit;
     for (1 .. 1200) {
         if (waitpid($run_pid, WNOHANG) == $run_pid) { $exit = $?; last }
@@ -148,13 +153,13 @@ my $ok = eval {
         }
     };
 
-    is($exit, 0, "the run recovered from the preload-root crash and exited 0") or $diag->();
-    like($out, qr{PASSED.*a_inflight\.tx}, "the in-flight test survived the crash and passed") or $diag->();
-    like($out, qr{PASSED.*z_pending\.tx}, "the pending test ran on the respawned preload-root and passed") or $diag->();
-
-    # 9. Shut the persistent runner down cleanly.
-    my $stop = spawn_to(File::Spec->catfile($outdir, 'stop.out'), @base, 'stop');
-    waitpid($stop, 0);
+    # The robust no-respawn invariant: the persistent runner TERMINATES after the
+    # fatal preload-root crash rather than respawning a fresh preload-root and
+    # staying alive. Give it a generous window to wind down.
+    my $runner_gone = 0;
+    for (1 .. 1200) { unless (kill 0, $runner_pid) { $runner_gone = 1; last } sleep 0.1 }
+    ok($runner_gone, "the persistent runner terminated after the fatal preload-root crash (no respawn)") or $diag->();
+    $runner_pid = undef if $runner_gone;
 
     1;
 };

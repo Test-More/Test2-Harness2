@@ -7,15 +7,17 @@ use File::Spec;
 
 use Test2::Util qw/CAN_REALLY_FORK/;
 
-# Chunk 19.5 (§6.10): preload-root crash resilience. The preload-root process hosts
-# the stages; if it dies mid-startup the runner must respawn a fresh incarnation and
-# recover the run rather than hang or fail.
+# bloat #3 (ARCHITECTURE.md §4.2): a preload-root crash is FATAL. The preload-root
+# process hosts the stages; if it dies mid-startup the runner does NOT respawn it --
+# the run fails (and a persistent runner terminates) rather than papering over the
+# crash with a respawn. This is deliberate: it prevents accidentally recreating
+# respawn-like behavior. (HUP reload re-execs the preload-root in place, same pid,
+# and is NOT a crash -- see reload.t.)
 #
-# CrashOncePreload makes the preload-root POSIX::_exit() exactly once during its load
-# (a crash: no clean stage_host_exited), keyed off a per-run marker file. The runner
-# should detect the dead preload-root, respawn it, and the second incarnation (marker
-# present) loads normally so the run completes and the test passes. Run a few times
-# for stability.
+# CrashOncePreload makes the preload-root POSIX::_exit() exactly once during its
+# load (a crash: no clean stage_host_exited), keyed off a per-run marker file. With
+# the respawn apparatus removed, the run must fail (non-zero exit) -- the crash is
+# not recovered. Run a few times for stability.
 
 skip_all "Cannot fork, skipping preload-root crash test" unless CAN_REALLY_FORK;
 skip_all "This test requires forking" if $ENV{T2_NO_FORK};
@@ -33,13 +35,13 @@ for my $i (1 .. 3) {
     yath(
         command => 'test',
         args    => [$dir, '--ext=tx', '-A', '-PCrashOncePreload'],
-        exit    => 0,
+        exit    => T(),    # non-zero: a preload-root crash is fatal, the run fails
         test    => sub {
             my $out = shift;
 
             ok(-e $marker, "run $i: the preload-root crashed once (marker was created)");
-            like($out->{output}, qr{PASSED.*crash\.tx},
-                "run $i: the run recovered from the preload-root crash and the test passed");
+            isnt($out->{exit}, 0,
+                "run $i: a preload-root crash is fatal -- the run fails rather than respawning");
         },
     );
 }
