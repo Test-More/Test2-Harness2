@@ -39,9 +39,10 @@ sub run {
     my @jobs;
 
     my $stage_status = $status->{stage_readiness} // {};
+    my $stage_pids   = $status->{stage_pids} // {};
     for my $stage (keys %$stage_status) {
-        my $pid = $stage_status->{$stage} // next;
-        $pid = 'N/A' if $pid == 1;
+        next unless $stage_status->{$stage};
+        my $pid = $stage_pids->{$stage} // 'N/A';
         push @jobs => [$pid, "Runner Stage", $stage];
     }
 

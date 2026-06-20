@@ -8,6 +8,7 @@ use Carp qw/croak/;
 use Object::HashBase qw{
     <state
     <job_pids
+    <stage_pids
 };
 
 =pod
@@ -37,16 +38,18 @@ hashref the command turns into its tables and its kill list.
 =head1 SYNOPSIS
 
     my $report = Test2::Harness2::Runner::StatusReport->new(
-        state    => $runner->state,
-        job_pids => $runner->job_pids,
+        state      => $runner->state,
+        job_pids   => $runner->job_pids,
+        stage_pids => $runner->stage_peer_pids,
     );
 
     my $data = $report->build;
     # {
     #   runs           => [ { run_id => ..., pending => [...] }, ... ],
     #   running        => [ { job_id, run_id, pid, rel_file, is_try, conflicts }, ... ],
-    #   stage_readiness => { default => $pid, ... },
-    #   stage_lifecycle => { default => { state => 'up', generation => N, pid => $pid, stamp => T }, ... },
+    #   stage_readiness => { default => 1, ... },     # truthy == schedulable
+    #   stage_pids      => { default => $pid, ... },   # connected stages' real pids
+    #   stage_lifecycle => { default => { state => 'up', generation => N, stamp => T }, ... },
     #   reload_state    => { ... },
     # }
 
@@ -62,6 +65,12 @@ The runner's canonical L<Test2::Harness2::Runner::State>.
 
 The runner's C<< { job_id =E<gt> pid } >> map.
 
+=item $hash = $report->stage_pids
+
+The C<< { stage =E<gt> pid } >> map of each connected preload stage's real pid,
+read from its peer connection. A down/restarting stage has no connection and so
+no entry.
+
 =item $data = $report->build
 
 Build and return the serializable status hashref described above.
@@ -72,7 +81,8 @@ Build and return the serializable status hashref described above.
 
 sub init ($self) {
     croak "'state' is a required attribute" unless $self->{+STATE};
-    $self->{+JOB_PIDS} //= {};
+    $self->{+JOB_PIDS}   //= {};
+    $self->{+STAGE_PIDS} //= {};
     return;
 }
 
@@ -82,8 +92,12 @@ sub build ($self) {
     return {
         runs            => $self->_runs,
         running         => $self->_running,
+        # The dispatch gate: truthy == schedulable. The State stores no pid; a
+        # connected stage's real pid is reported separately in stage_pids, sourced
+        # from its peer connection.
         stage_readiness => {%{$state->stage_readiness // {}}},
-        # Chunk 19.5 (§6.8): the richer per-stage lifecycle (state/generation/pid) the
+        stage_pids      => {%{$self->{+STAGE_PIDS}}},
+        # Chunk 19.5 (§6.8): the richer per-stage lifecycle (state/generation) the
         # named states feed; stage_readiness is kept as the back-compatible up/down view.
         stage_lifecycle => {%{$state->stage_lifecycle // {}}},
         reload_state    => $state->reload_state // {},

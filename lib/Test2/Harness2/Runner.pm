@@ -719,6 +719,29 @@ sub _resolver_identity {
     return undef;
 }
 
+# A connected preload stage's real pid comes from its 'preload-<stage>' peer
+# connection (the pid it announced in the identity handshake -- ticket #1), not
+# from the scheduler State (which stores no pid). Build a { stage => pid } map for
+# status/ps from the live stage peers; a down/restarting stage has no live
+# connection (or never announced a pid) and so gets no entry -- correctly absent.
+sub stage_peer_pids {
+    my $self = shift;
+
+    my $peers = $self->{service_peers} or return {};
+
+    my %pids;
+    for my $id (sort keys %$peers) {
+        next if $id eq 'preload-root';
+        my ($stage) = $id =~ m/^preload-(.+)$/ or next;
+        my $conn = $peers->{$id};
+        next unless $conn && !$conn->closed;
+        my $pid = $conn->peer_pid // next;
+        $pids{$stage} = $pid;
+    }
+
+    return \%pids;
+}
+
 # Chunk 19.3: resolve a test file's stage via a live preload stage -- the only kind
 # of process holding the merged preload meta (and its file_stage callbacks). The
 # scheduler-only runner has no preloader, so it asks a stage over the channel that

@@ -259,8 +259,9 @@ sub request_handler_status {
         unless $self->{'rootpid'} == $$;
 
     my $report = Test2::Harness2::Runner::StatusReport->new(
-        state    => $self->state,
-        job_pids => $self->{'job_pids'},
+        state      => $self->state,
+        job_pids   => $self->{'job_pids'},
+        stage_pids => $self->stage_peer_pids,
     );
 
     return {ok => 1, status => $report->build};
