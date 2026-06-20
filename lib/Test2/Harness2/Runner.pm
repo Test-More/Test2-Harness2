@@ -533,8 +533,21 @@ sub process {
 sub _drain_transitions {
     my $self = shift;
 
-    for (1 .. 50) {
+    # Drain until the service socket is quiet, bounded by an overall deadline so
+    # a peer that never goes silent cannot hang the close. Each pass services
+    # whatever is pending, then peeks the select set: once a pass leaves nothing
+    # readable (no pending connection on the listener, no data on any conn) the
+    # in-flight frames are folded and we stop early rather than spinning out the
+    # whole budget.
+    my $deadline = Time::HiRes::time() + 0.5;
+    while (1) {
         $self->service_io;
+
+        last if Time::HiRes::time() >= $deadline;
+
+        my $sel = $self->{service_select} or last;
+        last unless $sel->can_read(0);
+
         Time::HiRes::sleep(0.01);
     }
 
