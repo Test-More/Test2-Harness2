@@ -52,9 +52,10 @@ sub _pid_check {
 
 sub init {
     my $self = shift;
-    $self->{+CAN_RELOAD_CB}  //= $self->can('_can_reload');
-    $self->{+FIND_LOADED_CB} //= $self->can('_find_loaded');
-    $self->{+STAT_MIN_GAP}   //= 2;
+
+    croak "'find_loaded_cb' is a required attribute" unless $self->{+FIND_LOADED_CB};
+
+    $self->{+STAT_MIN_GAP} //= 2;
 
     $self->reset;
 }
@@ -72,8 +73,6 @@ sub reset {
     }
     delete $self->{+STAT_LAST_CHECKED};
 }
-
-sub _find_loaded { keys %INC }
 
 sub refresh {
     my $self = shift;
@@ -177,24 +176,6 @@ sub _get_changes {
 
     return unless $found;
     return $changed;
-}
-
-sub _can_reload {
-    my %params = @_;
-
-    my $mod = $params{module};
-
-    return 1 unless $mod->can('import');
-
-    return 0 if $mod->can('IMPORTER_MENU');
-
-    {
-        no strict 'refs';
-        return 0 if @{"$mod\::EXPORT"};
-        return 0 if @{"$mod\::EXPORT_OK"};
-    }
-
-    return 1;
 }
 
 sub reload_changes {
