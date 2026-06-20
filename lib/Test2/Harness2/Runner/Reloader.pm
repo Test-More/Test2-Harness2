@@ -18,7 +18,6 @@ BEGIN {
         $MASK |= Linux::Inotify2::IN_ATTRIB();
         $MASK |= Linux::Inotify2::IN_DELETE_SELF();
         $MASK |= Linux::Inotify2::IN_MOVE_SELF();
-        $MASK |= Linux::Inotify2::IN_MOVE_SELF();
 
         *USE_INOTIFY = sub() { 1 };
         require constant;
