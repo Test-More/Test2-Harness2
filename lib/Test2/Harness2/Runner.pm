@@ -210,7 +210,7 @@ sub init {
     # from rootpid (the preload-root driving a stage-host Runner, later substeps)
     # then identifies as a stage rather than the root via is_stage_service /
     # service_name / scheduler_tick. $RUNNER_PID tracks the logical root so
-    # resource accounting (SharedJobSlots) keys on the real runner, not a child.
+    # resource accounting keys on the real runner, not a child.
     $self->{+ROOTPID} //= $$;
     $RUNNER_PID = $self->{+ROOTPID};
 

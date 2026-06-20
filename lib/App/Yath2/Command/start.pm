@@ -1040,17 +1040,6 @@ Abort the test run if no tests have been able to start for SECONDS seconds while
 Runner ID (usually a generated uuid)
 
 
-=item --shared-jobs-config .sharedjobslots.yml
-
-=item --shared-jobs-config relative/path/.sharedjobslots.yml
-
-=item --shared-jobs-config /absolute/path/.sharedjobslots.yml
-
-=item --no-shared-jobs-config
-
-Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.
-
-
 =item -x2
 
 =item --slots-per-job 2

@@ -515,9 +515,9 @@ first, before other resources.
 Job slots are sorted later (100) so that we do not try to grab a job slot if
 other resources are not available.
 
-Most of the time order will not matter, however with Shared job slots we have a
-race with other test runs to get slots, and checking availability is enough to
-consume a slot, even if other resources are not available.
+Most of the time order will not matter, but checking availability can be enough
+to consume a slot, so a job limiter should be checked only after the other
+resources a test needs are known to be available.
 
 =item $string = $inst->status_lines()
 

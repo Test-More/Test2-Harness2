@@ -44,41 +44,18 @@ sub runner_resources {
     return $self->client->resources;
 }
 
-# Fallback for when there is no running runner: a shared-job-slots config may
-# still describe resource state we can render directly (no runner needed). Built
-# locally and rendered the same way -- as a { class, lines } record.
-sub shared_resources {
-    my $self = shift;
-
-    my $shared;
-    my $ok = eval {
-        require Test2::Harness2::Runner::Resource::SharedJobSlots;
-        $shared = Test2::Harness2::Runner::Resource::SharedJobSlots->new(
-            settings => $self->settings,
-        );
-        1;
-    };
-
-    return undef unless $ok && $shared;
-
-    my $lines = $shared->status_lines;
-    return undef unless defined $lines && length $lines;
-
-    return [{class => ref($shared), lines => $lines}];
-}
-
 sub run {
     my $self = shift;
 
     # Probe up front so we can report "nothing to show" the same way the old
     # observe-State path did, rather than spinning forever on an empty screen.
-    my $resources = $self->runner_resources // $self->shared_resources;
+    my $resources = $self->runner_resources;
 
-    die "No persistent runner, no running test, and no shared resources found\n"
+    die "No persistent runner and no running test found\n"
         unless $resources;
 
     while (1) {
-        $resources = $self->runner_resources // $self->shared_resources // [];
+        $resources = $self->runner_resources // [];
 
         my @out = (
             "\r\e[2J\r\e[1;1H",
@@ -809,17 +786,6 @@ Abort the test run if no tests have been able to start for SECONDS seconds while
 =item --no-runner-id
 
 Runner ID (usually a generated uuid)
-
-
-=item --shared-jobs-config .sharedjobslots.yml
-
-=item --shared-jobs-config relative/path/.sharedjobslots.yml
-
-=item --shared-jobs-config /absolute/path/.sharedjobslots.yml
-
-=item --no-shared-jobs-config
-
-Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.
 
 
 =item -x2

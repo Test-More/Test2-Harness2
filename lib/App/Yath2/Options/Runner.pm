@@ -230,17 +230,6 @@ Abort the test run if no tests have been able to start for SECONDS seconds while
 Runner ID (usually a generated uuid)
 
 
-=item --shared-jobs-config .sharedjobslots.yml
-
-=item --shared-jobs-config relative/path/.sharedjobslots.yml
-
-=item --shared-jobs-config /absolute/path/.sharedjobslots.yml
-
-=item --no-shared-jobs-config
-
-Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.
-
-
 =item -x2
 
 =item --slots-per-job 2
@@ -344,13 +333,6 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         alt         => ['timeout'],
         default     => 1,
         description => "(default: on) Enable/disable timeouts",
-    );
-
-    option shared_jobs_config => (
-        type          => 'Scalar',
-        default       => '.sharedjobslots.yml',
-        long_examples => [' .sharedjobslots.yml', ' relative/path/.sharedjobslots.yml', ' /absolute/path/.sharedjobslots.yml'],
-        description   => 'Where to look for a shared slot config file. If a filename with no path is provided yath will search the current and all parent directories for the name.',
     );
 
     # jobs_post_process is registered before cover_post_process to preserve live
@@ -578,9 +560,6 @@ sub jobs_post_process ($options, $state) {
 sub fix_job_resources ($settings) {
     my $runner = $settings->runner;
 
-    require Test2::Harness2::Runner::Resource::SharedJobSlots::Config;
-    my $sconf = Test2::Harness2::Runner::Resource::SharedJobSlots::Config->find(settings => $settings);
-
     my %found;
     for my $r (@{$runner->resources}) {
         require(mod2file($r));
@@ -588,34 +567,9 @@ sub fix_job_resources ($settings) {
         $found{$r}++;
     }
 
-    if ($sconf && !$found{'Test2::Harness2::Runner::Resource::SharedJobSlots'} && !$sconf->disabled) {
-        if (delete $found{'Test2::Harness2::Runner::Resource::JobCount'}) {
-            @{$settings->runner->resources} = grep { $_ ne 'Test2::Harness2::Runner::Resource::JobCount' } @{$runner->resources};
-        }
-
-        if (!keys %found) {
-            require Test2::Harness2::Runner::Resource::SharedJobSlots;
-            unshift @{$runner->resources} => 'Test2::Harness2::Runner::Resource::SharedJobSlots';
-            $found{'Test2::Harness2::Runner::Resource::SharedJobSlots'}++;
-        }
-    }
-    elsif (!keys %found) {
+    unless (keys %found) {
         require Test2::Harness2::Runner::Resource::JobCount;
         unshift @{$runner->resources} => 'Test2::Harness2::Runner::Resource::JobCount';
-    }
-
-    if ($found{'Test2::Harness2::Runner::Resource::SharedJobSlots'} && $sconf) {
-        $runner->create_option(job_count     => $sconf->default_slots_per_run || $sconf->max_slots_per_run) if $runner && !$runner->job_count;
-        $runner->create_option(slots_per_job => $sconf->default_slots_per_job || $sconf->max_slots_per_job) if $runner && !$runner->slots_per_job;
-
-        my $run_slots = $runner->job_count;
-        my $job_slots = $runner->slots_per_job;
-
-        die "Requested job count ($run_slots) exceeds the system shared limit (" . $sconf->max_slots_per_run . ").\n"
-            if $run_slots > $sconf->max_slots_per_run;
-
-        die "Requested job concurrency ($job_slots) exceeds the system shared limit (" . $sconf->max_slots_per_job . ").\n"
-            if $job_slots > $sconf->max_slots_per_job;
     }
 
     $runner->create_option(job_count     => 1) if $runner && !$runner->job_count;
