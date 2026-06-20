@@ -445,45 +445,57 @@ sub record_job_pid {
 # scheduled (or is going down at shutdown). The runner folds this into the same
 # stage-readiness state its scheduler's _stage_order already gates on, replacing
 # the dispatch.jsonl stage_ready/stage_down actions for the transient path. One-way.
-# Chunk 19.5 (§6.8/§6.10): a stage_ready/stage_down report carries the generation of
-# the preload-root incarnation that produced it. After a preload-root crash + respawn,
-# a stale stage (from the dead incarnation) may still report; ignore it so it does not
-# mark the current generation's stage ready/down or corrupt scheduling.
-sub _stale_stage_generation {
+#
+# Connection-currency (bloat #3): a stale stage report (from a prior preload-root
+# incarnation, or a stage that has since been superseded) is rejected by checking
+# the report's source connection against the connection currently registered as
+# that stage's `preload-<stage>` peer. A report is honored only when it arrives on
+# the connection the runner currently considers authoritative for that identity;
+# a superseded connection's report is ignored. This replaces the old wire
+# `generation` stamping -- the registered connection IS the live incarnation.
+sub _stale_stage_report {
     my $self = shift;
-    my ($payload) = @_;
+    my ($payload, $conn) = @_;
 
-    my $cur = $self->{'preload_root_generation'} // return 0;
-    my $gen = $payload->{generation};
-    return 0 unless defined $gen;
+    my $stage = $payload->{stage} // return 1;
 
-    return $gen != $cur ? 1 : 0;
+    # No source connection means we cannot attribute the report; ignore it.
+    return 1 unless $conn;
+
+    my $current = $self->{service_peers}{"preload-$stage"};
+
+    # Before the stage's identity frame lands the peer may not be registered yet;
+    # accept the report from the connection it arrived on (the registration and the
+    # first report can race). Once a peer IS registered, only that exact connection
+    # is current.
+    return 0 unless $current;
+    return $current == $conn ? 0 : 1;
 }
 
 sub request_handler_stage_ready {
     my $self = shift;
-    my ($payload) = @_;
-    return undef if $self->_stale_stage_generation($payload);
-    $self->state->stage_ready($payload->{stage}, $payload->{generation});
+    my ($payload, $conn) = @_;
+    return undef if $self->_stale_stage_report($payload, $conn);
+    $self->state->stage_ready($payload->{stage});
     return undef;
 }
 
 sub request_handler_stage_down {
     my $self = shift;
-    my ($payload) = @_;
-    return undef if $self->_stale_stage_generation($payload);
-    $self->state->stage_down($payload->{stage}, $payload->{generation});
+    my ($payload, $conn) = @_;
+    return undef if $self->_stale_stage_report($payload, $conn);
+    $self->state->stage_down($payload->{stage});
     return undef;
 }
 
 # Chunk 19.5 (§6.8): a stage announces it is intentionally reloading (restarting)
 # before it exits to be respawned -- a richer label than the plain stage_down it
-# would otherwise send. Same generation guard as ready/down.
+# would otherwise send. Same connection-currency guard as ready/down.
 sub request_handler_stage_restarting {
     my $self = shift;
-    my ($payload) = @_;
-    return undef if $self->_stale_stage_generation($payload);
-    $self->state->stage_restarting($payload->{stage}, $payload->{generation});
+    my ($payload, $conn) = @_;
+    return undef if $self->_stale_stage_report($payload, $conn);
+    $self->state->stage_restarting($payload->{stage});
     return undef;
 }
 
@@ -507,15 +519,11 @@ sub request_handler_get_preload_list {
     # its preloader TOLERATES a broken preload (warn+skip) on the persistent path
     # (monitor on) but fails fast on the transient path (monitor off) -- matching the
     # pre-19 "persistent mode ignores broken preloads" behavior.
-    # Chunk 19.5 (§6.8): hand down this preload-root incarnation's generation. The
-    # stage-host Runner stamps it onto every stage_ready / stage_down report so the
-    # runner can ignore reports from a prior, dead incarnation after a respawn (§6.10).
     return {
         ok               => 1,
         preloads         => [@{$self->preloads // []}],
         runner_pid       => $self->{'rootpid'},
         monitor_preloads => $self->monitor_preloads ? 1 : 0,
-        preload_generation => $self->{'preload_root_generation'} // 1,
     };
 }
 

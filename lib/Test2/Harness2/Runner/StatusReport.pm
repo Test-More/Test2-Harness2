@@ -48,7 +48,7 @@ hashref the command turns into its tables and its kill list.
     #   runs           => [ { run_id => ..., pending => [...] }, ... ],
     #   running        => [ { job_id, run_id, pid, rel_file, is_try, conflicts }, ... ],
     #   stage_pids      => { default => $pid, ... },   # connected stages' real pids
-    #   stage_lifecycle => { default => { state => 'up', stamp => T, generation => N }, ... },
+    #   stage_lifecycle => { default => { state => 'up', stamp => T }, ... },
     #   reload_state    => { ... },                    # state eq 'up' == schedulable
     # }
 
@@ -91,7 +91,7 @@ sub build ($self) {
     return {
         runs            => $self->_runs,
         running         => $self->_running,
-        # §6.8: the per-stage lifecycle ({state, stamp, generation}) is the single
+        # §6.8: the per-stage lifecycle ({state, stamp}) is the single
         # source of stage scheduling state; `state eq 'up'` is the dispatch gate. The
         # State stores no pid; a connected stage's real pid is reported separately in
         # stage_pids, sourced from its peer connection.

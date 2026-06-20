@@ -18,21 +18,20 @@ use Test2::Harness2::Runner::State;
 subtest up_restarting_down => sub {
     my $state = FakeState->new();
 
-    $state->stage_ready('moose', 7);
+    $state->stage_ready('moose');
     ok($state->stage_is_up('moose'), "ready stage is schedulable (gate == 'up')");
-    is($state->stage_lifecycle->{moose}{state},      'up', "lifecycle state is 'up'");
-    is($state->stage_lifecycle->{moose}{generation}, 7,    "generation recorded");
+    is($state->stage_lifecycle->{moose}{state}, 'up', "lifecycle state is 'up'");
+    ok(defined $state->stage_lifecycle->{moose}{stamp}, "stamp recorded");
 
-    $state->stage_restarting('moose', 7);
+    $state->stage_restarting('moose');
     ok(!$state->stage_is_up('moose'), "a restarting stage is NOT schedulable");
     is($state->stage_lifecycle->{moose}{state}, 'restarting', "lifecycle state is 'restarting'");
 
-    $state->stage_ready('moose', 8);
+    $state->stage_ready('moose');
     ok($state->stage_is_up('moose'), "re-readied stage is schedulable again");
-    is($state->stage_lifecycle->{moose}{state},      'up', "back to 'up'");
-    is($state->stage_lifecycle->{moose}{generation}, 8,    "new generation recorded");
+    is($state->stage_lifecycle->{moose}{state}, 'up', "back to 'up'");
 
-    $state->stage_down('moose', 8);
+    $state->stage_down('moose');
     ok(!$state->stage_is_up('moose'), "a down stage is NOT schedulable");
     is($state->stage_lifecycle->{moose}{state}, 'down', "lifecycle state is 'down'");
 };
@@ -57,20 +56,24 @@ subtest stage_map_drives_starting_and_down => sub {
 
 subtest reset_clears_lifecycle => sub {
     my $state = FakeState->new();
-    $state->stage_ready('a', 1);
-    $state->stage_ready('b', 1);
+    $state->stage_ready('a');
+    $state->stage_ready('b');
 
     $state->reset_stage_readiness;
 
     is($state->stage_lifecycle, {}, "lifecycle cleared on reset (respawn)");
 };
 
-subtest generation_optional => sub {
-    # The in-runner (no preload-root) path reports without a generation.
+# bloat #3: the lifecycle record is {state, stamp} only -- stale-incarnation
+# rejection moved to connection-currency in the runner's stage-report handlers, so
+# there is no wire-generation field anywhere in the lifecycle.
+subtest lifecycle_has_no_generation => sub {
     my $state = FakeState->new();
     $state->stage_ready('base');
-    is($state->stage_lifecycle->{base}{state}, 'up', "state tracked without a generation");
-    ok(!exists $state->stage_lifecycle->{base}{generation}, "no generation key when none given");
+    is($state->stage_lifecycle->{base}{state}, 'up', "state tracked");
+    ok(defined $state->stage_lifecycle->{base}{stamp}, "stamp present");
+    ok(!exists $state->stage_lifecycle->{base}{generation}, "no generation key in the lifecycle record");
+    is([sort keys %{$state->stage_lifecycle->{base}}], ['stamp', 'state'], "lifecycle record is exactly {state, stamp}");
 };
 
 done_testing;

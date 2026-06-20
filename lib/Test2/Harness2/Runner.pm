@@ -95,19 +95,14 @@ use Test2::Harness2::Util::HashBase(
         +reported_stage_data
         +preload_root_hosts
 
-        +preload_root_generation
         +preload_root_respawns
-
-        +preload_generation
     },
 );
 
-# Generation slots (set above): on the real runner, +preload_root_generation is a
-# monotonic counter bumped each time a preload root is spawned (so stage reports from
-# a prior, crashed incarnation are ignored), and +preload_root_respawns bounds crash
-# respawns (§6.10). On a stage-host / forked stage, +preload_generation is the
-# generation that incarnation was spawned with (from get_preload_list), stamped onto
-# every stage_ready / stage_down report (§6.8).
+# +preload_root_respawns bounds crash respawns of the preload root (§6.10).
+# Stale-incarnation stage reports are rejected by connection-currency in the
+# runner's stage-report handlers (the registered `preload-<stage>` peer connection
+# IS the live incarnation), so there is no wire-generation counter (bloat #3).
 
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Service';
@@ -1052,12 +1047,6 @@ sub spawn_preload_root {
 
     return if $self->{+PRELOAD_ROOT_PID};
 
-    # Each incarnation gets a fresh generation. A stage that registered with (or
-    # reports under) an older generation is from a preload root that has since died
-    # and been respawned (§6.10); the runner ignores those stale reports so they do
-    # not mark the current generation's stage down or corrupt scheduling (§6.8).
-    $self->{+PRELOAD_ROOT_GENERATION} = ($self->{+PRELOAD_ROOT_GENERATION} // 0) + 1;
-
     require Test2::Collector;
     require Test2::Collector::Recorder::Zstd;
 
@@ -1456,7 +1445,7 @@ sub run_stage {
         # binds its own preload-<stage>.socket, but it is reserved for `yath spawn`
         # (ARCHITECTURE.md §4.8), not used by the runner for dispatch.
         $self->_connect_runner;
-        $self->service_send('runner', 'stage_ready', stage => $stage, generation => $self->{+PRELOAD_GENERATION});
+        $self->service_send('runner', 'stage_ready', stage => $stage);
     }
     else {
         $self->state->stage_ready($stage);
@@ -1495,7 +1484,7 @@ sub run_stage {
         # is the permanent "will never be available" signal. Whether the exit was an
         # intentional reload (SIGNAL=HUP) or another exit, the stage is still mapped and
         # coming back, so both restart.
-        eval { $self->service_send('runner', 'stage_restarting', stage => $stage, generation => $self->{+PRELOAD_GENERATION}); 1 };
+        eval { $self->service_send('runner', 'stage_restarting', stage => $stage); 1 };
         $self->close_service;
     }
     else {

@@ -533,9 +533,9 @@ sub _retry_task {
 
 # §6.8 (chunk 19.5): named stage lifecycle states are the single source of stage
 # scheduling state -- the old parallel STAGE_READINESS map is gone. STAGE_LIFECYCLE
-# is a per-stage record {state, stamp, generation} that the scheduler gate
-# (_stage_order, spawn_stage_ready) reads as `state eq 'up'`, and that status/ps
-# surface. The four states are:
+# is a per-stage record {state, stamp} that the scheduler gate (_stage_order,
+# spawn_stage_ready) reads as `state eq 'up'`, and that status/ps surface. The four
+# states are:
 #
 #   starting    -- committed/known: the runner learned from the reported stage map
 #                  that this stage will exist, before its stage_ready arrived.
@@ -552,19 +552,17 @@ sub _retry_task {
 # real pid comes from its peer connection (Connection::peer_pid), threaded into
 # status by the runner.
 #
-# NOTE (bloat #2 scoping): `generation` is retained as a lifecycle field and the
-# Handlers stale-incarnation guard still uses it. Bloat #3 replaces wire-generation
-# stamping with connection-currency and then drops generation; until that lands,
-# removing it here would break stale-incarnation rejection after a preload-root
-# respawn.
+# Stale-incarnation reports are rejected by connection-currency in the runner's
+# stage-report handlers (a report is honored only from the connection currently
+# registered as that stage's `preload-<stage>` peer), NOT by a wire generation
+# counter -- so the lifecycle record carries no generation (bloat #3).
 sub _set_stage_lifecycle {
     my $self = shift;
-    my ($stage, $state, $generation) = @_;
+    my ($stage, $state) = @_;
 
     ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} = {
         state => $state,
         stamp => time,
-        defined($generation) ? (generation => $generation) : (),
     };
 
     return;
@@ -582,15 +580,15 @@ sub stage_is_up {
 
 sub stage_ready {
     my $self = shift;
-    my ($stage, $generation) = @_;
-    $self->_set_stage_lifecycle($stage, 'up', $generation);
+    my ($stage) = @_;
+    $self->_set_stage_lifecycle($stage, 'up');
     return;
 }
 
 sub stage_down {
     my $self = shift;
-    my ($stage, $generation) = @_;
-    $self->_set_stage_lifecycle($stage, 'down', $generation);
+    my ($stage) = @_;
+    $self->_set_stage_lifecycle($stage, 'down');
     return;
 }
 
@@ -600,8 +598,8 @@ sub stage_down {
 # incarnation's stage_ready returns it to 'up'.
 sub stage_restarting {
     my $self = shift;
-    my ($stage, $generation) = @_;
-    $self->_set_stage_lifecycle($stage, 'restarting', $generation);
+    my ($stage) = @_;
+    $self->_set_stage_lifecycle($stage, 'restarting');
     return;
 }
 
