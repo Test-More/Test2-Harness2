@@ -4,66 +4,33 @@
 use strict;
 use warnings;
 
-my %ORIG_INC = (%INC);
+use Test2::V0;
 
 @ARGV = ();
 
-my $in_section;
-my %sections;
+# Load the modules under test before we chdir into the fixture tree, so the
+# relative @INC entries (e.g. -Ilib) still resolve.
+require App::Yath::Script::V2;
+require App::Yath2;
+my $CLASS = 'App::Yath::Script::V2';
 
 {
-    local $.;
-    my ($script) = grep { -f $_ } 'lib/App/Yath/Script/V2.pm', '../lib/App/Yath/Script/V2.pm';
-    die "Could not find App::Yath::Script::V2 module" unless $script;
-    open(my $fh, '<', $script) or die "Could not open V1 module: $!";
-
     my ($tdir) = grep { -d $_ } 't/yath_script', 'yath_script';
     die "Could not find the t/yath_script directory" unless $tdir;
     chdir("$tdir/nested") or die "Could not change directory: $!";
-
-    while (my $line = <$fh>) {
-        chomp($line);
-        if ($line =~ m/^\s*# ==START TESTABLE CODE (\S+)==\s*$/) {
-            $in_section = $1;
-            push @{$sections{lc($in_section)}} => ("use strict;", "use warnings FATAL => 'all';", "#line " . ($. + 1) . ' "' . $script . '"');
-            next;
-        }
-        if ($line =~ m/^\s*# ==END TESTABLE CODE\s?(\S+)==\s*$/) {
-            die "In section '$in_section' but found end of section '$1'" unless $1 eq $in_section;
-            $sections{lc($in_section)} = join "\n" => @{delete $sections{lc($in_section)}};
-            $in_section = undef;
-        }
-
-        next unless $in_section;
-        push @{$sections{lc($in_section)}} => $line;
-    }
 }
 
-my @RESULTS;
-
-sub is($$;$)   { push @RESULTS => ['is',   [@_], [caller()]] }
-sub like($$;$) { push @RESULTS => ['like', [@_], [caller()]] }
-sub ok($;$)    { push @RESULTS => ['ok',   [@_], [caller()]] }
-
-our %T;
-sub T() { \%T }
-
-test_parse_config_files();
-sub test_parse_config_files {
-    my ($config_args, $to_clean);
-    my $code = delete $sections{parse_config_files};
+subtest parse_config_files => sub {
+    my $config_file      = './../.yath.rc';
+    my $user_config_file = './.yath.user.rc';
 
     local @ARGV = ('START', 'END');
-    my %CONFIG;
 
-    eval <<"    EOT" or die $@;
-        my \$config_file      = './../.yath.rc';
-        my \$user_config_file = './.yath.user.rc';
-$code
-        \$config_args = \\\@CONFIG_ARGS;
-        \$to_clean    = \\\@TO_CLEAN;
-        1;
-    EOT
+    my ($config_args, $config, $to_clean) = $CLASS->_parse_config_files($config_file, $user_config_file);
+
+    # The setup() caller prepends the pre-args; replicate that so we can check
+    # the resulting @ARGV the way the script does.
+    unshift @ARGV => @$config_args;
 
     is(
         $config_args,
@@ -98,7 +65,7 @@ $code
     );
 
     is(
-        {%CONFIG},
+        $config,
         {
             '~' => [
                 '-pXXX',
@@ -141,7 +108,6 @@ $code
         "Parsed all command args properly"
     );
 
-
     is(
         $to_clean,
         [
@@ -161,176 +127,112 @@ $code
         ],
         "Will come back and clean these later"
     );
-}
+};
 
-test_pre_parse_d_args();
-sub test_pre_parse_d_args {
-    my $code = delete $sections{pre_parse_d_args};
+subtest pre_parse_dev_libs => sub {
+    {
+        local @INC = ('START', 'END');
+        local @ARGV = ('START', '-D=aaa', '-Dbbb', '--no-scan-plugins', '--no-dev-lib', '-D', '--dev-lib', '-Dxxx', '-Dxxx', '--dev-lib=foo', '-Dbbb', '::', '-Doops', 'END');
 
-    local @INC = ('START', 'END');
-    local @ARGV = ('START', '-D=aaa', '-Dbbb', '--no-scan-plugins', '--no-dev-lib', '-D', '--dev-lib', '-Dxxx', '-Dxxx', '--dev-lib=foo', '-Dbbb', '::', '-Doops', 'END');
-    my @DEVLIBS;
-    my $NO_PLUGINS;
+        my ($libs, $no_plugins) = $CLASS->_pre_parse_dev_libs();
 
-    my ($libs, $done);
-    eval $code . <<'    EOT' or die $@;
-        $libs = \@libs;
-        $done = \%done;
-        1;
-    EOT
+        # The setup() caller prepends the dev-libs to @INC; replicate that.
+        unshift @INC => @$libs;
 
-    is(
-        [@ARGV],
-        ['START', '::', '-Doops', 'END'],
-        "Modified \@ARGV"
-    );
+        is(
+            [@ARGV],
+            ['START', '::', '-Doops', 'END'],
+            "Modified \@ARGV"
+        );
 
-    is(
-        $libs,
-        ['lib', 'blib/lib', 'blib/arch', 'xxx', 'foo', 'bbb'],
-        "Got expected libs"
-    );
+        is(
+            $libs,
+            ['lib', 'blib/lib', 'blib/arch', 'xxx', 'foo', 'bbb'],
+            "Got expected libs (with the --no-dev-lib reset midway wiping previously seen entries)"
+        );
 
-    is(
-        [@DEVLIBS],
-        ['lib', 'blib/lib', 'blib/arch', 'xxx', 'foo', 'bbb'],
-        "Got expected devlibs"
-    );
+        is(
+            [@INC],
+            ['lib', 'blib/lib', 'blib/arch', 'xxx', 'foo', 'bbb', 'START', 'END'],
+            "prepended libs to \@INC"
+        );
 
-    is(
-        [@INC],
-        ['lib', 'blib/lib', 'blib/arch', 'xxx', 'foo', 'bbb', 'START', 'END'],
-        "prepended libs to \@INC"
-    );
+        is($no_plugins, 1, "Set no plugins");
+    }
 
-    is(
-        $NO_PLUGINS,
-        1,
-        "Set no plugins"
-    );
+    {
+        local @INC = ('START', 'END');
+        local @ARGV = ('START', '-Dbbb', '--', '-Doops', 'END');
 
-    is(
-        $done,
-        {
-            'lib' => 2,
-            'blib/lib' => 2,
-            'blib/arch' => 2,
-            'xxx' => 2,
-            'foo' => 1,
-            'bbb' => 1,
-        },
-        "Saw each arg as many times as we expected (including the reset mid-way wiping previously seen out)"
-    );
+        my ($libs, $no_plugins) = $CLASS->_pre_parse_dev_libs();
+        unshift @INC => @$libs;
 
-    local @INC = ('START', 'END');
-    local @ARGV = ('START', '-Dbbb', '--', '-Doops', 'END');
-    @DEVLIBS = ();
+        is(
+            [@ARGV],
+            ['START', '--', '-Doops', 'END'],
+            "Modified \@ARGV"
+        );
 
-    eval $code . <<'    EOT' or die $@;
-        $libs = \@libs;
-        $done = \%done;
-        1;
-    EOT
+        is($libs, ['bbb'], "Got expected libs");
 
-    is(
-        [@ARGV],
-        ['START', '--', '-Doops', 'END'],
-        "Modified \@ARGV"
-    );
+        is(
+            [@INC],
+            ['bbb', 'START', 'END'],
+            "prepended libs to \@INC"
+        );
 
-    is(
-        $libs,
-        ['bbb'],
-        "Got expected libs"
-    );
+        is($no_plugins, undef, "Did not set no plugins");
+    }
+};
 
-    is(
-        [@INC],
-        ['bbb', 'START', 'END'],
-        "prepended libs to \@INC"
-    );
-
-    is(
-        $done,
-        {
-            'bbb' => 1,
-        },
-        "Saw each arg as many times as we expected"
-    );
-}
-
-is({%INC}, {%ORIG_INC}, "Did not load anything.");
-require Test2::V0;
-
-# such a dirty hack!
-# Turn %T into an instance of the T check.
-my $t = Test2::V0::T();
-%T = %$t;
-bless(\%T, ref($t));
-
-for my $res (@RESULTS) {
-    my ($func, $args, $caller) = @$res;
-
-    my $sub = Test2::V0->can($func) or die "No such test function: $func at $caller->[1] line $caller->[2]\n";
-
-    $sub->(@$args) or warn "Actual assertion at $caller->[1] line $caller->[2]\n";
-}
-
-test_cleanup_paths();
-sub test_cleanup_paths {
-    my $code = delete $sections{cleanup_paths};
-
+subtest realpath_paths => sub {
     require Cwd;
     require File::Spec;
 
-    my @libs = ('../../lib', './', '../');
-    my @DEVLIBS = @libs;
-    local @INC = (@libs, 'START', 'END');
-    my %CONFIG = (
+    my @libs     = ('../../lib', './', '../');
+    my @dev_libs = @libs;
+    local @INC   = (@libs, 'START', 'END');
+    my %config   = (
         test => [
             '-I' => '../../lib',
             '-I=../../lib',
         ],
     );
 
-    my @TO_CLEAN = (
+    my @to_clean = (
         ['test', 1, '-I', ' ', '../../lib'],
         ['test', 2, '-I', '=', '../../lib'],
     );
 
-    eval $code . "\n1;" or die $@;
+    $CLASS->_realpath_paths(\@dev_libs, \%config, \@to_clean);
 
-    Test2::V0::is(
+    is(
         \@INC,
         [(map { Cwd::realpath($_) } @libs), 'START', 'END'],
         "Cleaned up \@INC"
     );
 
-    Test2::V0::is(
-        \@DEVLIBS,
+    is(
+        \@dev_libs,
         [(map { Cwd::realpath($_) } @libs)],
-        "Cleaned up \@DEVLIBS"
+        "Cleaned up dev-libs"
     );
 
-    Test2::V0::is(
-        \%CONFIG,
+    is(
+        \%config,
         {
             test => [
                 '-I' => Cwd::realpath('../../lib'),
                 '-I=' . Cwd::realpath('../../lib'),
             ],
         },
-        "Cleaned up \%CONFIG"
+        "Cleaned up \%config"
     );
-}
+};
 
-test_create_app();
-sub test_create_app {
-    my $code = delete $sections{create_app};
-
+subtest build_app => sub {
     my $args;
-    require App::Yath2;
-    my $control = Test2::V0::mock(
+    my $control = mock(
         'App::Yath2' => (
             override => {
                 generate_run_sub => sub { $args = [@_] },
@@ -338,37 +240,57 @@ sub test_create_app {
         )
     );
 
-    my (%ORIG_SIG, @ORIG_ARGV, @ORIG_INC, @DEVLIBS, @ARGV, %CONFIG, $NO_PLUGINS, $ORIG_TMP, $ORIG_TMP_PERMS, $config_file, $user_config_file);
-    my $script = "foobar";
-    $NO_PLUGINS = 2;
-    eval $code or die $@;
+    my %ORIG_SIG  = (INT => 'DEFAULT');
+    my @ORIG_ARGV = ('foo', 'bar');
+    my @ORIG_INC  = @INC;
+    my @dev_libs  = ('lib');
 
-    my ($app, $symbol) = @$args;
-    Test2::V0::isa_ok($app, 'App::Yath2');
-    Test2::V0::is($symbol, 'App::Yath::Script::V2::_run', "Got correct symbol");
+    local @ARGV = ('cmd', 'arg');
 
-    Test2::V0::ref_is($app->_argv, \@ARGV, "Used ARGV");
-    Test2::V0::ref_is($app->config, \%CONFIG, "Used CONFIG");
+    my %config = (test => ['-Ifoo']);
 
-    my $settings = $app->settings;
+    my $app = $CLASS->_build_app(
+        script          => 'foobar',
+        config          => \%config,
+        orig_tmp        => '/tmp',
+        orig_tmp_perms  => 0700,
+        orig_sig        => \%ORIG_SIG,
+        orig_argv       => \@ORIG_ARGV,
+        orig_inc        => \@ORIG_INC,
+        dev_libs        => \@dev_libs,
+        no_scan_plugins => 2,
+    );
+
+    isa_ok($app, ['App::Yath2'], "Built an App::Yath2 instance");
+
+    my ($got_app, $symbol) = @$args;
+    ref_is($got_app, $app, "generate_run_sub called on the app");
+    is($symbol, 'App::Yath::Script::V2::_run', "Got correct run-sub symbol");
+
+    ref_is($app->_argv, \@ARGV, "Used \@ARGV");
+    ref_is($app->config, \%config, "Used \%config");
+
     is(
-        $settings,
+        $app->settings,
         {
-            yath => {
-                orig_sig   => Test2::V0::exact_ref(\%ORIG_SIG),
-                orig_argv  => Test2::V0::exact_ref(\@ORIG_ARGV),
-                orig_inc   => Test2::V0::exact_ref(\@ORIG_INC),
-                dev_libs   => Test2::V0::exact_ref(\@DEVLIBS),
-                script     => $script,
-                no_scan_plugins => 2,
-                start      => Test2::V0::T(),
+            harness => {
+                orig_tmp         => '/tmp',
+                orig_tmp_perms   => 0700,
+                orig_sig         => exact_ref(\%ORIG_SIG),
+                orig_argv        => exact_ref(\@ORIG_ARGV),
+                orig_inc         => exact_ref(\@ORIG_INC),
+                dev_libs         => exact_ref(\@dev_libs),
+                script           => 'foobar',
+                no_scan_plugins  => 2,
+                config_file      => '',
+                user_config_file => '',
+                start            => T(),
+                version          => T(),
+                cwd              => T(),
             },
         },
         "Got settings"
     );
-}
+};
 
-die "The following sections were not tested: " . join(', ', keys %sections)
-    if keys %sections;
-
-Test2::V0::done_testing();
+done_testing();

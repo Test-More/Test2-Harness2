@@ -4,9 +4,28 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-my ($RUN_SUB, @DEVLIBS, $NO_PLUGINS);
-
+# The external App::Yath::Script dispatcher calls these two methods as the
+# yath script's public entry points: ->do_begin(%params) from the script's
+# BEGIN block, then ->do_runtime() afterwards. We keep both names so that
+# contract holds. None of do_begin's work actually needs the BEGIN phase
+# anymore -- the yath process is just a command dispatcher now (the preload
+# goto-file host runs in the preload tree, and no-preload job launch is a
+# plain fork+exec), so do_begin just delegates to plain early-runtime setup.
 sub do_begin {
+    my $class  = shift;
+    return $class->setup(@_);
+}
+
+sub do_runtime {
+    my $class = shift;
+    return _run();
+}
+
+# Early-runtime setup that builds the App::Yath2 instance. Ordering matters:
+# dev-libs (-D / --dev-lib) must land in @INC *before* we require App::Yath2
+# and the command/plugin modules it pulls in, so _pre_parse_dev_libs runs
+# (and _realpath_paths cleans the new @INC entries) before _build_app.
+sub setup {
     my $class  = shift;
     my %params = @_;
 
@@ -17,18 +36,61 @@ sub do_begin {
 
     local $.;
 
-    my $ORIG_TMP;
-    my $ORIG_TMP_PERMS;
+    # Capture the original environment early so it reflects state before we
+    # start mutating @INC, @ARGV, or loading modules.
     my %ORIG_SIG  = map { defined($SIG{$_}) ? ($_ => "$SIG{$_}") : () } keys %SIG;
     my @ORIG_ARGV = @$argv;
     my @ORIG_INC  = @INC;
-    my %CONFIG;
 
     @ARGV = @$argv;
 
-    # ==START TESTABLE CODE PARSE_CONFIG_FILES==
+    my ($config_args, $config, $to_clean) = $class->_parse_config_files($config_file, $user_config_file);
+    unshift @ARGV => @$config_args;
 
+    my ($dev_libs, $no_scan_plugins) = $class->_pre_parse_dev_libs();
+    unshift @INC => @$dev_libs;
+
+    # Now it is safe/ok to load things.
+    require Cwd;
+    require File::Spec;
+
+    my $orig_tmp       = File::Spec->tmpdir();
+    my $orig_tmp_perms = ((stat($orig_tmp))[2] & 07777);
+
+    $class->_realpath_paths($dev_libs, $config, $to_clean);
+
+    my $app = $class->_build_app(
+        script           => $script,
+        config           => $config,
+        config_file      => $config_file,
+        user_config_file => $user_config_file,
+        orig_tmp         => $orig_tmp,
+        orig_tmp_perms   => $orig_tmp_perms,
+        orig_sig         => \%ORIG_SIG,
+        orig_argv        => \@ORIG_ARGV,
+        orig_inc         => \@ORIG_INC,
+        dev_libs         => $dev_libs,
+        no_scan_plugins  => $no_scan_plugins,
+    );
+
+    # Reset these if we got this far.
+    $? = 0;
+    $@ = '';
+
+    return $app;
+}
+
+# Parse the project and user .yath.rc config files into pre-args (dev-libs and
+# --no-scan-plugins, which must be applied before command parsing), per-command
+# %CONFIG args, and a @TO_CLEAN list of rel()-derived paths to realpath later.
+# Returns (\@config_args, \%config, \@to_clean).
+sub _parse_config_files {
+    my $class = shift;
+    my ($config_file, $user_config_file) = @_;
+
+    my %CONFIG;
     my (@CONFIG_ARGS, @TO_CLEAN);
+
     for my $file ($config_file, $user_config_file) {
         next unless $file && -f $file;
 
@@ -112,12 +174,18 @@ sub do_begin {
         close($fh);
     }
 
-    unshift @ARGV => @CONFIG_ARGS;
+    return (\@CONFIG_ARGS, \%CONFIG, \@TO_CLEAN);
+}
 
-    # ==END TESTABLE CODE PARSE_CONFIG_FILES==
-    # ==START TESTABLE CODE PRE_PARSE_D_ARGS==
+# Pull the -D / --dev-lib and --no-scan-plugins flags out of @ARGV before the
+# real command parser runs. Consumes those flags (leaving the rest in @ARGV)
+# and returns (\@dev_libs, $no_scan_plugins). The caller prepends @dev_libs to
+# @INC so they take effect before any command/plugin modules load.
+sub _pre_parse_dev_libs {
+    my $class = shift;
 
-    my (@libs, %done, @args, $maybe_exec);
+    my $no_plugins;
+    my (@libs, %done, @args);
     while (@ARGV) {
         my $arg = shift @ARGV;
 
@@ -134,17 +202,14 @@ sub do_begin {
 
         if ($arg =~ m{^(?:(?:-D=?|--dev-lib=)(.*)|--dev-lib)$}) {
             my @add = $1 ? ($1) : ();
-            unless (@add) {
-                @add        = ('lib', 'blib/lib', 'blib/arch');
-                $maybe_exec = $arg;
-            }
+            @add = ('lib', 'blib/lib', 'blib/arch') unless @add;
 
             push @libs => grep { !$done{$_}++ } @add;
             next;
         }
 
         if ($arg eq '--no-scan-plugins') {
-            $NO_PLUGINS = 1;
+            $no_plugins = 1;
             next;
         }
 
@@ -152,60 +217,65 @@ sub do_begin {
     }
     @ARGV = (@args, @ARGV);
 
-    unshift @INC => @libs;
-    @DEVLIBS = @libs;
+    return (\@libs, $no_plugins);
+}
 
-    # ==END TESTABLE CODE PRE_PARSE_D_ARGS==
+# Resolve the dev-lib @INC entries and any rel()-derived %CONFIG values to
+# absolute, symlink-resolved paths. Mutates @INC, @$dev_libs, and %$config in
+# place. Must run after Cwd/File::Spec are loaded.
+sub _realpath_paths {
+    my $class = shift;
+    my ($dev_libs, $config, $to_clean) = @_;
 
-    # Now it is safe/ok to load things.
-    require Cwd;
-    require File::Spec;
+    return unless @$dev_libs || @$to_clean;
 
-    $ORIG_TMP       = File::Spec->tmpdir();
-    $ORIG_TMP_PERMS = ((stat($ORIG_TMP))[2] & 07777);
-
-    # ==START TESTABLE CODE CLEANUP_PATHS==
-
-    if (@libs || @TO_CLEAN) {
-        for (my $i = 0; $i < @libs; $i++) {
-            $DEVLIBS[$i] = $INC[$i] = Cwd::realpath($INC[$i]) // File::Spec->rel2abs($INC[$i]);
-        }
-
-        for my $clean (@TO_CLEAN) {
-            my ($cmd, $idx, $key, $eq, $val) = @$clean;
-            $val = Cwd::realpath($val) // File::Spec->rel2abs($val);
-
-            if ($eq eq '=') {
-                $CONFIG{$cmd}->[$idx] = "${key}${eq}${val}";
-            }
-            else {
-                $CONFIG{$cmd}->[$idx] = $val;
-            }
-        }
+    for (my $i = 0; $i < @$dev_libs; $i++) {
+        $dev_libs->[$i] = $INC[$i] = Cwd::realpath($INC[$i]) // File::Spec->rel2abs($INC[$i]);
     }
 
-    # ==END TESTABLE CODE CLEANUP_PATHS==
-    # ==START TESTABLE CODE CREATE_APP==
+    for my $clean (@$to_clean) {
+        my ($cmd, $idx, $key, $eq, $val) = @$clean;
+        $val = Cwd::realpath($val) // File::Spec->rel2abs($val);
+
+        if ($eq eq '=') {
+            $config->{$cmd}->[$idx] = "${key}${eq}${val}";
+        }
+        else {
+            $config->{$cmd}->[$idx] = $val;
+        }
+    }
+}
+
+# Build and return the App::Yath2 instance from the parsed config, remaining
+# @ARGV, captured original environment, and dev-lib info. Wires the generated
+# run sub into this package's _run symbol for do_runtime to invoke.
+sub _build_app {
+    my $class  = shift;
+    my %params = @_;
+
+    my $config = $params{config};
 
     require App::Yath2;
     require Time::HiRes;
     require Getopt::Yath::Settings;
 
     my %mixin = (config_file => '', user_config_file => '');
-    $mixin{config_file}      = Cwd::realpath($config_file)      // File::Spec->rel2abs($config_file)      if $config_file;
-    $mixin{user_config_file} = Cwd::realpath($user_config_file) // File::Spec->rel2abs($user_config_file) if $user_config_file;
+    for my $key (qw/config_file user_config_file/) {
+        my $file = $params{$key} or next;
+        $mixin{$key} = Cwd::realpath($file) // File::Spec->rel2abs($file);
+    }
 
     my $settings = Getopt::Yath::Settings->new;
     $settings->create_group(
         harness => {
-            orig_tmp        => $ORIG_TMP,
-            orig_tmp_perms  => $ORIG_TMP_PERMS,
-            orig_sig        => \%ORIG_SIG,
-            orig_argv       => \@ORIG_ARGV,
-            orig_inc        => \@ORIG_INC,
-            script          => $script,
-            no_scan_plugins => $NO_PLUGINS,
-            dev_libs        => \@DEVLIBS,
+            orig_tmp        => $params{orig_tmp},
+            orig_tmp_perms  => $params{orig_tmp_perms},
+            orig_sig        => $params{orig_sig},
+            orig_argv       => $params{orig_argv},
+            orig_inc        => $params{orig_inc},
+            script          => $params{script},
+            no_scan_plugins => $params{no_scan_plugins},
+            dev_libs        => $params{dev_libs},
             start           => Time::HiRes::time(),
             version         => $App::Yath2::VERSION,
             cwd             => Cwd::getcwd(),
@@ -215,22 +285,13 @@ sub do_begin {
 
     my $app = App::Yath2->new(
         argv     => \@ARGV,
-        config   => \%CONFIG,
+        config   => $config,
         settings => $settings,
     );
 
     $app->generate_run_sub('App::Yath::Script::V2::_run');
 
-    # ==END TESTABLE CODE CREATE_APP==
-
-    # Reset these if we got this far.
-    $? = 0;
-    $@ = '';
-}
-
-sub do_runtime {
-    my $class = shift;
-    return _run();
+    return $app;
 }
 
 1;
@@ -258,11 +319,17 @@ C<scripts/yath> script of L<Test2::Harness2>.
 
 =over 4
 
-=item $class->do_begin(%params)
+=item $app = $class->do_begin(%params)
 
-Called during the C<BEGIN> phase. Parses configuration files, processes C<-D>
-and C<--no-scan-plugins> arguments, sets up C<@INC>, and initializes
-L<App::Yath2>.
+=item $app = $class->setup(%params)
+
+C<do_begin> is the entry point the L<App::Yath::Script> dispatcher calls from
+the C<yath> script's C<BEGIN> block; it simply delegates to C<setup>. The work
+itself runs as plain early-runtime setup and does not depend on the C<BEGIN>
+phase. It parses configuration files, processes C<-D> and
+C<--no-scan-plugins> arguments, sets up C<@INC> (dev-libs land before the
+command and plugin modules load), captures the original environment, and
+builds the L<App::Yath2> instance.
 
 Parameters:
 
@@ -289,6 +356,31 @@ Path to the C<.yath.user.rc> file, or C<undef>.
 =item $exit = $class->do_runtime()
 
 Called after C<BEGIN>. Executes the yath command and returns the exit code.
+
+=back
+
+=head1 PRIVATE METHODS
+
+=over 4
+
+=item ($config_args, $config, $to_clean) = $class->_parse_config_files($config_file, $user_config_file)
+
+Parse the C<.yath.rc> / C<.yath.user.rc> files into pre-args, per-command
+config, and a list of paths to realpath later.
+
+=item ($dev_libs, $no_scan_plugins) = $class->_pre_parse_dev_libs()
+
+Consume C<-D> / C<--dev-lib> / C<--no-scan-plugins> from C<@ARGV>, returning the
+dev-lib paths and the no-scan-plugins flag.
+
+=item $class->_realpath_paths($dev_libs, $config, $to_clean)
+
+Resolve dev-lib and rel()-derived config paths to absolute, symlink-resolved
+form in place.
+
+=item $app = $class->_build_app(%params)
+
+Construct the L<App::Yath2> instance and wire up the run sub.
 
 =back
 
