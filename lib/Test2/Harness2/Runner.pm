@@ -664,14 +664,12 @@ sub _preload_root_wanted {
     return 1;
 }
 
-# Chunk 19.2b: true once the preload-root process hosts ALL the preload stages
+# True once the preload-root process hosts ALL the preload stages
 # (base/default included), so this runner is a pure orchestrator -- it schedules
-# and dispatches over sockets and hosts NO stage in-process. DORMANT: nothing
-# sets preload_root_hosts yet, so this is false everywhere (the existing in-runner
-# preload path and the no-preload path are unchanged). Step 19.3 flips it on when
-# the preload-root is wired to drive the stage-host Runner; the scheduler-only run
-# loop and the dispatch-all branch below are written now but stay unreached until
-# then.
+# and dispatches over sockets and hosts NO stage in-process. LIVE for preload
+# runs: spawn_preload_root sets PRELOAD_ROOT_HOSTS = 1 (the chunk-19.3 flip), so
+# this is true whenever preloads are configured and a preload-root was spawned.
+# It stays false on the no-preload path (the runner forks each test job itself).
 sub _preload_root_hosts_stages {
     my $self = shift;
     return 0 unless $self->{+ROOTPID} == $$;
@@ -1192,10 +1190,11 @@ sub dispatch_pending {
 
     my $state      = $self->state;
 
-    # Chunk 19.2b: when the preload-root hosts every stage there is NO in-process
-    # root stage, so dispatch EVERY started task out over a stage socket (undef
-    # root_stage => take_dispatch_tasks dispatches all). DORMANT until 19.3. The
-    # staged-root path keeps tasks for the root's own stage in place for run_job.
+    # When the preload-root hosts every stage there is NO in-process root stage,
+    # so dispatch EVERY started task out over a stage socket (undef root_stage =>
+    # take_dispatch_tasks dispatches all). This is LIVE for preload runs. The
+    # in-runner staged-root path (else branch) keeps tasks for the root's own
+    # stage in place for run_job; it is unreachable for preload runs.
     my $root_stage;
     if ($self->_preload_root_hosts_stages) {
         $root_stage = undef;
@@ -1246,9 +1245,10 @@ sub dispatch_pending {
 sub run_tests {
     my $self = shift;
 
-    # Chunk 19.2b: when the preload-root hosts every stage, this runner does NOT
-    # preload or host a stage in-process -- it is scheduler-only. DORMANT until
-    # 19.3 wires the preload-root to drive stages (the predicate is false now).
+    # When the preload-root hosts every stage, this runner does NOT preload or
+    # host a stage in-process -- it is scheduler-only. LIVE for preload runs:
+    # _preload_root_hosts_stages is true once spawn_preload_root flipped it on.
+    # The in-runner preload path below is only reached on the no-preload run.
     return $self->run_scheduler_only if $self->_preload_root_hosts_stages;
 
     my $preloader = $self->preloader;
@@ -1282,14 +1282,15 @@ sub run_tests {
     return;
 }
 
-# Chunk 19.2b: the scheduler-only run loop for when the preload-root hosts every
-# stage. This runner holds NO preloaded state and hosts NO stage: it only services
+# The scheduler-only run loop for when the preload-root hosts every stage. This
+# runner holds NO preloaded state and hosts NO stage: it only services
 # runner.socket (accepting stage registrations + transitions + client requests)
 # and ticks the in-process scheduler, which dispatches every started task out to a
 # stage's registered channel (see dispatch_pending's preload-root branch). It does
 # NOT touch the preloader (the preload-root owns preload + reload), does not
 # run_job (stages fork the tests), and ends on a shutdown signal or run
-# completion. DORMANT until 19.3 flips _preload_root_hosts_stages on.
+# completion. LIVE for preload runs (reached from run_tests once
+# _preload_root_hosts_stages is true).
 sub run_scheduler_only {
     my $self = shift;
 
