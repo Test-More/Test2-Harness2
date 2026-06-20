@@ -330,7 +330,9 @@ sub state {
 
 # The lightweight in-stage delegate a transient forked preload stage uses in
 # place of State (chunk 5d). Built once per stage child; it holds the dispatched
-# task queue and a Runner::Client back to runner.socket for outcome reports.
+# task queue and reports outcomes back to the runner via service_send over the
+# single registered service channel (the connection the stage opened to send
+# stage_ready), not a second connect-out to runner.socket.
 sub stage_delegate {
     my $self = shift;
     return $self->{+STAGE_DELEGATE} //= Test2::Harness2::Runner::Stage->new(

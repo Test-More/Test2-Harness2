@@ -103,35 +103,10 @@ Ask the runner service to shut down gracefully (used by C<yath stop>).
 
 Ask the runner to halt the run (used on a caught signal).
 
-=item $client->stop_task($job_id)
-
-Report (from a preload stage) that a dispatched job finished and its slot/resources
-should be released.
-
-=item $client->retry_task($job_id)
-
-Report (from a preload stage) that a dispatched job finished but should be retried.
-
-=item $client->stage_ready($stage)
-
-Report (from a preload stage) that the stage is ready to be scheduled.
-
-=item $client->stage_down($stage)
-
-Report (from a preload stage) that the stage is shutting down.
-
-=item $client->reload($stage, $data)
-
-Forward (from a monitored preload stage) a reload/monitor notification.
-
 =item $hash = $client->reload_state
 
 Query the runner's canonical reload state. Two-way: returns the reload-state hash
 (possibly empty), or C<undef> if the runner could not be reached.
-
-=item $client->job_pid($job_id, $pid)
-
-Report (from a preload stage) the pid of a job the stage forked. One-way.
 
 =item $hash = $client->status
 
@@ -167,12 +142,6 @@ sub stop_run     ($self, $run_id)  { $self->_send('stop_run', run_id => $run_id)
 sub end_queue    ($self)           { $self->_send('end_queue');                  return }
 sub stop         ($self)           { $self->_send('stop');                       return }
 sub halt_run     ($self, $run_id)  { $self->_send('halt_run', run_id => $run_id); return }
-sub stop_task    ($self, $job_id)  { $self->_send('stop_task', job_id => $job_id); return }
-sub retry_task   ($self, $job_id)  { $self->_send('retry_task', job_id => $job_id); return }
-sub reload       ($self, $s, $d)   { $self->_send('reload', stage => $s, data => $d); return }
-sub stage_ready  ($self, $stage)   { $self->_send('stage_ready', stage => $stage); return }
-sub stage_down   ($self, $stage)   { $self->_send('stage_down', stage => $stage); return }
-sub job_pid      ($self, $j, $p)   { $self->_send('job_pid', job_id => $j, pid => $p); return }
 
 sub reload_state ($self) {
     my $reply = $self->_request('reload_state') or return undef;
