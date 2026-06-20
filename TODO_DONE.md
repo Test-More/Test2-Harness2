@@ -7,6 +7,45 @@ Newest first.
 
 ---
 
+## #22 — Untangle runner / preload-root into two independent classes — CORE DONE (residuals)
+
+Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED. Commits `f23ceb44c`
+(the 3 agent commits `48b55e4ae`/`0331e86e5`/`5a5f77a67`) + `b628a3728` (dead-guard
+cleanup).
+
+**The split (owner directive — two fully independent classes, share only `Role::Service`):**
+- **New `lib/Test2/Harness2/Preload/Host.pm`** (~747 lines) — independent stage-host
+  class. Composes `Role::Service` (+ `parent IPC`); does **NOT** compose the runner's
+  `Scheduler`/`Service::Handlers` roles; neither class inherits the other. Owns the
+  stage-host machinery moved out of `Runner.pm`: `process`/`run_tests`/`run_stage`/
+  `run_job`/`set_proc_exit`/`reset_stage`/`stop_stages`/`_connect_runner`/
+  `stage_delegate`/`preloader`/`check_timeouts` + its **own** stage handlers
+  (`run_task`/`resolve_file_stages`/`reload`). `Preload::_run_stage_host` now builds a
+  `Preload::Host`, not a `Runner`.
+- **`Runner.pm`** is now always the root scheduler (~290 lines lighter): deleted the
+  in-process-stage machinery, the `Preloader::Stage` relaunch branch, `is_stage_service`/
+  `stage_delegate`/`_connect_runner`/`stop_stages`, and **all `ROOTPID==$$` role guards**
+  (18 → 0; the last always-true guard in `scheduler_tick` removed in `b628a3728`). The 4
+  remaining `ROOTPID` refs are **value-uses** (the runner's own pid passed to children as
+  `runner_pid`/`watch_parent_pid`), not guards. Keeps the scheduler-only preload path
+  (`run_scheduler_only`, `spawn_preload_root`, stage-map + `resolve_file_stage`) + the
+  no-preload fork+exec path.
+- **Bug fixed mid-task:** the first `Preload::Host` cut lacked stage handlers, so the
+  runner's dispatches were silently dropped (hung the eager/nested-stage path) — caught
+  by running `preload.t` in isolation (the `-j16` suite masked it). Folded in.
+
+**Residuals (documented in `AI_DOCS/2026-06-20-ticket22-runner-preload-host-split.md`):**
+the no-preload `run_tests` still wraps `run_stage('default')` in a now-pointless
+`setjump "Stage-Runner"` loop (nothing longjumps it — flatten later); and the directive's
+*ideal* end state — `run_scheduler_only` as the runner's ONLY run path, collapsing the
+no-preload fork path into it and deleting `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`
+— deferred (larger, green-first). `preload.t` remains `-j16`-contention-flaky (pre-existing
+de-flake theme); clean in isolation + both full suites at each commit.
+
+**This unblocks #4 Part 5, #8 (full set_proc_exit removal), #23 (Stage rename).**
+
+---
+
 ## #26 — Simplify App::Yath::Script::V2 — DONE (`12e20db92`, orig `50f86d212`)
 
 Suite green: `prove` Files=108 Tests=1722 · `yath test` PASSED 109/1728.
