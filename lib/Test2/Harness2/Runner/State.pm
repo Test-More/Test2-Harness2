@@ -102,15 +102,11 @@ sub settings {
 
 sub run {
     my $self = shift;
-    return $self->{+RUN} if $self->{+RUN};
-    $self->poll();
     return $self->{+RUN};
 }
 
 sub done {
     my $self = shift;
-
-    $self->poll();
 
     return 0 if $self->{+RUNNING};
     return 0 if keys %{$self->{+PENDING_TASKS} //= {}};
@@ -149,7 +145,6 @@ sub next_task {
     my $self = shift;
     my ($stage) = @_;
 
-    $self->poll();
     $self->clear_finished_run();
 
     while(1) {
@@ -201,7 +196,6 @@ sub take_dispatch_tasks {
 
 sub advance {
     my $self = shift;
-    $self->poll();
 
     $_->tick() for @{$self->{+RESOURCES} //= []};
 
@@ -211,68 +205,20 @@ sub advance {
     return $self->clear_finished_run();
 }
 
-my %ACTIONS = (
-    queue_run   => '_queue_run',
-    queue_task  => '_queue_task',
-    queue_spawn => '_queue_spawn',
-    start_spawn => '_start_spawn',
-    start_run   => '_start_run',
-    start_task  => '_start_task',
-    stop_run    => '_stop_run',
-    stop_task   => '_stop_task',
-    retry_task  => '_retry_task',
-    stage_ready      => '_stage_ready',
-    stage_down       => '_stage_down',
-    stage_restarting => '_stage_restarting',
-    end_queue   => '_end_queue',
-    halt_run    => '_halt_run',
-    truncate    => '_truncate',
-    reload      => '_reload',
-);
-
-# A2: the runner owns its scheduling state outright and applies every action
-# in-process at enqueue time (see _enqueue), so there is nothing to drain. The old
-# dispatch.jsonl file-drain (the only remaining reader of the never-written
-# dispatch.jsonl) is gone. poll() survives only as the no-op the scheduling API
-# (run/done/next_task/advance) still calls at its old polling points.
-sub poll { return }
-
-sub _enqueue {
-    my $self = shift;
-    my ($action, $item) = @_;
-
-    # The runner owns its state outright, so apply the action in-process
-    # immediately (chunk 5d). There is no dispatch.jsonl round-trip anymore.
-    my $sub = $ACTIONS{$action} or die "Invalid action '$action'";
-    $self->$sub($item, $$);
-
-    return;
-}
-
+# The runner owns its scheduling state outright and applies every mutation
+# in-process immediately (chunk 5d). truncate's real work is the halt_run loop.
 sub truncate {
     my $self = shift;
     $self->halt_run($_) for keys %{$self->{+PENDING_TASKS} // {}};
-    $self->_enqueue(truncate => $$);
-    $self->poll;
 }
 
-sub _truncate { }
+sub end_queue { $_[0]->{+QUEUE_ENDED} = 1 }
 
-sub end_queue  { $_[0]->_enqueue('end_queue' => 1) }
-sub _end_queue { $_[0]->{+QUEUE_ENDED} = 1 }
-
+# Chunk 6.1: the per-run jobs.jsonl (the old runner -> gatherer channel) is
+# retired. Halting a run no longer needs to append a terminator to it -- the
+# runner forwards the run's outcome over the socket and the renderer rolls it
+# up from canonical state.
 sub halt_run {
-    my $self = shift;
-    my ($run_id) = @_;
-    $self->_enqueue(halt_run => $run_id);
-
-    # Chunk 6.1: the per-run jobs.jsonl (the old runner -> gatherer channel) is
-    # retired. Halting a run no longer needs to append a terminator to it -- the
-    # runner forwards the run's outcome over the socket and the renderer rolls it
-    # up from canonical state.
-}
-
-sub _halt_run {
     my $self = shift;
     my ($run_id) = @_;
 
@@ -284,7 +230,7 @@ sub _halt_run {
 sub queue_run {
     my $self = shift;
     my ($run) = @_;
-    $self->_enqueue(queue_run => $run);
+    $self->_queue_run($run);
 }
 
 sub _queue_run {
@@ -316,7 +262,7 @@ sub run_item {
 sub start_run {
     my $self = shift;
     my ($run_id) = @_;
-    $self->_enqueue(start_run => $run_id);
+    $self->_start_run($run_id);
 }
 
 sub _start_run {
@@ -335,7 +281,7 @@ sub _start_run {
 sub stop_run {
     my $self = shift;
     my ($run_id) = @_;
-    $self->_enqueue(stop_run => $run_id);
+    $self->_stop_run($run_id);
 }
 
 sub _stop_run {
@@ -352,7 +298,7 @@ sub queue_spawn {
     my ($spawn) = @_;
     $spawn->{spawn} //= 1;
     $spawn->{id} //= gen_uuid();
-    $self->_enqueue(queue_spawn => $spawn);
+    $self->_queue_spawn($spawn);
 }
 
 # Resolve the stage a spawn would be routed to and report whether that stage is
@@ -390,7 +336,7 @@ sub _queue_spawn {
 sub start_spawn {
     my $self = shift;
     my ($spec) = @_;
-    $self->_enqueue(start_spawn => $spec);
+    $self->_start_spawn($spec);
 }
 
 sub _start_spawn {
@@ -407,7 +353,7 @@ sub _start_spawn {
 sub queue_task {
     my $self = shift;
     my ($task) = @_;
-    $self->_enqueue(queue_task => $task);
+    $self->_queue_task($task);
 }
 
 sub _queue_task {
@@ -432,7 +378,7 @@ sub _queue_task {
 sub start_task {
     my $self = shift;
     my ($spec) = @_;
-    $self->_enqueue(start_task => $spec);
+    $self->_start_task($spec);
 }
 
 sub _start_task {
@@ -492,7 +438,7 @@ sub _start_task {
 sub stop_task {
     my $self = shift;
     my ($job_id) = @_;
-    $self->_enqueue(stop_task => $job_id);
+    $self->_stop_task($job_id);
 }
 
 sub _stop_task {
@@ -521,7 +467,7 @@ sub retry_task {
     my $self = shift;
     my ($job_id) = @_;
 
-    $self->_enqueue(retry_task => $job_id);
+    $self->_retry_task($job_id);
 }
 
 sub _retry_task {
@@ -545,20 +491,21 @@ sub _retry_task {
 
 # Chunk 19.5 (§6.8): named stage lifecycle states. STAGE_READINESS stays the
 # dispatch gate (truthy == 'up'); STAGE_LIFECYCLE is a parallel, richer record
-# {state, generation, pid, stamp} per stage that status/ps surface and that names
-# the transition the scheduler already acted on. 'up' sets readiness truthy;
+# {state, generation, stamp} per stage that status/ps surface and that names
+# the transition the scheduler already acted on. The State stores no pid -- a
+# connected stage's real pid comes from its peer connection (Connection::peer_pid),
+# the runner threads it into status via service_peers. 'up' sets readiness truthy;
 # 'down' and 'restarting' clear it (a restarting stage is intentionally reloading
 # and must not be dispatched to until its fresh incarnation re-readies) -- so the
 # gate behavior is unchanged, only the label is richer.
 sub _set_stage_lifecycle {
     my $self = shift;
-    my ($stage, $state, $generation, $pid) = @_;
+    my ($stage, $state, $generation) = @_;
 
     ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} = {
         state => $state,
         stamp => time,
         defined($generation) ? (generation => $generation) : (),
-        defined($pid)        ? (pid        => $pid)         : (),
     };
 
     return;
@@ -576,16 +523,16 @@ sub _stage_action_parts {
 sub stage_ready {
     my $self = shift;
     my ($stage, $generation) = @_;
-    $self->_enqueue(stage_ready => {stage => $stage, generation => $generation});
+    $self->_stage_ready({stage => $stage, generation => $generation});
 }
 
 sub _stage_ready {
     my $self = shift;
-    my ($item, $pid) = @_;
+    my ($item) = @_;
     my ($stage, $generation) = $self->_stage_action_parts($item);
 
-    $self->{+STAGE_READINESS}->{$stage} = $pid // 1;
-    $self->_set_stage_lifecycle($stage, 'up', $generation, $pid // 1);
+    $self->{+STAGE_READINESS}->{$stage} = 1;
+    $self->_set_stage_lifecycle($stage, 'up', $generation);
 
     return;
 }
@@ -593,7 +540,7 @@ sub _stage_ready {
 sub stage_down {
     my $self = shift;
     my ($stage, $generation) = @_;
-    $self->_enqueue(stage_down => {stage => $stage, generation => $generation});
+    $self->_stage_down({stage => $stage, generation => $generation});
 }
 
 sub _stage_down {
@@ -614,7 +561,7 @@ sub _stage_down {
 sub stage_restarting {
     my $self = shift;
     my ($stage, $generation) = @_;
-    $self->_enqueue(stage_restarting => {stage => $stage, generation => $generation});
+    $self->_stage_restarting({stage => $stage, generation => $generation});
 }
 
 sub _stage_restarting {
@@ -642,7 +589,7 @@ sub reload {
     my $self = shift;
     my ($stage, $data) = @_;
     $stage //= 'default';
-    $self->_enqueue(reload => {%$data, stage => $stage});
+    $self->_reload({%$data, stage => $stage});
     return;
 }
 

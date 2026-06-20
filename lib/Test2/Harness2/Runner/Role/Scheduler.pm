@@ -99,10 +99,9 @@ sub scheduler_tick {
     my $state = $self->state;
 
     # Fail fast: the scheduler is in-runner code now (the separate-process retry
-    # rationale died with the IPC model). A throw out of poll/advance/dispatch is
-    # a real in-process bug and is left to propagate. Resources that need to
+    # rationale died with the IPC model). A throw out of advance/dispatch is a
+    # real in-process bug and is left to propagate. Resources that need to
     # tolerate transient errors must catch them inside their own tick().
-    $state->poll;
 
     # Track the active run across the advance so we can announce its end the
     # moment it leaves the active slot (chunk 6.1-2 per-run completion). The
