@@ -52,7 +52,7 @@ sub poll ($self, $max = undef) {
 
     my $reader = $self->reader or return ();
 
-    # Tail mode (chunk 17): skip everything already recorded and emit only records
+    # Tail mode: skip everything already recorded and emit only records
     # appended after the reader opened -- used by `yath stop` to render just the
     # runner's shutdown output (plugin teardown) without re-rendering the whole
     # persistent runner's prior output.
@@ -82,8 +82,8 @@ sub poll ($self, $max = undef) {
         # INTERNAL shape the renderer expects (tag => INTERNAL, important => 1;
         # debug => 1 for stderr). from_stream is internal bookkeeping; drop it.
         # The runner/stage streams render as INTERNAL; a plugin "aux" collector
-        # (chunk 17) instead renders tagged with its plugin name (via the tag
-        # attribute), so its output keeps the historical "(NAME)" shape.
+        # instead renders tagged with its plugin name (via the tag attribute),
+        # so its output keeps the conventional "(NAME)" shape.
         my $out_tag = $self->{+TAG} // 'INTERNAL';
         if (my $info = $fd->{info}) {
             for my $i (@$info) {
@@ -191,7 +191,7 @@ This is the runner-stream sibling of L<Test2::Harness2::JobReader>:
 same C<*.jsonl.zst> reader path, but run-level (no C<job_id>) and with no
 job-completion facet synthesis.
 
-The same reader is used for the per-stage non-test collectors (chunk 4b): the
+The same reader is used for the per-stage non-test collectors: the
 gatherer points one at each C<stage-E<lt>nameE<gt>-events.jsonl.zst> with a
 C<label> naming that stage, so an abnormal stage exit is reported against the
 stage rather than the runner. C<label> defaults to C<'yath runner'> and prefixes

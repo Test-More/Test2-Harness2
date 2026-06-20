@@ -265,7 +265,7 @@ sub _queue_run {
     my ($run) = @_;
 
     # Keep the raw queued run item ON the Run object so the runner can forward it
-    # verbatim when it dispatches a task to a stage service (chunk 5d): the stage
+    # verbatim when it dispatches a task to a stage service: the stage
     # rebuilds its own Runner::Run from this item rather than from a serialized live
     # object. Folding it onto the Run (rather than a parallel run_items hash) means it
     # is auto-pruned the moment the run object is dropped -- no leak on a persistent
@@ -319,7 +319,7 @@ sub _stop_run {
     $self->{+STOPPED_RUNS}->{$run_id} = 1;
 
     # Drop this run's _next sort memo buckets so they do not leak past the run.
-    # Assumes a single active run; must be revisited for concurrent multi-run (chunk 16).
+    # Assumes a single active run; must be revisited for concurrent multi-run.
     my $sorted = $self->{+SORTED} //= {};
     delete $sorted->{$_} for grep { 0 == index($_, "$run_id\0") } keys %$sorted;
 
@@ -407,7 +407,7 @@ sub _queue_task {
 
     # A new task in this bucket invalidates _next's conflict-priority sort memo,
     # so the reinserted task gets re-sorted. Keyed by the stable path tuple.
-    # Assumes a single active run; must be revisited for concurrent multi-run (chunk 16).
+    # Assumes a single active run; must be revisited for concurrent multi-run.
     delete $self->{+SORTED}->{join("\0", $self->task_fields($task))};
 
     return;
@@ -564,8 +564,8 @@ sub requeue_task {
     return;
 }
 
-# §6.8 (chunk 19.5): named stage lifecycle states are the single source of stage
-# scheduling state -- the old parallel STAGE_READINESS map is gone. STAGE_LIFECYCLE
+# §6.8: named stage lifecycle states are the single source of stage
+# scheduling state (no parallel readiness map). STAGE_LIFECYCLE
 # is a per-stage record {state, stamp} that the scheduler gate (_stage_order,
 # spawn_stage_ready) reads as `state eq 'up'`, and that status/ps surface. The four
 # states are:

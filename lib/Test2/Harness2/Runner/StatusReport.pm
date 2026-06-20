@@ -22,12 +22,9 @@ runner serves over its socket to the C<status>/C<ps>/C<abort> commands.
 
 =head1 DESCRIPTION
 
-The persistent C<status>, C<ps>, and C<abort> commands used to read the runner's
-scheduling state out of C<dispatch.jsonl> (an observe-mode
-L<Test2::Harness2::Runner::State>) and each running job's pid out of
-C<jobs.jsonl>. Chunk 6.1 retires both files: the runner now answers a C<status>
-request over C<runner.socket> with the same information, taken from its live
-canonical state.
+The persistent C<status>, C<ps>, and C<abort> commands ask the runner for its
+scheduling state and each running job's pid by sending a C<status> request over
+C<runner.socket>; the runner answers from its live canonical state.
 
 This object renders that answer: it walks the runner's
 L<Test2::Harness2::Runner::State> (the authoritative scheduler state) plus the

@@ -22,7 +22,7 @@ detection.
 
 =head1 DESCRIPTION
 
-Chunk 5g retires the yath-side gatherer on the transient path: the runner is the
+On the transient path there is no yath-side gatherer: the runner is the
 completion / stalled / timeout / verdict authority. Run-level timeout aborts
 already live in the scheduler tick (L<Test2::Harness2::Runner::State> resource
 timeout). This watchdog folds in the remaining gatherer duty -- aborting a job

@@ -23,7 +23,7 @@ per-job 3-phase ordering on top of L<Test2::Harness2::Renderer::Base>.
 
 =head1 DESCRIPTION
 
-This is the interim (chunk 6a) command-side render path. The reusable mechanics
+This is the interim command-side render path. The reusable mechanics
 -- locating a collector's C<events.jsonl.zst> from transition state, reading it
 by path, the runner/stage output tail, the run-level rollup, and the
 C<render_event> fan-out to the sink renderers + logger -- live in the base class

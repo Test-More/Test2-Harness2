@@ -392,10 +392,9 @@ sub bailed_out {
 
     # Bail-out is carried in the audited final_state (a control facet /
     # harness_final_state halt), which the collector persists to the bail file.
-    # As of chunk 3 (Test2-Collector swap) the runner no longer writes a stdout
-    # file, so the legacy "scan stdout for 'Bail out!'" path had no input and is
-    # gone. Re-sourcing bail detection from the events file is a deferred
-    # follow-up.
+    # The runner does not write a stdout file, so there is no "scan stdout for
+    # 'Bail out!'" path. Re-sourcing bail detection from the events file is a
+    # deferred follow-up.
     return "" unless -f $self->bail_file;
 
     my $fh = open_file($self->bail_file, '<');

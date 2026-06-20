@@ -262,7 +262,7 @@ This is a callback that lets you run setup logic when the runner starts. Note
 that in a persistent runner this is run once on startup, it is not run for each
 C<run> command against the persistent runner.
 
-B<Runs in the runner> (chunk 17): C<setup>/C<teardown> are invoked by the runner
+B<Runs in the runner>: C<setup>/C<teardown> are invoked by the runner
 after its C<runner.socket> is bound, B<not> in the C<test>/C<start>/C<stop>
 command process. This is what lets C<shellcall>/C<run_collected> report their
 output as collector events over C<runner.socket>, and makes any process you start

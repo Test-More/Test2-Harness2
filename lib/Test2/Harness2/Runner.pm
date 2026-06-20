@@ -280,10 +280,9 @@ sub state {
     );
 
     # The runner is the sole writer/reader of its scheduling state: stages receive
-    # work over sockets (chunk 5d transient, chunk 6.1-2 persistent) and the
+    # work over sockets (on both the transient and persistent paths) and the
     # run/spawn/abort/status/resources commands submit + query over runner.socket.
-    # The State applies every action in-process; dispatch.jsonl (A2) is gone -- it
-    # has no remaining writer or reader on either path.
+    # The State applies every action in-process.
     return $self->{+STATE};
 }
 

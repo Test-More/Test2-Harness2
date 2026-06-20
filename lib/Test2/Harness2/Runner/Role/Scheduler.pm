@@ -31,10 +31,9 @@ tick.
 
 This role carries the scheduler half of L<Test2::Harness2::Runner>: the
 per-service-loop tick that advances the in-process
-L<Test2::Harness2::Runner::State> object. The scheduler used to be a separate
-process polling C<dispatch.jsonl> under a flock (chunk 5b); it is now an
-in-runner object ticked on the same cadence as the socket I/O, and these methods
-are the entry points the run loop calls.
+L<Test2::Harness2::Runner::State> object. The scheduler is an in-runner object
+ticked on the same cadence as the socket I/O, and these methods are the entry
+points the run loop calls.
 
 It is composed into the runner alongside
 L<Test2::Harness2::Role::Service> and
@@ -79,9 +78,8 @@ sub service_tick {
     # end_test_loop.
     $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
 
-    # The scheduler is an in-runner object (chunk 5b): advance it here, on the
-    # same service-loop cadence the socket I/O runs on, instead of in a separate
-    # process polling dispatch.jsonl under a flock.
+    # The scheduler is an in-runner object: advance it here, on the
+    # same service-loop cadence the socket I/O runs on.
     $self->scheduler_tick;
 
     return;
@@ -101,7 +99,7 @@ sub scheduler_tick {
     # tolerate transient errors must catch them inside their own tick().
 
     # Track the active run across the advance so we can announce its end the
-    # moment it leaves the active slot (chunk 6.1-2 per-run completion). The
+    # moment it leaves the active slot (per-run completion). The
     # run is recorded once it becomes active and announced once it clears.
     my $before = $state->run ? $state->run->run_id : undef;
     $self->{+ACTIVE_RUN} //= $before if defined $before;

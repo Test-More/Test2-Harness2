@@ -140,7 +140,7 @@ sub launch ($class, %params) {
 
     my ($action, $job, $stage) = @$jump;
 
-    # Reload (chunk 19.4 territory; wired now so --reload works): the base stage's
+    # Reload: the base stage's
     # reload check asks us to respawn the whole preload tree. Re-exec ourselves so
     # every stage reloads from a clean interpreter, exactly as the runner command
     # re-execs on its own reload.

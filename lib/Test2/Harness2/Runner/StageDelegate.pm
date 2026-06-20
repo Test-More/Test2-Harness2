@@ -42,7 +42,7 @@ back to the runner via C<stop_task> / C<retry_task> / C<halt_run>, so the
 runner's canonical in-process state stays authoritative for scheduling without a
 shared file.
 
-Chunk 9 (ARCHITECTURE.md §5.2): those reports ride the B<one> registered service
+Those reports (ARCHITECTURE.md §5.2) ride the B<one> registered service
 channel the stage opened to the runner (the connection it dials to send
 C<stage_ready>), not a second connect-out to C<runner.socket>. The stage sends
 each report with the runner's C<service_send> to the C<runner> peer; the runner

@@ -50,7 +50,7 @@ that entered that state since the previous call.
 
 A single C<runner.socket> serves every run a persistent runner executes; the
 monitor folds them all into one canonical state. To let the runner route each
-subscriber only its own run's data (chunk 6.1 per-run routing), the monitor
+subscriber only its own run's data (per-run routing), the monitor
 tracks the B<run association> that rides on every message -- the collector
 C<run_uuid> on a collector transition and the C<run_id> on a runner-originated
 job mutation. Those two identifiers are the same value: the runner stamps a test
@@ -418,7 +418,7 @@ sub _process ($self, $payload) {
     }
 
     # A runner-originated run-completion mutation: the runner has finished a run
-    # (serialized, one at a time -- chunk 6.1-2). A run-scoped subscriber keys its
+    # (serialized, one at a time). A run-scoped subscriber keys its
     # completion on this, since the persistent runner does NOT close its socket
     # after a single run the way the transient runner does.
     if (my $re = $fd->{harness_run_end}) {

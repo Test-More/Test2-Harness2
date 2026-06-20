@@ -91,15 +91,13 @@ running with C<abort_on_disconnect> true, or detach it (leave it running) if fal
 
 =cut
 
-# Run submission moved onto runner.socket (chunk 5c): a transient `yath test`
-# command no longer constructs its own State; it connects to runner.socket and
-# sends one-way request frames. The runner receives them here and enqueues them
-# through the canonical State's public queue_* methods, which apply each action
-# in-process. The runner is the sole owner of its scheduling state -- it dispatches
-# tasks to its stage services over sockets and folds their outcomes back in
-# (A2 retired dispatch.jsonl entirely; there is no shared action log or file
-# reader). The persistent run/spawn/abort path submits the same way over the
-# socket.
+# Run submission rides runner.socket: a transient `yath test` command connects
+# to runner.socket and sends one-way request frames. The runner receives them
+# here and enqueues them through the canonical State's public queue_* methods,
+# which apply each action in-process. The runner is the sole owner of its
+# scheduling state -- it dispatches tasks to its stage services over sockets and
+# folds their outcomes back in (there is no shared action log or file reader).
+# The persistent run/spawn/abort path submits the same way over the socket.
 #
 # These are one-way requests: the role's _service_conn sends no reply when a
 # handler returns undef. Ordering is preserved because the command sends them

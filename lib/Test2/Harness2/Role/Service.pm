@@ -262,7 +262,7 @@ sub forward_frame ($self, $frame, $run_id = undef) {
         my $sub  = $subs->{$key};
         my $conn = $sub->{conn};
 
-        # Per-run routing (chunk 6.1): a global subscriber (no run_id) gets every
+        # Per-run routing: a global subscriber (no run_id) gets every
         # frame; a run-scoped subscriber gets the global / run-less frames plus the
         # frames of its own run.
         next if defined $sub->{run_id}

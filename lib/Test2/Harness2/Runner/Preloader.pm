@@ -203,8 +203,8 @@ sub launch_stage {
 
     # Wrap this stage process in its own non-test collector so its
     # stdout/stderr/exit become first-class timestamped events in a per-stage
-    # events file (chunk 4b: every runner-forked process runs under a
-    # collector). The collector PARENT (this process) drives the pipeline and
+    # events file (every runner-forked process runs under a collector). The
+    # collector PARENT (this process) drives the pipeline and
     # POSIX::_exit()s with the stage's verdict; its run_sub child unwinds back
     # to the setjump below -- the same Long::Jump escape preloads/test jobs use
     # (App::Yath2::Command::runner launch_via_fork) to add no stack frame -- and

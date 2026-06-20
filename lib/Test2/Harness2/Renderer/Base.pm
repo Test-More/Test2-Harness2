@@ -325,10 +325,9 @@ sub feed_events_file ($self, $events_file, %args) {
 # --hide-runner-output display option).
 #
 # This is the runner/stage events-file location half of §4.5 -- the part `yath
-# watch` reuses to render runner/global output. Chunk 6 (phase D): both the
-# transient and persistent runners (and their stages) are now collector-wrapped,
-# so EVERYTHING the runner and its stages print lands in an events file read here;
-# the flat output.log/error.log shim is retired.
+# watch` reuses to render runner/global output. Both the transient and
+# persistent runners (and their stages) are collector-wrapped, so EVERYTHING the
+# runner and its stages print lands in an events file read here.
 sub step_runner_output ($self, $monitor) {
     return unless $self->{+SHOW_RUNNER_OUTPUT};
 
@@ -347,8 +346,8 @@ sub step_runner_output ($self, $monitor) {
 
     # Every other (non-test) service collector announces its events file over the
     # transition channel; pick those up as they appear. A plugin "aux" collector
-    # (chunk 17) is named "aux:NAME" -- render its output tagged with NAME (the
-    # historical "(NAME)" aux output), other services as plain INTERNAL.
+    # is named "aux:NAME" -- render its output tagged with NAME (the conventional
+    # "(NAME)" aux output), other services as plain INTERNAL.
     for my $uuid ($monitor->services) {
         my $c  = $monitor->collector($uuid) or next;
         my $ef = $c->{events_file}          or next;
