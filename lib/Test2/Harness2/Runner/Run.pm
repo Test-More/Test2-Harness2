@@ -12,6 +12,8 @@ use Test2::Harness2::Util::HashBase qw{
     <workdir
 
     +run_dir
+
+    <raw_item
 };
 
 sub init {
@@ -54,6 +56,12 @@ Runner directory.
 =item $dir = $run->run_dir
 
 Directory specific to this run.
+
+=item $hashref = $run->raw_item
+
+The raw queued run item (the hash the queuing client sent) stored verbatim on the
+run object, so the runner can forward it to a stage service on dispatch. Pruned
+automatically when the run object is dropped.
 
 =back
 

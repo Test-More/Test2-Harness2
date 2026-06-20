@@ -44,7 +44,6 @@ use Test2::Harness2::Util::HashBase(
 
         <pending_tasks <task_lookup
         <pending_runs  +run <stopped_runs
-        <run_items
         <pending_spawns
 
         <running
@@ -247,26 +246,27 @@ sub _queue_run {
     my $self = shift;
     my ($run) = @_;
 
-    # Keep the raw queued run item so the runner can forward it verbatim when it
-    # dispatches a task to a stage service (chunk 5d): the stage rebuilds its own
-    # Runner::Run from this item rather than from a serialized live object.
-    $self->{+RUN_ITEMS}->{$run->{run_id}} = {%$run} if $run->{run_id};
-
+    # Keep the raw queued run item ON the Run object so the runner can forward it
+    # verbatim when it dispatches a task to a stage service (chunk 5d): the stage
+    # rebuilds its own Runner::Run from this item rather than from a serialized live
+    # object. Folding it onto the Run (rather than a parallel run_items hash) means it
+    # is auto-pruned the moment the run object is dropped -- no leak on a persistent
+    # runner (ticket #12 / ARCHITECTURE.md §4.2).
     push @{$self->{+PENDING_RUNS}} => Test2::Harness2::Runner::Run->new(
         %$run,
-        workdir => $self->{+WORKDIR},
+        raw_item => {%$run},
+        workdir  => $self->{+WORKDIR},
     );
 
     return;
 }
 
 # The raw queued run item for the active run, for forwarding to a stage on
-# dispatch. Returns undef if there is no active run or its item is not retained
-# (e.g. the gated polling path, which never dispatches over sockets).
+# dispatch. Returns undef if there is no active run.
 sub run_item {
     my $self = shift;
     my $run = $self->{+RUN} or return undef;
-    return $self->{+RUN_ITEMS}->{$run->run_id};
+    return $run->raw_item;
 }
 
 sub start_run {
