@@ -35,7 +35,7 @@ use Test2::Harness2::Util::HashBase(
     # plus a file_stage_resolver coderef that asks the base stage. eager_stages is
     # writable (not <) because set_stage_data refreshes it once the map arrives.
     qw{
-        stage_map
+        +stage_map
         file_stage_resolver
     },
 
@@ -52,8 +52,6 @@ use Test2::Harness2::Util::HashBase(
         <running_durations
         <running_conflicts
         <running_tasks
-
-        <stage_readiness
 
         <stage_lifecycle
 
@@ -93,6 +91,16 @@ sub init {
     @{$self->{+RESOURCES}} = sort { $a->sort_weight <=> $b->sort_weight } @{$self->{+RESOURCES}};
 
     $self->{+RELOAD_STATE} //= {};
+
+    # §6.8: any stage already named in a construction-time stage map is committed/
+    # known -- mark it 'starting' so the scheduler knows it will exist before its
+    # stage_ready arrives. set_stage_map drives the same transitions on later refreshes.
+    if (my $map = $self->{+STAGE_MAP}) {
+        my $life = $self->{+STAGE_LIFECYCLE} //= {};
+        for my $stage (keys %$map) {
+            $self->_set_stage_lifecycle($stage, 'starting') unless $life->{$stage};
+        }
+    }
 }
 
 sub settings {
@@ -312,7 +320,7 @@ sub spawn_stage_ready {
 
     my $stage = $self->task_stage({%$spawn, use_preload => $spawn->{use_preload} // 1});
 
-    my $ready = ($self->{+STAGE_READINESS} //= {})->{$stage} ? 1 : 0;
+    my $ready = $self->stage_is_up($stage) ? 1 : 0;
 
     return ($stage, $ready);
 }
@@ -489,15 +497,32 @@ sub _retry_task {
     return;
 }
 
-# Chunk 19.5 (§6.8): named stage lifecycle states. STAGE_READINESS stays the
-# dispatch gate (truthy == 'up'); STAGE_LIFECYCLE is a parallel, richer record
-# {state, generation, stamp} per stage that status/ps surface and that names
-# the transition the scheduler already acted on. The State stores no pid -- a
-# connected stage's real pid comes from its peer connection (Connection::peer_pid),
-# the runner threads it into status via service_peers. 'up' sets readiness truthy;
-# 'down' and 'restarting' clear it (a restarting stage is intentionally reloading
-# and must not be dispatched to until its fresh incarnation re-readies) -- so the
-# gate behavior is unchanged, only the label is richer.
+# §6.8 (chunk 19.5): named stage lifecycle states are the single source of stage
+# scheduling state -- the old parallel STAGE_READINESS map is gone. STAGE_LIFECYCLE
+# is a per-stage record {state, stamp, generation} that the scheduler gate
+# (_stage_order, spawn_stage_ready) reads as `state eq 'up'`, and that status/ps
+# surface. The four states are:
+#
+#   starting    -- committed/known: the runner learned from the reported stage map
+#                  that this stage will exist, before its stage_ready arrived.
+#   up          -- the stage reported ready; dispatchable.
+#   restarting  -- temporarily down, coming back (an intentional reload, or any
+#                  plain exit of a still-mapped stage that the preload-root respawns).
+#   down        -- permanent for this map: the stage is absent from the stage map
+#                  (never configured, misspelled, or removed by a refresh). A
+#                  require-style absence is permanent.
+#
+# Only 'up' is dispatchable; starting/restarting/down all keep the gate closed (a
+# restarting stage is intentionally reloading and must not be dispatched to until
+# its fresh incarnation re-readies). The State stores no pid -- a connected stage's
+# real pid comes from its peer connection (Connection::peer_pid), threaded into
+# status by the runner.
+#
+# NOTE (bloat #2 scoping): `generation` is retained as a lifecycle field and the
+# Handlers stale-incarnation guard still uses it. Bloat #3 replaces wire-generation
+# stamping with connection-currency and then drops generation; until that lands,
+# removing it here would break stale-incarnation rejection after a preload-root
+# respawn.
 sub _set_stage_lifecycle {
     my $self = shift;
     my ($stage, $state, $generation) = @_;
@@ -511,77 +536,80 @@ sub _set_stage_lifecycle {
     return;
 }
 
-# A stage_ready/stage_down/stage_restarting action carries the stage name and the
-# reporting incarnation's generation (a hashref item); older/in-runner callers may
-# still pass a bare stage string.
-sub _stage_action_parts {
+# True if the named stage is currently 'up' (dispatchable). This is the converged
+# dispatch gate that replaced the STAGE_READINESS truthiness check.
+sub stage_is_up {
     my $self = shift;
-    my ($item) = @_;
-    return ref($item) ? @{$item}{qw/stage generation/} : ($item, undef);
+    my ($stage) = @_;
+
+    my $life = ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} or return 0;
+    return $life->{state} eq 'up' ? 1 : 0;
 }
 
 sub stage_ready {
     my $self = shift;
     my ($stage, $generation) = @_;
-    $self->_stage_ready({stage => $stage, generation => $generation});
-}
-
-sub _stage_ready {
-    my $self = shift;
-    my ($item) = @_;
-    my ($stage, $generation) = $self->_stage_action_parts($item);
-
-    $self->{+STAGE_READINESS}->{$stage} = 1;
     $self->_set_stage_lifecycle($stage, 'up', $generation);
-
     return;
 }
 
 sub stage_down {
     my $self = shift;
     my ($stage, $generation) = @_;
-    $self->_stage_down({stage => $stage, generation => $generation});
-}
-
-sub _stage_down {
-    my $self = shift;
-    my ($item) = @_;
-    my ($stage, $generation) = $self->_stage_action_parts($item);
-
-    $self->{+STAGE_READINESS}->{$stage} = 0;
     $self->_set_stage_lifecycle($stage, 'down', $generation);
-
     return;
 }
 
 # §6.8: a stage announces it is intentionally reloading (tearing down on purpose)
-# before it exits and the preload-root respawns it -- distinct from a plain 'down'.
-# Like 'down' it clears the dispatch gate; the fresh incarnation's stage_ready
-# returns it to 'up'.
+# before it exits and the preload-root respawns it -- distinct from a permanent
+# 'down'. Like every non-'up' state it keeps the dispatch gate closed; the fresh
+# incarnation's stage_ready returns it to 'up'.
 sub stage_restarting {
     my $self = shift;
     my ($stage, $generation) = @_;
-    $self->_stage_restarting({stage => $stage, generation => $generation});
-}
-
-sub _stage_restarting {
-    my $self = shift;
-    my ($item) = @_;
-    my ($stage, $generation) = $self->_stage_action_parts($item);
-
-    $self->{+STAGE_READINESS}->{$stage} = 0;
     $self->_set_stage_lifecycle($stage, 'restarting', $generation);
-
     return;
 }
 
-# §6.10: forget every stage's readiness. Used when a crashed preload root is
+# §6.10: forget every stage's lifecycle. Used when a crashed preload root is
 # respawned: the dead incarnation's stages are gone (or stale), so the scheduler
 # must wait for the fresh incarnation to re-register before dispatching again.
 sub reset_stage_readiness {
     my $self = shift;
-    $self->{+STAGE_READINESS} = {};
     $self->{+STAGE_LIFECYCLE} = {};
+    return;
+}
+
+# Chunk 19.3 + §6.8: the reported stage map is the runner's commitment record of
+# which stages will exist. Setting it transitions lifecycle: every stage present in
+# the new map that has no live ('up') record yet is 'starting' (committed/known,
+# its stage_ready not yet arrived); a stage that was tracked but is now absent from
+# the map is 'down' (permanent for this map -- removed by a refresh, never
+# configured, or misspelled). A stage already 'up' keeps its state (its peer is
+# still connected; only its stage_down/restarting report demotes it).
+sub set_stage_map {
+    my $self = shift;
+    my ($map) = @_;
+
+    $self->{+STAGE_MAP} = $map;
+
+    my $life = $self->{+STAGE_LIFECYCLE} //= {};
+    $map //= {};
+
+    # Stages present in the map: commit them as 'starting' unless already 'up'.
+    for my $stage (keys %$map) {
+        my $cur = $life->{$stage};
+        next if $cur && $cur->{state} eq 'up';
+        $self->_set_stage_lifecycle($stage, 'starting');
+    }
+
+    # Stages we tracked that are no longer in the map: permanently 'down'.
+    for my $stage (keys %$life) {
+        next if $map->{$stage};
+        next if $life->{$stage}->{state} eq 'down';
+        $self->_set_stage_lifecycle($stage, 'down');
+    }
+
     return;
 }
 
@@ -833,9 +861,9 @@ sub _dur_order {
 sub _stage_order {
     my $self = shift;
 
-    my $stage_check = $self->{+STAGE_READINESS} //= {};
+    my $life = $self->{+STAGE_LIFECYCLE} //= {};
 
-    my @stage_list = sort grep { $stage_check->{$_} } keys %$stage_check;
+    my @stage_list = sort grep { $life->{$_}->{state} eq 'up' } keys %$life;
 
     # Populate list with all ready stages
     my %seen;

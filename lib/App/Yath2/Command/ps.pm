@@ -38,10 +38,12 @@ sub run {
 
     my @jobs;
 
-    my $stage_status = $status->{stage_readiness} // {};
-    my $stage_pids   = $status->{stage_pids} // {};
-    for my $stage (keys %$stage_status) {
-        next unless $stage_status->{$stage};
+    # §6.8: an 'up' stage is the only dispatchable (and connected) one, so it is the
+    # only one with a live process to list here.
+    my $stage_life = $status->{stage_lifecycle} // {};
+    my $stage_pids = $status->{stage_pids} // {};
+    for my $stage (keys %$stage_life) {
+        next unless ($stage_life->{$stage}{state} // '') eq 'up';
         my $pid = $stage_pids->{$stage} // 'N/A';
         push @jobs => [$pid, "Runner Stage", $stage];
     }

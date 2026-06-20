@@ -58,22 +58,21 @@ sub run {
     }
 
     print "\n**** Runner Stages: ****\n";
-    my $stage_status = $status->{stage_readiness} // {};
     my $stage_pids   = $status->{stage_pids} // {};
     my $stage_life   = $status->{stage_lifecycle} // {};
     my $reload_status = $status->{reload_state} // {};
     my $reload_issues = 0;
 
     my $rows = [];
-    for my $stage (keys %$stage_status) {
-        my $ready = $stage_status->{$stage} ? 'YES' : 'NO';
+    for my $stage (keys %$stage_life) {
+        # §6.8: the named lifecycle state (starting/up/restarting/down) is the single
+        # source of stage scheduling state; only 'up' is dispatchable.
+        my $state = $stage_life->{$stage}{state} // 'down';
+        my $ready = $state eq 'up' ? 'YES' : 'NO';
+
         # The real pid comes from the connected stage's peer connection; a
         # down/restarting stage has no connection and so no pid.
         my $pid = $stage_pids->{$stage} // 'N/A';
-
-        # Chunk 19.5 (§6.8): the named lifecycle state (starting/up/restarting/down),
-        # falling back to the readiness up/down view for any stage without a record yet.
-        my $state = $stage_life->{$stage}{state} // ($ready eq 'YES' ? 'up' : 'down');
 
         my $issues = keys %{$reload_status->{$stage}};
         my $reload = $issues ? 'YES' : 'NO';

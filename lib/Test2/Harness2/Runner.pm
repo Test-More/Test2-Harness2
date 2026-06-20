@@ -1470,16 +1470,18 @@ sub run_stage {
     }
 
     if ($stage_service) {
-        # Chunk 19.5 (§6.8): if this exit is a reload (end_test_loop set SIGNAL=HUP via
-        # preloader->check), announce 'restarting' -- the preload-root will respawn us
-        # and the fresh incarnation re-readies. Any other exit is a plain 'down'.
-        my $reloading = $self->{+SIGNAL} && $self->{+SIGNAL} eq 'HUP';
-        my $report = $reloading ? 'stage_restarting' : 'stage_down';
-        eval { $self->service_send('runner', $report, stage => $stage, generation => $self->{+PRELOAD_GENERATION}); 1 };
+        # §6.8 (§4.7/§4.7a): a stage that exits while it is still in the stage map is
+        # "coming back" -- the preload-root respawns it and the fresh incarnation
+        # re-readies -- so it reports 'restarting', not 'down'. 'down' is reserved for
+        # a stage that is absent from the map (driven map-side by set_stage_map), which
+        # is the permanent "will never be available" signal. Whether the exit was an
+        # intentional reload (SIGNAL=HUP) or another exit, the stage is still mapped and
+        # coming back, so both restart.
+        eval { $self->service_send('runner', 'stage_restarting', stage => $stage, generation => $self->{+PRELOAD_GENERATION}); 1 };
         $self->close_service;
     }
     else {
-        $self->state->stage_down($stage);
+        $self->state->stage_restarting($stage);
     }
 
     # Chunk 5g: the run loop is ending; any task still tracked as running whose

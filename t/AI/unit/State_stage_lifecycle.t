@@ -11,39 +11,57 @@ use Test2::Harness2::Runner::State;
     sub init {}
 }
 
-# Chunk 19.5 (§6.8): named stage lifecycle states. STAGE_READINESS stays the
-# dispatch gate (truthy == schedulable); STAGE_LIFECYCLE is the richer parallel
-# record {state, generation, ...}. 'up' is schedulable; 'restarting'/'down' are not.
-subtest up_down_restarting => sub {
+# §6.8 (chunk 19.5, bloat #2): named stage lifecycle states are the SINGLE source of
+# stage scheduling state -- the old parallel STAGE_READINESS map is gone. The
+# converged dispatch gate is `state eq 'up'` (stage_is_up). The four states are
+# starting / up / restarting / down; only 'up' is dispatchable.
+subtest up_restarting_down => sub {
     my $state = FakeState->new();
 
     $state->stage_ready('moose', 7);
-    ok($state->stage_readiness->{moose}, "ready stage is schedulable (gate truthy)");
+    ok($state->stage_is_up('moose'), "ready stage is schedulable (gate == 'up')");
     is($state->stage_lifecycle->{moose}{state},      'up', "lifecycle state is 'up'");
     is($state->stage_lifecycle->{moose}{generation}, 7,    "generation recorded");
 
     $state->stage_restarting('moose', 7);
-    is($state->stage_readiness->{moose}, 0, "a restarting stage is NOT schedulable");
+    ok(!$state->stage_is_up('moose'), "a restarting stage is NOT schedulable");
     is($state->stage_lifecycle->{moose}{state}, 'restarting', "lifecycle state is 'restarting'");
 
     $state->stage_ready('moose', 8);
-    ok($state->stage_readiness->{moose}, "re-readied stage is schedulable again");
+    ok($state->stage_is_up('moose'), "re-readied stage is schedulable again");
     is($state->stage_lifecycle->{moose}{state},      'up', "back to 'up'");
     is($state->stage_lifecycle->{moose}{generation}, 8,    "new generation recorded");
 
     $state->stage_down('moose', 8);
-    is($state->stage_readiness->{moose}, 0, "a down stage is NOT schedulable");
+    ok(!$state->stage_is_up('moose'), "a down stage is NOT schedulable");
     is($state->stage_lifecycle->{moose}{state}, 'down', "lifecycle state is 'down'");
 };
 
-subtest reset_clears_both => sub {
+# §6.8: the reported stage map commits stages as 'starting' (known, not yet ready);
+# a stage absent from a refreshed map is permanently 'down'.
+subtest stage_map_drives_starting_and_down => sub {
+    my $state = FakeState->new();
+
+    $state->set_stage_map({alpha => {}, beta => {}});
+    is($state->stage_lifecycle->{alpha}{state}, 'starting', "committed stage is 'starting'");
+    is($state->stage_lifecycle->{beta}{state},  'starting', "committed stage is 'starting'");
+    ok(!$state->stage_is_up('alpha'), "a starting stage is NOT schedulable");
+
+    # alpha readies; a refresh that keeps alpha and drops beta leaves alpha 'up' and
+    # marks beta (now absent) permanently 'down'.
+    $state->stage_ready('alpha');
+    $state->set_stage_map({alpha => {}});
+    is($state->stage_lifecycle->{alpha}{state}, 'up',   "an already-up stage stays 'up' across a refresh");
+    is($state->stage_lifecycle->{beta}{state},  'down', "a stage absent from the refreshed map is 'down'");
+};
+
+subtest reset_clears_lifecycle => sub {
     my $state = FakeState->new();
     $state->stage_ready('a', 1);
     $state->stage_ready('b', 1);
 
     $state->reset_stage_readiness;
 
-    is($state->stage_readiness, {}, "readiness cleared on reset (respawn)");
     is($state->stage_lifecycle, {}, "lifecycle cleared on reset (respawn)");
 };
 
