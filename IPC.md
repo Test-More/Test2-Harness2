@@ -52,7 +52,7 @@ yath test                          COMMAND: client + renderer host
                                  ├─ spawn ─ [collector:preload-root] ─► preload-root
                                  │     (perl -I... -MTest2::Harness2::Preload=launch,runner.socket -e 1;)
                                  │     │  dials runner.socket as 'preload-root'; handshake: get_preload_list / set_stage_data
-                                 │     │  drives a stage-host Runner (rootpid = the REAL runner pid), so it is a stage, not the root
+                                 │     │  drives a stage host (Test2::Harness2::Preload::Host; rootpid = the REAL runner pid) -- an independent class, NOT a Runner
                                  │     │  HOSTS the base/default/NOPRELOAD stage in-process (dials runner.socket as 'preload-<base>')
                                  │     │
                                  │     └─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
@@ -88,7 +88,7 @@ yath start  (writes yath-persist.json {pid,dir}; spawns the runner; then exits)
                             │  scheduler-only when a preload-root hosts the stages
                             │  Runner::Monitor keyed by run; routes each client only its run
                             ├─ [collector:preload-root] ─► preload-root (dials runner.socket as 'preload-root';
-                            │                              │              drives a stage-host Runner, rootpid = real runner)
+                            │                              │              drives a stage host (Test2::Harness2::Preload::Host), rootpid = real runner)
                             │                              ├─ in-process base/default/NOPRELOAD stage (dials runner.socket)
                             │                              └─ fork ─ [collector:stage-<name>] ─► preload stage
                             │                                        │  dials runner.socket as 'preload-<name>';
