@@ -90,9 +90,6 @@ sub service_tick {
 sub scheduler_tick {
     my $self = shift;
 
-    # Only the root runner process schedules; forked stage children do not.
-    return unless $self->{+ROOTPID} == $$;
-
     # Once we are winding down there is no point advancing the scheduler.
     return if $self->{+SIGNAL};
 
