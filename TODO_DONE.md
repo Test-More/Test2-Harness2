@@ -7,6 +7,44 @@ Newest first.
 
 ---
 
+## Batch 7 (2026-06-19) — runner self-restart removed (#4 Parts 3-4)
+
+Combined suite green: `prove` Files=108 Tests=1740 · `yath test` PASSED 109/1746.
+
+### #4 — Parts 3 & 4 DONE (Part 5 deferred → needs the #22 role-split)
+Decided resolution "delete entirely" (no-preload `yath reload` dropped).
+- **Part 3 (`7dcb243db`) — runner self-restart deleted.** Removed the `'respawn'` exec
+  branch + `respawn_runner_callback` (`runner.pm` command), the `RESPAWN_RUNNER_CALLBACK`
+  plumbing + the `end_test_loop` respawn trigger (`Runner.pm`), and the stage-host's
+  `respawn_runner_callback` (`Preload.pm`). HUP: preload runner forwards `reload` to the
+  preload-root (landed in #4 P2); the no-preload root runner is a **no-op** on HUP.
+  Updated `persist.t` + `watch_socket.t` to drop the no-preload-reload assertions
+  (no-preload daemons no longer `yath reload`).
+- **Part 4 (`8c375b53f`) — no-preload job launch is plain fork+exec under a collector.**
+  `generate_run_sub` no longer builds the `setjump "Test-Runner"` frame / `goto::file`
+  dispatch / fork-job callbacks — it runs the runner inline; with no fork-job callback each
+  test goes the spawn path = **fork+EXEC of a clean perl under its own collector**.
+  `goto::file`+`Long::Jump` now live ONLY in the preload tree. **Bug fixed:**
+  `Job::collector_target` now passes the test path relative to `ch_dir` (the collector
+  chdirs before exec) — `yath projects` was broken without it. Updated `plugin/test.tx`
+  (child no longer inherits the runner's `%INC`). **Interactive mode not preserved** (its
+  FIFO patch lived in the goto-file launcher) — no test runs a test in interactive mode, so
+  nothing needed skipping; the rewrite is the deferred #20 / chunk-13 conversation.
+- **Part 5 (delete dead in-runner named-stage path) — DEFERRED, premise is wrong.** The
+  targeted code is **NOT dead**: the **preload-root's stage-host** (`Preload::_run_stage_host`)
+  is an ordinary `Runner` with `rootpid != $$`, so `_preload_root_hosts_stages` is **false**
+  for it → it runs the full `run_tests`/`Preloader::launch_stage`/`_stage_transition_reporter`/
+  `set_proc_exit`-stage-relaunch path to host + reload its stages (`reload.t` exercises it).
+  Removing it requires the **role-split (#22)** — lift the stage machinery out of `Runner.pm`
+  into a stage-host class so the scheduler-only root no longer carries it. **This same fact
+  blocks the full `set_proc_exit` removal in #8.** So: do #22 (role-split) to unblock #4 P5 +
+  #8's set_proc_exit-stage removal.
+- **Follow-ups:** base/default-stage mid-run reload now flows through the preload-root's
+  `request_handler_reload` (no `end_test_loop` self-re-exec) — worth a confirming test;
+  `watch_socket.t`'s events-file check was relaxed (no-preload runner is silent on reload).
+
+---
+
 ## Batch 6 (2026-06-19) — the preload self-management keystone
 
 Combined suite green: `prove` Files=108 Tests=1740 · `yath test` PASSED.

@@ -161,7 +161,7 @@ eagerly drops channels of stages that are themselves still alive.
   `agent_scripts/audit-collector-watch-parent` for scalar-vs-list.
 
 ### #4 — Dual preload architecture + lying "DORMANT" comments; delete runner self-restart
-**Status:** 🟡 PARTIAL (batch 4) — Parts 1+2 DONE (`42a788d46`); Parts 3/4/5 DEFERRED, **need a product decision** (no-preload persistent `yath reload` is a tested feature — see TODO_DONE.md) · **Step:** 19/23 · **Depends:** —
+**Status:** ✅ Parts 1-4 DONE (`5dacdf749`) — see TODO_DONE.md; Part 5 (delete dead in-runner stage path) BLOCKED on #22 role-split (preload-root reuses the stage machinery)
 
 **Problem:** stale comments in `Runner.pm` claim certain paths are "DORMANT" when
 they are actually **live** (the chunk-19.3 flip already happened — `_preload_root_hosts_stages`
