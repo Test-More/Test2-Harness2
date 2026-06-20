@@ -3,7 +3,7 @@
 **Date:** 2026-06-13
 **Branch:** `collector-swap` (worktree `worktrees/collector-swap`, cut from `2.0d`)
 **Status:** Approved design
-**Migration:** chunk 3 of the 1.0→2.0 evolution (`MIGRATION.md`, `ARCHITECTURE.md` §4.1).
+**Migration:** chunk 3 of the 1.0→2.0 evolution (`TODO_STEPS.md`, `ARCHITECTURE.md` §4.1).
 
 ## Goal
 

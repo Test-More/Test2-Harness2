@@ -360,14 +360,14 @@ The hard task. Donor: `reference/old3/lib/App/Yath2.pm` lines 268-284 (options c
 
 **Files:**
 - Delete: `lib/App/Yath2/Options.pm`, `lib/App/Yath2/Option.pm`, `lib/Test2/Harness2/Settings.pm`, `lib/Test2/Harness2/Settings/Prefix.pm`
-- Modify: `release-scripts/generate_options_pod.pl`, `release-scripts/generate_command_pod.pl`, `MIGRATION.md`, `ARCHITECTURE.md` (§2.3 tag)
+- Modify: `release-scripts/generate_options_pod.pl`, `release-scripts/generate_command_pod.pl`, `TODO_STEPS.md`, `ARCHITECTURE.md` (§2.3 tag)
 
 - [ ] **Step 14.1:** `grep -rn 'App::Yath2::Options\b\|App::Yath2::Option\b\|Test2::Harness2::Settings' lib/ t/ t2/ release-scripts/` — expected: only the four to-be-deleted files + release-scripts. Fix any straggler first.
 - [ ] **Step 14.2:** `git rm` the four modules.
 - [ ] **Step 14.3:** Update release-scripts: `generate_options_pod.pl` `pre_docs('pod',3)`/`cmd_docs('pod',3)` → `$class->options->docs('pod', head => 3)`; `generate_command_pod.pl` keeps calling `$pkg->generate_pod()` (already swapped in Task 9). Run both against `./lib` and eyeball one regenerated POD block.
 - [ ] **Step 14.4:** Full suite: `prove -Ilib -j16 -r t/ 2>&1 | tail -3`. Expected: PASS. Fix until green.
 - [ ] **Step 14.5:** Pre-review gates (AGENTS.md): `perl agent_scripts/audit-methods-not-functions lib`, `perl agent_scripts/audit-readonly-attrs lib`, `podchecker` on every touched `.pm`. All hits are hard stops — resolve, re-run suite if code changed.
-- [ ] **Step 14.6:** Docs: MIGRATION.md — chunk 2 → ✅ with commit refs, update "Current state" + "Next" (chunk 3); ARCHITECTURE.md §2.3 — `[target]` → done (drop the "until then" sentence, retag section, note Getopt::Yath live).
+- [ ] **Step 14.6:** Docs: TODO_STEPS.md — chunk 2 → ✅ with commit refs, update "Current state" + "Next" (chunk 3); ARCHITECTURE.md §2.3 — `[target]` → done (drop the "until then" sentence, retag section, note Getopt::Yath live).
 - [ ] **Step 14.7:** Commit: `git commit -am "refactor!: complete Getopt::Yath migration, remove 1.0 option machinery"`
 
 ---

@@ -106,8 +106,8 @@ designs, but the live tree starts from 1.0 and is migrated forward.
 
 The end state is reached in chunks, each small enough for a human to review
 and each keeping the test suite green. Per-chunk status (done / in progress /
-not started, with commit refs) is tracked in `TODO_STEPS.md`. The intended
-order, roughly:
+not started) + dependencies + the tickets that implement each chunk are tracked
+in `TODO_STEPS.md` (commit history lives in git). The intended order, roughly:
 
 1. **Mechanical renames** — `App::Yath` → `App::Yath2`,
    `Test2::Harness` → `Test2::Harness2`; versions → `2.000000`;

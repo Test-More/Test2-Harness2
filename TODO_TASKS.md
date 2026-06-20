@@ -17,9 +17,10 @@ do **not** re-fix it.
 
 ## Context (read before acting)
 
-- **Branch `2.0d`.** Test: `AUTHOR_TESTING=1 prove -Ilib -j16 -r t/` (no
-  `scripts/yath`; not self-hosting; `AUTHOR_TESTING=1` or author-gated tests skip
-  silently).
+- **Branch `2.0d`.** Test (both must pass, always `AUTHOR_TESTING=1`):
+  `AUTHOR_TESTING=1 prove -Ilib -j16 -r t/` **and** `AUTHOR_TESTING=1 yath test -D -j16`.
+  Skip `yath test` only for interim-broken steps. No repo-local `scripts/yath`. See
+  AGENTS Testing.
 - **Root cause of most tickets:** chunk-19 residue (the preload-root extraction
   landed; crash/race/de-flake machinery + stale comments lag the architecture) and
   1.0 carryover superseded by collectors+sockets. Recurring lens: **state flows over
@@ -158,6 +159,37 @@ eagerly drops channels of stages that are themselves still alive.
 - **Repo-side (same chunk as the collector change):** bump `dist.ini`/`cpanfile`/
   generated `Makefile.PL` floors off `Test2::Collector = 0.000001`; update
   `agent_scripts/audit-collector-watch-parent` for scalar-vs-list.
+
+### #4 — Dual preload architecture + lying "DORMANT" comments; delete runner self-restart
+**Status:** Decided · **Step:** 19/23 · **Depends:** —
+
+**Problem:** stale comments in `Runner.pm` claim certain paths are "DORMANT" when
+they are actually **live** (the chunk-19.3 flip already happened — `_preload_root_hosts_stages`
+is true for preload runs). They fooled an auditor. Separately, the runner is now
+scheduler-only, so reload/respawn and in-process stage-hosting logic should leave the
+main runner entirely. Verified: the *only* reason the runner was restartable is
+preloads, and post-flip no preloaded state lives in the runner.
+
+**Steps:**
+- **Fix the lying comments first** (cheap, high-value — they cause wrong audits):
+  rewrite `Runner.pm:661,1178,1231,1273` (and 182-191) to state the gate is live for
+  preload runs; delete the "DORMANT/NOT YET TRIGGERED" claims.
+- **Split job launch by preload-ness:** no-preload job launch becomes a plain
+  collector **fork+exec** of the test file — no `goto::file`, `Long::Jump`, or `BEGIN`
+  in the runner. `goto::file` + `Long::Jump` live **only** in the preload tree
+  (`Preload.pm`/`JobLauncher.pm`).
+- **Delete the runner's self-restart:** the `setjump "Test-Runner"` frame + its
+  `$action` dispatch, `respawn_runner_callback`, the `'respawn'` exec branch, the
+  `RESPAWN_RUNNER_CALLBACK` plumbing, and the respawn trigger in `end_test_loop`.
+  (Verified unreachable for preload runs — scheduler-only — and vestigial for
+  no-preload.)
+- **HUP becomes a pure forward:** on SIGHUP the runner only `service_send('preload-root',
+  'reload')` and continues — no `SIGNAL`, no winddown, no exec. The preload-root owns
+  reload (it re-execs itself, #3). No-preload run → HUP is a no-op.
+- Then resolve the **dead in-runner named-stage path** (the `else` branches in
+  `dispatch_pending`, `set_proc_exit`'s stage branch, `launch_stage` forking named
+  stages, `_stage_transition_reporter`) — unreachable for preload runs; delete (keeps
+  the no-preload base job path).
 
 ### #5 — Delete SharedJobSlots
 **Status:** Decided · **Step:** 11-area · **Depends:** —

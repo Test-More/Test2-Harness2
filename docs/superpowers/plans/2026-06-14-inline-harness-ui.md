@@ -156,7 +156,7 @@
 - [ ] Commit.
 
 ### Task 6.2: Docs
-**Files:** Modify `MIGRATION.md`, `ARCHITECTURE.md`; clean stale POD refs.
+**Files:** Modify `TODO_STEPS.md`, `ARCHITECTURE.md`; clean stale POD refs.
 - [ ] Record the UI inline chunk; note QuickORM conversion is the next chunk.
 - [ ] Commit.
 

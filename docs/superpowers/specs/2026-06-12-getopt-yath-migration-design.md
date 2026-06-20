@@ -9,7 +9,7 @@
 Replace the in-tree 1.0 option-processing machinery (`App::Yath2::Options`,
 `App::Yath2::Option`, `Test2::Harness2::Settings`) with the external
 **`Getopt::Yath`** distribution (installed, 2.000008). This is chunk 2 of the
-1.0 → 2.0 migration (`MIGRATION.md`, `ARCHITECTURE.md` §1.1, §2.3).
+1.0 → 2.0 migration (`TODO_STEPS.md`, `ARCHITECTURE.md` §1.1, §2.3).
 
 ## Decisions (user-approved)
 
@@ -134,6 +134,6 @@ on every touched `.pm` (AGENTS.md).
 2. `App::Yath2.pm` + `Command.pm` core parse-flow swap, commands migrated.
 3. Harness-side consumers (`Test2::Harness2::*`) + settings swap.
 4. Plugins, fixtures, unit tests.
-5. Delete old machinery; migrate release-scripts; MIGRATION.md chunk 2 → ✅.
+5. Delete old machinery; migrate release-scripts; TODO_STEPS.md chunk 2 → ✅.
 
 (Boundaries may shift as work demands; the sequence stays small and ordered.)

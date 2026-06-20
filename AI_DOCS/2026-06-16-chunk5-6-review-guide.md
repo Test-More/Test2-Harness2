@@ -30,9 +30,11 @@ dig.
    (renderers), §4.7 (preload stage services), §5.2–5.3 (wire form + socket
    naming), §6.1 (multi-run — now resolved-in-part) are the sections this branch
    implements.
-4. `TODO_STEPS.md` — "Done so far" (chunk 5 / §6.1 / chunk 6 entries) and "Current
-   state" describe the end state in prose; the "Chunks 4-6 detailed plan" has the
-   per-substep intent. Treat TODO_STEPS.md as the status-of-record.
+4. `TODO_STEPS.md` — the "Done (summary)" section covers chunks 5 / §6.1 / 6; the
+   per-chunk forward intent is under "Pending steps (detail)". (Note: this doc
+   predates the 2026-06-19 restructure; TODO_STEPS no longer has the old "Current
+   state" / "Chunks 4-6 detailed plan" sections — the deep history is in git.) Treat
+   TODO_STEPS.md as the status-of-record.
 
 ## 2. The architecture delta (the mental model)
 

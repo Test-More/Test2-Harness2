@@ -18,11 +18,13 @@ Also: **`AGENTS.md`** (how-to-work rules, pre-review checks), **`IPC.md`**
 
 - **Branch:** `2.0d` (cut from `1.0`). Commit **directly** to it (foundations
   override — no worktrees/feature branches until foundations are declared done).
-- **Testing:** `AUTHOR_TESTING=1 prove -Ilib -j16 -r t/` (portable; the installed
-  `yath -D test` also works). `-Ilib` is **mandatory** (makes the suite use this
-  repo's `lib/`, not an installed 1.0). `AUTHOR_TESTING=1` is required or
-  author-gated tests skip silently. **Not self-hosting yet** — there is no
-  `scripts/yath`; `yath test` is not used to run our own suite. Always `-j16`.
+- **Testing:** run **both**, must pass under both, **always** `AUTHOR_TESTING=1`:
+  `AUTHOR_TESTING=1 prove -Ilib -j16 -r t/` **and** `AUTHOR_TESTING=1 yath test -D -j16`.
+  `-Ilib`/`-D` are mandatory (make the suite use this repo's `lib/`, not an installed
+  1.0). `AUTHOR_TESTING=1` always — author-gated tests must run, not skip. Skip the
+  `yath test` run **only** for interim steps expected to be broken (note it). No
+  repo-local `scripts/yath` (`yath` is the installed `App::Yath::Script`). See AGENTS
+  Testing.
 - **`Test2-Collector`** is a hard dependency (declared in `dist.ini`); reinstall
   from its checkout when a step requires a collector change (e.g. the multi-pid
   `watch_parent_pid`, the `SOMAXCONN` backlog fix).
@@ -53,12 +55,12 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 13 | `spawn` bypasses runner: direct stage socket, dup2 IO, double-fork no collector (§4.8) — needs 9,10,12 | ⬜ | — |
 | 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only object (§1) | ✅ | — |
 | 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
-| 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | #13 (%SORTED), #22 (run lifecycle) |
+| 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | #13 (%SORTED concurrency); #12 (run lifecycle, primary home ch22) |
 | 17 | Plugin setup/teardown move to the runner; aux output → collectors; retire aux_logs flat files | ✅ | — |
 | 18 | Collectors watch the runner pid → self-terminate if runner dies (§4.1) + audit gate | ✅ | — |
 | 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11 |
 | 20 | Interactive mode IO: replace FIFO proxy with socket-shared client IO (§4.10, reuse §4.8 dup2) — needs 13. Interactive may be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b) |
-| 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ⬜ | #6, #8 |
+| 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ⬜ | #6, #8, #11 |
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
 
@@ -154,8 +156,8 @@ carry the specifics.
   multiple runs at once (the **earlier-run-priority + backfill** goal, ARCH §6.1) and
   build run-scoped preload stages (`runs/<run_id>/preload-<stage>.socket`, the
   `run_id` hook — TODO_TASKS **#16**). The concurrent-run scheduler change touches
-  the per-run scheduling structures (TODO_TASKS **#13** `%SORTED`, **#22** run
-  lifecycle).
+  the per-run scheduling structures (TODO_TASKS **#13** `%SORTED`; **#12** run
+  lifecycle is related but its primary home is chunk 22).
 
 - **Chunk 20 — interactive mode IO (§4.10) — needs 13.** Replace the FIFO IO-proxy
   with socket-shared client IO (`dup2` socket→test stdio, reusing the spawn §4.8

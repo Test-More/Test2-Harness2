@@ -238,12 +238,19 @@ reference.
 
 ## Testing
 
-While the harness is being rebuilt and is not yet self-hosting, tests
-run via:
+Tests run via **both** of these, and must pass under **both** (always with
+`AUTHOR_TESTING=1` — those author-gated tests must run, not silently skip):
 
 ```
-prove -Ilib -j16 -r t/
+AUTHOR_TESTING=1 prove -Ilib -j16 -r t/
+AUTHOR_TESTING=1 yath test -D -j16
 ```
+
+The `yath test -D` path works now (the installed `yath` with `-D` prepending this
+checkout's `lib/`). Skip the `yath test` run **only** for interim steps where it is
+expected to be broken (note it when you do). `-Ilib` / `-D` are mandatory — they make
+the suite exercise this repo's `lib/`, not an installed 1.0. There is no repo-local
+`scripts/yath` (the `yath` binary is the installed `App::Yath::Script`).
 
 **Never block on a stuck test run.** The full suite is fast. Enforce a hard
 wall-clock ceiling on any run and treat exceeding it as a failure, not as
@@ -267,14 +274,10 @@ the orphans (`ps`/`pgrep` for `Preload=launch`, `runner`, `yath-nested-runner`,
 provides the `Test2::Collector*` namespace the collector pipeline
 loads).
 
-Eventually yath will be self-hosting and the runner moves to:
-
-```
-yath test -D -j24 [files...]
-```
-
-The `yath` script comes from `App::Yath::Script` (see top of file);
-this distribution does not ship its own `yath` binary.
+Full **self-hosting** (the 2.0 runner running its own suite without `-D` against an
+installed copy) is the end state; until then `yath test -D` against this checkout's
+`lib/` is the working form above. The `yath` script comes from `App::Yath::Script`
+(see top of file); this distribution does not ship its own `yath` binary.
 
 Test layout:
 

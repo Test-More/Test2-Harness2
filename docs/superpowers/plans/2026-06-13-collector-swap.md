@@ -730,20 +730,20 @@ git commit -m "test: update suite for the Test2-Collector pipeline; delete dead 
 ## Task 9: Docs + final gates
 
 **Files:**
-- Modify: `MIGRATION.md`, `ARCHITECTURE.md` (§4.1), `AGENTS.md`/testing note if the test command now needs `-It2clib`.
+- Modify: `TODO_STEPS.md`, `ARCHITECTURE.md` (§4.1), `AGENTS.md`/testing note if the test command now needs `-It2clib`.
 
 - [ ] **Step 9.1: Pre-review gates.** Run `perl agent_scripts/audit-methods-not-functions lib`, `perl agent_scripts/audit-readonly-attrs lib`, and `podchecker` on every touched/new `.pm`. Resolve all hits (hard stops per AGENTS.md). Re-run the suite if code changed.
 
-- [ ] **Step 9.2: Update testing instructions.** If `Test2::Collector*` is now loaded by the live runtime (not just tests), the canonical test command becomes `prove -Ilib -It2clib -j16 -r t/`. Update the testing note in `AGENTS.md` and `MIGRATION.md` "Ground rules" to include `-It2clib` (and note scripts add `t2clib` to `@INC` themselves).
+- [ ] **Step 9.2: Update testing instructions.** If `Test2::Collector*` is now loaded by the live runtime (not just tests), the canonical test command becomes `prove -Ilib -It2clib -j16 -r t/`. Update the testing note in `AGENTS.md` and `TODO_STEPS.md` "Ground rules" to include `-It2clib` (and note scripts add `t2clib` to `@INC` themselves).
 
-- [ ] **Step 9.3: MIGRATION.md.** Flip chunk 3 row to ✅ with commit refs; update "Current state" (tests now run under Test2-Collector; in-tree auditor/parsers/JobDir/stream formatter removed; collector pipeline output is a single events.jsonl.zst per job containing events+transitions; gatherer tails those files; run-level rollup in the gatherer). Add a "Done so far" chunk-3 entry. Update "Next" → chunk 4 (collectors wrap every yath-started process).
+- [ ] **Step 9.3: TODO_STEPS.md.** Flip chunk 3 row to ✅ with commit refs; update "Current state" (tests now run under Test2-Collector; in-tree auditor/parsers/JobDir/stream formatter removed; collector pipeline output is a single events.jsonl.zst per job containing events+transitions; gatherer tails those files; run-level rollup in the gatherer). Add a "Done so far" chunk-3 entry. Update "Next" → chunk 4 (collectors wrap every yath-started process).
 
 - [ ] **Step 9.4: ARCHITECTURE.md §4.1 (Collectors).** Retag from `[target]` toward done for the parts now real: Test2-Collector executes/audits tests; the yath-side collector reads the `.jsonl.zst` the collector writes instead of parsing/auditing raw events. Note the `record_transitions` decision (one file holds events+transitions) and that the live transition socket channel (§4.3) + collectors-for-all-processes (§4.2) remain `[target]` (chunks 4–5). Record the Test2-Collector dist change (transitions→recorder) as an addendum if it deviates from anything §4.1/§5.1 stated.
 
 - [ ] **Step 9.5: Commit.**
 
 ```bash
-git add MIGRATION.md ARCHITECTURE.md AGENTS.md
+git add TODO_STEPS.md ARCHITECTURE.md AGENTS.md
 git commit -m "docs: mark chunk 3 (collector swap) complete"
 ```
 
