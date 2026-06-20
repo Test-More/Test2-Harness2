@@ -29,7 +29,7 @@ use Test2::Harness2::Runner::StatusReport();
 use Test2::Harness2::Runner::Role::Service::Handlers();
 use Test2::Harness2::Runner::Role::Scheduler();
 
-use Test2::Harness2::Plugin();    # chunk 17: $AUX_PIDS registry + run_collected/shellcall
+use Test2::Harness2::Plugin();    # $AUX_PIDS registry + run_collected/shellcall
 
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
@@ -104,7 +104,7 @@ with 'Test2::Harness2::Runner::Role::Scheduler';
 
 sub job_class { 'Test2::Harness2::Runner::Job' }
 
-# Chunk 6 (phase D): launch the runner process under its own non-test collector
+# Launch the runner process under its own non-test collector
 # (ARCH 4.2: "Test2::Harness2::Runner->start (or equivalent) launches the runner
 # process under a non-test collector"). This is the single shared collector-wrap
 # the transient (`yath test`) AND persistent (`yath start`) paths both use, so
@@ -251,7 +251,7 @@ sub state {
 
     my $settings = $self->settings;
 
-    # Chunk 19.3: when the preload-root hosts the stages this runner is
+    # When the preload-root hosts the stages this runner is
     # scheduler-only and holds NO preloader. State resolves a task's stage from the
     # reported stage map (eager fan-out rebuilt from the map's can_run) and, for
     # file_stage / default resolution, a resolve_file_stages round-trip to the base
@@ -416,25 +416,22 @@ sub process {
     $ENV{T2_HARNESS_WORKDIR} = $self->{+DIR};
 
     # Bind runner.socket and run the accept/request loop coexisting with the
-    # run loop (chunk 5a scaffolding). The scheduler is now an in-runner object
-    # ticked each service-loop iteration (chunk 5b). The transient `yath test`
-    # command submits its run and tasks over this socket (chunk 5c), which the
-    # request handlers fold into the in-process State. As of chunk 5g the
-    # transient path no longer writes queue.jsonl/jobs.jsonl (the gatherer that
-    # read them is retired there); they remain only for the gated persistent path.
+    # run loop. The scheduler is an in-runner object ticked each service-loop
+    # iteration. The transient `yath test` command submits its run and tasks
+    # over this socket, which the request handlers fold into the in-process
+    # State. The transient path does not write queue.jsonl/jobs.jsonl; they
+    # remain only for the gated persistent path.
     $self->start_service;
 
-    # Chunk 17: plugin setup() runs HERE, in the runner, after runner.socket is
+    # Plugin setup() runs HERE, in the runner, after runner.socket is
     # bound -- so a plugin's aux work (shellcall / run_collected) reports to the
     # socket as collector events instead of flat aux_logs files, and any aux
     # process is a runner child that dies with the runner. teardown() runs below,
     # after the run loop, before stop().
     $self->setup_plugins;
 
-    # Chunk 19.1: stand up the separate preload-root process (it dials this socket
-    # and handshakes). Spawned-but-idle alongside the existing in-runner preload
-    # path for now; later substeps move stage forking + test launching into it and
-    # retire the in-runner path.
+    # Stand up the separate preload-root process (it dials this socket and
+    # handshakes); it forks the stages and launches the tests.
     $self->spawn_preload_root if $self->_preload_root_wanted;
 
     $self->start();
@@ -445,7 +442,7 @@ sub process {
 
     warn $err unless $ok;
 
-    # Chunk 19.1: tear the preload-root down before plugin teardown/stop so it is
+    # Tear the preload-root down before plugin teardown/stop so it is
     # reaped while the runner is still servicing its socket.
     $self->stop_preload_root;
 
@@ -453,7 +450,7 @@ sub process {
 
     $self->stop();
 
-    # Chunk 5g: the transient command's render completion is the runner closing
+    # The transient command's render completion is the runner closing
     # this socket. Before we close, drain any in-flight transition frames a job
     # collector flushed late (e.g. a stage's last job, whose final_state can race
     # the stage's stop_task report) so they are folded and forwarded to the
@@ -469,7 +466,7 @@ sub process {
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
 }
 
-# Chunk 5g: final non-blocking sweep of the service socket so transitions that
+# Final non-blocking sweep of the service socket so transitions that
 # arrived after the run loop ended are folded into the monitor and forwarded to
 # the subscriber before the socket closes (the command's completion signal).
 sub _drain_transitions {
@@ -496,7 +493,7 @@ sub _drain_transitions {
     return;
 }
 
-# Chunk 17: plugin setup/teardown run in the runner (not the command). The command
+# Plugin setup/teardown run in the runner (not the command). The command
 # serializes plugins to bare class names, so the runner reconstructs the SAME
 # instances from the resolved specs (Class or Class=arg1,arg2) the command stashed
 # in settings->harness->plugin_specs. Loading App::Yath2::Plugin::* is user-driven
@@ -586,7 +583,7 @@ sub stop_aux {
     return;
 }
 
-# Chunk 19.1: the preload root is wanted when this run actually preloads -- there
+# The preload root is wanted when this run actually preloads -- there
 # are preload libraries configured AND we are not below the preload threshold
 # (below threshold preloading is disabled and tests run via the clean fork+exec
 # path). Mirrors the below_threshold computation the in-runner preloader()
@@ -605,15 +602,15 @@ sub _preload_root_wanted {
 # True once the preload-root process hosts ALL the preload stages
 # (base/default included), so this runner is a pure orchestrator -- it schedules
 # and dispatches over sockets and hosts NO stage in-process. LIVE for preload
-# runs: spawn_preload_root sets PRELOAD_ROOT_HOSTS = 1 (the chunk-19.3 flip), so
-# this is true whenever preloads are configured and a preload-root was spawned.
+# runs: spawn_preload_root sets PRELOAD_ROOT_HOSTS = 1, so this is true
+# whenever preloads are configured and a preload-root was spawned.
 # It stays false on the no-preload path (the runner forks each test job itself).
 sub _preload_root_hosts_stages {
     my $self = shift;
     return $self->{+PRELOAD_ROOT_HOSTS} ? 1 : 0;
 }
 
-# Chunk 19.3: rebuild the eager-stage fan-out from the stage data the preload-root
+# Rebuild the eager-stage fan-out from the stage data the preload-root
 # reported. The reported map is { <stage> => { can_run => [...], default => 0|1 } };
 # State::_stage_order wants { <stage> => [<eager children>] } for stages whose
 # can_run is non-empty (an eager stage runs its nested stages' tests when it would
@@ -634,7 +631,7 @@ sub eager_from_stage_map {
     return \%eager;
 }
 
-# Chunk 19.3: an identity of a connected preload STAGE peer (any 'preload-<name>'
+# An identity of a connected preload STAGE peer (any 'preload-<name>'
 # except the preload-root handshake peer). Every stage is forked from the base and
 # so inherits the full merged preload meta (with its file_stage callbacks), so ANY
 # live stage can resolve a file's stage. The base stage's own name varies ('base'
@@ -677,7 +674,7 @@ sub stage_peer_pids {
     return \%pids;
 }
 
-# Chunk 19.3: resolve a test file's stage via a live preload stage -- the only kind
+# Resolve a test file's stage via a live preload stage -- the only kind
 # of process holding the merged preload meta (and its file_stage callbacks). The
 # scheduler-only runner has no preloader, so it asks a stage over the channel that
 # stage registered and caches the answer per file. Returns the resolved stage name,
@@ -712,7 +709,7 @@ sub resolve_file_stage {
     return undef;
 }
 
-# Chunk 19.3: send a request to a preload peer and pump the service loop until its
+# Send a request to a preload peer and pump the service loop until its
 # correlated response arrives (or a timeout). Used by the scheduler-only runner to
 # resolve file_stage from the base stage synchronously during scheduling. Matched
 # responses are stashed by request_id in service_on_response.
@@ -754,7 +751,7 @@ sub service_on_response {
     return;
 }
 
-# Chunk 19.3: the scheduler-only runner cannot bucket a preload task by stage until
+# The scheduler-only runner cannot bucket a preload task by stage until
 # the stage map is reported AND the base stage (the file_stage resolver) is
 # connected -- task_stage resolves through both. A command may submit its run +
 # tasks before the preload-root finishes its handshake and the base stage registers.
@@ -768,7 +765,7 @@ sub _ready_to_schedule {
     return 1;
 }
 
-# Chunk 19.3: true if the preload-root process has exited (reaped here, since it is
+# True if the preload-root process has exited (reaped here, since it is
 # not in {+PROCS}). Used while waiting for stages to register so a preload-root that
 # dies outright does not hang the run until the deadline.
 sub _preload_root_dead {
@@ -809,7 +806,7 @@ sub _handle_dead_preload_root {
     return 'fail';
 }
 
-# Chunk 19.3: surface the preload-root's (and its stages') captured STDERR when the
+# Surface the preload-root's (and its stages') captured STDERR when the
 # preloads fail to come up, so the broken-preload diagnostic (a die in a preload, a
 # stage that did not exit cleanly) reaches the command's output instead of being
 # swallowed in the preload-root's events file. Best-effort: any read error is
@@ -859,7 +856,7 @@ sub _emit_preload_failure_output {
     return;
 }
 
-# Chunk 19.3: apply a run/task submission, or buffer it until the scheduler is ready
+# Apply a run/task submission, or buffer it until the scheduler is ready
 # (see _ready_to_schedule). On every non-scheduler-only path there is no preload-root
 # and this is a straight passthrough to State.
 sub submit_action {
@@ -876,7 +873,7 @@ sub submit_action {
     return;
 }
 
-# Chunk 19.3: replay buffered submissions in order once the scheduler is ready.
+# Replay buffered submissions in order once the scheduler is ready.
 sub flush_submit_buffer {
     my $self = shift;
 
@@ -889,23 +886,18 @@ sub flush_submit_buffer {
     return;
 }
 
-# Chunk 19.1: spawn the preload-root process (Test2::Harness2::Preload) -- the
+# Spawn the preload-root process (Test2::Harness2::Preload) -- the
 # separate process that holds the preloaded interpreter state, so the runner does
 # not. It is fork+exec'd under its own non-test collector (recording its
 # stdout/stderr to preload-root-events.jsonl.zst, the same wire form as the runner
 # and job collectors) and dials runner.socket to handshake (get_preload_list +
 # set_stage_data).
 #
-# It is tracked like an aux process (chunk 17): NOT in {+PROCS}, so it never blocks
+# It is tracked like an aux process: NOT in {+PROCS}, so it never blocks
 # the runner's wait(all=>1); stop_preload_root tears it down at wind-down, and its
 # collector watches the runner pid (ARCHITECTURE.md §4.1) as the backstop. The
 # preload-root deliberately never exits on its own mid-run, so the runner's
 # waitpid(-1) reaper never trips over it.
-#
-# 19.1 STANDS THE PROCESS UP ONLY: it handshakes then idles. Stage forking (19.2),
-# the test-launch goto-file path (19.3), and removing the in-runner preload path
-# (19.5) are separate substeps; here the existing in-runner preloader still runs
-# the run, and this process is spawned-but-idle alongside it.
 sub spawn_preload_root {
     my $self = shift;
 
@@ -947,7 +939,7 @@ sub spawn_preload_root {
 
     $self->{+PRELOAD_ROOT_PID} = $pid;
 
-    # Chunk 19.3: the atomic flip. The preload-root now drives a stage-host Runner
+    # The preload-root drives a stage-host Runner
     # (Preload::run_driver) that hosts EVERY stage (base/default/NOPRELOAD + named),
     # so this runner holds no preloaded state and hosts no stage in-process: it goes
     # scheduler-only (run_tests -> run_scheduler_only) and dispatches every started
@@ -960,7 +952,7 @@ sub spawn_preload_root {
     return $pid;
 }
 
-# Chunk 19.1: tear the preload root down at runner wind-down. Ask it to stop over
+# Tear the preload root down at runner wind-down. Ask it to stop over
 # the channel it dialed (pumping the socket so the request is delivered and it is
 # reaped), then TERM->KILL+reap by pid as the backstop -- the aux-process teardown
 # shape (it is not in {+PROCS}).
@@ -997,17 +989,16 @@ sub stop_preload_root {
     return;
 }
 
-# Chunk 5g: the runner is the transient completion/stalled/timeout authority now
-# that the yath-side gatherer is retired on the transient path. The watchdog folds
-# the gatherer's non-walking duties (stalled-job detection, abort-on-wind-down)
-# into the scheduler tick over canonical state. The standing gatherer survives
-# only for the gated persistent path.
+# On the transient path the runner is the completion/stalled/timeout authority
+# (there is no yath-side gatherer). The watchdog folds the stalled-job detection
+# and abort-on-wind-down duties into the scheduler tick over canonical state. The
+# standing gatherer survives only for the gated persistent path.
 sub watchdog {
     my $self = shift;
     return $self->{+WATCHDOG} //= Test2::Harness2::Runner::Watchdog->new(runner => $self);
 }
 
-# Chunk 5d: hand started tasks bound for socketed stages out to those stages.
+# Hand started tasks bound for socketed stages out to those stages.
 sub dispatch_pending {
     my $self = shift;
 
@@ -1033,12 +1024,11 @@ sub dispatch_pending {
     for my $task (@tasks) {
         my $stage = $task->{stage};
 
-        # Chunk 9: dispatch down the registered channel the stage opened to us
-        # (service_send by peer identity), instead of dialing the stage's socket.
-        # The stage is only schedulable after its stage_ready arrived on that
-        # connection, so the peer normally exists; if the stage has since died its
-        # connection dropped (EOF) and service_send reports no peer -- the same
-        # "stage gone" signal the old connect-out client surfaced.
+        # Dispatch down the registered channel the stage opened to us
+        # (service_send by peer identity). The stage is only schedulable after
+        # its stage_ready arrived on that connection, so the peer normally
+        # exists; if the stage has since died its connection dropped (EOF) and
+        # service_send reports no peer -- the "stage gone" signal.
         my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item);
 
         # take_dispatch_tasks already pulled this task off the list while it stays
@@ -1057,7 +1047,7 @@ sub dispatch_pending {
             next;
         }
 
-        # Chunk 5f: dispatching a job to a stage is a runner-originated state
+        # Dispatching a job to a stage is a runner-originated state
         # mutation; forward it to subscribers so their mirror sees the job move.
         $self->announce_job($task->{job_id}, 'dispatched', stage => $stage, file => $task->{file}, run_id => $task->{run_id});
     }
@@ -1117,7 +1107,7 @@ sub run_tests {
 sub run_scheduler_only {
     my $self = shift;
 
-    # Chunk 19.3: wait until the preload-root has reported the stage map AND the base
+    # Wait until the preload-root has reported the stage map AND the base
     # stage (the file_stage resolver) is connected, so buffered run/task submissions
     # can be bucketed and resolved correctly. Submissions that arrive during this
     # window are buffered by submit_action; flush them once ready. If the preload-root
@@ -1182,7 +1172,7 @@ sub run_scheduler_only {
     # than "never ran" (the same wind-down duty the staged loop performs).
     $self->watchdog->abort_remaining unless $self->{+PERSIST};
 
-    # Chunk 19.3b: the stages are children of the preload-root, not this runner, so
+    # The stages are children of the preload-root, not this runner, so
     # they are not in {+PROCS}; we only know them as registered `preload-<name>`
     # peers. The run is done, so tell every stage to stop over the channel it opened
     # to us. Once all stages stop, the preload-root's own stage-host run loop ends
@@ -1192,7 +1182,7 @@ sub run_scheduler_only {
     return;
 }
 
-# Chunk 19.3b: send a graceful 'stop' to every connected preload stage peer
+# Send a graceful 'stop' to every connected preload stage peer
 # (identities `preload-<name>`, excluding the preload-root's own handshake peer).
 # On the preload path the stages are the preload-root's children (hosted by
 # Test2::Harness2::Preload::Host), not this runner's, so the runner only knows them
@@ -1259,7 +1249,7 @@ sub run_stage {
 
     $self->state->stage_restarting($stage);
 
-    # Chunk 5g: the run loop is ending; any task still tracked as running whose
+    # The run loop is ending; any task still tracked as running whose
     # collector never reported completion (e.g. a job left over on a signal-driven
     # shutdown) will never finish on its own. Synthesize its abort into canonical
     # state so the command-side driver rolls it up as failed instead of reporting it
@@ -1331,21 +1321,13 @@ sub run_job {
         $pid = $job->pid;
     }
 
-    # jobs.jsonl was the runner -> gatherer channel (the gatherer read it to learn
-    # spawned jobs + their pids). Chunk 5g retired it on the transient path and
-    # chunk 6.1 retires it on the persistent path: the runner forwards the
-    # job-start as an announce_job mutation over the socket, and the job's pid
-    # rides the new job_pid report / in-memory map (status/ps/abort), so no
-    # process reads the file any more.
-
-    # Chunk 5f: forking a test job is a runner-originated state mutation; forward
+    # Forking a test job is a runner-originated state mutation; forward
     # it to subscribers so their mirror sees the job go running.
     $self->announce_job($task->{job_id}, 'running', stage => $task->{stage}, file => $task->{file}, run_id => $task->{run_id});
 
-    # Chunk 6.1-2: track the job's pid for the status/ps/abort report. The runner
-    # records it directly (it is the job-pid authority), replacing the per-run
-    # jobs.jsonl the status/ps commands used to read. (A preload-stage's forked
-    # jobs are reported to the runner via the job_pid request from
+    # Track the job's pid for the status/ps/abort report. The runner
+    # records it directly (it is the job-pid authority). (A preload-stage's
+    # forked jobs are reported to the runner via the job_pid request from
     # Test2::Harness2::Preload::Host.)
     $self->record_job_pid($task->{job_id}, $pid);
 
@@ -1411,7 +1393,7 @@ sub set_proc_exit {
         if (($exit || $timed_out) && $proc->is_try < ($proc->retry // 0)) {
             $self->state->retry_task($task->{job_id});
             push @args => 'will-retry';
-            # Chunk 5f: a root-forked job finishing is a runner-originated state
+            # A root-forked job finishing is a runner-originated state
             # mutation; forward it so a subscriber's mirror sees it re-queued.
             $self->announce_job($task->{job_id}, 'retry', file => $task->{file}, run_id => $task->{run_id});
         }
