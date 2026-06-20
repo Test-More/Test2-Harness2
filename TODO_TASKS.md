@@ -255,7 +255,7 @@ results already come from the collector, not the reap.
   the `IPC` base class.
 
 ### #9 — Factor the collector-reporter boilerplate into `Util::socket_reporter`
-**Status:** Decided · **Step:** foundation · **Depends:** —
+**Status:** ✅ DONE (batch 2, `fca4f3e42`) — see TODO_DONE.md · **Step:** foundation · **Depends:** —
 
 **Problem:** 4 identical `Recorder::Socket->new(... no_reply, drain_input ...)`
 reporter-construction sites + the same TCP-RST rationale comment (Runner.pm:1039,
@@ -343,7 +343,7 @@ delete purely-historical ones. The lying `DORMANT` comments are fixed **now** as
 1 of #4.
 
 ### #16 — `run_ord` → rename `run_id` (keep the seam)
-**Status:** Decided · **Step:** 16 · **Depends:** —
+**Status:** ✅ DONE (batch 2, `212aca276`) — see TODO_DONE.md · **Step:** 16 · **Depends:** —
 
 **Problem:** `run_ord` is the dormant socket-naming seam for run-scoped preload stages
 (`runs/<run_ord>/preload-<stage>.socket`), needed once run-scoped stages + concurrent
@@ -442,7 +442,7 @@ All thin under #4/#8/chunk23 (eager/file_stage removed). **Defer; then rename** 
 `Runner::Stage::done` always returns 0 → `die "impossible"` or drop.
 
 ### #24 — Resource base → Role with `requires available, assign`
-**Status:** Decided · **Step:** 11 · **Depends:** #5
+**Status:** ✅ DONE (batch 2, `38f6b00a9`) — see TODO_DONE.md · **Step:** 11 · **Depends:** #5
 
 **Problem:** the Resource base has 9 no-op methods; `available` defaults to `-1`
 (forgetting it silently all-skips). `scope_global/host/run` are dead after #5 (only

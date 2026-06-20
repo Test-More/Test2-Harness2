@@ -7,6 +7,46 @@ Newest first.
 
 ---
 
+## Batch 2 (2026-06-19) — dedup + interface
+
+Three parallel tickets, integrated onto 2.0d. Combined suite green: `prove` Files=106
+Tests=1731 · `yath test` PASSED (both `AUTHOR_TESTING=1 -j16`).
+
+### #24 — Resource base → Role::Tiny role (`requires available, assign`) — DONE (`38f6b00a9`, orig `0a979a4093`)
+Converted `Runner::Resource` to a **Role::Tiny role that `use`s Object::HashBase**
+(`use Role::Tiny;` before `use Object::HashBase;` so HashBase suppresses `new` for the
+role; then `requires 'available','assign'`). Consumers compose via the `&` prefix
+(`use Object::HashBase qw/&Test2::Harness2::Runner::Resource .../`); `JobCount`
+predeclares `sub new;` to keep its own `new`. Removed dead `scope_global/host/run` and
+the `available`/`assign` no-op defaults; kept the optional no-op hooks (+
+`sort_weight`/`job_limiter*`/`discharge` — called on every resource). Converted the 4
+integration-test resources to `&`-composition; POD → composition.
+**Review notes:** (1) `requires` enforcement is a **load-time WARN, not a hard die**
+(HashBase's role-applier `warn`s on a missing required method) — JobCount + all test
+resources satisfy it, so moot in practice; flag if fatal enforcement was wanted.
+(2) no-op defaults got explicit invokants (`my $self = shift; return`) to satisfy the
+methods-not-functions audit now that the file `use`s Object::HashBase. (3) kept the
+existing `strict/warnings` headers (v5.38 is for new modules only).
+
+### #16 — `run_ord` → rename `run_id` (keep the seam) — DONE (`212aca276`, orig `9369a5f22`)
+Renamed the dormant socket-naming seam everywhere (`Role/Service.pm` `->can`/POD/
+`service_socket_path`, `Runner.pm` seam comment, and the `Role_Service.t` consumer
+test). `grep run_ord lib/ t/` → zero hits. Fixed the doc ("per-run numeric subdir" →
+"the run's run_id (UUID) subdir"). Seam intact, behavior identical (no consumer defines
+the hook). The unrelated real `run_id` run-identifier API was untouched.
+
+### #9 — Factor collector-reporter boilerplate → `Util::socket_reporter` — DONE (`fca4f3e42`, orig `beb44ecd5`)
+Added exportable `Test2::Harness2::Util::socket_reporter($identity, $socket)` (returns
+undef unless `-S $socket`; builds `Recorder::Socket` with `no_reply`, `drain_input`,
+**`pid => $$`** — the #1 handshake pid; eval-guarded). Swapped the 4 sites (Runner.pm
+preload-root, Job.pm, Preloader.pm, Plugin.pm), identity strings preserved. **Review
+note:** Job.pm/Preloader.pm previously `warn`ed on connect failure; the helper swallows
+the error + returns undef (the file recorder still produces a complete stream), so those
+two warns are gone — the one behavioral delta beyond the dedup. Flag if the warn should
+be restored (e.g. socket-reporter failure now goes silent).
+
+---
+
 ## Batch 1 (2026-06-19) — behavior-preserving deletes
 
 Four independent tickets, each implemented by a fresh agent in an isolated worktree,
