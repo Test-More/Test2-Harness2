@@ -72,10 +72,9 @@ use Test2::Harness2::Util::HashBase(
 
         +last_timeout_check
         +timeout_signaled
+        +run_reached_timeout
         +can_stage
         <tmp_dir
-
-        +scheduler_errors
 
         <rootpid
 
@@ -381,8 +380,8 @@ sub check_timeouts {
 
         print STDERR "$$ $0 " . $job->file . " collector process-group did not fully exit after the collector was reaped, sending " . ($kill ? 'SIGKILL' : 'SIGTERM') . " to $pid...\n";
 
-        $self->{run_reached_timeout} //= {};
-        $self->{run_reached_timeout}->{$job->task->{job_id}} = $pid;
+        $self->{+RUN_REACHED_TIMEOUT} //= {};
+        $self->{+RUN_REACHED_TIMEOUT}->{$job->task->{job_id}} = $pid;
 
         kill($sig, $pid);
     }
@@ -1615,8 +1614,8 @@ sub set_proc_exit {
         delete $self->{+JOB_PIDS}->{$task->{job_id}};
 
         my $timed_out = 0;
-        if (!$exit && ref $self->{run_reached_timeout} && $self->{run_reached_timeout}->{$task->{job_id}}) {
-            delete $self->{run_reached_timeout}->{$task->{job_id}};
+        if (!$exit && ref $self->{+RUN_REACHED_TIMEOUT} && $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}) {
+            delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}};
             $timed_out = 1;
         }
 
