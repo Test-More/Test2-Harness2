@@ -531,6 +531,43 @@ sub _retry_task {
     return;
 }
 
+# bloat #3: put a RUNNING task back into the PENDING queue to be re-resolved and
+# re-dispatched on a later tick -- WITHOUT consuming a retry. Used when a job was
+# started (slot + resources consumed, RUNNING) but never actually accepted by a
+# stage: the assigned stage went down/restarting between available/assign and the
+# actual dispatch (the assign->launch race, §4.7a), or a self-restarting stage took
+# its channel before it could fork the job. This is NOT a failure: the job is owed a
+# run, just not by that stage incarnation.
+#
+# Distinct from retry_task (which consumes a try after a genuine failure) and from
+# abort_job (which fails the job). The job_id / try number are preserved, the
+# running slot + resources are released (_stop_task -> a fresh assign/record happens
+# on re-dispatch), and the %SORTED bucket memo is cleared (_queue_task). Emits no
+# terminal subscriber transition -- the runner forwards a 'requeued' mutation (or
+# none) rather than 'done'/'aborted'.
+#
+# TASK_LOOKUP holds the ORIGINAL task (its directive `stage` preference); the
+# resolved-stage copy lives only in RUNNING_TASKS and is dropped by _stop_task. So
+# re-queuing TASK_LOOKUP's task re-resolves the run stage (directive / file_stage /
+# default) against the CURRENT map on the next tick -- a stage that has since come
+# back, or a different available stage, can take it.
+sub requeue_task {
+    my $self = shift;
+    my ($job_id) = @_;
+
+    my $task = $self->{+TASK_LOOKUP}->{$job_id} or die "Could not find task to requeue ($job_id)";
+
+    $self->_stop_task($job_id);
+
+    return if $self->{+HALTED_RUNS}->{$task->{run_id}};
+
+    # A fresh copy (TASK_LOOKUP's was deleted by _stop_task); the try number and the
+    # directive stage preference are preserved -- a requeue does not consume a retry.
+    $self->_queue_task({%$task});
+
+    return;
+}
+
 # §6.8 (chunk 19.5): named stage lifecycle states are the single source of stage
 # scheduling state -- the old parallel STAGE_READINESS map is gone. STAGE_LIFECYCLE
 # is a per-stage record {state, stamp} that the scheduler gate (_stage_order,

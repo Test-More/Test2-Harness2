@@ -441,6 +441,30 @@ sub record_job_pid {
     return;
 }
 
+# bloat #3: put a started-but-never-accepted job back in the queue (the dispatch
+# found its assigned stage gone, BEFORE the stage forked the job and took ownership
+# of completion). This is the safe requeue: the stage never received the task, so no
+# duplicate run can result. Releases the slot / resources and re-queues for
+# re-resolution (State::requeue_task, no retry consumed), clears any job_pids entry,
+# and forwards a non-terminal 'requeued' mutation (NOT 'done'/'aborted') so a
+# subscriber's mirror moves the job back to pending rather than finalizing it.
+sub requeue_task {
+    my $self = shift;
+    my ($task) = @_;
+
+    my $job_id = $task->{job_id} // return;
+
+    # A racing stop/abort may already have cleared it; treat that as a no-op.
+    my $ok = eval { $self->state->requeue_task($job_id); 1 };
+    return unless $ok;
+
+    delete $self->{'job_pids'}->{$job_id};
+
+    $self->announce_job($job_id, 'requeued', file => $task->{file}, run_id => $task->{run_id});
+
+    return;
+}
+
 # Chunk 5d: a transient stage reports it has bound its socket and is ready to be
 # scheduled (or is going down at shutdown). The runner folds this into the same
 # stage-readiness state its scheduler's _stage_order already gates on, replacing

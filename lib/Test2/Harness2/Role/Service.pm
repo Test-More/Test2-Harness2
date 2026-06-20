@@ -94,8 +94,9 @@ The existing connection to peer C<$identity>, or C<undef>.
 =item $request_id = $self->service_send($identity, $command, %args)
 
 Send a request to the peer named C<$identity> over the shared connection. Returns
-the request_id (truthy) on success, or false if there is no live connection to that
-peer. The reply, if the handler sends one, arrives later via
+the request_id (truthy) on success, or B<false> if there is no live connection to
+that peer B<or the write failed> (the peer vanished mid-write, closing the
+connection). The reply, if the handler sends one, arrives later via
 C<service_on_response>; one-way requests need no reply.
 
 =item $self->service_io

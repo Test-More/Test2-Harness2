@@ -795,7 +795,10 @@ sub request_preload_sync {
     my ($identity, $command, %args) = @_;
 
     my $conn = $self->service_peer_conn($identity) or return undef;
-    my $request_id = $conn->send_request($command, %args);
+
+    # send_request returns false if the write failed (the peer vanished mid-write,
+    # closing the connection) -- nothing to wait for, fail over immediately.
+    my $request_id = $conn->send_request($command, %args) or return undef;
 
     $self->{preload_responses} //= {};
 
@@ -1160,18 +1163,18 @@ sub dispatch_pending {
         my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item);
 
         # take_dispatch_tasks already pulled this task off the list while it stays
-        # tracked as RUNNING (slot + resources consumed). If the dispatch was a
-        # no-op because the stage is gone, no stage will ever run it or report
-        # stop_task/retry_task -- the job is stuck running forever and the run
-        # hangs (clear_finished_run refuses to finish while RUNNING is nonzero).
-        # Abort it NOW through the same machinery the watchdog uses on wind-down:
-        # release its slot / resources and announce it as 'aborted' (failed) with a
-        # diagnostic, instead of announcing a 'dispatched' that never happened.
+        # tracked as RUNNING (slot + resources consumed). service_send returns false
+        # when the stage's channel is gone (no peer, or the write failed because the
+        # peer vanished mid-write) -- the stage NEVER received the task, so it never
+        # forked the job and never took ownership of its completion. This is the
+        # assign->launch race (§4.7a) / a self-restarting stage taking its channel:
+        # the job is owed a run, not a failure. REQUEUE it (bloat #3) -- release its
+        # slot / resources and put it back PENDING (no retry consumed) to be
+        # re-resolved and re-dispatched on a later tick -- instead of aborting it.
+        # Requeuing is safe ONLY because no stage accepted it; once a stage forks the
+        # job, its collector owns completion and requeuing would duplicate-run.
         unless ($sent) {
-            $self->watchdog->abort_job(
-                $task->{job_id}, $task,
-                "Stage '$stage' is gone; could not dispatch this job to it",
-            );
+            $self->requeue_task($task);
             next;
         }
 

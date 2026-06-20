@@ -391,7 +391,8 @@ sub _request_sync ($self, $identity, $command, %args) {
     my $conn = $self->service_peer_conn($identity)
         or croak "no connection to peer '$identity'";
 
-    my $request_id = $conn->send_request($command, %args);
+    my $request_id = $conn->send_request($command, %args)
+        or croak "could not send '$command' to '$identity' (connection closed)";
 
     $self->{+RESPONSES} //= {};
 

@@ -205,9 +205,16 @@ sub send_identity ($self) {
 }
 
 sub send_request ($self, $command, %args) {
+    return undef if $self->{+CLOSED};
+
     my $request_id = gen_uuid();
     $self->{+PENDING}{$request_id} = 1;
     $self->_write({request => {%args, request_id => $request_id, command => $command}});
+
+    # _write closes the connection on a failed write (e.g. the peer is gone). Report
+    # the failure so callers (service_send) can treat it as "not delivered".
+    return undef if $self->{+CLOSED};
+
     return $request_id;
 }
 
