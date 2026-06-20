@@ -119,14 +119,18 @@ The persistent runner stays listening until a `stop` request.
 
 ## 4. Who reaps whom
 
-Reaping is local to whichever process forked the (collector-wrapped) child;
-`Test2::Harness2::IPC` owns it in each forking process. The runner's
+Reaping is local to whichever process forked the (collector-wrapped) child.
+`Test2::Harness2::IPC` is the multi-child reaper for the two genuinely
+multi-child forkers -- the runner (its own no-preload job collectors) and
+`Test2::Harness2::Preload::Host` (its forked stages + jobs). The `yath test`
+command, which forks exactly one child (the runner), reaps it inline on
+`Util::IPC` without the controller (§4 table). The runner's
 `Role::Service::reap_children` is a deliberate **no-op** so it does not race
 `Test2::Harness2::IPC`.
 
 | Forks / spawns | Reaps | Notes |
 |---|---|---|
-| `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner |
+| `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner. The command owns exactly this one child, so it spawns it on `Util::IPC::run_cmd` and reaps/signals it with a direct `waitpid`/`kill` (no `Test2::Harness2::IPC` controller instance) |
 | runner | the **preload-root** (its collector); on the no-preload path, the test job (its collector) it forked directly | the preload-root pid is tracked **outside** the runner's `{+PROCS}` (so it never trips `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root`) |
 | preload-root | each preload stage (its collector) it forked | the base/default/NOPRELOAD stage runs in-process in the preload-root and is not forked/reaped |
 | preload stage | each test job (its collector) it forked | the stage reports the job's `stop_task`/`retry_task` up the one service channel it opened to the runner |
