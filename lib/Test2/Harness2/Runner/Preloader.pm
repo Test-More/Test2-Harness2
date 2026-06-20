@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use B();
-use Carp qw/confess croak/;
+use Carp qw/croak/;
 use Fcntl qw/LOCK_EX LOCK_UN/;
 use POSIX();
 use Long::Jump qw/setjump longjump/;
@@ -627,11 +627,10 @@ sub _reload_cb_delete_symbol {
 sub _monitor {
     my $self = shift;
 
-    if ($self->{+MONITORED} && $self->{+MONITORED}->[0] == $$) {
-        die "Monitor already starated\n" . "\n=======\n$0\n" . Carp::longmess() . "\n=====\n" . $self->{+MONITORED}->[1] . "\n" . $self->{+MONITORED}->[2] . "\n=======\n";
-    }
+    die "Monitor already started in this process ($$)\n"
+        if $self->{+MONITORED} && $self->{+MONITORED} == $$;
 
-    $self->{+MONITORED} = [$$, $0, Carp::longmess()];
+    $self->{+MONITORED} = $$;
 
     my $reloader = $self->{+RELOADER};
     $reloader->reset();
