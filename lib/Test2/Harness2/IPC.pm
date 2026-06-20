@@ -138,7 +138,9 @@ sub _bring_out_yer_dead {
     my $found = 0;
     while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
         my $exit = $?;
-        die "waitpid returned pid '$pid', but we are not monitoring that one!" unless $procs->{$pid};
+        # A pid we are not monitoring is a child forked by a plugin or 3rd-party
+        # module that we happened to reap here; that is benign, just skip it.
+        next unless $procs->{$pid};
         $found++;
         $waiting->{$pid} = [$exit, time()];
     }
