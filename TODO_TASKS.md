@@ -294,7 +294,7 @@ teardown paths → one: `stop_stages` (in-runner `Preloader::Stage`) is deleted 
 `stop_preload_stages` (socket peers) survives.
 
 ### #12 — Run state lifecycle: fold onto `Run`, connection-gated retention
-**Status:** Decided · **Step:** 22 · **Depends:** #1
+**Status:** ✅ DONE (batch 5, `5ac411700`) — see TODO_DONE.md · **Step:** 22 · **Depends:** #1
 
 **Problem:** `RUN_ITEMS` keeps a raw copy of every queued run forever (leak;
 unbounded on a persistent runner); `run_item` returns only the active one.
@@ -312,7 +312,7 @@ unbounded on a persistent runner); `run_item` returns only the active one.
   retention/abort is owner-gated.
 
 ### #13 — `%SORTED` → instance field, stable key, pruned
-**Status:** Decided · **Step:** 16 · **Depends:** —
+**Status:** ✅ DONE (batch 5, `44d4f1aa1`) — see TODO_DONE.md · **Step:** 16 · **Depends:** —
 
 **Problem:** package-global `%SORTED` (sort memo keyed by arrayref address) leaks
 forever, has a ref-reuse correctness bug (reused address skips the conflict sort), and

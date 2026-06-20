@@ -7,6 +7,33 @@ Newest first.
 
 ---
 
+## Batch 5 (2026-06-19) — run lifecycle + scheduler memo
+
+Combined suite green: `prove` Files=107 Tests=1740 · `yath test` PASSED.
+
+### #12 — Run state lifecycle: fold onto `Run`, connection-gated retention — DONE (`5ac411700`, orig `215336f6e`/`248212d0b`)
+Part 1: added `raw_item` to the `Run` object (`{%$run}` at queue); `run_item` returns
+`$RUN->raw_item`; deleted the leaking `RUN_ITEMS` hash. Part 2: owner-gated retention —
+`request_handler_queue_run` records `run_owners{run_id} => {conn, peer_pid (#1),
+abort_on_disconnect (default true)}`; a new `Role::Service::service_conn_closed($conn)`
+hook (called from the single `_drop_conn` path) sweeps owned runs on disconnect:
+finished→`purge_run`; running+flag→run-scoped `Watchdog::abort_remaining(run_id=>…)` +
+`abort_run` (halt pending, stop, advance); running+!flag→detach. State keeps finished
+runs in `retained_runs` until owner-drop (was: discarded immediately); `announce_run`
+purges unowned finished runs (bounded retention). `queue_task`/`stop_run` still any-conn.
+Added `State_run_retention.t` (8 subtests). **Notes:** abort-on-disconnect default true
+(transient `yath test` relies on it — green); the detach path (flag false) is implemented
++ unit-tested but not exercised e2e (no `yath queue` command sets the flag yet).
+
+### #13 — `%SORTED` → instance field, stable key, pruned — DONE (`44d4f1aa1`, orig `bd011cfe5`)
+Made `%SORTED` an instance `{+SORTED}` slot keyed by the stable path tuple
+`join("\0", run_id, smoke, stage, cat, dur)` (was the arrayref address → leak +
+ref-reuse bug). Clears the bucket key on add (`_queue_task`) and all `^<run_id>\0` keys
+on `_stop_run`; comment flags the single-active-run assumption for chunk 16. Conflict-
+priority sort verified still once-per-bucket.
+
+---
+
 ## Batch 4 (2026-06-19) — stage lifecycle + runner rework (partial)
 
 Combined suite green: `prove` Files=106 Tests=1732 · `yath test` PASSED.
