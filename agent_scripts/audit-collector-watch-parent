@@ -16,6 +16,10 @@ use warnings;
 # pass watch_parent_pid nor carry an exemption marker. Exits 1 on any hit, 0 when
 # clean. Heuristic: comments are blanked and POD skipped before matching; the
 # call's argument list is taken as the balanced-parenthesis span after the call.
+#
+# watch_parent_pid may be a single pid OR an arrayref of ancestor pids (a stage
+# collector watches runner + parent stage(s) + preload-root). This audit only
+# checks that the key is passed, so both spellings satisfy it.
 
 use File::Find ();
 
