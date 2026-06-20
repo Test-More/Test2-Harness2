@@ -334,7 +334,7 @@ the priority index so it isn't re-flagged. (`run_id` outer key is already multi-
 forward-compatible.)
 
 ### #15 — Chunk-comment archaeology
-**Status:** Deferred · **Step:** after #1-#13 · **Depends:** the rewriting tickets
+**Status:** ✅ DONE (`97f51134a`) — 109 chunk-comments → 0; per-comment judgment (strip-current / delete-historical). See TODO_DONE.md
 
 127 `# Chunk N.M` comments (Runner.pm 47, Handlers.pm 32). **Defer the bulk sweep**
 until #1-#13 rewrite the heavily-commented code (sweep the final code). **Not a

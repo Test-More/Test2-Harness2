@@ -7,6 +7,21 @@ Newest first.
 
 ---
 
+## #15 — Chunk-comment archaeology sweep — DONE (`97f51134a`, 7 commits)
+
+Suite green: `prove` Files=108 Tests=1731 · `yath test` PASSED 109/1736. Comments
+only. **`grep '# *[Cc]hunk [0-9]' lib/` → 0** (and a broader inline/POD `chunk N`
+sweep → 0). Per-comment judgment: purely-historical comments deleted; current-invariant
+explanations kept with the `Chunk N.M` prefix stripped; `§X.Y` / `ARCHITECTURE.md`
+cross-refs and `(ticket #N)`/`bloat #N` refs preserved. Rough: Runner.pm ~30 stripped /
+~4 deleted; Handlers.pm ~28 stripped; State.pm stripped + 1 deleted; rest per-file.
+**Flag for a future code-accuracy pass (not this comments-only ticket):**
+`Scheduler.pm:~120` comment still says tasks dispatch to "preload-<stage>.socket"
+whereas the code dispatches over the registered channel via `service_send` — wording
+only, left as-is.
+
+---
+
 ## #8 — Collapse the IPC controller (simplify) — Parts 1-3 DONE; Part 4 DEFERRED (`280720efb`)
 
 Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED.
