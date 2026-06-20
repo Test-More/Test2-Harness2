@@ -30,7 +30,7 @@ use Test2::Harness2::Util::HashBase(
         +settings
     },
 
-    # Chunk 19.3: the scheduler-only runner (preload-root hosts the stages) has NO
+    # The scheduler-only runner (preload-root hosts the stages) has NO
     # preloader, so task_stage resolves from the stage map the preload-root reported
     # plus a file_stage_resolver coderef that asks the base stage. eager_stages is
     # writable (not <) because set_stage_data refreshes it once the map arrives.
@@ -197,7 +197,7 @@ sub next_task {
     }
 }
 
-# Chunk 5d: pull tasks the scheduler has started whose run-stage is NOT the
+# Pull tasks the scheduler has started whose run-stage is NOT the
 # given (root) stage off the task list, so the runner can dispatch them to the
 # matching stage service. Tasks for the root's own stage are left in place for the
 # root's own run_job (the no-preload path). Returns the removed tasks; their
@@ -210,7 +210,7 @@ sub take_dispatch_tasks {
     my $list = $self->{+TASK_LIST} //= [];
     my (@dispatch, @keep);
     for my $task (@$list) {
-        # Chunk 19.2b: an undef root_stage means the runner hosts no stage of its
+        # An undef root_stage means the runner hosts no stage of its
         # own (the preload-root hosts every stage), so dispatch every staged task
         # out. Otherwise dispatch only tasks NOT bound for the root's own stage.
         if (defined($task->{stage}) && (!defined($root_stage) || $task->{stage} ne $root_stage)) {
@@ -237,7 +237,7 @@ sub advance {
 }
 
 # The runner owns its scheduling state outright and applies every mutation
-# in-process immediately (chunk 5d). truncate's real work is the halt_run loop.
+# in-process immediately. truncate's real work is the halt_run loop.
 sub truncate {
     my $self = shift;
     $self->halt_run($_) for keys %{$self->{+PENDING_TASKS} // {}};
@@ -245,10 +245,6 @@ sub truncate {
 
 sub end_queue { $_[0]->{+QUEUE_ENDED} = 1 }
 
-# Chunk 6.1: the per-run jobs.jsonl (the old runner -> gatherer channel) is
-# retired. Halting a run no longer needs to append a terminator to it -- the
-# runner forwards the run's outcome over the socket and the renderer rolls it
-# up from canonical state.
 sub halt_run {
     my $self = shift;
     my ($run_id) = @_;
@@ -649,7 +645,7 @@ sub reset_stage_readiness {
     return;
 }
 
-# Chunk 19.3 + §6.8: the reported stage map is the runner's commitment record of
+# The reported stage map is the runner's commitment record of
 # which stages will exist. Setting it transitions lifecycle: every stage present in
 # the new map that has no live ('up') record yet is 'starting' (committed/known,
 # its stage_ready not yet arrived); a stage that was tracked but is now absent from
@@ -734,7 +730,7 @@ sub task_stage {
     # default itself.
     return $self->preloader->task_stage($task->{file}, $wants) if $self->preloader;
 
-    # Chunk 19.3 scheduler-only path: the preload-root hosts the stages, so resolve
+    # Scheduler-only path: the preload-root hosts the stages, so resolve
     # from the reported stage map plus a file_stage round-trip to the base stage. With
     # neither a preloader nor a stage map (no preload at all) keep the legacy fallback.
     # The base stage always registers as lowercase 'default' (Runner::Preloader),
@@ -757,7 +753,7 @@ sub task_stage {
     return $self->_default_stage_from_map($map);
 }
 
-# Chunk 19.3: the default stage from the reported map -- the one flagged default, or
+# The default stage from the reported map -- the one flagged default, or
 # (defensively) the first by name when none is flagged.
 sub _default_stage_from_map {
     my $self = shift;
