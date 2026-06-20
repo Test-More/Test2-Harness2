@@ -43,7 +43,44 @@ our @EXPORT_OK = qw{
 
     looks_like_uuid
     is_same_file
+
+    socket_reporter
 };
+
+# Build the one-way Test2::Collector::Recorder::Socket that streams a collector's
+# transitions to runner.socket, or undef when the socket cannot be located or the
+# connection fails (so the file recorder still produces a complete stream and the
+# collector is never blocked on the transition channel). $identity is the
+# preamble identity name (e.g. "collector:job:<id>"); $socket is the runner.socket
+# path. Shared by every collector reporter site (the preload-root, per-job,
+# per-stage, and plugin-aux collectors).
+#
+# The reporter identifies first (preamble) like every connection, but it is
+# one-way -- it only streams transitions and never reads. It sets no_reply so the
+# runner does NOT send its identity back: an unread reply would, on the reporter's
+# close, turn into a TCP-RST that discards in-flight transitions. It still
+# drains+discards input defensively. pid => $$ carries the reporter process's real
+# pid in the identity handshake.
+sub socket_reporter {
+    my ($identity, $socket) = @_;
+
+    return undef unless $socket && -S $socket;
+
+    require Test2::Collector::Recorder::Socket;
+
+    my $reporter;
+    my $ok = eval {
+        $reporter = Test2::Collector::Recorder::Socket->new(
+            paths       => [$socket],
+            preamble    => {identity => {name => $identity, no_reply => 1, pid => $$}},
+            drain_input => 1,
+        );
+        1;
+    };
+
+    return undef unless $ok;
+    return $reporter;
+}
 
 sub is_same_file {
     my ($file1, $file2) = @_;
@@ -496,6 +533,22 @@ result returned without prepending C<$prefix>.
 =item hub_truth
 
 This is an internal implementation detail, do not use it.
+
+=item $reporter = socket_reporter($identity, $socket)
+
+Build the one-way L<Test2::Collector::Recorder::Socket> that streams a
+collector's transitions to the runner's C<runner.socket>. C<$identity> is the
+preamble identity name (for example C<"collector:job:$id">), and C<$socket> is
+the path to C<runner.socket>.
+
+Returns C<undef> when C<$socket> is unset, is not a socket, or the connection
+cannot be made -- callers fall back to the file recorder so a missing or
+not-yet-accepting socket only costs the reporter, never the events file.
+
+The reporter is one-way: it identifies first (preamble) like every connection,
+sets C<no_reply> so the runner does not send its identity back, and still drains
+and discards any input defensively. Its preamble carries C<< pid => $$ >> so the
+reporter process's real pid is part of the identity handshake.
 
 =item $hashref = parse_exit($?)
 

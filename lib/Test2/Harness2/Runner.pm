@@ -11,7 +11,7 @@ use POSIX qw/:sys_wait_h/;
 use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/sleep time/;
 
-use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file collector_exit_code runner_events_file/;
+use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter/;
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 
@@ -1030,19 +1030,7 @@ sub spawn_preload_root {
     # (like the per-stage and aux collectors) so its transitions stream to
     # runner.socket and the renderer surfaces them -- tagged INTERNAL like the
     # runner/stage streams, carrying the process's own `yath-nested-runner` $0.
-    my $reporter;
-    if (-S $socket) {
-        require Test2::Collector::Recorder::Socket;
-        my $ok = eval {
-            $reporter = Test2::Collector::Recorder::Socket->new(
-                paths       => [$socket],
-                preamble    => {identity => {name => "collector:preload-root", no_reply => 1}},
-                drain_input => 1,
-            );
-            1;
-        };
-        undef $reporter unless $ok;
-    }
+    my $reporter = socket_reporter("collector:preload-root", $socket);
 
     my $pid = Test2::Collector::spawn_collector(
         is_test            => 0,

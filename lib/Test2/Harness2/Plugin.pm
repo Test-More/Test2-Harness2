@@ -40,6 +40,7 @@ sub _aux_collect_args {
 
     require File::Spec;
     require Test2::Collector::Recorder::Zstd;
+    require Test2::Harness2::Util;
     require Test2::Harness2::Util::UUID;
 
     my $dir = $ENV{T2_HARNESS_WORKDIR}
@@ -48,22 +49,7 @@ sub _aux_collect_args {
     my $efile  = File::Spec->catfile($dir, "aux-${name}-" . Test2::Harness2::Util::UUID::gen_uuid() . ".jsonl.zst");
     my $socket = File::Spec->catfile($dir, 'runner.socket');
 
-    my $reporter;
-    if (-S $socket) {
-        require Test2::Collector::Recorder::Socket;
-        # The reporter identifies (preamble) like any collector and is one-way
-        # (no_reply); it streams transitions to runner.socket so the runner folds
-        # the aux collector into canonical state and the renderer finds its events
-        # file by path. A missing/unreachable socket leaves the file recorder.
-        eval {
-            $reporter = Test2::Collector::Recorder::Socket->new(
-                paths       => [$socket],
-                preamble    => {identity => {name => "collector:aux:$name", no_reply => 1}},
-                drain_input => 1,
-            );
-            1;
-        } or undef $reporter;
-    }
+    my $reporter = Test2::Harness2::Util::socket_reporter("collector:aux:$name", $socket);
 
     return (
         is_test            => 0,

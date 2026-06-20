@@ -15,7 +15,7 @@ use Time::HiRes qw/time/;
 use File::Spec();
 use File::Temp();
 
-use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp collector_exit_code/;
+use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp collector_exit_code socket_reporter/;
 use Test2::Harness2::IPC;
 
 use parent 'Test2::Harness2::IPC::Process';
@@ -314,28 +314,8 @@ sub _transition_reporter {
     return undef unless defined $workdir && length $workdir;
 
     my $socket = File::Spec->catfile($workdir, 'runner.socket');
-    return undef unless -S $socket;
 
-    require Test2::Collector::Recorder::Socket;
-
-    # Chunk 9: the reporter identifies first (preamble) like every connection, but
-    # it is one-way -- it only streams transitions and never reads. It sets no_reply
-    # so the runner does NOT send its identity back: an unread reply would, on the
-    # reporter's close, turn into a TCP-RST that discards in-flight transitions. It
-    # still drains+discards input defensively.
-    my $reporter;
-    return $reporter
-        if eval {
-            $reporter = Test2::Collector::Recorder::Socket->new(
-                paths       => [$socket],
-                preamble    => {identity => {name => "collector:job:" . $self->job_id, no_reply => 1}},
-                drain_input => 1,
-            );
-            1;
-        };
-
-    warn "$$ $0 could not connect transition reporter to '$socket': $@";
-    return undef;
+    return socket_reporter("collector:job:" . $self->job_id, $socket);
 }
 
 sub switches_from_env {

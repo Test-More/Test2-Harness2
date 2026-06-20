@@ -10,7 +10,7 @@ use Fcntl qw/LOCK_EX LOCK_UN/;
 use POSIX();
 use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/time sleep/;
-use Test2::Harness2::Util qw/open_file file2mod mod2file lock_file unlock_file clean_path collector_exit_code stage_events_file/;
+use Test2::Harness2::Util qw/open_file file2mod mod2file lock_file unlock_file clean_path collector_exit_code stage_events_file socket_reporter/;
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Runner::Reloader;
@@ -288,28 +288,8 @@ sub _stage_transition_reporter {
     return undef unless defined $workdir && length $workdir;
 
     my $socket = File::Spec->catfile($workdir, 'runner.socket');
-    return undef unless -S $socket;
 
-    require Test2::Collector::Recorder::Socket;
-
-    # Chunk 9: the reporter identifies first (preamble) like every connection, but
-    # it is one-way -- it only streams transitions and never reads. It sets no_reply
-    # so the runner does NOT send its identity back: an unread reply would, on the
-    # reporter's close, turn into a TCP-RST that discards in-flight transitions. It
-    # still drains+discards input defensively.
-    my $reporter;
-    return $reporter
-        if eval {
-            $reporter = Test2::Collector::Recorder::Socket->new(
-                paths       => [$socket],
-                preamble    => {identity => {name => "collector:stage:$stage_name", no_reply => 1}},
-                drain_input => 1,
-            );
-            1;
-        };
-
-    warn "$$ $0 could not connect stage transition reporter to '$socket': $@";
-    return undef;
+    return socket_reporter("collector:stage:$stage_name", $socket);
 }
 
 sub start_stage {
