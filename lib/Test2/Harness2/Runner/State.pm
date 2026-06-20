@@ -63,6 +63,8 @@ use Test2::Harness2::Util::HashBase(
 
         <last_job_activity
         <total_started
+
+        sorted
     },
 );
 
@@ -298,6 +300,11 @@ sub _stop_run {
 
     $self->{+STOPPED_RUNS}->{$run_id} = 1;
 
+    # Drop this run's _next sort memo buckets so they do not leak past the run.
+    # Assumes a single active run; must be revisited for concurrent multi-run (chunk 16).
+    my $sorted = $self->{+SORTED} //= {};
+    delete $sorted->{$_} for grep { 0 == index($_, "$run_id\0") } keys %$sorted;
+
     return;
 }
 
@@ -379,6 +386,11 @@ sub _queue_task {
 
     my $pending = $self->task_pending_lookup($task);
     push @{$pending} => $task;
+
+    # A new task in this bucket invalidates _next's conflict-priority sort memo,
+    # so the reinserted task gets re-sorted. Keyed by the stable path tuple.
+    # Assumes a single active run; must be revisited for concurrent multi-run (chunk 16).
+    delete $self->{+SORTED}->{join("\0", $self->task_fields($task))};
 
     return;
 }
@@ -878,7 +890,6 @@ sub _stage_order {
     return \@stages;
 }
 
-my %SORTED;
 sub _next {
     my $self = shift;
 
@@ -886,6 +897,8 @@ sub _next {
     my $run_id = $run->run_id;
 
     my $pending = $self->{+PENDING_TASKS}->{$run_id} or return;
+
+    my $sorted = $self->{+SORTED} //= {};
 
     my $conflicts = $self->{+RUNNING_CONFLICTS};
     my $cat_order = $self->_cat_order;
@@ -909,8 +922,11 @@ sub _next {
                 for my $ldur (@$dur_order) {
                     my $search = $search->{$ldur} or next;
 
-                    # Make sure anything with conflicts runs early.
-                    unless ($SORTED{$search}++) {
+                    # Make sure anything with conflicts runs early. Memo keyed by the
+                    # stable path tuple (address-reuse-safe), cleared when a task is
+                    # added to the bucket (_queue_task) or the run stops (_stop_run).
+                    my $sort_key = join("\0", $run_id, $smoke, $lstage, $lcat, $ldur);
+                    unless ($sorted->{$sort_key}++) {
                         @$search = sort { scalar(@{$b->{conflicts}}) <=> scalar(@{$a->{conflicts}}) } @$search;
                     }
 
