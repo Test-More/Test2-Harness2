@@ -9,9 +9,8 @@ use Getopt::Yath;
 use Test2::Harness2::Run;
 use Test2::Harness2::Event;
 use Test2::Harness2::Util::File::JSON;
-use Test2::Harness2::IPC;
 use Test2::Harness2::Runner;
-use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
+use Test2::Harness2::Util::IPC qw/run_cmd/;
 
 use Test2::Harness2::Renderer::Driver;
 
@@ -32,7 +31,7 @@ use Carp qw/croak/;
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/
-    <runner_pid +ipc +signal
+    <runner_pid +owns_runner +runner_exited +sigs_installed +signal
 
     +run_plan <run_id
 
@@ -130,14 +129,96 @@ sub workdir {
     $self->settings->workspace->workdir;
 }
 
-sub ipc {
+# The command manages exactly ONE child: the runner (its collector wrapper),
+# spawned by start_runner. So it does not need the heavy Test2::Harness2::IPC
+# controller -- it spawns the one child on Util::IPC's run_cmd and reaps/signals
+# it directly here. The persistent run/spawn paths connect to a PRE-EXISTING
+# runner they do not own (owns_runner is false there), so the reap/signal helpers
+# leave it alone.
+
+# Install INT/HUP/TERM handlers that forward to handle_sig. Idempotent.
+sub install_signal_handlers {
     my $self = shift;
-    return $self->{+IPC} //= Test2::Harness2::IPC->new(
-        handlers => {
-            INT  => sub { $self->handle_sig(@_) },
-            TERM => sub { $self->handle_sig(@_) },
-        }
-    );
+
+    return if $self->{+SIGS_INSTALLED};
+    $self->{+SIGS_INSTALLED} = 1;
+
+    for my $sig (qw/INT HUP TERM/) {
+        $SIG{$sig} = sub { $self->handle_sig($sig) };
+    }
+
+    return;
+}
+
+sub remove_signal_handlers {
+    my $self = shift;
+
+    return unless $self->{+SIGS_INSTALLED};
+    $self->{+SIGS_INSTALLED} = 0;
+
+    delete $SIG{$_} for qw/INT HUP TERM/;
+
+    return;
+}
+
+# Non-blocking reap of the one runner child. Sets runner_exited once it is gone
+# (or when there is no child to reap). A no-op on the persistent path (we do not
+# own the runner there).
+sub reap_runner {
+    my $self = shift;
+
+    return if $self->{+RUNNER_EXITED};
+
+    my $pid = $self->{+RUNNER_PID};
+    return unless $pid && $self->{+OWNS_RUNNER};
+
+    local $?;
+    my $got = waitpid($pid, POSIX::WNOHANG());
+    $self->{+RUNNER_EXITED} = 1 if $got == $pid || $got == -1;
+
+    return;
+}
+
+# True once our spawned runner is no longer running. The happy path keys
+# completion on the socket EOF; this is the fallback when there is no
+# subscription (the runner died before it ever bound its socket).
+sub runner_gone {
+    my $self = shift;
+
+    return 1 unless $self->{+RUNNER_PID} && $self->{+OWNS_RUNNER};
+
+    $self->reap_runner;
+    return $self->{+RUNNER_EXITED} ? 1 : 0;
+}
+
+# Block until our spawned runner has been reaped. A no-op on the persistent path.
+sub wait_for_runner {
+    my $self = shift;
+
+    my $pid = $self->{+RUNNER_PID};
+    return unless $pid && $self->{+OWNS_RUNNER};
+    return if $self->{+RUNNER_EXITED};
+
+    local $?;
+    waitpid($pid, 0);
+    $self->{+RUNNER_EXITED} = 1;
+
+    return;
+}
+
+# Forward a signal to our spawned runner; it tears down its own job children.
+# A no-op on the persistent path (we do not own that runner).
+sub signal_runner {
+    my $self = shift;
+    my ($sig) = @_;
+    $sig //= 'TERM';
+
+    my $pid = $self->{+RUNNER_PID};
+    return unless $pid && $self->{+OWNS_RUNNER};
+
+    kill($sig, $pid);
+
+    return;
 }
 
 sub handle_sig {
@@ -147,7 +228,7 @@ sub handle_sig {
     eval { $_->signal($sig) } for grep { $_->can('signal') } @{$self->renderers};
 
     print STDERR "\nCaught SIG$sig, forwarding signal to child processes...\n";
-    $self->ipc->killall($sig);
+    $self->signal_runner($sig);
 
     if ($self->{+SIGNAL}) {
         print STDERR "\nSecond signal ($self->{+SIGNAL} followed by $sig), exiting now without waiting\n";
@@ -207,7 +288,7 @@ sub DESTROY {
 sub start {
     my $self = shift;
 
-    $self->ipc->start();
+    $self->install_signal_handlers();
     $self->parse_args;
     $self->write_settings_to($self->workdir, 'settings.json');
 
@@ -248,19 +329,12 @@ sub client {
     my $self = shift;
 
     return $self->{+CLIENT} //= do {
-        my $ipc        = $self->ipc;
-        my $runner_pid = $self->runner_pid;
-
         App::Yath2::Client->new(
             workdir        => $self->workdir,
             liveness_check => sub {
-                # Single non-blocking reap pass (timeout => 0 makes wait do one
-                # _bring_out_yer_dead sweep and return), so a runner that died
-                # during startup leaves our tracked procs and the client can stop.
-                # This is IPC's own reap path, so runner-death handling is
-                # unchanged.
-                eval { $ipc->wait(timeout => 0); 1 };
-                return $runner_pid && $ipc->procs->{$runner_pid} ? 1 : 0;
+                # Single non-blocking reap pass, so a runner that died during
+                # startup is detected and the client can stop trying to connect.
+                return $self->runner_gone ? 0 : 1;
             },
         );
     };
@@ -340,7 +414,6 @@ sub render {
 sub render_via_subscription {
     my $self = shift;
 
-    my $ipc    = $self->ipc;
     my $sub    = $self->connect_subscriber;
     my $driver = $self->driver;
 
@@ -378,7 +451,7 @@ sub render_via_subscription {
             return;
         }
 
-        $ipc->wait() if $ipc;
+        $self->reap_runner;
         sleep 0.02;
     }
 }
@@ -445,15 +518,12 @@ sub subscription_complete {
 
 # True once the runner process is no longer tracked as live. Used as the
 # completion fallback when there is no subscription (the runner died before it
-# ever bound its socket); the happy path keys completion on the socket EOF.
+# ever bound its socket); the happy path keys completion on the socket EOF. The
+# persistent run path overrides this (its runner is a pre-existing process it
+# does not own, checked via kill(0)).
 sub _runner_gone {
     my $self = shift;
-
-    my $ipc        = $self->ipc;
-    my $runner_pid = $self->runner_pid or return 1;
-
-    eval { $ipc->wait(timeout => 0); 1 };
-    return $ipc->procs->{$runner_pid} ? 0 : 1;
+    return $self->runner_gone;
 }
 
 
@@ -473,13 +543,12 @@ sub stop {
 
     $_->finish() for @$renderers;
 
-    my $ipc = $self->ipc;
     print STDERR "Waiting for child processes to exit...\n" if $self->{+SIGNAL};
 
     $self->signal_shutdown() if $self->{+SIGNAL};
 
-    $ipc->wait(all => 1);
-    $ipc->stop;
+    $self->wait_for_runner;
+    $self->remove_signal_handlers;
 
     unless ($settings->display->quiet > 2) {
         printf STDERR "\nNo tests were seen!\n" unless $self->{+TESTS_SEEN};
@@ -510,7 +579,7 @@ sub terminate_queue {
 # Shutdown work to do when the command itself caught a signal. The run state lives
 # in the runner now (chunk 5c), so rather than reconstructing it to kill individual
 # job pids, ask the runner to halt the run over the socket. handle_sig already
-# forwarded the signal to the runner (and thus its job children) via ipc->killall,
+# forwarded the signal to the runner (and thus its job children) via signal_runner,
 # so the running tests are being torn down regardless.
 sub signal_shutdown {
     my $self = shift;
@@ -910,27 +979,30 @@ sub start_runner {
 
     my $runner_events_file = runner_events_file($dir);
 
-    my $ipc  = $self->ipc;
-    my $proc = $ipc->spawn(
-        env_vars    => {@prof ? (NYTPROF => 'start=no:addpid=1') : ()},
+    # The command owns exactly this one child, so it spawns it directly on the
+    # fork-exec run_cmd primitive and reaps/signals it itself (#8) -- no heavy IPC
+    # controller. The spawned child becomes the collector PARENT and never
+    # returns: it runs the whole collector and POSIX::_exit()s. This mirrors
+    # Test2::Harness2::Runner::Job::spawn_params and only works under the
+    # fork-exec run_cmd (which invokes the coderef in the already-forked child);
+    # the harness only supports fork-capable systems. The collector forks the
+    # actual runner (exec), captures its stdout/stderr/exit, and records the full
+    # stream into runner-events.jsonl.zst, so there are no separate stdout/stderr
+    # files anymore. The collector-wrap is shared with the persistent path via
+    # Test2::Harness2::Runner->start_collected (ARCH 4.2).
+    my $pid = run_cmd(
+        caller1     => [caller()],
+        caller2     => [caller(1)],
+        env         => {@prof ? (NYTPROF => 'start=no:addpid=1') : ()},
         no_set_pgrp => 1,
-
-        # The spawned child becomes the collector PARENT and never returns: it
-        # runs the whole collector and POSIX::_exit()s. This mirrors
-        # Test2::Harness2::Runner::Job::spawn_params and only works under the
-        # fork-exec run_cmd (which invokes the coderef in the already-forked
-        # child); the harness only supports fork-capable systems. The collector
-        # forks the actual runner (exec), captures its stdout/stderr/exit, and
-        # records the full stream into runner-events.jsonl.zst, so there are no
-        # separate stdout/stderr files anymore. The collector-wrap is shared with
-        # the persistent path via Test2::Harness2::Runner->start_collected
-        # (ARCH 4.2).
-        command => Test2::Harness2::Runner->start_collected(\@runner_cmd, $runner_events_file),
+        command     => Test2::Harness2::Runner->start_collected(\@runner_cmd, $runner_events_file),
     );
 
-    $self->{+RUNNER_PID} = $proc->pid;
+    $self->{+RUNNER_PID}     = $pid;
+    $self->{+OWNS_RUNNER}    = 1;
+    $self->{+RUNNER_EXITED}  = 0;
 
-    return $proc;
+    return $pid;
 }
 
 sub parse_args {
