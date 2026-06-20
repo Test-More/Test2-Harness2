@@ -192,7 +192,7 @@ preloads, and post-flip no preloaded state lives in the runner.
   the no-preload base job path).
 
 ### #5 — Delete SharedJobSlots
-**Status:** Decided · **Step:** 11-area · **Depends:** —
+**Status:** ✅ DONE (batch 1, `6bd15d6b6`) — see TODO_DONE.md · **Step:** 11-area · **Depends:** —
 
 **Problem:** the cross-runner shared-slot coordinator has dead internals + a real
 `mod2file` import bug — but it is being replaced by a future system-usage resource.
@@ -206,7 +206,7 @@ unaffected (that's `JobCount`, kept). Removes multi-runner slot coordination unt
 the system-usage resource lands.
 
 ### #6 — Delete dead `wait()` params (`cat`/`all_cat`/`block`)
-**Status:** Decided · **Step:** 21 · **Depends:** —
+**Status:** ✅ DONE (batch 1, `d6f3135fb`) — see TODO_DONE.md · **Step:** 21 · **Depends:** —
 
 **Problem:** `wait()` accepts `cat`/`all_cat`/`block`/`all`/`timeout`; the four call
 sites use only `all`/`timeout`/none. `cat`/`all_cat`/`block` are 1.0 category-scoped
@@ -218,7 +218,7 @@ and `PROCS_BY_CAT` (if `cat` was its only consumer). `_wait_done` collapses to:
 nothing-left / timeout / `all`-mode-remains / default-single-pass.
 
 ### #7 — Misc dead lines / fossils
-**Status:** Mixed · **Step:** various · **Depends:** —
+**Status:** ✅ 7a/7d/7e/7f DONE (batch 1) — see TODO_DONE.md; 7b → chunk 20; 7c moot via #5 · **Step:** various · **Depends:** —
 
 - **7a — delete:** Reloader.pm dup `$MASK |= IN_MOVE_SELF()` line.
 - **7d — delete:** unused `use Atomic::Pipe` in `Renderer/DB.pm`.
@@ -379,7 +379,7 @@ decode-then-forward handlers are the right RPC surface (`submit_action` also isn
 passthrough — it buffers until the base stage is ready).
 
 ### #19 — Delete stale stage-report methods from `Runner::Client`
-**Status:** Decided · **Step:** — · **Depends:** —
+**Status:** ✅ DONE (batch 1, `3d3e28d61`) — see TODO_DONE.md · **Step:** — · **Depends:** —
 
 `Stage->_report` uses `service_send` directly, so `Runner::Client`'s `stop_task`/
 `retry_task`/`reload`/`stage_ready`/`stage_down`/`job_pid` have **0 callers**. Delete
