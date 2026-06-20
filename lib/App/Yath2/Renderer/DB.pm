@@ -11,7 +11,6 @@ use App::Yath2::Schema::RunProcessor;
 use Consumer::NonBlock;
 use App::Yath2::Schema::Util;
 
-use Atomic::Pipe;
 use YAML::Tiny;
 
 use Carp qw/confess/;
