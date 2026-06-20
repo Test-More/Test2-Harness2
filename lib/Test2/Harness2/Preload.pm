@@ -246,8 +246,6 @@ sub _run_stage_host ($self) {
     my $dir      = $self->{+WORKDIR};
     my $settings = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
 
-    my $my_pid = $self->{+MY_PID};
-
     my $runner = Test2::Harness2::Runner->new(
         $settings->runner->all,
 
@@ -259,9 +257,8 @@ sub _run_stage_host ($self) {
         # preload (warn+skip); transient ⇒ monitor off ⇒ a broken preload is fatal.
         monitor_preloads => $self->{+MONITOR_PRELOADS},
 
-        fork_job_callback       => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'preload-root') },
-        fork_spawn_callback     => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
-        respawn_runner_callback => sub { return unless $$ == $my_pid; longjump 'preload-root' => 'respawn' },
+        fork_job_callback   => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'preload-root') },
+        fork_spawn_callback => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
     );
 
     $runner->process();

@@ -97,9 +97,8 @@ sub generate_run_sub {
             dir      => $dir,
             settings => $settings,
 
-            fork_job_callback       => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'Test-Runner') },
-            fork_spawn_callback     => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'Test-Runner') },
-            respawn_runner_callback => sub { return unless $$ == $runner_pid; longjump "Test-Runner" => 'respawn' },
+            fork_job_callback   => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'Test-Runner') },
+            fork_spawn_callback => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'Test-Runner') },
         );
 
         my $exit = $runner->process();
@@ -117,14 +116,6 @@ sub generate_run_sub {
     die "Test runner completed, but failed to exit" unless $jump;
 
     my ($action, $job, $stage) = @$jump;
-
-    if ($action eq 'respawn') {
-        print "$$ Respawning the runner...\n";
-        $cleanup->dismiss(1);
-        exec($^X, $settings->harness->script, @{$spawn_settings->harness->orig_argv});
-        warn "exec failed!";
-        exit 1;
-    }
 
     die "Invalid action: $action" if $action ne 'run_test';
 

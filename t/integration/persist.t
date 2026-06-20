@@ -74,15 +74,22 @@ yath(
     },
 );
 
+# A no-preload persistent runner holds no preloaded interpreter state and no
+# longer self-restarts: it is a pure scheduler/orchestrator. `yath reload` (a
+# SIGHUP) is therefore a no-op here -- the runner keeps running and does not
+# re-exec. (To pick up code changes a no-preload persistent runner must be
+# stopped and started again; reload only does work when a preload-root is
+# hosting stages, which re-execs the preload tree.) The command still succeeds
+# (the signal is delivered); the runner simply does not reload.
 yath(command => 'reload', exit => 0);
 
+# Confirm the runner survived the reload no-op and is still serving its socket.
 yath(
-    command => 'watch',
-    args    => ['STOP'],
+    command => 'status',
     exit    => 0,
     test    => sub {
         my $out = shift;
-        like($out->{output}, qr{yath-nested-runner \(default\) Runner caught SIGHUP, reloading}, "Reloaded runner");
+        like($out->{output}, qr/\*\*\*\* Runner Stages: \*\*\*\*/, "runner still serving after a no-op reload");
     },
 );
 

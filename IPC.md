@@ -100,8 +100,10 @@ clients connecting IN to runner.socket:
    yath reload  SIGHUP → the runner's own pid (from yath-persist.json). On a
                 preload run the (scheduler-only) runner does NOT wind down: its HUP
                 handler forwards a 'reload' request to the preload-root (which
-                re-execs itself) and keeps scheduling. A no-preload runner still
-                self-restarts on HUP via the command's setjump "Test-Runner" frame.
+                re-execs itself) and keeps scheduling. The runner never self-restarts:
+                it holds no preloaded interpreter state. A no-preload runner therefore
+                has nothing to reload, so HUP is a no-op (to pick up code changes a
+                no-preload persistent runner must be stopped and started again).
 ```
 
 `yath run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`/`which`/`watch`

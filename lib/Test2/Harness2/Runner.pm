@@ -59,7 +59,7 @@ use Test2::Harness2::Util::HashBase(
     },
     # From Construction
     qw{
-        <dir <settings <fork_job_callback <fork_spawn_callback <respawn_runner_callback <monitor_preloads
+        <dir <settings <fork_job_callback <fork_spawn_callback <monitor_preloads
         <jobs_todo <dump_depmap <persist
     },
     # Other
@@ -235,10 +235,17 @@ sub init {
             return;
         }
 
-        # Legacy in-runner reload path: the real no-preload runner (self-restart via
-        # the command's setjump "Test-Runner" frame) and a stage-host base/default
-        # runner (rootpid != $$, respawn via longjump 'preload-root') both reload by
-        # setting SIGNAL=HUP, which their stage's end_test_loop turns into a respawn.
+        # The real root runner (rootpid == $$) is now purely scheduler/orchestrator;
+        # it holds no preloaded interpreter state and does not self-restart. A
+        # no-preload run has nothing to reload, so HUP here is a no-op (a no-preload
+        # persistent runner must be restarted to pick up code changes). The preload
+        # case already returned above (it forwards the reload to the preload-root).
+        return if $self->{+ROOTPID} == $$;
+
+        # Stage-host base/default runner (rootpid != $$): it lives inside the
+        # preload-root and reloads by re-execing the whole preload tree. It signals
+        # the reload by setting SIGNAL=HUP, which its base/default stage's
+        # end_test_loop turns into a respawn (longjump 'preload-root').
         print "$$ $0 ($self->{+STAGE}) Runner caught SIG$sig, reloading...\n";
         $self->{+SIGNAL} = $sig;
     };
@@ -1563,11 +1570,6 @@ sub end_test_loop {
     my $state = $self->state;
 
     no warnings 'uninitialized';
-    if (!$self->{+STAGE} || $self->{+STAGE} eq 'default' || $self->{+STAGE} eq 'base') {
-        $self->{+RESPAWN_RUNNER_CALLBACK}->()
-            if $self->preloader->check($state) || ($self->{+SIGNAL} && $self->{+SIGNAL} eq 'HUP');
-    }
-
     if ($self->preloader->check($state)) {
         $self->{+SIGNAL} //= 'HUP';
         return 1;
@@ -1721,10 +1723,6 @@ The L<Getopt::Yath::Settings> instance.
 =item $coderef = $runner->fork_job_callback
 
 Callback used to spawn new tests via fork.
-
-=item $coderef = $runner->respawn_runner_callback
-
-Callback to restart the runner process.
 
 =item $bool = $runner->monitor_preloads
 
