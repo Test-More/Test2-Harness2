@@ -13,9 +13,11 @@ my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;
 $dir =~ s{^\./}{};
 
-# Test 1: Scheduler logic keeps throwing (repeated exception in tick()).
-# The in-runner scheduler catches each error, retries up to its limit, then
-# aborts the run cleanly with a useful diagnostic instead of spinning forever.
+# Test 1: Scheduler logic throws (exception in tick()).
+# The in-runner scheduler fails fast: a throw out of poll/advance/dispatch is a
+# real in-process bug and is left to propagate rather than being retried. The run
+# terminates non-zero, surfacing the original error, instead of spinning or
+# silently hanging.
 yath(
     command => 'test',
     args    => [$dir, '--ext=tx', '-j2', "-D$dir", '-R+SchedulerKillerResource'],
@@ -23,8 +25,8 @@ yath(
     exit    => T(),
     test    => sub {
         my $out = shift;
-        like($out->{output}, qr/Scheduler error.*Intentional scheduler crash/, "Runner surfaced the in-runner scheduler error");
-        like($out->{output}, qr/Scheduler aborting after .* consecutive errors/, "Runner aborted after reaching the error limit");
+        ok($out->{exit}, "Run did not hang; it failed fast after the scheduler threw");
+        like($out->{output}, qr/Intentional scheduler crash/, "Runner surfaced the original scheduler error");
     },
 );
 
@@ -43,9 +45,11 @@ yath(
     },
 );
 
-# Test 3: Scheduler recovers from transient errors.
-# SchedulerKillerResource throws twice then stops. The in-runner scheduler
-# catches the errors, retries, and the run completes successfully.
+# Test 3: A resource that absorbs its own transient errors lets the run finish.
+# The scheduler fails fast, so resilience to transient errors is the resource's
+# job: SchedulerKillerResource hits a transient error a few times but swallows it
+# inside its own tick(). The run completes successfully and the scheduler never
+# sees a throw.
 yath(
     command => 'test',
     args    => [$dir, '--ext=tx', '-j2', "-D$dir", '-R+SchedulerKillerResource'],
@@ -53,8 +57,7 @@ yath(
     exit    => 0,
     test    => sub {
         my $out = shift;
-        like($out->{output}, qr/Scheduler error.*Transient scheduler error/, "Runner logged the transient scheduler error");
-        unlike($out->{output}, qr/Scheduler aborting/, "Runner did not abort on a transient error");
+        like($out->{output}, qr/absorbed transient error/, "Resource absorbed its own transient error");
     },
 );
 

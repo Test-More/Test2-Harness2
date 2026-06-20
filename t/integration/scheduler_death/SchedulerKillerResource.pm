@@ -34,12 +34,20 @@ sub tick {
         POSIX::_exit(0);
     }
     elsif ($mode eq 'recover') {
-        # Throw a few times then stop, simulating a transient error
+        # The scheduler fails fast: a throw out of tick() is a real in-process
+        # bug and is no longer retried. A resource that wants to tolerate a
+        # transient error must absorb it inside its own tick(). Simulate that
+        # here: hit a transient error a few times but swallow it ourselves so the
+        # run completes instead of aborting.
         $self->{_error_count} //= 0;
         if ($self->{_error_count}++ < 2) {
-            die "Transient scheduler error for testing\n";
+            my $ok = eval {
+                die "Transient scheduler error for testing\n";
+                1;
+            };
+            warn "SchedulerKillerResource absorbed transient error: $@" unless $ok;
         }
-        # After 2 errors, stop throwing — scheduler should recover
+        # After 2 errors, stop hitting the transient error entirely.
     }
 }
 

@@ -5,6 +5,17 @@ our $VERSION = '2.000000';
 
 use Role::Tiny;
 
+# Constant-only slots: this role shares the runner's hashref. Declaring the slot
+# keys it touches as HashBase constants gives compile-time/grep safety on the
+# bare-string keys without changing the slots themselves (the constant is the
+# lowercased name). The owning runner declares the same slots; the values match.
+use Test2::Harness2::Util::HashBase qw{
+    +rootpid
+    +signal
+    +active_run
+    +resource_timeout
+};
+
 requires qw/state announce_run dispatch_pending service_stopped/;
 
 =pod
@@ -47,17 +58,13 @@ Called each service-loop iteration. Translates a socket C<stop> request into the
 runner's own shutdown signal, then advances the scheduler via
 C<scheduler_tick>.
 
-=item $int = $self->SCHEDULER_MAX_ERRORS
-
-How many consecutive scheduler-logic failures the runner tolerates before it
-aborts the run.
-
 =item $self->scheduler_tick
 
 Advance the in-process scheduler: poll + advance the state, announce a finished
 run, dispatch started tasks to stage sockets, and enforce the resource timeout.
-Consecutive failures are counted and the run is aborted after
-C<SCHEDULER_MAX_ERRORS>.
+A throw out of any of these is a real in-process bug and is left to propagate —
+the scheduler fails fast. Resources that need to tolerate transient errors must
+catch them inside their own C<tick()>.
 
 =back
 
@@ -70,7 +77,7 @@ sub service_tick {
     # role's request_handler_stop sets service_stopped; translate that into the
     # runner's own shutdown signal so the run loop (run_stage) terminates through
     # end_test_loop.
-    $self->{'signal'} //= 'TERM' if $self->service_stopped;
+    $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
 
     # The scheduler is an in-runner object (chunk 5b): advance it here, on the
     # same service-loop cadence the socket I/O runs on, instead of in a separate
@@ -80,77 +87,54 @@ sub service_tick {
     return;
 }
 
-# How many consecutive scheduler-logic failures the runner tolerates before it
-# gives up and aborts the run. A scheduler used to be a separate process that
-# could die and be detected via waitpid; now that it is in-runner code, a
-# failure (e.g. a resource that dies in tick()) surfaces here directly. We retry
-# a few times so a transient error self-heals, then abort cleanly with a useful
-# diagnostic rather than spinning or silently hanging.
-sub SCHEDULER_MAX_ERRORS { 5 }
-
 sub scheduler_tick {
     my $self = shift;
 
     # Only the root runner process schedules; forked stage children do not.
-    return unless $self->{'rootpid'} == $$;
+    return unless $self->{+ROOTPID} == $$;
 
     # Once we are winding down there is no point advancing the scheduler.
-    return if $self->{'signal'};
+    return if $self->{+SIGNAL};
 
     my $state = $self->state;
 
-    my $ok = eval {
-        $state->poll;
+    # Fail fast: the scheduler is in-runner code now (the separate-process retry
+    # rationale died with the IPC model). A throw out of poll/advance/dispatch is
+    # a real in-process bug and is left to propagate. Resources that need to
+    # tolerate transient errors must catch them inside their own tick().
+    $state->poll;
 
-        # Track the active run across the advance so we can announce its end the
-        # moment it leaves the active slot (chunk 6.1-2 per-run completion). The
-        # run is recorded once it becomes active and announced once it clears.
-        my $before = $state->run ? $state->run->run_id : undef;
-        $self->{'active_run'} //= $before if defined $before;
+    # Track the active run across the advance so we can announce its end the
+    # moment it leaves the active slot (chunk 6.1-2 per-run completion). The
+    # run is recorded once it becomes active and announced once it clears.
+    my $before = $state->run ? $state->run->run_id : undef;
+    $self->{+ACTIVE_RUN} //= $before if defined $before;
 
-        while (1) {
-            next if $state->advance;
-            last;
-        }
-
-        my $after = $state->run ? $state->run->run_id : undef;
-        if (defined $self->{'active_run'} && (!defined($after) || $after ne $self->{'active_run'})) {
-            $self->announce_run($self->{'active_run'});
-            $self->{'active_run'} = $after;
-        }
-
-        # Chunk 5d/6.1-2: hand any task the scheduler just started, whose run-stage
-        # is a socketed preload stage (i.e. not this root process's own stage), out
-        # to that stage's preload-<stage>.socket. Tasks for the root's own stage
-        # stay in the task list for the root's own run_job (the no-preload path,
-        # where the root forks tests itself). This now runs on the persistent path
-        # too (its forked stages are dispatch services).
-        $self->dispatch_pending;
-
-        if (my $idle = $state->resource_timeout($self->{'resource_timeout'})) {
-            print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
-            print STDERR "There are pending tests but resources have not become available.\n";
-            print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
-            $state->truncate();
-            $self->{'signal'} = 'TERM';
-        }
-
-        1;
-    };
-
-    if ($ok) {
-        $self->{'scheduler_errors'} = 0;
-        return;
+    while (1) {
+        next if $state->advance;
+        last;
     }
 
-    my $err   = $@;
-    my $count = ++$self->{'scheduler_errors'};
-    my $max   = $self->SCHEDULER_MAX_ERRORS;
-    print STDERR "\n$$ $0 Scheduler error ($count/$max): $err\n";
+    my $after = $state->run ? $state->run->run_id : undef;
+    if (defined $self->{+ACTIVE_RUN} && (!defined($after) || $after ne $self->{+ACTIVE_RUN})) {
+        $self->announce_run($self->{+ACTIVE_RUN});
+        $self->{+ACTIVE_RUN} = $after;
+    }
 
-    if ($count >= $max) {
-        print STDERR "$$ $0 Scheduler aborting after $count consecutive errors.\n";
-        $self->{'signal'} //= 'TERM';
+    # Chunk 5d/6.1-2: hand any task the scheduler just started, whose run-stage
+    # is a socketed preload stage (i.e. not this root process's own stage), out
+    # to that stage's preload-<stage>.socket. Tasks for the root's own stage
+    # stay in the task list for the root's own run_job (the no-preload path,
+    # where the root forks tests itself). This now runs on the persistent path
+    # too (its forked stages are dispatch services).
+    $self->dispatch_pending;
+
+    if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
+        print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";
+        print STDERR "There are pending tests but resources have not become available.\n";
+        print STDERR "Use --resource-timeout to adjust or disable (0) this timeout.\n\n";
+        $state->truncate();
+        $self->{+SIGNAL} = 'TERM';
     }
 
     return;
