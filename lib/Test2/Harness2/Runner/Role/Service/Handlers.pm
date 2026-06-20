@@ -104,7 +104,7 @@ running with C<abort_on_disconnect> true, or detach it (leave it running) if fal
 # These are one-way requests: the role's _service_conn sends no reply when a
 # handler returns undef. Ordering is preserved because the command sends them
 # over a single connection and the FrameBuffer drains frames in order.
-# Chunk 19.3: run/task submissions go through submit_action, which applies them to
+# Run/task submissions go through submit_action, which applies them to
 # State immediately on every path EXCEPT the scheduler-only preload-root path before
 # the stage map + base-stage resolver are ready -- there it buffers them and replays
 # them in order once ready (a task cannot be bucketed by stage until then).
@@ -112,7 +112,7 @@ sub request_handler_queue_run {
     my $self = shift;
     my ($payload, $conn) = @_;
 
-    # Chunk 19.4b: surface any tolerated preload-load warnings (e.g. a broken preload
+    # Surface any tolerated preload-load warnings (e.g. a broken preload
     # on the persistent path) at the START of each run, so a `yath run` client sees
     # them. Emitting to STDERR here lands them in runner-events within the run's
     # render window, where the run's Driver renders them tagged INTERNAL.
@@ -212,7 +212,7 @@ sub handle_owner_drop {
     return;
 }
 
-# Chunk 19.4b: the preload-root reports preload-load warnings it tolerated (a broken
+# The preload-root reports preload-load warnings it tolerated (a broken
 # preload skipped on the persistent path). Stored and re-emitted at each run start so
 # they reach the run's output (the stage host does not exit, so they cannot ride
 # stage_host_exited the way a transient fatal failure does).
@@ -237,8 +237,7 @@ sub request_handler_stop_run {
     return undef;
 }
 
-# Chunk 6.1-2: `yath spawn` submits its spawn over runner.socket (instead of the
-# in-process dispatch.jsonl State it used while gated). The runner folds it into
+# `yath spawn` submits its spawn over runner.socket. The runner folds it into
 # the canonical State, which the (persistent) stages pick up to launch the script.
 #
 # Review P2: this is acknowledged (two-way). The command then blocks on a worker
@@ -275,7 +274,7 @@ sub request_handler_end_queue {
 }
 
 # A transient command that caught a signal asks the runner to halt the run over
-# the socket (chunk 5c). The runner stops scheduling tasks for the run and
+# the socket. The runner stops scheduling tasks for the run and
 # terminates its own job children through its normal signal/stop path; the command
 # does not reconstruct state to kill individual job pids.
 sub request_handler_halt_run {
@@ -285,7 +284,7 @@ sub request_handler_halt_run {
     return undef;
 }
 
-# Chunk 5d: a forked transient preload stage receives dispatched jobs on its own
+# A forked transient preload stage receives dispatched jobs on its own
 # preload-<stage>.socket. The runner's in-process scheduler connects out and sends
 # the already-resolved task (with the resources merged in) plus the run definition;
 # the stage delegate queues it and the stage's run loop forks it from the preloaded
@@ -297,7 +296,7 @@ sub request_handler_run_task {
     return undef;
 }
 
-# Chunk 5d: a stage reports a finished dispatched job back to the runner over
+# A stage reports a finished dispatched job back to the runner over
 # runner.socket so the runner's canonical scheduler state releases the slot and
 # resources (stop) or re-queues it for dispatch (retry). The retry-vs-stop decision
 # is made by the stage that reaped the job (it owns the proc / is_try / verdict);
@@ -307,7 +306,7 @@ sub request_handler_stop_task {
     my ($payload) = @_;
     $self->state->stop_task($payload->{job_id});
     delete $self->{'job_pids'}->{$payload->{job_id}};
-    # Chunk 5f: a stage-reported job finishing is a runner-originated state
+    # A stage-reported job finishing is a runner-originated state
     # mutation; forward it to subscribers so their mirror releases the job.
     $self->announce_job($payload->{job_id}, 'done');
     return undef;
@@ -322,7 +321,7 @@ sub request_handler_retry_task {
     return undef;
 }
 
-# Chunk 5d: a monitored stage forwards a reload/monitor notification so the
+# A monitored stage forwards a reload/monitor notification so the
 # runner's reload state (diagnostics) stays current without a shared file. One-way.
 sub request_handler_reload {
     my $self = shift;
@@ -331,11 +330,10 @@ sub request_handler_reload {
     return undef;
 }
 
-# Chunk 6.1-3: the persistent `yath run` command checks the runner's reload state
+# The persistent `yath run` command checks the runner's reload state
 # (per-stage source-file reload errors/warnings) before starting a run, so it can
-# abort or prompt. It used to read this by constructing an observe-mode State that
-# polled dispatch.jsonl; now it asks the runner over the socket. Two-way: returns
-# the canonical reload_state hash. Only the root runner is the state authority.
+# abort or prompt. It asks the runner over the socket. Two-way: returns the
+# canonical reload_state hash. Only the root runner is the state authority.
 sub request_handler_reload_state {
     my $self = shift;
 
@@ -345,9 +343,8 @@ sub request_handler_reload_state {
     return {ok => 1, reload_state => $self->state->reload_state // {}};
 }
 
-# Chunk 6.1-2: the persistent `status`/`ps`/`abort` commands ask the runner for
-# its live scheduling state over runner.socket instead of reading dispatch.jsonl
-# (observe-mode State) + jobs.jsonl (job pids). The runner is the state authority;
+# The persistent `status`/`ps`/`abort` commands ask the runner for
+# its live scheduling state over runner.socket. The runner is the state authority;
 # it builds a serializable report from its canonical State plus its in-memory
 # job-pid map (it knows each job's pid when it forks it, or when a stage reports
 # the pid of a job the stage forked). Two-way: returns the report hash.
@@ -366,13 +363,11 @@ sub request_handler_status {
     return {ok => 1, status => $report->build};
 }
 
-# Chunk 6.1-2: a transient/persistent root command asks the runner to truncate
-# the queue (abort) over the socket, replacing the observe-State truncate the
-# `abort` command used to do by writing dispatch.jsonl directly. The runner
-# truncates its own canonical state. Two-way: returns the kill list (the
-# still-running jobs and their pids) so the command can signal them. The runner
-# does not signal the jobs itself -- `abort` deliberately leaves the runner alive
-# and only INT's the running tests, matching the historical behavior.
+# A transient/persistent root command asks the runner to truncate
+# the queue (abort) over the socket. The runner truncates its own canonical
+# state. Two-way: returns the kill list (the still-running jobs and their pids)
+# so the command can signal them. The runner does not signal the jobs itself --
+# `abort` deliberately leaves the runner alive and only INT's the running tests.
 sub request_handler_truncate {
     my $self = shift;
 
@@ -414,7 +409,7 @@ sub request_handler_resources {
     return {ok => 1, resources => \@out};
 }
 
-# Chunk 6.1-2: a forked preload stage forks a dispatched test job from its
+# A forked preload stage forks a dispatched test job from its
 # preloaded interpreter, so the stage -- not the runner -- knows the job's pid.
 # It reports the pid back over runner.socket so the runner's job-pid map (used by
 # the status/ps/abort report) is complete without a jobs.jsonl file. One-way.
@@ -465,18 +460,17 @@ sub requeue_task {
     return;
 }
 
-# Chunk 5d: a transient stage reports it has bound its socket and is ready to be
+# A transient stage reports it has bound its socket and is ready to be
 # scheduled (or is going down at shutdown). The runner folds this into the same
-# stage-readiness state its scheduler's _stage_order already gates on, replacing
-# the dispatch.jsonl stage_ready/stage_down actions for the transient path. One-way.
+# stage-readiness state its scheduler's _stage_order already gates on. One-way.
 #
 # Connection-currency (bloat #3): a stale stage report (from a prior preload-root
 # incarnation, or a stage that has since been superseded) is rejected by checking
 # the report's source connection against the connection currently registered as
 # that stage's `preload-<stage>` peer. A report is honored only when it arrives on
 # the connection the runner currently considers authoritative for that identity;
-# a superseded connection's report is ignored. This replaces the old wire
-# `generation` stamping -- the registered connection IS the live incarnation.
+# a superseded connection's report is ignored -- the registered connection IS the
+# live incarnation.
 sub _stale_stage_report {
     my $self = shift;
     my ($payload, $conn) = @_;
@@ -512,7 +506,7 @@ sub request_handler_stage_down {
     return undef;
 }
 
-# Chunk 19.5 (§6.8): a stage announces it is intentionally reloading (restarting)
+# A stage announces it is intentionally reloading (restarting)
 # before it exits to be respawned -- a richer label than the plain stage_down it
 # would otherwise send. Same connection-currency guard as ready/down.
 sub request_handler_stage_restarting {
@@ -523,7 +517,7 @@ sub request_handler_stage_restarting {
     return undef;
 }
 
-# Chunk 19.1: the preload-root process (Test2::Harness2::Preload) dials the runner
+# The preload-root process (Test2::Harness2::Preload) dials the runner
 # and asks for the preload list -- the runner no longer loads the preload
 # libraries itself; the preload root does. Return the resolved -P/--preload module
 # specs the user passed (the runner's `preloads`). Two-way. Only the root runner is
@@ -534,15 +528,14 @@ sub request_handler_get_preload_list {
     return {ok => 0, error => 'not the runner state hub'}
         unless $self->{'rootpid'} == $$;
 
-    # Chunk 19.3b: also hand the preload-root the REAL runner's pid. The preload-root
+    # Also hand the preload-root the REAL runner's pid. The preload-root
     # builds a stage-host Runner with this as its rootpid (so that Runner treats
     # itself as a stage, not the root) and conveys it down as watch_parent_pid to
     # every stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
     #
-    # Chunk 19.4b: also hand over monitor_preloads. The stage-host Runner uses it so
+    # Also hand over monitor_preloads. The stage-host Runner uses it so
     # its preloader TOLERATES a broken preload (warn+skip) on the persistent path
-    # (monitor on) but fails fast on the transient path (monitor off) -- matching the
-    # pre-19 "persistent mode ignores broken preloads" behavior.
+    # (monitor on) but fails fast on the transient path (monitor off).
     return {
         ok               => 1,
         preloads         => [@{$self->preloads // []}],
@@ -551,14 +544,11 @@ sub request_handler_get_preload_list {
     };
 }
 
-# Chunk 19.1: the preload-root loads the preload libraries, builds the stage map
+# The preload-root loads the preload libraries, builds the stage map
 # (each stage's eager fan-out + which is default), and reports it here so the
 # runner knows which stages to expect without loading any preload itself.
-# The runner stores it (the gate that makes preload-task
-# dispatch wait on it lands with the preload-root-driven dispatch in 19.2; storing
-# it now is additive and does not change the existing in-runner dispatch path).
-# One-way is enough, but we ack so the preload root can confirm receipt. Only the
-# root runner is the state hub.
+# The runner stores it. One-way is enough, but we ack so the preload root can
+# confirm receipt. Only the root runner is the state hub.
 sub request_handler_set_stage_data {
     my $self = shift;
     my ($payload) = @_;
@@ -574,7 +564,7 @@ sub request_handler_set_stage_data {
     # are not reused (code-review: file_stage cache outliving its preload generation).
     delete $self->{'file_stage_cache'};
 
-    # Chunk 19.3: if the scheduler-only State was already built (e.g. an early status
+    # If the scheduler-only State was already built (e.g. an early status
     # request) it captured an empty map; refresh its eager fan-out + stage map now
     # that the real data has arrived, before any task is bucketed (submit_action
     # buffers tasks until the map + base stage are ready, so this lands first).
@@ -588,7 +578,7 @@ sub request_handler_set_stage_data {
     return {ok => 1};
 }
 
-# Chunk 19.3: the scheduler-only runner has no loaded preloader, so it asks the base
+# The scheduler-only runner has no loaded preloader, so it asks the base
 # stage (the process holding the merged preload meta) to resolve test files' stages
 # via the preload's file_stage callbacks, falling back to the default stage. Served
 # only where a preloader is loaded (the base stage). Precedence mirrors
@@ -613,14 +603,13 @@ sub request_handler_resolve_file_stages {
     return {ok => 1, stages => \%stages};
 }
 
-# The stage map the preload root reported (chunk 19.1), or undef before it has
-# arrived. `has_reported_stage_data` is the readiness predicate the 19.2
-# dispatch gate will consult; in 19.1 it is exposed but does not yet gate the
-# existing in-runner dispatch path.
+# The stage map the preload root reported, or undef before it has arrived.
+# `has_reported_stage_data` is the readiness predicate the dispatch gate
+# consults.
 sub reported_stage_data     { $_[0]->{'reported_stage_data'} }
 sub has_reported_stage_data { defined $_[0]->{'reported_stage_data'} ? 1 : 0 }
 
-# Chunk 19.3: the preload-root reports that its stage-host Runner has finished. If
+# The preload-root reports that its stage-host Runner has finished. If
 # the scheduler-only runner is still waiting for a stage to register (a broken
 # preload that died before any stage came up), this is the signal to stop waiting,
 # fail the run, and surface the preload-root's captured error output. On a normal run
@@ -636,7 +625,7 @@ sub request_handler_stage_host_exited {
 sub stage_host_exited { $_[0]->{'stage_host_exited'} ? 1 : 0 }
 sub stage_host_errors { $_[0]->{'stage_host_errors'} // [] }
 
-# Chunk 5e: the runner is the hub of the transition channel. Every non-runner
+# The runner is the hub of the transition channel. Every non-runner
 # collector (each test job, each transient preload stage, any aux collector)
 # connects its reporter to runner.socket and streams its transitions here; the
 # runner folds them into this canonical in-process state object (uuid, name,
@@ -644,14 +633,12 @@ sub stage_host_errors { $_[0]->{'stage_host_errors'} // [] }
 # plus drain-on-call change-lists). The runner's OWN collector (the one
 # App::Yath2::Command::test::start_runner wraps it in) does NOT report here -- it
 # records to its own events file only; the runner is the hub, not its own peer.
-# This state is infrastructure: it is not yet the render source (that swap is
-# deferred to 6a/5g, where the gatherer's independent tree-walk retires).
 sub monitor {
     my $self = shift;
     return $self->{'monitor'} //= Test2::Harness2::Runner::Monitor->new;
 }
 
-# Chunk 5e: Role::Service hands every transition frame here (one-way, no reply).
+# Role::Service hands every transition frame here (one-way, no reply).
 # Only the root runner process is the transition hub; a forked stage service does
 # not fold transitions (it dispatches/reaps jobs and reports outcomes back to the
 # root over runner.socket). Fold the already-decoded payload into the monitor.
@@ -663,12 +650,12 @@ sub service_transition {
 
     $self->monitor->feed($payload);
 
-    # Chunk 5f: forward every state-mutating transition to subscribed clients so
+    # Forward every state-mutating transition to subscribed clients so
     # their snapshot-plus-transitions mirror stays whole (ARCH 4.2-4.3). The frame
     # is forwarded verbatim (no recompress) -- it is already a self-contained zstd
     # frame the subscriber's mirror folds the same way this monitor just did.
     #
-    # Chunk 6.1: route per-run. Resolve the frame's run association (the
+    # Route per-run. Resolve the frame's run association (the
     # collector run_uuid, == the run's run_id) AFTER feeding the monitor, so a
     # later transition carrying only the uuid resolves against the tracked
     # collector. A run-less frame (the runner's own, a preload-stage lifecycle
@@ -679,14 +666,14 @@ sub service_transition {
     return;
 }
 
-# Chunk 5f: a client subscribes to the runner's canonical state. We register the
+# A client subscribes to the runner's canonical state. We register the
 # connection as a persistent subscriber (it stays open and receives forwarded
 # mutation frames asynchronously) and reply with a serialized snapshot of the
 # whole canonical state so the client's local mirror starts whole. Unlike the
 # one-way submission requests this returns a reply (the snapshot). Only the root
 # runner is the state hub; a forked stage service does not serve subscriptions.
 #
-# Chunk 6.1: per-run routing. The request may carry a run_id; the subscriber is
+# Per-run routing: the request may carry a run_id; the subscriber is
 # then scoped to that run -- its snapshot is filtered to that run (plus the global
 # bucket) and forward_frame thereafter sends it only that run's frames. A
 # subscribe with no run_id is a global subscriber (the watch path): it gets the
@@ -705,7 +692,7 @@ sub request_handler_subscribe {
     return {ok => 1, snapshot => $self->monitor->snapshot($run_id)};
 }
 
-# Chunk 5f: the runner ORIGINATES some state mutations itself -- it dispatches a
+# The runner ORIGINATES some state mutations itself -- it dispatches a
 # job to a stage, forks a job (running), and reaps a job (done). ARCH 4.2 is
 # explicit these must reach subscribers too, not only the folded collector
 # transitions, so the snapshot-plus-transitions contract stays whole. We express
@@ -721,7 +708,7 @@ sub announce_job {
 
     my $rj = {job_id => $job_id, state => $state, %extra};
 
-    # Chunk 6.1: route this runner-originated mutation to its run's subscribers.
+    # Route this runner-originated mutation to its run's subscribers.
     # 'dispatched'/'running'/'retry'/'done' from the scheduler carry run_id in
     # %extra; a stage-reported 'done'/'retry' (from the stop_task/retry_task
     # request handlers) does not, so backfill it from the run_id the monitor
@@ -741,7 +728,7 @@ sub announce_job {
     return;
 }
 
-# Chunk 6.1-2: the runner originates a run-completion mutation. The persistent
+# The runner originates a run-completion mutation. The persistent
 # runner serves many runs and keeps its socket open, so a run-scoped subscriber
 # (the `yath run` command) cannot key completion on the socket closing the way the
 # transient `yath test` command does. Instead the runner announces each run's end
