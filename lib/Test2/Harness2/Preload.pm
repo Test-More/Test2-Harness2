@@ -231,22 +231,24 @@ sub run_driver ($self) {
     return;
 }
 
-# Build and run the stage-host Runner in this (the preload-root) process. It is an
-# ordinary Test2::Harness2::Runner whose rootpid is the REAL runner's pid: because
-# rootpid != $$, run_stage('base') treats the base process as a socket stage (dials
-# the real runner, binds preload-base.socket) rather than the scheduler root, and
-# preload_stages forks the other stages as this process's children. The test-launch
-# fork callback unwinds to our 'preload-root' Long::Jump host (see launch()).
+# Build and run the stage host in this (the preload-root) process. It is a
+# Test2::Harness2::Preload::Host -- an independent class from the runner (ticket
+# #22): it preloads, forks/hosts the stages, and launches dispatched tests, but
+# it has NO scheduler and holds NO canonical run State. Its rootpid is the REAL
+# runner's pid: the base/default stage is hosted in THIS process and dials the
+# real runner over runner.socket (binding preload-base.socket), and preload_stages
+# forks the named stages as this process's children. The test-launch fork callback
+# unwinds to our 'preload-root' Long::Jump host (see launch()).
 sub _run_stage_host ($self) {
 
     require Getopt::Yath::Settings;
-    require Test2::Harness2::Runner;
+    require Test2::Harness2::Preload::Host;
     require Test2::Harness2::Runner::JobLauncher;
 
     my $dir      = $self->{+WORKDIR};
     my $settings = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
 
-    my $runner = Test2::Harness2::Runner->new(
+    my $host = Test2::Harness2::Preload::Host->new(
         $settings->runner->all,
 
         dir      => $dir,
@@ -261,7 +263,7 @@ sub _run_stage_host ($self) {
         fork_spawn_callback => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
     );
 
-    $runner->process();
+    $host->process();
 
     return;
 }
