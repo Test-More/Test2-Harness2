@@ -44,6 +44,7 @@ use Test2::Harness2::Util::HashBase(
 
         <pending_tasks <task_lookup
         <pending_runs  +run <stopped_runs
+        <retained_runs
         <pending_spawns
 
         <running
@@ -112,6 +113,27 @@ sub settings {
 sub run {
     my $self = shift;
     return $self->{+RUN};
+}
+
+# Classify a run for the runner's owner-drop sweep (ticket #12 / ARCHITECTURE.md
+# §4.2): 'running' if it is the active run or still pending/queued, 'finished' if it
+# has already been retained as complete, or undef if the state knows nothing of it
+# (already purged). A 'running' run whose owner drops is aborted-or-detached; a
+# 'finished' run whose owner drops is purged.
+sub run_status {
+    my $self = shift;
+    my ($run_id) = @_;
+
+    return undef unless defined $run_id;
+
+    my $active = $self->{+RUN};
+    return 'running' if $active && $active->run_id eq $run_id;
+
+    return 'running' if grep { $_->run_id eq $run_id } @{$self->{+PENDING_RUNS} // []};
+
+    return 'finished' if $self->{+RETAINED_RUNS}->{$run_id};
+
+    return undef;
 }
 
 sub done {
@@ -789,9 +811,52 @@ sub clear_finished_run {
     return 0 if $self->{+PENDING_TASKS}->{$run->run_id};
     return 0 if $self->{+RUNNING};
 
+    # Retain the finished run (Run object + its raw item + job states) keyed by
+    # run_id rather than discarding it outright, so the queuing client may still
+    # query it. The runner purges it (purge_run) when that owner connection drops;
+    # a run whose owner is already gone is purged immediately by the runner's
+    # owner-drop sweep (ticket #12 / ARCHITECTURE.md §4.2).
+    $self->{+RETAINED_RUNS}->{$run->run_id} = $run;
+
     delete $self->{+RUN};
 
     return 1;
+}
+
+# Purge a run's retained/in-flight state entirely: the retained finished Run, plus
+# any still-pending tasks and stopped/halted/announced bookkeeping for it. Called by
+# the runner when the run's owner connection drops (a finished run whose owner left,
+# or a detached run reaching completion). Returns true if anything was purged.
+sub purge_run {
+    my $self = shift;
+    my ($run_id) = @_;
+
+    return 0 unless defined $run_id;
+
+    my $purged = delete $self->{+RETAINED_RUNS}->{$run_id} ? 1 : 0;
+
+    delete $self->{+PENDING_TASKS}->{$run_id};
+    delete $self->{+STOPPED_RUNS}->{$run_id};
+    delete $self->{+HALTED_RUNS}->{$run_id};
+
+    return $purged;
+}
+
+# Abort a run's remaining schedulable work in canonical state: drop its pending
+# tasks (so nothing new dispatches) and mark it stopped so the run loop advances off
+# it. The runner pairs this with a run-scoped watchdog abort_remaining (which kills
+# the run's still-running jobs by signalling their collectors) before calling here.
+# Used when the queuing client drops and abort_on_disconnect is true.
+sub abort_run {
+    my $self = shift;
+    my ($run_id) = @_;
+
+    return unless defined $run_id;
+
+    $self->halt_run($run_id);
+    $self->_stop_run($run_id);
+
+    return;
 }
 
 sub advance_tasks {

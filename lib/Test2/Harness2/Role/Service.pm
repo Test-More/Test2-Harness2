@@ -52,7 +52,8 @@ optional C<service_on_response($conn, $event)> hook.
 C<workdir> and C<name> are required. Optional: C<service_identity> (the name this
 service announces; defaults to C<service_name>), C<run_id> (the run's run_id
 (UUID) subdir), C<service_tick>, C<service_transition($payload, $frame, $conn)>,
-and C<service_on_response($conn, $event)>.
+C<service_on_response($conn, $event)>, and C<service_conn_closed($conn)> (called
+when a peer connection is dropped, for connection-gated cleanup).
 
 =head1 PUBLIC METHODS
 
@@ -383,6 +384,12 @@ sub _drop_conn ($self, $conn) {
     delete $self->{service_subs}{$conn};
     $self->{service_select}->remove($fh) if $self->{service_select};
     $conn->close;
+
+    # Optional consumer hook (ticket #12 / ARCHITECTURE.md §4.2): a closing peer may
+    # be the connection that queued a run. The runner uses this to sweep the runs that
+    # connection owned -- aborting a still-running run, purging a finished one -- so
+    # in-memory run state is bounded by live owner connections.
+    $self->service_conn_closed($conn) if $self->can('service_conn_closed');
 
     return;
 }

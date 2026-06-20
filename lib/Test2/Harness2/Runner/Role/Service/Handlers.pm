@@ -76,6 +76,17 @@ Record a started job's pid in the runner's in-memory map.
 
 The socket request handlers; see the inline documentation for each.
 
+=item $self->service_conn_closed($conn)
+
+L<Test2::Harness2::Role::Service> calls this when a peer connection closes; sweep
+the runs that connection owns (queued) and abort the running ones / purge the
+finished ones, per the connection-gated retention policy.
+
+=item $self->handle_owner_drop($run_id, $info)
+
+Act on one run whose owning connection dropped: purge it if finished, abort it if
+running with C<abort_on_disconnect> true, or detach it (leave it running) if false.
+
 =back
 
 =cut
@@ -99,7 +110,7 @@ The socket request handlers; see the inline documentation for each.
 # them in order once ready (a task cannot be bucketed by stage until then).
 sub request_handler_queue_run {
     my $self = shift;
-    my ($payload) = @_;
+    my ($payload, $conn) = @_;
 
     # Chunk 19.4b: surface any tolerated preload-load warnings (e.g. a broken preload
     # on the persistent path) at the START of each run, so a `yath run` client sees
@@ -109,8 +120,96 @@ sub request_handler_queue_run {
         print STDERR $_ for @$warnings;
     }
 
-    $self->submit_action('queue_run', $payload->{run});
+    my $run = $payload->{run};
+
+    # Ticket #12 / ARCHITECTURE.md §4.2: record the connection that queued this run as
+    # its owner, plus that peer's pid (the §5.2 identity handshake) and the run's
+    # abort_on_disconnect flag (default true). Retention and teardown are gated on this
+    # owner connection -- when it drops, the runner's owner-drop sweep
+    # (service_conn_closed) either aborts the still-running run or purges the finished
+    # one. queue_task / stop_run stay accepted from ANY connection; only this is
+    # owner-gated. Recorded only on the state hub (the root runner); a forked stage
+    # service does not own run retention.
+    if (defined($conn) && $self->{'rootpid'} == $$ && $run && defined $run->{run_id}) {
+        $self->{'run_owners'}->{$run->{run_id}} = {
+            conn                => $conn,
+            peer_pid            => $conn->peer_pid,
+            abort_on_disconnect => (exists $run->{abort_on_disconnect} ? ($run->{abort_on_disconnect} ? 1 : 0) : 1),
+        };
+    }
+
+    $self->submit_action('queue_run', $run);
     return undef;
+}
+
+# Ticket #12 / ARCHITECTURE.md §4.2: Role::Service calls this when any peer
+# connection closes (its _drop_conn hook). Sweep the runs this connection owns (it
+# queued them) and act on the owner drop: a still-running run is aborted (if its
+# abort_on_disconnect is true) or detached (if false); a finished, retained run is
+# purged. Other connections' runs are untouched, so a persistent runner's in-memory
+# run state is bounded by live owner connections, not by total runs ever queued.
+sub service_conn_closed {
+    my $self = shift;
+    my ($conn) = @_;
+
+    return unless $self->{'rootpid'} == $$;
+    return unless defined $conn;
+
+    my $owners = $self->{'run_owners'} or return;
+
+    for my $run_id (keys %$owners) {
+        my $info = $owners->{$run_id};
+        next unless ($info->{conn} // 0) == $conn;
+        $self->handle_owner_drop($run_id, $info);
+    }
+
+    return;
+}
+
+# Ticket #12 / ARCHITECTURE.md §4.2: act on a single run whose owner connection
+# dropped. Retention is gated on the owner, NOT on completion:
+#   finished -> purge the retained run (Run object + job states + raw item);
+#   running + abort_on_disconnect true  -> abort: halt pending tasks, kill the run's
+#       still-running jobs via the watchdog (run-scoped abort_remaining, which signals
+#       their collectors), mark it stopped so the loop advances to the next run;
+#   running + abort_on_disconnect false -> detach: leave it running, purge on
+#       completion (clear_finished_run retains it; the finished branch fires if its
+#       owner record is ever swept again, otherwise it lingers harmlessly until the
+#       state is torn down).
+# The owner record is dropped either way so the run is not swept twice.
+sub handle_owner_drop {
+    my $self = shift;
+    my ($run_id, $info) = @_;
+
+    # Drop the owner record first so an abort that ends the run (and could re-enter the
+    # sweep) does not loop on this run.
+    delete $self->{'run_owners'}->{$run_id};
+
+    my $status = $self->state->run_status($run_id);
+
+    # Finished and retained: the owner left, so purge it now (nothing will query it).
+    if (defined($status) && $status eq 'finished') {
+        $self->state->purge_run($run_id);
+        return;
+    }
+
+    # Already gone (purged, or never reached state): nothing to do.
+    return unless defined($status) && $status eq 'running';
+
+    # Detach: keep the run going, purge it on completion. A future queue-and-detach
+    # command sets abort_on_disconnect false; the run's results still persist.
+    return unless $info->{abort_on_disconnect};
+
+    # Abort: halt pending tasks + stop the run in canonical state, and kill its still-
+    # running jobs (the watchdog signals their collectors). A vanished run/test command
+    # means a crash or user kill, which intends to kill the run.
+    $self->watchdog->abort_remaining(
+        "Run aborted: the command that queued it disconnected",
+        run_id => $run_id,
+    );
+    $self->state->abort_run($run_id);
+
+    return;
 }
 
 # Chunk 19.4b: the preload-root reports preload-load warnings it tolerated (a broken
@@ -630,6 +729,14 @@ sub announce_run {
 
     my $frame = compress_blob(encode_json($payload));
     $self->forward_frame($frame, $run_id);
+
+    # Ticket #12 / ARCHITECTURE.md §4.2: a finished run is retained (queryable) only
+    # while its owner connection is live. A run with NO owner record -- e.g. one queued
+    # by an internal/non-socket path -- can never be queried, so purge it the moment it
+    # completes rather than retaining it forever. A run whose owner is still connected
+    # stays retained until that owner drops (service_conn_closed purges it then).
+    $self->state->purge_run($run_id)
+        unless $self->{'run_owners'} && $self->{'run_owners'}->{$run_id};
 
     return;
 }

@@ -71,10 +71,14 @@ sub init ($self) {
 
 =item $wd->abort_remaining($reason)
 
+=item $wd->abort_remaining($reason, run_id =E<gt> $run_id)
+
 Abort every still-running task that has not reported completion, attributing the
 optional C<$reason>. Called when the runner is winding the run down so a job
 whose collector never finalized still rolls up as failed instead of silently
-vanishing. Each job is aborted at most once.
+vanishing. Each job is aborted at most once. With a C<run_id> the abort is scoped
+to that one run's jobs (the owner-drop abort path, which must not touch other runs
+on a persistent runner).
 
 =item $wd->abort_job($job_id, $task, $reason)
 
@@ -96,15 +100,22 @@ sub abort_job ($self, $job_id, $task, $reason = undef) {
     return;
 }
 
-sub abort_remaining ($self, $reason = undef) {
+sub abort_remaining ($self, $reason = undef, %params) {
     my $runner = $self->{+RUNNER};
     return unless $runner->rootpid == $$;
+
+    # Optionally scope to one run: the owner-drop abort path (ticket #12 /
+    # ARCHITECTURE.md §4.2) aborts only the dropped run's jobs, leaving other runs on
+    # a persistent runner untouched. Wind-down passes no run_id and aborts them all.
+    my $only_run = $params{run_id};
 
     my $running = $runner->state->running_tasks // {};
 
     for my $job_id (keys %$running) {
         next if $self->{+ABORTED}{$job_id};
-        $self->_abort_job($job_id, $running->{$job_id}, $reason // "Runner shut down before this job completed");
+        my $task = $running->{$job_id};
+        next if defined($only_run) && ($task->{run_id} // '') ne $only_run;
+        $self->_abort_job($job_id, $task, $reason // "Runner shut down before this job completed");
     }
 
     return;
