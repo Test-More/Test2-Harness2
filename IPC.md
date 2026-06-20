@@ -59,13 +59,18 @@ yath test                          COMMAND: client + renderer host
                                  │                                           │  dials runner.socket as 'preload-<name>'; reports up + receives dispatch
                                  │                                           └─ fork ─ [collector:job] ─► test job (longjump+goto-file via JobLauncher)
                                  │
-                                 └─ no-preload / below-threshold: fork ─ [collector:job] ─► test job   (runner forks the job collector itself)
+                                 └─ no-preload / below-threshold: fork ─ [collector:job] ─► test job   (collector fork+EXECs a clean perl)
 ```
 
 The preload-root level exists **only when preloads are configured** (and not below
-`preload_threshold`); otherwise the runner forks the test-job collector itself
-(the no-preload path, unchanged). The base/default/NOPRELOAD stage runs
-**in-process** in the preload-root; named stages are forked as its children.
+`preload_threshold`); otherwise the runner forks the test-job collector itself and
+the collector **fork+execs a clean perl** for the test (the no-preload path -- no
+`goto::file` / `Long::Jump` / in-process launch; the test child does NOT inherit the
+runner's `%INC`). `goto::file` + `Long::Jump` live **only** in the preload tree
+(`Test2::Harness2::Preload` + `Test2::Harness2::Runner::JobLauncher`), where a
+preloaded test must run in-process with its stage's modules already loaded. The
+base/default/NOPRELOAD stage runs **in-process** in the preload-root; named stages
+are forked as its children.
 
 Lifespan: the transient runner shuts down and closes `runner.socket` once the run
 is done and its job children are reaped; the command's render loop ends on that

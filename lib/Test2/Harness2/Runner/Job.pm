@@ -211,6 +211,14 @@ sub collector_target {
         @skip_or_fail = ('-e', "print \"1..0 # SKIP $skip\"");
     }
 
+    # run_file is relative to the runner's CWD, but the collector chdir's into
+    # ch_dir before exec (e.g. `yath projects` runs each project from its own
+    # directory). A path relative to the runner's CWD would not resolve after that
+    # chdir, so when a ch_dir is in effect pass the file path relative to ch_dir
+    # (the same path the goto::file launch produced after chdir'ing into ch_dir),
+    # which keeps __FILE__ / $0 the project-relative path the test expects.
+    my $run_file = $self->ch_dir ? File::Spec->abs2rel($self->file, $self->ch_dir) : $self->run_file;
+
     return (
         exec => [
             $^X,
@@ -219,7 +227,7 @@ sub collector_target {
             $self->switches,
             $self->cli_options,
 
-            @skip_or_fail ? @skip_or_fail : ($self->run_file),
+            @skip_or_fail ? @skip_or_fail : ($run_file),
 
             $self->args,
         ],

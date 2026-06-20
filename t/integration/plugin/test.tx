@@ -1,10 +1,12 @@
 use Test2::V0;
 
-# Chunk 17: plugin setup/teardown now run IN THE RUNNER, so the runner loads the
-# plugin module and test children forked from it inherit it in %INC. (Previously
-# only the command loaded plugins and the runner was a fresh exec, so test children
-# were clean.) The plugin module being present is therefore expected now.
-ok($INC{'App/Yath2/Plugin/TestPlugin.pm'}, "Plugin is loaded in the runner (runs setup/teardown) and inherited by test children");
+# A no-preload test job is launched as a plain fork+exec under its own collector
+# (the runner provides no in-process fork-job launcher), so the test child is a
+# CLEAN perl: it does NOT inherit the runner's %INC. The plugin runs its
+# setup/teardown in the runner, but the exec'd test child never sees the plugin
+# module loaded. (A preloaded test runs in-process and WOULD inherit it; this
+# no-preload file asserts the clean-child behavior.)
+ok(!$INC{'App/Yath2/Plugin/TestPlugin.pm'}, "Plugin is NOT inherited by a fork+exec'd (clean) no-preload test child");
 
 is($ENV{T2_HARNESS_JOB_DURATION}, 'long');
 

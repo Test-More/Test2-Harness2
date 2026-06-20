@@ -4,38 +4,16 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Config qw/%Config/;
 use File::Spec;
 
-# Chunk 19.3: the goto-file job-launch machinery (fork-under-collector,
-# Long::Jump unwind, post-goto::file child setup) AND the goto::file filter patch
-# moved to Test2::Harness2::Runner::JobLauncher (producing side), so the
-# preload-root can reuse it without App::Yath2. Loading it here installs the
-# filter patch and provides launch_via_fork/launch_spawn/cleanup_process.
-use Test2::Harness2::Runner::JobLauncher();
-
-use Test2::Harness2::IPC();
-
 use Carp qw/confess/;
-use Scalar::Util qw/openhandle/;
-use List::Util qw/first/;
 use File::Path qw/remove_tree/;
 
 use Scope::Guard;
 
-use Test2::Util qw/clone_io/;
-
-use Long::Jump qw/setjump longjump/;
-
 use Getopt::Yath::Settings;
 
-use Test2::Harness2::Util qw/mod2file write_file_atomic open_file clean_path process_includes/;
-
-use Test2::Harness2::Util::IPC qw/swap_io/;
-
-use Test2::Harness2::Runner::Preloader();
-
-my @SIGNALS = grep { $_ ne 'ZERO' } split /\s+/, $Config{sig_name};
+use Test2::Harness2::Util qw/write_file_atomic/;
 
 # If FindBin is installed, go ahead and load it. We do not care much about
 # success vs failure here.
@@ -71,60 +49,34 @@ sub generate_run_sub {
 
     my $cleanup = $class->cleanup($settings, \%args, $dir);
 
-    my $jump = setjump "Test-Runner" => sub {
-        local $.;
+    # The runner is a pure scheduler/orchestrator: it holds no preloaded
+    # interpreter state and does not run any test in-process. On the no-preload
+    # path each test is launched as a plain fork+exec under its own collector
+    # (Test2::Harness2::Runner::Job's spawn path -- the runner provides no
+    # fork-job callback, so the job execs a clean perl). The goto::file /
+    # Long::Jump in-process launch lives ONLY in the preload tree
+    # (Test2::Harness2::Preload + Test2::Harness2::Runner::JobLauncher), where a
+    # preloaded test must run in-process with the stage's modules already loaded.
+    require Test2::Harness2::Runner;
+    my $runner = Test2::Harness2::Runner->new(
+        $settings->runner->all,
 
-        my %orig_sig = %SIG;
-        my $guard    = Scope::Guard->new(sub {
-            my %seen;
-            for my $sig (@SIGNALS) {
-                next if $seen{$sig}++;
-                if (exists $orig_sig{$sig}) {
-                    $SIG{$sig} = $orig_sig{$sig};
-                }
-                else {
-                    delete $SIG{$sig};
-                }
-            }
-        });
+        %args,
 
-        require Test2::Harness2::Runner;
-        my $runner = Test2::Harness2::Runner->new(
-            $settings->runner->all,
+        dir      => $dir,
+        settings => $settings,
+    );
 
-            %args,
+    my $exit = $runner->process();
 
-            dir      => $dir,
-            settings => $settings,
-
-            fork_job_callback   => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'Test-Runner') },
-            fork_spawn_callback => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'Test-Runner') },
-        );
-
-        my $exit = $runner->process();
-
-        if ($$ == $runner_pid) {
-            $_->cleanup() for @{$runner->state->resources};
-        }
-
-        my $complete = File::Spec->catfile($dir, 'complete');
-        write_file_atomic($complete, '1');
-
-        exit($exit // 1);
-    };
-
-    die "Test runner completed, but failed to exit" unless $jump;
-
-    my ($action, $job, $stage) = @$jump;
-
-    die "Invalid action: $action" if $action ne 'run_test';
-
-    if (my $chdir = $job->ch_dir) {
-        chdir($chdir) or die "Could not chdir: $!";
+    if ($$ == $runner_pid) {
+        $_->cleanup() for @{$runner->state->resources};
     }
-    goto::file->import($job->run_file);
-    Test2::Harness2::Runner::JobLauncher->cleanup_process($job, $stage);
-    DB::enable_profile() if $settings->runner->nytprof;
+
+    my $complete = File::Spec->catfile($dir, 'complete');
+    write_file_atomic($complete, '1');
+
+    exit($exit // 1);
 }
 
 sub cleanup {
