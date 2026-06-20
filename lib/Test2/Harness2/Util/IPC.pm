@@ -65,6 +65,25 @@ sub swap_io {
     $die->("New handle does not have the desired fd!");
 }
 
+# Forward (child/spawn-side) IO redirection shared by both run_cmd backends:
+# point STDERR/STDOUT/STDIN at the requested handles. STDOUT and STDERR are
+# swapped the same way in both backends; only the no-stdin case differs (the
+# fork backend reads from /dev/null before exec, the spawn backend closes it),
+# so that fallback is supplied by the caller.
+sub _swap_in_io {
+    my %params = @_;
+
+    my ($stdout, $stderr, $stdin, $die, $no_stdin) = @params{qw/stdout stderr stdin die no_stdin/};
+
+    swap_io(\*STDERR, $stderr, $die) if $stderr;
+    swap_io(\*STDOUT, $stdout, $die) if $stdout;
+
+    if   ($stdin) { swap_io(\*STDIN, $stdin, $die) }
+    else          { $no_stdin->() }
+
+    return;
+}
+
 sub _run_cmd_fork {
     my %params = @_;
 
@@ -103,10 +122,13 @@ sub _run_cmd_fork {
         POSIX::_exit(127);
     };
 
-    swap_io(\*STDERR, $stderr, $die) if $stderr;
-    swap_io(\*STDOUT, $stdout, $die) if $stdout;
-    swap_io(\*STDIN,  $stdin,  $die) if $stdin;
-    open(STDIN, "<", "/dev/null") if !$stdin;
+    _swap_in_io(
+        stdout   => $stdout,
+        stderr   => $stderr,
+        stdin    => $stdin,
+        die      => $die,
+        no_stdin => sub { open(STDIN, "<", "/dev/null") },
+    );
 
     @$cmd = map { ref($_) eq 'CODE' ? $_->() : $_ } @$cmd;
 
@@ -144,9 +166,13 @@ sub _run_cmd_spwn {
         POSIX::_exit(127);
     };
 
-    swap_io(\*STDERR, $stderr, $die) if $stderr;
-    swap_io(\*STDOUT, $stdout, $die) if $stdout;
-    $stdin ? swap_io(\*STDIN,  $stdin,  $die) : close(STDIN);
+    _swap_in_io(
+        stdout   => $stdout,
+        stderr   => $stderr,
+        stdin    => $stdin,
+        die      => $die,
+        no_stdin => sub { close(STDIN) },
+    );
 
     local $?;
     my $pid;
