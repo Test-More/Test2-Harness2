@@ -180,13 +180,13 @@ sub service_name {
 }
 
 # Chunk 6.1-2 SEAM (run-scoped preload stages -- NOT YET TRIGGERED):
-# Test2::Harness2::Role::Service nests a service's socket under runs/<run_ord>/
-# when the consumer provides run_ord, so a per-run preload stage would bind
+# Test2::Harness2::Role::Service nests a service's socket under runs/<run_id>/
+# when the consumer provides run_id, so a per-run preload stage would bind
 # runs/<run_id>/preload-<stage>.socket and two runs on one persistent runner
-# could not collide. The runner deliberately does NOT define run_ord: execution
+# could not collide. The runner deliberately does NOT define run_id: execution
 # is serialized (one active run) and preload stages are GLOBAL (shared,
 # runner-lifetime, flat preload-<stage>.socket), so there is no per-run stage to
-# scope or tear down. Implementing run_ord (+ a run-end stage teardown, +
+# scope or tear down. Implementing run_id (+ a run-end stage teardown, +
 # run-scoped peer identities) is the seam for the future run-scoped-stage
 # feature; it is intentionally left unbuilt here (no trigger exists).
 

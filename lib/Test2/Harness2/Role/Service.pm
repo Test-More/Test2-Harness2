@@ -28,7 +28,7 @@ request/response loop.
 =head1 DESCRIPTION
 
 A role for the harness's long-lived services. It owns a listening unix socket
-(C<< $workdir/[$run_ord/]$name.socket >>) and the socket-servicing primitive
+(C<< $workdir/[$run_id/]$name.socket >>) and the socket-servicing primitive
 (C<service_io>): accept new connections, B<connect out> to peer services, and
 read framed messages off every connection and dispatch each by kind. The
 consumer drives its own loop, calling C<service_io> (and C<service_tick>) each
@@ -50,8 +50,8 @@ optional C<service_on_response($conn, $event)> hook.
 =head2 Required / optional consumer methods
 
 C<workdir> and C<name> are required. Optional: C<service_identity> (the name this
-service announces; defaults to C<service_name>), C<run_ord> (a per-run numeric
-subdir), C<service_tick>, C<service_transition($payload, $frame, $conn)>,
+service announces; defaults to C<service_name>), C<run_id> (the run's run_id
+(UUID) subdir), C<service_tick>, C<service_transition($payload, $frame, $conn)>,
 and C<service_on_response($conn, $event)>.
 
 =head1 PUBLIC METHODS
@@ -73,7 +73,7 @@ to C<service_name>.
 =item $path = $self->service_socket_path
 
 The listen socket path: C<< $workdir/$name.socket >>, or
-C<< $workdir/runs/$run_ord/$name.socket >> when the consumer provides a C<run_ord>.
+C<< $workdir/runs/$run_id/$name.socket >> when the consumer provides a C<run_id>.
 
 =item $self->start_service
 
@@ -156,9 +156,9 @@ sub service_socket_path ($self) {
     # Chunk 6.1-2: a run-scoped service nests its socket under a per-run subdir
     # (runs/<run_id>/<name>.socket) so two runs sharing one persistent runner
     # cannot collide on a preload-<stage>.socket. A consumer signals run-scoping by
-    # providing run_ord; no consumer triggers a run-scoped stage yet.
-    $dir = File::Spec->catdir($dir, 'runs', $self->run_ord)
-        if $self->can('run_ord') && defined $self->run_ord;
+    # providing run_id; no consumer triggers a run-scoped stage yet.
+    $dir = File::Spec->catdir($dir, 'runs', $self->run_id)
+        if $self->can('run_id') && defined $self->run_id;
 
     return File::Spec->catfile($dir, $self->service_name . '.socket');
 }

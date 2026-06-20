@@ -98,31 +98,31 @@ ok($svc->service_stopped, "service marked stopped");
 $svc->close_service;
 ok(!-e $svc->service_socket_path, "socket unlinked on close_service");
 
-# Chunk 6.1-2: a run-scoped consumer (one that provides run_ord) nests its socket
-# under runs/<run_ord>/ so two runs on one persistent runner cannot collide on a
-# stage socket. A consumer with NO run_ord keeps the flat workdir path.
+# Chunk 6.1-2: a run-scoped consumer (one that provides run_id) nests its socket
+# under runs/<run_id>/ so two runs on one persistent runner cannot collide on a
+# stage socket. A consumer with NO run_id keeps the flat workdir path.
 {
     package My::RunSvc;
     use v5.38;
-    use Object::HashBase qw/<workdir <name <run_ord/;
+    use Object::HashBase qw/<workdir <name <run_id/;
     use Role::Tiny::With;
     with 'Test2::Harness2::Role::Service';
     sub init ($self) { return }
 }
 
 my $rdir = tempdir(CLEANUP => 1);
-my $rsvc = My::RunSvc->new(workdir => $rdir, name => 'preload-default', run_ord => 'RUN-ABC');
+my $rsvc = My::RunSvc->new(workdir => $rdir, name => 'preload-default', run_id => 'RUN-ABC');
 is(
     $rsvc->service_socket_path,
     File::Spec->catfile($rdir, 'runs', 'RUN-ABC', 'preload-default.socket'),
     "run-scoped socket nests under runs/<run_id>/",
 );
 
-my $gsvc = My::RunSvc->new(workdir => $rdir, name => 'preload-default', run_ord => undef);
+my $gsvc = My::RunSvc->new(workdir => $rdir, name => 'preload-default', run_id => undef);
 is(
     $gsvc->service_socket_path,
     File::Spec->catfile($rdir, 'preload-default.socket'),
-    "a global (no run_ord) stage socket stays flat in the workdir",
+    "a global (no run_id) stage socket stays flat in the workdir",
 );
 
 $rsvc->start_service;
