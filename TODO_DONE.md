@@ -7,6 +7,23 @@ Newest first.
 
 ---
 
+## #26 — Simplify App::Yath::Script::V2 — DONE (`12e20db92`, orig `50f86d212`)
+
+Suite green: `prove` Files=108 Tests=1722 · `yath test` PASSED 109/1728.
+
+`do_begin`'s body moved out of BEGIN into a runtime `setup` method (only the
+dev-lib-before-load ordering + `ORIG_*` capture needed "early," not BEGIN). The four
+`# ==TESTABLE CODE==` marker blobs became real `$class->` methods
+(`_parse_config_files`/`_pre_parse_dev_libs`/`_realpath_paths`/`_build_app`); the
+marker-extraction hack is gone. **Dispatcher contract kept:** the external
+`App::Yath::Script` dispatcher still calls `do_begin` (now a one-line delegate to
+`setup`) in its BEGIN + `do_runtime` after. `t/yath_script.t` rewritten to call the
+real methods directly (and fixed a latent bug — the old extracted test asserted
+settings group `yath`; the real code emits `harness`). **Note:** kept `setup` as a
+public method beside `do_begin`; trivial to inline if you'd rather drop it.
+
+---
+
 ## Batch 7 (2026-06-19) — runner self-restart removed (#4 Parts 3-4)
 
 Combined suite green: `prove` Files=108 Tests=1740 · `yath test` PASSED 109/1746.

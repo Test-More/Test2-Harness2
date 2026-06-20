@@ -422,15 +422,32 @@ capture to the single guarded load (shrinks #21).
 
 ## TIER 3 — Lower priority / deferred / rejected
 
-### #22 — `ROOTPID == $$` role branching
-**Status:** Deferred · **Step:** after #4/#8/#20/#23 · **Depends:** those
+### #22 — Fully untangle the runner from the preload-root (two independent classes)
+**Status:** Decided — the **ENABLER** for #4 Part 5, #8 (set_proc_exit removal), #23 · **Step:** 19 · **Depends:** —
 
-~16 `ROOTPID==$$` guards distinguish three roles on one `Runner` class (scheduler-only
-root, forked stage child, stage-host). The branching persists after #4 (the
-stage-host/child role moves to the preload tree), but #8/#20/#23 remove several guards
-first. **Defer; then split into two classes** (scheduler-only root vs preload-tree
-stage-host/child — `Preload::_run_stage_host` already constructs the latter
-separately), eliminating the branching. Coordinate with #23(rename).
+**Owner directive (2026-06-20):** the runner and the preload-root are **completely
+different concepts** entangled into one `Runner` class only because 1.0 grew organically.
+**Make them two fully independent classes** — neither inherits from the other, and there
+is **no shared base class or role designed just for them** to work around it. They share
+**only** that both implement the **service role** (`Role::Service`) — both have a listen
+socket + manage connections. Do **not** preserve the entanglement (the `~16 ROOTPID==$$`
+guards + `Preload::_run_stage_host` building a `Runner` with `rootpid != $$` to reuse the
+stage machinery is exactly what to remove).
+
+- **The runner** = the harness **scheduler** + primary server/socket. Schedules, owns
+  canonical state, serves clients/stages, launches tests **only as clean-slate fork+exec**
+  (the no-preload path, #4 P4). No preloading, hosts no stage in-process.
+- **The preload-root + stages** = preload + launch tests. **No scheduler**, no canonical
+  run state — they preload, fork/host stages, and launch tests (goto::file) on dispatch.
+  The stage-host machinery currently reused out of `Runner.pm` (`run_tests` staged loop,
+  `Preloader::launch_stage` of named stages, `_stage_transition_reporter`, the
+  `set_proc_exit` stage-relaunch branch, `dispatch_pending`'s in-process-stage branches)
+  moves into this independent preload-host class.
+
+After this the runner carries **only** scheduler + server + clean-slate exec; the
+`ROOTPID==$$` role guards disappear. **Unblocks** #4 P5, #8's full `set_proc_exit`
+removal, and #23. Big structural refactor of the most-depended-on file — green-first,
+expect iteration.
 
 ### #23 — Three classes named "Stage" — rename
 **Status:** Deferred · **Step:** after #4/#8/chunk23 · **Depends:** those, #22
@@ -474,7 +491,7 @@ resource (both define `available`+`assign`).
   (`@INC` + `CORE::GLOBAL::require` — useful belt-and-suspenders).
 
 ### #26 — Simplify `App::Yath::Script::V2`: drop the BEGIN hack, refactor into subs
-**Status:** Decided · **Step:** 19/23 · **Depends:** #4
+**Status:** ✅ DONE (`12e20db92`) — see TODO_DONE.md
 
 **Problem:** `do_begin` runs in the `yath` script's **BEGIN** phase, and its body is a
 set of inline `# ==START/END TESTABLE CODE <NAME>==` marker blocks
