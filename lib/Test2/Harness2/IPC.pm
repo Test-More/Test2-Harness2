@@ -29,7 +29,6 @@ use Test2::Harness2::Util::HashBase qw{
     <pid
     <handlers
     <procs
-    <procs_by_cat
     <waiting
     <wait_time
     <started
@@ -42,7 +41,6 @@ sub init {
     $self->{+PID} = $$;
 
     $self->{+PROCS} //= {};
-    $self->{+PROCS_BY_CAT} //= {};
 
     $self->{+WAIT_TIME} = 0.02 unless defined $self->{+WAIT_TIME};
 
@@ -121,10 +119,9 @@ sub check_for_fork {
 
     return 0 if $self->{+PID} == $$;
 
-    $self->{+PROCS}        = {};
-    $self->{+PROCS_BY_CAT} = {};
-    $self->{+WAITING}      = {};
-    $self->{+PID}          = $$;
+    $self->{+PROCS}   = {};
+    $self->{+WAITING} = {};
+    $self->{+PID}     = $$;
 
     return 1;
 }
@@ -152,9 +149,8 @@ sub _bring_out_yer_dead {
 sub _check_if_dead_yet {
     my $self = shift;
 
-    my $procs     = $self->{+PROCS}        //= {};
-    my $cat_procs = $self->{+PROCS_BY_CAT} //= {};
-    my $waiting   = $self->{+WAITING}      //= {};
+    my $procs   = $self->{+PROCS}   //= {};
+    my $waiting = $self->{+WAITING} //= {};
 
     my $found = 0;
     for my $pid (keys %$waiting) {
@@ -162,7 +158,6 @@ sub _check_if_dead_yet {
         $found++;
         my $args = delete $waiting->{$pid};
         my $proc = delete $procs->{$pid};
-        delete $cat_procs->{$proc->category}->{$pid};
         $self->set_proc_exit($proc, @$args);
     }
 
@@ -178,9 +173,8 @@ sub set_proc_exit {
 sub _ex_parrots {
     my $self = shift;
 
-    my $procs     = $self->{+PROCS}        //= {};
-    my $cat_procs = $self->{+PROCS_BY_CAT} //= {};
-    my $waiting   = $self->{+WAITING}      //= {};
+    my $procs   = $self->{+PROCS}   //= {};
+    my $waiting = $self->{+WAITING} //= {};
 
     my $found = 0;
     for my $pid (keys %$procs) {
@@ -202,13 +196,10 @@ sub wait {
 
     my $sig_count = $self->{+SIG_COUNT};
 
-    my $procs     = $self->{+PROCS}        //= {};
-    my $cat_procs = $self->{+PROCS_BY_CAT} //= {};
-    my $waiting   = $self->{+WAITING}      //= {};
+    my $procs   = $self->{+PROCS}   //= {};
+    my $waiting = $self->{+WAITING} //= {};
 
     return 0 unless keys(%$procs) || keys(%$waiting);
-
-    my $cat_total = $params{cat} ? keys %{$cat_procs->{$params{cat}}} : 0;
 
     my $start = time;
 
@@ -220,14 +211,7 @@ sub wait {
         $found += $self->_bring_out_yer_dead();
         $found += $self->_check_if_dead_yet();
 
-        return $found if $self->_wait_done($found, $start, \%params);
-
-        if (my $cat = $params{cat}) {
-            my $cur_total = keys %{$cat_procs->{$cat}};
-            return 0 unless $cur_total;
-            my $delta = $cat_total - $cur_total;
-            return $delta if $delta;
-        }
+        return $found if $self->_wait_done($start, \%params);
 
         # This is expensive, so only do it if we are gonna end up waiting
         # anyway If we do find anything here do not bother waiting.
@@ -245,7 +229,7 @@ sub wait {
 
 sub _wait_done {
     my $self = shift;
-    my ($found, $start, $params) = @_;
+    my ($start, $params) = @_;
 
     my $all = keys(%{$self->{+PROCS}});
     return 1 unless $all;
@@ -253,13 +237,6 @@ sub _wait_done {
     return 1 if $params->{timeout} && time - $start >= $params->{timeout};
 
     return 0 if $all && $params->{all};
-
-    return 0 if $params->{all_cat} && keys %{$self->{+PROCS_BY_CAT}->{$params->{all_cat}}};
-
-    return 0 if $params->{block} && !$found;
-
-    # This gets validated outside this loop
-    return 0 if $params->{cat};
 
     return 1;
 }
@@ -285,7 +262,6 @@ sub watch {
     croak "Already watching pid $pid" if exists $self->{+PROCS}->{$pid};
 
     $self->{+PROCS}->{$pid} = $proc;
-    $self->{+PROCS_BY_CAT}->{$proc->category}->{$pid} = $proc;
 }
 
 sub spawn {
@@ -350,10 +326,6 @@ Custom signal handlers specific to the IPC object.
 
 Hashref of C<< $pid => $proc >> where $proc is an instance of
 L<Test2::Harness2::IPC::Proc>.
-
-=item $hashref = $ipc->procs_by_cat
-
-Hashref of C<< $category => { $pid => $proc } >>.
 
 =item $hashref = $ipc->waiting
 
@@ -446,18 +418,6 @@ timeout. L<Time::HiRes> is used, so timeout is in seconds with decimals.
 =item all => $bool
 
 Block until B<ALL> processes are done.
-
-=item cat => $category
-
-Block until at least 1 process from the category is complete.
-
-=item all_cat => $category
-
-Block until B<ALL> processes from the category are complete.
-
-=item block => $bool
-
-Block until at least 1 process is complete.
 
 =back
 
