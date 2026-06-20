@@ -1,24 +1,30 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# Chunk 19.2a: the runner honors an injected rootpid (the logical root runner's
-# pid), defaulting to $$ when none is given. This lets the future preload-root
-# build a stage-host Runner whose $$ differs from the real runner, so it
-# identifies as a stage instead of the root.
+# Ticket #22: the runner and the preload-root stage host are now two fully
+# independent classes. The runner is ALWAYS the root scheduler (it never becomes a
+# stage host), so it no longer carries the rootpid-gated is_stage_service /
+# service_name stage behavior. That stage-service identity now lives in
+# Test2::Harness2::Preload::Host, the independent stage host. This test pins the
+# split: the runner names the 'runner' service unconditionally, and the host names
+# 'preload-<stage>' once it is hosting a stage.
 
 use File::Temp qw/tempdir/;
 use Getopt::Yath::Settings;
 
 use Test2::Harness2::Runner;
+use Test2::Harness2::Preload::Host;
 
 my $dir = tempdir(CLEANUP => 1);
 
+# The runner still honors an injected rootpid (it is conveyed down as
+# runner_pid / watch_parent_pid), defaulting to this process when not given.
 my $default = Test2::Harness2::Runner->new(
     dir       => $dir,
     settings  => Getopt::Yath::Settings->new(harness => {}),
     resources => [],
 );
-is($default->rootpid, $$, "rootpid defaults to this process when not injected");
+is($default->rootpid, $$, "runner rootpid defaults to this process when not injected");
 
 my $injected = Test2::Harness2::Runner->new(
     dir       => $dir,
@@ -28,11 +34,25 @@ my $injected = Test2::Harness2::Runner->new(
 );
 is($injected->rootpid, 999_999, "injected rootpid is honored, not overwritten with \$\$");
 
-# A process whose $$ != rootpid identifies as a stage once a stage is set
-# (is_stage_service: false for the root, true for a non-root with a stage).
-ok(!$injected->is_stage_service, "no stage yet -> not a stage service");
-$injected->{stage} = 'base';
-ok($injected->is_stage_service, "non-root pid with a stage -> stage service");
-is($injected->service_name, 'preload-base', "stage service names its socket preload-<stage>");
+# The runner is always the root scheduler: it has no stage-service identity, and
+# its service is always 'runner.socket'.
+ok(!$injected->can('is_stage_service'), "runner no longer carries is_stage_service (it is never a stage host)");
+is($injected->service_name, 'runner', "runner always names the 'runner' service");
+
+# The stage host (Preload::Host) owns the stage-service identity. It requires the
+# real runner's pid as rootpid and identifies as a 'preload-<stage>' service once
+# it is hosting a stage.
+my $host = Test2::Harness2::Preload::Host->new(
+    dir       => $dir,
+    settings  => Getopt::Yath::Settings->new(harness => {}),
+    resources => [],
+    rootpid   => 999_999,
+);
+ok(!$host->is_stage_service, "host with no stage yet -> not a stage service");
+is($host->service_name, 'runner', "host with no stage yet -> names the base 'runner' service");
+
+$host->{stage} = 'base';
+ok($host->is_stage_service, "host with a stage -> stage service");
+is($host->service_name, 'preload-base', "host stage service names its socket preload-<stage>");
 
 done_testing;
