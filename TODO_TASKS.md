@@ -89,7 +89,7 @@ pid" (and `_set_stage_lifecycle` gets the same bogus `$$`).
   `_truncate` + its enqueue.
 
 ### #2 — Converge stage state into one 4-state lifecycle
-**Status:** Decided · **Step:** 10 · **Depends:** #1
+**Status:** ✅ DONE (batch 4, `a86f0273e`) — see TODO_DONE.md (kept generation for #3) · **Step:** 10 · **Depends:** #1
 
 **Problem:** `STAGE_READINESS` (`{stage=>pid}`) and `STAGE_LIFECYCLE`
 (`{state,generation,pid,stamp}`) are redundant; every transition writes both.
@@ -161,7 +161,7 @@ eagerly drops channels of stages that are themselves still alive.
   `agent_scripts/audit-collector-watch-parent` for scalar-vs-list.
 
 ### #4 — Dual preload architecture + lying "DORMANT" comments; delete runner self-restart
-**Status:** Decided · **Step:** 19/23 · **Depends:** —
+**Status:** 🟡 PARTIAL (batch 4) — Parts 1+2 DONE (`42a788d46`); Parts 3/4/5 DEFERRED, **need a product decision** (no-preload persistent `yath reload` is a tested feature — see TODO_DONE.md) · **Step:** 19/23 · **Depends:** —
 
 **Problem:** stale comments in `Runner.pm` claim certain paths are "DORMANT" when
 they are actually **live** (the chunk-19.3 flip already happened — `_preload_root_hosts_stages`

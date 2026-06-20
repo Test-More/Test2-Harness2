@@ -7,6 +7,53 @@ Newest first.
 
 ---
 
+## Batch 4 (2026-06-19) — stage lifecycle + runner rework (partial)
+
+Combined suite green: `prove` Files=106 Tests=1732 · `yath test` PASSED.
+
+### #2 — Converge stage state into one 4-state lifecycle — DONE (`a86f0273e`, orig `ce391d9cc`)
+Deleted `STAGE_READINESS`; `STAGE_LIFECYCLE` is the single source (`stage_is_up` helper;
+scheduler gate reads `state eq 'up'`). 4 states wired in State.pm: `starting` (from
+`set_stage_map` — mapped-but-not-up), `up` (`stage_ready`), `restarting` (stage exit
+while still mapped — both reload + non-reload), **`down` = absent-from-map** (a refresh
+that drops a previously-tracked stage marks it `down` — fully reached, tested). Status
+drops `stage_readiness`, returns `stage_lifecycle` + `stage_pids` (#1). **Kept
+`generation` + `_stale_stage_generation` guard** (scope: #3 removes them with
+connection-currency). Updated `State_stage_lifecycle.t`.
+
+### #4 — Runner rework — PARTIAL (Parts 1+2 done; 3/4/5 DEFERRED — NEEDS A PRODUCT DECISION)
+- **Part 1 DONE (`4f4898a09`):** fixed the lying DORMANT comments in `Runner.pm`
+  (`_preload_root_hosts_stages`/`dispatch_pending`/`run_tests`/`run_scheduler_only`) →
+  state the gate is LIVE for preload runs, in-runner paths are the no-preload fallback.
+  Correctly **left** the `Runner.pm:181` comment — it is the run-scoped-stage SEAM
+  (chunk 6.1-2), genuinely unbuilt, accurately "NOT YET TRIGGERED" (not a stale claim).
+- **Part 2 (partial) DONE (`42a788d46`, orig `08d7307db`):** the **preload** (scheduler-only)
+  runner's SIGHUP no longer winds down — it `service_send('preload-root','reload')` and
+  continues; added `Preload::request_handler_reload` → `longjump 'preload-root' => 'respawn'`.
+  Updated IPC.md.
+- **Parts 3 (delete runner self-restart), 4 (no-preload fork+exec, remove goto::file/Long::Jump
+  from runner), 5 (delete dead in-runner named-stage path) — DEFERRED.**
+
+> ⚠️ **NEEDS YOUR DECISION (#4 — blocks Parts 3/4/5, and tickets #8, #26).** The ticket's
+> premise that the runner self-restart is "vestigial for no-preload" is **false against the
+> suite.** `t/integration/persist.t` and `t/AI/integration/watch_socket.t` `yath start` a
+> **no-preload** persistent runner, `yath reload` it, and assert it reloads via exactly the
+> `setjump "Test-Runner"` self-restart Part 3 would delete (the agent confirmed the only HUP
+> delivery is to a `rootpid==$$`, `stage=default`, no-preload-root runner). So no-preload
+> persistent `yath reload` is a **tested, user-facing feature**, not vestigial. Pick one:
+> **(a)** accept that a no-preload persistent runner loses `yath reload` self-restart (update/
+> retire those two tests) → Parts 3/4/5 proceed as written; or **(b)** keep the no-preload
+> self-restart and rescope #4 (HUP-forward stays preload-only, as landed; the runner's
+> `setjump`/goto::file stays for the no-preload path). This is a product call I should not make
+> unilaterally — it changes a human-authored test's asserted behavior.
+> Also (minor): the socket `reload` forward in Part 2 is best-effort — the preload-root also
+> gets HUP via the shared process group (it's an `is_test=>0` collector in the runner's
+> pgroup); the socket forward only lands in the post-run idle window. If the socket forward
+> should be the *primary* mechanism, that needs servicing the Preload connection mid-run
+> (a larger change).
+
+---
+
 ## Batch 3 (2026-06-19) — foundation + scheduler + quick fixes
 
 Three parallel tickets onto 2.0d. Combined suite green: `prove` Files=106 Tests=1731 ·
