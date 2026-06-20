@@ -450,7 +450,7 @@ removal, and #23. Big structural refactor of the most-depended-on file — green
 expect iteration.
 
 ### #23 — Three classes named "Stage" — rename
-**Status:** Deferred · **Step:** after #4/#8/chunk23 · **Depends:** those, #22
+**Status:** ✅ DONE (`2de1be5d3`) — StageDelegate/StageProcess/StageConfig; `done` kept (live caller post-#22). See TODO_DONE.md
 
 `Runner::Stage` (in-stage delegate), `Runner::Preloader::Stage` (`IPC::Process` proc
 tracker), `Runner::Preload::Stage` (DSL config) collide (two differ by one letter).

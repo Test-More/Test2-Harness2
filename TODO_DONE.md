@@ -7,6 +7,22 @@ Newest first.
 
 ---
 
+## #23 — Rename the three colliding "Stage" classes — DONE (`2de1be5d3`)
+
+Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED 109/1736. All via
+`git mv` (history preserved); zero stale refs.
+- `Runner::Stage` → **`Runner::StageDelegate`** (in-stage delegate)
+- `Runner::Preloader::Stage` → **`Runner::StageProcess`** (`IPC::Process` proc tracker)
+- `Runner::Preload::Stage` → **`Runner::StageConfig`** (preload DSL config)
+
+**`StageDelegate::done` KEPT** (not died/deleted — the audit's "always returns 0 =
+dead" was pre-#22): post-#22 it has a live polymorphic caller —
+`Preload::Host::end_test_loop` calls `$state->done` where `state` is the stage
+delegate; the constant `return 0` keeps the stage serving dispatches until the runner
+stops it. A `die` would crash every stage loop.
+
+---
+
 ## #22 — Untangle runner / preload-root into two independent classes — CORE DONE (residuals)
 
 Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED. Commits `f23ceb44c`
