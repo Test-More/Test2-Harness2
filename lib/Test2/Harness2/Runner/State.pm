@@ -775,6 +775,12 @@ sub task_pending_lookup {
     my $self = shift;
     my ($task) = @_;
 
+    # The 5-level PENDING_TASKS nesting IS the scheduler's priority index: the
+    # dimensions (run_id -> smoke -> stage -> cat -> dur) mirror _next's nested
+    # priority traversal, so _next walks them in priority order by iterating the
+    # index in place rather than filtering a flat list each dispatch. Do not
+    # flatten it (that would push the partitioning into the hot loop); prune_hash
+    # GCs empty sub-keys. (bloat ticket #14)
     my ($run_id, $smoke, $stage, $cat, $dur) = $self->task_fields($task);
 
     return $self->{+PENDING_TASKS}->{$run_id}->{$smoke}->{$stage}->{$cat}->{$dur} //= [];

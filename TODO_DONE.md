@@ -44,6 +44,14 @@ de-flake theme); clean in isolation + both full suites at each commit.
 
 **This unblocks #4 Part 5, #8 (full set_proc_exit removal), #23 (Stage rename).**
 
+**Follow-on cleanups landed (`4fa8f9a3a`):** removed 3 dead imports from Runner.pm
+(`Preload`/`Preloader::Stage`/`DepTracer` — no longer referenced after the split).
+This + #22 **completes #4 Part 5** (no in-runner named-stage path remains; Runner's
+`set_proc_exit` is job-only, the stage branch lives in `Preload::Host`) and **#11**
+(only `stop_preload_stages` remains; `_drop_preload_peers` gone via #3; watchdog
+narrowed). **#14** — added the priority-index comment to `task_pending_lookup`
+(rejected-keep: the 5-level nesting mirrors `_next`'s traversal; don't flatten).
+
 ---
 
 ## #26 — Simplify App::Yath::Script::V2 — DONE (`12e20db92`, orig `50f86d212`)

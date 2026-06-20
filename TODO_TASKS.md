@@ -161,7 +161,7 @@ eagerly drops channels of stages that are themselves still alive.
   `agent_scripts/audit-collector-watch-parent` for scalar-vs-list.
 
 ### #4 — Dual preload architecture + lying "DORMANT" comments; delete runner self-restart
-**Status:** ✅ Parts 1-4 DONE (`5dacdf749`) — see TODO_DONE.md; Part 5 (delete dead in-runner stage path) BLOCKED on #22 role-split (preload-root reuses the stage machinery)
+**Status:** ✅ DONE — Parts 1-4 (`5dacdf749`) + Part 5 satisfied by #22 (`4fa8f9a3a`); see TODO_DONE.md
 
 **Problem:** stale comments in `Runner.pm` claim certain paths are "DORMANT" when
 they are actually **live** (the chunk-19.3 flip already happened — `_preload_root_hosts_stages`
@@ -284,7 +284,7 @@ assignment). Delete `resolve_file_stage`, `resolve_file_stages`, `request_preloa
 choice is decided client-side at queue time (see #23 / §4.7a).
 
 ### #11 — Overlapping terminate/reap/timeout layers
-**Status:** Decided (mostly subsumed) · **Step:** 21 · **Depends:** #3, #4, #8
+**Status:** ✅ DONE — subsumed by #3/#4/#22 (single teardown path, watchdog narrowed); see TODO_DONE.md
 
 **Decision:** after #3/#4/#8 the four "layers" become distinct: ChildMonitor multi-pid
 self-termination (#3), a minimal zombie-reaper (#8), `Watchdog` narrowed to wind-down
@@ -325,7 +325,7 @@ big single bucket), so keep it.
 sites: assumes a single active run — revisit for concurrent multi-run (chunk 16).
 
 ### #14 — Deep task partitioning + `prune_hash`
-**Status:** Rejected (keep) · **Step:** — · **Depends:** —
+**Status:** ✅ DONE (rejected-keep + comment added, `next commit`) — the nesting is the priority index
 
 The 5-level `PENDING_TASKS` nesting **is the scheduler's priority index** — it mirrors
 `_next`'s nested priority traversal (smoke→stage→cat→dur); flattening would slow the
