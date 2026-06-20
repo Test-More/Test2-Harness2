@@ -893,10 +893,17 @@ sub _handle_dead_preload_root {
     return 'respawn';
 }
 
-# §6.10: forget a dead preload-root incarnation's stage map / readiness / peer
-# connections so the scheduler gates on (and dispatches only to) the fresh
-# incarnation. The new incarnation's handshake (set_stage_data) refreshes the map
-# and clears the file_stage cache; its stages re-register with the new generation.
+# §6.10: forget a dead preload-root incarnation's stage map / readiness so the
+# scheduler gates on (and dispatches only to) the fresh incarnation. The new
+# incarnation's handshake (set_stage_data) refreshes the map and clears the
+# file_stage cache.
+#
+# The runner no longer drops live stage channels here (bloat #3): a stage drops
+# itself (its collector self-terminates when its watched runner dies, and a stage
+# whose preload-root died finishes its in-flight job, reports, and exits), and the
+# socket EOF removes the peer via _drop_conn in the service loop. There is no
+# busy-channel retention special case -- a stage with an in-flight job keeps its
+# channel simply because it is still connected.
 sub _reset_preload_root_state {
     my $self = shift;
 
@@ -904,43 +911,6 @@ sub _reset_preload_root_state {
 
     my $state = $self->state;
     $state->reset_stage_readiness if $state && $state->can('reset_stage_readiness');
-
-    $self->_drop_preload_peers;
-
-    return;
-}
-
-# Drop the stale service connections to the dead incarnation (the preload-root and
-# its stages) so a later dial reuses nothing stale. The peers reconnect.
-#
-# §6.10: a stage that still has an IN-FLIGHT (running) job is the exception -- keep
-# its channel. When the preload-root is killed mid-run, the orphaned stage process
-# is still alive (its collector watches the real runner, not the dead preload-root)
-# and finishes that job, then reports its outcome (stop_task / retry_task) over THIS
-# channel. Those job reports are NOT generation-guarded, so dropping the channel here
-# would lose the in-flight job's completion and hang the run (this is what made the
-# mid-run-kill recovery flaky under load). The stale stage gets no new dispatch
-# (readiness was just reset; the fresh incarnation's stages serve new work) and is
-# reaped when the run ends / the runner stops.
-sub _drop_preload_peers {
-    my $self = shift;
-
-    my $peers = $self->{service_peers} or return;
-
-    my %busy;
-    if (my $state = $self->state) {
-        my $running = $state->running_tasks // {};
-        for my $task (values %$running) {
-            $busy{$task->{stage}}++ if defined $task->{stage};
-        }
-    }
-
-    for my $id (keys %$peers) {
-        next unless $id eq 'preload-root' || $id =~ m/^preload-/;
-        next if $id =~ m/^preload-(.+)$/ && $busy{$1};
-        my $conn = $peers->{$id} or next;
-        $self->_drop_conn($conn);
-    }
 
     return;
 }
