@@ -50,6 +50,11 @@ subtest identity_exchange => sub {
     ok($b->ready, "beta ready after receiving alpha's identity");
     is($a->identity, 'beta',  "alpha learned beta");
     is($b->identity, 'alpha', "beta learned alpha");
+
+    # The identity handshake carries each peer's real pid; both ends run in this
+    # process, so each learns $$.
+    is($a->peer_pid, $$, "alpha learned beta's pid from the handshake");
+    is($b->peer_pid, $$, "beta learned alpha's pid from the handshake");
 };
 
 subtest request_response_correlation => sub {

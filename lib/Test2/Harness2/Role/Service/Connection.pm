@@ -19,6 +19,7 @@ use Test2::Harness2::Util::HashBase qw{
     <identity_timeout
     +fb
     +identity
+    +identity_pid
     +ready
     +sent_identity
     +deadline
@@ -49,7 +50,7 @@ in B<one> place rather than being re-implemented per client.
 Every message is a JSON object, zstd-compressed into one self-contained frame.
 Five frame kinds, distinguished by their top-level key:
 
-    { identity   => { name => $id, ... } }   # who I am
+    { identity   => { name => $id, pid => $$, ... } }   # who I am
     { request    => { request_id => $uuid, command => $cmd, ... } }
     { response   => { request_id => $uuid, ... } }
     { transition => ... }                     # collector transition (folded)
@@ -109,6 +110,12 @@ bad. Defaults to 5.
 =item $id = $conn->identity
 
 The peer's announced identity, or C<undef> until it has arrived.
+
+=item $pid = $conn->peer_pid
+
+The peer process's pid, announced alongside its identity, or C<undef> until the
+identity frame has arrived. This is the authoritative source for a connected
+peer's real pid (e.g. a preload stage's pid for C<status>/C<ps>).
 
 =item $bool = $conn->ready
 
@@ -180,6 +187,7 @@ sub init ($self) {
 }
 
 sub identity { $_[0]->{+IDENTITY} }
+sub peer_pid { $_[0]->{+IDENTITY_PID} }
 sub ready    { $_[0]->{+READY}  ? 1 : 0 }
 sub closed   { $_[0]->{+CLOSED} ? 1 : 0 }
 
@@ -192,7 +200,7 @@ sub expired ($self) {
 sub send_identity ($self) {
     return if $self->{+SENT_IDENTITY};
     $self->{+SENT_IDENTITY} = 1;
-    $self->_write({identity => {name => $self->{+MY_IDENTITY}}});
+    $self->_write({identity => {name => $self->{+MY_IDENTITY}, pid => $$}});
     return;
 }
 
@@ -297,9 +305,10 @@ sub _classify ($self, $payload, $rec) {
     # --- pending: the first frame decides the connection's kind ---------------
     unless ($self->{+READY}) {
         if ($is_identity) {
-            $self->{+READY}    = 1;
-            $self->{+BAD}      = 0;
-            $self->{+IDENTITY} = $payload->{identity}{name};
+            $self->{+READY}        = 1;
+            $self->{+BAD}          = 0;
+            $self->{+IDENTITY}     = $payload->{identity}{name};
+            $self->{+IDENTITY_PID} = $payload->{identity}{pid};
 
             # The accepter replies with its own identity (the dialer already sent
             # its own, so this is a no-op there) -- UNLESS the peer asked us not to.

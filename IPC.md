@@ -175,7 +175,10 @@ over that one channel.
 Every connection is a `Connection` object that owns the framing. Five frame kinds,
 distinguished by their top-level key:
 
-- **`{ identity => { name => <id> } }`** — sent on open (see lifecycle below).
+- **`{ identity => { name => <id>, pid => <pid> } }`** — sent on open (see lifecycle
+  below). The announced `pid` is the peer process's real pid; the receiver stores it
+  (`$conn->peer_pid`). `status`/`ps` read each connected `preload-<stage>` peer's pid
+  this way (the scheduler State stores no pid).
 - **`{ request => { request_id => <uuid>, command => <cmd>, ... } }`** → dispatched
   to `request_handler_<cmd>`; the handler's return value is sent back as a
   `response` echoing the `request_id`, or no reply when the handler returns `undef`
