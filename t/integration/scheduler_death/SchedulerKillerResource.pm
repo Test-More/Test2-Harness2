@@ -2,7 +2,7 @@ package SchedulerKillerResource;
 use strict;
 use warnings;
 
-use parent 'Test2::Harness2::Runner::Resource';
+use Object::HashBase qw/&Test2::Harness2::Runner::Resource/;
 
 use POSIX();
 

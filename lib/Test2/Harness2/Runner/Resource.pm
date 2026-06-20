@@ -2,28 +2,24 @@ package Test2::Harness2::Runner::Resource;
 use strict;
 use warnings;
 
+use Role::Tiny;
+use Object::HashBase;
+
 use Term::Table;
 use Time::HiRes qw/time/;
 use Test2::Util::Times qw/render_duration/;
 
 our $VERSION = '2.000000';
 
-sub scope_global { 0 }
-sub scope_host   { 0 }
-sub scope_run    { 1 }
+requires 'available', 'assign';
 
-sub setup {}
+sub setup { my $class = shift; return }
 
-sub new {
-    my $class = shift;
-    return bless({@_}, $class);
-}
+sub tick { my $self = shift; return }
 
-sub tick { }
+sub refresh { my $self = shift; return }
 
-sub refresh { }
-
-sub discharge { }
+sub discharge { my $self = shift; return }
 
 sub sort_weight {
     my $class = shift;
@@ -33,21 +29,17 @@ sub sort_weight {
 
 sub job_limiter { 0 }
 
-sub job_limiter_max { }
+sub job_limiter_max { my $self = shift; return }
 
 sub job_limiter_at_max { 0 }
 
-sub available { -1 }
+sub record { my $self = shift; return }
 
-sub record { }
+sub release { my $self = shift; return }
 
-sub assign { }
+sub cleanup { my $self = shift; return }
 
-sub release { }
-
-sub cleanup { }
-
-sub status_data {()}
+sub status_data { my $self = shift; return () }
 
 sub status_lines {
     my $self = shift;
@@ -123,7 +115,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Resource - Base class for resource management classes
+Test2::Harness2::Runner::Resource - Role for resource management classes
 
 =head1 DESCRIPTION
 
@@ -131,17 +123,28 @@ Sometimes you have limited resources that must be shared/divided between tests
 that run concurrently. Resource classes give you a way to leverage the IPC
 system used by L<Test2::Harness2> to manage resource assignment and recovery.
 
+This is a L<Role::Tiny> role that itself C<use>s L<Object::HashBase>. A resource
+class B<composes> the role (it does not inherit from it). The role C<requires>
+the C<available()> and C<assign()> methods, so a consuming class B<must> define
+both or it will fail to compose; the remaining hooks have no-op defaults the
+class may override.
+
 =head1 SYNOPSIS
 
 Here is a resource class that simply assigns an integer to each test. It would
 be possible to re-use integers, but since there are infinite integers this
 example is kept simple and just always grabs the next one.
 
+The role is composed via L<Object::HashBase>'s C<&> prefix, which both applies
+the role (bringing in its C<requires> and default hooks) and gives the consuming
+class its own C<new()> plus any HashBase attributes listed alongside it.
+
     package Test2::Harness2::Runner::Resource::Foo;
     use strict;
     use warnings;
 
-    use parent 'Test2::Harness2::Runner::Resource';
+    # Compose the role; '&' applies it. Add any HashBase attributes after it.
+    use Object::HashBase qw/&Test2::Harness2::Runner::Resource/;
 
     sub setup {
         my $class = shift; # NOT AN INSTANCE
@@ -380,10 +383,17 @@ per-process instances may not be forked from the process that calls setup().
 
 =item $res = $class->new(settings => $settings);
 
-A default new method, returns a blessed hashref with the settings key set to
-the L<Getopt::Yath::Settings> instance.
+The consuming class gets a default C<new()> from L<Object::HashBase> (the C<&>
+role-composition prefix provides it). It returns a blessed hashref with the
+given key/value pairs, e.g. the C<settings> key set to the
+L<Getopt::Yath::Settings> instance.
 
 =item $val = $res->available(\%task)
+
+B<REQUIRED:> the consuming class B<must> define this method (the role
+C<requires> it).
+
+
 
 B<DO NOT MODIFY ANY INTERNAL STATE IN THIS METHOD>
 
@@ -403,6 +413,9 @@ The only key in C<\%task> hashref that most resources will care about is the
 C<'file'> key, which contains the test file to be run.
 
 =item $res->assign(\%task, \%state)
+
+B<REQUIRED:> the consuming class B<must> define this method (the role
+C<requires> it).
 
 B<DO NOT MODIFY THE TASK HASHREF>
 

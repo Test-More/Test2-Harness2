@@ -4,8 +4,10 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'Test2::Harness2::Runner::Resource';
-use Test2::Harness2::Util::HashBase qw/<settings <job_count <used <free/;
+# Predeclare new() so HashBase does not generate one (we define our own below).
+sub new;
+
+use Object::HashBase qw/&Test2::Harness2::Runner::Resource <settings <job_count <used <free/;
 use Time::HiRes qw/time/;
 use List::Util qw/min/;
 
