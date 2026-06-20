@@ -461,7 +461,7 @@ C<@INC>, loads, Test2 state, the stage C<pre_launch> hook, and final cleanup).
 
 =item $stage = Test2::Harness2::Runner::JobLauncher->get_stage($runner)
 
-The L<Test2::Harness2::Runner::Preload::Stage> the runner is currently hosting, or
+The L<Test2::Harness2::Runner::StageConfig> the runner is currently hosting, or
 undef.
 
 =back

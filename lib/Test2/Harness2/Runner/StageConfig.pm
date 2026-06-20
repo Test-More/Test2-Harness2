@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Preload::Stage;
+package Test2::Harness2::Runner::StageConfig;
 use strict;
 use warnings;
 
@@ -118,7 +118,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Preload::Stage - Abstraction of a preload stage.
+Test2::Harness2::Runner::StageConfig - Abstraction of a preload stage.
 
 =head1 DESCRIPTION
 

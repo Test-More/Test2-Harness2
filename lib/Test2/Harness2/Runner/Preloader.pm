@@ -14,7 +14,7 @@ use Test2::Harness2::Util qw/open_file file2mod mod2file lock_file unlock_file c
 use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 
 use Test2::Harness2::Runner::Reloader;
-use Test2::Harness2::Runner::Preloader::Stage;
+use Test2::Harness2::Runner::StageProcess;
 
 use File::Spec();
 use List::Util qw/pairgrep/;
@@ -192,7 +192,7 @@ sub launch_stage {
     # stage's verdict (collector_exit_code), and the runner's process-group
     # signalling reaches the whole stage (the collector parent is the group
     # leader; the stage runs in its group).
-    return Test2::Harness2::Runner::Preloader::Stage->new(
+    return Test2::Harness2::Runner::StageProcess->new(
         pid => $pid,
         name => $name,
     ) if $pid;

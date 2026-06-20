@@ -21,8 +21,8 @@ use Test2::Harness2::Runner::Job();
 use Test2::Harness2::Runner::Spawn();
 use Test2::Harness2::Runner::Preload();
 use Test2::Harness2::Runner::Preloader();
-use Test2::Harness2::Runner::Preloader::Stage();
-use Test2::Harness2::Runner::Stage();
+use Test2::Harness2::Runner::StageProcess();
+use Test2::Harness2::Runner::StageDelegate();
 
 use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
@@ -219,7 +219,7 @@ sub state {
 # channel (the connection the stage opened to send stage_ready).
 sub stage_delegate {
     my $self = shift;
-    return $self->{+STAGE_DELEGATE} //= Test2::Harness2::Runner::Stage->new(
+    return $self->{+STAGE_DELEGATE} //= Test2::Harness2::Runner::StageDelegate->new(
         workdir => $self->{+DIR},
         name    => $self->{+STAGE},
         runner  => $self,
@@ -412,7 +412,7 @@ sub stop_stages {
 
     my %live_stage;
     for my $proc (values %{$self->{+PROCS} // {}}) {
-        next unless $proc->isa('Test2::Harness2::Runner::Preloader::Stage');
+        next unless $proc->isa('Test2::Harness2::Runner::StageProcess');
         $live_stage{$proc->name} = 1;
     }
 
@@ -690,7 +690,7 @@ sub set_proc_exit {
             }
         }
     }
-    elsif ($proc->isa('Test2::Harness2::Runner::Preloader::Stage')) {
+    elsif ($proc->isa('Test2::Harness2::Runner::StageProcess')) {
         my $stage = $proc->name;
 
         if ($exit != 0) {

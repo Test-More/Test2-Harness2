@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Preloader::Stage;
+package Test2::Harness2::Runner::StageProcess;
 use strict;
 use warnings;
 
@@ -20,7 +20,7 @@ __END__
 
 =head1 NAME
 
-Test2::Harness2::Runner::Preloader::Stage - Representation of a persistent stage process.
+Test2::Harness2::Runner::StageProcess - Representation of a persistent stage process.
 
 =head1 DESCRIPTION
 

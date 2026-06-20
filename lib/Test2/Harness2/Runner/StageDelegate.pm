@@ -1,4 +1,4 @@
-package Test2::Harness2::Runner::Stage;
+package Test2::Harness2::Runner::StageDelegate;
 use v5.38;
 
 our $VERSION = '2.000000';
@@ -23,7 +23,7 @@ use Test2::Harness2::Util::HashBase qw{
 
 =head1 NAME
 
-Test2::Harness2::Runner::Stage - In-stage dispatch delegate for a transient
+Test2::Harness2::Runner::StageDelegate - In-stage dispatch delegate for a transient
 preload-stage service.
 
 =head1 DESCRIPTION

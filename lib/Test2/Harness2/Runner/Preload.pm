@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Runner::Preload::Stage();
+use Test2::Harness2::Runner::StageConfig();
 
 sub import {
     my $class = shift;
@@ -124,7 +124,7 @@ sub build_stage {
     die "A coderef is required at $caller->[1] line $caller->[2].\n"
         unless $params{code};
 
-    my $stage = Test2::Harness2::Runner::Preload::Stage->new(
+    my $stage = Test2::Harness2::Runner::StageConfig->new(
         stage_lookup => $self->{+STAGE_LOOKUP},
         %params,
     );
