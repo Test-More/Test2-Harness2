@@ -81,6 +81,8 @@ sub clear_loaded { %{$_[0]->{+LOADED}} = () }
 
 my %REQUIRE_CACHE;
 
+# Registered callbacks are fired by Test2::Harness2::Runner::Preloader::_reload_cb_reload
+# (via $dtrace->callbacks) when a watched file changes on reload.
 sub add_callbacks {
     my $self = shift;
     my %watch = @_;
