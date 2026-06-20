@@ -236,7 +236,7 @@ nothing-left / timeout / `all`-mode-remains / default-single-pass.
   (live, called from the Runner loop).
 
 ### #8 — Collapse the `Test2::Harness2::IPC` controller
-**Status:** Decided · **Step:** 21 · **Depends:** #6, #4-task
+**Status:** 🟡 Parts 1-3 DONE (`280720efb`) — die→next, warns debug-gated, command inline reaper; Part 4 (no-preload completion→socket / delete set_proc_exit job branch) DEFERRED as a rewrite (§5.4 follow-up). See TODO_DONE.md
 
 **Problem:** the IPC controller does spawn + zombie-reap + category tracking +
 reap-driven scheduling. Only the first two should survive. Two real consumers: the

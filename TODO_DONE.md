@@ -7,6 +7,38 @@ Newest first.
 
 ---
 
+## #8 — Collapse the IPC controller (simplify) — Parts 1-3 DONE; Part 4 DEFERRED (`280720efb`)
+
+Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED.
+- **P1 (`f0c84daa9`):** `IPC::_bring_out_yer_dead` die-on-unmonitored-waitpid → `next`
+  (a plugin/3rd-party child reaped here is benign, not fatal).
+- **P2 (`e894886c4`):** gated the `_ex_parrots` "vanished!"/"escaped the wait cycle"
+  warns behind a `T2_HARNESS_IPC_DEBUG` env flag. **Kept** the `_ex_parrots` sweep
+  itself (a real cross-platform backstop; `Preload::Host` shares this base for genuine
+  multi-child reaping) — only demoted the always-on warns.
+- **P3 (`9924a1d2e` + IPC.md `a1b2444b3`):** `test.pm` no longer uses an `IPC`
+  *controller instance* for its one child (the runner) — inline spawn+reap+signal on
+  `Util::IPC::run_cmd` (`reap_runner`/`wait_for_runner`/`signal_runner` + an
+  `owns_runner` flag so the persistent `run`/`spawn` paths don't reap/signal a
+  pre-existing runner). Collector-wrap via `start_collected` unchanged. **Subtlety:**
+  the old `killall` under `USE_P_GROUPS` did `kill(-pid)` but the runner is spawned
+  `no_set_pgrp` so it wasn't a group leader — that was a no-op; `signal_runner` now does
+  a correct direct `kill($sig, $pid)` (signals/integration tests pass).
+- **P4 DEFERRED (migrate no-preload job completion to the collector socket + delete
+  `Runner::set_proc_exit` job branch):** too invasive for cleanup. The runner makes the
+  **retry-vs-stop-vs-bail** decision from runner-side proc state (`is_try`/`retry`/
+  `bailed_out`/`RUN_REACHED_TIMEOUT`) that does **not** exist in the collector; the
+  preload path only works because the *stage* owns the proc + decides locally before
+  sending an already-decided `stop_task`/`retry_task`. The no-preload runner owns both
+  the proc and the socket fold — driving completion off the terminal transition needs
+  the retry/bail decision relocated + a fire-exactly-once transition-vs-reap ordering
+  fix = a rewrite. Left as a follow-up (§5.4 target). `Preload::Host`'s own
+  `set_proc_exit` (legitimate multi-child reaping) untouched. **Note:** P2's debug gate
+  uses an env var because the IPC base class has no settings/debug handle — flag if you
+  want it on the standard debug convention.
+
+---
+
 ## #23 — Rename the three colliding "Stage" classes — DONE (`2de1be5d3`)
 
 Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED 109/1736. All via
