@@ -370,7 +370,7 @@ it undefined (flat socket). Only used in Role/Service.pm + Runner.pm (clean rena
   real logic (signal on `service_stopped`).
 
 ### #18 — Handler boilerplate + duplicated stale-generation guard
-**Status:** Decided (reject + via #3) · **Step:** — · **Depends:** #3
+**Status:** ✅ DONE — guard-dup dissolved via #3 (connection-currency replaced _stale_stage_generation); factory rejected (kept explicit handlers)
 
 The duplicated `_stale_stage_generation` guard dissolves via #3 (connection-currency,
 one check). **Reject** the generic `action_handler` factory — it re-introduces the
