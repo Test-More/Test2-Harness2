@@ -383,26 +383,17 @@ sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+R
 sub bailed_out {
     my $self = shift;
 
-    if(-f $self->bail_file) {
-        my $fh = open_file($self->bail_file, '<');
-        my $reason = <$fh> || 1;
-        return $reason;
-    }
-
+    # Bail-out is carried in the audited final_state (a control facet /
+    # harness_final_state halt), which the collector persists to the bail file.
     # As of chunk 3 (Test2-Collector swap) the runner no longer writes a stdout
-    # file, so the legacy "scan stdout for 'Bail out!'" path has no input. Guard
-    # against the missing file so this never dies at runtime. Bail-out is now
-    # carried in the events stream (a control facet / harness_final_state halt);
-    # re-sourcing bail detection from the events file is a deferred follow-up.
-    return "" unless -f $self->out_file;
+    # file, so the legacy "scan stdout for 'Bail out!'" path had no input and is
+    # gone. Re-sourcing bail detection from the events file is a deferred
+    # follow-up.
+    return "" unless -f $self->bail_file;
 
-    my $fh = open_file($self->out_file, '<');
-    while (my $line = <$fh>) {
-        next unless $line =~ m/^Bail out!\s*(.*)$/;
-        return $1 || 1;
-    }
-
-    return "";
+    my $fh = open_file($self->bail_file, '<');
+    my $reason = <$fh> || 1;
+    return $reason;
 }
 
 sub verbose { $_[0]->{+VERBOSE} //= $_[0]->{+TASK}->{verbose} // 0 }
