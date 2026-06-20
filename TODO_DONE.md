@@ -7,6 +7,43 @@ Newest first.
 
 ---
 
+## Batch 3 (2026-06-19) — foundation + scheduler + quick fixes
+
+Three parallel tickets onto 2.0d. Combined suite green: `prove` Files=106 Tests=1731 ·
+`yath test` PASSED (both `AUTHOR_TESTING=1 -j16`).
+
+### #1 — Remove `poll`/`_enqueue`/`%ACTIONS` + bogus `$$`; pid via handshake — DONE (`9a1196e14`, orig `defeb8dda`/`376aedf54`/`8e2adada7`)
+Deleted `poll` + its 6 call sites, `_enqueue`+`%ACTIONS`, the bogus `$$` arg (State stores
+no pid; readiness is a truthy gate); folded `truncate`/`_halt_run`/`_end_queue`.
+`Connection::send_identity` now carries `pid => $$`, stores `IDENTITY_PID` on receive,
+added `peer_pid`. New `Runner::stage_peer_pids` builds `{stage=>pid}` from `service_peers`;
+`StatusReport`/`status`/`ps` show each connected stage's real pid (down/restarting → N/A).
+Did **not** converge READINESS/LIFECYCLE (ticket #2). Updated IPC.md + added `peer_pid`
+assertions. **Integration note:** the State `poll`-call removal in `scheduler_tick`
+conflicted with #17's fail-fast rewrite of the same method — resolved by keeping #17's
+fail-fast structure and dropping the `poll` call.
+
+### #17 — `scheduler_tick` fixes — DONE (`5525f532f`,`bb3830e96`, orig `4cc1a1a4f`/`5f8336cb6`)
+Bare hash keys → HashBase constants (`{+ROOTPID}`/`{+SIGNAL}`/`{+ACTIVE_RUN}`/
+`{+RESOURCE_TIMEOUT}`/`{+RUN_REACHED_TIMEOUT}`; declared the constants on the Scheduler
+role). Dropped `SCHEDULER_MAX_ERRORS` + the eval-retry + the `scheduler_errors` slot →
+**fail-fast** (a `poll`/`advance`/`dispatch_pending` throw propagates). Kept `service_tick`
+separate (rejected the merge). Updated `scheduler_death.t`: crash → fail-fast; the recover
+case re-modeled so the resource absorbs its own transient error inside `tick()`.
+
+### #25 — Smaller notes (quick fixes + verify-then-fix) — DONE (`1acb653b5`,`babce0e64`,`72fb81211`,`b52823f51`,`ac4274db9`)
+Quick fixes: `_drain_transitions` → deadline-based drain (early-exit on a quiet
+`can_read(0)`, ~0.5s cap); `Preloader::_monitor` longmess → plain `die`; `Job::bailed_out`
+legacy out_file scan deleted (structured bail kept); dead `Reloader::_can_reload`/
+`_find_loaded` deleted (`init` now `croak`s if cbs missing). `Util/IPC` IO-swap extracted
+into a shared `_swap_in_io`. **Verify-then-fix — LEFT (with reasons):** `find_churn`
+sleep-retry (covers non-atomic save / stat-poll paths the inotify mask doesn't); the two
+file-watch loops (not dups — different throttle levels; merging changes cadence). Moot
+items (SharedJobSlots/IPC-controller) skipped; bad-frame tolerance + DepTracer dual-hook
+left (decided keep).
+
+---
+
 ## Batch 2 (2026-06-19) — dedup + interface
 
 Three parallel tickets, integrated onto 2.0d. Combined suite green: `prove` Files=106

@@ -65,7 +65,7 @@ do **not** re-fix it.
 ## TIER 1 — High-consensus, behavior-preserving
 
 ### #1 — Remove `poll`/`_enqueue`/`%ACTIONS` + bogus `$$`; pid via handshake
-**Status:** Decided · **Step:** 10/19 · **Depends:** —
+**Status:** ✅ DONE (batch 3, `9a1196e14`) — see TODO_DONE.md · **Step:** 10/19 · **Depends:** —
 
 **Problem:** `sub poll {return}` (State.pm) is a dispatch.jsonl fossil called from ~6
 sites. Every mutator routes `method → _enqueue → %ACTIONS → _do_*` (pure in-process
@@ -356,7 +356,7 @@ comment. The value is always the run's UUID (never an integer); global preloads 
 it undefined (flat socket). Only used in Role/Service.pm + Runner.pm (clean rename).
 
 ### #17 — `scheduler_tick` fixes
-**Status:** Decided · **Step:** 21-area · **Depends:** —
+**Status:** ✅ DONE (batch 3, `bb3830e96`) — see TODO_DONE.md · **Step:** 21-area · **Depends:** —
 
 - **Bare hash keys:** `scheduler_tick`/`service_tick`/`check_timeouts` use
   `{'rootpid'}`/`{'signal'}`/`{'active_run'}`/`{'resource_timeout'}`/
@@ -458,7 +458,7 @@ update POD away from inheritance. Implementers: `JobCount` + the future preload
 resource (both define `available`+`assign`).
 
 ### #25 — Smaller notes (triage)
-**Status:** Mixed · **Step:** various · **Depends:** —
+**Status:** ✅ DONE (batch 3, quick+verify fixes) — see TODO_DONE.md; moot items via #5/#8 · **Step:** various · **Depends:** —
 
 - **Moot via #5/#8:** `_runner_todo` sentinel + `_redistribute_fair` "Yikes!" comment
   (SharedJobSlots, #5); `check_timeouts` base stub + `set_sig_handler` (IPC controller,
