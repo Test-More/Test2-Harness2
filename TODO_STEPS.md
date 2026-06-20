@@ -58,7 +58,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | #13 (%SORTED concurrency); #12 (run lifecycle, primary home ch22) |
 | 17 | Plugin setup/teardown move to the runner; aux output → collectors; retire aux_logs flat files | ✅ | — |
 | 18 | Collectors watch the runner pid → self-terminate if runner dies (§4.1) + audit gate | ✅ | — |
-| 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11 |
+| 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11, #26 |
 | 20 | Interactive mode IO: replace FIFO proxy with socket-shared client IO (§4.10, reuse §4.8 dup2) — needs 13. Interactive may be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b) |
 | 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ⬜ | #6, #8, #11 |
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |

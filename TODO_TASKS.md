@@ -473,6 +473,34 @@ resource (both define `available`+`assign`).
 - **Keep (decided):** bad-frame tolerance of 3 (`Connection.pm`); DepTracer dual hook
   (`@INC` + `CORE::GLOBAL::require` — useful belt-and-suspenders).
 
+### #26 — Simplify `App::Yath::Script::V2`: drop the BEGIN hack, refactor into subs
+**Status:** Decided · **Step:** 19/23 · **Depends:** #4
+
+**Problem:** `do_begin` runs in the `yath` script's **BEGIN** phase, and its body is a
+set of inline `# ==START/END TESTABLE CODE <NAME>==` marker blocks
+(`PARSE_CONFIG_FILES`, `PRE_PARSE_D_ARGS`, `CLEANUP_PATHS`, `CREATE_APP`). Both are
+1.0 artifacts: the logic lived in the `scripts/yath` script, all in BEGIN, in the
+**`main`** namespace (which it must not contaminate) — so the blocks were
+marker-delimited so `t/yath_script.t` could extract and run them in isolation. In 2.0
+none of that holds: the `yath` script is only a command dispatcher; the preload
+goto-file path runs in the **preload tree** (`perl -MTest2::Harness2::Preload=launch`),
+**never** through a `yath ...` command — so nothing needs the yath-script BEGIN
+environment — and `App::Yath::Script::V2` is a proper module, not `main`.
+
+**Steps:**
+- Move `do_begin`'s work **out of BEGIN** to plain early runtime; keep only the
+  ordering that must precede loading command modules (`-D`/`--dev-lib` into `@INC`
+  before `require App::Yath2` + command/plugin modules) and the `ORIG_*`
+  (tmp/sig/argv/inc) capture, which only needs "early," not "BEGIN."
+- Refactor the four `==TESTABLE CODE==` marker blocks into **clean named subs**
+  (e.g. `_parse_config_files`, `_pre_parse_dev_libs`, `_realpath_paths`,
+  `_build_app`) — real methods, droppable the marker-comment extraction hack.
+- Update **`t/yath_script.t`** to call those subs directly instead of extracting the
+  marker blocks.
+- Collapse the `do_begin`/`do_runtime` split where it no longer earns its keep.
+- Scope to `App::Yath::Script::V2` (our handler); the external `App::Yath::Script`
+  dispatcher namespace is unchanged.
+
 ---
 
 ## Explicitly justified — do NOT cut
