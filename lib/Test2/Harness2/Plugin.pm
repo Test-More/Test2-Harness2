@@ -6,7 +6,7 @@ use Scalar::Util qw/blessed/;
 
 our $VERSION = '2.000000';
 
-# Chunk 17: plugin setup/teardown run in the RUNNER now. A run_collected aux
+# Plugin setup/teardown run in the RUNNER. A run_collected aux
 # process pushes its pid here so the runner can stop it at teardown; the runner
 # localizes this to its own list around setup_plugins/teardown_plugins.
 our $AUX_PIDS;
@@ -29,10 +29,10 @@ sub teardown {}
 
 sub TO_JSON { ref($_[0]) || "$_[0]" }
 
-# Chunk 17: the common Test2::Collector args for a plugin "aux" collector. Its
+# The common Test2::Collector args for a plugin "aux" collector. Its
 # output is captured as collector EVENTS (a file recorder plus a socket reporter to
-# runner.socket) instead of flat aux_logs files, so the runner folds it and the
-# renderer shows it -- tagged with $name. Runs only inside the runner, where the
+# runner.socket), so the runner folds it and the renderer shows it -- tagged with
+# $name. Runs only inside the runner, where the
 # runner workdir (T2_HARNESS_WORKDIR) and runner.socket exist.
 sub _aux_collect_args {
     my $this = shift;

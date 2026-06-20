@@ -106,11 +106,10 @@ sub init ($self) {
     return;
 }
 
-# Chunk 9: report one outcome to the runner over the single registered service
-# channel (the connection this stage opened to send stage_ready), instead of a
-# second connect-out to runner.socket. The runner reads it off that connection
-# and folds it into canonical state via its request handlers. One-way (the runner
-# sends no response).
+# Report one outcome to the runner over the single registered service
+# channel (the connection this stage opened to send stage_ready). The runner
+# reads it off that connection and folds it into canonical state via its request
+# handlers. One-way (the runner sends no response).
 sub _report ($self, $command, %args) {
     my $runner = $self->{+RUNNER} or return;
     $runner->service_send('runner', $command, %args);

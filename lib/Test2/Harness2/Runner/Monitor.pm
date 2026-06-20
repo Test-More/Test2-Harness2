@@ -470,11 +470,10 @@ sub _process_runner_job ($self, $rj) {
     $j->{run_id}  = $rj->{run_id}  if exists $rj->{run_id};
     $j->{details} = $rj->{details} if exists $rj->{details};
 
-    # Chunk 5g: a job the runner watchdog aborted (its collector will never
-    # report completion) enters the 'aborted' state. Surface it on a drain-on-call
+    # A job the runner watchdog aborted (its collector will never report
+    # completion) enters the 'aborted' state. Surface it on a drain-on-call
     # change list so a subscriber (the command-side driver) can render it as a
-    # failed completion exactly once, the way the gatherer synthesized
-    # harness_job_exit{aborted}/harness_job_end{fail}.
+    # failed completion exactly once.
     push @{$self->{+PENDING_ABORTED}} => $job_id
         if defined($rj->{state}) && $rj->{state} eq 'aborted';
 

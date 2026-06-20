@@ -155,7 +155,7 @@ sub service_identity ($self) { return $self->service_name }
 sub service_socket_path ($self) {
     my $dir = $self->workdir;
 
-    # Chunk 6.1-2: a run-scoped service nests its socket under a per-run subdir
+    # A run-scoped service nests its socket under a per-run subdir
     # (runs/<run_id>/<name>.socket) so two runs sharing one persistent runner
     # cannot collide on a preload-<stage>.socket. A consumer signals run-scoping by
     # providing run_id; no consumer triggers a run-scoped stage yet.

@@ -141,10 +141,10 @@ sub step ($self, $monitor) {
         $self->_render_completion($uuid, $c);
     }
 
-    # Chunk 5g: a job the runner watchdog aborted (its collector will never
-    # report completion) -- render a synthetic failed completion, the way the
-    # gatherer's _abort_stalled_jobs used to. The runner is the completion
-    # authority on the transient path; the driver renders + rolls up its verdict.
+    # A job the runner watchdog aborted (its collector will never report
+    # completion) -- render a synthetic failed completion. The runner is the
+    # completion authority on the transient path; the driver renders + rolls up
+    # its verdict.
     for my $job_id ($monitor->new_aborted_jobs) {
         $self->_render_aborted($monitor->job($job_id));
     }
@@ -261,11 +261,11 @@ sub _render_launch ($self, $uuid, $c) {
     return;
 }
 
-# Chunk 5g: render a job the runner watchdog aborted. There is no collector
+# Render a job the runner watchdog aborted. There is no collector
 # events file to walk (the collector never finalized, or never started), so we
 # synthesize the launch (if it was never rendered) plus an aborted
-# harness_job_exit and a failed harness_job_end -- the same shapes the gatherer's
-# _abort_stalled_jobs produced -- and roll up the failure command-side.
+# harness_job_exit and a failed harness_job_end, and roll up the failure
+# command-side.
 sub _render_aborted ($self, $rj) {
     return unless $rj;
     my $job_id = $rj->{job_id} // return;

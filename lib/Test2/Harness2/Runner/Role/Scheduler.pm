@@ -117,11 +117,11 @@ sub scheduler_tick {
         $self->{+ACTIVE_RUN} = $after;
     }
 
-    # Chunk 5d/6.1-2: hand any task the scheduler just started, whose run-stage
+    # Hand any task the scheduler just started, whose run-stage
     # is a socketed preload stage (i.e. not this root process's own stage), out
     # to that stage's preload-<stage>.socket. Tasks for the root's own stage
     # stay in the task list for the root's own run_job (the no-preload path,
-    # where the root forks tests itself). This now runs on the persistent path
+    # where the root forks tests itself). This runs on the persistent path
     # too (its forked stages are dispatch services).
     $self->dispatch_pending;
 

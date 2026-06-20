@@ -9,11 +9,11 @@ use Config qw/%Config/;
 # around that.
 my $FIX_STDIN;
 
-# Chunk 19.3: the goto::file filter patch (interactive STDIN handling) moves here
-# with the rest of the job-launch machinery so it travels with the launcher rather
-# than living in the App::Yath2 command. Whichever process is the goto-file host
-# (the runner command on the no-preload path, or the preload-root on the preload
-# path) loads this module and so installs the patch.
+# The goto::file filter patch (interactive STDIN handling) lives here with the
+# rest of the job-launch machinery so it travels with the launcher. Whichever
+# process is the goto-file host (the runner command on the no-preload path, or
+# the preload-root on the preload path) loads this module and so installs the
+# patch.
 BEGIN {
     require goto::file;
     no strict 'refs';
@@ -85,8 +85,7 @@ use Long::Jump qw/longjump/;
 use Test2::Harness2::Util qw/mod2file open_file process_includes/;
 use Test2::Harness2::Util::IPC qw/swap_io/;
 
-# Chunk 19.3: these were App::Yath2::Command::runner methods. They are the
-# producing-side job-launch machinery (fork a test job under a collector, unwind
+# The producing-side job-launch machinery (fork a test job under a collector, unwind
 # to the goto-file host with no added stack frame, and finish setting up the test
 # child after the goto::file swap), so they belong in Test2::Harness2 and are
 # shared by both the runner command (no-preload path) and the preload-root (preload
