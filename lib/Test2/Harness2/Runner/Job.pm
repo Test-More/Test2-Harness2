@@ -359,7 +359,20 @@ sub _transition_reporter {
 
     my $socket = File::Spec->catfile($workdir, 'runner.socket');
 
-    return socket_reporter("collector:job:" . $self->job_id, $socket);
+    # Carry job_id + job_try (+ run_id) in the identity preamble so the runner can
+    # map this connection -- and the EOF when this collector exits -- back to the
+    # job and its current try (ARCHITECTURE.md §5.4 completion decision /
+    # stale-try guard). read_control makes the connection bidirectional so this
+    # collector reads the runner's bail/abort terminate message.
+    return socket_reporter(
+        "collector:job:" . $self->job_id, $socket,
+        read_control => 1,
+        identity     => {
+            job_id  => $self->job_id,
+            job_try => $self->is_try,
+            run_id  => $self->run->run_id,
+        },
+    );
 }
 
 sub switches_from_env {

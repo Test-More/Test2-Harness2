@@ -20,6 +20,7 @@ use Test2::Harness2::Util::HashBase qw{
     +fb
     +identity
     +identity_pid
+    +identity_payload
     +ready
     +sent_identity
     +deadline
@@ -117,6 +118,13 @@ The peer process's pid, announced alongside its identity, or C<undef> until the
 identity frame has arrived. This is the authoritative source for a connected
 peer's real pid (e.g. a preload stage's pid for C<status>/C<ps>).
 
+=item $hashref = $conn->identity_payload
+
+The B<full> identity hash the peer announced (C<name>, C<pid>, and any extra
+fields a reporter carries -- a test collector announces C<job_id>, C<job_try>,
+and C<run_id>), or C<undef> until the identity frame has arrived. The runner uses
+the extra fields to map a connection (and its EOF) back to the job it ran.
+
 =item $bool = $conn->ready
 
 True once the peer's identity has been received (the connection may carry
@@ -143,6 +151,14 @@ C<request_id> so the caller can match the eventual response.
 =item $conn->send_response($request_id, $payload)
 
 Send a response to a request, echoing its C<request_id>.
+
+=item $bool = $conn->send_control($control, %args)
+
+Send one inbound control message to a collector reporter that was built to read
+controls (a single C<< {control =E<gt> {control =E<gt> $control, %args}} >> frame
+typed C<control>). Used for the runner's bail/abort B<terminate> message. Returns
+false if the connection is (or becomes) closed, true on a successful write. There
+is no reply -- the collector kills its child and exits, EOFing its connection.
 
 =item @events = $conn->drain
 
@@ -186,9 +202,10 @@ sub init ($self) {
     return;
 }
 
-sub identity { $_[0]->{+IDENTITY} }
-sub peer_pid { $_[0]->{+IDENTITY_PID} }
-sub ready    { $_[0]->{+READY}  ? 1 : 0 }
+sub identity         { $_[0]->{+IDENTITY} }
+sub peer_pid         { $_[0]->{+IDENTITY_PID} }
+sub identity_payload { $_[0]->{+IDENTITY_PAYLOAD} }
+sub ready            { $_[0]->{+READY}  ? 1 : 0 }
 sub closed   { $_[0]->{+CLOSED} ? 1 : 0 }
 
 sub expired ($self) {
@@ -221,6 +238,19 @@ sub send_request ($self, $command, %args) {
 sub send_response ($self, $request_id, $payload = {}) {
     $self->_write({response => {%$payload, request_id => $request_id}});
     return;
+}
+
+sub send_control ($self, $control, %args) {
+    return 0 if $self->{+CLOSED};
+
+    # The runner-&gt;collector terminate is a single zstd frame typed 'control'
+    # (the wire form Test2::Collector::Recorder::Socket reads when built with
+    # read_control). It is fire-and-forget: the collector kills its child and
+    # exits (its connection EOFs); there is no reply.
+    my $sent = eval { write_frame($self->{+FH}, compress_blob(encode_json({control => {control => $control, %args}})), 'control'); 1 };
+    $self->close unless $sent;
+
+    return $self->{+CLOSED} ? 0 : 1;
 }
 
 sub close ($self) {
@@ -312,10 +342,11 @@ sub _classify ($self, $payload, $rec) {
     # --- pending: the first frame decides the connection's kind ---------------
     unless ($self->{+READY}) {
         if ($is_identity) {
-            $self->{+READY}        = 1;
-            $self->{+BAD}          = 0;
-            $self->{+IDENTITY}     = $payload->{identity}{name};
-            $self->{+IDENTITY_PID} = $payload->{identity}{pid};
+            $self->{+READY}            = 1;
+            $self->{+BAD}              = 0;
+            $self->{+IDENTITY}         = $payload->{identity}{name};
+            $self->{+IDENTITY_PID}     = $payload->{identity}{pid};
+            $self->{+IDENTITY_PAYLOAD} = $payload->{identity};
 
             # The accepter replies with its own identity (the dialer already sent
             # its own, so this is a no-op there) -- UNLESS the peer asked us not to.
@@ -326,7 +357,7 @@ sub _classify ($self, $payload, $rec) {
             # read, so it closes cleanly and loses no transitions.
             $self->send_identity unless $payload->{identity}{no_reply};
 
-            return {kind => 'identity', name => $self->{+IDENTITY}};
+            return {kind => 'identity', name => $self->{+IDENTITY}, payload => $self->{+IDENTITY_PAYLOAD}};
         }
 
         # Every connection must identify first -- there is no reporter exemption.
