@@ -519,43 +519,69 @@ environment — and `App::Yath::Script::V2` is a proper module, not `main`.
 
 ---
 
-## TIER 4 — Transition-driven completion + subreaper (designed 2026-06-21)
+## TIER 4 — Transition-driven completion + subreaper (designed 2026-06-21, reviewed)
 
-> These five tickets replace the old #8-Part-4 framing. Design context + rationale:
-> `AI_DOCS/2026-06-21-transition-driven-completion-and-subreaper.md` (read it first).
-> #27→#28→#29 are the active sequence; #30/#31 are deferred follow-ups. They span the
-> local `Test2-Collector` checkout (no version bump — unreleased).
+> Replaces the old #8-Part-4 framing. Design context + rationale + the two-reviewer
+> findings we resolved: `AI_DOCS/2026-06-21-transition-driven-completion-and-subreaper.md`
+> (read it first). Authoritative spec: ARCHITECTURE.md §5.4 (+ §4.1/§4.7).
+> Active sequence **#32 → #27 → #28 → #29**; deferred follow-ups #30/#31. They span the
+> local `Test2-Collector` checkout (no version bump — unreleased). Review-driven
+> standalone fixes: #33–#37.
 
 ### #27 — Transition-driven test completion; collector exit = health-only
-**Status:** Decided · **Step:** 24 · **Depends:** —
+**Status:** Decided · **Step:** 24 · **Depends:** #32 (fd hygiene gates EOF)
 
 **Problem:** the runner decides a test's outcome from the **reaped collector exit
-code** (`JobLauncher` exits the collector with `Job::_collector_exit_code`, which
-layers the audited verdict + writes a `bail` file; `Runner::set_proc_exit` /
-`Preload::Host::set_proc_exit` read `$exit` to pick retry/stop/bail). The exit code
-cannot express a bail-out, and on the preload path the runner never even sees it (the
-stage reaps). The audited result is already on the wire (`harness_final_state`,
-streamed to `runner.socket`) — the runner should decide from that.
+code** (`JobLauncher` exits with `Job::_collector_exit_code`, which layers the audited
+verdict + writes a `bail` file; `set_proc_exit` reads `$exit` to pick retry/stop/bail).
+The exit code cannot express a bail-out, and on the preload path the runner never sees
+it (the stage reaps). The audited result is already on the wire (`harness_final_state`
+→ `runner.socket`) — decide from that.
 
-**Steps:**
-- **Test2-Collector:** emit an early **`halt` transition** (state `halt`, carrying the
-  reason) the moment the auditor first sees a halt/terminate control facet (keep
-  `final_state.halt` too). Make the collector parent exit **health-only**
-  (`collector_exit_code` → 0 if `collector.ok`, non-zero only on collector
-  malfunction) — stop forwarding the child's verdict/exit. Ensure the
-  `starting`/`harness_collector` handshake carries the collector **pid**.
-- **Harness:** decide every test outcome from transitions + the **connection EOF** on
-  the collector's `runner.socket` connection (drain pending frames on EOF, then:
-  final_state seen → pass / fail⇒retry-if-tries / `halt`⇒bail; **absent ⇒ fail**,
-  flagged possible-harness-internal even on exit 0). **Invariant:** collector problem
-  or missing final_state ⇒ fail.
-- Every handshake reports pid; a test collector adds **`job_id`+`job_try`** (maps the
-  connection/EOF to the job — sufficient since `job_id` is a uuid).
-- Delete `Job::_collector_exit_code` verdict-layering + the `bail` file; remove the
-  reap-driven retry/stop/bail from `Runner::set_proc_exit` **and**
-  `Preload::Host::set_proc_exit`; drop `StageDelegate`/`Runner::Client` verdict
-  reporting. Retry *policy* stays runner-side (`--retry` + `# HARNESS-retry N` /
-  `# HARNESS-no-retry`, both already exist). See ARCHITECTURE §5.4.
+**Decision (resolved with two reviews — ARCHITECTURE §5.4):**
+
+*Collector side (`Test2-Collector`, local checkout):*
+- Emit an early **`halt` transition** (`harness_state_transition` `state => 'halt'`,
+  carrying the reason in `details`) the moment a halt/terminate control facet is seen
+  (keep `final_state.halt`).
+- **Child-fd hygiene:** the collector closes its reporter/recorder sockets in the test
+  child (and the no-exec `goto::file` preload launch closes them + inherited runner
+  conns) — see #32; sockets created `FD_CLOEXEC`.
+- **Bidirectional connection:** the test-collector connection must **read inbound
+  control messages** from the runner (the bail/terminate message) between events —
+  today's reporters are one-way (`no_reply`); that changes.
+- Handshake carries `pid` (already health-only exit via `Runner->spawn_exit_code`).
+
+*Harness side:*
+- Decide every outcome from transitions + **connection EOF** (drain frames on EOF):
+  final_state seen → pass / `!pass`⇒retry-if-tries (re-queue same `job_id`, new
+  `job_try`) / `halt`⇒bail; **absent ⇒ fail** (flag possible-harness-internal **unless**
+  the runner deliberately terminated it ⇒ `aborted`). **Invariant:** collector problem
+  or missing final_state ⇒ fail, never a false pass.
+- **Connection identity / stale-try (A5):** store the full identity; register
+  `conn → {pid, job_id, job_try, run_id}`; idempotent close; ignore an EOF/report whose
+  `job_try` ≠ the current try (retire a superseded try's connection).
+- **No-verdict render mutation (A6):** emit a runner-originated terminal
+  `harness_runner_job` failed/aborted (`job_id`/`run_id`/`file`/`job_try`/reason),
+  consumed once, for any completion with no collector `final_state`. Reason = harness
+  output.
+- **Bail + abort teardown (A4 / B3 / B4):** the runner→collector **terminate message**
+  is the primary teardown. Bail (`--abort-on-bail`): stop dispatch for the run, message
+  every run collector to terminate (kill child, record "external bail-out", exit→EOF),
+  message late-connecting collectors too; `halt` wins over retry. `yath abort` +
+  owner-disconnect abort use the **same** message via a recorded **abort intent** (no
+  stale-pid snapshot). Pid/`kill(-pid)` is fallback only.
+- **Exit handling (A8):** test-job parent exits via the collector's
+  `Test2::Collector::Runner->spawn_exit_code` (health-only); **delete
+  `Job::_collector_exit_code`** + the `bail` file; keep `Util::collector_exit_code` for
+  **non-test** wraps (runner/stage/aux). Remove reap-driven retry/stop/bail from
+  `Runner::set_proc_exit` **and** `Preload::Host::set_proc_exit`; drop
+  `StageDelegate`/`Runner::Client` verdict reporting.
+- **Post-pass collector failure (A3):** a collector that fails *after* reporting
+  `pass` keeps the test green; on a **supported** platform the reaped non-zero health
+  exit ⇒ report to harness output + **mark the suite failed** at `test`/`run` exit; on
+  unsupported it may be lost (accepted). Mandatory reporter + `--collector-connect-timeout`
+  (#32). Retry policy stays runner-side (`--retry` + existing directives).
 
 ### #28 — Runner child-subreaper + detached preload collectors
 **Status:** Decided · **Step:** 25 · **Depends:** #27
@@ -566,15 +592,17 @@ reaping logic), preload-spawned collectors must detach and re-parent to the runn
 **Steps:**
 - New **`Test2::Harness2::Util::SubReaper`** (pure-Perl, no XS, no dep): acquire/release
   child-subreaper via `syscall()` — Linux `prctl(PR_SET_CHILD_SUBREAPER)` (per-arch
-  `SYS_prctl` table, `PR_SET_CHILD_SUBREAPER`=36), FreeBSD/DragonFly
-  `procctl(P_PID,$$,PROC_REAP_ACQUIRE)` (`548`); unknown OS/arch or failed call ⇒
-  eval-guarded graceful "unsupported". The reparenting logic lives in this util, **not
-  inlined in `Runner.pm`**. Port the local
-  `Test2-Harness2-ChildSubReaper/t/40-subreaper-behavior.t`.
+  `SYS_prctl` table: x86_64=157, aarch64/riscv64=167, i386=172; `PR_SET_CHILD_SUBREAPER`=36),
+  FreeBSD/DragonFly `procctl(P_PID,$$,PROC_REAP_ACQUIRE)` (`548`, `P_PID`=0,
+  `PROC_REAP_ACQUIRE`=2); unknown OS/arch or failed call ⇒ eval-guarded graceful
+  "unsupported". Reparenting logic lives in **this util, not inlined in `Runner.pm`**.
+  Port the local `Test2-Harness2-ChildSubReaper/t/40-subreaper-behavior.t`.
 - Runner acquires subreaper at startup. **Preload-spawned collectors double-fork +
-  detach** (re-parent to runner on supported OS, init otherwise). Preload tree reaps no
-  collectors. Decision still rides EOF (#27) regardless of who reaps. ARCHITECTURE
-  §4.1/§5.4.
+  detach** (`setsid` ⇒ own process-group leader, so `kill(-pid)` reaches the subtree;
+  re-parent to runner on supported OS, init otherwise). Preload tree reaps no
+  collectors. **Runner learns pids from the collector handshake** (#27), so the stage
+  tracks none — moots any double-fork pid-pipe. `job_pids` cleared on EOF. Decision
+  rides EOF regardless of who reaps. ARCHITECTURE §4.1/§5.4.
 
 ### #29 — Collapse to one run path (run_scheduler_only only)
 **Status:** Decided · **Step:** 26 · **Depends:** #27, #28
@@ -600,6 +628,89 @@ A test-facing helper a test calls to request a retry at runtime; emits an event 
 collector turns into a `retry` transition (generic facet or `control.retry`); the
 runner retries via the normal re-queue path. Count/no-retry directive already exists;
 this adds the runtime channel.
+
+### #32 — FD hygiene: no socket-fd leaks across forks (prerequisite for EOF)
+**Status:** Decided · **Step:** 24 · **Depends:** — · **Gates:** #27
+
+**Problem:** the EOF-as-gone-signal model (#27/§5.4) is only sound if **no other
+process holds a dup** of a collector's connection fd — a UNIX socket EOFs only once
+*all* holders close it. The runner forks a collector parent **without exec** (inherits
+the listen socket + every other live collector's connection); the test child and its
+descendants can inherit the collector's reporter socket (esp. the no-exec `goto::file`
+preload launch). Any leaked dup ⇒ a dead collector's connection never EOFs ⇒ hang /
+false "still running".
+
+**Steps:**
+- Create every harness/collector socket **`FD_CLOEXEC`** (covers exec paths).
+- **Explicit post-fork close-sweep** for the no-exec forks: the collector parent closes
+  all inherited runner connections + the listen socket; the **preload test-launch
+  (`goto::file`)** path closes the collector's reporter/recorder sockets + any inherited
+  runner connections before becoming the test.
+- Make the **reporter mandatory** (#27): connect-failure ⇒ synchronously fail/abort the
+  job (runner-visible), never silent recorder-only degrade. Add **`--collector-connect-timeout`**
+  (on by default, ~30s) for "dispatched but no `starting` transition arrived".
+- **Regression:** a preload test forks a long-lived descendant that outlives it ⇒ the
+  runner still sees the collector's EOF promptly. ARCHITECTURE §5.4.
+
+### #33 — Enforce `preload_stage_startup_timeout` in the scheduler (it is currently inert)
+**Status:** Decided · **Step:** 11 · **Depends:** —
+
+**Problem:** the #21 safeguard never fires. The scheduler buckets a task via
+`State::task_stage()` (no timeout) and `_stage_order`/`_next` only traverse **`up`**
+stage buckets, so a task aimed at a stage stuck `starting`/`restarting` is never
+visited and `Resource::Preload::available()`'s `-1` is never consulted. The #21 unit
+test only drove `available()` in isolation.
+
+**Steps (approach A):** a per-tick stage scan transitions a `starting`/`restarting`
+stage that exceeds `preload_stage_startup_timeout` to **`down`** — which makes
+`_stage_order` skip it **and** makes `task_stage` re-resolve its bucket (down ⇒ falls
+to default if advisory, or the require path fails). Add an **integration test driving
+the full scheduler path** (not just `available()`).
+
+### #34 — `yath reload` ineffective during a persistent preload run
+**Status:** Decided · **Step:** 19 · **Depends:** —
+
+**Problem:** the runner forwards `reload` as a socket message to the **`preload-root`**
+peer, but during a run the preload-root is blocked in `_run_stage_host` and does not
+pump its own service loop until post-run idle — so the reload sits unread (or fires
+late during shutdown, re-execing while stopping).
+
+**Steps (approach A):** route `reload` to a **live-during-run** target — the active
+base-stage connection (`preload-base`) owned by `Preload::Host`, which translates it
+into its existing in-run respawn path (`SIGNAL=HUP` → end-loop → respawn the tree).
+Make it idempotent/ordered so a pending reload is dropped once `stop` is queued.
+
+### #35 — `halt_run`/`purge_run` leave stale tasks in `TASK_LOOKUP`
+**Status:** Decided · **Step:** 22 · **Depends:** —
+
+**Problem:** `halt_run`/`purge_run` delete the run's buckets but not its `TASK_LOOKUP`
+entries. `_queue_task`'s duplicate guard checks `TASK_LOOKUP` before `HALTED_RUNS`, so
+stale entries stay addressable (can block a same-`job_id` task) and a persistent runner
+retains task hashes indefinitely after aborts/truncates.
+
+**Steps:** clear the run's `TASK_LOOKUP` entries in `halt_run` **and** `purge_run`. Add
+a test assertion that the run's tasks are gone from `task_lookup` after abort/purge.
+
+### #36 — Delete dead `reset_stage_readiness`
+**Status:** Decided · **Step:** 10 · **Depends:** —
+
+**Problem:** `State::reset_stage_readiness` was for a respawned crashed preload-root,
+but preload-root crashes are fatal/never respawned (#3) — verified zero production
+callers (only `t/AI/unit/State_stage_lifecycle.t:62`).
+
+**Steps:** **re-verify no consumers**, then delete the sub + the test subtest that
+exercises it.
+
+### #37 — Document the resource-skip `-e` executor assumption
+**Status:** Decided · **Step:** 11 · **Depends:** — · **Doc-only**
+
+**Problem:** the permanent `resource_skip` path runs a dummy via `perl -e '...'`,
+assuming a Perl-compatible `-e` executor. Safe today (non-Perl/binary jobs do not run
+under preloads, so cannot trigger a `Preload` resource skip), but undocumented.
+
+**Steps:** add a comment at the skip-command assembly noting the `-e` assumption and
+that a future resource-skip on a non-Perl/custom executor must supply its own skip
+representation. No behavior change.
 
 ---
 

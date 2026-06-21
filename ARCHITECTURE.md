@@ -1073,10 +1073,38 @@ carried by collectors + sockets.
   handshake still reports a pid (below) for status/diagnostics and to map a
   connection to its job, **not** for liveness.
 
+- **FD ownership is a hard prerequisite (invariant).** Socket EOF is only a reliable
+  "gone" signal if **no other process holds a duplicate** of that connection's fd. A
+  UNIX socket EOFs to the reader only once *every* holder has closed it. The runner
+  forks a collector parent **without exec** (it runs Perl), so the child inherits the
+  runner's listen socket **and every other live collector's connection**; the test
+  child (and any descendant it forks) can likewise inherit the collector's reporter
+  socket — especially on the preload `goto::file` path where there is no exec. So:
+  every socket is created `FD_CLOEXEC`, **and** every fork performs an explicit
+  close-sweep in the child — the collector parent closes all inherited runner
+  connections + the listen socket; the test child (no-exec preload launch included)
+  closes the collector's reporter/recorder sockets and any inherited runner
+  connections. Without this, EOF is unreliable under concurrency and the whole model
+  breaks silently. A regression must prove a preload test that forks a long-lived
+  descendant still EOFs promptly.
+
+- **The reporter is mandatory.** Because EOF + transitions are the *only* completion
+  signal, a test that runs without a connected reporter would never complete. The
+  test-job reporter connection is therefore required: a connect failure
+  **synchronously fails/aborts the job** through a runner-visible path (it never
+  silently degrades to recorder-only). A configurable **`--collector-connect-timeout`**
+  (on by default) bounds "dispatched but no `starting` transition arrived" — exceeding
+  it fails/aborts that job.
+
 - **Handshake identity.** Every connection to `runner.socket` (commands, stages,
   collectors) identifies itself with its **pid**; a test collector additionally
-  carries its **`job_id` (uuid) + `job_try`**, which is sufficient to map its
-  connection (and that connection's EOF) to the job.
+  carries its **`job_id` (uuid) + `job_try`** (+ `run_id`/`collector_uuid`). The
+  connection stores the **full identity payload** (not just name+pid), and the runner
+  registers a `conn → {pid, job_id, job_try, run_id}` map. Close handling is
+  **idempotent** (EOF, any reap, and any explicit terminate converge to one decision),
+  and a **stale-try guard** applies: an EOF/report whose `job_try` ≠ the job's current
+  try is ignored for stop/retry (it is a dead prior attempt; the connection of a
+  superseded try is explicitly retired so its late EOF is a no-op).
 
 - **Completion decision (runner, identical for both run paths).** On a test
   collector's connection EOF, the runner drains any pending transition frames on it,
@@ -1087,10 +1115,49 @@ carried by collectors + sockets.
     tick) else complete (fail); a `halt` ⇒ **bail**: halt the run (no further
     dispatch) and terminate all active jobs (when `--abort-on-bail`).
   - `harness_final_state` **absent** at EOF → the test produced no verdict: **fail
-    it**, flagged as a *possible harness/collector internal error that may not
-    indicate a problem with the test*. This holds **even if the collector exited 0**
-    — a healthy collector always emits a final state, so its absence is itself a
-    collector problem.
+    it**. If the runner did not deliberately terminate this job, flag it as a
+    *possible harness/collector internal error that may not indicate a problem with
+    the test* (a healthy collector always emits a final state, so its absence is
+    itself a collector problem — this holds **even if the collector exited 0**). If
+    the runner **did** terminate it (a `--abort-on-bail` bail of another test, a
+    `yath abort`, or an owner-disconnect abort — see *Bail and abort*), it is recorded
+    as **aborted**, *not* a harness-internal error.
+
+- **No-verdict completions need a render representation.** When the runner decides a
+  job's outcome with no collector `final_state` (EOF-no-verdict, abort, or a bail
+  where the collector never reported), there may be no `completed`/`final_state`
+  transition and no usable events-file terminal for the command-side renderer to key
+  off. The runner therefore emits a **runner-originated terminal mutation**
+  (a `harness_runner_job` failed/aborted carrying `job_id`/`run_id`/`file`/`job_try`
+  and the diagnostic **reason**), consumed exactly once, so the subscriber renders the
+  decided outcome instead of rolling the job up as "never ran." The reason is
+  **harness output**, distinct from job output.
+
+- **Bail and abort: a runner→collector terminate message (bidirectional connections).**
+  Teardown of a running job is driven over the socket, not by the runner signaling
+  pids. This requires the **test-collector connection to be bidirectional** — the
+  collector reads inbound control messages from the runner between events (today's
+  test reporters are one-way; that changes). The primitive:
+  - **Bail (`--abort-on-bail`, default):** the bailing test's collector sends the
+    `halt` transition (and kills its own child if it has not self-exited, recording a
+    bail-out *from itself*). On seeing it, the runner stops dispatching new jobs for
+    that run and sends a **"run bailed" message to every job collector of the run**;
+    each kills its child (normal signal escalation to descendants), writes an
+    events-file note that it **received a bail-out from another test**, records its
+    findings, and exits → EOF. Any collector that **reports in after** the bail (a job
+    dispatched but not yet connected) gets the message on connect — the runner tracks
+    the run as bailed. `halt` **wins over retry** (a bailing job is never re-queued).
+    With `--no-abort-on-bail` the collector still sends the transition and still kills
+    its own child; the runner just does not propagate it to the run.
+  - **Abort (`yath abort`) and owner-disconnect abort** use the **same** terminate
+    message: the runner records an **abort intent** for the run/job and tells each
+    collector to terminate (and terminates any that connect afterward). This replaces
+    signaling pids from a possibly-stale snapshot, so it cannot miss a job whose pid
+    had not yet been reported.
+  - **Pid/process-group is the fallback only:** if a collector does not comply, the
+    runner hard-kills via `kill(-pid)` (a detached collector `setsid`s, so its pid is
+    its group leader). Pids come from the handshake (above), so no stage-side pid
+    tracking is needed.
 
 - **Invariant: a collector problem or a missing `harness_final_state` always fails
   the test.** The harness never reports a pass it did not see audited. The retry
@@ -1098,13 +1165,28 @@ carried by collectors + sockets.
   per-file `# HARNESS-retry N` / `# HARNESS-no-retry` directives — never in the
   collector.
 
-- **Collector exit semantics.** A collector's parent process exits with a **health
-  code only**: `0` when the collector itself functioned (regardless of whether the
-  wrapped test passed, failed, or died by signal — that is in the transitions), and
-  non-zero only when the *collector* malfunctioned. It no longer encodes or forwards
-  the test's verdict. A non-zero health code (seen only when the runner reaps the
-  collector) is extra diagnostic for the "possible harness internal error" message,
-  **not** a decision input.
+- **Collector exit semantics.** A **test-job** collector's parent process exits with
+  a **health code only**: `0` when the collector itself functioned (regardless of
+  whether the wrapped test passed, failed, or died by signal — that is in the
+  transitions), non-zero only when the *collector* malfunctioned. It no longer encodes
+  the test's verdict. The single source of "collector health" is the
+  `Test2-Collector` helper (`Test2::Collector::Runner->spawn_exit_code`); the harness
+  uses it for the test-job parent and **deletes `Runner::Job::_collector_exit_code`**
+  (the verdict-layering). `Test2::Harness2::Util::collector_exit_code` (which forwards
+  the *wrapped child's* exit) **stays** for **non-test** wraps — the runner wrap (whose
+  child *is* the runner, whose exit `yath test` must return), stage, and aux collectors
+  — where the wrapped exit is genuinely meaningful.
+- **Post-pass collector failure (best-effort, supported platforms).** A collector can
+  fail *after* it has already emitted `harness_final_state.pass = 1` (a late
+  recorder/reporter flush error). The audited part — the verdict — already succeeded,
+  so the **test stays a pass** and is never reopened. On a **subreaper-supported**
+  platform the runner reaps the collector and sees the non-zero health exit: it
+  **reports the collector error to harness output** (not job output) and **marks the
+  overall suite/run failed** at `test`/`run` exit, even if every test passed — so
+  harness/collector bugs are surfaced for debugging. On an **unsupported** platform
+  the runner never sees that exit, so a post-pass collector failure **may be lost**;
+  this is accepted (the critical path, auditing, succeeded). The health exit is used
+  *only* for this post-hoc suite-level escalation, never for a per-test verdict.
 
 - **Process tree: the runner is a child subreaper; preload collectors detach.** So
   the runner is the single owner of the process tree (zombie reaping, kill-tree on
@@ -1120,6 +1202,9 @@ carried by collectors + sockets.
     them; on an unsupported OS they re-parent to **init**, which reaps them. The
     preload tree never reaps a collector either way.
   - **No-preload** collectors are the runner's direct children, reaped by the runner.
+  - The runner learns every collector's pid from its **handshake** (above), so the
+    stage tracks **no** collector pids — its detached collector self-reports to the
+    runner. `job_pids` is cleared on **EOF** (the decision point), not on reap.
   - Because the completion **decision** rides on EOF + transitions, it is identical
     whether the runner reaps the collector, init reaps it, or it is never reaped —
     reparenting governs only *zombie ownership and teardown*, never the verdict.

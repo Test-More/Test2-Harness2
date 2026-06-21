@@ -143,18 +143,58 @@ This absorbs the **#22 residual**, **#4 Part 4**, and **#8 Part 4**.
    (when it happens) must be pure zombie cleanup. Make sure a reparented collector's
    reap cannot double-fire a decision.
 
-## Reviewer questions (please weigh in)
+## Review outcomes (resolved with the owner, 2026-06-21)
 
-- Is **EOF on the transition connection** a sound universal "collector gone" signal
-  in this architecture, including the persistent-runner case where the same socket
-  carries many connections? Any path where a collector dies but its connection does
-  **not** EOF promptly (e.g. an inherited dup of the socket fd in a grandchild)?
-- Is **collector-exit-health-only** the right call, or is there value in keeping the
-  child's OS exit available as a secondary signal somewhere?
-- Pure-Perl `syscall()` subreaper: acceptable maintenance risk vs XS header
-  correctness? Any (OS,arch) we should table beyond Linux x86_64/aarch64 + FreeBSD?
-- The `halt`/bail transition: new `state => 'halt'` on `harness_state_transition`
-  (carry `details`) vs a dedicated facet — preference?
-- Sequencing #27→#28→#29 across two repos (Test2-Collector + harness) while keeping
-  both green at each step — is the chunk split right, or should the collector-side
-  (`halt` transition + health-only exit) land and install first as its own step?
+Two reviews (`review_gemini.md`, `review_gpt.md`) were discussed item-by-item and
+folded into ARCHITECTURE §5.4 + tickets #27/#28/#32–#37. Resolutions:
+
+- **EOF soundness needs fd hygiene (both reviewers, P1) → new prerequisite #32.** A
+  forked-no-exec collector inherits other collectors' connection fds; the test child
+  can inherit the reporter socket (esp. no-exec `goto::file`). Decision: `FD_CLOEXEC`
+  at creation **plus** an explicit post-fork close-sweep (collector parent closes
+  inherited runner conns + listen socket; the preload test-launch closes the
+  collector's reporter/recorder sockets too). #32 gates #27. The reporter is mandatory;
+  add `--collector-connect-timeout`.
+- **Collector-exit-health-only — yes, but the work is harness-side (A8).** The local
+  Test2-Collector is already health-only (`Runner->spawn_exit_code`); the harness
+  reintroduces the verdict via `Job::_collector_exit_code`. Test jobs use the
+  collector's helper; `Util::collector_exit_code` stays for non-test wraps.
+- **Post-pass collector failure (A3):** a collector that fails *after* reporting `pass`
+  keeps the test green; on supported platforms the reaped non-zero health exit ⇒
+  harness-output error + **mark the suite failed** at command exit; unsupported may
+  lose it (accepted). Exit code is consulted *only* for this suite-level escalation.
+- **Bail/abort via a runner→collector terminate message (A4):** the test-collector
+  connection becomes **bidirectional**; the runner messages all run collectors to
+  terminate (they kill their child, record, exit→EOF), handles late-connecting
+  collectors via an abort/bail **intent**, and `halt` wins over retry. The same
+  primitive is the proper fix for owner-disconnect abort (B3) and the `yath abort`
+  race (B4); pid/`kill(-pid)` is fallback only. Detached collectors `setsid`.
+- **Connection identity / stale-try (A5):** store the full identity; `conn → job` map;
+  idempotent close; ignore EOFs from a non-current `job_try`.
+- **No-verdict render mutation (A6):** a runner-originated terminal `harness_runner_job`
+  failed/aborted (job_id/run_id/file/job_try/reason), consumed once; reason = harness
+  output. Watchdog-aborted jobs are recorded `aborted`, not "harness internal".
+- **Pure-Perl `syscall()` subreaper — confirmed.** Table: Linux `SYS_prctl`
+  x86_64=157, aarch64/riscv64=167, i386=172 (`PR_SET_CHILD_SUBREAPER`=36); FreeBSD
+  `SYS_procctl`=548 (`P_PID`=0, `PROC_REAP_ACQUIRE`=2). Graceful unsupported elsewhere.
+- **`halt` transition — `state => 'halt'` on `harness_state_transition`** carrying
+  `details` (no new facet).
+- **Cross-repo sequencing:** order matters — the harness must stop deciding on the exit
+  code **before** anything relies on health-only — handled within #27's harness-side
+  steps; #32 lands first (fd hygiene), then #27, #28, #29.
+
+### Review-driven standalone fixes (separate tickets, per owner: ticket-not-fix-now)
+
+- **#33** — `preload_stage_startup_timeout` is inert in the scheduler (the #21
+  safeguard never fires; `_next` never visits non-`up` buckets). Approach A: per-tick
+  scan marks a timed-out stage `down` to re-resolve buckets. *(This is a real gap in
+  the #21 work just landed.)*
+- **#34** — `yath reload` ineffective during a persistent preload run (routed to the
+  dormant `preload-root` peer). Approach A: route to the live base-stage connection.
+- **#35** — `halt_run`/`purge_run` leak `TASK_LOOKUP` entries.
+- **#36** — delete dead `reset_stage_readiness` (re-verify no consumers first).
+- **#37** — document the resource-skip `-e` executor assumption (doc-only).
+
+The reviews' praise/verification of already-landed work (SharedJobSlots deletion, the
+Stage-class rename, client-side stage assignment, the Runner/Preload::Host split,
+connection-gated retention, stage-death resilience) needs no action.
