@@ -16,7 +16,8 @@ use Test2::Harness2::Util::HashBase qw{
 my @FIELDS = qw{
     file rel_file
     job_id job_name run_id
-    stage category duration rank
+    stage no_preload require_preload preload_list
+    category duration rank
     conflicts switches test_args env_vars input
     min_slots max_slots
     use_fork use_preload use_stream use_timeout

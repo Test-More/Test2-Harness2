@@ -24,6 +24,7 @@ use Test2::Harness2::Util::HashBase qw{
     job_class
     comment
     _category _stage _duration _min_slots _max_slots
+    _no_preload _require_preload _preload_list
 };
 
 sub set_duration ($self, $val) { $self->set__duration(lc($val)) }
@@ -32,6 +33,10 @@ sub set_category ($self, $val) { $self->set__category(lc($val)) }
 sub set_stage     ($self, $val) { $self->set__stage($val) }
 sub set_min_slots ($self, $val) { $self->set__min_slots($val) }
 sub set_max_slots ($self, $val) { $self->set__max_slots($val) }
+
+sub set_no_preload      ($self, $val = 1) { $self->set__no_preload($val      ? 1 : 0) }
+sub set_require_preload ($self, $val = 1) { $self->set__require_preload($val ? 1 : 0) }
+sub set_preload_list    ($self, $list) { $self->set__preload_list([@$list]) }
 
 sub retry ($self) { $self->headers->{retry} }
 sub set_retry ($self, $val = 1) {
@@ -101,6 +106,29 @@ sub check_stage ($self) {
     return $self->{+_HEADERS}->{stage} || undef;
 }
 
+sub check_no_preload ($self) {
+    return $self->{+_NO_PRELOAD} if defined $self->{+_NO_PRELOAD};
+
+    # '# HARNESS-NO-PRELOAD' parses through the generic NO-<feature> handler
+    # into features.preload=0; map that to the no_preload field.
+    return $self->check_feature(preload => 1) ? 0 : 1;
+}
+
+sub check_require_preload ($self) {
+    return $self->{+_REQUIRE_PRELOAD} if defined $self->{+_REQUIRE_PRELOAD};
+
+    $self->_scan unless $self->{+_SCANNED};
+    return $self->{+_HEADERS}->{require_preload} ? 1 : 0;
+}
+
+sub check_preload_list ($self) {
+    return [@{$self->{+_PRELOAD_LIST}}] if $self->{+_PRELOAD_LIST};
+
+    $self->_scan unless $self->{+_SCANNED};
+    my $list = $self->{+_HEADERS}->{preload_list} or return [];
+    return [@$list];
+}
+
 sub check_min_slots ($self) {
     return $self->{+_MIN_SLOTS} if $self->{+_MIN_SLOTS};
 
@@ -153,6 +181,18 @@ sub check_category ($self) {
     return 'isolation' if $isolate;
 
     return 'general';
+}
+
+sub validate_preload ($self) {
+    my $no_preload      = $self->check_no_preload      ? 1 : 0;
+    my $require_preload = $self->check_require_preload ? 1 : 0;
+    my $preload_list    = $self->check_preload_list;
+
+    if ($no_preload && ($require_preload || @$preload_list)) {
+        croak "Test '$self->{+FILE}' cannot combine a no-preload directive with a preload stage requirement or list (no_preload requires require_preload off and an empty preload_list).";
+    }
+
+    return ($no_preload, $require_preload, $preload_list);
 }
 
 sub event_timeout     ($self) { $self->headers->{timeout}->{event} }
@@ -270,8 +310,20 @@ sub _scan ($self) {
             $headers{features}->{$feature} = 1;
         }
         elsif ($dir eq 'stage') {
-            my ($name) = @args;
-            $headers{stage} = $name;
+            my @list = @args;
+
+            # 'REQUIRE' is a reserved leading keyword: it marks the listed
+            # stages as mandatory (no fallback) rather than advisory.
+            # See ARCHITECTURE.md §4.7a "Directive syntax note".
+            if (@list && uc($list[0]) eq 'REQUIRE') {
+                shift @list;
+                $headers{require_preload} = 1;
+            }
+
+            $headers{preload_list} = [@list];
+
+            # Keep the legacy single-stage header populated for back-compat.
+            $headers{stage} = $list[0];
         }
         elsif ($dir eq 'meta') {
             my ($key, $val) = @args;
@@ -363,11 +415,18 @@ sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     die "The '$self->{+FILE}' test specifies that it should not be run by Test2::Harness2.\n"
         unless $self->check_feature(run => 1);
 
-    my $category      = $self->check_category;
-    my $duration      = $self->check_duration;
-    my $stage         = $self->check_stage;
-    my $min_slots     = $self->check_min_slots;
-    my $max_slots     = $self->check_max_slots;
+    my $category  = $self->check_category;
+    my $duration  = $self->check_duration;
+    my $stage     = $self->check_stage;
+    my $min_slots = $self->check_min_slots;
+    my $max_slots = $self->check_max_slots;
+
+    my ($no_preload, $require_preload, $preload_list) = $self->validate_preload;
+
+    # The runner still reads the legacy single-stage 'stage' field until the
+    # consumer side migrates to the three preload fields, so a plugin that set
+    # only the list still routes.
+    $stage //= $preload_list->[0];
 
     my $smoke     = $self->check_feature(smoke     => 0);
     my $fork      = $self->check_feature(fork      => 1);
@@ -376,63 +435,67 @@ sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     my $stream    = $self->check_feature(stream    => 1);
     my $io_events = $self->check_feature(io_events => 1);
 
-    my $retry          = $self->retry;
-    my $retry_isolated = $self->retry_isolated;
-
     my $binary   = $self->{+IS_BINARY} ? 1 : 0;
     my $non_perl = $self->{+NON_PERL}  ? 1 : 0;
 
-    my $et  = $self->event_timeout;
-    my $pet = $self->post_exit_timeout;
+    # The inject env_vars is consumed (merged over the file's env_vars) only
+    # when the file declares env_vars; otherwise it passes through %inject.
+    my $env_mix = $self->env_vars ? delete $inject{env_vars} : undef;
 
-    my $job_class = $self->job_class;
-
-    my $input     = $self->input;
-    my $test_args = $self->test_args;
-
-    my $env_vars = $self->env_vars;
-    if ($env_vars) {
-        my $mix = delete $inject{env_vars};
-        $env_vars = {%$mix, %$env_vars} if $mix;
-    }
+    my %optional = $self->_optional_task_fields($env_mix, $min_slots, $max_slots);
 
     return {
-        binary      => $binary,
-        category    => $category,
-        conflicts   => $self->conflicts_list,
-        duration    => $duration,
-        file        => $self->file,
-        rel_file    => $self->relative,
-        job_id      => gen_uuid(),
-        job_name    => $job_name,
-        run_id      => $run_id,
-        non_perl    => $non_perl,
-        stage       => $stage,
-        stamp       => time,
-        switches    => $self->switches,
-        use_fork    => $fork,
-        use_preload => $preload,
-        use_stream  => $stream,
-        use_timeout => $timeout,
-        smoke       => $smoke,
-        io_events   => $io_events,
-        rank        => $self->rank,
+        binary          => $binary,
+        category        => $category,
+        conflicts       => $self->conflicts_list,
+        duration        => $duration,
+        file            => $self->file,
+        rel_file        => $self->relative,
+        job_id          => gen_uuid(),
+        job_name        => $job_name,
+        run_id          => $run_id,
+        non_perl        => $non_perl,
+        stage           => $stage,
+        no_preload      => $no_preload,
+        require_preload => $require_preload,
+        preload_list    => $preload_list,
+        stamp           => time,
+        switches        => $self->switches,
+        use_fork        => $fork,
+        use_preload     => $preload,
+        use_stream      => $stream,
+        use_timeout     => $timeout,
+        smoke           => $smoke,
+        io_events       => $io_events,
+        rank            => $self->rank,
 
-        defined($input)          ? (input             => $input)                   : (),
-        defined($env_vars)       ? (env_vars          => $env_vars)                : (),
-        defined($test_args)      ? (test_args         => $test_args)               : (),
-        defined($job_class)      ? (job_class         => $job_class)               : (),
-        defined($retry)          ? (retry             => $retry)                   : (),
-        defined($retry_isolated) ? (retry_isolated    => $retry_isolated)          : (),
-        defined($et)             ? (event_timeout     => $et)                      : (),
-        defined($pet)            ? (post_exit_timeout => $self->post_exit_timeout) : (),
-        defined($min_slots)      ? (min_slots         => $min_slots)               : (),
-        defined($max_slots)      ? (max_slots         => $max_slots)               : (),
+        %optional,
 
         @{$self->{+QUEUE_ARGS}},
 
         %inject,
     };
+}
+
+sub _optional_task_fields ($self, $env_mix, $min_slots, $max_slots) {
+    my $env_vars = $self->env_vars;
+    $env_vars = {%$env_mix, %$env_vars} if $env_vars && $env_mix;
+
+    my %optional = (
+        input             => $self->input,
+        env_vars          => $env_vars,
+        test_args         => $self->test_args,
+        job_class         => $self->job_class,
+        retry             => $self->retry,
+        retry_isolated    => $self->retry_isolated,
+        event_timeout     => $self->event_timeout,
+        post_exit_timeout => $self->post_exit_timeout,
+        min_slots         => $min_slots,
+        max_slots         => $max_slots,
+    );
+
+    delete @optional{grep { !defined $optional{$_} } keys %optional};
+    return %optional;
 }
 
 my %RANK = (
@@ -556,7 +619,37 @@ with C<set_duration()>.
 =item $tf->set_stage($stage)
 
 Get the preload stage the test file thinks it should be run in. You can
-override with C<set_stage()>.
+override with C<set_stage()>. This is the legacy single-stage value; the
+ordered preference list is C<check_preload_list()>.
+
+=item $bool = $tf->check_no_preload()
+
+=item $tf->set_no_preload($bool)
+
+True when the test cannot run under a preload (C<# HARNESS-NO-PRELOAD>). A
+plugin may set or clear this during C<munge_files>.
+
+=item $bool = $tf->check_require_preload()
+
+=item $tf->set_require_preload($bool)
+
+True when the listed preload stages are mandatory with no fallback
+(C<# HARNESS-STAGE-REQUIRE A B C>).
+
+=item $arrayref = $tf->check_preload_list()
+
+=item $tf->set_preload_list(\@stages)
+
+The ordered list of preferred preload stages (C<# HARNESS-STAGE A B C>). A
+single C<# HARNESS-STAGE Foo> yields a one-element list. Empty means the
+default stage.
+
+=item ($no_preload, $require_preload, $preload_list) = $tf->validate_preload()
+
+Resolve the three preload fields (directives, with plugin overrides applied)
+and enforce the rule that C<no_preload> implies C<require_preload> off and an
+empty C<preload_list>. Croaks on a conflicting combination. Called by
+C<queue_item()>.
 
 =item $bool = $tf->check_feature($name)
 

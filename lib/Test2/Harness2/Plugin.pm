@@ -179,6 +179,11 @@ This is an opportunity for your plugin to modify the data for any test file
 that will be run. The first argument is an arrayref of
 L<App::Yath2::TestFile> objects.
 
+This is also the hook for assigning preload stages at queue time: call
+C<set_no_preload>, C<set_require_preload>, or C<set_preload_list> on a test to
+set or clear its preload fields. The override is validated when the queue item
+is built.
+
 =item $hashref = $plugin->duration_data($settings, $test_names)
 
 If defined, this can return a hashref of duration data. This should return
