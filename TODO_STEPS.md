@@ -63,6 +63,11 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ⬜ | #6, #8, #11 |
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
+| 24 | Transition-driven test completion (§5.4): decide pass/fail/retry/bail from collector transitions + connection EOF; collector exit becomes health-only; runner never reads the verdict off the exit code. Spans Test2-Collector. | ⬜ | #27 |
+| 25 | Runner as child subreaper + preload collectors double-fork/detach (§4.1/§5.4); new `Test2::Harness2::Util::SubReaper` (pure-Perl `syscall`). Lets the preload tree reap nothing. — needs 24 | ⬜ | #28 |
+| 26 | Collapse to one run path (§5.4): `run_scheduler_only` becomes the runner's only run loop; delete the in-runner `run_tests`/`run_stage`/`run_job` stage machinery + `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes #22 residual + #4 P4 + #8 P4. — needs 24, 25 | ⬜ | #29 |
+| 27 | Generic `collector_transition` event facet (Test2-Collector forwards verbatim) + runner→plugin hook for non-builtin transitions. — needs 24 | ⬜ (deferred) | #30 |
+| 28 | Runtime retry-request: a test-facing helper emits an event → collector `retry` transition → runner retries via normal re-queue. — needs 24, 27 | ⬜ (deferred) | #31 |
 
 The **Tasks** column points at the well-defined tickets in `TODO_TASKS.md` that
 implement (part of) a step. A step is "broad"; its tickets are "specific."
@@ -189,6 +194,56 @@ carry the specifics.
   Cleanup: delete the `eager` loop in `State::_stage_order`; rewrite/delete
   `file_stage`/`eager` tests; expand `HARNESS-STAGE` to multi-arg (1 = back-compat).
   Folds into chunk 11. TODO_TASKS **#10**, **#20**, **#21**, **#2**, **#23**.
+
+- **Chunk 24 — transition-driven test completion (§5.4).** The runner decides a
+  test's outcome **only** from its collector's transitions (`harness_final_state`
+  `pass`, plus a new early **`halt`/bail transition`** carrying the reason), and learns
+  the collector is gone from the **EOF on its transition connection** to
+  `runner.socket` — never from a `waitpid` status or a pid check. Decision: final_state
+  seen → pass / fail⇒retry-if-tries-left (re-queue same `job_id`, new `job_try`) /
+  `halt`⇒bail (halt run + terminate active under `--abort-on-bail`); final_state
+  **absent at EOF → fail**, flagged possible-harness-internal (even on exit 0).
+  **Invariant:** collector problem or missing final_state ⇒ fail, never a false pass.
+  **Test2-Collector side:** emit the `halt` transition on first halt facet; make the
+  collector parent exit **health-only** (0 = collector OK regardless of test verdict,
+  non-zero = collector malfunction) — stop forwarding the child's verdict; ensure the
+  `starting`/`harness_collector` handshake carries the collector pid. **Harness side:**
+  delete `Job::_collector_exit_code` verdict-layering + the `bail` file; remove the
+  reap-driven retry/stop/bail from `Runner::set_proc_exit` **and**
+  `Preload::Host::set_proc_exit`; drop `StageDelegate`/`Runner::Client` verdict
+  reporting. Every connection handshake reports its pid; a test collector adds
+  `job_id`+`job_try`. TODO_TASKS **#27**.
+
+- **Chunk 25 — runner as child subreaper + detached preload collectors (§4.1/§5.4) —
+  needs 24.** New pure-Perl `Test2::Harness2::Util::SubReaper` (no XS, no dep): Linux
+  `prctl(PR_SET_CHILD_SUBREAPER,1)` + FreeBSD/DragonFly `procctl(...PROC_REAP_ACQUIRE)`
+  via `syscall()` with a per-(OS,arch) number table; unknown/failed ⇒ graceful
+  unsupported no-op. The runner acquires subreaper at startup. **Preload-spawned
+  collectors double-fork + detach** so they re-parent to the runner (supported) or init
+  (unsupported); the preload tree reaps no collectors. Port the local
+  `Test2-Harness2-ChildSubReaper` `40-subreaper-behavior.t`. The reparenting logic must
+  live in the util, not inlined in `Runner.pm`. TODO_TASKS **#28**.
+
+- **Chunk 26 — one run path (§5.4) — needs 24, 25.** With completion + reaping off the
+  reap, `run_scheduler_only` becomes the runner's **only** run loop. Delete the
+  in-runner `run_tests`/`run_stage`/`run_job` stage machinery and
+  `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`; the no-preload dispatch forks a
+  collector child and decides via transitions/EOF exactly like the preload path.
+  Completes the **#22 residual** (run_scheduler_only-as-only-path) + **#4 Part 4** +
+  **#8 Part 4**. TODO_TASKS **#29**.
+
+- **Chunk 27 — generic `collector_transition` facet (deferred) — needs 24.** A test
+  emits an event carrying a `collector_transition` facet; the collector forwards it
+  verbatim as a transition to the runner, which routes any **non-builtin** transition
+  to a **plugin hook** (`handle_transition` or similar). The extensible substrate for
+  custom harness-significant signals. TODO_TASKS **#30**.
+
+- **Chunk 28 — runtime retry-request helper (deferred) — needs 24, 27.** A test-facing
+  helper module a test calls to request a retry at runtime; emits an event the
+  collector turns into a `retry` transition (rides the generic facet or a dedicated
+  `control.retry`); the runner retries via the normal re-queue path. The retry
+  *count/no-retry* file directive already exists (`# HARNESS-retry N` /
+  `# HARNESS-no-retry`); this adds the runtime-request channel. TODO_TASKS **#31**.
 
 ## Cross-references
 

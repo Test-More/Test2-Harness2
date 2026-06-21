@@ -519,6 +519,90 @@ environment — and `App::Yath::Script::V2` is a proper module, not `main`.
 
 ---
 
+## TIER 4 — Transition-driven completion + subreaper (designed 2026-06-21)
+
+> These five tickets replace the old #8-Part-4 framing. Design context + rationale:
+> `AI_DOCS/2026-06-21-transition-driven-completion-and-subreaper.md` (read it first).
+> #27→#28→#29 are the active sequence; #30/#31 are deferred follow-ups. They span the
+> local `Test2-Collector` checkout (no version bump — unreleased).
+
+### #27 — Transition-driven test completion; collector exit = health-only
+**Status:** Decided · **Step:** 24 · **Depends:** —
+
+**Problem:** the runner decides a test's outcome from the **reaped collector exit
+code** (`JobLauncher` exits the collector with `Job::_collector_exit_code`, which
+layers the audited verdict + writes a `bail` file; `Runner::set_proc_exit` /
+`Preload::Host::set_proc_exit` read `$exit` to pick retry/stop/bail). The exit code
+cannot express a bail-out, and on the preload path the runner never even sees it (the
+stage reaps). The audited result is already on the wire (`harness_final_state`,
+streamed to `runner.socket`) — the runner should decide from that.
+
+**Steps:**
+- **Test2-Collector:** emit an early **`halt` transition** (state `halt`, carrying the
+  reason) the moment the auditor first sees a halt/terminate control facet (keep
+  `final_state.halt` too). Make the collector parent exit **health-only**
+  (`collector_exit_code` → 0 if `collector.ok`, non-zero only on collector
+  malfunction) — stop forwarding the child's verdict/exit. Ensure the
+  `starting`/`harness_collector` handshake carries the collector **pid**.
+- **Harness:** decide every test outcome from transitions + the **connection EOF** on
+  the collector's `runner.socket` connection (drain pending frames on EOF, then:
+  final_state seen → pass / fail⇒retry-if-tries / `halt`⇒bail; **absent ⇒ fail**,
+  flagged possible-harness-internal even on exit 0). **Invariant:** collector problem
+  or missing final_state ⇒ fail.
+- Every handshake reports pid; a test collector adds **`job_id`+`job_try`** (maps the
+  connection/EOF to the job — sufficient since `job_id` is a uuid).
+- Delete `Job::_collector_exit_code` verdict-layering + the `bail` file; remove the
+  reap-driven retry/stop/bail from `Runner::set_proc_exit` **and**
+  `Preload::Host::set_proc_exit`; drop `StageDelegate`/`Runner::Client` verdict
+  reporting. Retry *policy* stays runner-side (`--retry` + `# HARNESS-retry N` /
+  `# HARNESS-no-retry`, both already exist). See ARCHITECTURE §5.4.
+
+### #28 — Runner child-subreaper + detached preload collectors
+**Status:** Decided · **Step:** 25 · **Depends:** #27
+
+**Problem:** to make the runner the sole reaper (and free the preload tree from any
+reaping logic), preload-spawned collectors must detach and re-parent to the runner.
+
+**Steps:**
+- New **`Test2::Harness2::Util::SubReaper`** (pure-Perl, no XS, no dep): acquire/release
+  child-subreaper via `syscall()` — Linux `prctl(PR_SET_CHILD_SUBREAPER)` (per-arch
+  `SYS_prctl` table, `PR_SET_CHILD_SUBREAPER`=36), FreeBSD/DragonFly
+  `procctl(P_PID,$$,PROC_REAP_ACQUIRE)` (`548`); unknown OS/arch or failed call ⇒
+  eval-guarded graceful "unsupported". The reparenting logic lives in this util, **not
+  inlined in `Runner.pm`**. Port the local
+  `Test2-Harness2-ChildSubReaper/t/40-subreaper-behavior.t`.
+- Runner acquires subreaper at startup. **Preload-spawned collectors double-fork +
+  detach** (re-parent to runner on supported OS, init otherwise). Preload tree reaps no
+  collectors. Decision still rides EOF (#27) regardless of who reaps. ARCHITECTURE
+  §4.1/§5.4.
+
+### #29 — Collapse to one run path (run_scheduler_only only)
+**Status:** Decided · **Step:** 26 · **Depends:** #27, #28
+
+**Problem:** with completion + reaping off the reap, the in-runner stage machinery is
+vestigial. **Steps:** make `run_scheduler_only` the runner's only run loop; the
+no-preload dispatch forks a collector child and decides via transitions/EOF like the
+preload path; delete `run_tests`/`run_stage`/`run_job` in-runner stage machinery and
+`_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes the **#22 residual**,
+**#4 Part 4**, **#8 Part 4**. ARCHITECTURE §5.4.
+
+### #30 — Generic `collector_transition` facet + plugin hook
+**Status:** Deferred · **Step:** 27 · **Depends:** #27
+
+A test emits an event with a `collector_transition` facet; the collector forwards it
+verbatim as a transition; the runner routes **non-builtin** transitions to a **plugin
+hook**. Extensible substrate for custom harness-significant signals.
+
+### #31 — Runtime retry-request helper
+**Status:** Deferred · **Step:** 28 · **Depends:** #27, #30
+
+A test-facing helper a test calls to request a retry at runtime; emits an event the
+collector turns into a `retry` transition (generic facet or `control.retry`); the
+runner retries via the normal re-queue path. Count/no-retry directive already exists;
+this adds the runtime channel.
+
+---
+
 ## Explicitly justified — do NOT cut
 
 Load-bearing, all auditors agree: the unified `Role::Service`/`Connection` framing

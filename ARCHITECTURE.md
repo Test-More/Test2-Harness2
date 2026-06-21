@@ -336,6 +336,17 @@ processes. The runner's *own* collector wrap is exempt (its child *is* the
 runner). A `yath spawn` child is exempt (§4.8): it has no collector and is the one
 process meant to outlive the harness.
 
+**Liveness, completion, and reaping (see §5.4).** `watch_parent_pid` is the
+collector's own defense against a dead runner. In the other direction, the runner
+learns a test collector finished from the **EOF on that collector's transition
+connection** to `runner.socket` (never a pid check), and decides the test's outcome
+purely from the collector's transitions (`harness_final_state` / `halt`) — never
+from the collector's exit code. The runner is a **child subreaper** so it owns
+reaping for the whole tree; preload-spawned collectors **double-fork and detach** so
+the preload tree reaps nothing. The full model — the decision algorithm, the
+"no final state ⇒ fail" invariant, collector-exit-is-health-only, and the
+subreaper/reparenting mechanism (`Test2::Harness2::Util::SubReaper`) — is in §5.4.
+
 ### 4.2 Main harness service `[target]`
 
 **Responsibility.** One long-running **runner** service owns the canonical run
@@ -596,6 +607,15 @@ runs in the preload-root/stage via `Test2::Harness2::Runner::JobLauncher` (extra
 from the `App::Yath2` runner command so `Test2::Harness2` loads no `App::Yath2`).
 The `preload-root` is thus a new service-kind identity that **dials** `runner.socket`
 and does **not** listen on a socket of its own.
+
+**Stages do not reap test collectors (see §5.4).** A stage launches each test under
+a collector that **double-forks and detaches**, so the collector re-parents away from
+the stage — to the runner on a subreaper-supported OS, or to init otherwise. The
+stage therefore has **no** test-collector reaping logic and makes **no** completion
+or retry/bail decision; the test collector streams its transitions straight to
+`runner.socket`, and the runner decides everything from those transitions + the
+connection EOF. This is the same path the no-preload runner-launched collector takes,
+which is why the two paths converge on one scheduler-only run loop (§5.4).
 
 **Scope of services (decided).** All services are **global** harness services;
 there are **no per-run services**. The service kinds are: the runner (§4.2),
@@ -1033,17 +1053,91 @@ Direction of connection (the symmetric service model, §5.2):
 ### 5.4 Process spawning and reaping `[migrating]`
 
 **Target.** Process management reduces to two primitives — **spawn a child** and
-**reap a zombie** — because collectors and sockets now carry everything the old
-`Test2::Harness2::IPC` controller existed to do.
+**reap a zombie**. A reap is *only* zombie cleanup; it is **never** a scheduling or
+verdict input. Everything else the old `Test2::Harness2::IPC` controller did is
+carried by collectors + sockets.
 
-- **Results come over the socket, not the reap.** A test's outcome is the
-  collector's `harness_process_exit` event / `stop_task`/`retry_task` report on
-  `runner.socket` (§4.1, §4.7), not the child's `waitpid` status. The runner's
-  scheduler acts on those reports; the only reason it still `waitpid`s a child is to
-  **reap the zombie**. (The no-preload in-runner job path is the last consumer that
-  still schedules off the reap via `Runner::set_proc_exit`; it migrates onto the
-  collector socket report like the preload path, after which `set_proc_exit` is
-  deleted.)
+- **A test's outcome comes only from its collector's transitions.** Each test runs
+  under a `Test2-Collector` collector that streams its transitions — including the
+  audited `harness_final_state` (`pass`, and `halt` on a bail-out) — to
+  `runner.socket` (§4.3, §5.2). The runner folds them into canonical state
+  (`Runner::Monitor`) and makes **every** completion decision from them. The
+  collector's OS exit code is **never** the test verdict (see *Collector exit
+  semantics*).
+
+- **The gone signal is socket EOF — not the reap, not a pid check.** A collector's
+  transition connection to `runner.socket` closes when the collector process ends —
+  on a clean exit *and* on a hard, uncatchable death (`SIGKILL`, segfault, OOM) — on
+  every platform, with no pid-reuse race. So the runner learns a collector is gone
+  from the **EOF on its connection**, independent of who (if anyone) reaps it. Every
+  handshake still reports a pid (below) for status/diagnostics and to map a
+  connection to its job, **not** for liveness.
+
+- **Handshake identity.** Every connection to `runner.socket` (commands, stages,
+  collectors) identifies itself with its **pid**; a test collector additionally
+  carries its **`job_id` (uuid) + `job_try`**, which is sufficient to map its
+  connection (and that connection's EOF) to the job.
+
+- **Completion decision (runner, identical for both run paths).** On a test
+  collector's connection EOF, the runner drains any pending transition frames on it,
+  then:
+  - `harness_final_state` **seen** → act on the audited verdict: `pass` ⇒ complete
+    (pass); `!pass` ⇒ **retry** if the task has tries left (re-queue the same
+    `job_id` with an incremented `job_try`; the scheduler picks it up on a later
+    tick) else complete (fail); a `halt` ⇒ **bail**: halt the run (no further
+    dispatch) and terminate all active jobs (when `--abort-on-bail`).
+  - `harness_final_state` **absent** at EOF → the test produced no verdict: **fail
+    it**, flagged as a *possible harness/collector internal error that may not
+    indicate a problem with the test*. This holds **even if the collector exited 0**
+    — a healthy collector always emits a final state, so its absence is itself a
+    collector problem.
+
+- **Invariant: a collector problem or a missing `harness_final_state` always fails
+  the test.** The harness never reports a pass it did not see audited. The retry
+  *policy* (how many tries) lives in the runner — the `--retry` setting plus the
+  per-file `# HARNESS-retry N` / `# HARNESS-no-retry` directives — never in the
+  collector.
+
+- **Collector exit semantics.** A collector's parent process exits with a **health
+  code only**: `0` when the collector itself functioned (regardless of whether the
+  wrapped test passed, failed, or died by signal — that is in the transitions), and
+  non-zero only when the *collector* malfunctioned. It no longer encodes or forwards
+  the test's verdict. A non-zero health code (seen only when the runner reaps the
+  collector) is extra diagnostic for the "possible harness internal error" message,
+  **not** a decision input.
+
+- **Process tree: the runner is a child subreaper; preload collectors detach.** So
+  the runner is the single owner of the process tree (zombie reaping, kill-tree on
+  shutdown, escalation) and the preload tree needs **no** reaping logic of its own:
+  - The runner registers as a **child subreaper** at startup via a small pure-Perl
+    helper, `Test2::Harness2::Util::SubReaper` (no XS, no external dependency): Linux
+    `prctl(PR_SET_CHILD_SUBREAPER, 1)` and FreeBSD/DragonFly `procctl(...,
+    PROC_REAP_ACQUIRE)`, issued through `syscall()` with a per-(OS,arch) number
+    table. Any unknown platform or failed call is a graceful no-op (eval-guarded) —
+    the platform is simply "unsupported."
+  - **Collectors spawned by preload stages always double-fork and detach** from the
+    stage. On a subreaper-supported OS they re-parent to the **runner**, which reaps
+    them; on an unsupported OS they re-parent to **init**, which reaps them. The
+    preload tree never reaps a collector either way.
+  - **No-preload** collectors are the runner's direct children, reaped by the runner.
+  - Because the completion **decision** rides on EOF + transitions, it is identical
+    whether the runner reaps the collector, init reaps it, or it is never reaped —
+    reparenting governs only *zombie ownership and teardown*, never the verdict.
+
+- **Removed by this model.** `Runner::Job::_collector_exit_code` (verdict-layering)
+  and the `bail` file it wrote; the reap-driven retry/stop/bail in
+  `Runner::set_proc_exit` *and* `Preload::Host::set_proc_exit`; the
+  `StageDelegate`/`Runner::Client` verdict reporting (`stop_task`/`retry_task`
+  carrying a verdict the runner now reads straight off the transition). A stage's
+  reap becomes zombie + local bookkeeping only (and on a subreaper-supported OS the
+  stage's detached collectors re-parent away, so it has none to reap).
+
+- **Net structural result.** No-preload and preload runs both reduce to "fork a
+  collector → decide from its transitions/EOF → the runner owns reaping," so
+  `run_scheduler_only` becomes the runner's **only** run path and the in-runner
+  `run_tests`/`run_stage`/`run_job` stage machinery plus
+  `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS` are removed (the remaining #22
+  residual and #4 Part 4 / #8 Part 4 fold into this).
 - **The `IPC` controller base class is dismantled.** Its substantive logic is
   either dead or superseded: category tracking + `cat`/`all_cat` waits
   (`PROCS_BY_CAT`), the three-pass death detection (`_bring_out_yer_dead` /
