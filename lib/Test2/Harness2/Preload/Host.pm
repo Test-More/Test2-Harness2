@@ -213,9 +213,10 @@ sub preloader {
 }
 
 # The host never holds canonical scheduling State: every stage receives work over
-# its own socket and reports outcomes back to the runner. The lightweight in-stage
-# delegate exposes the next_task/run/stop_task/retry_task API run_job/set_proc_exit
-# call, so the shared run loop is unchanged.
+# its own socket, and the runner decides each job's outcome from its collector's
+# transitions + connection EOF (ARCHITECTURE.md §5.4) -- the stage reports no
+# verdict. The lightweight in-stage delegate exposes the next_task/run API run_job
+# calls, so the shared run loop is unchanged.
 sub state {
     my $self = shift;
     return $self->stage_delegate;

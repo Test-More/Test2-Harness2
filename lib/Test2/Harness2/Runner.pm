@@ -449,11 +449,13 @@ sub process {
 
     # The transient command's render completion is the runner closing
     # this socket. Before we close, drain any in-flight transition frames a job
-    # collector flushed late (e.g. a stage's last job, whose final_state can race
-    # the stage's stop_task report) so they are folded and forwarded to the
-    # subscriber. By now stop() has reaped every child (the stages, and through
-    # them their job collectors), so a few non-blocking service passes capture the
-    # remainder. Transient only; the gated persistent path has the gatherer.
+    # collector flushed late (a stage's last job whose final_state lands during
+    # wind-down) so they are folded + forwarded to the subscriber AND so a late
+    # collector connection EOF still runs the completion decision (§5.4). By now
+    # stop() has reaped every child, so a few non-blocking service passes capture
+    # the remainder. The watchdog already aborted any job still tracked as running,
+    # and the EOF decision is fire-once, so this cannot double-decide. Transient
+    # only; the gated persistent path has the gatherer.
     $self->_drain_transitions unless $self->{+PERSIST};
 
     # The runner closes runner.socket here (its close is the transient command's

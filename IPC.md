@@ -26,11 +26,21 @@ runs **under its own `Test2::Collector` parent**. The collector is the parent
 process; it execs/forks the real work as its child, records the child's
 stdout/stderr/exit as timestamped events into a `*.jsonl.zst` file, and (for every
 process except the runner) its reporter streams **transitions** to `runner.socket`.
-The collector parent `POSIX::_exit`s with the child's verdict, so **reaping a yath
-process means reaping its collector wrapper**.
+For a **non-test** wrap (runner / stage / aux) the collector parent `POSIX::_exit`s
+with the wrapped child's exit (`Util::collector_exit_code`), so reaping that process
+carries a meaningful exit. A **test-job** collector parent instead exits
+**health-only** (`Test2::Collector::Runner->spawn_exit_code`: 0 if the collector
+functioned, non-zero only if the collector itself malfunctioned): the test's verdict
+rides its transitions, which the runner decides on the collector's **connection EOF**
+to `runner.socket` (§5.4), never the exit code. Reaping a test-job collector is
+therefore pure **zombie cleanup**.
 
 - Runner + preload stages run under **non-test** collectors.
-- Test jobs run under **test** collectors.
+- Test jobs run under **test** collectors. The test-job reporter connection is
+  **bidirectional** (built `read_control`): besides streaming transitions it reads
+  the runner's inbound `terminate` control (the bail/abort message). Its identity
+  preamble carries `job_id` + `job_try` + `run_id` so the runner maps the connection
+  (and its EOF) back to the job.
 
 Below, `[collector:NAME] → proc` means "proc runs under a non-test/test collector
 labelled NAME".
@@ -142,7 +152,7 @@ command, which forks exactly one child (the runner), reaps it inline on
 | `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner. The command owns exactly this one child, so it spawns it on `Util::IPC::run_cmd` and reaps/signals it with a direct `waitpid`/`kill` (no `Test2::Harness2::IPC` controller instance) |
 | runner | the **preload-root** (its collector); on the no-preload path, the test job (its collector) it forked directly | the preload-root pid is tracked **outside** the runner's `{+PROCS}` (so it never trips `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root`) |
 | preload-root | each preload stage (its collector) it forked | the base/default/NOPRELOAD stage runs in-process in the preload-root and is not forked/reaped |
-| preload stage | each test job (its collector) it forked | the stage reports the job's `stop_task`/`retry_task` up the one service channel it opened to the runner |
+| preload stage | each test job (its collector) it forked | the stage's reap is **pure zombie cleanup** — it reports NO verdict. The runner decides the job's outcome from the collector's transitions + connection EOF on `runner.socket` (§5.4). The stage still reports the forked job's `job_pid` and any `reload` up the one service channel it opened to the runner |
 
 **`stop_preload_root` must not kill the collector parent (leak fix, chunk 19.4d).**
 `spawn_collector` returns the *collector parent* pid; the actual preload-root is the
@@ -154,11 +164,25 @@ the runner vanishes) and orphan the `-e` child. Instead the runner exits moments
 later; the `ChildMonitor` (watch_parent_pid → runner) then terminates the `-e`
 child + its stage/job descendants, and the collector parent finalizes and exits.
 
-**Completion is learned from transitions, not from reaping.** A job's collector
-emits its final-state transition to `runner.socket`; the runner folds it into
-canonical state. Reaping is just local cleanup afterward. The runner's
-`Runner::Watchdog` aborts a job whose dispatch to a stage failed (so the run does
-not stall) and aborts any still-running jobs at run wind-down.
+**Completion is decided on the collector's connection EOF, not from reaping (§5.4).**
+A test job's collector streams its verdict transitions (`harness_final_state`, plus
+an early `halt` transition on a bail) to `runner.socket`; when the collector exits,
+its connection EOFs. The runner decides the outcome on that EOF (after draining the
+connection's pending frames): `final_state` pass ⇒ complete; `!pass` ⇒ retry while
+tries remain else fail; `halt` ⇒ bail; no `final_state` ⇒ fail (a terminated job is
+recorded *aborted*, otherwise flagged possible-harness-internal — never a false
+pass). The decision is **fire-once per `(job_id, job_try)`**: a shared ledger the EOF
+path and the `Runner::Watchdog` both set, so an EOF and an abort that race converge to
+one completion; a superseded try's late EOF is ignored (stale-try guard). Reaping is
+pure zombie cleanup afterward. The `Runner::Watchdog` still aborts a job whose
+dispatch to a stage failed and any still-running jobs at run wind-down.
+
+**Bail/abort teardown rides a runner→collector terminate control.** On a `halt`
+transition the runner stops dispatching new jobs for the run and (with
+`--abort-on-bail`) sends a `terminate` control to every live test collector of the
+run over its bidirectional connection; each kills its child and exits → EOF (decided
+*aborted*). A job that connects *after* the bail is terminated on connect (the runner
+tracks the run's bail/abort intent). `halt` wins over retry.
 
 **Collectors self-terminate if the runner dies.** Every preload-root, stage, and
 job collector is started with `watch_parent_pid => <root runner pid>` (the runner
@@ -250,15 +274,18 @@ connection carries both directions:
 
 ```
 stage  --[dials runner.socket, identity 'preload-<stage>']--> runner's set
-        reports UP   (stage_ready / stage_down / stop_task / retry_task / job_pid / reload / halt_run)
+        reports UP   (stage_ready / stage_down / job_pid / reload)
         dispatch DOWN (run_task / stop)  — runner service_send's by peer identity over the SAME fd
 ```
 
 Commands (`test`/`run`/`status`/...) are full peers too: each connects, identifies,
 and issues `request`s, matching `response`s by id. A collector's `Recorder::Socket`
 reporter is a **separate** connection that also identifies first (via its
-`preamble`, with `no_reply` so the runner does not reply) and then streams
-transitions only. **Subscribers** connect, send a `subscribe` request, get the
+`preamble`). A **non-test** reporter sets `no_reply` and streams transitions only
+(one-way). A **test-job** reporter is built `read_control`, so it is bidirectional:
+it streams transitions up *and* reads the runner's inbound `terminate` control, and
+its preamble carries `job_id` + `job_try` + `run_id` for the connection→job map.
+**Subscribers** connect, send a `subscribe` request, get the
 snapshot as its `response`, then receive forwarded transition frames pushed over
 the same fd
 (`forward_frame` over `service_subs`).
