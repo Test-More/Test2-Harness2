@@ -346,6 +346,13 @@ touch a line that already has one, replace it.
 - **`kwarg`** (and `kwargs`) — write `named argument` / `named arguments`, or
   `key/value argument`.
 
+These are forbidden in **code and POD only** (comments, identifiers, POD,
+user-facing strings); they are fine in prose discussion and the planning Markdown
+docs:
+
+- **`load-bearing`** — in code/POD, name the actual constraint instead (e.g. "the
+  runner relies on this", "required for X to work").
+
 ## POD
 
 Every shipped `.pm` file must have POD documentation. Start from
