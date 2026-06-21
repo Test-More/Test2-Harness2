@@ -109,7 +109,10 @@ yath start  (writes yath-persist.json {pid,dir}; spawns the runner; then exits)
 clients connecting IN to runner.socket:
    yath run     submit run(run_id) + subscribe(run_id)   → renders its run via Renderer::Driver
    yath watch   subscribe (no run_id = global)           → renders runner/stage output via Renderer::Base
-   yath status / ps / abort / resources   request → Runner::StatusReport reply
+   yath status / ps / resources   request → Runner::StatusReport reply
+   yath abort   'truncate' request → the runner halts the queue AND terminates the
+                running tests itself (abort intent + terminate control, hard-kill
+                fallback); the command no longer snapshots or signals pids
    yath spawn   submit a spawn over the socket (acknowledged: fails fast if no live stage)
    yath stop    'stop' request (graceful shutdown)
    yath reload  SIGHUP → the runner's own pid (from yath-persist.json). On a
@@ -177,12 +180,38 @@ one completion; a superseded try's late EOF is ignored (stale-try guard). Reapin
 pure zombie cleanup afterward. The `Runner::Watchdog` still aborts a job whose
 dispatch to a stage failed and any still-running jobs at run wind-down.
 
+**The reporter is mandatory + a connect timeout bounds the wait (§5.4).** Because
+EOF + transitions are the only completion signal, a test that ran without a connected
+reporter would never complete. So a test-job collector whose `runner.socket` is
+present but whose reporter could not connect **fails the job** (the collector parent
+exits non-zero without running the test) rather than degrading to recorder-only. And
+a job the runner marked dispatched/running whose collector never connects within
+`--collector-connect-timeout` (on by default, ~30s) is failed by the per-tick scan
+(it would otherwise never EOF). The connect-watch is stamped when the runner first
+marks a job dispatched/running and cleared the moment its collector connects.
+
 **Bail/abort teardown rides a runner→collector terminate control.** On a `halt`
 transition the runner stops dispatching new jobs for the run and (with
 `--abort-on-bail`) sends a `terminate` control to every live test collector of the
 run over its bidirectional connection; each kills its child and exits → EOF (decided
 *aborted*). A job that connects *after* the bail is terminated on connect (the runner
-tracks the run's bail/abort intent). `halt` wins over retry.
+tracks the run's bail/abort **intent**). `halt` wins over retry. **The SAME terminate
+primitive is the proper teardown for `yath abort` and owner-disconnect abort:** the
+runner records the abort intent and messages every live + late-connecting collector
+of the run (so it cannot miss a job whose pid had not yet been reported); `yath abort`
+no longer snapshots/INTs pids from the command. A collector that does not comply
+within a short grace is **hard-killed** via `kill(-pid)` (the handshake pid; a
+detached collector `setsid`s so its pid leads its group) — fallback only; the
+fire-once ledger still guards the eventual EOF.
+
+**Post-pass collector failure flags the suite (§5.4).** A collector that fails
+*after* reporting `pass` keeps its test green (never reopened); when the runner
+**reaps** that collector (the no-preload case) and sees a non-zero **health** exit, it
+reports the error to **harness output** and sets a suite-level health-failure flag so
+`yath test`/`run` exits non-zero even though every test passed. This is the only place
+the collector exit code is consulted — post-hoc, suite-level, never a per-test
+verdict. (A preload collector is stage-reaped until the subreaper lands, so its
+post-pass failure may be lost — accepted.)
 
 **Collectors self-terminate if the runner dies.** Every preload-root, stage, and
 job collector is started with `watch_parent_pid => <root runner pid>` (the runner
