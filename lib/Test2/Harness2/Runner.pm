@@ -188,13 +188,17 @@ sub init {
 
         # The runner is purely the scheduler/orchestrator: it holds no preloaded
         # interpreter state and does not self-restart. When a preload-root is up,
-        # reload lives entirely in the preload tree -- forward the reload to the
-        # preload-root and keep scheduling. The preload-root re-execs itself from a
-        # clean interpreter (Test2::Harness2::Preload::request_handler_reload); it
-        # also shares this runner's process group, so a HUP delivered to the group
-        # reaches it directly as well.
+        # reload lives entirely in the preload tree. Route the reload to the
+        # base/default stage's LIVE channel -- the one stage connection the runner
+        # services throughout a run -- not the preload-root's handshake channel,
+        # which is dormant mid-run (the preload-root is blocked in its stage host and
+        # only services that channel at post-run idle, so a reload sent there sits
+        # unread, or fires late during shutdown). The base/default stage runs in the
+        # preload-root process, so it owns the respawn jump frame; it translates the
+        # reload into the in-run respawn of the whole tree.
         if ($self->{+PRELOAD_ROOT_PID}) {
-            $self->service_send('preload-root', 'reload');
+            my $id = $self->_preload_root_stage_identity or return;
+            $self->service_send($id, 'reload_root');
             return;
         }
 
@@ -622,6 +626,30 @@ sub _has_live_stage_peer {
     }
 
     return 0;
+}
+
+# The peer identity of the base/default stage -- the stage hosted IN the
+# preload-root process (so its announced peer_pid equals PRELOAD_ROOT_PID). It is the
+# only stage that owns the preload-root respawn jump frame and the only one whose
+# channel the runner services for the whole run, so it is the reload target. Returns
+# undef if no such peer is connected yet (no preload-root, or the base stage has not
+# registered), in which case a reload is dropped rather than misrouted.
+sub _preload_root_stage_identity {
+    my $self = shift;
+
+    my $root_pid = $self->{+PRELOAD_ROOT_PID} or return undef;
+    my $peers    = $self->{service_peers}     or return undef;
+
+    for my $id (sort keys %$peers) {
+        next if $id eq 'preload-root';
+        next unless $id =~ m/^preload-/;
+        my $conn = $peers->{$id};
+        next unless $conn && !$conn->closed;
+        my $pid = $conn->peer_pid // next;
+        return $id if $pid == $root_pid;
+    }
+
+    return undef;
 }
 
 # A connected preload stage's real pid comes from its 'preload-<stage>' peer

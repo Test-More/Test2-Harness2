@@ -71,6 +71,8 @@ use Test2::Harness2::Util::HashBase(
         +job_pids
 
         +preload_warnings
+
+        +pending_reload
     },
 );
 
@@ -158,11 +160,15 @@ sub init {
     $self->{+HANDLERS}->{HUP} = sub {
         my $sig = shift;
 
-        # The host reloads by re-execing the whole preload tree. Its base/default
-        # stage signals the reload by setting SIGNAL=HUP, which its end_test_loop
-        # turns into a respawn (longjump 'preload-root').
+        # A direct SIGHUP to the preload-root reloads by re-execing the whole preload
+        # tree. The base/default stage runs in this process and owns the
+        # 'preload-root' Long::Jump frame, so it marks a pending reload and ends its
+        # run loop; run_stage then respawns the tree. (`yath reload` does not take
+        # this path -- it HUPs the runner, which forwards a reload over the
+        # base/default stage's live socket channel instead.)
         print "$$ $0 ($self->{+STAGE}) Preload::Host caught SIG$sig, reloading...\n";
-        $self->{+SIGNAL} = $sig;
+        $self->{+PENDING_RELOAD} = 1 unless $self->{+SIGNAL};
+        $self->{+SIGNAL}         = $sig;
     };
 
     my $tmp_dir = File::Spec->catdir($self->{+DIR}, 'tmp');
@@ -278,6 +284,26 @@ sub request_handler_reload {
     my $self = shift;
     my ($payload) = @_;
     $self->state->reload($payload->{stage}, $payload->{data});
+    return undef;
+}
+
+# A `yath reload` (SIGHUP to the runner) is forwarded by the runner to the
+# base/default stage's live channel -- the one connection serviced during a run --
+# because the preload-root's own handshake channel is dormant mid-run. Translate it
+# into the in-run respawn path: mark a pending reload and set SIGNAL=HUP so the
+# base/default stage's run loop ends and respawns the whole preload tree (the same
+# flow a monitored file change uses). A reload that races a shutdown is ignored: a
+# queued `stop` (service_stopped) wins, so a stale reload cannot re-exec the tree
+# during wind-down. One-way: the runner does not read a reply.
+sub request_handler_reload_root {
+    my $self = shift;
+
+    return undef if $self->service_stopped;
+    return undef if $self->{+SIGNAL};
+
+    $self->{+PENDING_RELOAD} = 1;
+    $self->{+SIGNAL}         = 'HUP';
+
     return undef;
 }
 
@@ -516,43 +542,47 @@ sub reset_stage {
     return;
 }
 
+# A forked preload stage becomes a dispatch service: it drops the runner.socket
+# listen descriptor it inherited and binds its own preload-<stage>.socket (reserved
+# for `yath spawn`, ARCHITECTURE.md §4.8), opens the ONE registered service channel
+# to the runner (ARCHITECTURE.md §5.2), and announces readiness over it. The base/
+# default stage -- the one holding the full merged preload meta -- first reports the
+# stage map (which stages exist + which is default) and any preload-time warnings,
+# BEFORE its stage_ready: the runner gates dispatch on both the map AND the base
+# stage being ready, so sending the map first guarantees it lands before any task is
+# scheduled. Forked named stages inherit the same meta but must not re-report.
+sub _announce_stage_ready {
+    my $self = shift;
+    my ($stage) = @_;
+
+    $self->reset_service;
+    $self->start_service;
+
+    $self->_connect_runner;
+
+    if ($stage eq 'base' || $stage eq 'default') {
+        $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data);
+
+        if (my $warnings = $self->{+PRELOAD_WARNINGS}) {
+            $self->service_send('runner', 'preload_warnings', warnings => [@$warnings])
+                if @$warnings;
+        }
+    }
+
+    $self->service_send('runner', 'stage_ready', stage => $stage);
+
+    return;
+}
+
 sub run_stage {
     my $self = shift;
     my ($stage) = @_;
 
     $self->{+STAGE} = $stage;
 
-    # A forked preload stage becomes a dispatch service: it drops the runner.socket
-    # listen descriptor it inherited and binds its own preload-<stage>.socket
-    # (reserved for `yath spawn`, ARCHITECTURE.md §4.8). It then opens the one
-    # registered service channel to the runner and announces readiness over it.
     my $stage_service = $self->is_stage_service;
     if ($stage_service) {
-        $self->reset_service;
-        $self->start_service;
-
-        # Open the ONE registered service channel to the runner
-        # (ARCHITECTURE.md §5.2) and announce readiness over it. The runner
-        # reads stage_ready / outcome reports off this connection AND
-        # dispatches jobs back down it.
-        $self->_connect_runner;
-
-        # The base/default stage -- the one holding the full merged preload meta --
-        # reports the stage map (which stages exist + which is default) and any
-        # preload-time warnings to the runner over this channel, BEFORE its
-        # stage_ready. The runner gates dispatch on both the map AND the base stage
-        # being ready, so sending the map first guarantees it lands before any task is
-        # scheduled. Forked named stages inherit the same meta but must not re-report.
-        if ($stage eq 'base' || $stage eq 'default') {
-            $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data);
-
-            if (my $warnings = $self->{+PRELOAD_WARNINGS}) {
-                $self->service_send('runner', 'preload_warnings', warnings => [@$warnings])
-                    if @$warnings;
-            }
-        }
-
-        $self->service_send('runner', 'stage_ready', stage => $stage);
+        $self->_announce_stage_ready($stage);
     }
     else {
         $self->state->stage_ready($stage);
@@ -564,7 +594,14 @@ sub run_stage {
         # forks/reaps the jobs it is handed and reports outcomes back.
         if ($stage_service) {
             $self->service_io;
-            $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
+
+            # A queued `stop` wins over a pending `yath reload`: drop the pending
+            # reload and force a TERM shutdown so a stale reload cannot re-exec the
+            # preload tree while the runner is winding down.
+            if ($self->service_stopped) {
+                delete $self->{+PENDING_RELOAD};
+                $self->{+SIGNAL} = 'TERM';
+            }
         }
 
         next if $self->run_job();
@@ -595,6 +632,16 @@ sub run_stage {
     $self->killall($self->{+SIGNAL}) if $self->{+SIGNAL};
 
     $self->wait(all => 1);
+
+    # A `yath reload` delivered mid-run reaches the base/default stage (it owns the
+    # live channel during a run); respawn the whole preload tree from a clean
+    # interpreter via the 'preload-root' Long::Jump host the preload-root launch
+    # frame established, exactly as the post-run idle reload does. Only the
+    # base/default stage runs in the preload-root process, so only it owns that jump
+    # frame; named child stages exit and are relaunched by the respawned tree.
+    if (delete $self->{+PENDING_RELOAD}) {
+        longjump 'preload-root' => 'respawn';
+    }
 
     exit 0 unless $stage eq 'base' || $stage eq 'default';
 }

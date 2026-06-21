@@ -104,11 +104,20 @@ clients connecting IN to runner.socket:
    yath stop    'stop' request (graceful shutdown)
    yath reload  SIGHUP → the runner's own pid (from yath-persist.json). On a
                 preload run the (scheduler-only) runner does NOT wind down: its HUP
-                handler forwards a 'reload' request to the preload-root (which
-                re-execs itself) and keeps scheduling. The runner never self-restarts:
-                it holds no preloaded interpreter state. A no-preload runner therefore
-                has nothing to reload, so HUP is a no-op (to pick up code changes a
-                no-preload persistent runner must be stopped and started again).
+                handler forwards a 'reload_root' request to the base/default stage's
+                LIVE service channel (the `preload-<base>` peer whose announced pid
+                equals the preload-root pid). That stage is hosted in the preload-root
+                process and is the one connection the runner services for the whole
+                run, so the reload is read promptly; it ends its run loop and re-execs
+                the whole preload tree from the 'preload-root' Long::Jump frame. The
+                reload is NOT sent to the preload-root's dormant handshake channel
+                (which is only serviced at post-run idle, so a reload there would sit
+                unread, or fire late during shutdown). A queued 'stop' cancels a
+                pending reload so a stale reload cannot re-exec the tree mid-shutdown.
+                The runner never self-restarts: it holds no preloaded interpreter
+                state. A no-preload runner has nothing to reload, so HUP is a no-op (to
+                pick up code changes a no-preload persistent runner must be stopped and
+                started again).
 ```
 
 `yath run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`/`which`/`watch`

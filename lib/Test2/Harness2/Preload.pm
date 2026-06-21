@@ -5,7 +5,7 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use POSIX();
-use Long::Jump qw/setjump longjump/;
+use Long::Jump qw/setjump/;
 use Time::HiRes qw/sleep time/;
 use File::Spec();
 
@@ -370,16 +370,12 @@ sub request_handler_stop ($self, @) {
     return {ok => 1, stopping => 1};
 }
 
-# The runner forwards a SIGHUP-driven reload over the channel as a 'reload'
-# request (Test2::Harness2::Runner's HUP handler). Re-exec the whole preload tree
-# from a clean interpreter via the 'preload-root' Long::Jump host the launch frame
-# established (the same path the stage-host's respawn callback uses), so every
-# stage reloads. This is only reachable in the post-run idle loop -- during a run
-# the stage-host Runner owns the connection and reloads via its own SIGHUP /
-# preloader->check; this covers a reload that arrives while the root idles.
-sub request_handler_reload ($self, @) {
-    longjump 'preload-root' => 'respawn';
-}
+# A `yath reload` is NOT routed to this dormant handshake channel: the runner
+# forwards the reload to the base/default stage's live channel
+# (Test2::Harness2::Preload::Host::request_handler_reload_root) instead, which is
+# serviced throughout a run and translates it into the in-run tree respawn. Routing
+# it here would leave it unread during a run (this channel is only serviced at
+# post-run idle) and risk re-execing the tree late during shutdown.
 
 1;
 

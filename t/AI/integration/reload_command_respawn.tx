@@ -1,0 +1,11 @@
+use Test2::V0;
+
+# Run under the persistent preload tree. Preload::Var is preloaded by the base/
+# default stage; its $VALUE reflects whatever was on disk the last time the tree
+# loaded. The expected value is passed as an argument so the harness test can assert
+# which incarnation of the preload is live.
+my $want = $ARGV[0] or die "no expected value argument";
+
+is($Preload::Var::VALUE, $want, "preloaded Preload::Var::VALUE is '$want'");
+
+done_testing;
