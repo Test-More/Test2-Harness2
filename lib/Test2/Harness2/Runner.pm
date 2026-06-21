@@ -13,6 +13,7 @@ use Time::HiRes qw/sleep time/;
 use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter/;
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
+use Test2::Harness2::Util::SubReaper qw/acquire_subreaper subreaper_supported/;
 
 use Test2::Harness2::Runner::Constants;
 
@@ -392,8 +393,36 @@ sub all_libs {
     return @out;
 }
 
+# Mark the runner as a child subreaper so it owns reaping for the whole process
+# tree (detached preload collectors re-parent here). All syscall/platform logic
+# lives in Test2::Harness2::Util::SubReaper -- never inlined here. A failed or
+# unsupported acquire is non-fatal: detached collectors then re-parent to init and
+# the EOF-based completion decision is unaffected (ARCHITECTURE.md §5.4).
+sub become_subreaper {
+    my $self = shift;
+
+    return 0 unless subreaper_supported();
+
+    unless (acquire_subreaper()) {
+        warn "$$ $0 could not acquire child-subreaper status: $!\n";
+        return 0;
+    }
+
+    return 1;
+}
+
 sub process {
     my $self = shift;
+
+    # Become the child subreaper for the whole process tree BEFORE any collector
+    # is forked, so every preload-spawned collector that double-forks and detaches
+    # re-parents up to THIS runner (the nearest subreaper ancestor) rather than to
+    # the preload tree. Only the runner acquires this -- the preload-root/host and
+    # forked stages must not, or a detached collector would stop at them. On an
+    # unsupported platform this is a graceful no-op and detached collectors
+    # re-parent to init; the completion decision rides EOF either way
+    # (ARCHITECTURE.md §5.4). The reaping is pure zombie cleanup.
+    $self->become_subreaper;
 
     @INC = process_includes(
         list            => [@{$self->settings->harness->dev_libs}, $self->all_libs],
@@ -1409,6 +1438,13 @@ state.
 
 Get all the libs that should be added to @INC by default. Note that specific
 runs and even specific tests can have custom paths on top of these.
+
+=item $bool = $runner->become_subreaper
+
+Mark the runner as a child subreaper so it owns reaping for the whole process
+tree (detached preload collectors re-parent to it). Returns true on success,
+false on an unsupported platform or a failed acquire (both non-fatal). All
+platform/syscall logic lives in L<Test2::Harness2::Util::SubReaper>.
 
 =back
 
