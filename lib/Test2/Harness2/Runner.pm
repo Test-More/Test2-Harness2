@@ -8,7 +8,6 @@ use File::Spec();
 
 use Carp qw/confess croak/;
 use POSIX qw/:sys_wait_h/;
-use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/sleep time/;
 
 use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter/;
@@ -69,7 +68,6 @@ use Test2::Harness2::Util::HashBase(
         +last_timeout_check
         +timeout_signaled
         +run_reached_timeout
-        +can_stage
         <tmp_dir
 
         <rootpid
@@ -434,7 +432,6 @@ sub process {
 
     my $ok  = eval { $self->run_tests(); 1 };
     my $err = $@;
-    $self->{+CAN_STAGE} = 0;
 
     warn $err unless $ok;
 
@@ -949,17 +946,11 @@ sub run_tests {
 
     $self->watch($_) for @procs;
 
-    while (1) {
-        $self->{+CAN_STAGE} = 1;
-        my $jump = setjump "Stage-Runner" => sub {
-            $self->run_stage($stage);
-        };
-
-        last unless $jump;
-
-        ($stage) = @$jump;
-        $self->reset_stage();
-    }
+    # No-preload only: there are no named stages, and the runner never relaunches a
+    # stage (ticket #22 moved all stage hosting to Test2::Harness2::Preload::Host), so
+    # nothing ever longjumps "Stage-Runner". Run the single 'default' stage directly --
+    # no Long::Jump host frame and no reset/relaunch loop.
+    $self->run_stage($stage);
 
     return;
 }
@@ -1071,23 +1062,6 @@ sub stop_preload_stages {
     return;
 }
 
-sub reset_stage {
-    my $self = shift;
-
-    # Normalize IPC
-    $self->check_for_fork();
-
-    # If no stage was set we do not want to clear this, root stages need to
-    # preserve the preloads
-    return unless $self->{+STAGE};
-
-    # From Runner
-    delete $self->{+STAGE};
-    delete $self->{+STATE};
-    delete $self->{+LAST_TIMEOUT_CHECK};
-
-    return;
-}
 
 sub run_stage {
     my $self = shift;
