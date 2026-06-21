@@ -387,7 +387,7 @@ them; keep `Client` a command/query/subscription client. Fix the stale comment a
 Runner.pm:333 (folds into #15).
 
 ### #20 — Preload `require` happens outside the guard
-**Status:** Decided · **Step:** 19/23 · **Depends:** —
+**Status:** ✅ DONE (`91afaac78`) — lightweight handshake; preloads load once under the guard; map+warnings reported from the stage host. See TODO_DONE.md · **Step:** 19/23 · **Depends:** —
 
 **Problem:** `Preload::_load_preloads` does a full `require` of preload modules at the
 **handshake** (for metadata) **before** `test2_start_preload` — so require-time Test2
@@ -402,7 +402,7 @@ runner change. Deletes `Preload::_load_preloads` + the duplicate load; moves war
 capture to the single guarded load (shrinks #21).
 
 ### #21 — Preload failure: detection (done) vs diagnostics (simplify)
-**Status:** Decided · **Step:** 11/23 · **Depends:** #3, #20
+**Status:** ✅ DONE (`419571793`) — zstd scrape deleted; `--preload-map-timeout` + off-by-default `--preload-stage-startup-timeout` (§4.7a backstop). See TODO_DONE.md · **Step:** 11/23 · **Depends:** #3, #20
 
 **Reframe — two concerns:**
 - **Detection ("don't wait forever") — solved.** A crashed stage EOFs its socket (#3);

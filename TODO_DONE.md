@@ -7,6 +7,72 @@ Newest first.
 
 ---
 
+## #21 — Preload failure: diagnostics simplify + configurable timeouts — DONE (`419571793`)
+
+Depends #20 (landed first). Done directly on 2.0d (no worktree). Both suites green
+(`prove` 1748 · `yath test -D` 1754). Conforms code to the already-written
+ARCHITECTURE.md §4.7a (no doc change needed).
+
+**Diagnostics:** deleted the inline `Zstd::FrameBuffer` events-file scrape in
+`Runner::_emit_preload_failure_output`. The method now just re-emits the errors the
+preload-root hands over via `stage_host_exited` / `preload_warnings`; each failed
+process's own collector already records its output and the renderer surfaces it, so the
+runner only needs to know a stage failed. A hard SIGKILL crash hands nothing over → the
+generic "died unexpectedly" message stands alone. (`preload.t`'s "This is broken" /
+"Can't locate Does/Not/Exist" assertions still pass — they ride the handed-over
+`stage_host_errors`, not the scrape.)
+
+**Timeouts (two new runner options, `App/Yath2/Options/Runner.pm`):**
+- `--preload-map-timeout` (default 60) replaces the hardcoded 60s map/base-stage
+  readiness deadline in `Runner::run_scheduler_only` AND the preload-root's 30s handshake
+  RPC wait (`Preload::_request_sync`, fallback 30s before settings.json is readable). The
+  preload-root now loads `settings.json` once via a cached `settings` accessor (reused by
+  the handshake + the stage host; removes a double-load).
+- `--preload-stage-startup-timeout` (default 0 = off) is the §4.7a per-stage startup
+  backstop, enforced in `Resource::Preload::available()`: a stage stuck
+  `starting`/`restarting` past the timeout is treated as permanently gone (→ `-1` for a
+  required stage, falls to `default` for advisory) instead of waited on forever. Reads
+  the lifecycle stamp age via new `State::stage_state_age`.
+
+**Tests:** added a `startup_timeout_backstop` subtest to `t/AI/unit/Resource_Preload.t`
+(backdates a stuck stage's lifecycle stamp; verifies -1 required / 1 advisory / 0 when
+off). **Flag for review:** the map timeout and the preload-root handshake RPC share one
+knob (`preload_map_timeout`) — semantically both are "preload bring-up patience," but
+they live at different layers (runner-waits-for-tree vs root-waits-for-runner). Splitting
+into two settings is trivial if the owner prefers.
+
+---
+
+## #20 — Preload `require` happens outside the guard — DONE (`91afaac78`)
+
+Done directly on 2.0d (no worktree). Both suites green (`prove` 1747 · `yath test -D`
+1753). Conforms code to the already-written ARCHITECTURE.md §4.7 (no doc change needed).
+
+**Problem:** `Preload::_load_preloads` ran a full `require` of every preload module at the
+handshake, BEFORE `test2_start_preload` — so require-time Test2 side effects escaped the
+guard and every module loaded twice (handshake + the stage host's guarded preload).
+
+**Fix (lightweight handshake):** `Preload::_handshake` now only dials, identifies, and
+calls `get_preload_list` (for `runner_pid` + `monitor_preloads`). Deleted
+`Preload::_load_preloads` and `Preload::stage_data` (+ the now-dead `mod2file` /
+`Runner::Preload` imports). The stage host loads the preloads once under the guard
+(`Preload::Host::run_tests`, wrapping `$preloader->preload()` in a `local $SIG{__WARN__}`
+to capture preload-time warnings); the base/default stage then reports `set_stage_data`
+(built from the guarded preloader's `staged` meta via the new
+`Preload::Host::stage_data`) + `preload_warnings` over its channel, BEFORE its
+`stage_ready`. The runner's dispatch gate already requires both the map and the base
+stage, so the map still lands before any task schedules.
+
+**Test:** rewrote `t/AI/integration/preload_root_handshake.t` — the bare handshake no
+longer reports the stage map (that is the stage host's job, covered by the preloaded
+end-to-end runs), so it now asserts the new lightweight-handshake contract (handshake
+completes, the channel is bidirectional via `stage_host_exited`, no map from the bare
+handshake). The `preload_root_crash` fixture comment still references `_load_preloads`
+but the crash now fires during the guarded load instead — same observable outcome
+(abrupt preload-root death before any stage registers); test passes unchanged.
+
+---
+
 ## #10 / chunk 23 + chunk 11 — Client-side stage assignment + §4.7a preload Resource — DONE (`af8153696`)
 
 Two sequential agents, all parts green. Net resolver/file_stage/eager elimination
