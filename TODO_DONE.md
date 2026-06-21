@@ -7,6 +7,49 @@ Newest first.
 
 ---
 
+## Batch (2026-06-21) — review-driven fixes #32–#37 (parallel agents, integrated on 2.0d)
+
+Six tickets from the two-reviewer pass, run as 3 parallel worktree agents and
+cherry-picked onto 2.0d; combined suite green at each integration (final: `prove`
+1769, `yath test -D` PASSED). All AGENTS.md audits + `podchecker` clean per agent.
+
+- **#32 (`3dde68850`) — fd hygiene (core).** `Util::IPC::set_cloexec`; `FD_CLOEXEC`
+  on every harness socket (listen, peer connect, accepted, collector reporter via the
+  recorder's `connections` accessor); `Role::Service::close_all_connections`
+  post-fork close-sweep wired into both no-exec forks (`JobLauncher::launch_via_fork`
+  collector parent + `cleanup_process` goto::file child, which also closes the
+  inherited reporter sockets stashed on the job). Test `Role_Service_fd_hygiene.t`.
+  **No Test2-Collector change needed.** Mandatory-reporter + `--collector-connect-timeout`
+  deferred to #27.
+- **#37 (`e29259adc`) — doc.** Comment at the resource-skip `-e` assembly in
+  `Job::collector_target`.
+- **#36 (`4403aa4c0`) — delete dead `reset_stage_readiness`** + its test subtest
+  (re-verified zero production callers).
+- **#35 (`e4e64f6b8`) — `TASK_LOOKUP` leak.** `_drop_run_task_lookup` from `halt_run`
+  + `purge_run`; `State_run_retention.t` asserts removal.
+- **#33 (`1b0a1312b`) — enforce `preload_stage_startup_timeout`.** Per-tick
+  `_expire_stale_stages` in `advance` demotes a timed-out `starting`/`restarting`
+  stage to `down`, **plus `_rebucket_stage_tasks`** (demotion alone strands tasks
+  already bucketed under the stage — `_next` only walks `up` buckets) drains the
+  bucket back through `task_pending_lookup` so `task_stage` re-resolves (advisory→default,
+  required→`resource_skip`). Integration test `scheduler_stage_startup_timeout.t`.
+  (Fixes the inert #21 safeguard.)
+- **#34 (`0b659a90f`) — `yath reload` during a preload run.** HUP routes a
+  `reload_root` request to the base/default stage's **live** channel (peer matched by
+  `peer_pid == PRELOAD_ROOT_PID`); `Preload::Host::request_handler_reload_root` sets a
+  `pending_reload` → `longjump 'preload-root' 'respawn'` at stage end; a queued `stop`
+  drops the pending reload (no re-exec mid-shutdown). Removed the unreachable
+  `Preload::request_handler_reload`. `IPC.md` updated. Tests
+  `Runner_reload_routing.t` + `reload_command_respawn.t`.
+
+**Flags for later (pre-existing, not from this batch):** `State.pm` 1257 LOC + `_next`
+93 lines (over thresholds); `Runner.pm` 1296 LOC + `run_scheduler_only` 79 lines.
+`reload_command_respawn.t` uses a fixed `sleep 3` for the async respawn (possible slow-CI
+flake). The fd-hygiene regression is the close-sweep unit test (a true EOF regression
+lands with #27's EOF-decision logic).
+
+---
+
 ## #22 residual — flatten the vestigial no-preload Stage-Runner loop — DONE (`7e6ed23f8`)
 
 Done directly on 2.0d (no worktree). Both suites green (`prove` 1748 · `yath test -D`

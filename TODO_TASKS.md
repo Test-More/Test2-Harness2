@@ -630,7 +630,7 @@ runner retries via the normal re-queue path. Count/no-retry directive already ex
 this adds the runtime channel.
 
 ### #32 — FD hygiene: no socket-fd leaks across forks (prerequisite for EOF)
-**Status:** Decided · **Step:** 24 · **Depends:** — · **Gates:** #27
+**Status:** ✅ DONE (`3dde68850`) — fd-hygiene core; mandatory-reporter + connect-timeout deferred to #27. See TODO_DONE.md · **Step:** 24 · **Gates:** #27
 
 **Problem:** the EOF-as-gone-signal model (#27/§5.4) is only sound if **no other
 process holds a dup** of a collector's connection fd — a UNIX socket EOFs only once
@@ -653,7 +653,7 @@ false "still running".
   runner still sees the collector's EOF promptly. ARCHITECTURE §5.4.
 
 ### #33 — Enforce `preload_stage_startup_timeout` in the scheduler (it is currently inert)
-**Status:** Decided · **Step:** 11 · **Depends:** —
+**Status:** ✅ DONE (`1b0a1312b`) — per-tick scan demotes timed-out stage to down + rebuckets; integration test. See TODO_DONE.md · **Step:** 11
 
 **Problem:** the #21 safeguard never fires. The scheduler buckets a task via
 `State::task_stage()` (no timeout) and `_stage_order`/`_next` only traverse **`up`**
@@ -668,7 +668,7 @@ to default if advisory, or the require path fails). Add an **integration test dr
 the full scheduler path** (not just `available()`).
 
 ### #34 — `yath reload` ineffective during a persistent preload run
-**Status:** Decided · **Step:** 19 · **Depends:** —
+**Status:** ✅ DONE (`0b659a90f`) — reload routed to live base-stage channel; stop drops pending reload. See TODO_DONE.md · **Step:** 19
 
 **Problem:** the runner forwards `reload` as a socket message to the **`preload-root`**
 peer, but during a run the preload-root is blocked in `_run_stage_host` and does not
@@ -681,7 +681,7 @@ into its existing in-run respawn path (`SIGNAL=HUP` → end-loop → respawn the
 Make it idempotent/ordered so a pending reload is dropped once `stop` is queued.
 
 ### #35 — `halt_run`/`purge_run` leave stale tasks in `TASK_LOOKUP`
-**Status:** Decided · **Step:** 22 · **Depends:** —
+**Status:** ✅ DONE (`e4e64f6b8`) — clear TASK_LOOKUP on halt_run+purge_run + test. See TODO_DONE.md · **Step:** 22
 
 **Problem:** `halt_run`/`purge_run` delete the run's buckets but not its `TASK_LOOKUP`
 entries. `_queue_task`'s duplicate guard checks `TASK_LOOKUP` before `HALTED_RUNS`, so
@@ -692,7 +692,7 @@ retains task hashes indefinitely after aborts/truncates.
 a test assertion that the run's tasks are gone from `task_lookup` after abort/purge.
 
 ### #36 — Delete dead `reset_stage_readiness`
-**Status:** Decided · **Step:** 10 · **Depends:** —
+**Status:** ✅ DONE (`4403aa4c0`) — verified zero callers, deleted sub + test. See TODO_DONE.md · **Step:** 10
 
 **Problem:** `State::reset_stage_readiness` was for a respawned crashed preload-root,
 but preload-root crashes are fatal/never respawned (#3) — verified zero production
@@ -702,7 +702,7 @@ callers (only `t/AI/unit/State_stage_lifecycle.t:62`).
 exercises it.
 
 ### #37 — Document the resource-skip `-e` executor assumption
-**Status:** Decided · **Step:** 11 · **Depends:** — · **Doc-only**
+**Status:** ✅ DONE (`e29259adc`) — comment added. · **Step:** 11 · **Doc-only**
 
 **Problem:** the permanent `resource_skip` path runs a dummy via `perl -e '...'`,
 assuming a Perl-compatible `-e` executor. Safe today (non-Perl/binary jobs do not run
