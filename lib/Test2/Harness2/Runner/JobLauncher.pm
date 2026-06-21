@@ -166,6 +166,15 @@ sub launch_via_fork ($class, $runner, $job, $label = 'Test-Runner') {
         setpgrp(0, 0) if Test2::Harness2::IPC::USE_P_GROUPS();
         $runner->stop();
 
+        # This child forked from a Role::Service host without exec, so it inherited
+        # the host's listen socket and every live peer/collector connection. Close
+        # them before the collector forks the test child, so no dup of another
+        # collector's connection survives here to defeat that connection's EOF (the
+        # runner's "collector gone" signal). See ARCHITECTURE.md §5.4 "FD ownership
+        # is a hard prerequisite". The collector parent builds its OWN reporter
+        # (post-fork, in run_under_collector), so this does not touch it.
+        $runner->close_all_connections if $runner->can('close_all_connections');
+
         unless ($collected) {
             # Non-collected (spawn) path: this child IS the test process, so
             # post_fork fires here, in the same PID that will run.
@@ -209,6 +218,18 @@ sub cleanup_process ($class, $job, $stage) {
     # selected its own stream formatter (T2_FORMATTER=Collector). Skip the
     # harness's own IO redirect and Stream-formatter setup in that case.
     my $collected = ($ENV{T2_FORMATTER} // '') eq 'Collector';
+
+    # This is the in-process (preload goto::file) test child: it became the test
+    # without an exec, so it inherited the collector parent's reporter socket(s)
+    # and -- through the collector -- the runner host's connections. Close them all
+    # before the test runs so no dup of a collector's connection to runner.socket
+    # survives into the test (or a long-lived descendant it forks), which would
+    # defeat that connection's EOF (the runner's "collector gone" signal). FD_CLOEXEC
+    # cannot help here -- there is no exec. See ARCHITECTURE.md §5.4 "FD ownership is
+    # a hard prerequisite".
+    $job->close_inherited_handles;
+    my $runner = $job->runner;
+    $runner->close_all_connections if $runner && $runner->can('close_all_connections');
 
     $class->update_io($job) unless $collected;    # Get the correct filehandles in place early
     $class->set_env($job);                        # Set up the necessary env vars

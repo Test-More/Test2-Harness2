@@ -8,6 +8,7 @@ use File::Spec ();
 use File::Path qw/make_path/;
 
 use Test2::Collector::Util::Socket qw/open_unix_listen connect_unix write_frame/;
+use Test2::Harness2::Util::IPC qw/set_cloexec/;
 
 use Test2::Harness2::Role::Service::Connection();
 
@@ -112,6 +113,17 @@ Ask the loop to exit after the current iteration.
 
 Close the listening socket and all connections, and unlink the socket path.
 
+=item $self->close_all_connections
+
+Post-fork close-sweep for a child that does B<not> exec: close every inherited
+connection and the listen socket so a forked child holds no dup of any peer
+connection or the listen socket. Without it a dead collector's connection would
+never EOF (a UNIX socket EOFs only once every holder closes its fd). C<FD_CLOEXEC>
+covers exec paths; this covers the no-exec forks (the collector parent and the
+preload test launch). It does B<not> unlink the socket path (the parent still
+owns it) and leaves service bookkeeping cleared so the child does not act as a
+service.
+
 =item $self->reset_service
 
 Close and drop the listening socket and all connections B<without> unlinking the
@@ -175,6 +187,11 @@ sub start_service ($self) {
     my $listen = open_unix_listen($path);
     $listen->blocking(0);
 
+    # FD_CLOEXEC so a child that exec's never inherits the listen socket; the
+    # no-exec collector-parent fork still close-sweeps it (close_all_connections).
+    # See ARCHITECTURE.md §5.4 "FD ownership is a hard prerequisite".
+    set_cloexec($listen);
+
     $self->{service_listen}  = $listen;
     $self->{service_select}  = IO::Select->new($listen);
     $self->{service_conns}   = {};
@@ -205,6 +222,7 @@ sub service_connect_peer ($self, $identity, $path) {
     my $fh;
     return undef unless eval { $fh = connect_unix($path); 1 } && $fh;
     $fh->blocking(0);
+    set_cloexec($fh);
 
     my $conn = Test2::Harness2::Role::Service::Connection->new(
         fh          => $fh,
@@ -313,6 +331,7 @@ sub service_io ($self) {
 
     while (my $fh = $listen->accept) {
         $fh->blocking(0);
+        set_cloexec($fh);
         $sel->add($fh);
         $self->{service_conns}{$fh} = Test2::Harness2::Role::Service::Connection->new(
             fh          => $fh,
@@ -391,6 +410,28 @@ sub _drop_conn ($self, $conn) {
     # connection owned -- aborting a still-running run, purging a finished one -- so
     # in-memory run state is bounded by live owner connections.
     $self->service_conn_closed($conn) if $self->can('service_conn_closed');
+
+    return;
+}
+
+sub close_all_connections ($self) {
+    if (my $conns = $self->{service_conns}) {
+        $_->close for values %$conns;
+    }
+
+    if (my $listen = $self->{service_listen}) {
+        eval { CORE::close($listen); 1 };
+    }
+
+    if (my $sel = $self->{service_select}) {
+        $sel->remove($_) for $sel->handles;
+    }
+
+    delete $self->{service_listen};
+    delete $self->{service_select};
+    $self->{service_conns} = {};
+    $self->{service_peers} = {};
+    $self->{service_subs}  = {};
 
     return;
 }

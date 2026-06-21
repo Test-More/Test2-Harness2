@@ -16,6 +16,7 @@ use File::Spec();
 use File::Temp();
 
 use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp collector_exit_code socket_reporter/;
+use Test2::Harness2::Util::IPC qw/set_cloexec/;
 use Test2::Harness2::IPC;
 
 use parent 'Test2::Harness2::IPC::Process';
@@ -58,6 +59,8 @@ use Test2::Harness2::Util::HashBase(
 
         +min_slots
         +max_slots
+
+        +reporter_handles
     }
 );
 
@@ -273,6 +276,17 @@ sub run_under_collector {
     # the fork/exec to the test child via TO_JSON (it carries its socket paths).
     my $reporter = $self->_transition_reporter;
 
+    # The reporter's socket fds stream this collector's transitions to
+    # runner.socket; the EOF on that connection is the runner's "collector gone"
+    # signal (ARCHITECTURE.md §5.4). FD_CLOEXEC keeps an exec'd test child from
+    # inheriting them; the in-process (preload goto::file) test child does not
+    # exec, so the stashed handles are close-swept in cleanup_process.
+    if ($reporter && $reporter->can('connections')) {
+        my @handles = @{$reporter->connections // []};
+        set_cloexec($_) for @handles;
+        $self->{+REPORTER_HANDLES} = \@handles;
+    }
+
     my %common = (
         name               => $self->rel_file,
         is_test            => 1,
@@ -296,6 +310,24 @@ sub run_under_collector {
     );
 
     return Test2::Collector::collect(%common, @target);
+}
+
+# Close this collector's reporter socket(s) in the in-process (preload
+# goto::file) test child, which becomes the test without an exec and so inherits
+# the collector parent's reporter fds. While the test (or a descendant it forks)
+# held a dup, the collector's connection to runner.socket would not EOF when the
+# collector exits, and EOF is the runner's "collector gone" signal
+# (ARCHITECTURE.md §5.4). The exec paths are covered by FD_CLOEXEC instead.
+sub close_inherited_handles {
+    my $self = shift;
+
+    my $handles = delete $self->{+REPORTER_HANDLES} or return;
+    for my $fh (@$handles) {
+        next unless defined $fh && defined fileno($fh);
+        eval { close($fh); 1 };
+    }
+
+    return;
 }
 
 # Build the socket reporter that streams this test collector's
@@ -878,6 +910,13 @@ emit a TAP test failure.
 =item @list = $job->switches
 
 Command line switches for perl when running this test.
+
+=item $job->close_inherited_handles
+
+Close the reporter socket(s) the in-process (preload C<goto::file>) test child
+inherits from its collector parent. Called in that test child before the test
+runs so no dup of the collector's connection to C<runner.socket> survives into
+the test, keeping that connection's EOF an accurate "collector gone" signal.
 
 =item $hashref = $job->task
 

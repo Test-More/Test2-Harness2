@@ -6,6 +6,7 @@ our $VERSION = '2.000000';
 
 use Cwd qw/getcwd/;
 use Config qw/%Config/;
+use Fcntl qw/F_SETFD FD_CLOEXEC/;
 use Test2::Util qw/CAN_REALLY_FORK/;
 
 use Importer Importer => 'import';
@@ -14,6 +15,7 @@ our @EXPORT_OK = qw{
     USE_P_GROUPS
     run_cmd
     swap_io
+    set_cloexec
 };
 
 BEGIN {
@@ -30,6 +32,21 @@ if (CAN_REALLY_FORK) {
 }
 else {
     *run_cmd = \&_run_cmd_spwn;
+}
+
+# Set FD_CLOEXEC on a filehandle so the fd is closed across exec(), so a child
+# that exec's never inherits a harness/collector socket (the no-exec forks still
+# need an explicit close-sweep -- FD_CLOEXEC only fires on exec). A closed or
+# fd-less handle is silently skipped.
+sub set_cloexec {
+    my ($fh) = @_;
+
+    return unless defined $fh;
+    return unless defined fileno($fh);
+
+    fcntl($fh, F_SETFD, FD_CLOEXEC) or die "Could not set FD_CLOEXEC: $!";
+
+    return;
 }
 
 sub swap_io {
@@ -225,6 +242,14 @@ This is a shortcut for:
 
     use Config qw/%Config/;
     $Config{'d_setpgrp'};
+
+=item set_cloexec($fh)
+
+Set C<FD_CLOEXEC> on C<$fh> so its file descriptor is closed automatically when
+the process C<exec>s. Used on every harness/collector socket so an exec'd child
+never inherits one. A no-exec fork still needs an explicit close-sweep, since
+C<FD_CLOEXEC> only fires on C<exec>. A closed or fd-less handle is silently
+skipped.
 
 =item swap_io($from, $to)
 
