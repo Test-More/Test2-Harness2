@@ -67,9 +67,10 @@ yath test                          COMMAND: client + renderer host
                                  │     │
                                  │     └─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
                                  │                                           │  dials runner.socket as 'preload-<name>'; reports up + receives dispatch
-                                 │                                           └─ fork ─ [collector:job] ─► test job (longjump+goto-file via JobLauncher)
+                                 │                                           └─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] ──► test job (longjump+goto-file via JobLauncher)
+                                 │                                              the collector setsid's + DETACHES; it re-parents UP to the runner (subreaper) ······▲ (reaped there)
                                  │
-                                 └─ no-preload / below-threshold: fork ─ [collector:job] ─► test job   (collector fork+EXECs a clean perl)
+                                 └─ no-preload / below-threshold: fork ─ [collector:job] ─► test job   (collector fork+EXECs a clean perl; runner's direct child)
 ```
 
 The preload-root level exists **only when preloads are configured** (and not below
@@ -103,8 +104,9 @@ yath start  (writes yath-persist.json {pid,dir}; spawns the runner; then exits)
                             │                              └─ fork ─ [collector:stage-<name>] ─► preload stage
                             │                                        │  dials runner.socket as 'preload-<name>';
                             │                                        │  binds preload-<name>.socket (reserved for spawn)
-                            │                                        └─ [collector:job] ─► test job
-                            └─ no-preload: ─ [collector:job] ─► test job
+                            │                                        └─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] (setsid; DETACHES) ──► test job
+                            │                                           the detached collector re-parents UP to the runner (subreaper) and is reaped there ··▲
+                            └─ no-preload: ─ [collector:job] ─► test job  (runner's direct child)
 
 clients connecting IN to runner.socket:
    yath run     submit run(run_id) + subscribe(run_id)   → renders its run via Renderer::Driver
@@ -153,9 +155,9 @@ command, which forks exactly one child (the runner), reaps it inline on
 | Forks / spawns | Reaps | Notes |
 |---|---|---|
 | `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner. The command owns exactly this one child, so it spawns it on `Util::IPC::run_cmd` and reaps/signals it with a direct `waitpid`/`kill` (no `Test2::Harness2::IPC` controller instance) |
-| runner | the **preload-root** (its collector); on the no-preload path, the test job (its collector) it forked directly | the preload-root pid is tracked **outside** the runner's `{+PROCS}` (so it never trips `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root`) |
+| runner | the **preload-root** (its collector); on the no-preload path, the test job (its collector) it forked directly; **as a child subreaper, every re-parented detached preload test collector** | the preload-root pid is tracked **outside** the runner's `{+PROCS}` (so it never trips `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root`). The runner is a child subreaper (§4a), so an orphaned detached preload collector re-parents to it; its `waitpid(-1)` reaper reaps that pid as an **unwatched** zombie (`_bring_out_yer_dead` skips it for verdict purposes) and runs only the A3 post-pass health check on it (`_reaped_unwatched_pid`) |
 | preload-root | each preload stage (its collector) it forked | the base/default/NOPRELOAD stage runs in-process in the preload-root and is not forked/reaped |
-| preload stage | each test job (its collector) it forked | the stage's reap is **pure zombie cleanup** — it reports NO verdict. The runner decides the job's outcome from the collector's transitions + connection EOF on `runner.socket` (§5.4). The stage still reports the forked job's `job_pid` and any `reload` up the one service channel it opened to the runner |
+| preload stage | only the **short-lived intermediate** of each test-job launch | a preload test launch **double-forks + detaches** the collector (`JobLauncher::launch_via_double_fork`): the stage forks an intermediate that `setsid`s and forks the collector parent (which `setsid`s into its own session/group) then exits, orphaning the collector. The stage reaps **only the intermediate** (a generic `watch_pid`, pure zombie cleanup) and **never watches the collector** — that re-parents away (to the runner subreaper, else init). The stage tracks **no** collector pid (the detached collector reports its own pid to the runner on its handshake); it still forwards any `reload`. A resource-skip/dummy job (no `via`) still fork-execs its collector as the stage's direct child and reports that pid |
 
 **`stop_preload_root` must not kill the collector parent (leak fix, chunk 19.4d).**
 `spawn_collector` returns the *collector parent* pid; the actual preload-root is the
@@ -206,12 +208,16 @@ fire-once ledger still guards the eventual EOF.
 
 **Post-pass collector failure flags the suite (§5.4).** A collector that fails
 *after* reporting `pass` keeps its test green (never reopened); when the runner
-**reaps** that collector (the no-preload case) and sees a non-zero **health** exit, it
-reports the error to **harness output** and sets a suite-level health-failure flag so
-`yath test`/`run` exits non-zero even though every test passed. This is the only place
-the collector exit code is consulted — post-hoc, suite-level, never a per-test
-verdict. (A preload collector is stage-reaped until the subreaper lands, so its
-post-pass failure may be lost — accepted.)
+**reaps** that collector and sees a non-zero **health** exit, it reports the error to
+**harness output** and sets a suite-level health-failure flag so `yath test`/`run`
+exits non-zero even though every test passed. This is the only place the collector
+exit code is consulted — post-hoc, suite-level, never a per-test verdict. The runner
+reaps **both** paths now: the no-preload collector is its direct child
+(`set_proc_exit`), and the detached preload collector re-parents to the runner
+subreaper (§4a) and is reaped as an unwatched zombie reverse-mapped to its job via
+`job_pids` (`_reaped_unwatched_pid` → the shared `_check_post_pass_health`). On a
+subreaper-**unsupported** platform the detached collector re-parents to init, so the
+runner never sees its exit and a preload post-pass failure may be lost — accepted.
 
 **Collectors self-terminate if the runner dies.** Every preload-root, stage, and
 job collector is started with `watch_parent_pid => <root runner pid>` (the runner
@@ -224,6 +230,28 @@ collectors, stages, preload-root, or test processes. A collector watches the
 or a preload-root respawn — gets a new pid and must not kill the in-flight test).
 The runner-wrap collector is exempt (its child is the runner). Enforced by
 `agent_scripts/audit-collector-watch-parent`.
+
+### 4a. The runner is a child subreaper; preload collectors detach
+
+The runner becomes a **child subreaper** at the very start of `process()`, before
+any collector is forked (`Runner::become_subreaper`). The pure-Perl
+`Test2::Harness2::Util::SubReaper` (no XS, no dep) issues the native primitive via
+`syscall()` — Linux `prctl(PR_SET_CHILD_SUBREAPER, 1)`, FreeBSD/DragonFly
+`procctl(P_PID, $$, PROC_REAP_ACQUIRE)` — with a per-(OS, arch) syscall-number
+table; an unknown platform or a failed call is an eval-guarded graceful no-op
+("unsupported"). **Only the runner acquires it** — the preload-root/host and forked
+stages must not, or a detached collector would stop at them instead of re-parenting
+up to the runner.
+
+Consequence for the process tree: a preload test collector double-forks + detaches
+(§4 table), so when its short-lived intermediate exits the collector is orphaned and
+**re-parents to the nearest subreaper ancestor — the runner — on a supported OS**,
+or to **init** on an unsupported one. The preload tree then reaps **no** test
+collectors. The collector also `setsid`s into its own session/group, so the runner's
+`kill(-pid)` teardown fallback reaches its whole subtree even on the init-fallback
+path. None of this changes the completion **decision**, which rides EOF + transitions
+regardless of who (if anyone) reaps the collector; the subreaper governs only
+zombie-ownership and teardown.
 
 ---
 
