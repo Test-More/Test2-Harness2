@@ -529,7 +529,7 @@ environment — and `App::Yath::Script::V2` is a proper module, not `main`.
 > standalone fixes: #33–#37.
 
 ### #27 — Transition-driven test completion; collector exit = health-only
-**Status:** Decided · **Step:** 24 · **Depends:** #32 (fd hygiene gates EOF)
+**Status:** ✅ DONE — Phase 1 collector (`5c3ada3b` in Test2-Collector) + Phase 2a (`472946279`..`13c6f8b00`) + Phase 2b (`dba86899e`..`5dbfab743`). See TODO_DONE.md · **Step:** 24
 
 **Problem:** the runner decides a test's outcome from the **reaped collector exit
 code** (`JobLauncher` exits with `Job::_collector_exit_code`, which layers the audited

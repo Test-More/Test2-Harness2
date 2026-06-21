@@ -7,6 +7,56 @@ Newest first.
 
 ---
 
+## #27 — Transition-driven test completion (the §5.4 core) — DONE (3 agent phases)
+
+The crux rewrite: a test's verdict now comes from its collector's socket transitions
++ connection EOF, never the reaped exit code. Three phases, each integrated on 2.0d
+and verified green at the canonical `-j16` (final: `prove` 1780, `yath test -D` 1786).
+
+**Phase 1 — collector additive (Test2-Collector `5c3ada3b`, installed, no version bump).**
+Early `halt`/bail transition (`harness_state_transition {state=>'halt', details, stamp}`,
+before `completed`/`final_state`); bidirectional reporter connection — the collector
+reads inbound `control` frames when built `read_control=>1` and on `{control=>{control
+=>'terminate', reason}}` kills its child + records a `harness_terminated` events-file
+event + exits health-only → EOF (NO `final_state`); collector pid added to the
+`starting` transition. All additive/dormant — harness stayed green.
+
+**Phase 2a — harness completion core (`472946279`..`13c6f8b00`).** Reporter built
+`read_control` + carries `job_id`/`job_try`/`run_id`; `Connection` stores the full
+identity; runner registers a `conn→job` map. **EOF-driven decision** (`collector_conn_eof`,
+draining frames first): `final_state` pass→pass / fail→retry-if-tries / `halt`→bail;
+absent→fail (aborted if deliberately terminated, else possible-harness-internal).
+**Fire-once** via a shared `(job_id,job_try)` `decided_jobs` ledger consulted by both
+the EOF path and the watchdog; **stale-try guard** via `collector_current_try`. Bail:
+on a `halt` for run X, stop dispatch + `terminate` every run-X collector + terminate
+late-connecters (`bail_runs` intent); halt wins over retry. Removed the reap-driven
+retry/stop/bail from `Runner`+`Preload::Host` `set_proc_exit` (reap = zombie-only);
+deleted `Job::_collector_exit_code` + `bail_file` + `bailed_out`; test-job parent exits
+via the collector's health-only `spawn_exit_code` (`Util::collector_exit_code` kept for
+non-test wraps); dropped `StageDelegate`/`Client` verdict reporting. No-verdict render
+mutation (terminal `harness_runner_job` aborted/failed, reason = harness output).
+
+**Phase 2b — abort/terminate + reporter guards (`dba86899e`..`5dbfab743`).** `yath abort`
++ owner-disconnect now route through the terminate primitive (`aborting_runs` intent +
+`abort_run_collectors` + terminate-on-late-connect + a `_enforce_terminate_grace`
+`kill(-pid)` hard-kill fallback) — **fixes B3** (owner-disconnect left processes alive)
+and **B4** (the abort/pid-snapshot race). Mandatory reporter: `run_under_collector`
+fails the job if the required reporter can't connect; new `--collector-connect-timeout`
+(on, 30s) fails a dispatched job whose collector never connects (the no-EOF→hang guard),
+enforced per scheduler tick. Post-pass collector failure (A3): a non-zero **health** exit
+after a recorded pass keeps the test green but emits `announce_run_health` → the suite
+is flagged failed at command exit (runner-reaped/no-preload path now; preload covered
+once #28 reparents).
+
+**Notes for #28/#29:** the `kill(-pid)` hard-kill fallback needs detached preload
+collectors to `setsid` (#28). A3 currently only fires on the runner-reaped path; #28's
+subreaper reparenting will extend it to preload collectors (the `job_passed` ledger +
+`announce_run_health` are path-agnostic). The `-j16` `settings.json`/oversubscription
+flakes the agents saw were concurrent-machine-load, not code — verified clean at `-j16`
+on integration.
+
+---
+
 ## Batch (2026-06-21) — review-driven fixes #32–#37 (parallel agents, integrated on 2.0d)
 
 Six tickets from the two-reviewer pass, run as 3 parallel worktree agents and
