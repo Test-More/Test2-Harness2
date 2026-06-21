@@ -276,9 +276,9 @@ sub handle_owner_drop {
 
 # The completion decision (ARCHITECTURE.md §5.4), run on a test collector's
 # connection EOF after its transition frames have been drained. The verdict was
-# captured on the conn -> job entry as transitions arrived. FIRE-ONCE: the entry's
-# `decided` flag guarantees exactly one decision per (job_id, job_try) -- the EOF
-# fires it; the reap (when it happens) is pure zombie cleanup and never decides.
+# captured on the conn -> job entry as transitions arrived. FIRE-ONCE: the shared
+# decided_jobs ledger guarantees exactly one decision per (job_id, job_try) -- the
+# EOF fires it; the reap (when it happens) is pure zombie cleanup and never decides.
 #
 # A stale-try EOF (the entry's job_try is not the job's current try -- a superseded
 # attempt whose late EOF arrives after a retry already re-queued the job) is a
@@ -355,14 +355,14 @@ sub decide_collector_outcome {
         return;
     }
 
-    # No verdict at EOF: fail. Terminated => aborted; otherwise possible-internal.
+    # No verdict at EOF: fail. A deliberately terminated job (a bail/abort) is
+    # recorded as aborted; otherwise the missing final state is itself a collector
+    # problem and the reason flags it as possibly-not-the-test.
     unless ($fs) {
-        if ($entry->{terminated}) {
-            $self->_collector_no_verdict($entry, $entry->{terminate_reason} // "Job terminated by the runner", 'aborted');
-        }
-        else {
-            $self->_collector_no_verdict($entry, "The collector exited without reporting a final state; this may be a harness/collector problem and not a fault in the test itself", 'failed');
-        }
+        my $reason = $entry->{terminated}
+            ? ($entry->{terminate_reason} // "Job terminated by the runner")
+            : "The collector exited without reporting a final state; this may be a harness/collector problem and not a fault in the test itself";
+        $self->_collector_no_verdict($entry, $reason);
         return;
     }
 
@@ -445,12 +445,12 @@ sub _job_retry_count {
 # job) has no usable completed/final_state transition for the renderer, so emit a
 # runner-originated terminal 'aborted' harness_runner_job mutation carrying the
 # reason. The subscriber (the command-side renderer driver) folds it exactly once
-# and rolls the job up as a failed completion, the reason shown as harness output.
-# $kind is 'aborted' (terminated) or 'failed' (EOF-no-verdict); both render as a
-# failed completion -- the reason text distinguishes them to the reader.
+# and rolls the job up as a failed completion, the reason shown as harness output
+# (distinct from job output). Both the terminated/aborted and the EOF-no-verdict
+# cases render this way; only the reason text distinguishes them to the reader.
 sub _collector_no_verdict {
     my $self = shift;
-    my ($entry, $reason, $kind) = @_;
+    my ($entry, $reason) = @_;
 
     my $job_id = $entry->{job_id} // return;
 
