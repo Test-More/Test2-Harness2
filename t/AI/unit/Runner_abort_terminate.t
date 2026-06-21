@@ -210,6 +210,18 @@ subtest connect_timeout_cleared_on_connect => sub {
     ok(!exists $runner->{job_connect_watch}{J1}, "the connect watch is cleared once the collector connects");
 };
 
+subtest handshake_records_job_pid => sub {
+    # Ticket #28: a test collector reports its OWN pid on its identity handshake, and
+    # the runner records it into job_pids for both run paths (the preload path no
+    # longer reports a stage-side pid because the collector double-forks + detaches).
+    my $runner = mk_runner(running => {});
+    my $conn   = FakeConn->new;
+
+    identify($runner, $conn, job_id => 'J9', job_try => 0, run_id => 'R1', pid => 4242);
+
+    is($runner->{job_pids}{J9}, 4242, "collector pid from the handshake recorded in job_pids");
+};
+
 subtest post_pass_health_flag => sub {
     # The runner records that J1 reported a pass (decide_collector_outcome), then a
     # later non-zero health exit flags the suite (announce_run_health) while the test

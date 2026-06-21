@@ -243,7 +243,7 @@ sub preloader {
 
         # The root runner pid, so each stage collector watches it and
         # self-terminates if the runner dies (ARCHITECTURE.md §4.1).
-        runner_pid      => $self->{+ROOTPID},
+        runner_pid => $self->{+ROOTPID},
 
         below_threshold => ($self->{+PRELOAD_THRESHOLD} && $self->{+JOBS_TODO} && $self->{+PRELOAD_THRESHOLD} > $self->{+JOBS_TODO}) ? 1 : 0,
     );
@@ -262,10 +262,10 @@ sub state {
     # built State when the map arrives.
     if ($self->_preload_root_hosts_stages) {
         $self->{+STATE} //= Test2::Harness2::Runner::State->new(
-            workdir             => $self->{+DIR},
-            stage_map           => $self->reported_stage_data // {},
-            resources           => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
-            settings            => $settings,
+            workdir   => $self->{+DIR},
+            stage_map => $self->reported_stage_data // {},
+            resources => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
+            settings  => $settings,
         );
         return $self->{+STATE};
     }
@@ -273,10 +273,10 @@ sub state {
     my $preloader = $self->preloader;
 
     $self->{+STATE} //= Test2::Harness2::Runner::State->new(
-        workdir      => $self->{+DIR},
-        preloader    => $preloader,
-        resources    => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
-        settings     => $settings,
+        workdir   => $self->{+DIR},
+        preloader => $preloader,
+        resources => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
+        settings  => $settings,
     );
 
     # The runner is the sole writer/reader of its scheduling state: stages receive
@@ -535,7 +535,7 @@ sub _build_plugins {
     my $self = shift;
 
     my $harness = $self->settings->harness;
-    my $specs = $harness->check_option('plugin_specs') ? $harness->plugin_specs : undef;
+    my $specs   = $harness->check_option('plugin_specs') ? $harness->plugin_specs : undef;
     $specs //= [];
 
     my (%seen, @plugins);
@@ -545,7 +545,7 @@ sub _build_plugins {
         my @args = defined($args) ? (split /,/, $args) : ();
 
         my $file = mod2file($class);
-        my $ok = eval { require $file unless $INC{$file}; 1 };
+        my $ok   = eval { require $file unless $INC{$file}; 1 };
         unless ($ok) {
             warn "$$ $0 Runner could not load plugin '$class': $@";
             next;
@@ -859,7 +859,7 @@ sub spawn_preload_root {
         record_transitions => 1,
         recorder           => Test2::Collector::Recorder::Zstd->new(file => $events),
         ($reporter ? (reporter => $reporter) : ()),
-        watch_parent_pid   => $self->{+ROOTPID},
+        watch_parent_pid => $self->{+ROOTPID},
     );
 
     $self->{+PRELOAD_ROOT_PID} = $pid;
@@ -927,7 +927,7 @@ sub watchdog {
 sub dispatch_pending {
     my $self = shift;
 
-    my $state      = $self->state;
+    my $state = $self->state;
 
     # When the preload-root hosts every stage there is NO in-process root stage,
     # so dispatch EVERY started task out over a stage socket (undef root_stage =>
@@ -1121,7 +1121,6 @@ sub stop_preload_stages {
     return;
 }
 
-
 sub run_stage {
     my $self = shift;
     my ($stage) = @_;
@@ -1292,7 +1291,7 @@ sub set_proc_exit {
         # (collector_conn_eof) already cleared job_pids and decided; here we only
         # clear the timeout marker. job_pids is deleted defensively in case the reap
         # races ahead of the EOF (the EOF decision is still fire-once guarded).
-        my $task = $proc->task;
+        my $task   = $proc->task;
         my $job_id = $task->{job_id};
         delete $self->{+JOB_PIDS}->{$job_id};
         delete $self->{+RUN_REACHED_TIMEOUT}->{$job_id}
@@ -1301,18 +1300,8 @@ sub set_proc_exit {
         # Post-pass collector failure (A3, ARCHITECTURE.md §5.4): this no-preload
         # collector is the runner's own child, so the runner DOES see its health
         # exit here. The exit is HEALTH-ONLY now (the verdict rode the transitions),
-        # so a NON-ZERO exit means the collector itself malfunctioned. If it had
-        # already reported a pass, the test stays green but the suite is flagged
-        # failed -- the only place the collector exit code is ever consulted, and
-        # only post-hoc + suite-level. (A preload collector is stage-reaped until
-        # ticket #28, so its post-pass failure may be lost -- accepted per §5.4.)
-        my $passed_run = delete $self->{'job_passed'}{$job_id};
-        if (defined($passed_run) && $exit && $self->can('announce_run_health')) {
-            $self->announce_run_health(
-                $passed_run eq '' ? undef : $passed_run,
-                "A test collector for a PASSING job exited non-zero (health exit) after reporting its result; the test stays passed but the collector malfunctioned (job $job_id)",
-            );
-        }
+        # so a NON-ZERO exit means the collector itself malfunctioned.
+        $self->_check_post_pass_health($job_id, $exit);
     }
 
     # A preload stage exiting (reload/monitor relaunch, or death) is handled by the
@@ -1321,6 +1310,90 @@ sub set_proc_exit {
     # the no-preload path's nothing-else.
 
     $self->SUPER::set_proc_exit($proc, $exit, $time, @args);
+}
+
+# Post-pass collector-failure escalation (A3, ARCHITECTURE.md §5.4). If $job_id
+# already reported a pass and its collector then exited NON-ZERO (a health-only
+# exit, so non-zero means the collector itself malfunctioned), keep the test green
+# but flag the suite failed -- the only place the collector exit code is ever
+# consulted, and only post-hoc + suite-level. Shared by both reaping paths: the
+# no-preload runner-owned child (set_proc_exit) and the re-parented preload
+# collector reaped as an unwatched zombie (_bring_out_yer_dead). On an unsupported
+# platform the runner never reaps the detached collector, so a preload post-pass
+# failure may be lost -- accepted per §5.4.
+sub _check_post_pass_health {
+    my $self = shift;
+    my ($job_id, $exit) = @_;
+
+    return unless defined $job_id;
+
+    my $passed_run = delete $self->{'job_passed'}{$job_id};
+    return unless defined $passed_run;
+    return unless $exit;
+    return unless $self->can('announce_run_health');
+
+    $self->announce_run_health(
+        $passed_run eq '' ? undef : $passed_run,
+        "A test collector for a PASSING job exited non-zero (health exit) after reporting its result; the test stays passed but the collector malfunctioned (job $job_id)",
+    );
+
+    return;
+}
+
+# The runner is a child subreaper (ticket #28), so it reaps every re-parented
+# preload test collector here even though it never watched them. The base reaper
+# discards an unwatched pid; the runner additionally maps it back to its job (via
+# the job_pids the collector reported on its handshake) and runs the A3 post-pass
+# health escalation so a detached collector that failed AFTER reporting a pass
+# still flags the suite (ARCHITECTURE.md §5.4). Watched pids (no-preload children)
+# are handled by the base reaper + set_proc_exit as before; the decision itself
+# always rides EOF, so this reap is pure zombie cleanup + the A3 escalation.
+sub _bring_out_yer_dead {
+    my $self = shift;
+
+    my $procs   = $self->{+PROCS}   //= {};
+    my $waiting = $self->{+WAITING} //= {};
+
+    local $?;
+
+    my $found = 0;
+    while ((my $pid = waitpid(-1, POSIX::WNOHANG)) > 0) {
+        my $exit = $?;
+
+        if ($procs->{$pid}) {
+            $found++;
+            $waiting->{$pid} = [$exit, time()];
+            next;
+        }
+
+        # Unwatched pid: a re-parented preload collector (or a benign plugin/3rd-party
+        # child). If it maps to a job that reported a pass, apply the A3 escalation.
+        $self->_reaped_unwatched_pid($pid, $exit);
+    }
+
+    return $found;
+}
+
+# A pid reaped here that the runner never watched: a re-parented detached preload
+# collector, or a benign child a plugin/3rd-party module forked. Reverse-map it to
+# a job via job_pids (the collector reported its own pid on its handshake) and run
+# the A3 post-pass health check; an unmatched pid is simply ignored.
+sub _reaped_unwatched_pid {
+    my $self = shift;
+    my ($pid, $exit) = @_;
+
+    my $job_pids = $self->{+JOB_PIDS} or return;
+
+    for my $job_id (keys %$job_pids) {
+        next unless defined $job_pids->{$job_id};
+        next unless $job_pids->{$job_id} == $pid;
+
+        delete $job_pids->{$job_id};
+        $self->_check_post_pass_health($job_id, $exit);
+        last;
+    }
+
+    return;
 }
 
 1;
