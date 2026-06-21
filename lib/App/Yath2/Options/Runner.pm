@@ -232,7 +232,7 @@ How long the runner waits for the preload tree to load its preloads and report i
 
 =item --no-preload-stage-startup-timeout
 
-Optional backstop: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no backstop)
+Optional safeguard: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no safeguard)
 
 
 =item --runner-id ARG
@@ -565,7 +565,7 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         default        => 0,
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
-        description    => 'Optional backstop: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no backstop)',
+        description    => 'Optional safeguard: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no safeguard)',
     );
 
     option runner_id => (

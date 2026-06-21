@@ -104,7 +104,7 @@ sub run_collected {
     # and keeps capturing its output for the rest of the run -- e.g. a service the
     # plugin starts in setup(). Returns the collector pid; the runner tracks it via
     # AUX_PIDS and stops it at teardown, and watch_parent_pid ($$ = runner) is the
-    # backstop so it dies with the runner. Replaces the old fork + redirect_io.
+    # fallback so it dies with the runner. Replaces the old fork + redirect_io.
     my %target = (ref($run[0]) eq 'CODE') ? (run => $run[0]) : (exec => [@run]);
 
     my $pid = Test2::Collector::spawn_collector(

@@ -298,7 +298,7 @@ sub check_timeouts {
     # tracks per-job output activity or writes event_timeout/post_exit_timeout
     # marker files.
     #
-    # What remains here is a backstop for a collector PARENT that should have
+    # What remains here is a fallback for a collector PARENT that should have
     # exited but has not: once a job process has been reaped (it is in WAITING)
     # we give it a grace window, then escalate TERM -> KILL so a wedged
     # collector cannot hang the run.
@@ -552,7 +552,7 @@ sub teardown_plugins {
 
 # Stop every aux process started under this runner (a run_collected daemon). They
 # are not in {+PROCS}, so signal + reap them directly; their collector also watches
-# the runner pid (ARCHITECTURE.md §4.1) as the backstop if the runner dies hard.
+# the runner pid (ARCHITECTURE.md §4.1) as the fallback if the runner dies hard.
 sub stop_aux {
     my $self = shift;
     my $pids = $self->{+AUX_PIDS} or return;
@@ -761,7 +761,7 @@ sub flush_submit_buffer {
 #
 # It is tracked like an aux process: NOT in {+PROCS}, so it never blocks
 # the runner's wait(all=>1); stop_preload_root tears it down at wind-down, and its
-# collector watches the runner pid (ARCHITECTURE.md §4.1) as the backstop. The
+# collector watches the runner pid (ARCHITECTURE.md §4.1) as the fallback. The
 # preload-root deliberately never exits on its own mid-run, so the runner's
 # waitpid(-1) reaper never trips over it.
 sub spawn_preload_root {
@@ -820,7 +820,7 @@ sub spawn_preload_root {
 
 # Tear the preload root down at runner wind-down. Ask it to stop over
 # the channel it dialed (pumping the socket so the request is delivered and it is
-# reaped), then TERM->KILL+reap by pid as the backstop -- the aux-process teardown
+# reaped), then TERM->KILL+reap by pid as the fallback -- the aux-process teardown
 # shape (it is not in {+PROCS}).
 sub stop_preload_root {
     my $self = shift;
@@ -842,8 +842,8 @@ sub stop_preload_root {
     # If it did not stop gracefully we must NOT kill the collector parent ($pid):
     # that collector's ChildMonitor (watch_parent_pid => this runner) is exactly
     # what kills the preload-root's exec'd child if the runner vanishes. Killing
-    # the collector parent destroys that backstop and ORPHANS its child. Instead,
-    # leave the collector parent alone and let the backstop fire: when this runner
+    # the collector parent destroys that fallback and ORPHANS its child. Instead,
+    # leave the collector parent alone and let the fallback fire: when this runner
     # process exits (right after teardown/stop below), the ChildMonitor sees the
     # runner gone, terminates the preload-root child (and its stage descendants),
     # and the collector parent finalizes and exits -- reaped by init. The

@@ -60,12 +60,12 @@ generic "died unexpectedly" message stands alone. (`preload.t`'s "This is broken
   preload-root now loads `settings.json` once via a cached `settings` accessor (reused by
   the handshake + the stage host; removes a double-load).
 - `--preload-stage-startup-timeout` (default 0 = off) is the §4.7a per-stage startup
-  backstop, enforced in `Resource::Preload::available()`: a stage stuck
+  safeguard, enforced in `Resource::Preload::available()`: a stage stuck
   `starting`/`restarting` past the timeout is treated as permanently gone (→ `-1` for a
   required stage, falls to `default` for advisory) instead of waited on forever. Reads
   the lifecycle stamp age via new `State::stage_state_age`.
 
-**Tests:** added a `startup_timeout_backstop` subtest to `t/AI/unit/Resource_Preload.t`
+**Tests:** added a `startup_timeout_safeguard` subtest to `t/AI/unit/Resource_Preload.t`
 (backdates a stuck stage's lifecycle stamp; verifies -1 required / 1 advisory / 0 when
 off). **Flag for review:** the map timeout and the preload-root handshake RPC share one
 knob (`preload_map_timeout`) — semantically both are "preload bring-up patience," but
@@ -171,7 +171,7 @@ Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED.
   (a plugin/3rd-party child reaped here is benign, not fatal).
 - **P2 (`e894886c4`):** gated the `_ex_parrots` "vanished!"/"escaped the wait cycle"
   warns behind a `T2_HARNESS_IPC_DEBUG` env flag. **Kept** the `_ex_parrots` sweep
-  itself (a real cross-platform backstop; `Preload::Host` shares this base for genuine
+  itself (a real cross-platform fallback; `Preload::Host` shares this base for genuine
   multi-child reaping) — only demoted the always-on warns.
 - **P3 (`9924a1d2e` + IPC.md `a1b2444b3`):** `test.pm` no longer uses an `IPC`
   *controller instance* for its one child (the runner) — inline spawn+reap+signal on

@@ -42,7 +42,7 @@ $ENV{YATH_PERSISTENCE_DIR} //= $pdir;
 # tempdir cleanup so (LIFO) this runs first, while the pfiles still exist. A
 # SIGKILL of the test process bypasses both this and File::Temp; the runner's
 # own orphan guard (it self-exits when its workdir/pfile vanishes) is the
-# backstop for that case.
+# fallback for that case.
 sub _shutdown_persistent_runners {
     return unless -d $pdir;
 

@@ -328,7 +328,7 @@ stage**: a stage may **intentionally restart** (a preload reload) with a new pid
 and that must **not** take its in-flight test down — only the runner going away
 does. This makes collectors
 reliably self-terminating even when the runner dies *without* getting to signal
-them (a crash, `SIGKILL`, or any uncatchable death) — it is the backstop behind
+them (a crash, `SIGKILL`, or any uncatchable death) — it is the fallback behind
 the runner's normal process-group `killall`, not a replacement for it. Combined
 with the rule that **no harness child (except `yath spawn`) may survive the
 runner**, this guarantees a dead runner leaves no orphaned collectors or test
@@ -742,7 +742,7 @@ communication with the preloads to make the decision:
   counted as a retry. This requeue primitive is required by the scheduler
   regardless (a stage that self-restarts mid-run, §4.7/#3, must not fail its
   in-flight-but-unlaunched jobs); the resource just makes it the normal path.
-- **Startup-wait is the resource's job, with a configurable backstop.** A stage may
+- **Startup-wait is the resource's job, with a configurable safeguard.** A stage may
   legitimately take minutes to preload, so there is **no fixed startup timeout** —
   tasks for a `starting`/`restarting` stage simply wait (`available` = `0`), and
   `done()` will not complete a run while tasks are pending. A *crashed* stage is

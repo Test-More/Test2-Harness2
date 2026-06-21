@@ -4,7 +4,7 @@ use Test2::V0;
 # run_collected. Assert (1) its output is captured as (DAEMON)-tagged events,
 # (2) the run completes without hanging on the never-exiting daemon, and (3) the
 # daemon dies with the runner (the runner tracks it in AUX_PIDS and kills it at
-# teardown; watch_parent_pid is the backstop).
+# teardown; watch_parent_pid is the fallback).
 
 use App::Yath2::Tester qw/yath/;
 use File::Temp qw/tempfile/;

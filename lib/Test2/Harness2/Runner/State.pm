@@ -646,7 +646,7 @@ sub stage_state {
 
 # Seconds since the named stage last changed lifecycle state (e.g. how long it has
 # been 'starting'/'restarting'), or undef for a stage with no lifecycle record. The
-# preload Resource uses this to enforce the optional per-stage startup backstop.
+# preload Resource uses this to enforce the optional per-stage startup safeguard.
 sub stage_state_age {
     my $self = shift;
     my ($stage) = @_;

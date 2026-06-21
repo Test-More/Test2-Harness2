@@ -39,8 +39,7 @@ do **not** re-fix it.
   the harness directive + a custom plugin to assign stages at queue time (#10/#23
   codify that, stages **advisory** unless `REQUIRE`). At least one deployment has
   preload stages that take **2+ minutes** to start (root <1 min) → no fixed
-  named-stage startup timeout, configurable deadlines, generous/off-by-default hung
-  backstop (#21). A vanished `run`/`test` command = crash/user-kill → **abort the run
+  named-stage startup timeout, configurable deadlines, generous/off-by-default hung safeguard (#21). A vanished `run`/`test` command = crash/user-kill → **abort the run
   by default**, flag to detach (#12).
 
 ## Dependency / ordering
@@ -139,7 +138,7 @@ eagerly drops channels of stages that are themselves still alive.
 - **Preload-root crash = fatal.** Runner does **not** respawn it. On a **persistent**
   runner an unexpected preload-root exit **terminates the runner** (§4.2). HUP reload
   is the only restart, and the **preload-root re-execs itself** (it TERMs its own
-  stages first — `exec` keeps the same pid, so multi-pid watch is the crash backstop,
+  stages first — `exec` keeps the same pid, so multi-pid watch is the crash fallback,
   not the HUP path). Delete the runner-side crash-respawn apparatus
   (`preload_root_respawn_limit`, `_handle_dead_preload_root` respawn branch, the
   `'respawn'` path in `run_scheduler_only`).
@@ -265,7 +264,7 @@ Job.pm:319, Preloader.pm:293, **Plugin.pm:59** — the non-runner site).
 `Test2::Harness2::Util::socket_reporter($identity, $socket)` (not a Runner method —
 `Plugin` is runner-decoupled, derives the socket from `$ENV{T2_HARNESS_WORKDIR}`)
 that builds the reporter with `no_reply`, `drain_input`, **and `pid => $$`** (the #1
-handshake pid). The 4 sites call it. Mark `identity_timeout` a backstop; don't grow it.
+handshake pid). The 4 sites call it. Mark `identity_timeout` a fallback; don't grow it.
 
 ---
 
@@ -289,7 +288,7 @@ choice is decided client-side at queue time (see #23 / §4.7a).
 **Decision:** after #3/#4/#8 the four "layers" become distinct: ChildMonitor multi-pid
 self-termination (#3), a minimal zombie-reaper (#8), `Watchdog` narrowed to wind-down
 abort (stage-gone → `requeue_task`, #3), and `check_timeouts` kept as a **thin,
-debug-logged backstop** (TERM→KILL a reaped collector whose group lingers). Two
+debug-logged fallback** (TERM→KILL a reaped collector whose group lingers). Two
 teardown paths → one: `stop_stages` (in-runner `Preloader::Stage`) is deleted by #4;
 `stop_preload_stages` (socket peers) survives.
 
@@ -402,7 +401,7 @@ runner change. Deletes `Preload::_load_preloads` + the duplicate load; moves war
 capture to the single guarded load (shrinks #21).
 
 ### #21 — Preload failure: detection (done) vs diagnostics (simplify)
-**Status:** ✅ DONE (`419571793`) — zstd scrape deleted; `--preload-map-timeout` + off-by-default `--preload-stage-startup-timeout` (§4.7a backstop). See TODO_DONE.md · **Step:** 11/23 · **Depends:** #3, #20
+**Status:** ✅ DONE (`419571793`) — zstd scrape deleted; `--preload-map-timeout` + off-by-default `--preload-stage-startup-timeout` (§4.7a safeguard). See TODO_DONE.md · **Step:** 11/23 · **Depends:** #3, #20
 
 **Reframe — two concerns:**
 - **Detection ("don't wait forever") — solved.** A crashed stage EOFs its socket (#3);
@@ -525,6 +524,6 @@ environment — and `App::Yath::Script::V2` is a proper module, not `main`.
 Load-bearing, all auditors agree: the unified `Role::Service`/`Connection` framing
 layer; `Runner::Subscriber` parking deltas until after the snapshot;
 `Runner::Monitor`'s render mirror; `stop_preload_root` not killing the collector
-parent (the ChildMonitor backstop); the `no_reply`/`drain_input` fix (#9 — dedup, not
+parent (the ChildMonitor fallback); the `no_reply`/`drain_input` fix (#9 — dedup, not
 delete). Known migration gaps (not bloat): pfile discovery (ch12), `yath spawn`
 (ch13), system-load (ch7), run-scoped stages.

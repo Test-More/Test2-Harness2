@@ -215,7 +215,7 @@ sub run_driver ($self) {
     # Idle until the runner sends 'stop'. We reach here after the stage host returns
     # (run done) or if the handshake/host setup failed -- in either case we wait to be
     # told to stop rather than exit on our own: the runner reaps us at wind-down (and
-    # our collector watches the runner pid as the backstop), and a voluntary exit
+    # our collector watches the runner pid as the fallback), and a voluntary exit
     # mid-run would trip the runner's waitpid(-1) reaper.
     until ($self->{+STOPPED}) {
         $self->service_io;

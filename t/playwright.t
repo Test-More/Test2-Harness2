@@ -11,7 +11,7 @@ use Test2::V0;
 # download happen there. The webServer in the copied config is pointed back at
 # this checkout via YATH_REPO_ROOT so `yath server` still finds lib/share/demo.
 #
-# Pass iff every Playwright spec passes; on failure the full Playwright output
+# Pass only when every Playwright spec passes; on failure the full Playwright output
 # is dumped to STDERR. Skips (does not fail) when the toolchain is missing or
 # cannot be bootstrapped (e.g. no node/npm, or no network for npm/browser).
 

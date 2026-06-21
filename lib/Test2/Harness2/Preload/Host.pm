@@ -292,7 +292,7 @@ sub check_timeouts {
     return if $self->{+LAST_TIMEOUT_CHECK} && $now < (1 + $self->{+LAST_TIMEOUT_CHECK});
 
     # The per-test silence and lifetime timeouts are enforced by the
-    # Test2-Collector collector parent itself. What remains is a backstop for a
+    # Test2-Collector collector parent itself. What remains is a fallback for a
     # collector PARENT that should have exited but has not: once a job process has
     # been reaped (it is in WAITING) we give it a grace window, then escalate
     # TERM -> KILL so a wedged collector cannot hang the run.

@@ -24,7 +24,7 @@ BEGIN {
 
     *SIG_MAP = sub() { \%SIG_MAP };
 
-    # Debug gate for the "should never happen" reaper backstops. These are
+    # Debug gate for the "should never happen" reaper fallbacks. These are
     # benign guards (a tracked process that vanished without being reaped here,
     # or an unexpectedly-broken wait loop); their warns are noise on the happy
     # path, so they only print when T2_HARNESS_IPC_DEBUG is set.

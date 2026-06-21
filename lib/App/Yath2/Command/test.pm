@@ -462,7 +462,7 @@ sub render_via_subscription {
 # resource-cleanup line) into runner-events -- a different channel than the
 # socket. Bounded so a runner whose collector never writes the terminal record
 # (e.g. it was killed) cannot hang the command; the drain is condition-driven
-# (read until the runner-events terminal), this is only the backstop.
+# (read until the runner-events terminal), this is only the fallback.
 sub DRAIN_RUNNER_OUTPUT_TIMEOUT() { 5 }
 
 # On completion, pull the runner's trailing output into the log before finalizing.

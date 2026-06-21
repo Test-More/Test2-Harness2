@@ -334,6 +334,18 @@ primitive. If you find existing code doing it, replace with
   one of those documents matters here, restate the rule in the
   comment instead.
 
+## Terminology
+
+Some words are forbidden anywhere in the repository — code, comments, POD,
+user-facing strings, and the tracked Markdown docs. Do not introduce them; if you
+touch a line that already has one, replace it.
+
+- **`backstop`** — use `fallback` for a mechanism that fires when the primary path
+  fails, or `safeguard` for a protective limit.
+- **`iff`** — write `if and only if`, or reword to `only when` / `only if`.
+- **`kwarg`** (and `kwargs`) — write `named argument` / `named arguments`, or
+  `key/value argument`.
+
 ## POD
 
 Every shipped `.pm` file must have POD documentation. Start from

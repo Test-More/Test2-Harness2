@@ -35,7 +35,7 @@ sub run {
     $self->App::Yath2::Command::test::terminate_queue();
 
     # Plugin teardown() runs in the RUNNER as it shuts down, not here
-    # (kill is forceful; the runner's watch_parent_pid backstop reaps aux processes
+    # (kill is forceful; the runner's watch_parent_pid fallback reaps aux processes
     # if it dies before a graceful teardown).
 
     $self->SUPER::run();
