@@ -69,6 +69,8 @@ use Test2::Harness2::Util::HashBase(
         +stage_delegate
 
         +job_pids
+
+        +preload_warnings
     },
 );
 
@@ -224,6 +226,32 @@ sub stage_delegate {
         name    => $self->{+STAGE},
         runner  => $self,
     );
+}
+
+# Build the stage map reported to the runner from the merged preload meta the
+# guarded preload produced: each user-defined stage name maps to whether it is the
+# default. The runner resolves a test's stage client-side from the test's preload
+# directives against this map, so the map only needs to say which stages exist and
+# which is the default. Returns an empty hashref when there is no staged preload
+# (the runner still needs the empty map to know the data has arrived).
+sub stage_data {
+    my $self = shift;
+
+    my $meta = $self->preloader->staged;
+
+    my $data = {};
+    return $data unless $meta;
+
+    my $lookup  = $meta->stage_lookup;
+    my $default = $meta->default_stage;
+
+    for my $name (keys %$lookup) {
+        $data->{$name} = {
+            default => (defined($default) && $name eq $default) ? 1 : 0,
+        };
+    }
+
+    return $data;
 }
 
 # Stage-host request handlers. The runner (the scheduler) dispatches work to each
@@ -406,7 +434,23 @@ sub run_tests {
     my $self = shift;
 
     my $preloader = $self->preloader;
-    $preloader->preload();
+
+    # Load the preloads ONCE, here, under the test2_start_preload guard preload()
+    # establishes -- so a preload's require-time Test2 side effects stay inside the
+    # guard and no module loads twice (the preload-root handshake deliberately does
+    # NOT pre-load them). Capture any preload-time warnings (on the persistent path a
+    # broken preload is tolerated with a warn rather than a die) so the base stage can
+    # forward them to the runner alongside the stage map -- otherwise they would never
+    # reach a `yath run` client, since the persistent stage host does not exit.
+    my @warnings;
+    {
+        local $SIG{__WARN__} = sub {
+            push @warnings => $_[0];
+            print STDERR $_[0];
+        };
+        $preloader->preload();
+    }
+    $self->{+PRELOAD_WARNINGS} = \@warnings;
 
     my ($stage, @procs) = $preloader->preload_stages();
 
@@ -492,6 +536,22 @@ sub run_stage {
         # reads stage_ready / outcome reports off this connection AND
         # dispatches jobs back down it.
         $self->_connect_runner;
+
+        # The base/default stage -- the one holding the full merged preload meta --
+        # reports the stage map (which stages exist + which is default) and any
+        # preload-time warnings to the runner over this channel, BEFORE its
+        # stage_ready. The runner gates dispatch on both the map AND the base stage
+        # being ready, so sending the map first guarantees it lands before any task is
+        # scheduled. Forked named stages inherit the same meta but must not re-report.
+        if ($stage eq 'base' || $stage eq 'default') {
+            $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data);
+
+            if (my $warnings = $self->{+PRELOAD_WARNINGS}) {
+                $self->service_send('runner', 'preload_warnings', warnings => [@$warnings])
+                    if @$warnings;
+            }
+        }
+
         $self->service_send('runner', 'stage_ready', stage => $stage);
     }
     else {

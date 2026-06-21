@@ -9,13 +9,6 @@ use Long::Jump qw/setjump longjump/;
 use Time::HiRes qw/sleep time/;
 use File::Spec();
 
-use Test2::Harness2::Util qw/mod2file/;
-
-# The user-facing preload DSL / stage-tree meta. Distinct from THIS module: this
-# is the preload-ROOT bootstrap process, the DSL below is the stage definition
-# language a user's preload library uses.
-use Test2::Harness2::Runner::Preload();
-
 use Test2::Harness2::Util::HashBase qw{
     <runner_socket
     <workdir
@@ -165,8 +158,9 @@ sub launch ($class, %params) {
 
 =item $preload->run_driver
 
-Dial the runner, fetch the preload list, load the preloads, report the stage
-map, then service the channel until stopped. Never throws: on any error it logs
+Dial the runner, then drive the stage host (which loads the preloads under the
+guard and reports the stage map), then service the channel until stopped. Never
+throws: on any error it logs
 and idles until the runner reaps it, so it never voluntarily exits mid-run (a
 voluntary exit would race the runner's C<waitpid(-1)> reaper).
 
@@ -176,7 +170,7 @@ sub run_driver ($self) {
 
     # The preload-root IS the nested runner now (it hosts the base/default stage
     # in-process and forks the named stages). Name it like the old in-runner host
-    # BEFORE the handshake loads the preload libraries -- the base preload prints
+    # BEFORE the stage host loads the preload libraries -- the base preload prints
     # "$$ $0 - Loaded ..." as it loads, and each forked stage appends "-<stage>" to
     # $0 (Preloader::launch_stage) -- so all of it is tagged `yath-nested-runner`
     # (base) / `yath-nested-runner-<stage>` for `yath watch`, not the bare `-e` of
@@ -184,10 +178,11 @@ sub run_driver ($self) {
     $0 = 'yath-nested-runner';
 
     # Capture our own warnings (still printing them to STDERR for the events file) so
-    # a broken-preload diagnostic -- a die in a preload caught during the handshake,
-    # or a stage that "did not exit cleanly" caught by the stage-host Runner -- can be
-    # handed to the runner with stage_host_exited and surfaced in the command's output
-    # without the runner racing to read our events file.
+    # a broken-preload diagnostic -- a die in a preload, or a stage that "did not exit
+    # cleanly" caught by the stage host -- can be handed to the runner with
+    # stage_host_exited and surfaced in the command's output without the runner racing
+    # to read our events file. (The persistent path's tolerated-broken-preload
+    # warnings are surfaced separately by the stage host via preload_warnings.)
     $self->{+WARNINGS} = [];
     local $SIG{__WARN__} = sub ($msg) {
         push @{$self->{+WARNINGS}} => $msg;
@@ -268,35 +263,7 @@ sub _run_stage_host ($self) {
     return;
 }
 
-=item $preload->stage_data($meta)
-
-Build the stage map reported to the runner from a merged
-L<Test2::Harness2::Runner::Preload> meta object: each user-defined stage name
-maps to whether it is the default. The runner resolves a test's stage
-client-side from the test's preload directives against this map, so the map only
-needs to say which stages exist and which is the default. Returns an empty
-hashref when there is no staged preload.
-
 =back
-
-=cut
-
-sub stage_data ($self, $meta) {
-
-    my $data = {};
-    return $data unless $meta;
-
-    my $lookup  = $meta->stage_lookup;
-    my $default = $meta->default_stage;
-
-    for my $name (keys %$lookup) {
-        $data->{$name} = {
-            default => (defined($default) && $name eq $default) ? 1 : 0,
-        };
-    }
-
-    return $data;
-}
 
 =head1 PRIVATE METHODS
 
@@ -304,13 +271,9 @@ sub stage_data ($self, $meta) {
 
 =item $self->_handshake
 
-Dial the runner, request the preload list, load the preloads, and report the
-stage map.
-
-=item $meta = $self->_load_preloads(\@modules)
-
-Require each preload module and merge those that expose C<TEST2_HARNESS_PRELOAD>
-into one meta object. A module that fails to load is warned and skipped.
+Dial the runner and request the runner pid and persistent-vs-transient flag. The
+preloads are loaded later, once, under the C<test2_start_preload> guard in the
+stage host -- not here.
 
 =item $payload = $self->_request_sync($identity, $command, %args)
 
@@ -333,56 +296,25 @@ sub _handshake ($self) {
     my $conn = $self->service_connect_peer('runner', $self->{+RUNNER_SOCKET})
         or croak "preload-root could not connect to runner.socket at '$self->{+RUNNER_SOCKET}'";
 
+    # Lightweight handshake: dial, identify, and ask the runner for the runner pid
+    # and the persistent-vs-transient flag. The preloads are NOT loaded here -- doing
+    # so would run their require-time Test2 side effects OUTSIDE the
+    # test2_start_preload guard and load every module twice (once here, once in the
+    # guarded stage-host preload). The stage host loads them once under the guard and
+    # reports the stage map + any preload warnings from there.
     my $list = $self->_request_sync('runner', 'get_preload_list');
-    my @mods = @{($list && $list->{preloads}) || []};
 
-    # The real runner's pid: the stage-host Runner uses it as its rootpid (so it acts
-    # as a stage, not the root) and conveys it down as watch_parent_pid to every
+    # The real runner's pid: the stage host uses it as its rootpid (so it acts as a
+    # stage, not the root) and conveys it down as watch_parent_pid to every
     # stage/job collector (ARCHITECTURE.md §4.1: collectors watch the runner).
     $self->{+RUNNER_PID} = $list->{runner_pid} if $list && $list->{runner_pid};
 
     # The real runner's monitor_preloads (on for persistent, off for
-    # transient). The stage-host Runner uses it so a broken preload is tolerated
+    # transient). The stage host uses it so a broken preload is tolerated
     # (warn+skip) on the persistent path and fatal on the transient path.
     $self->{+MONITOR_PRELOADS} = $list->{monitor_preloads} ? 1 : 0 if $list;
 
-    my $meta = $self->_load_preloads(\@mods);
-
-    $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data($meta));
-
-    # Hand any preload-load warnings (e.g. a broken preload tolerated
-    # on the persistent path) to the runner so it can surface them in each run's
-    # output -- on the persistent path the stage host does not exit, so these would
-    # otherwise never reach a `yath run` client. This is ADDITIVE: the transient
-    # fatal path still surfaces the same warnings via stage_host_exited, so WARNINGS
-    # is NOT cleared here (clearing it would race queue_run and drop the transient
-    # diagnostic).
-    if (my @warnings = @{$self->{+WARNINGS} // []}) {
-        $self->service_send('runner', 'preload_warnings', warnings => [@warnings]);
-    }
-
     return;
-}
-
-sub _load_preloads ($self, $mods) {
-
-    my $meta;
-    for my $mod (@$mods) {
-        my $file = mod2file($mod);
-        my $ok = eval { require $file unless $INC{$file}; 1 };
-        my $err = $@;
-        unless ($ok) {
-            warn "$$ $0 preload-root could not load preload '$mod': $err";
-            next;
-        }
-
-        next unless $mod->can('TEST2_HARNESS_PRELOAD');
-
-        $meta //= Test2::Harness2::Runner::Preload->new;
-        $meta->merge($mod->TEST2_HARNESS_PRELOAD);
-    }
-
-    return $meta;
 }
 
 sub _request_sync ($self, $identity, $command, %args) {
