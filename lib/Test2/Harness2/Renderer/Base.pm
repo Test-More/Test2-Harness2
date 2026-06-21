@@ -36,6 +36,7 @@ use Test2::Harness2::Util::HashBase qw{
     <tests_seen
     <asserts_seen
     <final_data
+    +run_health
 };
 
 =pod
@@ -564,6 +565,18 @@ sub compute_final ($self) {
     }
 
     $final_data->{pass} = 0 if $final_data->{failed} or $final_data->{unseen};
+
+    # Post-pass collector failure (A3, ARCHITECTURE.md §5.4): the runner flagged a
+    # suite-level health failure (a collector that malfunctioned AFTER reporting a
+    # pass). The tests themselves stay green -- nothing is added to {failed} -- but
+    # the suite fails so the command exits non-zero. Record the reasons so the
+    # summary can surface them.
+    if (my $health = $self->{+RUN_HEALTH}) {
+        if (@$health) {
+            $final_data->{pass}          = 0;
+            $final_data->{health_errors} = [map { $_->{reason} } @$health];
+        }
+    }
 
     $self->{+FINAL_DATA} = $final_data;
     return $final_data;

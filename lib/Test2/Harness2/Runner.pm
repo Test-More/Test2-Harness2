@@ -1264,9 +1264,26 @@ sub set_proc_exit {
         # clear the timeout marker. job_pids is deleted defensively in case the reap
         # races ahead of the EOF (the EOF decision is still fire-once guarded).
         my $task = $proc->task;
-        delete $self->{+JOB_PIDS}->{$task->{job_id}};
-        delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}
+        my $job_id = $task->{job_id};
+        delete $self->{+JOB_PIDS}->{$job_id};
+        delete $self->{+RUN_REACHED_TIMEOUT}->{$job_id}
             if ref $self->{+RUN_REACHED_TIMEOUT};
+
+        # Post-pass collector failure (A3, ARCHITECTURE.md §5.4): this no-preload
+        # collector is the runner's own child, so the runner DOES see its health
+        # exit here. The exit is HEALTH-ONLY now (the verdict rode the transitions),
+        # so a NON-ZERO exit means the collector itself malfunctioned. If it had
+        # already reported a pass, the test stays green but the suite is flagged
+        # failed -- the only place the collector exit code is ever consulted, and
+        # only post-hoc + suite-level. (A preload collector is stage-reaped until
+        # ticket #28, so its post-pass failure may be lost -- accepted per §5.4.)
+        my $passed_run = delete $self->{'job_passed'}{$job_id};
+        if (defined($passed_run) && $exit && $self->can('announce_run_health')) {
+            $self->announce_run_health(
+                $passed_run eq '' ? undef : $passed_run,
+                "A test collector for a PASSING job exited non-zero (health exit) after reporting its result; the test stays passed but the collector malfunctioned (job $job_id)",
+            );
+        }
     }
 
     # A preload stage exiting (reload/monitor relaunch, or death) is handled by the

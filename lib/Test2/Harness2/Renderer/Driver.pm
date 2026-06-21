@@ -188,6 +188,11 @@ sub finalize ($self, $monitor) {
     # One last slurp of runner/stage output before the final rollup.
     $self->step_runner_output($monitor);
 
+    # Carry the runner's suite-level health failures (a post-pass collector
+    # failure, ARCHITECTURE.md §5.4) into the rollup so compute_final can mark the
+    # suite failed even though every test passed.
+    $self->{+RUN_HEALTH} = $monitor->run_health if $monitor->can('run_health');
+
     my $final_data = $self->compute_final;
 
     # Emit the run-level harness_final event into the render/log stream, exactly

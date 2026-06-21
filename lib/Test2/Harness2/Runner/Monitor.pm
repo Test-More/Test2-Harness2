@@ -12,6 +12,7 @@ use Object::HashBase qw{
     +collectors
     +jobs
     +runs
+    +run_health
     +pending_new
     +pending_failing
     +pending_diagnosing
@@ -101,6 +102,7 @@ sub init ($self) {
     $self->{+COLLECTORS} = {};
     $self->{+JOBS}       = {};
     $self->{+RUNS}       = {};
+    $self->{+RUN_HEALTH} = [];
 
     $self->{+PENDING_NEW}        = [];
     $self->{+PENDING_FAILING}    = [];
@@ -210,6 +212,12 @@ socket-close completion signal the transient path uses does not apply.
 The runner-originated state hashref for one job (or C<undef>): C<job_id>,
 C<state> (C<dispatched> / C<running> / C<done>), and the C<stage>, C<file>, and
 C<run_id> the runner carried on the mutation.
+
+=item $list = $mon->run_health
+
+The suite-level health failures the runner reported (a post-pass collector
+failure: a collector that failed after reporting a pass, so the test stays green
+but the suite is marked failed). Each entry is a C<< {run_id, reason} >> hashref.
 
 =item run_for_payload
 
@@ -329,6 +337,10 @@ sub run_for_payload ($self, $payload) {
         return $re->{run_id};
     }
 
+    if (my $rh = $fd->{harness_run_health}) {
+        return $rh->{run_id};
+    }
+
     my $hc = $fd->{harness_collector} or return undef;
 
     # A 'starting' transition carries run_uuid on the wire; later transitions
@@ -345,6 +357,7 @@ sub snapshot ($self, $run_id = undef) {
         collectors => $self->{+COLLECTORS},
         jobs       => $self->{+JOBS},
         runs       => $self->{+RUNS},
+        run_health => $self->{+RUN_HEALTH},
     } unless defined $run_id;
 
     my %collectors;
@@ -364,15 +377,22 @@ sub snapshot ($self, $run_id = undef) {
     my %runs;
     $runs{$run_id} = $self->{+RUNS}{$run_id} if $self->{+RUNS}{$run_id};
 
-    return {collectors => \%collectors, jobs => \%jobs, runs => \%runs};
+    my @health = grep { !defined($_->{run_id}) || $_->{run_id} eq $run_id } @{$self->{+RUN_HEALTH} // []};
+
+    return {collectors => \%collectors, jobs => \%jobs, runs => \%runs, run_health => \@health};
 }
 
 sub apply_snapshot ($self, $snapshot) {
     $self->{+COLLECTORS} = $snapshot->{collectors} // {};
     $self->{+JOBS}       = $snapshot->{jobs}       // {};
     $self->{+RUNS}       = $snapshot->{runs}       // {};
+    $self->{+RUN_HEALTH} = $snapshot->{run_health} // [];
     return;
 }
+
+# Suite-level health failures the runner reported (a post-pass collector failure,
+# ARCHITECTURE.md §5.4). Returns the list of {run_id, reason} records.
+sub run_health ($self) { return $self->{+RUN_HEALTH} // [] }
 
 =head1 PRIVATE METHODS
 
@@ -423,6 +443,16 @@ sub _process ($self, $payload) {
     # after a single run the way the transient runner does.
     if (my $re = $fd->{harness_run_end}) {
         $self->{+RUNS}{$re->{run_id}} = $re if defined $re->{run_id};
+        return;
+    }
+
+    # A runner-originated suite-level health failure (ARCHITECTURE.md §5.4
+    # "Post-pass collector failure"): a collector that failed AFTER reporting a
+    # pass keeps its test green, but the runner saw its non-zero health exit on
+    # reap and flags the SUITE failed so `yath test`/`run` exits non-zero. Record
+    # the flag + its diagnostics; the renderer rolls it into the run's pass/fail.
+    if (my $rh = $fd->{harness_run_health}) {
+        push @{$self->{+RUN_HEALTH}} => $rh;
         return;
     }
 
