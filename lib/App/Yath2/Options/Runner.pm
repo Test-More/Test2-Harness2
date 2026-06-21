@@ -568,6 +568,14 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         description    => 'Optional safeguard: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no safeguard)',
     );
 
+    option collector_connect_timeout => (
+        type           => 'Scalar',
+        default        => 30,
+        long_examples  => [' SECONDS'],
+        short_examples => [' SECONDS'],
+        description    => 'How long the runner waits for a dispatched test job\'s collector to connect back before failing that job. A test job\'s completion is learned only from its collector connection, so a collector that never connects would hang the run; this bounds that wait. (Default: 30 seconds; set 0 to disable)',
+    );
+
     option runner_id => (
         type        => 'Scalar',
         initialize  => \&gen_uuid,

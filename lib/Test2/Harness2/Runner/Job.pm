@@ -240,7 +240,23 @@ sub run_under_collector {
     # so the SAME transitions are ALSO written to the events file (the gatherer
     # reads that file on the persistent path). The Recorder::Socket spec survives
     # the fork/exec to the test child via TO_JSON (it carries its socket paths).
-    my $reporter = $self->_transition_reporter;
+    my ($reporter, $socket_present) = $self->_transition_reporter;
+
+    # The reporter is MANDATORY for a test job (ARCHITECTURE.md §5.4 "The reporter
+    # is mandatory"): the runner learns a test's completion ONLY from this
+    # connection's transitions + EOF, so a test that runs recorder-only would never
+    # complete (no connection => no EOF => the run hangs). If the runner.socket is
+    # present but the reporter could not connect, FAIL the job here rather than
+    # silently degrade: exit the collector parent non-zero WITHOUT running the test.
+    # The runner's --collector-connect-timeout then fails the dispatched job (no
+    # identity ever arrives), so it is failed through a runner-visible path. (When
+    # the socket is absent entirely -- a unit/no-socket context -- there is nothing
+    # to be mandatory about, so the recorder-only stream is fine.)
+    if ($socket_present && !$reporter) {
+        warn "$$ $0 the test collector could not connect its mandatory reporter to runner.socket; failing the job\n";
+        require POSIX;
+        POSIX::_exit(1);
+    }
 
     # The reporter's socket fds stream this collector's transitions to
     # runner.socket; the EOF on that connection is the runner's "collector gone"
@@ -297,12 +313,13 @@ sub close_inherited_handles {
 }
 
 # Build the socket reporter that streams this test collector's
-# transitions to runner.socket, or undef when the workdir/socket cannot be
-# located (so the file recorder still produces a complete stream and the job is
-# never blocked on the transition channel). The workdir comes from
-# T2_HARNESS_WORKDIR (set by the runner, inherited by this collector parent),
-# falling back to the runner's dir. Recorder::Socket connects at construction; if
-# the runner.socket is not accepting yet we skip the reporter rather than die.
+# transitions to runner.socket. Returns ($reporter, $socket_present): $reporter is
+# the Recorder::Socket (or undef if it could not be built), and $socket_present is
+# true when the runner.socket file exists (so the caller can tell "no socket here"
+# from "socket present but connect failed" -- only the latter fails a test job,
+# since the reporter is mandatory). The workdir comes from T2_HARNESS_WORKDIR (set
+# by the runner, inherited by this collector parent), falling back to the runner's
+# dir.
 sub _transition_reporter {
     my $self = shift;
 
@@ -316,16 +333,17 @@ sub _transition_reporter {
     # not-yet-accepting socket only costs the reporter, never the events file.
 
     my $workdir = $ENV{T2_HARNESS_WORKDIR} // $self->runner->dir;
-    return undef unless defined $workdir && length $workdir;
+    return (undef, 0) unless defined $workdir && length $workdir;
 
     my $socket = File::Spec->catfile($workdir, 'runner.socket');
+    my $socket_present = ($socket && -S $socket) ? 1 : 0;
 
     # Carry job_id + job_try (+ run_id) in the identity preamble so the runner can
     # map this connection -- and the EOF when this collector exits -- back to the
     # job and its current try (ARCHITECTURE.md §5.4 completion decision /
     # stale-try guard). read_control makes the connection bidirectional so this
     # collector reads the runner's bail/abort terminate message.
-    return socket_reporter(
+    my $reporter = socket_reporter(
         "collector:job:" . $self->job_id, $socket,
         read_control => 1,
         identity     => {
@@ -334,6 +352,8 @@ sub _transition_reporter {
             run_id  => $self->run->run_id,
         },
     );
+
+    return ($reporter, $socket_present);
 }
 
 sub switches_from_env {
