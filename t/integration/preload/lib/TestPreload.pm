@@ -1,23 +1,12 @@
 package TestPreload;
 use strict;
 use warnings;
-use Time::HiRes qw/sleep time/;
-use File::Temp qw/tempdir/;
-use File::Spec;
+use Time::HiRes qw/time/;
 
 use Test2::Harness2::Runner::Preload;
 
-my $dir = tempdir(CLEANUP => 1);
-my $TRIGGER = File::Spec->catfile($dir, 'trigger');
-
-file_stage sub {
-    my ($file) = @_;
-
-    return uc($1) if $file =~ m/(AAA|BBB)\.tx$/i;
-
-    return;
-};
-
+# Stage selection is client-side: tests carry a HARNESS-STAGE directive and the
+# runner routes them against this stage map. aaa.tx / bbb.tx ask for AAA / BBB.
 stage AAA => sub {
     preload 'AAA';
 
@@ -37,35 +26,12 @@ stage CCC => sub {
 };
 
 stage FAST => sub {
-    eager;
     default;
 
     preload 'FAST';
 
-    preload sub {
-        eval <<"        EOT" or die $@;
-#line ${ \__LINE__ } "${ \__FILE__ }"
-END {
-    return unless \$0 =~ m/slow\.tx/;
-    open(my \$fh, '>', "$TRIGGER") or die "XXX";
-    print \$fh "\n";
-    close(\$fh);
-}
-1;
-        EOT
-    };
-
     stage SLOW => sub {
-        preload sub {
-            print "$0 pending...\n";
-            use Carp qw/cluck/;
-            local $SIG{ALRM} = sub { cluck "oops"; exit 255 };
-            alarm 60;
-            until (-f $TRIGGER) {
-                print "$0 Waiting...\n";
-                sleep 0.2
-            }
-        };
+        preload 'SLOW';
     };
 };
 

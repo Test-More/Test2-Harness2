@@ -1,3 +1,0 @@
-use Test2::V0;
-ok(1, "ran after the preload-root recovered from a mid-run crash");
-done_testing;

@@ -22,7 +22,6 @@ use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use Test2::Harness2::Util::HashBase(
     # These are construction arguments
     qw{
-        eager_stages
         <workdir
         <preloader
         <resources
@@ -30,13 +29,13 @@ use Test2::Harness2::Util::HashBase(
         +settings
     },
 
-    # The scheduler-only runner (preload-root hosts the stages) has NO
-    # preloader, so task_stage resolves from the stage map the preload-root reported
-    # plus a file_stage_resolver coderef that asks the base stage. eager_stages is
-    # writable (not <) because set_stage_data refreshes it once the map arrives.
+    # The scheduler-only runner (preload-root hosts the stages) has NO preloader,
+    # so task_stage resolves a task's stage entirely client-side from the test's
+    # preload directives (no_preload / require_preload / preload_list) against the
+    # stage map the preload-root reported. +stage_map is writable because
+    # set_stage_map refreshes it once the map arrives.
     qw{
         +stage_map
-        file_stage_resolver
     },
 
     qw{
@@ -542,11 +541,11 @@ sub _retry_task {
 # terminal subscriber transition -- the runner forwards a 'requeued' mutation (or
 # none) rather than 'done'/'aborted'.
 #
-# TASK_LOOKUP holds the ORIGINAL task (its directive `stage` preference); the
-# resolved-stage copy lives only in RUNNING_TASKS and is dropped by _stop_task. So
-# re-queuing TASK_LOOKUP's task re-resolves the run stage (directive / file_stage /
-# default) against the CURRENT map on the next tick -- a stage that has since come
-# back, or a different available stage, can take it.
+# TASK_LOOKUP holds the ORIGINAL task (its preload directives / `stage`
+# preference); the resolved-stage copy lives only in RUNNING_TASKS and is dropped by
+# _stop_task. So re-queuing TASK_LOOKUP's task re-resolves the run stage (from the
+# task's preload directives) against the CURRENT map on the next tick -- a stage
+# that has since come back, or a different available stage, can take it.
 sub requeue_task {
     my $self = shift;
     my ($job_id) = @_;
@@ -730,25 +729,18 @@ sub task_stage {
     # default itself.
     return $self->preloader->task_stage($task->{file}, $wants) if $self->preloader;
 
-    # Scheduler-only path: the preload-root hosts the stages, so resolve
-    # from the reported stage map plus a file_stage round-trip to the base stage. With
-    # neither a preloader nor a stage map (no preload at all) keep the legacy fallback.
-    # The base stage always registers as lowercase 'default' (Runner::Preloader),
-    # so a non-staged preload-root reports an empty map and an unstaged task must
-    # resolve to 'default' -- NOT 'DEFAULT', which would dispatch to a
-    # 'preload-DEFAULT' that never registered and abort the jobs as "stage gone".
+    # Scheduler-only path: the preload-root hosts the stages, so resolve client-side
+    # from the reported stage map. With neither a preloader nor a stage map (no
+    # preload at all) keep the legacy fallback. The base stage always registers as
+    # lowercase 'default' (Runner::Preloader), so a non-staged preload-root reports
+    # an empty map and an unstaged task must resolve to 'default' -- NOT 'DEFAULT',
+    # which would dispatch to a 'preload-DEFAULT' that never registered and abort the
+    # jobs as "stage gone".
     my $map = $self->{+STAGE_MAP};
     return $wants // 'default' unless $map && keys %$map;
 
     # An explicit, valid directive wins; NOPRELOAD is the synthetic no-preload stage.
     return $wants if defined($wants) && length($wants) && ($wants eq 'NOPRELOAD' || $map->{$wants});
-
-    # Otherwise the base stage resolves file_stage // default for this file (the only
-    # process with the loaded preload meta + its file_stage callbacks).
-    if (my $resolver = $self->{+FILE_STAGE_RESOLVER}) {
-        my $stage = $resolver->($task->{file});
-        return $stage if defined($stage) && length($stage);
-    }
 
     return $self->_default_stage_from_map($map);
 }
@@ -969,9 +961,11 @@ sub _dur_order {
     return \@dur_order;
 }
 
-# This returns a list of [STAGE => RUN_STAGE] pairs. 'STAGE' is the stage in
-# which we search for tasks, 'RUN_STAGE' is the stage that actually does the
-# work. This is what allows us to find tasks for 'eager' stages that are bored.
+# This returns a list of [STAGE => RUN_STAGE] pairs, one per stage that is
+# currently 'up'. 'STAGE' is the bucket searched for tasks, 'RUN_STAGE' is the
+# stage that runs them; with eager fan-out eliminated a stage only ever runs its
+# own bucket, so the two are always identical -- the pair shape is retained for
+# _next's traversal.
 sub _stage_order {
     my $self = shift;
 
@@ -979,17 +973,7 @@ sub _stage_order {
 
     my @stage_list = sort grep { $life->{$_}->{state} eq 'up' } keys %$life;
 
-    # Populate list with all ready stages
-    my %seen;
-    my @stages = map {[$_ => $_]} grep { !$seen{$_}++ } @stage_list;
-
-    # Add in any eager stages, but make sure they are last.
-    for my $rstage (@stage_list) {
-        next unless exists $self->{+EAGER_STAGES}->{$rstage};
-        push @stages => map {[$_ => $rstage]} grep { !$seen{$_}++ } @{$self->{+EAGER_STAGES}->{$rstage}};
-    }
-
-    return \@stages;
+    return [map {[$_ => $_]} @stage_list];
 }
 
 sub _next {

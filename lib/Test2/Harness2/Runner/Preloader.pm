@@ -105,9 +105,7 @@ sub task_stage {
 
     return $wants if $wants && $self->stage_check($wants);
 
-    my $stage = $self->{+STAGED}->file_stage($file) // $self->{+STAGED}->default_stage;
-
-    return $stage;
+    return $self->{+STAGED}->default_stage;
 }
 
 sub preload {
@@ -396,13 +394,6 @@ sub _preload_module {
     $self->{+STAGED}->merge($mod->TEST2_HARNESS_PRELOAD);
 
     return;
-}
-
-sub eager_stages {
-    my $self = shift;
-
-    return unless $self->{+STAGED};
-    return $self->{+STAGED}->eager_stages;
 }
 
 sub load_blacklist {

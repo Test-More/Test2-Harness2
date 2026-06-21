@@ -272,8 +272,10 @@ sub _run_stage_host ($self) {
 
 Build the stage map reported to the runner from a merged
 L<Test2::Harness2::Runner::Preload> meta object: each user-defined stage name
-maps to its eager fan-out (C<can_run>) and whether it is the default. Returns an
-empty hashref when there is no staged preload.
+maps to whether it is the default. The runner resolves a test's stage
+client-side from the test's preload directives against this map, so the map only
+needs to say which stages exist and which is the default. Returns an empty
+hashref when there is no staged preload.
 
 =back
 
@@ -284,13 +286,11 @@ sub stage_data ($self, $meta) {
     my $data = {};
     return $data unless $meta;
 
-    my $eager   = $meta->eager_stages;
     my $lookup  = $meta->stage_lookup;
     my $default = $meta->default_stage;
 
     for my $name (keys %$lookup) {
         $data->{$name} = {
-            can_run => $eager->{$name} // [],
             default => (defined($default) && $name eq $default) ? 1 : 0,
         };
     }

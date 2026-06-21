@@ -40,7 +40,7 @@ already gone (C<abort_job>, called from C<dispatch_pending>). Both are confirmed
 unfinishable: in the wind-down case the run loop is ending, and in the failed
 dispatch case the send was a proven no-op so no stage will ever report the job.
 Speculative mid-run per-stage death polling is still intentionally avoided -- the
-nested / eager stage topology makes "is this stage's process gone?" unreliable,
+nested stage topology makes "is this stage's process gone?" unreliable,
 and a healthy stage's jobs are completed through the runner's normal reap /
 C<set_proc_exit> path.
 

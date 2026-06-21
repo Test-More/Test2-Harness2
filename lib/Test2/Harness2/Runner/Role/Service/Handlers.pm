@@ -543,7 +543,7 @@ sub request_handler_get_preload_list {
 }
 
 # The preload-root loads the preload libraries, builds the stage map
-# (each stage's eager fan-out + which is default), and reports it here so the
+# (which stages exist + which is default), and reports it here so the
 # runner knows which stages to expect without loading any preload itself.
 # The runner stores it. One-way is enough, but we ack so the preload root can
 # confirm receipt. Only the root runner is the state hub.
@@ -556,49 +556,17 @@ sub request_handler_set_stage_data {
 
     $self->{'reported_stage_data'} = $payload->{stage_data} // {};
 
-    # A fresh stage map means a (re)started preload root / reload: the file_stage
-    # callbacks that resolve_file_stage memoized may now map a file to a different
-    # stage. Drop the per-file cache so stale resolutions from the prior generation
-    # are not reused (code-review: file_stage cache outliving its preload generation).
-    delete $self->{'file_stage_cache'};
-
     # If the scheduler-only State was already built (e.g. an early status
-    # request) it captured an empty map; refresh its eager fan-out + stage map now
-    # that the real data has arrived, before any task is bucketed (submit_action
-    # buffers tasks until the map + base stage are ready, so this lands first).
+    # request) it captured an empty map; refresh its stage map now that the real
+    # data has arrived, before any task is bucketed (submit_action buffers tasks
+    # until the map + base stage are ready, so this lands first).
     if (my $state = $self->{'state'}) {
         if ($self->_preload_root_hosts_stages) {
-            $state->set_eager_stages($self->eager_from_stage_map);
             $state->set_stage_map($self->{'reported_stage_data'});
         }
     }
 
     return {ok => 1};
-}
-
-# The scheduler-only runner has no loaded preloader, so it asks the base
-# stage (the process holding the merged preload meta) to resolve test files' stages
-# via the preload's file_stage callbacks, falling back to the default stage. Served
-# only where a preloader is loaded (the base stage). Precedence mirrors
-# Runner::Preloader::task_stage; the directive stage and NOPRELOAD are resolved
-# runner-side, so only file_stage // default reaches here. Two-way.
-sub request_handler_resolve_file_stages {
-    my $self = shift;
-    my ($payload) = @_;
-
-    my $files = $payload->{files} || [];
-
-    my $preloader = $self->can('preloader') ? $self->preloader : undef;
-    my $staged    = $preloader ? $preloader->staged : undef;
-
-    my %stages;
-    for my $file (@$files) {
-        next unless $staged;
-        my $stage = $staged->file_stage($file) // $staged->default_stage;
-        $stages{$file} = $stage if defined $stage;
-    }
-
-    return {ok => 1, stages => \%stages};
 }
 
 # The stage map the preload root reported, or undef before it has arrived.

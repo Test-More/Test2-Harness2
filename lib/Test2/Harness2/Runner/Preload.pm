@@ -28,24 +28,11 @@ sub import {
         );
     };
 
-    $exports{eager} = sub {
-        croak "No current stage" unless @{$instance->stack};
-        my $stage = $instance->stack->[-1];
-        $stage->set_eager(1);
-    };
-
     $exports{default} = sub {
         croak "No current stage" unless @{$instance->stack};
         my $stage = $instance->stack->[-1];
         my $name = $stage->name;
         $instance->set_default_stage($name);
-    };
-
-    $exports{file_stage} = sub {
-        my ($callback) = @_;
-        my @caller = caller();
-        croak "'file_stage' cannot be used under a stage" if @{$instance->stack};
-        $instance->add_file_stage(\@caller, $callback);
     };
 
     for my $name (qw/pre_fork post_fork pre_launch/) {
@@ -101,7 +88,6 @@ use Test2::Harness2::Util::HashBase qw{
     <stage_lookup
     <stack
     +default_stage
-    +file_stage
 };
 
 sub init {
@@ -111,8 +97,6 @@ sub init {
     $self->{+STAGE_LOOKUP} //= {};
 
     $self->{+STACK} //= [];
-
-    $self->{+FILE_STAGE} //= [];
 }
 
 sub build_stage {
@@ -190,36 +174,7 @@ sub merge {
         $self->add_stage($stage, $caller);
     }
 
-    push @{$self->{+FILE_STAGE}} => @{$merge->{+FILE_STAGE}};
-
     $self->{+DEFAULT_STAGE} //= $merge->default_stage;
-}
-
-sub add_file_stage {
-    my $self = shift;
-    my ($caller, $code) = @_;
-
-    croak "Caller must be defined and an array" unless $caller && ref($caller) eq 'ARRAY';
-    croak "Code must be defined and a coderef"  unless $code   && ref($code) eq 'CODE';
-
-    push @{$self->{+FILE_STAGE}} => [$caller, $code];
-}
-
-sub file_stage {
-    my $self = shift;
-    my ($file) = @_;
-
-    for my $cb (@{$self->{+FILE_STAGE}}) {
-        my ($caller, $code) = @$cb;
-        my $stage = $code->($file) or next;
-
-        die "file_stage callback returned invalid stage: $stage at $caller->[1] line $caller->[2].\n"
-            unless $self->{+STAGE_LOOKUP}->{$stage};
-
-        return $stage;
-    }
-
-    return;
 }
 
 sub default_stage {
@@ -234,21 +189,6 @@ sub set_default_stage {
 
     croak "Default stage already set to $self->{+DEFAULT_STAGE}" if $self->{+DEFAULT_STAGE};
     $self->{+DEFAULT_STAGE} = $name;
-}
-
-sub eager_stages {
-    my $self = shift;
-
-    my %eager;
-
-    for my $root (@{$self->{+STAGE_LIST}}) {
-        for my $stage ($root, @{$root->all_children}) {
-            next unless $stage->eager;
-            $eager{$stage->name} = [map { $_->name } @{$stage->all_children}];
-        }
-    }
-
-    return \%eager;
 }
 
 1;
@@ -330,13 +270,6 @@ do regular modules. Yath will know the difference and act accordingly.
 
             ...
         };
-
-        # Eager means tests from nested stages can be run in this stage as
-        # well, this is useful if the nested stage takes a long time to load as
-        # it allows yath to start running tests sooner instead of waiting for
-        # the stage to finish loading. Once the nested stage is loaded tests
-        # intended for it will start running from it instead.
-        eager();
 
         # default means this stage is the one to use if the test does not
         # specify a stage.
@@ -474,15 +407,6 @@ can also add coderefs to execute arbitrary code between module loads.
 
 The coderef is called with no arguments, and its return is ignored.
 
-=item eager()
-
-This B<MUST> be called inside a C<stage()> builder coderef.
-
-This marks the I<active> stage as being I<eager>. An eager stage will start
-running tests for nested stages if it finds itself with no tests of its own to
-run before the nested stage can finish loading. The idea here is to avoid
-unused test slots when possible allowing for tests to complete sooner.
-
 =item default()
 
 This B<MUST> be called inside a C<stage()> builder coderef.
@@ -491,19 +415,6 @@ This B<MUST> be called only once across C<ALL> stages in a given library.
 
 If multiple preload libraries are loaded then the I<first> default set (based
 on load order) will be the default, others will notbe honored.
-
-=item $stage_name = file_stage($test_file)
-
-This is optional. If defined this callback will have a chance to look at all
-files that are going to be run and assign them a stage. This may return undef
-or an empty list if it does not have a stage to assign.
-
-If multiple preload libraries define file_stage callbacks they will be called
-in order, the first one to return a stage name will win.
-
-If no file_stage callbacks provide a stage for a file then any harness
-directives declaring a stage will be honored. If no stage is ever assigned then
-the test will be run int he default stage.
 
 =item pre_fork sub { ... }
 

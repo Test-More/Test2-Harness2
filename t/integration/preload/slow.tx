@@ -1,7 +1,8 @@
 use Test2::V0;
 #HARNESS-STAGE-SLOW
 
-ok($INC{'FAST.pm'}, "Preloaded fast");
-is($ENV{T2_HARNESS_STAGE}, 'FAST', "Running in 'FAST' stage despite asking for 'SLOW'");
+ok($INC{'FAST.pm'}, "Preloaded fast (SLOW is nested under FAST)");
+ok($INC{'SLOW.pm'}, "Preloaded slow");
+is($ENV{T2_HARNESS_STAGE}, 'SLOW', "Running in 'SLOW' stage");
 
 done_testing;

@@ -252,17 +252,15 @@ sub state {
     my $settings = $self->settings;
 
     # When the preload-root hosts the stages this runner is
-    # scheduler-only and holds NO preloader. State resolves a task's stage from the
-    # reported stage map (eager fan-out rebuilt from the map's can_run) and, for
-    # file_stage / default resolution, a resolve_file_stages round-trip to the base
-    # stage (the only process with the loaded preload meta). set_stage_data refreshes
-    # eager_stages / stage_map on the built State when the map arrives.
+    # scheduler-only and holds NO preloader. State resolves a task's stage entirely
+    # client-side from the test's preload directives (no_preload / require_preload /
+    # preload_list) against the reported stage map -- there is no file_stage resolver
+    # and no round-trip to a stage. set_stage_data refreshes the stage map on the
+    # built State when the map arrives.
     if ($self->_preload_root_hosts_stages) {
         $self->{+STATE} //= Test2::Harness2::Runner::State->new(
             workdir             => $self->{+DIR},
-            eager_stages        => $self->eager_from_stage_map,
             stage_map           => $self->reported_stage_data // {},
-            file_stage_resolver => sub { $self->resolve_file_stage($_[0]) },
             resources           => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
             settings            => $settings,
         );
@@ -273,7 +271,6 @@ sub state {
 
     $self->{+STATE} //= Test2::Harness2::Runner::State->new(
         workdir      => $self->{+DIR},
-        eager_stages => $preloader->eager_stages // {},
         preloader    => $preloader,
         resources    => [map { $_->new(settings => $settings) } @{$self->{+RESOURCES}}],
         settings     => $settings,
@@ -609,45 +606,25 @@ sub _preload_root_hosts_stages {
     return $self->{+PRELOAD_ROOT_HOSTS} ? 1 : 0;
 }
 
-# Rebuild the eager-stage fan-out from the stage data the preload-root
-# reported. The reported map is { <stage> => { can_run => [...], default => 0|1 } };
-# State::_stage_order wants { <stage> => [<eager children>] } for stages whose
-# can_run is non-empty (an eager stage runs its nested stages' tests when it would
-# otherwise idle). The scheduler-only runner has no preloader to ask, so it derives
-# this from the reported map instead of preloader->eager_stages.
-sub eager_from_stage_map {
+# True if at least one preload STAGE peer (any 'preload-<name>' except the
+# preload-root handshake peer) is currently connected. The scheduler-only runner
+# uses this as its base-stage-up signal: it does not dispatch a preload task until
+# a stage has registered (its socket is the dispatch channel). The base stage's
+# own name varies ('base' for a staged preload, 'default' for a non-staged one),
+# so we never hardcode it.
+sub _has_live_stage_peer {
     my $self = shift;
 
-    my $map = $self->reported_stage_data or return {};
-
-    my %eager;
-    for my $name (keys %$map) {
-        my $can = $map->{$name}->{can_run} or next;
-        next unless @$can;
-        $eager{$name} = [@$can];
-    }
-
-    return \%eager;
-}
-
-# An identity of a connected preload STAGE peer (any 'preload-<name>'
-# except the preload-root handshake peer). Every stage is forked from the base and
-# so inherits the full merged preload meta (with its file_stage callbacks), so ANY
-# live stage can resolve a file's stage. The base stage's own name varies ('base'
-# for a staged preload, 'default' for a non-staged one), so we never hardcode it.
-sub _resolver_identity {
-    my $self = shift;
-
-    my $peers = $self->{service_peers} or return undef;
+    my $peers = $self->{service_peers} or return 0;
     for my $id (sort keys %$peers) {
         next if $id eq 'preload-root';
         next unless $id =~ m/^preload-/;
         my $conn = $peers->{$id};
         next unless $conn && !$conn->closed;
-        return $id;
+        return 1;
     }
 
-    return undef;
+    return 0;
 }
 
 # A connected preload stage's real pid comes from its 'preload-<stage>' peer
@@ -673,93 +650,18 @@ sub stage_peer_pids {
     return \%pids;
 }
 
-# Resolve a test file's stage via a live preload stage -- the only kind
-# of process holding the merged preload meta (and its file_stage callbacks). The
-# scheduler-only runner has no preloader, so it asks a stage over the channel that
-# stage registered and caches the answer per file. Returns the resolved stage name,
-# or undef when no stage is reachable (the caller falls back to the default stage).
-sub resolve_file_stage {
-    my $self = shift;
-    my ($file) = @_;
-
-    my $cache = $self->{file_stage_cache} //= {};
-    return $cache->{$file} if exists $cache->{$file};
-
-    # The resolver is a live preload STAGE (not the preload-root). A stage can die
-    # mid-resolve (a crash, a reload); request_preload_sync returns undef promptly
-    # when its resolver's channel drops, so fail over to another live stage and
-    # retry. Bounded by the number of mapped stages plus a little slack. Only a
-    # successful resolution is cached -- a transient "no resolver" must not be
-    # memoized, or a later run would keep the stale miss.
-    my $state = $self->state;
-    my $stage_count = $state ? scalar keys %{$state->stage_lifecycle // {}} : 0;
-    my $attempts = $stage_count + 4;
-    for (1 .. $attempts) {
-        my $identity = $self->_resolver_identity or last;
-        my $resp = $self->request_preload_sync($identity, 'resolve_file_stages', files => [$file]);
-        return $cache->{$file} = $resp->{stages}->{$file}
-            if $resp && $resp->{stages};
-
-        # No answer (the resolver dropped); let service_io reap its closed channel so
-        # the next _resolver_identity skips it, then retry against a survivor.
-        $self->service_io;
-    }
-
-    return undef;
-}
-
-# Send a request to a preload peer and pump the service loop until its
-# correlated response arrives (or a timeout). Used by the scheduler-only runner to
-# resolve file_stage from the base stage synchronously during scheduling. Matched
-# responses are stashed by request_id in service_on_response.
-sub request_preload_sync {
-    my $self = shift;
-    my ($identity, $command, %args) = @_;
-
-    my $conn = $self->service_peer_conn($identity) or return undef;
-
-    # send_request returns false if the write failed (the peer vanished mid-write,
-    # closing the connection) -- nothing to wait for, fail over immediately.
-    my $request_id = $conn->send_request($command, %args) or return undef;
-
-    $self->{preload_responses} //= {};
-
-    my $deadline = time + 30;
-    until (exists $self->{preload_responses}->{$request_id}) {
-        return undef if time > $deadline;
-        $self->service_io;
-        # The peer answering this request can die mid-resolve (a stage crash /
-        # reload). Once service_io has reaped its closed channel, bail promptly so
-        # the caller can fail over to another live peer instead of spinning to the
-        # 30s deadline.
-        return undef if $conn->closed;
-        Time::HiRes::sleep(0.01);
-    }
-
-    return delete $self->{preload_responses}->{$request_id};
-}
-
-# Role::Service hands matched responses here; the scheduler-only runner stashes them
-# by request id for request_preload_sync (resolve_file_stages).
-sub service_on_response {
-    my $self = shift;
-    my ($conn, $event) = @_;
-
-    ($self->{preload_responses} //= {})->{$event->{request_id}} = $event->{payload};
-
-    return;
-}
-
-# The scheduler-only runner cannot bucket a preload task by stage until
-# the stage map is reported AND the base stage (the file_stage resolver) is
-# connected -- task_stage resolves through both. A command may submit its run +
-# tasks before the preload-root finishes its handshake and the base stage registers.
+# The scheduler-only runner cannot dispatch a preload task until the stage map is
+# reported AND at least one stage has registered (its socket is the dispatch
+# channel). A command may submit its run + tasks before the preload-root finishes
+# its handshake and the base stage registers; the runner buffers until both hold.
+# Stage selection itself is resolved client-side from the task's preload directives
+# against the map, so no round-trip to a stage is needed.
 sub _ready_to_schedule {
     my $self = shift;
 
     return 1 unless $self->_preload_root_hosts_stages;
     return 0 unless $self->has_reported_stage_data;
-    return 0 unless $self->_resolver_identity;
+    return 0 unless $self->_has_live_stage_peer;
 
     return 1;
 }
@@ -942,8 +844,8 @@ sub spawn_preload_root {
     # (Preload::run_driver) that hosts EVERY stage (base/default/NOPRELOAD + named),
     # so this runner holds no preloaded state and hosts no stage in-process: it goes
     # scheduler-only (run_tests -> run_scheduler_only) and dispatches every started
-    # task out over a stage's registered channel. Stage resolution comes from the
-    # reported stage map + a resolve_file_stages round-trip to the base stage (the
+    # task out over a stage's registered channel. Stage resolution is client-side,
+    # from each task's preload directives against the reported stage map (the
     # scheduler-only runner has no loaded preloader). Only the real root sets this
     # (spawn_preload_root is root-only via _preload_root_wanted).
     $self->{+PRELOAD_ROOT_HOSTS} = 1;
@@ -1106,9 +1008,9 @@ sub run_tests {
 sub run_scheduler_only {
     my $self = shift;
 
-    # Wait until the preload-root has reported the stage map AND the base
-    # stage (the file_stage resolver) is connected, so buffered run/task submissions
-    # can be bucketed and resolved correctly. Submissions that arrive during this
+    # Wait until the preload-root has reported the stage map AND at least one
+    # stage is connected (the dispatch channel), so buffered run/task submissions
+    # can be bucketed and dispatched correctly. Submissions that arrive during this
     # window are buffered by submit_action; flush them once ready. If the preload-root
     # never becomes ready, wind down rather than hang.
     my $deadline = time + 60;

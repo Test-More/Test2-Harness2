@@ -243,27 +243,6 @@ sub request_handler_run_task {
     return undef;
 }
 
-# The scheduler-only runner has no loaded preloader, so it asks a live stage (the
-# only process holding the merged preload meta) to resolve test files' stages via
-# the preload's file_stage callbacks, falling back to the default stage. Two-way.
-sub request_handler_resolve_file_stages {
-    my $self = shift;
-    my ($payload) = @_;
-
-    my $files     = $payload->{files} || [];
-    my $preloader = $self->preloader;
-    my $staged    = $preloader ? $preloader->staged : undef;
-
-    my %stages;
-    for my $file (@$files) {
-        next unless $staged;
-        my $stage = $staged->file_stage($file) // $staged->default_stage;
-        $stages{$file} = $stage if defined $stage;
-    }
-
-    return {ok => 1, stages => \%stages};
-}
-
 # A monitored stage forwards a reload/monitor notification so the runner's reload
 # state (diagnostics) stays current; the stage delegate relays it to the runner.
 # One-way.

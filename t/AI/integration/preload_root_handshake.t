@@ -90,7 +90,6 @@ ok($data->{Alpha}, "Alpha stage reported");
 ok($data->{Beta},  "Beta stage reported");
 is($data->{Alpha}{default}, 1, "Alpha is the default stage");
 is($data->{Beta}{default},  0, "Beta is not the default");
-is($data->{Alpha}{can_run}, [], "Alpha can_run (eager fan-out) is an arrayref");
 ok(!$data->{BASE} && !$data->{NONE}, "no BASE/NONE pseudo-stages (current vocabulary)");
 
 # Tell the preload-root to stop, pump so it is delivered, and reap it.

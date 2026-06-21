@@ -4,7 +4,7 @@ use Test2::V0;
 use Test2::Harness2::Runner::State;
 
 # Bypass the heavy init (settings/workdir/resources) -- task_stage only reads
-# preloader / stage_map / file_stage_resolver.
+# preloader / stage_map.
 {
     package FakeState;
     our @ISA = ('Test2::Harness2::Runner::State');

@@ -1,4 +1,5 @@
 use Test2::V0;
+# HARNESS-STAGE-AAA
 
 is($ENV{T2_HARNESS_STAGE}, 'AAA', "Running in stage 'AAA'");
 ok($INC{'AAA.pm'}, "Preloaded AAA");
