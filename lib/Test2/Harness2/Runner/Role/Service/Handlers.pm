@@ -241,6 +241,13 @@ sub service_identified {
     $self->{'collector_conns'}{"$conn"} = $entry;
     $self->{'collector_current_try'}{$job_id} = $payload->{job_try};
 
+    # Record the collector's pid for the status report (and the kill(-pid) abort
+    # fallback). The runner learns it HERE, from the collector's own handshake, for
+    # BOTH paths: no-preload collectors are the runner's direct children (also
+    # recorded at run_job), and preload collectors double-fork + detach (ticket #28)
+    # so the stage no longer reports their pid -- this handshake is the only source.
+    $self->record_job_pid($job_id, $payload->{pid}) if defined $payload->{pid};
+
     # The collector connected: the connect-timeout no longer applies to this job
     # (its completion now rides this connection's transitions + EOF).
     delete $self->{'job_connect_watch'}{$job_id};
@@ -1236,7 +1243,7 @@ sub announce_run_health {
     # Harness output (distinct from job output) so the collector bug is visible.
     print STDERR "yath: $reason\n";
 
-    my $rh = {run_id => $run_id, reason => $reason, stamp => time};
+    my $rh      = {run_id     => $run_id, reason => $reason, stamp => time};
     my $payload = {facet_data => {harness_run_health => $rh}};
 
     $self->monitor->feed($payload);

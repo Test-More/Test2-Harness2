@@ -149,15 +149,77 @@ sub launch_via_fork ($class, $runner, $job, $label = 'Test-Runner') {
     # In parent
     return $pid if $pid;
 
-    # In Child: this process becomes the Test2-Collector collector PARENT. The
-    # collector forks the actual test child internally; that child runs the
-    # run_sub below, which unwinds back to the host's setjump frame ($label) and
-    # goto::file's in the real test -- so the test still runs in-process with
-    # everything preloaded, but now under the collector's stream formatter, and its
-    # full event stream is recorded to events.jsonl.zst.
+    # In Child: this process becomes the Test2-Collector collector PARENT (or, for a
+    # non-collected spawn worker, the worker itself). The shared collector body
+    # unwinds back to the host's setjump frame ($label) and goto::file's in the real
+    # test. This is the SINGLE-fork form: the forked child is the host's DIRECT
+    # child, reaped by the host. It is used for the spawn-worker path
+    # (launch_spawn). The preload TEST-job path uses launch_via_double_fork so the
+    # collector detaches and re-parents to the runner subreaper.
+    $class->_run_collected_child($runner, $job, $stage, $label);
+}
+
+# The preload TEST-job launch: double-fork + setsid so the collector detaches from
+# the stage and re-parents to the runner (a child subreaper, ticket #28) on a
+# supported OS, or to init otherwise -- the preload tree then reaps no collectors.
+# The stage forks a short-lived INTERMEDIATE; the intermediate setsid's (the
+# collector leads its own session/process-group, so the runner's kill(-pid)
+# fallback reaches the whole subtree) and forks the collector PARENT, then exits,
+# orphaning the collector so it re-parents away. The stage reaps ONLY the
+# intermediate (returned here); it never watches the collector. The runner learns
+# the collector's pid from the #27 collector handshake, so no pid is captured or
+# reported here. The collector body still longjumps $label in its test child --
+# the 'preload-root' setjump frame is copied onto every forked stack, so it is
+# present in the test child and the unwind lands in Preload::launch.
+sub launch_via_double_fork ($class, $runner, $job, $label = 'preload-root') {
+    my $stage = $class->get_stage($runner);
+
+    $stage->do_pre_fork($job) if $stage;
+
+    my $intermediate = fork();
+    die "Failed to fork: $!" unless defined $intermediate;
+
+    # In the stage: return the short-lived intermediate's pid. The stage reaps THIS
+    # pid only (pure zombie cleanup); it must NOT watch the collector.
+    return $intermediate if $intermediate;
+
+    # In the intermediate: detach into a new session (so its OWN reap at the stage is
+    # clean -- its process group dies with it once the collector leaves the group
+    # below), fork the collector parent, and exit so the collector is orphaned and
+    # re-parents to the runner subreaper (or init). The intermediate must NEVER
+    # return into the host run loop -- it exits.
+    require POSIX;
+    POSIX::setsid() or do { warn "setsid failed: $!"; POSIX::_exit(1) };
+
+    my $collector = fork();
+    unless (defined $collector) {
+        warn "Failed to fork collector: $!";
+        POSIX::_exit(1);
+    }
+
+    # Intermediate exits immediately, orphaning the collector.
+    POSIX::_exit(0) if $collector;
+
+    # In the collector parent (now detached). setsid AGAIN so the collector leads its
+    # OWN session/process-group (pgid == its pid): the runner's kill(-pid) fallback
+    # then reaches the whole collector subtree, and the collector leaves the
+    # intermediate's group so the intermediate's reap at the stage finalizes cleanly.
+    POSIX::setsid() or do { warn "collector setsid failed: $!"; POSIX::_exit(1) };
+
+    $class->_run_collected_child($runner, $job, $stage, $label);
+}
+
+# The collector-parent (or non-collected spawn worker) body shared by the single-
+# fork (launch_via_fork) and double-fork (launch_via_double_fork) launches. Runs in
+# the child: becomes the Test2-Collector collector parent, which forks the real
+# test child internally; that child unwinds back to the host's setjump frame
+# ($label) via Long::Jump and goto::file's in the real test -- so the test runs
+# in-process with everything preloaded, under the collector's stream formatter, its
+# full event stream recorded to events.jsonl.zst. Never returns: it exits.
+sub _run_collected_child ($class, $runner, $job, $stage, $label) {
     # Spawn jobs are infrastructure processes (the persistent `spawn` command's
-    # workers), not test files; they must not be wrapped in a test collector.
-    # Only real test Jobs become collector parents.
+    # workers), not test files; they must not be wrapped in a test collector. Only
+    # real test Jobs become collector parents.
     my $collected = !$job->isa('Test2::Harness2::Runner::Spawn');
 
     my $ok = eval {
@@ -467,10 +529,22 @@ jump B<label> into C<launch_via_fork> so the unwind lands in the right frame.
 
 =item $pid = Test2::Harness2::Runner::JobLauncher->launch_via_fork($runner, $job, $label)
 
-Fork a job. In the parent, return the child pid. In the child (the collector
-parent for a real test, or the test process itself for a non-collected spawn),
-unwind to the host's C<setjump $label> frame via L<Long::Jump> so the host can
-C<goto::file> the test in-process. C<$label> defaults to C<'Test-Runner'>.
+Single-fork a job. In the parent, return the child pid (the host's direct child,
+reaped by the host). In the child (the collector parent for a real test, or the
+test process itself for a non-collected spawn worker), unwind to the host's
+C<setjump $label> frame via L<Long::Jump> so the host can C<goto::file> the test
+in-process. C<$label> defaults to C<'Test-Runner'>. Used by the spawn-worker path.
+
+=item $pid = Test2::Harness2::Runner::JobLauncher->launch_via_double_fork($runner, $job, $label)
+
+Launch a preload test job that B<double-forks and detaches> the collector: the
+host forks a short-lived intermediate that C<setsid>'s and forks the collector
+parent (which C<setsid>'s into its own session/process-group) then exits, so the
+collector is orphaned and re-parents to the runner (a child subreaper) on a
+supported platform, or to C<init> otherwise. Returns the B<intermediate's> pid for
+the host to reap; the host never watches the detached collector. The collector
+self-reports its pid to the runner over its connection handshake. C<$label>
+defaults to C<'preload-root'>.
 
 =item Test2::Harness2::Runner::JobLauncher->launch_spawn($runner, $spawn, $label)
 

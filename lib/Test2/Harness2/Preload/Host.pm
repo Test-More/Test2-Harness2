@@ -127,7 +127,7 @@ sub name { 'runner' }
 sub workdir { my $self = shift; return $self->{+DIR} }
 
 sub service_name {
-    my $self = shift;
+    my $self  = shift;
     my $stage = $self->{+STAGE} // return 'runner';
     return "preload-$stage";
 }
@@ -206,7 +206,7 @@ sub preloader {
 
         # The real runner pid, so each stage collector watches it and
         # self-terminates if the runner dies (ARCHITECTURE.md §4.1).
-        runner_pid      => $self->{+ROOTPID},
+        runner_pid => $self->{+ROOTPID},
 
         below_threshold => ($self->{+PRELOAD_THRESHOLD} && $self->{+JOBS_TODO} && $self->{+PRELOAD_THRESHOLD} > $self->{+JOBS_TODO}) ? 1 : 0,
     );
@@ -694,18 +694,26 @@ sub run_job {
     if ($via) {
         require(mod2file($1)) if !defined(&{$via}) && $via =~ m/^(.+)::[^:]+$/;
 
+        # The test-job launch double-forks + detaches the collector (ticket #28): it
+        # returns the SHORT-LIVED INTERMEDIATE's pid, not the collector's. The stage
+        # reaps ONLY the intermediate (pure zombie cleanup) and does NOT watch the
+        # detached collector -- that re-parents to the runner subreaper (or init) and
+        # the runner decides its outcome from the collector's transitions + EOF
+        # (ARCHITECTURE.md §5.4). It is watched as a generic process (NOT the Job), so
+        # set_proc_exit's Job branch never fires for it and no verdict is derived.
         $pid = $self->$via($job);
-        $job->set_pid($pid);
-        $self->watch($job);
+        $self->watch_pid($pid);
     }
     else {
         $self->spawn($job);
         $pid = $job->pid;
-    }
 
-    # The stage reports the forked job's pid back up its one registered
-    # channel (the stage delegate's job_pid -> service_send('runner', ...)).
-    eval { $self->state->job_pid($task->{job_id}, $pid); 1 };
+        # The spawn path is the stage's direct child; report its pid so the runner's
+        # status/abort map has it. The detached test-job collector reports its own
+        # pid to the runner over its handshake (ticket #28), so it is not reported
+        # here.
+        eval { $self->state->job_pid($task->{job_id}, $pid); 1 };
+    }
 
     return $pid;
 }

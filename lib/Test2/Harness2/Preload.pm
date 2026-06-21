@@ -265,7 +265,11 @@ sub _run_stage_host ($self) {
         # preload (warn+skip); transient ⇒ monitor off ⇒ a broken preload is fatal.
         monitor_preloads => $self->{+MONITOR_PRELOADS},
 
-        fork_job_callback   => sub { Test2::Harness2::Runner::JobLauncher->launch_via_fork(@_, 'preload-root') },
+        # Preload TEST jobs double-fork + detach so the collector re-parents to the
+        # runner subreaper (or init) instead of being stage-reaped (ticket #28). The
+        # returned pid is the short-lived intermediate, which the stage reaps; the
+        # detached collector self-reports its pid to the runner over its handshake.
+        fork_job_callback   => sub { Test2::Harness2::Runner::JobLauncher->launch_via_double_fork(@_, 'preload-root') },
         fork_spawn_callback => sub { Test2::Harness2::Runner::JobLauncher->launch_spawn(@_, 'preload-root') },
     );
 
