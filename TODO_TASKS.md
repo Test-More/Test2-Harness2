@@ -272,7 +272,7 @@ handshake pid). The 4 sites call it. Mark `identity_timeout` a backstop; don't g
 ## TIER 2 — Consolidate / over-built
 
 ### #10 — Resolver retry → resolver ELIMINATED
-**Status:** Decided · **Step:** 23 · **Depends:** #3
+**Status:** ✅ DONE (`af8153696`) — resolver/file_stage/eager eliminated; client-side 3-field assignment; full §4.7a preload Resource (= chunk 11). See TODO_DONE.md
 
 **Problem:** the scheduler-only runner resolves file→stage by a blocking per-file
 round-trip to the base stage, retry-bounded by `preload_root_respawn_limit` (wrong

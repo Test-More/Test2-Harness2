@@ -7,6 +7,51 @@ Newest first.
 
 ---
 
+## #10 / chunk 23 + chunk 11 — Client-side stage assignment + §4.7a preload Resource — DONE (`af8153696`)
+
+Two sequential agents, all parts green. Net resolver/file_stage/eager elimination
+(-559 lines) + the preload Resource (+362).
+
+**Producer (Agent A, `489baac07`):** `App::Yath2::TestFile` reads directives →
+3 validated task fields: `# HARNESS-NO-PRELOAD`→`no_preload`; `# HARNESS-STAGE A B C`
+(multi-arg; 1-arg back-compat)→`preload_list`; `# HARNESS-STAGE-REQUIRE A B C`→
+`require_preload`+`preload_list`. Validation croaks if `no_preload` conflicts. Plugin
+override via the existing `munge_files` hook (`set_no_preload`/`set_require_preload`/
+`set_preload_list`). Fields flow `queue_item`→Finder→RunPlan→task; `Test2::Harness2::TestFile`
+gained accessors.
+
+**Consumer + Resource (Agent B, `560788b37`/`7c74efc48`/`af8153696`):**
+- **Eliminated** (25 files, -559): `resolve_file_stage`/`resolve_file_stages`/
+  `request_preload_sync`/`_resolver_identity`/`service_on_response`/`eager_from_stage_map`,
+  the `file_stage_resolver`/`eager_stages` slots, the `file_stage` + `eager` preload DSL
+  (+ `add_file_stage`), the eager fan-out in `_stage_order`, the resolver handlers (Host +
+  runner), `can_run` in the map. `_ready_to_schedule` now gates on map + a live stage peer
+  (`_has_live_stage_peer`). The stage MAP (`set_stage_data`) is kept.
+- **`State::task_stage` field-based:** `no_preload`→`NOPRELOAD`; first `up` listed stage;
+  else first listed stage in the map (waits); else `default`. (Fixed a mid-impl hang: an
+  early `!use_preload`→`NOPRELOAD` short-circuit bucketed no-preload-run tasks to a stage
+  the runner never schedules → winddown hang; fixed by letting the preloader own
+  NOPRELOAD-vs-default on the no-preload path.)
+- **`Resource::Preload`** (§4.7a) composes the Role (`&`-prefix, JobCount model); built
+  specially in `State::init` with a State backref (scheduler-only path only) to read
+  `stage_map`/`stage_is_up`/`stage_state`. `available($task)` tri-state: `up`→1;
+  `starting`/`restarting`→0 (wait); all absent-from-map/`down` → `-1` if `require_preload`
+  (skip/fail), else advisory→`default`. `assign` records the chosen stage; `release` no-op
+  (unbounded). assign→launch race already requeues via `dispatch_pending`→`requeue_task` (#3).
+- **Legacy `stage` field KEPT** (producer sets `stage //= preload_list->[0]`; consumer
+  reads `preload_list` first, falls back) — removing it touches every producer for no gain.
+- **Tests:** deleted `stage_dispatch.t`/`preload_crash_midrun.t` + file_stage fixtures;
+  reworked `t/integration/preload` to route via `HARNESS-STAGE` directives (no more
+  file_stage/eager-TRIGGER); added `State_task_stage.t`, `Resource_Preload.t`,
+  `preload_require_skip.t` (end-to-end: require-missing → genuinely SKIPPED; advisory →
+  default; present → runs there).
+
+This completes chunk 23 (client-side stage assignment) AND chunk 11 (preload as a
+resource). **Note:** require-skip integration shows a cosmetic "stage exited abnormally
+signal 9" teardown line — normal SIGKILL stage teardown at winddown; run PASSES exit 0.
+
+---
+
 ## #15 — Chunk-comment archaeology sweep — DONE (`97f51134a`, 7 commits)
 
 Suite green: `prove` Files=108 Tests=1731 · `yath test` PASSED 109/1736. Comments
