@@ -707,52 +707,20 @@ sub _handle_dead_preload_root {
     return 'fail';
 }
 
-# Surface the preload-root's (and its stages') captured STDERR when the
-# preloads fail to come up, so the broken-preload diagnostic (a die in a preload, a
-# stage that did not exit cleanly) reaches the command's output instead of being
-# swallowed in the preload-root's events file. Best-effort: any read error is
-# ignored.
+# Surface the preload-root's (and its stages') captured STDERR when the preloads
+# fail to come up, so the broken-preload diagnostic (a die in a preload, a stage
+# that did not exit cleanly) reaches the command's output. The preload-root hands
+# these over with stage_host_exited / preload_warnings; the runner just re-emits
+# them. It does NOT decode the per-process events files itself -- each failed
+# process's own collector already recorded its output, and the renderer surfaces it;
+# the runner only needs to know there was a problem and fail the run. A hard crash
+# (SIGKILL) hands nothing over, in which case the generic "died unexpectedly"
+# message stands on its own.
 sub _emit_preload_failure_output {
     my $self = shift;
 
-    # Prefer the warnings the preload-root handed us with stage_host_exited (no
-    # events-file read race); these carry the broken-preload diagnostic.
     my $errors = $self->stage_host_errors;
-    if ($errors && @$errors) {
-        print STDERR $_ for @$errors;
-        return;
-    }
-
-    require Test2::Collector::Util::Zstd::FrameBuffer;
-
-    my @files = (File::Spec->catfile($self->{+DIR}, 'preload-root-events.jsonl.zst'));
-    push @files => glob(File::Spec->catfile($self->{+DIR}, 'stage-*-events.jsonl.zst'));
-
-    for my $file (@files) {
-        next unless -f $file;
-
-        my $ok = eval {
-            my $fb = Test2::Collector::Util::Zstd::FrameBuffer->new;
-            open(my $fh, '<', $file) or return 1;
-            binmode $fh;
-            local $/;
-            my $data = <$fh>;
-            close($fh);
-            $fb->push_bytes($data);
-
-            while (my $rec = $fb->next_frame) {
-                my $facets = $rec->{payload}->{facet_data} or next;
-                for my $info (@{$facets->{info} // []}) {
-                    next unless ($info->{tag} // '') eq 'STDERR';
-                    my $details = $info->{details};
-                    next unless defined $details && length $details;
-                    print STDERR "$details\n";
-                }
-            }
-            1;
-        };
-        warn $@ if !$ok && $@;
-    }
+    print STDERR $_ for @$errors;
 
     return;
 }
@@ -1012,8 +980,10 @@ sub run_scheduler_only {
     # stage is connected (the dispatch channel), so buffered run/task submissions
     # can be bucketed and dispatched correctly. Submissions that arrive during this
     # window are buffered by submit_action; flush them once ready. If the preload-root
-    # never becomes ready, wind down rather than hang.
-    my $deadline = time + 60;
+    # never becomes ready, wind down rather than hang. The deadline is configurable
+    # (--preload-map-timeout) because some preloads legitimately take a long time to
+    # load before the base stage can report the map.
+    my $deadline = time + ($self->settings->runner->preload_map_timeout // 60);
     until ($self->_ready_to_schedule) {
         $self->service_io;
 

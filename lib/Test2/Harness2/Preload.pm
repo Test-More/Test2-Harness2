@@ -18,6 +18,7 @@ use Test2::Harness2::Util::HashBase qw{
     +monitor_preloads
     +my_pid
     +warnings
+    +settings
 };
 
 use Role::Tiny::With;
@@ -226,6 +227,17 @@ sub run_driver ($self) {
     return;
 }
 
+# The run's settings, loaded once from the workdir's settings.json (written by the
+# command before it launched us). Cached and reused by both the handshake (for the
+# preload bring-up timeout) and the stage host. Dies if settings.json is absent --
+# a bare preload-root with no run (e.g. a unit harness) never reaches a real run.
+sub settings ($self) {
+    return $self->{+SETTINGS} //= do {
+        require Getopt::Yath::Settings;
+        Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($self->{+WORKDIR}, 'settings.json'));
+    };
+}
+
 # Build and run the stage host in this (the preload-root) process. It is a
 # Test2::Harness2::Preload::Host -- an independent class from the runner (ticket
 # #22): it preloads, forks/hosts the stages, and launches dispatched tests, but
@@ -236,12 +248,11 @@ sub run_driver ($self) {
 # unwinds to our 'preload-root' Long::Jump host (see launch()).
 sub _run_stage_host ($self) {
 
-    require Getopt::Yath::Settings;
     require Test2::Harness2::Preload::Host;
     require Test2::Harness2::Runner::JobLauncher;
 
     my $dir      = $self->{+WORKDIR};
-    my $settings = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
+    my $settings = $self->settings;
 
     my $host = Test2::Harness2::Preload::Host->new(
         $settings->runner->all,
@@ -327,7 +338,12 @@ sub _request_sync ($self, $identity, $command, %args) {
 
     $self->{+RESPONSES} //= {};
 
-    my $deadline = time + 30;
+    # The preload bring-up patience knob (--preload-map-timeout). The runner answers
+    # get_preload_list instantly over the local socket, so this only bites if the
+    # runner is wedged. Best-effort: before settings.json is readable (a bare
+    # preload-root with no run), fall back to a 30s floor.
+    my $timeout  = eval { $self->settings->runner->preload_map_timeout } || 30;
+    my $deadline = time + $timeout;
     until (exists $self->{+RESPONSES}{$request_id}) {
         croak "timed out waiting for '$command' response from '$identity'"
             if time > $deadline;

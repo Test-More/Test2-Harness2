@@ -31,6 +31,17 @@ sub init {
     die "A 'state' backref is required" unless $self->{+STATE};
 }
 
+# The configured per-stage startup backstop in seconds, or 0 (off) when no settings
+# / no runner group is available (e.g. a unit harness builds the resource with
+# settings => undef).
+sub _stage_startup_timeout {
+    my $self = shift;
+
+    my $settings = $self->{+SETTINGS} or return 0;
+    return 0 unless $settings->check_group('runner');
+    return $settings->runner->preload_stage_startup_timeout // 0;
+}
+
 # The ordered preload-stage preference for a task, via the State's resolver so the
 # resource and task_stage agree on the list.
 sub _preload_list {
@@ -62,6 +73,11 @@ sub available {
     # Empty list => the default stage, always available here (it is the run's base).
     return 1 unless @$list;
 
+    # Optional per-stage startup backstop (--preload-stage-startup-timeout, off by
+    # default): a stage stuck in starting/restarting past this many seconds is treated
+    # as permanently gone rather than waited on forever. 0 disables it.
+    my $startup_timeout = $self->_stage_startup_timeout;
+
     my $waitable = 0;
     for my $stage (@$list) {
         return 1 if $state->stage_is_up($stage);
@@ -70,6 +86,13 @@ sub available {
         # Absent from the map, or explicitly 'down', is permanently gone.
         next unless $map->{$stage};
         next if $state->stage_state($stage) eq 'down';
+
+        # The backstop: a stage that has been coming up too long is treated as gone.
+        if ($startup_timeout) {
+            my $age = $state->stage_state_age($stage);
+            next if defined($age) && $age > $startup_timeout;
+        }
+
         $waitable = 1;
     }
 

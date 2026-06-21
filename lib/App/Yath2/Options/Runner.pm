@@ -221,6 +221,20 @@ Note: Can be specified multiple times
 Abort the test run if no tests have been able to start for SECONDS seconds while there are pending tests and none running. This is useful when a resource class is broken and always claims a resource will become available, preventing yath from ever finishing. (Default: 0, meaning no timeout)
 
 
+=item --preload-map-timeout SECONDS
+
+=item --no-preload-map-timeout
+
+How long the runner waits for the preload tree to load its preloads and report its stage map (and at least one stage to register) before aborting the run. Raise this if your preloads are slow to load. (Default: 60 seconds)
+
+
+=item --preload-stage-startup-timeout SECONDS
+
+=item --no-preload-stage-startup-timeout
+
+Optional backstop: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no backstop)
+
+
 =item --runner-id ARG
 
 =item --runner-id=ARG
@@ -536,6 +550,22 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         long_examples  => [' SECONDS'],
         short_examples => [' SECONDS'],
         description    => 'Stop waiting post-exit after the timeout period. (Default: 15 seconds) Some tests fork and allow the parent to exit before writing all their output. If Test2::Harness2 detects an incomplete plan after the test exits it will monitor for more events until the timeout period. Add the "# HARNESS-NO-TIMEOUT" comment to the top of a test file to disable timeouts on a per-test basis.',
+    );
+
+    option preload_map_timeout => (
+        type           => 'Scalar',
+        default        => 60,
+        long_examples  => [' SECONDS'],
+        short_examples => [' SECONDS'],
+        description    => 'How long the runner waits for the preload tree to load its preloads and report its stage map (and at least one stage to register) before aborting the run. Raise this if your preloads are slow to load. (Default: 60 seconds)',
+    );
+
+    option preload_stage_startup_timeout => (
+        type           => 'Scalar',
+        default        => 0,
+        long_examples  => [' SECONDS'],
+        short_examples => [' SECONDS'],
+        description    => 'Optional backstop: if a preload stage stays in a starting/restarting state longer than SECONDS, treat it as unavailable so preload-directed tests routed to it are skipped (or failed, if they require it) instead of waiting forever. Generous and off by default since some preload stages legitimately take minutes to start. (Default: 0, meaning no backstop)',
     );
 
     option runner_id => (

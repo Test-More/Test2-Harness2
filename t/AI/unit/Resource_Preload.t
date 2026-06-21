@@ -88,6 +88,44 @@ subtest advisory_miss_falls_to_default => sub {
         "advisory + listed stage down => 1 (falls to default)");
 };
 
+subtest startup_timeout_backstop => sub {
+    require Getopt::Yath::Settings;
+
+    # ALPHA is present in the map but not up (restarting). With a 5s per-stage
+    # startup backstop configured and ALPHA backdated so it has been coming up for
+    # 100s, the backstop treats it as permanently gone instead of waiting forever.
+    my $LC = Test2::Harness2::Runner::State->STAGE_LIFECYCLE;
+
+    my $build = sub {
+        my $state = FakeState->new(preloader => undef, stage_map => $MAP);
+        $state->set_stage_map($MAP);
+        $state->stage_ready('default');
+        $state->stage_restarting('ALPHA');    # present but not up
+        $state->{$LC}{ALPHA}{stamp} -= 100;    # make it look stuck
+
+        my $settings = Getopt::Yath::Settings->new(runner => {preload_stage_startup_timeout => 5});
+        return Test2::Harness2::Runner::Resource::Preload->new(settings => $settings, state => $state);
+    };
+
+    my $res = $build->();
+    is($res->available({use_preload => 1, require_preload => 1, preload_list => ['ALPHA']}), -1,
+        "required stage stuck starting past the backstop => -1 (skip/fail)");
+
+    my $res2 = $build->();
+    is($res2->available({use_preload => 1, require_preload => 0, preload_list => ['ALPHA']}), 1,
+        "advisory stage stuck starting past the backstop => 1 (falls to default)");
+
+    # Without the backstop (timeout 0, the default), the same stuck stage is waited on.
+    my $state = FakeState->new(preloader => undef, stage_map => $MAP);
+    $state->set_stage_map($MAP);
+    $state->stage_ready('default');
+    $state->stage_restarting('ALPHA');
+    $state->{$LC}{ALPHA}{stamp} -= 100;
+    my $no_timeout = Test2::Harness2::Runner::Resource::Preload->new(settings => undef, state => $state);
+    is($no_timeout->available({use_preload => 1, require_preload => 1, preload_list => ['ALPHA']}), 0,
+        "no backstop configured => still waits (0) on a long-starting stage");
+};
+
 subtest assign_records_chosen_stage => sub {
     my ($res) = build_resource(stage_map => $MAP, up => ['default', 'ALPHA']);
 
