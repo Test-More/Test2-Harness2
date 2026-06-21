@@ -87,6 +87,11 @@ subtest abort_run_halts_and_stops => sub {
     ok($state->halted_runs->{'R1'}, "the run is halted (no new tasks accepted)");
     ok($state->stopped_runs->{'R1'}, "the run is stopped (loop will advance off it)");
 
+    # Ticket #35: halting the run must also drop its TASK_LOOKUP entries so a stale
+    # task can no longer block a same-job_id resubmission and so a persistent runner
+    # does not retain the task hashes forever.
+    ok(!$state->task_lookup->{'J1'}, "the halted run's task is gone from task_lookup");
+
     # A halted run drops further task submissions on the floor.
     $state->queue_task({
         job_id   => 'J2', run_id => 'R1',
@@ -94,6 +99,28 @@ subtest abort_run_halts_and_stops => sub {
         stage    => 'default', use_preload => 0,
     });
     ok(!$state->task_lookup->{'J2'}, "a halted run rejects further task submissions");
+};
+
+# Ticket #35: purge_run (owner-drop sweep) must also clear the run's TASK_LOOKUP
+# entries, not just the pending buckets and bookkeeping.
+subtest purge_run_clears_task_lookup => sub {
+    my $state = new_state();
+
+    $state->queue_run({run_id => 'R1'});
+    $state->start_run('R1');
+
+    $state->queue_task({
+        job_id   => 'J1', run_id => 'R1',
+        category => 'general', duration => 'short',
+        stage    => 'default', use_preload => 0,
+    });
+    ok($state->task_lookup->{'J1'}, "task queued");
+
+    $state->stop_run('R1');
+    $state->clear_finished_run;
+    $state->purge_run('R1');
+
+    ok(!$state->task_lookup->{'J1'}, "the purged run's task is gone from task_lookup");
 };
 
 # --- Runner-level owner-drop sweep -------------------------------------------------

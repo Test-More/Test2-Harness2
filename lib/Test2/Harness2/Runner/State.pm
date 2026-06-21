@@ -262,6 +262,7 @@ sub halt_run {
     my ($run_id) = @_;
 
     delete $self->{+PENDING_TASKS}->{$run_id};
+    $self->_drop_run_task_lookup($run_id);
 
     $self->{+HALTED_RUNS}->{$run_id}++;
 }
@@ -953,8 +954,27 @@ sub purge_run {
     delete $self->{+PENDING_TASKS}->{$run_id};
     delete $self->{+STOPPED_RUNS}->{$run_id};
     delete $self->{+HALTED_RUNS}->{$run_id};
+    $self->_drop_run_task_lookup($run_id);
 
     return $purged;
+}
+
+# Drop every TASK_LOOKUP entry belonging to a run. halt_run/purge_run otherwise
+# leave them: _queue_task's duplicate guard checks TASK_LOOKUP before HALTED_RUNS,
+# so a stale entry stays addressable (can block a same-job_id task) and a
+# persistent runner retains the task hashes indefinitely after an abort/truncate.
+sub _drop_run_task_lookup {
+    my $self = shift;
+    my ($run_id) = @_;
+
+    my $lookup = $self->{+TASK_LOOKUP} or return;
+
+    for my $job_id (keys %$lookup) {
+        my $task = $lookup->{$job_id} or next;
+        delete $lookup->{$job_id} if defined $task->{run_id} && $task->{run_id} eq $run_id;
+    }
+
+    return;
 }
 
 # Abort a run's remaining schedulable work in canonical state: drop its pending
