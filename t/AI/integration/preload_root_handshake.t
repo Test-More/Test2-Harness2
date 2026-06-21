@@ -39,8 +39,9 @@ BEGIN {
     with 'Test2::Harness2::Role::Service';
     with 'Test2::Harness2::Runner::Role::Service::Handlers';
 
-    sub name  { 'runner' }
-    sub state { $_[0]->{state} //= bless {}, 'FakeState' }
+    sub name     { 'runner' }
+    sub state    { $_[0]->{state} //= bless {}, 'FakeState' }
+    sub settings { $_[0]->{settings} }
 
     sub init {
         my $self = shift;

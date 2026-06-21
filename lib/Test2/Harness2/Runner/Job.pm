@@ -15,7 +15,7 @@ use Time::HiRes qw/time/;
 use File::Spec();
 use File::Temp();
 
-use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file open_file process_includes chmod_tmp collector_exit_code socket_reporter/;
+use Test2::Harness2::Util qw/fqmod clean_path write_file mod2file process_includes chmod_tmp socket_reporter/;
 use Test2::Harness2::Util::IPC qw/set_cloexec/;
 use Test2::Harness2::IPC;
 
@@ -45,7 +45,7 @@ use Test2::Harness2::Util::HashBase(
 
         +args +file +run_file
 
-        +out_file +err_file +in_file +bail_file +events_file
+        +out_file +err_file +in_file +events_file
 
         +load +load_import
 
@@ -130,55 +130,16 @@ sub spawn_params {
     return {
         command => sub {
             my $info = $self->run_under_collector($self->collector_target);
-            POSIX::_exit($self->_collector_exit_code($info));
+            # The test-job collector parent exits HEALTH-ONLY (0 if the collector
+            # functioned, non-zero only if the collector itself malfunctioned). The
+            # test's verdict rides the transitions (harness_final_state), which the
+            # runner decides on the connection EOF -- the exit code is never the
+            # verdict (ARCHITECTURE.md §5.4). Util::collector_exit_code stays for
+            # the NON-test wraps (runner/stage/aux), whose wrapped exit is meaningful.
+            require Test2::Collector::Runner;
+            POSIX::_exit(Test2::Collector::Runner->spawn_exit_code($info));
         },
     };
-}
-
-# Decide the collector-parent's exit code from the collect() info hash. The
-# RUNNER reaps this process and uses its wait status to drive retry/fail logic
-# (see Test2::Harness2::Runner::set_proc_exit), so the collector-parent MUST
-# exit with the TEST child's verdict, NOT merely its own (collector) health:
-#   - collector itself failed  -> 255 (a harness/collector error, not a test
-#     result; the runner treats non-zero as failure, which is correct here too).
-#   - otherwise                -> the test child's exit status: WEXITSTATUS when
-#     non-zero, or 1 if the test died by signal. Zero only on a clean pass, so a
-#     passing test still makes the runner see success.
-# POSIX::_exit(N) makes the runner observe wait-status N<<8, parse_exit -> err=N.
-sub _collector_exit_code {
-    my $self = shift;
-    my ($info) = @_;
-
-    # Collector-failure (255) and the err/sig numeric mapping are shared with the
-    # non-test runner collector wrapper (App::Yath2::Command::test); keep them in
-    # the one Util helper so exit-status fidelity never diverges. On a 255
-    # collector failure return immediately -- the job-specific bail/final_state
-    # layering below only makes sense when the collector itself was healthy.
-    # collector_exit_code already returns 255 whenever the collector is
-    # unhealthy, so short-circuit on that same condition: the job-specific
-    # bail/final_state layering below only makes sense when the collector itself
-    # was healthy.
-    my $code = collector_exit_code($info);
-    return $code unless $info && $info->{collector} && $info->{collector}{ok};
-
-    # A bail-out (or any other halt) lives only in the audited final_state, not
-    # in the OS exit status. Persist the reason so the runner's bailed_out() can
-    # see it (--abort-on-bail) now that there is no stdout file to scan.
-    my $fs = $info->{final_state};
-    if ($fs && defined($fs->{halt}) && length($fs->{halt})) {
-        write_file($self->bail_file, $fs->{halt});
-    }
-
-    return $code if $code;
-
-    # Test2-Collector can audit a test as FAILED while the process exits zero
-    # (raw TAP "not ok", a missing/invalid plan, --fail-on-resource-skip TAP, a
-    # bail-out). The runner drives retry/fail off this wait status, so a clean OS
-    # exit must still report failure when the audited verdict failed -- otherwise
-    # an audit-only failure is silently treated as a pass and never retried.
-    return 1 if $fs && !$fs->{pass};
-
-    return 0;
 }
 
 # Build the exec target (and any skip/fail short-circuit) for the spawn path.
@@ -399,7 +360,6 @@ my %JSON_SKIP = (
     IN_FILE()          => 1,
     JOB_DIR()          => 1,
     OUT_FILE()         => 1,
-    BAIL_FILE()        => 1,
     RUN_DIR()          => 1,
     TMP_DIR()          => 1,
 );
@@ -433,24 +393,8 @@ sub rel_file  { File::Spec->abs2rel($_[0]->file) }
 sub file      { $_[0]->{+FILE}      //= clean_path($_[0]->{+TASK}->{file}, 0) }
 sub err_file  { $_[0]->{+ERR_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stderr')) }
 sub out_file  { $_[0]->{+OUT_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stdout')) }
-sub bail_file { $_[0]->{+BAIL_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'bail')) }
 sub events_file { $_[0]->{+EVENTS_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'events.jsonl.zst')) }
 sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+RUNNER}->dir, $_[0]->{+RUN}->run_id)) }
-
-sub bailed_out {
-    my $self = shift;
-
-    # Bail-out is carried in the audited final_state (a control facet /
-    # harness_final_state halt), which the collector persists to the bail file.
-    # The runner does not write a stdout file, so there is no "scan stdout for
-    # 'Bail out!'" path. Re-sourcing bail detection from the events file is a
-    # deferred follow-up.
-    return "" unless -f $self->bail_file;
-
-    my $fh = open_file($self->bail_file, '<');
-    my $reason = <$fh> || 1;
-    return $reason;
-}
 
 sub verbose { $_[0]->{+VERBOSE} //= $_[0]->{+TASK}->{verbose} // 0 }
 sub is_try  { $_[0]->{+IS_TRY}  //= $_[0]->{+TASK}->{is_try}  // 0 }
@@ -780,14 +724,6 @@ Note, this object subclasses L<Test2::Harness2::IPC::Process>.
 =item $arrayref = $job->args
 
 Get the arguments for the test either formt he queue item, or from the run.
-
-=item $path = $job->bail_file
-
-Path to the events-file used in case of a bail-out
-
-=item $bool = $job->bailed_out
-
-True if the test job bailed out.
 
 =item $cat $job->category
 

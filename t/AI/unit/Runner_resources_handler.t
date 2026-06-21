@@ -30,7 +30,7 @@ use v5.38;
 {
     package My::Runner;
     use v5.38;
-    use Object::HashBase qw/<rootpid <state/;
+    use Object::HashBase qw/<rootpid <state <settings/;
     use Role::Tiny::With;
     with 'Test2::Harness2::Runner::Role::Service::Handlers';
 }

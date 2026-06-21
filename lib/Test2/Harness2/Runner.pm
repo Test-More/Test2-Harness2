@@ -1253,35 +1253,18 @@ sub set_proc_exit {
     my ($proc, $exit, $time, @args) = @_;
 
     if ($proc->isa('Test2::Harness2::Runner::Job')) {
+        # Reaping a test-job collector is now pure zombie cleanup. The runner
+        # decides the test's outcome (retry / stop / bail) from the collector's
+        # transitions + connection EOF on runner.socket (ARCHITECTURE.md §5.4), NOT
+        # from this reaped exit code: the exit code cannot express a bail-out, and
+        # on the preload path the runner never sees it. The EOF handler
+        # (collector_conn_eof) already cleared job_pids and decided; here we only
+        # clear the timeout marker. job_pids is deleted defensively in case the reap
+        # races ahead of the EOF (the EOF decision is still fire-once guarded).
         my $task = $proc->task;
-
         delete $self->{+JOB_PIDS}->{$task->{job_id}};
-
-        my $timed_out = 0;
-        if (!$exit && ref $self->{+RUN_REACHED_TIMEOUT} && $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}) {
-            delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}};
-            $timed_out = 1;
-        }
-
-        if (($exit || $timed_out) && $proc->is_try < ($proc->retry // 0)) {
-            $self->state->retry_task($task->{job_id});
-            push @args => 'will-retry';
-            # A root-forked job finishing is a runner-originated state
-            # mutation; forward it so a subscriber's mirror sees it re-queued.
-            $self->announce_job($task->{job_id}, 'retry', file => $task->{file}, run_id => $task->{run_id});
-        }
-        else {
-            $self->state->stop_task($task->{job_id});
-            $self->announce_job($task->{job_id}, 'done', file => $task->{file}, run_id => $task->{run_id});
-        }
-
-        if (my $bail = $exit ? $proc->bailed_out : 0) {
-            print "$$ $0 BAIL-OUT detected: $bail\n";
-            if ($self->settings->runner->abort_on_bail) {
-                print "$$ $0 Aborting the test run...\n";
-                $self->state->halt_run($task->{run_id});
-            }
-        }
+        delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}
+            if ref $self->{+RUN_REACHED_TIMEOUT};
     }
 
     # A preload stage exiting (reload/monitor relaunch, or death) is handled by the

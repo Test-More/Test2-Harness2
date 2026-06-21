@@ -751,31 +751,16 @@ sub set_proc_exit {
     my ($proc, $exit, $time, @args) = @_;
 
     if ($proc->isa('Test2::Harness2::Runner::Job')) {
+        # Reaping a test-job collector is now pure zombie cleanup: the runner
+        # decides the test's outcome (retry / stop / bail) from the collector's
+        # transitions + connection EOF on runner.socket (ARCHITECTURE.md §5.4), not
+        # from this reaped exit code. The stage therefore reports NO verdict back to
+        # the runner -- doing so would double-decide. We only drop our local job-pid
+        # bookkeeping and clear any timeout marker.
         my $task = $proc->task;
-
         delete $self->{+JOB_PIDS}->{$task->{job_id}};
-
-        my $timed_out = 0;
-        if (!$exit && ref $self->{+RUN_REACHED_TIMEOUT} && $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}) {
-            delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}};
-            $timed_out = 1;
-        }
-
-        if (($exit || $timed_out) && $proc->is_try < ($proc->retry // 0)) {
-            $self->state->retry_task($task->{job_id});
-            push @args => 'will-retry';
-        }
-        else {
-            $self->state->stop_task($task->{job_id});
-        }
-
-        if (my $bail = $exit ? $proc->bailed_out : 0) {
-            print "$$ $0 BAIL-OUT detected: $bail\n";
-            if ($self->settings->runner->abort_on_bail) {
-                print "$$ $0 Aborting the test run...\n";
-                $self->state->halt_run($task->{run_id});
-            }
-        }
+        delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}
+            if ref $self->{+RUN_REACHED_TIMEOUT};
     }
     elsif ($proc->isa('Test2::Harness2::Runner::StageProcess')) {
         my $stage = $proc->name;

@@ -228,68 +228,11 @@ subtest 'TAP output is valid when executed' => sub {
     };
 };
 
-subtest '_collector_exit_code maps collect() info to an exit code' => sub {
-    my $job = make_job();
-
-    # Collector itself failed -> 255 (harness/collector error, not a test result)
-    is(
-        $job->_collector_exit_code({collector => {ok => 0, errors => []}}),
-        255,
-        "collector failure -> 255",
-    );
-    is($job->_collector_exit_code(undef),  255, "missing info -> 255");
-    is($job->_collector_exit_code({}),     255, "no collector key -> 255");
-
-    # Collector ok + clean test pass -> 0
-    is(
-        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}}),
-        0,
-        "clean pass -> 0",
-    );
-    is(
-        $job->_collector_exit_code({collector => {ok => 1}, exit => {}}),
-        0,
-        "missing exit fields -> 0",
-    );
-
-    # Collector ok + test failed (non-zero exit) -> that exit code
-    is(
-        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 3, sig => 0}}),
-        3,
-        "test failure -> test's exit code",
-    );
-
-    # Collector ok + test killed by a signal (no err) -> 1
-    is(
-        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 9}}),
-        1,
-        "signal death -> 1",
-    );
-
-    # Collector ok + clean OS exit but the audited verdict FAILED -> 1, so the
-    # runner retries/fails an audit-only failure (raw "not ok", bad plan, ...).
-    is(
-        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}, final_state => {pass => 0}}),
-        1,
-        "audited failure with exit 0 -> 1",
-    );
-
-    # Audited pass with clean exit stays 0 (final_state present must not break it).
-    is(
-        $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}, final_state => {pass => 1}}),
-        0,
-        "audited pass with exit 0 -> 0",
-    );
-};
-
-subtest '_collector_exit_code records a bail reason for abort-on-bail' => sub {
-    my $job = make_job();
-
-    # A halt on the audited final_state is written to the bail file so the
-    # runner's bailed_out() can see it (no stdout file is scanned anymore).
-    $job->_collector_exit_code({collector => {ok => 1}, exit => {err => 0, sig => 0}, final_state => {pass => 0, halt => 'stop now'}});
-
-    is($job->bailed_out, 'stop now', "bail reason persisted and read back");
-};
+# The test-job collector parent now exits HEALTH-ONLY via
+# Test2::Collector::Runner->spawn_exit_code (the test verdict rides the
+# transitions + connection EOF, ARCHITECTURE.md §5.4). Job::_collector_exit_code
+# and Job::bailed_out / bail_file were removed, so the exit-code-mapping subtests
+# that lived here are gone. The exit semantics are covered in Test2-Collector's
+# own suite (spawn_exit_code) and end-to-end by the integration runs.
 
 done_testing;

@@ -160,6 +160,7 @@ subtest purge_run_clears_task_lookup => sub {
         return bless {rootpid => $$, state => FakeRunState->new, watchdog => FakeWatchdog->new, @_}, $class;
     }
     sub state    { $_[0]->{state} }
+    sub settings { $_[0]->{settings} }
     sub watchdog { $_[0]->{watchdog} }
 }
 

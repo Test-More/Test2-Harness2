@@ -13,7 +13,7 @@ use Test2::Harness2::Runner::StatusReport();
 
 use Role::Tiny;
 
-requires qw/state/;
+requires qw/state settings/;
 
 =pod
 
@@ -78,9 +78,30 @@ The socket request handlers; see the inline documentation for each.
 
 =item $self->service_conn_closed($conn)
 
-L<Test2::Harness2::Role::Service> calls this when a peer connection closes; sweep
-the runs that connection owns (queued) and abort the running ones / purge the
-finished ones, per the connection-gated retention policy.
+L<Test2::Harness2::Role::Service> calls this when a peer connection closes.
+Dispatch by connection kind: a registered test-collector connection EOF runs the
+completion decision (C<collector_conn_eof>); a command/run-owner connection runs
+the connection-gated run sweep (abort the running ones / purge the finished ones).
+
+=item $self->service_identified($conn, $payload)
+
+L<Test2::Harness2::Role::Service> calls this when a peer announces its full
+identity. A test collector's identity carries C<job_id> + C<job_try> (+ C<run_id>);
+register the connection so its later EOF maps back to the job.
+
+=item $self->collector_conn_eof($conn)
+
+Decide a test's outcome on its collector connection's EOF (drain done): the
+verdict was captured on the connection as transitions arrived. Fire-once per
+C<(job_id, job_try)>, stale-try guarded.
+
+=item $self->mark_job_decided($job_id, $job_try)
+
+=item $bool = $self->job_already_decided($job_id, $job_try)
+
+The shared fire-once ledger keyed by C<(job_id, job_try)>: the EOF decision and
+the watchdog both consult/set it so a job completes exactly once even when its EOF
+and an abort race.
 
 =item $self->handle_owner_drop($run_id, $info)
 
@@ -153,12 +174,55 @@ sub service_conn_closed {
     return unless $self->{'rootpid'} == $$;
     return unless defined $conn;
 
+    # A test collector's connection EOF is the "collector gone" signal and the
+    # point at which the runner decides the test's outcome (ARCHITECTURE.md §5.4).
+    # Dispatch by connection kind: a registered test-collector connection runs the
+    # completion decision; a command/run-owner connection runs the owner-drop sweep.
+    # These are disjoint -- a test-collector connection never owns a run.
+    return $self->collector_conn_eof($conn)
+        if $self->{'collector_conns'} && $self->{'collector_conns'}{"$conn"};
+
     my $owners = $self->{'run_owners'} or return;
 
     for my $run_id (keys %$owners) {
         my $info = $owners->{$run_id};
         next unless ($info->{conn} // 0) == $conn;
         $self->handle_owner_drop($run_id, $info);
+    }
+
+    return;
+}
+
+# A peer announced its full identity. A test collector's identity carries job_id
+# + job_try (+ run_id); register the connection -> job map so the connection's
+# later EOF maps back to the job and its try (ARCHITECTURE.md §5.4). A non-test
+# identity (a stage, a command, the preload-root) carries no job_id and is
+# ignored here. If the run is already under a bail/abort intent (a job that
+# connected AFTER the bail), terminate this late collector right now.
+sub service_identified {
+    my $self = shift;
+    my ($conn, $payload) = @_;
+
+    return unless $self->{'rootpid'} == $$;
+    return unless $conn && ref($payload) eq 'HASH';
+
+    my $job_id = $payload->{job_id} // return;
+
+    my $entry = {
+        conn    => $conn,
+        job_id  => $job_id,
+        job_try => $payload->{job_try},
+        run_id  => $payload->{run_id},
+        pid     => $payload->{pid},
+    };
+
+    $self->{'collector_conns'}{"$conn"} = $entry;
+    $self->{'collector_current_try'}{$job_id} = $payload->{job_try};
+
+    # Late-connecting collector for a run already bailing/aborting: terminate it
+    # now so it kills its child and EOFs (handled as aborted, never a false pass).
+    if (defined($entry->{run_id}) && $self->{'bail_runs'} && exists $self->{'bail_runs'}{$entry->{run_id}}) {
+        $self->_terminate_collector($entry, $self->{'bail_runs'}{$entry->{run_id}});
     }
 
     return;
@@ -206,6 +270,257 @@ sub handle_owner_drop {
         run_id => $run_id,
     );
     $self->state->abort_run($run_id);
+
+    return;
+}
+
+# The completion decision (ARCHITECTURE.md §5.4), run on a test collector's
+# connection EOF after its transition frames have been drained. The verdict was
+# captured on the conn -> job entry as transitions arrived. FIRE-ONCE: the entry's
+# `decided` flag guarantees exactly one decision per (job_id, job_try) -- the EOF
+# fires it; the reap (when it happens) is pure zombie cleanup and never decides.
+#
+# A stale-try EOF (the entry's job_try is not the job's current try -- a superseded
+# attempt whose late EOF arrives after a retry already re-queued the job) is a
+# no-op for stop/retry: it is only forgotten.
+sub collector_conn_eof {
+    my $self = shift;
+    my ($conn) = @_;
+
+    my $entry = delete $self->{'collector_conns'}{"$conn"} or return;
+
+    my $job_id  = $entry->{job_id};
+    my $job_try = $entry->{job_try};
+
+    delete $self->{'job_pids'}->{$job_id} if defined $job_id;
+
+    # Stale try: a superseded attempt's connection was retired on retry; its late
+    # EOF must not stop/retry the live try (the current incarnation owns it).
+    my $current = $self->{'collector_current_try'}{$job_id};
+    return if defined($current) && defined($job_try) && "$current" ne "$job_try";
+
+    # FIRE-ONCE: exactly one completion per (job_id, job_try). The decided set is
+    # shared with the watchdog (an abort/owner-disconnect/wind-down abort marks the
+    # job decided), so an EOF that arrives after the watchdog already decided this
+    # try is a no-op, and vice versa. Per-entry/global both keyed here.
+    return if $self->job_already_decided($job_id, $job_try);
+    $self->mark_job_decided($job_id, $job_try);
+
+    delete $self->{'collector_current_try'}{$job_id};
+
+    $self->decide_collector_outcome($entry);
+
+    return;
+}
+
+# The shared fire-once ledger keyed by (job_id, job_try): the EOF decision and the
+# watchdog both consult/set it so a job completes exactly once even when its EOF
+# and an abort race. A retry is a NEW (job_id, job_try) pair, so it is never
+# blocked by the prior try's entry.
+sub _decided_key { my ($self, $job_id, $job_try) = @_; return join('+', $job_id // '', $job_try // 0) }
+
+sub job_already_decided {
+    my $self = shift;
+    my ($job_id, $job_try) = @_;
+    return $self->{'decided_jobs'}{$self->_decided_key($job_id, $job_try)} ? 1 : 0;
+}
+
+sub mark_job_decided {
+    my $self = shift;
+    my ($job_id, $job_try) = @_;
+    $self->{'decided_jobs'}{$self->_decided_key($job_id, $job_try)} = 1;
+    return;
+}
+
+# Act on one collector's captured verdict (ARCHITECTURE.md §5.4):
+#   final_state seen + halt  -> bail (already fired when the halt transition
+#                               arrived; never retry a bailing job).
+#   final_state seen + pass  -> complete (stop the task; 'done').
+#   final_state seen + !pass -> retry if the task has tries left, else fail.
+#   final_state ABSENT       -> fail. If the runner deliberately terminated this
+#                               job (a bail/abort terminate) record it 'aborted';
+#                               otherwise flag a possible harness/collector
+#                               internal error. Never a false pass.
+sub decide_collector_outcome {
+    my $self = shift;
+    my ($entry) = @_;
+
+    my $job_id = $entry->{job_id};
+    my $fs     = $entry->{final_state};
+
+    # halt wins over retry: a bailing job is completed (failed), never re-queued.
+    if ($entry->{halt} || ($fs && defined($fs->{halt}) && length($fs->{halt}))) {
+        $self->_collector_stop($job_id);
+        $self->announce_job($job_id, 'done', run_id => $entry->{run_id});
+        return;
+    }
+
+    # No verdict at EOF: fail. Terminated => aborted; otherwise possible-internal.
+    unless ($fs) {
+        if ($entry->{terminated}) {
+            $self->_collector_no_verdict($entry, $entry->{terminate_reason} // "Job terminated by the runner", 'aborted');
+        }
+        else {
+            $self->_collector_no_verdict($entry, "The collector exited without reporting a final state; this may be a harness/collector problem and not a fault in the test itself", 'failed');
+        }
+        return;
+    }
+
+    if ($fs->{pass}) {
+        $self->_collector_stop($job_id);
+        $self->announce_job($job_id, 'done', run_id => $entry->{run_id});
+        return;
+    }
+
+    # Audited failure: retry if tries remain (re-queue same job_id, new job_try),
+    # else complete (fail). The retry POLICY lives in the task (--retry +
+    # # HARNESS-retry / # HARNESS-no-retry directives, parsed into task->{retry}).
+    if ($self->_collector_retry_if_tries($entry)) {
+        $self->announce_job($job_id, 'retry', run_id => $entry->{run_id});
+        return;
+    }
+
+    $self->_collector_stop($job_id);
+    $self->announce_job($job_id, 'done', run_id => $entry->{run_id});
+
+    return;
+}
+
+# Stop a task in canonical state, best-effort (a racing stop/abort may already
+# have cleared it -- not an error here).
+sub _collector_stop {
+    my $self = shift;
+    my ($job_id) = @_;
+    return unless defined $job_id;
+    eval { $self->state->stop_task($job_id); 1 };
+    return;
+}
+
+# Retry the task if it has tries left: consult the task's retry directive against
+# its current try and, when a try remains, re-queue the same job_id with an
+# incremented job_try (State::retry_task) and advance the current-try marker so
+# the superseded connection's late EOF becomes a no-op. Returns true when it
+# retried. A halted run never retries (State::retry_task itself guards this).
+sub _collector_retry_if_tries {
+    my $self = shift;
+    my ($entry) = @_;
+
+    my $job_id = $entry->{job_id} // return 0;
+    my $try    = $entry->{job_try};
+
+    my $running = $self->state->running_tasks // {};
+    my $task    = $running->{$job_id} or return 0;
+
+    my $retries = $self->_job_retry_count($task, $entry->{run_id});
+    return 0 unless defined($try) && $try < $retries;
+
+    my $ok = eval { $self->state->retry_task($job_id); 1 };
+    return 0 unless $ok;
+
+    # The re-queued attempt is try+1; mark it current so this attempt's connection
+    # (which is about to be forgotten) cannot stop/retry the new one.
+    $self->{'collector_current_try'}{$job_id} = $try + 1;
+
+    return 1;
+}
+
+# How many retries the job is allowed: the per-file `# HARNESS-retry N`/-no-retry
+# directive lands on the task ($task->{retry}); the run-level --retry lives on the
+# Run. Mirror Test2::Harness2::Runner::Job::retry's task-then-run fallback so the
+# EOF decision matches what the old reap-driven decision did.
+sub _job_retry_count {
+    my $self = shift;
+    my ($task, $run_id) = @_;
+
+    return $task->{retry} if defined $task->{retry};
+
+    my $run = $self->state->run;
+    return $run->retry // 0 if $run && (!defined($run_id) || $run->run_id eq $run_id);
+
+    return 0;
+}
+
+# No-verdict render mutation (A6, ARCHITECTURE.md §5.4): a completion the runner
+# decided with NO collector final_state (EOF-no-verdict, or a terminated/aborted
+# job) has no usable completed/final_state transition for the renderer, so emit a
+# runner-originated terminal 'aborted' harness_runner_job mutation carrying the
+# reason. The subscriber (the command-side renderer driver) folds it exactly once
+# and rolls the job up as a failed completion, the reason shown as harness output.
+# $kind is 'aborted' (terminated) or 'failed' (EOF-no-verdict); both render as a
+# failed completion -- the reason text distinguishes them to the reader.
+sub _collector_no_verdict {
+    my $self = shift;
+    my ($entry, $reason, $kind) = @_;
+
+    my $job_id = $entry->{job_id} // return;
+
+    $self->_collector_stop($job_id);
+
+    $self->announce_job(
+        $job_id, 'aborted',
+        run_id  => $entry->{run_id},
+        details => $reason,
+    );
+
+    return;
+}
+
+# A bail-out (the early halt transition) for a run. Stop dispatching new jobs for
+# the run, and -- with --abort-on-bail (default) -- record a bail/abort INTENT for
+# the run and send the terminate control to every live test collector of the run.
+# Each terminated collector kills its child and exits -> EOF, decided as aborted
+# (never a false pass). A job dispatched but not yet connected gets the terminate
+# on connect (service_identified consults the intent). halt wins over retry: the
+# bailing job's own collector is not re-queued (decide_collector_outcome treats a
+# halted entry as a failed completion). With --no-abort-on-bail the runner does NOT
+# propagate -- only the bailing test is affected (its collector still killed its
+# own child).
+sub collector_bail {
+    my $self = shift;
+    my ($entry, $reason) = @_;
+
+    my $run_id = $entry->{run_id};
+
+    print "$$ $0 BAIL-OUT detected: $reason\n";
+
+    # Stop dispatching new jobs for this run either way (the run is bailing).
+    eval { $self->state->halt_run($run_id); 1 } if defined $run_id;
+
+    return unless $self->settings->runner->abort_on_bail;
+
+    print "$$ $0 Aborting the test run...\n";
+
+    return unless defined $run_id;
+
+    # Record the intent so a job that connects AFTER the bail is terminated on
+    # connect (service_identified), and terminate every collector already live.
+    $self->{'bail_runs'}{$run_id} //= $reason;
+
+    for my $key (keys %{$self->{'collector_conns'} // {}}) {
+        my $other = $self->{'collector_conns'}{$key};
+        next unless defined($other->{run_id}) && $other->{run_id} eq $run_id;
+        next if $other == $entry;    # the bailing collector tears itself down
+        $self->_terminate_collector($other, $reason);
+    }
+
+    return;
+}
+
+# Send the terminate control to one collector (the bail/abort teardown primitive).
+# Mark the entry terminated so its EOF is decided as 'aborted', not a possible
+# harness-internal error. The collector kills its child and exits -> EOF. If the
+# connection is already gone the send is a no-op (the EOF will still decide it).
+sub _terminate_collector {
+    my $self = shift;
+    my ($entry, $reason) = @_;
+
+    $entry->{terminated}      //= 1;
+    $entry->{terminate_reason} //= $reason;
+
+    my $conn = $entry->{conn} or return;
+    return if $conn->closed;
+
+    eval { $conn->send_control('terminate', reason => $reason); 1 };
 
     return;
 }
@@ -294,30 +609,10 @@ sub request_handler_run_task {
     return undef;
 }
 
-# A stage reports a finished dispatched job back to the runner over
-# runner.socket so the runner's canonical scheduler state releases the slot and
-# resources (stop) or re-queues it for dispatch (retry). The retry-vs-stop decision
-# is made by the stage that reaped the job (it owns the proc / is_try / verdict);
-# here we only fold the outcome into state. One-way.
-sub request_handler_stop_task {
-    my $self = shift;
-    my ($payload) = @_;
-    $self->state->stop_task($payload->{job_id});
-    delete $self->{'job_pids'}->{$payload->{job_id}};
-    # A stage-reported job finishing is a runner-originated state
-    # mutation; forward it to subscribers so their mirror releases the job.
-    $self->announce_job($payload->{job_id}, 'done');
-    return undef;
-}
-
-sub request_handler_retry_task {
-    my $self = shift;
-    my ($payload) = @_;
-    $self->state->retry_task($payload->{job_id});
-    delete $self->{'job_pids'}->{$payload->{job_id}};
-    $self->announce_job($payload->{job_id}, 'retry');
-    return undef;
-}
+# stop_task / retry_task verdict forwarding is GONE: a stage no longer reports a
+# job's outcome to the runner. The runner decides every test's outcome (stop /
+# retry / bail) from the collector's transitions + connection EOF on runner.socket
+# (see service_conn_closed / collector_conn_eof, ARCHITECTURE.md §5.4).
 
 # A monitored stage forwards a reload/monitor notification so the
 # runner's reload state (diagnostics) stays current without a shared file. One-way.
@@ -616,6 +911,26 @@ sub service_transition {
 
     $self->monitor->feed($payload);
 
+    # Capture a test collector's verdict ON ITS CONNECTION so the EOF decision
+    # keys off the connection, not the collector uuid (ARCHITECTURE.md §5.4). A
+    # final_state rides the harness_final_state facet; a bail rides the early
+    # harness_state_transition state => 'halt'. Both are recorded on the conn -> job
+    # entry; the halt also triggers the run bail before the connection EOFs.
+    if ($conn && $self->{'collector_conns'} && (my $entry = $self->{'collector_conns'}{"$conn"})) {
+        my $fd = ref($payload) eq 'HASH' ? $payload->{facet_data} : undef;
+        if (ref($fd) eq 'HASH') {
+            $entry->{final_state} = $fd->{harness_final_state}
+                if $fd->{harness_final_state};
+
+            my $st = $fd->{harness_state_transition};
+            if ($st && ($st->{state} // '') eq 'halt') {
+                my $reason = $st->{details} // 'bail-out';
+                $entry->{halt} //= $reason;
+                $self->collector_bail($entry, $reason);
+            }
+        }
+    }
+
     # Forward every state-mutating transition to subscribed clients so
     # their snapshot-plus-transitions mirror stays whole (ARCH 4.2-4.3). The frame
     # is forwarded verbatim (no recompress) -- it is already a self-contained zstd
@@ -707,6 +1022,11 @@ sub announce_run {
     return unless $self->{'rootpid'} == $$;
     return unless defined $run_id;
     return if $self->{'announced_runs'}->{$run_id}++;
+
+    # The run is over: drop its bail/abort intent so a persistent runner does not
+    # carry it into a future run that reuses nothing of it (the per-job decision
+    # maps are dropped on each job's EOF; this is the one run-scoped map).
+    delete $self->{'bail_runs'}{$run_id} if $self->{'bail_runs'};
 
     my $payload = {facet_data => {harness_run_end => {run_id => $run_id, stamp => time}}};
 

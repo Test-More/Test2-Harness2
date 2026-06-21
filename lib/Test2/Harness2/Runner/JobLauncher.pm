@@ -200,10 +200,13 @@ sub launch_via_fork ($class, $runner, $job, $label = 'Test-Runner') {
             },
         );
 
-        # Exit with the TEST child's verdict (not the collector's own health) so
-        # the runner's retry/fail logic sees the real result. See
-        # Test2::Harness2::Runner::Job::_collector_exit_code.
-        POSIX::_exit($job->_collector_exit_code($info));
+        # Exit HEALTH-ONLY (0 if the collector functioned, non-zero only if the
+        # collector itself malfunctioned). The test's verdict rides the
+        # transitions (harness_final_state), which the runner decides on the
+        # connection EOF -- the exit code is never the verdict
+        # (ARCHITECTURE.md §5.4). The reap of this process is pure zombie cleanup.
+        require Test2::Collector::Runner;
+        POSIX::_exit(Test2::Collector::Runner->spawn_exit_code($info));
 
         1;
     };

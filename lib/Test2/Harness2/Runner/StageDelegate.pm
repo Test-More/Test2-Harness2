@@ -37,17 +37,16 @@ polls C<dispatch.jsonl> for work, so it does not need the full scheduler state.
 The stage's service loop hands each dispatched C<run_task> request to
 C<enqueue_task>; the stage's run loop pops them via C<next_task> (the same
 method name the runner's State exposes, so the shared C<run_job> code is
-unchanged) and forks the job. When a job finishes the stage reports the outcome
-back to the runner via C<stop_task> / C<retry_task> / C<halt_run>, so the
-runner's canonical in-process state stays authoritative for scheduling without a
-shared file.
+unchanged) and forks the job. The stage does B<not> report a job's verdict back:
+the runner decides every test's outcome (stop / retry / bail) from the
+collector's transitions + connection EOF on C<runner.socket> (ARCHITECTURE.md
+§5.4), so a stage reaping a job is pure zombie cleanup.
 
-Those reports (ARCHITECTURE.md §5.2) ride the B<one> registered service
-channel the stage opened to the runner (the connection it dials to send
-C<stage_ready>), not a second connect-out to C<runner.socket>. The stage sends
-each report with the runner's C<service_send> to the C<runner> peer; the runner
-reads it off that same connection and dispatches it to its request handlers. The
-runner dispatches jobs B<down> the same channel, so there is one connection per
+What the stage B<does> still report up to the runner -- a forked job's pid and a
+reload/monitor notification (ARCHITECTURE.md §5.2) -- rides the B<one> registered
+service channel the stage opened to the runner (the connection it dials to send
+C<stage_ready>), not a second connect-out to C<runner.socket>. The runner
+dispatches jobs B<down> the same channel, so there is one connection per
 runner/stage pair carrying both directions.
 
 =head1 PUBLIC METHODS
@@ -68,18 +67,6 @@ API used by C<run_job>.
 
 The L<Test2::Harness2::Runner::Run> for the most recently dispatched run (built
 from the dispatched run item), or C<undef> before any dispatch.
-
-=item $stage->stop_task($job_id)
-
-Report a finished job to the runner so it releases the slot/resources.
-
-=item $stage->retry_task($job_id)
-
-Report a finished-but-should-retry job to the runner.
-
-=item $stage->halt_run($run_id)
-
-Ask the runner to halt the run (e.g. a bail-out under --abort-on-bail).
 
 =item $stage->job_pid($job_id, $pid)
 
@@ -136,20 +123,10 @@ sub next_task ($self, $stage = undef) {
 
 sub run ($self) { return $self->{+CURRENT_RUN} }
 
-sub stop_task ($self, $job_id) {
-    $self->_report('stop_task', job_id => $job_id);
-    return;
-}
-
-sub retry_task ($self, $job_id) {
-    $self->_report('retry_task', job_id => $job_id);
-    return;
-}
-
-sub halt_run ($self, $run_id) {
-    $self->_report('halt_run', run_id => $run_id);
-    return;
-}
+# stop_task / retry_task / halt_run are GONE: a stage no longer forwards a job
+# verdict to the runner. The runner decides every test's outcome (stop / retry /
+# bail) from the collector's transitions + connection EOF on runner.socket
+# (ARCHITECTURE.md §5.4), so the stage reaping a job is pure zombie cleanup.
 
 sub job_pid ($self, $job_id, $pid) {
     $self->_report('job_pid', job_id => $job_id, pid => $pid);

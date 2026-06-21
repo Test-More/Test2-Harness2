@@ -53,8 +53,10 @@ optional C<service_on_response($conn, $event)> hook.
 C<workdir> and C<name> are required. Optional: C<service_identity> (the name this
 service announces; defaults to C<service_name>), C<run_id> (the run's run_id
 (UUID) subdir), C<service_tick>, C<service_transition($payload, $frame, $conn)>,
-C<service_on_response($conn, $event)>, and C<service_conn_closed($conn)> (called
-when a peer connection is dropped, for connection-gated cleanup).
+C<service_on_response($conn, $event)>, C<service_identified($conn, $payload)>
+(called when a peer announces its full identity, for connection-to-job mapping),
+and C<service_conn_closed($conn)> (called when a peer connection is dropped, for
+connection-gated cleanup).
 
 =head1 PUBLIC METHODS
 
@@ -367,6 +369,12 @@ sub _handle_events ($self, $conn, @events) {
 
         if ($kind eq 'identity') {
             $self->{service_peers}{$event->{name}} = $conn;
+            # Optional consumer hook: a peer just announced its full identity. The
+            # runner uses it to register a test-collector connection (its full
+            # identity payload -- job_id / job_try / run_id) so the connection's
+            # later EOF maps back to the job (ARCHITECTURE.md §5.4).
+            $self->service_identified($conn, $event->{payload})
+                if $self->can('service_identified') && $event->{payload};
             next;
         }
 

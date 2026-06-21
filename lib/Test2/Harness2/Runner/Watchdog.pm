@@ -141,6 +141,13 @@ sub _abort_job ($self, $job_id, $task, $reason) {
 
     $self->{+ABORTED}{$job_id} = 1;
 
+    # Converge with the EOF decision (ARCHITECTURE.md §5.4): mark this
+    # (job_id, job_try) decided in the runner's shared fire-once ledger so the
+    # collector's later connection EOF is a no-op (it must not re-decide / double
+    # announce). The runner keeps the ledger; the watchdog is the other writer.
+    $runner->mark_job_decided($job_id, $task->{is_try})
+        if $runner->can('mark_job_decided');
+
     # Best-effort slot / resource release; a task a racing reap already stopped
     # leaves stop_task croaking "not running", which is not an error here.
     my $ok = eval { $runner->state->stop_task($job_id); 1 };

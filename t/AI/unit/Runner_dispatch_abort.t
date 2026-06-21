@@ -73,6 +73,7 @@ use Test2::Harness2::Runner::Monitor;
         return $self;
     }
     sub state    { $_[0]->{state} }
+    sub settings { $_[0]->{settings} }
     sub monitor  { $_[0]->{monitor} }
 
     # This fake mirrors the staged-root path (rootpid == $$, hosts the 'default'
