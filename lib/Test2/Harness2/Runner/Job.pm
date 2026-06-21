@@ -206,6 +206,11 @@ sub collector_target {
         return (exec => \@cmd);
     }
 
+    # This dummy skip/fail command assumes a Perl-compatible '-e' executor (it is
+    # run via $^X below). It is safe today because non-Perl/binary jobs short-circuit
+    # above and never run under a preload, so they cannot trigger a resource skip. A
+    # future resource-skip on a non-Perl or custom executor must supply its own skip
+    # representation rather than relying on this 'perl -e' dummy.
     my @skip_or_fail;
     if ($skip && $resource_skip_is_fail) {
         @skip_or_fail = ('-e', "print \"1..1\\nnot ok 1 - $skip\\n\"");
