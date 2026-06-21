@@ -60,10 +60,11 @@ C<scheduler_tick>.
 =item $self->scheduler_tick
 
 Advance the in-process scheduler: poll + advance the state, announce a finished
-run, dispatch started tasks to stage sockets, and enforce the resource timeout.
-A throw out of any of these is a real in-process bug and is left to propagate —
-the scheduler fails fast. Resources that need to tolerate transient errors must
-catch them inside their own C<tick()>.
+run, dispatch started tasks to stage sockets, enforce the collector-connect
+timeout + the terminate hard-kill grace, and enforce the resource timeout. A throw
+out of any of these is a real in-process bug and is left to propagate — the
+scheduler fails fast. Resources that need to tolerate transient errors must catch
+them inside their own C<tick()>.
 
 =back
 
@@ -123,6 +124,13 @@ sub scheduler_tick {
     # path, where the root forks tests itself). This runs on the persistent path
     # too (its forked stages are dispatch services).
     $self->dispatch_pending;
+
+    # Enforce the collector-connect timeout (a dispatched/running job whose
+    # collector never connected) and the hard-kill grace for terminated collectors
+    # that did not comply (ARCHITECTURE.md §5.4). Both are runner-visible failures
+    # the fire-once ledger still guards, so they never double-decide a job.
+    $self->_enforce_collector_connect_timeout;
+    $self->_enforce_terminate_grace;
 
     if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
         print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";

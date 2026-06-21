@@ -37,18 +37,18 @@ sub run {
     # Get the output from finding the pfile
     $self->pfile_data();
 
-    # Ask the runner to truncate its queue over runner.socket; it returns the
-    # still-running jobs with their pids (from its in-memory job-pid map) for us
-    # to INT. The runner stays alive -- abort only clears the queue and kills the
-    # running tests.
+    # Ask the runner to truncate its queue over runner.socket. The runner itself
+    # tears the running tests down -- it records an abort intent per running run and
+    # messages each test collector to terminate (hard-killing any that do not comply),
+    # so the command no longer snapshots pids or signals jobs. That snapshot raced a
+    # job whose pid had not yet been reported; the runner's intent + terminate-on-
+    # connect covers it. The runner stays alive. The returned list is informational.
     print "\nTruncating Queue...\n\n";
     my $running = $self->client->truncate // [];
 
     for my $task (@$running) {
-        my $pid = $task->{pid} // next;
-        my $file = $task->{rel_file};
-        print "Killing test $pid - $file...\n";
-        kill('INT', $pid);
+        my $file = $task->{rel_file} // $task->{file} // $task->{job_id};
+        print "Aborting test - $file...\n";
     }
 
     print "\n";

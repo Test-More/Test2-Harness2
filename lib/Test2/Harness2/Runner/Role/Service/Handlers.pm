@@ -68,6 +68,13 @@ done) so a subscriber's mirror folds it identically.
 
 Fold and forward a runner-originated run-completion mutation.
 
+=item $self->announce_run_health($run_id, $reason)
+
+Report a post-pass collector failure: the runner reaped a collector with a
+non-zero health exit after it had already reported a pass. The test stays green;
+this flags the suite failed (a C<harness_run_health> mutation) so the command
+exits non-zero, and prints the error to harness output.
+
 =item $self->record_job_pid($job_id, $pid)
 
 Record a started job's pid in the runner's in-memory map.
@@ -107,6 +114,21 @@ and an abort race.
 
 Act on one run whose owning connection dropped: purge it if finished, abort it if
 running with C<abort_on_disconnect> true, or detach it (leave it running) if false.
+
+=item $self->terminate_run_collectors($run_id, $reason)
+
+=item $self->terminate_run_collectors($run_id, $reason, skip =E<gt> $entry)
+
+The shared bail/abort teardown primitive: record an abort intent for the run (so a
+late-connecting collector is terminated on connect) and send the runner-to-collector
+terminate control to every live test collector of the run. The optional C<skip>
+entry (a collector tearing its own child down) is not messaged.
+
+=item $count = $self->abort_run_collectors($run_id, $reason)
+
+Tear a run down through C<terminate_run_collectors> from the abort path (C<yath
+abort> and owner-disconnect abort), returning the number of live run collectors it
+messaged.
 
 =back
 
@@ -219,10 +241,17 @@ sub service_identified {
     $self->{'collector_conns'}{"$conn"} = $entry;
     $self->{'collector_current_try'}{$job_id} = $payload->{job_try};
 
+    # The collector connected: the connect-timeout no longer applies to this job
+    # (its completion now rides this connection's transitions + EOF).
+    delete $self->{'job_connect_watch'}{$job_id};
+
     # Late-connecting collector for a run already bailing/aborting: terminate it
     # now so it kills its child and EOFs (handled as aborted, never a false pass).
-    if (defined($entry->{run_id}) && $self->{'bail_runs'} && exists $self->{'bail_runs'}{$entry->{run_id}}) {
-        $self->_terminate_collector($entry, $self->{'bail_runs'}{$entry->{run_id}});
+    # This is the late-connect leg of the bail/abort intent (the assign->launch
+    # race / B4): a job dispatched before the abort but only now connecting still
+    # gets torn down, with no reliance on a possibly-stale pid snapshot.
+    if (defined($entry->{run_id}) && $self->{'aborting_runs'} && exists $self->{'aborting_runs'}{$entry->{run_id}}) {
+        $self->_terminate_collector($entry, $self->{'aborting_runs'}{$entry->{run_id}}{reason});
     }
 
     return;
@@ -367,6 +396,10 @@ sub decide_collector_outcome {
     }
 
     if ($fs->{pass}) {
+        # Record that THIS job reported a pass, so a later non-zero health exit on
+        # reap (a post-pass collector failure, A3) flags the suite -- the test
+        # itself stays green and is never reopened (ARCHITECTURE.md §5.4).
+        $self->{'job_passed'}{$job_id} = $entry->{run_id} // '';
         $self->_collector_stop($job_id);
         $self->announce_job($job_id, 'done', run_id => $entry->{run_id});
         return;
@@ -466,15 +499,16 @@ sub _collector_no_verdict {
 }
 
 # A bail-out (the early halt transition) for a run. Stop dispatching new jobs for
-# the run, and -- with --abort-on-bail (default) -- record a bail/abort INTENT for
-# the run and send the terminate control to every live test collector of the run.
-# Each terminated collector kills its child and exits -> EOF, decided as aborted
-# (never a false pass). A job dispatched but not yet connected gets the terminate
-# on connect (service_identified consults the intent). halt wins over retry: the
-# bailing job's own collector is not re-queued (decide_collector_outcome treats a
-# halted entry as a failed completion). With --no-abort-on-bail the runner does NOT
-# propagate -- only the bailing test is affected (its collector still killed its
-# own child).
+# the run, and -- with --abort-on-bail (default) -- tear the run down through the
+# shared abort-intent primitive (terminate_run_collectors): record an abort INTENT
+# for the run and send the terminate control to every live test collector of the
+# run. Each terminated collector kills its child and exits -> EOF, decided as
+# aborted (never a false pass). A job dispatched but not yet connected gets the
+# terminate on connect (service_identified consults the intent). halt wins over
+# retry: the bailing job's own collector is not re-queued (decide_collector_outcome
+# treats a halted entry as a failed completion). With --no-abort-on-bail the runner
+# does NOT propagate -- only the bailing test is affected (its collector still
+# killed its own child).
 sub collector_bail {
     my $self = shift;
     my ($entry, $reason) = @_;
@@ -492,30 +526,62 @@ sub collector_bail {
 
     return unless defined $run_id;
 
-    # Record the intent so a job that connects AFTER the bail is terminated on
-    # connect (service_identified), and terminate every collector already live.
-    $self->{'bail_runs'}{$run_id} //= $reason;
+    # The bailing collector tears its OWN child down (it emitted the halt); only the
+    # other run collectors need the terminate message, so skip its entry.
+    $self->terminate_run_collectors($run_id, $reason, skip => $entry);
+
+    return;
+}
+
+# The shared bail/abort teardown primitive (ARCHITECTURE.md §5.4 "Bail and
+# abort"). Record an abort INTENT for the run -- with a hard-kill deadline -- so a
+# collector that connects AFTER this (a job dispatched but not yet connected, B4)
+# is terminated on connect (service_identified consults the intent), and send the
+# terminate control to every test collector of the run that is already live. Each
+# terminated collector kills its child and exits -> EOF, decided as aborted (never
+# a false pass). The intent is dropped when the run ends (announce_run). The
+# optional `skip` entry (the bailing collector, which tears its own child down) is
+# not messaged.
+sub terminate_run_collectors {
+    my $self = shift;
+    my ($run_id, $reason, %params) = @_;
+
+    return unless defined $run_id;
+
+    my $skip = $params{skip};
+
+    # Record (or refresh) the intent. The deadline arms the per-tick hard-kill
+    # fallback (_enforce_terminate_grace) for any collector that does not comply.
+    my $intent = $self->{'aborting_runs'}{$run_id} //= {reason => $reason};
+    $intent->{deadline} //= time + $self->_terminate_grace;
 
     for my $key (keys %{$self->{'collector_conns'} // {}}) {
         my $other = $self->{'collector_conns'}{$key};
         next unless defined($other->{run_id}) && $other->{run_id} eq $run_id;
-        next if $other == $entry;    # the bailing collector tears itself down
+        next if $skip && $other == $skip;
         $self->_terminate_collector($other, $reason);
     }
 
     return;
 }
 
+# The grace period (seconds) a terminated collector is given to comply (kill its
+# child and EOF) before the runner hard-kills its process group (kill(-pid)).
+sub _terminate_grace { 10 }
+
 # Send the terminate control to one collector (the bail/abort teardown primitive).
 # Mark the entry terminated so its EOF is decided as 'aborted', not a possible
-# harness-internal error. The collector kills its child and exits -> EOF. If the
-# connection is already gone the send is a no-op (the EOF will still decide it).
+# harness-internal error, and stamp when it was messaged so the per-tick fallback
+# can hard-kill it if it does not comply. The collector kills its child and exits
+# -> EOF. If the connection is already gone the send is a no-op (the EOF will still
+# decide it).
 sub _terminate_collector {
     my $self = shift;
     my ($entry, $reason) = @_;
 
-    $entry->{terminated}      //= 1;
+    $entry->{terminated}       //= 1;
     $entry->{terminate_reason} //= $reason;
+    $entry->{terminate_sent}   //= time;
 
     my $conn = $entry->{conn} or return;
     return if $conn->closed;
@@ -523,6 +589,115 @@ sub _terminate_collector {
     eval { $conn->send_control('terminate', reason => $reason); 1 };
 
     return;
+}
+
+# Per-tick hard-kill fallback (ARCHITECTURE.md §5.4: "Pid/process-group is the
+# fallback only"). A collector that was sent a terminate but has not EOFed within
+# the grace is hard-killed via its process group (kill(-pid)) -- a detached
+# collector setsids (so its pid leads its group) and a non-detached collector is the
+# runner's own child. The pid comes from the handshake (entry->{pid}); the fire-once
+# ledger still guards the eventual EOF so this never double-decides. Best-effort: a
+# missing pid or a vanished group is a no-op.
+sub _enforce_terminate_grace {
+    my $self = shift;
+
+    my $aborting = $self->{'aborting_runs'} or return;
+    return unless keys %$aborting;
+
+    my $now   = time;
+    my $conns = $self->{'collector_conns'} // {};
+
+    for my $key (keys %$conns) {
+        my $entry = $conns->{$key};
+        next unless $entry->{terminate_sent};
+        next if $entry->{hard_killed};
+
+        my $intent = $aborting->{$entry->{run_id} // ''} or next;
+        next unless defined($intent->{deadline}) && $now >= $intent->{deadline};
+
+        my $conn = $entry->{conn};
+        next if $conn && $conn->closed;    # already gone; its EOF will decide it
+
+        my $pid = $entry->{pid} or next;
+        $entry->{hard_killed} = 1;
+        eval { kill('KILL', -$pid) || kill('KILL', $pid); 1 };
+    }
+
+    return;
+}
+
+# The --collector-connect-timeout, in seconds (0 = off). The mandatory reporter
+# (ARCHITECTURE.md §5.4) means a dispatched/running job whose collector never
+# connects would never EOF -> hang; this bounds that wait. Read from settings;
+# a unit harness with no runner group falls back to off.
+sub _collector_connect_timeout {
+    my $self = shift;
+
+    my $settings = $self->settings or return 0;
+    return 0 unless $settings->check_group('runner');
+    return $settings->runner->collector_connect_timeout // 0;
+}
+
+# Per-tick scan (ARCHITECTURE.md §5.4 "The reporter is mandatory"): a job the
+# runner marked dispatched/running whose collector never connected within
+# --collector-connect-timeout is failed/aborted -- it would otherwise never EOF and
+# hang the run. Mirrors the #33 _expire_stale_stages per-tick shape. The job is
+# synthesized as aborted (the no-verdict render mutation) and marked decided in the
+# shared fire-once ledger so a collector that connects after this is a no-op (and is
+# also terminated, since the failed mutation cleared its watch but the job is gone).
+sub _enforce_collector_connect_timeout {
+    my $self = shift;
+
+    my $timeout = $self->_collector_connect_timeout or return;
+
+    my $watch = $self->{'job_connect_watch'} or return;
+    return unless keys %$watch;
+
+    my $now     = time;
+    my $running = $self->state->running_tasks // {};
+
+    for my $job_id (keys %$watch) {
+        my $info = $watch->{$job_id};
+        next unless $now - $info->{since} > $timeout;
+
+        # Only act while the job is still tracked running; a racing completion
+        # already cleared it. Drop the watch either way.
+        delete $watch->{$job_id};
+        my $task = $running->{$job_id} or next;
+
+        my $job_try = $task->{is_try};
+        next if $self->job_already_decided($job_id, $job_try);
+        $self->mark_job_decided($job_id, $job_try);
+        delete $self->{'collector_current_try'}{$job_id};
+
+        $self->_collector_no_verdict(
+            {job_id => $job_id, run_id => $task->{run_id}, terminated => 1},
+            "The test collector did not connect within ${timeout}s; failing the job (it can never report completion)",
+        );
+    }
+
+    return;
+}
+
+# Record an abort INTENT for a run and terminate its collectors (the abort path:
+# `yath abort` and owner-disconnect abort, B3 / B4). Same primitive as a bail; the
+# distinct entry point lets the watchdog and the truncate handler tear a run down
+# without a halt transition. Returns the number of live run collectors it messaged.
+sub abort_run_collectors {
+    my $self = shift;
+    my ($run_id, $reason) = @_;
+
+    return 0 unless defined $run_id;
+
+    $self->terminate_run_collectors($run_id, $reason);
+
+    my $count = 0;
+    for my $key (keys %{$self->{'collector_conns'} // {}}) {
+        my $other = $self->{'collector_conns'}{$key};
+        $count++ if defined($other->{run_id}) && $other->{run_id} eq $run_id;
+    }
+
+    return $count;
 }
 
 # The preload-root reports preload-load warnings it tolerated (a broken
@@ -656,11 +831,16 @@ sub request_handler_status {
     return {ok => 1, status => $report->build};
 }
 
-# A transient/persistent root command asks the runner to truncate
-# the queue (abort) over the socket. The runner truncates its own canonical
-# state. Two-way: returns the kill list (the still-running jobs and their pids)
-# so the command can signal them. The runner does not signal the jobs itself --
-# `abort` deliberately leaves the runner alive and only INT's the running tests.
+# A transient/persistent root command asks the runner to truncate the queue
+# (abort) over the socket. The runner truncates its own canonical state AND tears
+# every running test down itself through the abort-intent + terminate primitive
+# (ARCHITECTURE.md §5.4): it records an abort intent per still-running run and
+# messages each live (and late-connecting) test collector to terminate, hard-killing
+# any that do not comply within the grace. The command no longer snapshots pids or
+# signals the jobs -- the old pid-snapshot raced a job whose pid had not yet been
+# reported (B4); intent + terminate-on-connect closes that. `abort` still leaves the
+# runner itself alive. Two-way: returns the still-running list (diagnostic only) +
+# the count of collectors it terminated.
 sub request_handler_truncate {
     my $self = shift;
 
@@ -673,6 +853,13 @@ sub request_handler_truncate {
     );
 
     my $running = $report->build->{running};
+
+    # Record each still-running run's abort intent + terminate its collectors BEFORE
+    # truncating the queue, so the intent is in place for any collector that connects
+    # during teardown. The watchdog synthesizes each running job's aborted state +
+    # marks it decided; the resulting collector EOFs are fire-once no-ops.
+    my $reason = "Aborted by request";
+    $self->watchdog->abort_remaining($reason);
 
     $self->state->truncate;
 
@@ -987,6 +1174,18 @@ sub announce_job {
     return unless $self->{'rootpid'} == $$;
     return unless defined $job_id;
 
+    # Connect-timeout tracking (ARCHITECTURE.md §5.4 "The reporter is mandatory").
+    # The moment the runner first marks a job dispatched/running, stamp when it is
+    # owed a collector connection; if no collector connects (service_identified)
+    # within --collector-connect-timeout the per-tick scan fails the job (it would
+    # otherwise never EOF and hang the run). A terminal mutation clears the stamp.
+    if ($state eq 'dispatched' || $state eq 'running') {
+        $self->{'job_connect_watch'}{$job_id} //= {since => time, run_id => $extra{run_id}};
+    }
+    elsif ($state eq 'done' || $state eq 'aborted' || $state eq 'requeued') {
+        delete $self->{'job_connect_watch'}{$job_id};
+    }
+
     my $rj = {job_id => $job_id, state => $state, %extra};
 
     # Route this runner-originated mutation to its run's subscribers.
@@ -1009,6 +1208,36 @@ sub announce_job {
     return;
 }
 
+# Post-pass collector failure (A3, ARCHITECTURE.md §5.4). The runner reaped a test
+# collector and saw a NON-ZERO health exit even though that collector had already
+# reported harness_final_state.pass=1. The test stays GREEN (its audited verdict
+# already succeeded and is never reopened), but the collector itself malfunctioned
+# afterward, so report the error to HARNESS output and flag the SUITE failed: the
+# runner originates a harness_run_health mutation the renderer folds so
+# `yath test`/`run` exits non-zero even though every test passed. This is the ONLY
+# place a collector's exit code is consulted -- post-hoc, suite-level, never a
+# per-test verdict. Folded into our own monitor (so a later snapshot carries it)
+# and forwarded to the run's subscribers.
+sub announce_run_health {
+    my $self = shift;
+    my ($run_id, $reason) = @_;
+
+    return unless $self->{'rootpid'} == $$;
+
+    # Harness output (distinct from job output) so the collector bug is visible.
+    print STDERR "yath: $reason\n";
+
+    my $rh = {run_id => $run_id, reason => $reason, stamp => time};
+    my $payload = {facet_data => {harness_run_health => $rh}};
+
+    $self->monitor->feed($payload);
+
+    my $frame = compress_blob(encode_json($payload));
+    $self->forward_frame($frame, $run_id);
+
+    return;
+}
+
 # The runner originates a run-completion mutation. The persistent
 # runner serves many runs and keeps its socket open, so a run-scoped subscriber
 # (the `yath run` command) cannot key completion on the socket closing the way the
@@ -1026,7 +1255,7 @@ sub announce_run {
     # The run is over: drop its bail/abort intent so a persistent runner does not
     # carry it into a future run that reuses nothing of it (the per-job decision
     # maps are dropped on each job's EOF; this is the one run-scoped map).
-    delete $self->{'bail_runs'}{$run_id} if $self->{'bail_runs'};
+    delete $self->{'aborting_runs'}{$run_id} if $self->{'aborting_runs'};
 
     my $payload = {facet_data => {harness_run_end => {run_id => $run_id, stamp => time}}};
 

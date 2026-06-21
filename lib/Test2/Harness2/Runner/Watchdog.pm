@@ -50,6 +50,15 @@ an C<aborted> runner-job mutation, which subscribers (the command-side renderer
 driver) fold and roll up as failed -- the same effect the gatherer's synthetic
 C<harness_job_exit{aborted}> / C<harness_job_end{fail}> had.
 
+When the abort is a real run teardown (C<yath abort> or an owner-disconnect abort,
+not a failed dispatch), the watchdog ALSO drives the runner-to-collector terminate
+primitive (C<abort_run_collectors>): it records an abort intent for the run and
+messages every live (and late-connecting) test collector to terminate -- so the
+processes actually die, not just the canonical state. The collector kills its child
+and exits, EOFing its connection; the fire-once ledger keeps that EOF from
+re-deciding the job the watchdog already synthesized. Pid/process-group hard-kill is
+the runner's grace fallback for a non-complying collector (ARCHITECTURE.md §5.4).
+
 =head1 SYNOPSIS
 
     my $wd = Test2::Harness2::Runner::Watchdog->new(runner => $runner);
@@ -80,6 +89,13 @@ vanishing. Each job is aborted at most once. With a C<run_id> the abort is scope
 to that one run's jobs (the owner-drop abort path, which must not touch other runs
 on a persistent runner).
 
+This also drives the runner-to-collector terminate primitive so the test
+B<processes> actually die: a run-scoped call records that run's abort intent and
+messages its live + late-connecting collectors; an all-runs (wind-down) call does
+the same for every active run. A C<terminate =E<gt> 0> override suppresses the
+terminate (the resource-timeout wind-down path, which has already truncated the
+queue and only needs the synthetic state so the run rolls up).
+
 =item $wd->abort_job($job_id, $task, $reason)
 
 Abort one specific still-tracked job, attributing C<$reason>. Used the moment a
@@ -108,14 +124,35 @@ sub abort_remaining ($self, $reason = undef, %params) {
     # ARCHITECTURE.md §4.2) aborts only the dropped run's jobs, leaving other runs on
     # a persistent runner untouched. Wind-down passes no run_id and aborts them all.
     my $only_run = $params{run_id};
+    my $reason_msg = $reason // "Runner shut down before this job completed";
 
     my $running = $runner->state->running_tasks // {};
+
+    # Drive the runner->collector terminate so the test PROCESSES die, not just the
+    # canonical state (B3/B4, ARCHITECTURE.md §5.4). A run-scoped abort terminates
+    # only that run's collectors; an all-runs wind-down terminates every active run's
+    # collectors (records each run's intent so a late-connecting collector is torn
+    # down too). The fire-once ledger keeps the resulting EOFs from re-deciding the
+    # jobs this synthesizes below. `terminate => 0` suppresses it (the wind-down has
+    # already truncated and just needs the synthetic state).
+    if (!defined($params{terminate}) || $params{terminate}) {
+        if ($runner->can('abort_run_collectors')) {
+            my %runs;
+            if (defined $only_run) {
+                $runs{$only_run} = 1;
+            }
+            else {
+                $runs{$_->{run_id}} = 1 for grep { defined $_->{run_id} } values %$running;
+            }
+            $runner->abort_run_collectors($_, $reason_msg) for keys %runs;
+        }
+    }
 
     for my $job_id (keys %$running) {
         next if $self->{+ABORTED}{$job_id};
         my $task = $running->{$job_id};
         next if defined($only_run) && ($task->{run_id} // '') ne $only_run;
-        $self->_abort_job($job_id, $task, $reason // "Runner shut down before this job completed");
+        $self->_abort_job($job_id, $task, $reason_msg);
     }
 
     return;
