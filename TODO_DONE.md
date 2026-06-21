@@ -7,6 +7,37 @@ Newest first.
 
 ---
 
+## #22 residual — flatten the vestigial no-preload Stage-Runner loop — DONE (`7e6ed23f8`)
+
+Done directly on 2.0d (no worktree). Both suites green (`prove` 1748 · `yath test -D`
+1754). The runner only reaches `run_tests`'s in-runner path on a no-preload run, and
+since #22 moved all stage hosting to `Preload::Host` the runner never relaunches a stage
+— so nothing ever longjumps `"Stage-Runner"`. Replaced the single-pass setjump/relaunch
+loop with a direct `run_stage('default')` call and removed the now-dead `reset_stage`
+method, the write-only `can_stage` slot, and the unused `Long::Jump` import. Also fixed
+the stale `Scheduler.pm` comment that described dispatch as a dial to
+`preload-<stage>.socket` (it is `service_send` over the registered channel).
+
+**Remaining #22 residual — `run_scheduler_only` as the runner's ONLY run path** — is
+coupled with #8 Part 4 (the no-preload fork path can only collapse into the
+scheduler-only loop once no-preload completion no longer drives scheduling off the local
+reap). See the #8 Part 4 note below.
+
+**Finding on #8 Part 4 (recorded for whoever picks it up):** `Runner::Job::_collector_exit_code`
+shows the no-preload collector deliberately encodes the **audited** `harness_final_state`
+(pass/fail, audit-only failures, and the bail `halt`) into its **OS exit code** before
+exiting — and persists the bail reason to `bail_file`. So the runner's reap-driven
+`set_proc_exit` decision already acts on the audited verdict; the exit status *is* the
+collector's report, not a lossy waitpid status. That makes #8 Part 4 a lateral
+architectural move (drive the same decision off the `harness_final_state` transition
+instead of the exit code) rather than a correctness fix, and it carries real
+fire-exactly-once race risk on the hottest path (the transition and the reap both signal
+completion; a collector that crashes before emitting `harness_final_state` still needs
+the reap as the fire-once fallback). Recommend treating it as its own reviewed effort,
+not a blind cleanup. NOT attempted this session.
+
+---
+
 ## #21 — Preload failure: diagnostics simplify + configurable timeouts — DONE (`419571793`)
 
 Depends #20 (landed first). Done directly on 2.0d (no worktree). Both suites green

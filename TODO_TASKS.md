@@ -423,7 +423,7 @@ capture to the single guarded load (shrinks #21).
 ## TIER 3 — Lower priority / deferred / rejected
 
 ### #22 — Fully untangle the runner from the preload-root (two independent classes)
-**Status:** ✅ CORE DONE (`f23ceb44c`+`b628a3728`) — Preload::Host extracted, runner has ZERO rootpid guards; residuals: setjump-loop flatten + run_scheduler_only-as-only-path (see TODO_DONE/AI_DOCS). Unblocks #4 P5, #8, #23
+**Status:** ✅ CORE DONE (`f23ceb44c`+`b628a3728`); setjump-loop flatten DONE (`7e6ed23f8`) — Preload::Host extracted, runner has ZERO rootpid guards; remaining residual: run_scheduler_only-as-only-path (coupled with #8 Part 4 — see TODO_DONE). Unblocks #4 P5, #8, #23
 
 **Owner directive (2026-06-20):** the runner and the preload-root are **completely
 different concepts** entangled into one `Runner` class only because 1.0 grew organically.
