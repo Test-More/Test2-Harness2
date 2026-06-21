@@ -1,0 +1,9 @@
+use Test2::V0;
+# HARNESS-STAGE-REQUIRE NOPE
+
+# This test REQUIREs stage NOPE, which the preload does not define. The §4.7a
+# preload Resource returns -1 (permanently unavailable) for a require_preload task
+# whose listed stages are all absent, so this test is skipped before it runs --
+# the body never executes.
+ok(0, "this body must NOT run -- the test should be resource-skipped");
+done_testing;

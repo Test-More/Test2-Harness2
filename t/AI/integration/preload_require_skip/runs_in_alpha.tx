@@ -1,0 +1,5 @@
+use Test2::V0;
+# HARNESS-STAGE-ALPHA
+
+is($ENV{T2_HARNESS_STAGE}, 'ALPHA', "a present required stage runs there");
+done_testing;

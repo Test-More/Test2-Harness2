@@ -89,6 +89,19 @@ sub init {
         push @{$self->{+RESOURCES}} => Test2::Harness2::Runner::Resource::JobCount->new(job_count => $self->{+JOB_COUNT}, settings => $self->settings);
     }
 
+    # §4.7a: when the preload-root hosts the stages (scheduler-only -- a stage map
+    # is the routing source and there is no in-runner preloader) gate preload-
+    # directed tasks on stage availability via the preload Resource. It needs live
+    # stage state, so it is built specially with a backref to this State (resources
+    # normally get only `settings`). The no-preload run (preloader present, no map)
+    # forks tests itself and does not need it.
+    if (defined($self->{+STAGE_MAP}) && !$self->{+PRELOADER}
+        && !grep { $_->isa('Test2::Harness2::Runner::Resource::Preload') } @{$self->{+RESOURCES}})
+    {
+        require Test2::Harness2::Runner::Resource::Preload;
+        push @{$self->{+RESOURCES}} => Test2::Harness2::Runner::Resource::Preload->new(settings => $self->settings, state => $self);
+    }
+
     @{$self->{+RESOURCES}} = sort { $a->sort_weight <=> $b->sort_weight } @{$self->{+RESOURCES}};
 
     $self->{+RELOAD_STATE} //= {};
@@ -598,6 +611,14 @@ sub _set_stage_lifecycle {
     };
 
     return;
+}
+
+# The reported stage map (or undef before it has arrived). Read-only accessor used
+# by the preload Resource and task_stage; the slot is writable (+stage_map) because
+# set_stage_map refreshes it.
+sub stage_map {
+    my $self = shift;
+    return $self->{+STAGE_MAP};
 }
 
 # True if the named stage is currently 'up' (dispatchable). This is the converged

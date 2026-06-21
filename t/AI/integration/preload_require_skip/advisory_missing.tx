@@ -1,0 +1,7 @@
+use Test2::V0;
+# HARNESS-STAGE NOPE
+
+# Advisory: names a missing stage but does NOT require it, so it falls to the
+# default stage and runs normally.
+is($ENV{T2_HARNESS_STAGE}, 'DEFAULT', "advisory miss runs in the default stage");
+done_testing;
