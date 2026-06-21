@@ -242,6 +242,8 @@ sub advance {
 
     $_->tick() for @{$self->{+RESOURCES} //= []};
 
+    $self->_expire_stale_stages();
+
     $self->advance_run();
     return 0 unless $self->{+RUN};
     return 1 if $self->advance_tasks();
@@ -678,6 +680,81 @@ sub stage_restarting {
     my $self = shift;
     my ($stage) = @_;
     $self->_set_stage_lifecycle($stage, 'restarting');
+    return;
+}
+
+# The configured per-stage startup safeguard in seconds, or 0 (off) when no
+# settings / no runner group is available (a unit harness builds the State with no
+# settings). Mirrors Resource::Preload::_stage_startup_timeout so the per-tick scan
+# and the resource agree on the limit.
+sub _stage_startup_timeout {
+    my $self = shift;
+
+    my $settings = $self->{+SETTINGS} or return 0;
+    return 0 unless $settings->check_group('runner');
+    return $settings->runner->preload_stage_startup_timeout // 0;
+}
+
+# Per-tick safeguard for --preload-stage-startup-timeout (off by default). The
+# scheduler only traverses 'up' stage buckets (_stage_order), so a task aimed at a
+# stage stuck 'starting'/'restarting' is never visited and the preload Resource's
+# -1 is never consulted. Demoting an over-age stage to 'down' makes _stage_order
+# skip it; re-bucketing the tasks parked in that stage then lets task_stage
+# re-resolve them -- an advisory task falls to the default stage, a require_preload
+# task lands in a traversable bucket where the resource returns -1 and it is
+# skipped/failed. Either way it is dispatched, never hung.
+sub _expire_stale_stages {
+    my $self = shift;
+
+    my $timeout = $self->_stage_startup_timeout or return;
+
+    my $life = $self->{+STAGE_LIFECYCLE} or return;
+
+    my @expired;
+    for my $stage (keys %$life) {
+        my $state = $life->{$stage}->{state};
+        next unless $state eq 'starting' || $state eq 'restarting';
+
+        my $age = $self->stage_state_age($stage);
+        next unless defined($age) && $age > $timeout;
+
+        $self->stage_down($stage);
+        push @expired => $stage;
+    }
+
+    $self->_rebucket_stage_tasks($_) for @expired;
+
+    return;
+}
+
+# Move every pending task parked in a now-unschedulable stage bucket back through
+# task_pending_lookup so task_stage re-resolves its destination. _next only walks
+# 'up' stage buckets, so a task left in a demoted ('down') stage would otherwise be
+# unreachable -- the stale bucket has to be drained for the demotion to take effect.
+sub _rebucket_stage_tasks {
+    my $self = shift;
+    my ($stage) = @_;
+
+    my $pending = $self->{+PENDING_TASKS} or return;
+
+    my @moved;
+    for my $run_id (keys %$pending) {
+        for my $smoke (keys %{$pending->{$run_id}}) {
+            my $by_cat = $pending->{$run_id}->{$smoke}->{$stage} or next;
+            for my $cat (keys %$by_cat) {
+                for my $dur (keys %{$by_cat->{$cat}}) {
+                    push @moved => @{$by_cat->{$cat}->{$dur}};
+                }
+            }
+            delete $pending->{$run_id}->{$smoke}->{$stage};
+        }
+    }
+
+    for my $task (@moved) {
+        push @{$self->task_pending_lookup($task)} => $task;
+        delete $self->{+SORTED}->{join("\0", $self->task_fields($task))};
+    }
+
     return;
 }
 
