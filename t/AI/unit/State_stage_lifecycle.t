@@ -54,16 +54,6 @@ subtest stage_map_drives_starting_and_down => sub {
     is($state->stage_lifecycle->{beta}{state},  'down', "a stage absent from the refreshed map is 'down'");
 };
 
-subtest reset_clears_lifecycle => sub {
-    my $state = FakeState->new();
-    $state->stage_ready('a');
-    $state->stage_ready('b');
-
-    $state->reset_stage_readiness;
-
-    is($state->stage_lifecycle, {}, "lifecycle cleared on reset (respawn)");
-};
-
 # bloat #3: the lifecycle record is {state, stamp} only -- stale-incarnation
 # rejection moved to connection-currency in the runner's stage-report handlers, so
 # there is no wire-generation field anywhere in the lifecycle.

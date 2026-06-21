@@ -680,15 +680,6 @@ sub stage_restarting {
     return;
 }
 
-# §6.10: forget every stage's lifecycle. Used when a crashed preload root is
-# respawned: the dead incarnation's stages are gone (or stale), so the scheduler
-# must wait for the fresh incarnation to re-register before dispatching again.
-sub reset_stage_readiness {
-    my $self = shift;
-    $self->{+STAGE_LIFECYCLE} = {};
-    return;
-}
-
 # The reported stage map is the runner's commitment record of
 # which stages will exist. Setting it transitions lifecycle: every stage present in
 # the new map that has no live ('up') record yet is 'starting' (committed/known,
