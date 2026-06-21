@@ -610,6 +610,19 @@ sub stage_is_up {
     return $life->{state} eq 'up' ? 1 : 0;
 }
 
+# The lifecycle state of a named stage: 'up' / 'starting' / 'restarting' / 'down',
+# or 'absent' for a stage with no lifecycle record at all (never configured,
+# misspelled, or removed by a map refresh). 'down' and 'absent' are both the
+# permanent-unavailable signal -- a stage marked 'down' was dropped from a refreshed
+# map. The preload Resource maps these to its available() tri-state.
+sub stage_state {
+    my $self = shift;
+    my ($stage) = @_;
+
+    my $life = ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} or return 'absent';
+    return $life->{state};
+}
+
 sub stage_ready {
     my $self = shift;
     my ($stage) = @_;
@@ -718,30 +731,80 @@ sub _reload {
     return;
 }
 
+# The ordered preload-stage preference list for a task. Prefer the explicit
+# preload_list (the client-side directive list, never undef on a produced task);
+# fall back to the legacy single 'stage' field so hand-built/legacy task hashrefs
+# (and the no-preload preloader path) still resolve.
+sub task_preload_list {
+    my $self = shift;
+    my ($task) = @_;
+
+    my $list = $task->{preload_list};
+    return [@$list] if $list && @$list;
+
+    my $stage = $task->{stage};
+    return [$stage] if defined($stage) && length($stage);
+
+    return [];
+}
+
+# Resolve the stage a task should be bucketed/dispatched into, entirely
+# client-side from the task's preload directives against the reported stage map
+# (no round-trip to any stage). This is the bucketing key in PENDING_TASKS; the
+# preload Resource's available() applies the matching tri-state gate (wait vs
+# skip) for stages that are not yet 'up'.
+#
+# Selection (scheduler-only path):
+#   * no_preload (or !use_preload) => the synthetic NOPRELOAD stage (fork clean).
+#   * the FIRST preload_list stage that is currently 'up' (first-to-be-available;
+#     it does NOT wait for a higher-preference stage).
+#   * else the first preload_list stage that exists in the map but is not yet up
+#     ('starting'/'restarting') -- bucket there and wait for it to ready.
+#   * else (empty list, or every listed stage is permanently gone: 'down'/absent)
+#     => the default stage. A require_preload task that lands here is gated to a
+#     skip by the preload Resource; an advisory one runs in default.
 sub task_stage {
     my $self = shift;
     my ($task) = @_;
 
     my $wants = $task->{stage};
-    $wants //= 'NOPRELOAD' unless $task->{use_preload};
+    $wants //= 'NOPRELOAD' if !$task->{use_preload} || $task->{no_preload};
 
-    # In-runner preload path: the loaded preloader resolves directive / file_stage /
-    # default itself.
+    # In-runner preload path (no-preload run): the loaded preloader owns the
+    # directive-vs-NOPRELOAD-vs-default decision (and the below-threshold / no-stage
+    # fallbacks where even a NOPRELOAD task resolves to the runner's own 'default').
     return $self->preloader->task_stage($task->{file}, $wants) if $self->preloader;
 
-    # Scheduler-only path: the preload-root hosts the stages, so resolve client-side
-    # from the reported stage map. With neither a preloader nor a stage map (no
-    # preload at all) keep the legacy fallback. The base stage always registers as
-    # lowercase 'default' (Runner::Preloader), so a non-staged preload-root reports
-    # an empty map and an unstaged task must resolve to 'default' -- NOT 'DEFAULT',
-    # which would dispatch to a 'preload-DEFAULT' that never registered and abort the
-    # jobs as "stage gone".
+    # Scheduler-only path: the preload-root hosts the stages. A no_preload task forks
+    # clean (NOPRELOAD); everything else resolves client-side from the directives.
+    return 'NOPRELOAD' if !$task->{use_preload} || $task->{no_preload};
+
+    # With no stage map at all (no preload configured) keep the legacy fallback. The
+    # base stage always registers as lowercase 'default' (Runner::Preloader), so a
+    # non-staged preload-root reports an empty map and an unstaged task must resolve
+    # to 'default' -- NOT 'DEFAULT', which would dispatch to a 'preload-DEFAULT' that
+    # never registered and abort the jobs as "stage gone".
     my $map = $self->{+STAGE_MAP};
     return $wants // 'default' unless $map && keys %$map;
 
-    # An explicit, valid directive wins; NOPRELOAD is the synthetic no-preload stage.
-    return $wants if defined($wants) && length($wants) && ($wants eq 'NOPRELOAD' || $map->{$wants});
+    my $list = $self->task_preload_list($task);
 
+    # First listed stage that is up wins.
+    for my $stage (@$list) {
+        return $stage if $self->stage_is_up($stage);
+    }
+
+    # Otherwise the first listed stage that still EXISTS in the map (so it is
+    # starting/restarting, coming back): bucket there and wait for it to ready. A
+    # listed stage that is absent from the map -- or explicitly 'down' -- is
+    # permanently gone and contributes nothing to selection.
+    for my $stage (@$list) {
+        next unless $map->{$stage};
+        next if $self->stage_state($stage) eq 'down';
+        return $stage;
+    }
+
+    # Empty list, or every listed stage is permanently gone: fall to default.
     return $self->_default_stage_from_map($map);
 }
 
