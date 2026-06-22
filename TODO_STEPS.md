@@ -51,7 +51,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |
 | 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ⬜ (residual) | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
-| 12 | Discovery via runner-socket symlink + PID-file fallback (§5.3) | ⬜ | — |
+| 12 | Discovery via runner-socket symlink + PID-file fallback (§5.3) | ✅ (`App::Yath2::Discovery`) | — |
 | 13 | `spawn` bypasses runner: direct `Preload::Host` socket, **SCM_RIGHTS fd-pass** of real STDIN/OUT/ERR, supervisor (no exec → longjump preload path) + dedicated control protocol, kill-on-command-EOF, no collector (§4.8) — needs 12, 29, 30 | ⬜ | #39 |
 | 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only object (§1) | ✅ | — |
 | 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
@@ -143,10 +143,18 @@ carry the specifics.
   the three job fields chunk 23 produces (no resolver). Resource interface hardening
   is TODO_TASKS **#24**.
 
-- **Chunk 12 — discovery via a runner-socket symlink (§5.3).** Replace
-  `yath-persist.json` with a well-known symlink to `runner.socket` (follow it to the
-  socket + workdir). Keep a flat `PID`-file fallback to signal a wedged runner whose
-  socket is unresponsive.
+- **Chunk 12 — discovery via a runner-socket symlink (§5.3). DONE.** Replaced
+  `yath-persist.json` with a well-known symlink to `runner.socket` (follow it → socket
+  + workdir) in `App::Yath2::Discovery` (wrapped by `App::Yath2::Pfile`;
+  `App::Yath2::Util::find_runner_link` resolves the path). The flat workdir `PID`-file
+  is the signal fallback for a wedged runner whose socket is unresponsive; a
+  dangling/connect-fail symlink ⇒ runner absent ⇒ the stale symlink is cleaned.
+  Settled at implementation time: symlink basename
+  `.<user>-<host>-<project>-yath-runner.sock` (legacy project-prefix / tempdir-vs-cwd
+  rules; one runner per project), no explicit symlink perms (the link mode is not
+  meaningful; access is governed by the workdir/socket), and the version stamp was
+  dropped (liveness is the socket connect; the runner's `settings.json` carries
+  config). See ARCH §5.3 "Implemented (chunk 12)".
 
 - **Chunk 13 — `spawn` bypasses the runner (§4.8) — needs 12, 29, 30.** `spawn`
   discovers + connects **directly** to an available preload stage (`Preload::Host`,

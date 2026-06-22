@@ -154,9 +154,10 @@ is **not** execution order here — dependencies are noted inline:
     runner dispatches over that registered channel. Depends on 9.
 11. **Preload as a resource** (§4.7a) — model preload availability as a scheduler
     resource so jobs gate on it like any other resource. Depends on 10.
-12. **Discovery via runner-socket symlink** (§5.3) — replace `yath-persist.json`
-    with a well-known symlink to `runner.socket`; clients read the workdir `PID`
-    file as a signal-fallback when the socket is unresponsive.
+12. **Discovery via runner-socket symlink** (§5.3) — **done**: replaced
+    `yath-persist.json` with a well-known symlink to `runner.socket`
+    (`App::Yath2::Discovery`); clients read the workdir `PID` file as a
+    signal-fallback when the socket is unresponsive.
 13. **`spawn` bypasses the runner** (§4.8) — connect directly to a stage socket,
     share IO over the socket (dup2 onto the child's std streams), double-fork the
     child with no collector. Depends on 9, 10, 12.
@@ -1145,9 +1146,29 @@ from there the available `preload-<stage>.socket`s). This replaces the
   signal-based termination when the socket is unresponsive.
 - **Failure semantics.** A dangling symlink (or one whose `connect` fails) means
   no live runner: the client treats the harness as absent and cleans the stale
-  symlink, rather than blocking. (Owner/permission, version, and
-  multiple-harness-per-project handling are settled at implementation time and
-  tracked in `TODO_STEPS.md`.)
+  symlink, rather than blocking.
+
+**Implemented (chunk 12).** `App::Yath2::Discovery` owns the symlink (publish on
+`start`, resolve on `run`/`which`/`status`/`stop`/`reload`/etc.), wrapped by
+`App::Yath2::Pfile` so the command surface (`pid`/`workdir`/`describe`) is
+unchanged. `App::Yath2::Util::find_runner_link` resolves the symlink path, reusing
+the legacy pfile path algorithm. The caveated sub-items were settled as follows:
+
+- **Naming / multiple-harness-per-project.** The symlink basename is
+  `.<user>-<host>-<project>-yath-runner.sock` under the persist dir
+  (`YATH_PERSISTENCE_DIR` / `--persist-dir`, else the system temp dir, else the
+  cwd with an up-dir walk) — the legacy pfile project-prefix / tempdir-vs-cwd
+  rules, so each distinct project (and user/host) gets a distinct symlink. The
+  extension is `.sock` (a symlink), not `.json`. One runner per project per
+  persist dir, as before.
+- **Owner / permission.** No explicit mode is set on the symlink (a symlink's own
+  mode is not meaningful on Linux — `lchmod` is a no-op); access is governed by
+  the workdir + socket permissions, which already live in a user-private temp dir.
+- **Version stamp.** Dropped. The old `yath-persist.json` carried a version that
+  discovery cross-checked; the symlink carries no metadata. A different-version
+  runner is a different socket/workdir, the runner's own `settings.json` carries
+  its configuration, and liveness is the socket connect — so a discovery-file
+  version check is no longer needed. The version-mismatch banner is removed.
 
 `preload-<stage>.socket` is only the **global / per-run-baseline** form. A
 **run-scoped** preload stage on a persistent multi-run runner needs a
