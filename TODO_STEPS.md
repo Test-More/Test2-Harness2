@@ -52,14 +52,14 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ⬜ (residual) | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
 | 12 | Discovery via runner-socket symlink + PID-file fallback (§5.3) | ⬜ | — |
-| 13 | `spawn` bypasses runner: direct stage socket, dup2 IO, double-fork no collector (§4.8) — needs 9,10,12 | ⬜ | — |
+| 13 | `spawn` bypasses runner: direct `Preload::Host` socket, **SCM_RIGHTS fd-pass** of real STDIN/OUT/ERR, supervisor (no exec → longjump preload path) + dedicated control protocol, kill-on-command-EOF, no collector (§4.8) — needs 12, 29, 30 | ⬜ | #39 |
 | 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only object (§1) | ✅ | — |
 | 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | #13 (%SORTED concurrency); #12 (run lifecycle, primary home ch22) |
 | 17 | Plugin setup/teardown move to the runner; aux output → collectors; retire aux_logs flat files | ✅ | — |
 | 18 | Collectors watch the runner pid → self-terminate if runner dies (§4.1) + audit gate | ✅ | — |
 | 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11, #26 |
-| 20 | Interactive mode IO: replace FIFO proxy with socket-shared client IO (§4.10, reuse §4.8 dup2) — needs 13. Interactive may be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b) |
+| 20 | Interactive mode IO: replace FIFO proxy with **STDIN-only SCM_RIGHTS fd-pass** (output stays with collector), command-listens/per-test-accept (§4.10, reuses §4.8 primitive) — needs 29, 13. May be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b), #40 |
 | 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ⬜ | #6, #8, #11 |
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
@@ -68,6 +68,9 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 26 | Collapse to one run path (§5.4): `run_scheduler_only` becomes the runner's only run loop; delete the in-runner `run_tests`/`run_stage`/`run_job` stage machinery + `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes #22 residual + #4 P4 + #8 P4. — needs 24, 25 | ⬜ | #29 |
 | 27 | Generic `collector_transition` event facet (Test2-Collector forwards verbatim) + runner→plugin hook for non-builtin transitions. — needs 24 | ⬜ (deferred) | #30 |
 | 28 | Runtime retry-request: a test-facing helper emits an event → collector `retry` transition → runner retries via normal re-queue. — needs 24, 27 | ⬜ (deferred) | #31 |
+| 29 | Socket FD-pass primitive `Test2::Harness2::Util::FdPass` (SCM_RIGHTS; optional `IO::FDPass`; command-listens) — shared by spawn (13) + interactive (20) | ⬜ | #38 |
+| 30 | Harness-client library: grow `App::Yath2::Client` to own runner-lifecycle modes + finders/specs + state queries; thin `test`/`run`/`start` (§4.11) | ⬜ | #41 |
+| 31 | Render-loop library: `RenderLoop` (owns dispatch+rollup) + pure-source `Producer`; `LiveProducer` + `JSONLFileProducer` now, `ArchiveProducer` deferred to DB rewrite (§4.12) | ⬜ | #42 |
 
 The **Tasks** column points at the well-defined tickets in `TODO_TASKS.md` that
 implement (part of) a step. A step is "broad"; its tickets are "specific."
@@ -145,12 +148,21 @@ carry the specifics.
   socket + workdir). Keep a flat `PID`-file fallback to signal a wedged runner whose
   socket is unresponsive.
 
-- **Chunk 13 — `spawn` bypasses the runner (§4.8) — needs 9,10,12.** `spawn`
-  connects **directly** to an available preload stage's socket; the stage
-  **double-forks** the child with **no collector**, detached. IO sharing uses
-  **`dup2`** of the accepted socket onto the child's STDIN/OUT/ERR (no `SCM_RIGHTS`
-  dependency), retiring the 1.0 `/proc` IO proxying. (Interactive mode, chunk 20,
-  reuses this mechanism.)
+- **Chunk 13 — `spawn` bypasses the runner (§4.8) — needs 12, 29, 30.** `spawn`
+  discovers + connects **directly** to an available preload stage (`Preload::Host`,
+  which gains a new `request_handler_spawn` that async-double-forks a supervisor and
+  acks `{ok=>1}`). IO sharing is **SCM_RIGHTS fd-passing** (chunk 29): the command
+  **listens**, the spawned side **dials back**, the command `send_fds` its real
+  STDIN/OUT/ERR, the child `recv_fds` + `dup2`s them — the command leaves the byte
+  path (no proxy; replaces 1.0 `/proc`). The supervisor (holds the preloaded image)
+  forks a script child that **must not `exec`** — it sanitizes (close inherited
+  sockets, Test2 reset, stage hooks) and **unwinds into the preloaded interpreter via
+  `Long::Jump`/`goto::file`** (preserving the preload), then `waitpid`s + reports raw
+  wait status over a **dedicated control protocol** (same socket, post-fd phase). The
+  child runs under **no collector**, detached from the harness but **bound to the
+  command** (supervisor kills it on command-EOF). See AI_DOCS/2026-06-21-spawn-
+  interactive-client-render-spec.md §2/§8. TODO_TASKS **#39**. (Interactive, chunk 20,
+  reuses the chunk-29 primitive.)
 
 - **Chunk 15 — final renderer ordering.** `Renderer::Driver` still pins the interim
   per-job 3-phase ordering on `Renderer::Base`; the final cross-job ordering
@@ -164,11 +176,17 @@ carry the specifics.
   the per-run scheduling structures (TODO_TASKS **#13** `%SORTED`; **#12** run
   lifecycle is related but its primary home is chunk 22).
 
-- **Chunk 20 — interactive mode IO (§4.10) — needs 13.** Replace the FIFO IO-proxy
-  with socket-shared client IO (`dup2` socket→test stdio, reusing the spawn §4.8
-  mechanism); forces `-j1`. The FIFO patch lives in the goto-file launcher that the
-  no-preload-fork-exec task removes, so interactive may be **temporarily disabled /
-  left xfail** until this lands. TODO_TASKS **#7** (7b).
+- **Chunk 20 — interactive mode IO (§4.10) — needs 29, 13.** Replace the FIFO
+  IO-proxy with **STDIN-only SCM_RIGHTS fd-passing** (chunk 29 primitive): the
+  command **opens a listen socket only in interactive mode** (`$ENV{YATH_INTERACTIVE}`
+  carries the **socket path**), the test **dials in, `recv_fds` the real STDIN fd,
+  `dup2`s it onto fd 0** (preload: goto-file filter; no-preload: pre-exec connect).
+  **Output stays with the collector** (STDOUT/STDERR not shared) → normal §4.5
+  render. The command keeps the listener open and passes the fd **once per
+  sequential test** (`-j1`), with timeout/cleanup, stopping after the run. The FIFO
+  patch lives in the goto-file launcher that the no-preload-fork-exec task removes,
+  so interactive may be **temporarily disabled / left xfail** until this lands.
+  TODO_TASKS **#7** (7b), **#40**.
 
 - **Chunk 21 — collapse the IPC controller (§5.4) — needs 6.** Reduce
   `Test2::Harness2::IPC` to **spawn + zombie-reap on `Util::IPC`**: move no-preload
@@ -245,11 +263,42 @@ carry the specifics.
   *count/no-retry* file directive already exists (`# HARNESS-retry N` /
   `# HARNESS-no-retry`); this adds the runtime-request channel. TODO_TASKS **#31**.
 
+- **Chunk 29 — socket FD-pass primitive (§4.8/§4.10).** New
+  `Test2::Harness2::Util::FdPass`: SCM_RIGHTS `send_fds`/`recv_fds` over **optional
+  `IO::FDPass`** (a Recommends, **not** a hard requires — spawn + interactive error
+  early if absent; the lean `test`/`run`/`start` path never loads it). Both ends
+  agree on one backend (IO::FDPass = one fd per call, looped; old3's `Socket::MsgHdr`
+  wrapper is the fallback reference). The choreography is **command-listens /
+  target-dials**. Command-side **and** target-side `require` guards turn a missing
+  module into a structured spawn rejection / clean interactive failure, never a raw
+  post-accept crash. Shared by chunks 13 + 20. TODO_TASKS **#38**.
+
+- **Chunk 30 — harness-client library (§4.11).** Grow `App::Yath2::Client` into the
+  bridge between `App::Yath2` and `runner.socket`: a **runner-lifecycle mode enum**
+  (transient = spawn+own+reap+signal-trap; attach = discover+`kill(0)`; start =
+  spawn-daemon), **finders + job-spec building** (absorb `RunPlan`), and **state-query
+  accessors** over the mirrored `Monitor` (`jobs_in_state`, `events_file_for`). Thin
+  `test`/`run`/`start` onto the mode; collapse the `run extends test` override pile +
+  the inline runner spawn/reap/signal in `test.pm`. Does **not** own renderers (chunk
+  31). `spawn` uses it only for stage discovery. TODO_TASKS **#41**.
+
+- **Chunk 31 — render-loop library (§4.12).** New `App::Yath2` `RenderLoop` that
+  **owns dispatch + sink lifecycle + the run rollup** and takes an injected
+  **pure-source `Producer`** (`poll`→ordered events, `done`). `iterate()` +
+  `start()`/`start(sub{})` entry points. `LiveProducer` (extracted from the current
+  `Subscriber`/`Monitor`/`Driver` mechanics — the `Driver`'s dispatch + `compute_final`
+  + bounded `wait_terminal` move into the loop) and `JSONLFileProducer` (keeps
+  `replay` working) land now; `ArchiveProducer` (DB log) is deferred to the DB-layer
+  rewrite, when the `JobReader`/`RunnerReader` byte-source generalization (§4.5) and
+  the `JSONLFileProducer` deletion happen. Sinks fed self-contained events for future
+  child-process relocation. TODO_TASKS **#42**.
+
 ## Cross-references
 
 `ARCHITECTURE.md` carries the target-state detail these steps build toward:
 §4.2 (runner service + run lifecycle), §4.3 (transition channel), §4.5 (renderers),
 §4.7/§4.7a (preload stages + preload resource), §4.8 (spawn), §4.10 (interactive),
+§4.11 (harness-client library), §4.12 (render-loop library),
 §5.2/§5.3 (socket wire form + naming), §5.4 (spawn/reap), §6.1 (multi-run).
 Reference prototypes live under `reference/` (`2.0b`, `harness_service`,
 `dbix_quickorm`, `painter`, `io_events`).

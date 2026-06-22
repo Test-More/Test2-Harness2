@@ -714,6 +714,152 @@ representation. No behavior change.
 
 ---
 
+## TIER 5 — Spawn / interactive / client / render-loop (designed 2026-06-21, reviewed)
+
+> Design context + rationale + the two-reviewer findings we resolved:
+> `AI_DOCS/2026-06-21-spawn-interactive-client-render-spec.md` (read it first).
+> Authoritative spec: ARCHITECTURE.md §4.8 (spawn), §4.10 (interactive), §4.11
+> (harness-client), §4.12 (render-loop), with §4.5/§4.6 amendments. Sequence
+> **#38 → #39 → #40** (fd-pass primitive, then spawn, then interactive); **#41** and
+> **#42** (client + render-loop refactors) are independent of the IO work. Steps
+> 29/13/20/30/31.
+
+### #38 — Socket FD-pass primitive `Test2::Harness2::Util::FdPass`
+**Status:** Decided · **Step:** 29 · **Gates:** #39, #40
+
+**Problem:** spawn + interactive need to give a child the user's *real* terminal fd
+(single keystrokes, raw mode, debugger-correct), not a byte proxy. The 1.0 `/proc`
+proxy and the earlier "dup2-socket-onto-stdio" idea both still copy bytes through a
+middle process.
+
+**Steps:**
+- New **`Test2::Harness2::Util::FdPass`**: `send_fds($sock,\@fds)` / `recv_fds($sock,$n)`
+  via **SCM_RIGHTS** ancillary data, over **`IO::FDPass`** (one fd per call, looped;
+  the receiver knows the expected count). Port the proven shape from
+  `reference/old3/lib/App/Yath2/Spawn/FdPass.pm` (it used `Socket::MsgHdr` — keep that
+  as the fallback reference). Both ends MUST use the same backend.
+- **`IO::FDPass` is OPTIONAL** — a Recommends/Suggests in `dist.ini`, **not** a hard
+  requires. spawn + interactive `require` it dynamically and **error early with an
+  actionable message** if absent (spawn: at command start; interactive: in the option
+  post-process where the FIFO is set up today). The lean `test`/`run`/`start` path
+  never loads it. The **target side** (`Preload::Host` / the test) must also guard the
+  `require` and turn a failure into a **structured spawn rejection / clean collected
+  interactive failure**, never a raw post-accept crash (a stage under a different
+  `@INC`/older install may lack it even when the command has it).
+- Choreography is **command-listens / target-dials** (the fd flows command→child).
+  Command-side listen sockets live in a short private tmp dir via `File::Temp`
+  (≤108/104-char `sun_path` cap), random names, `0600` (dir `0700`), `unlink`ed after
+  accept; created `FD_CLOEXEC`; the received dup fds are closed after `dup2`.
+  ARCHITECTURE §4.8/§4.10, §5.2/§5.3.
+
+### #39 — `spawn` redesign: direct-to-stage, fd-pass, supervisor (no exec)
+**Status:** Decided · **Step:** 13 · **Depends:** #38, #12 (discovery), `Preload::Host`
+
+**Problem:** today `yath spawn` goes *through* `runner.socket`, proxies IO via
+`/proc/<pid>/fd`, and delivers exit via an `ipcfile`. Target: bypass the runner, pass
+the real terminal fds, preserve the preload, deliver real wait status.
+
+**Steps:**
+- **`Preload::Host` gains `request_handler_spawn`** (it composes only `Role::Service`,
+  so it must learn the command): accept `{file, args, env_vars, cwd, abs_path,
+  correlation_id, listen_socket_path}`, **async double-fork** a detached supervisor,
+  and ack `{ok=>1}` without blocking the host loop. The command discovers the stage
+  via the §5.3 symlink + `preload-<stage>.socket` and connects **directly** (not the
+  runner).
+- **Supervisor (holds the preloaded image):** dials the command's listen socket,
+  `recv_fds` STDIN/OUT/ERR, forks a **script child**. The script child **must NOT
+  `exec`** (exec wipes the preload — the whole point of spawn): it `dup2`s the fds
+  onto 0/1/2, runs **post-fork sanitization** (close inherited service/runner/collector
+  sockets + the command listener — preserve the §5.4 EOF model — close the recv'd dup
+  fds, `test2_stop_preload`/`test2_post_preload_reset`, `do_post_fork`/`do_pre_launch`),
+  and **unwinds into the preloaded interpreter via `Long::Jump`/`goto::file`** (the
+  mechanism current `launch_spawn` already uses, `JobLauncher.pm`). No collector wraps
+  it.
+- **Control channel = dedicated mini-protocol** on the same socket *after* the
+  SCM_RIGHTS message (whose one `\0` payload byte the receiver consumes). **Not**
+  `Role::Service::Connection` (identity-first framing collides with the fd-pass byte).
+  Carries: supervisor pid; forwarded signals/winch (command traps + forwards — a
+  `setsid` child has no controlling tty); and the child's **raw wait status** at exit
+  (signal-death reported + re-raised on the command, the 1.0 `parse_exit` behavior —
+  not just an exit code).
+- **Detached from harness, bound to command:** the supervisor watches the control
+  connection; on **EOF** (command/terminal died) it `kill(-pgid)`s the script child
+  and exits. The spawned process survives runner/stage teardown but **does not outlive
+  the command**.
+- **Cleanup:** retire the `/proc/<pid>/fd` proxy + `ipcfile`; `spawn` no longer routes
+  through `runner.socket`. ARCHITECTURE §4.8.
+
+### #40 — interactive redesign: STDIN-only fd-pass, per-test accept
+**Status:** Decided · **Step:** 20 · **Depends:** #38, #39 (shares the primitive) · **Note:** supersedes the old #7 (7b)
+
+**Problem:** the 1.0 FIFO STDIN-proxy (`POSIX::mkfifo`, `$ENV{YATH_INTERACTIVE}`,
+`goto::file` re-open) is clunky and has a broken open-retry loop.
+
+**Steps:**
+- **STDIN only** — `STDOUT`/`STDERR` stay with the collector (recorded + rendered via
+  §4.5); only STDIN is shared. (Corrects §4.10's earlier "all three streams".)
+- The command **opens a listen socket only when `--interactive`**; `$ENV{YATH_INTERACTIVE}`
+  carries the **socket path**. The test **dials in, `recv_fds` the real STDIN fd,
+  `dup2`s it onto fd 0** — preload path in the `goto::file` filter; **no-preload path**
+  via a **pre-exec connect+recv+dup2(0)** in the collector/launch setup gated on the
+  env var (name the exact hook in both paths).
+- **One pass per test:** `-j1` (isolation category, already in place) means N
+  sequential tests; the command keeps the listener open, passes the fd **once per
+  test**, with connect timeout + cleanup, and stops accepting when the run ends.
+- No control channel (the test is a normal collected job — verdict from its collector,
+  signals via the existing job-signal machinery). Same controlling-terminal limitation
+  as §4.8 (no `/dev/tty`/job-control without forwarding). Add tests: `perl -d`, raw
+  mode, `/dev/tty`, Ctrl-C, Ctrl-Z, WINCH. Remove the FIFO patch. ARCHITECTURE §4.10.
+
+### #41 — Harness-client library (grow `App::Yath2::Client`, Option A)
+**Status:** Decided · **Step:** 30
+
+**Problem:** `test`/`run`/`start` repeat work and lean on complex polymorphism
+(`run extends test` with ~12 overrides; runner spawn/reap/signal inline in `test.pm`).
+`App::Yath2::Client` exists but only wraps the submit + subscribe transports.
+
+**Steps:**
+- Grow `App::Yath2::Client` into the bridge between `App::Yath2` and `runner.socket`,
+  owning: (a) a **runner-lifecycle mode enum** — *transient* (spawn the
+  collector-wrapped runner, own+reap, trap+forward `INT`/`TERM`/`HUP` to the runner
+  process group), *attach* (discover the persistent runner via §5.3, `kill(0)`
+  liveness, never reap), *start* (spawn the daemon, write discovery state, return);
+  (b) **finders + job-spec building** (absorb `RunPlan`); (c) **state-query accessors**
+  over the mirrored `Monitor` (`jobs_in_state`, `events_file_for`, run/job rollup).
+- **Thin the commands:** `test` = client *transient* + render loop; `run` = client
+  *attach* + render loop; `start` = client *start*, no render loop. Delete the
+  `run extends test` override pile + the inline runner lifecycle in `test.pm`.
+- Does **NOT** own renderers (#42). `spawn` uses the client only for stage discovery.
+  ARCHITECTURE §4.11.
+
+### #42 — Render-loop library (`RenderLoop` + `Producer`, Option A)
+**Status:** Decided · **Step:** 31
+
+**Problem:** the render loop is duplicated across `test`/`run` (inherited),
+`watch` (own loop), and `replay` (own loop, bypasses `Renderer::Base`). RL-1/RL-2 of
+the draft were internally inconsistent about who owns the `Driver` (reviewer flagged).
+
+**Steps:**
+- New `App::Yath2` **`RenderLoop`** that **owns dispatch + the sink lifecycle
+  (`step`/`finish`/`signal`) + the run rollup (`compute_final`)**, wrapping the
+  `Test2::Harness2::Renderer::Base` mechanics. Entry points: **`->iterate()`** (one
+  pass) and **`->start()` / `->start(sub {…})`** (loop owns the iteration).
+- A **`Producer` is a pure source** (`poll()`→ordered events, `done()`, optional
+  `finalize`). Extract: **`LiveProducer`** (the `Subscriber`/`Monitor` mirror + the
+  current `Renderer::Driver`'s per-job *ordering*; the `Driver`'s dispatch +
+  `compute_final` + **bounded `wait_terminal`** move into the loop — **preserve** the
+  false-FAIL fix) with `done()` = socket-closed (`test`) / `run_done` (`run`); the
+  `watch` variant yields runner/service output only; **`JSONLFileProducer`** wrapping
+  the existing flat-`.jsonl` reader to keep `replay` working.
+- **`ArchiveProducer` (DB log) is deferred** to the DB-layer rewrite (build a `Monitor`
+  snapshot from state rows + read events from artifact blobs; needs the
+  `JobReader`/`RunnerReader` **byte-source generalization**, §4.5). The
+  `JSONLFileProducer` is deleted when it lands.
+- Sinks fed only self-contained `Event` objects, so a slow sink can later run in its
+  own process (not built now). ARCHITECTURE §4.12 (+ §4.5/§4.6).
+
+---
+
 ## Explicitly justified — do NOT cut
 
 Load-bearing, all auditors agree: the unified `Role::Service`/`Connection` framing
