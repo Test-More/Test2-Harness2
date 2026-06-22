@@ -881,7 +881,23 @@ the real terminal fds, preserve the preload, deliver real wait status.
   through `runner.socket`. ARCHITECTURE §4.8.
 
 ### #40 — interactive redesign: STDIN-only fd-pass, per-test accept
-**Status:** Decided · **Step:** 20 · **Depends:** #38, #39 (shares the primitive) · **Note:** supersedes the old #7 (7b)
+**Status:** ✅ DONE — interactive shares only the command's real STDIN, passed over
+a Unix socket (`SCM_RIGHTS`, via `Test2::Harness2::Util::FdPass`) instead of a FIFO.
+The command (`App::Yath2::Options::Debug::_post_process_interactive`) opens a listen
+socket only in `--interactive`, advertises its path in `$ENV{YATH_INTERACTIVE}`,
+forks, and runs a per-test accept loop that passes its STDIN fd once per sequential
+test (`-j1` via the isolation category, already in place) and stops when the run
+ends. The test dials in and `dup2`s the received fd onto fd 0 via
+`Test2::Harness2::Interactive::connect_stdin` — the **preload** path calls it from the
+`goto::file` filter (`Runner::JobLauncher`); the **no-preload** path injects
+`-MTest2::Harness2::Interactive` into the exec'd test (`Runner::Job::cli_options`), and
+its `import` runs `connect_stdin` before the test body. STDOUT/STDERR stay with the
+collector (rendered normally); `--live`/`-v` default on. No control channel (a normal
+collected job). The FIFO machinery (`POSIX::mkfifo`, the open-retry loop) is removed.
+Tty/controlling-terminal limitation documented (no `/dev/tty`, job control, or
+terminal-generated signals without forwarding; run `reset` after an abrupt raw-mode
+death). · **Step:** 20 · **Depends:** #38, #39 (shares the primitive) · **Note:**
+supersedes the old #7 (7b)
 
 **Problem:** the 1.0 FIFO STDIN-proxy (`POSIX::mkfifo`, `$ENV{YATH_INTERACTIVE}`,
 `goto::file` re-open) is clunky and has a broken open-retry loop.

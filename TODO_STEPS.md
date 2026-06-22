@@ -59,7 +59,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 17 | Plugin setup/teardown move to the runner; aux output → collectors; retire aux_logs flat files | ✅ | — |
 | 18 | Collectors watch the runner pid → self-terminate if runner dies (§4.1) + audit gate | ✅ | — |
 | 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11, #26 |
-| 20 | Interactive mode IO: replace FIFO proxy with **STDIN-only SCM_RIGHTS fd-pass** (output stays with collector), command-listens/per-test-accept (§4.10, reuses §4.8 primitive) — needs 29, 13. May be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b), #40 |
+| 20 | Interactive mode IO: replace FIFO proxy with **STDIN-only SCM_RIGHTS fd-pass** (output stays with collector), command-listens/per-test-accept (§4.10, reuses §4.8 primitive) — needs 29, 13. May be temporarily disabled / xfail until this lands (do not block #4-task) | ✅ | #7 (7b), #40 |
 | 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ✅ (base class slimmed, not dismantled — `Preload::Host` is a 3rd consumer, out of scope per 26/#29) | #6, #8, #11 |
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ✅ (via #12 `5ac411700`; status cell was stale) | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
@@ -198,17 +198,21 @@ carry the specifics.
   the per-run scheduling structures (TODO_TASKS **#13** `%SORTED`; **#12** run
   lifecycle is related but its primary home is chunk 22).
 
-- **Chunk 20 — interactive mode IO (§4.10) — needs 29, 13.** Replace the FIFO
-  IO-proxy with **STDIN-only SCM_RIGHTS fd-passing** (chunk 29 primitive): the
-  command **opens a listen socket only in interactive mode** (`$ENV{YATH_INTERACTIVE}`
-  carries the **socket path**), the test **dials in, `recv_fds` the real STDIN fd,
-  `dup2`s it onto fd 0** (preload: goto-file filter; no-preload: pre-exec connect).
+- **Chunk 20 — interactive mode IO (§4.10) — needs 29, 13. ✅ DONE.** Replaced the
+  FIFO IO-proxy with **STDIN-only SCM_RIGHTS fd-passing** (chunk 29 primitive): the
+  command (`App::Yath2::Options::Debug::_post_process_interactive`) **opens a listen
+  socket only in interactive mode** (`$ENV{YATH_INTERACTIVE}` carries the **socket
+  path**), forks, and runs a per-test accept loop. The test **dials in, `recv_fds`
+  the real STDIN fd, `dup2`s it onto fd 0** through
+  `Test2::Harness2::Interactive::connect_stdin` (preload: the `goto::file` filter in
+  `Runner::JobLauncher`; no-preload: `-MTest2::Harness2::Interactive` injected by
+  `Runner::Job::cli_options`, whose `import` connects before the test body).
   **Output stays with the collector** (STDOUT/STDERR not shared) → normal §4.5
-  render. The command keeps the listener open and passes the fd **once per
-  sequential test** (`-j1`), with timeout/cleanup, stopping after the run. The FIFO
-  patch lives in the goto-file launcher that the no-preload-fork-exec task removes,
-  so interactive may be **temporarily disabled / left xfail** until this lands.
-  TODO_TASKS **#7** (7b), **#40**.
+  render; `--live`/`-v` default on. The command keeps the listener open and passes
+  the fd **once per sequential test** (`-j1` via the isolation category), with a
+  select-bounded accept that ends when the run does. No control channel (a normal
+  collected job). FIFO machinery (`POSIX::mkfifo`, the open-retry loop) removed;
+  tty/controlling-terminal limitation documented. TODO_TASKS **#7** (7b), **#40**.
 
 - **Chunk 21 — collapse the IPC controller (§5.4) — needs 6. ✅ DONE (base slimmed,
   not dismantled).** The substantive collapse landed across #6 (`cat`-waits +

@@ -979,7 +979,7 @@ and `instance_*` (runner) hooks purely to keep the 1.0 `Test2::Harness`/`App::Ya
 namespaces back-compatible. The `*2` namespaces have no such constraint, so a single
 `setup`/`teardown` pair lives on the runner.
 
-### 4.10 Interactive mode (`--interactive`) `[migrating]`
+### 4.10 Interactive mode (`--interactive`) `[target]`
 
 **Responsibility.** Interactive mode connects the **client** (`yath test` /
 `yath run`) terminal IO to each test as it runs, so a test that prompts, drops into
@@ -1000,21 +1000,35 @@ despite running deep in the runner's process tree.
   watch output via the renderer) — with its retained limitation that output round-
   trips through the renderer rather than appearing on a raw tty.
 - **The STDIN fd is passed (`SCM_RIGHTS`), reusing the `spawn` primitive (§4.8).**
-  The **command opens a listen socket only when `--interactive` is set**;
-  `$ENV{YATH_INTERACTIVE}` carries that **socket path** (not a fifo path). The test
-  **dials in, `recv_fds` the command's real `STDIN` fd, and `dup2`s it onto fd 0** —
-  in the `goto::file` filter on the preload path, or via a pre-exec connect on the
-  no-preload path. The test then reads the user's real terminal directly (single
-  keystrokes, raw mode), not a proxied byte stream. The fd-pass util / `IO::FDPass`
-  optionality and the controlling-terminal limitation are the same as §4.8.
+  The **command opens a listen socket only when `--interactive` is set**
+  (`Test2::Harness2::Util::FdPass::command_listen`); `$ENV{YATH_INTERACTIVE}` carries
+  that **socket path** (not a fifo path). The command then forks: the parent keeps
+  the real `STDIN` and runs the per-test accept loop, the child gives up `STDIN`
+  (re-opened on `/dev/null`, as in 1.0) and continues as the yath command. The test
+  **dials in, `recv_fds` the command's real `STDIN` fd, and `dup2`s it onto fd 0**
+  through `Test2::Harness2::Interactive::connect_stdin` — on the **preload** path
+  the `goto::file` filter (`Runner::JobLauncher`) calls it in-process (no exec); on
+  the **no-preload** path the test is exec'd as a clean `perl` with
+  `-MTest2::Harness2::Interactive` injected (`Runner::Job::cli_options`), and that
+  module's `import` runs `connect_stdin` before the test body. The test then reads
+  the user's real terminal directly (single keystrokes, raw mode), not a proxied
+  byte stream. The fd-pass util / `IO::FDPass` optionality and the
+  controlling-terminal limitation are the same as §4.8.
 - **Output streams live (`--live` defaults ON).** A test that prompts or drops into
   a debugger needs its output as it is produced, not held until the job ends, so
   interactive defaults the `--live` flag ON (§4.5). Being `-j1`, the live tail
   never actually interleaves — it just streams the one running test.
 - **One pass per test.** Because interactive is `-j1` there is no contention, but a
-  run still has *N* sequential tests. The command keeps its listener open and passes
-  the `STDIN` fd **once per test**, with a connect timeout + cleanup, and stops
-  accepting once the run ends.
+  run still has *N* sequential tests. The forked parent keeps its listener open and
+  passes the `STDIN` fd **once per test**: it `select`s the listen socket with a
+  short timeout, accepts a dial-back, `send_fds` its `STDIN` to that test, and closes
+  the connection. The same `select` wake also reaps the command child, so the loop
+  ends (and the listen socket is unlinked) when the run does; the parent then
+  forwards the command's exit code. A test that dies mid-handshake is non-fatal — the
+  send is guarded and the next test gets its own connection. No control channel rides
+  the socket: a test is a normal collected job, so its verdict comes from its
+  collector's transitions (§5.4) and signals go through the existing job-signal
+  machinery.
 - **Replaces the FIFO IO-proxy.** The 1.0 implementation makes a FIFO
   (`POSIX::mkfifo`, sets `$ENV{YATH_INTERACTIVE}` to the fifo) and pumps the
   client's STDIN through the pipe, re-opening the test's STDIN from the fifo in a

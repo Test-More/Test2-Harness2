@@ -109,12 +109,30 @@ sub yath {
     my $inc     = delete $params{inc}     // 1;
     my $capture = delete $params{capture} // 1;
     my $log     = delete $params{log}     // 0;
+    my $stdin   = delete $params{stdin};
 
     my $no_app_path = delete $params{no_app_path};
     my $lib = delete $params{lib} // [];
 
     if (keys %params) {
         croak "Unexpected parameters: " . join (', ', sort keys %params);
+    }
+
+    # Optional STDIN for the yath process (e.g. interactive mode feeds the
+    # command's STDIN through to the one running test). A string is written to a
+    # temp file and rewound; an open handle is used as-is.
+    my $stdin_fh;
+    if (defined $stdin) {
+        if (ref $stdin) {
+            $stdin_fh = $stdin;
+        }
+        else {
+            my $sfile;
+            ($stdin_fh, $sfile) = tempfile("yathin-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.in');
+            print $stdin_fh $stdin;
+            $stdin_fh->flush;
+            seek($stdin_fh, 0, 0);
+        }
     }
 
     my (@inc, @dev);
@@ -168,6 +186,7 @@ sub yath {
     my $pid = run_cmd(
         no_set_pgrp => 1,
         $capture ? (stderr => $wh, stdout => $wh) : (),
+        $stdin_fh ? (stdin => $stdin_fh) : (),
         command => \@cmd,
         run_in_parent => [sub { close($wh) }],
     );
@@ -455,6 +474,12 @@ Defaults to false.
 When true yath will be instructed to produce a log, the log will be accessible
 via C<< $result->{log} >>. C<< $result->{log} >> will be an instance of
 L<Test2::Harness2::Util::File::JSONL>.
+
+=item stdin => $string_or_handle
+
+Optional STDIN for the yath process. A string is written to a temporary file
+and rewound; an already-open filehandle is used as-is. Useful for interactive
+mode, where the command's STDIN is passed through to the one running test.
 
 =item no_app_path => $bool
 

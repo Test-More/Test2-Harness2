@@ -13,7 +13,12 @@ my $FIX_STDIN;
 # rest of the job-launch machinery so it travels with the launcher. Whichever
 # process is the goto-file host (the runner command on the no-preload path, or
 # the preload-root on the preload path) loads this module and so installs the
-# patch.
+# patch. This is the PRELOAD interactive path: the test runs in-process (no
+# exec), so this filter connects to the command's listen socket, receives the
+# command's real STDIN over SCM_RIGHTS, and dup2s it onto fd 0 -- exactly where
+# the 1.0 FIFO re-open used to live. (The no-preload path is exec'd as a clean
+# perl and instead injects -MTest2::Harness2::Interactive, whose import does the
+# same connect; see Test2::Harness2::Runner::Job::cli_options.)
 BEGIN {
     require goto::file;
     no strict 'refs';
@@ -27,42 +32,31 @@ BEGIN {
         seek(STDIN, 0, 0) if $FIX_STDIN;
 
         unless ($int_done++) {
-            if (my $fifo = $ENV{YATH_INTERACTIVE}) {
-                my $ok;
-                for (1 .. 10) {
-                    $ok = open(STDIN, '<', $fifo);
-                    last if $ok;
-                    die "Could not open fifo ($fifo): $!";
-                    sleep 1;
-                }
-
-                die "Could not open fifo ($fifo): $!" unless $ok;
+            if (defined $ENV{YATH_INTERACTIVE} && length $ENV{YATH_INTERACTIVE}) {
+                require Test2::Harness2::Interactive;
+                Test2::Harness2::Interactive::connect_stdin($ENV{YATH_INTERACTIVE});
 
                 print STDERR <<'                EOT';
 
 *******************************************************************************
 *                   YATH IS RUNNING IN INTERACTIVE MODE                       *
 *                                                                             *
-* STDIN is comming from a fifo pipe, not a TTY!                               *
+* STDIN is the yath command's real STDIN, passed in over a socket.            *
 *                                                                             *
-* The $ENV{YATH_INTERACTIVE} var is set to the FIFO being used.               *
+* The $ENV{YATH_INTERACTIVE} var holds the socket path being used.            *
 *                                                                             *
-* VERBOSE mode has been turned on for you                                     *
-*                                                                             *
-* Only 1 test will run at a time                                              *
+* VERBOSE mode has been turned on for you, and only 1 test runs at a time.    *
 *                                                                             *
 * The main yath process no longer has STDIN, so yath plugins that wait for    *
 * input WILL BREAK.                                                           *
 *                                                                             *
-* Prompts that do not end with a newline may have a 1 second delay before     *
-* they are displayed, they will be prefixed with [INTERACTIVE]                *
+* STDOUT/STDERR are still recorded by the collector and shown via the         *
+* renderer, not written straight to your terminal.                            *
 *                                                                             *
-* Any stdin/stdout that is printed in 2 parts without a newline and more than *
-* a 1 second delay will be printed with the [INTERACTIVE] prefix, if they are *
-* not actually a prompt you can safely ignore them.                           *
-*                                                                             *
-* It is possible that a prompt was displayed before this message, please      *
-* check above if your prompt appears missing. This is an IO fluke, not a bug. *
+* This is NOT a controlling terminal: /dev/tty, job control, and              *
+* terminal-generated signals (Ctrl-C / Ctrl-Z / window resize) are not        *
+* delivered to the test. If a test leaves the terminal in raw mode on an      *
+* abrupt exit, run `reset` to restore it.                                     *
 *                                                                             *
 *******************************************************************************
 
