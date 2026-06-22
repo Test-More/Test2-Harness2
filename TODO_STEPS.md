@@ -160,9 +160,9 @@ carry the specifics.
   `Long::Jump`/`goto::file`** (preserving the preload), then `waitpid`s + reports raw
   wait status over a **dedicated control protocol** (same socket, post-fd phase). The
   child runs under **no collector**, detached from the harness but **bound to the
-  command** (supervisor kills it on command-EOF). See AI_DOCS/2026-06-21-spawn-
-  interactive-client-render-spec.md §2/§8. TODO_TASKS **#39**. (Interactive, chunk 20,
-  reuses the chunk-29 primitive.)
+  command** (supervisor kills it on command-EOF). TODO_TASKS **#39**; design record
+  `AI_DOCS/2026-06-21-spawn-interactive-client-render-spec.md` §2/§8. (Interactive,
+  chunk 20, reuses the chunk-29 primitive.)
 
 - **Chunk 15 — final renderer ordering.** `Renderer::Driver` still pins the interim
   per-job 3-phase ordering on `Renderer::Base`; the final cross-job ordering
