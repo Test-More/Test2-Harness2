@@ -13,6 +13,7 @@ use Object::HashBase qw{
     +jobs
     +runs
     +run_health
+    +system_load
     +pending_new
     +pending_failing
     +pending_diagnosing
@@ -219,6 +220,11 @@ The suite-level health failures the runner reported (a post-pass collector
 failure: a collector that failed after reporting a pass, so the test stays green
 but the suite is marked failed). Each entry is a C<< {run_id, reason} >> hashref.
 
+=item $snapshot = $mon->system_load
+
+The latest system-load snapshot folded from a C<harness_system> message, or
+C<undef> if none has arrived. Replaced (not accumulated) so it is always current.
+
 =item run_for_payload
 
 =item $run = $mon->run_for_payload($payload)
@@ -354,10 +360,11 @@ sub run_for_payload ($self, $payload) {
 
 sub snapshot ($self, $run_id = undef) {
     return {
-        collectors => $self->{+COLLECTORS},
-        jobs       => $self->{+JOBS},
-        runs       => $self->{+RUNS},
-        run_health => $self->{+RUN_HEALTH},
+        collectors  => $self->{+COLLECTORS},
+        jobs        => $self->{+JOBS},
+        runs        => $self->{+RUNS},
+        run_health  => $self->{+RUN_HEALTH},
+        system_load => $self->{+SYSTEM_LOAD},
     } unless defined $run_id;
 
     my %collectors;
@@ -379,20 +386,27 @@ sub snapshot ($self, $run_id = undef) {
 
     my @health = grep { !defined($_->{run_id}) || $_->{run_id} eq $run_id } @{$self->{+RUN_HEALTH} // []};
 
-    return {collectors => \%collectors, jobs => \%jobs, runs => \%runs, run_health => \@health};
+    # System load is global (run-less), so every run-scoped snapshot carries it too.
+    return {collectors => \%collectors, jobs => \%jobs, runs => \%runs, run_health => \@health, system_load => $self->{+SYSTEM_LOAD}};
 }
 
 sub apply_snapshot ($self, $snapshot) {
-    $self->{+COLLECTORS} = $snapshot->{collectors} // {};
-    $self->{+JOBS}       = $snapshot->{jobs}       // {};
-    $self->{+RUNS}       = $snapshot->{runs}       // {};
-    $self->{+RUN_HEALTH} = $snapshot->{run_health} // [];
+    $self->{+COLLECTORS}  = $snapshot->{collectors}  // {};
+    $self->{+JOBS}        = $snapshot->{jobs}        // {};
+    $self->{+RUNS}        = $snapshot->{runs}        // {};
+    $self->{+RUN_HEALTH}  = $snapshot->{run_health}  // [];
+    $self->{+SYSTEM_LOAD} = $snapshot->{system_load};
     return;
 }
 
 # Suite-level health failures the runner reported (a post-pass collector failure,
 # ARCHITECTURE.md §5.4). Returns the list of {run_id, reason} records.
 sub run_health ($self) { return $self->{+RUN_HEALTH} // [] }
+
+# The latest system-load snapshot (ARCHITECTURE.md §4.4), or undef if none has
+# arrived. Published by the runner from a harness_system message; replaced (not
+# accumulated) so it is always current.
+sub system_load ($self) { return $self->{+SYSTEM_LOAD} }
 
 =head1 PRIVATE METHODS
 
@@ -453,6 +467,14 @@ sub _process ($self, $payload) {
     # the flag + its diagnostics; the renderer rolls it into the run's pass/fail.
     if (my $rh = $fd->{harness_run_health}) {
         push @{$self->{+RUN_HEALTH}} => $rh;
+        return;
+    }
+
+    # A system-load snapshot (ARCHITECTURE.md §4.4): a global singleton, not a
+    # lifecycle entity. Keep only the latest, so a snapshot taken for a late
+    # subscriber carries current load.
+    if (my $sys = $fd->{harness_system}) {
+        $self->{+SYSTEM_LOAD} = $sys;
         return;
     }
 
