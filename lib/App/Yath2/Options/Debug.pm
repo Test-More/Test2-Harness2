@@ -7,9 +7,6 @@ use Test2::Harness2::Util::JSON qw/encode_pretty_json/;
 use Test2::Util::Table qw/table/;
 use Test2::Harness2::Util qw/find_libraries mod2file clean_path/;
 
-use Errno qw/EINTR/;
-use Time::HiRes ();
-
 use Getopt::Yath;
 
 =pod
@@ -272,6 +269,15 @@ sub _post_process_show_opts ($options, $state) {
 
 my $RAN = 0;
 
+# Interactive mode shares ONLY the command's STDIN with one test at a time (-j1),
+# by passing the real STDIN descriptor over a Unix socket (SCM_RIGHTS) rather than
+# proxying bytes through a FIFO. STDOUT/STDERR stay with the collector and render
+# normally. The command opens a listen socket here, advertises its path in
+# $ENV{YATH_INTERACTIVE} (and the run env, so it reaches the test child), then
+# forks: the parent keeps the real STDIN and runs a per-test accept loop (passes
+# the STDIN fd once per sequential test); the child gives up STDIN and continues
+# as the yath command. Each test (preload goto::file filter, or no-preload
+# -MTest2::Harness2::Interactive) dials in and dup2s the received fd onto fd 0.
 sub _post_process_interactive ($options, $state) {
     return if $RAN++;
 
@@ -279,21 +285,38 @@ sub _post_process_interactive ($options, $state) {
 
     return unless $settings->debug->interactive;
 
-    my ($fifo);
-    if ($settings->check_group('workspace')) {
-        my $dir = $settings->workspace->workdir;
-        $fifo = "$dir/fifo-$$";
-    }
-    else {
-        require File::Temp;
-        my ($fh, $tmpfile) = File::Temp::tempfile("YATH-FIFO-$$-XXXXXX", TMPDIR => 1);
-        close($fh);
-        unlink($tmpfile);
-        $fifo = $tmpfile;
+    # Interactive needs IO::FDPass to pass the STDIN descriptor. It is an optional
+    # dependency, so fail early here (at the command, before any run is queued)
+    # with an actionable message rather than crashing deep in a worker.
+    require Test2::Harness2::Util::FdPass;
+    Test2::Harness2::Util::FdPass::require_fdpass('Interactive mode');
+
+    my ($listen, $path) = Test2::Harness2::Util::FdPass::command_listen();
+
+    _interactive_apply_settings($settings, $path);
+
+    my $pid = fork() // die "Could not fork: $!";
+
+    if ($pid) {
+        # Parent: owns the real STDIN; pass it to each test as it dials in.
+        _interactive_accept_loop($listen, $path, $pid);
     }
 
-    ${$settings->debug->option_ref('fifo', 1)} = $fifo;
+    # Child (the yath command): give up the listener and STDIN -- the parent owns
+    # them now. The main yath process no longer has STDIN (plugins that read it
+    # will break, as documented).
+    close($listen);
+    close(STDIN);
+    open(STDIN, '<', '/dev/null');
 
+    return;
+}
+
+# Apply the interactive display/formatter/env defaults and advertise the listen
+# socket path. --live defaults ON (output must stream while a test prompts), -v
+# ON, qvf OFF; the socket path goes into both the run env (reaches the test
+# child) and our own %ENV.
+sub _interactive_apply_settings ($settings, $path) {
     if ($settings->check_group('display')) {
         my $display = $settings->display;
         $display->create_option(quiet   => 0) if $display->check_option('quiet');
@@ -312,71 +335,60 @@ sub _post_process_interactive ($options, $state) {
 
     if ($settings->check_group('run')) {
         $settings->run->create_option(env_vars => {}) unless $settings->run->check_option('env_vars');
-        $settings->run->env_vars->{YATH_INTERACTIVE} = $fifo;
-        $ENV{YATH_INTERACTIVE} = $fifo;
+        $settings->run->env_vars->{YATH_INTERACTIVE} = $path;
     }
 
-    my $pid = fork() // die "Could not fork: $!";
-    if ($pid) {
-        require Scope::Guard;
-        require POSIX;
-        POSIX::mkfifo($fifo, 0700) or die "Failed to make fifo ($fifo): $!";
-        my $fh;
+    $ENV{YATH_INTERACTIVE} = $path;
 
-        my $cleanup = sub {
-            close($fh)    if $fh;
-            unlink($fifo) if -e $fifo;
-        };
+    return;
+}
 
-        my $old_int_handler  = $SIG{INT};
-        my $old_term_handler = $SIG{TERM};
+# The command-side per-test accept loop. -j1 means N sequential tests; each dials
+# the listen socket once and we pass it the real STDIN descriptor, then close the
+# connection and wait for the next test. The loop ends when the yath command
+# child exits; we then unlink the socket and forward the child's exit code. A
+# connect that never arrives is bounded by the child's lifetime (the select wakes
+# periodically to re-check that the child is alive).
+sub _interactive_accept_loop ($listen, $path, $pid) {
+    require POSIX;
 
-        $SIG{INT}  = sub { $cleanup->('INT');  $old_int_handler->()  if ref $old_int_handler;  exit 1; };
-        $SIG{TERM} = sub { $cleanup->('TERM'); $old_term_handler->() if ref $old_term_handler; exit 1; };
-        $SIG{PIPE} = sub { exit 1 };
+    my $cleanup = sub { unlink($path) if defined $path && -e $path };
 
-        $SIG{CHLD} = sub {
-            local $?;
-            my $res  = waitpid($pid, 0);
-            my $exit = ($? >> 8);
+    my $finish = sub {
+        my ($exit) = @_;
+        $cleanup->();
+        exit($exit // 0);
+    };
 
-            close($fh)    if $fh;
-            unlink($fifo) if -e $fifo;
+    local $SIG{INT}  = sub { $finish->(1) };
+    local $SIG{TERM} = sub { $finish->(1) };
+    local $SIG{PIPE} = 'IGNORE';
 
-            # Forward the exit code from our child
-            exit($exit);
-        };
+    my $rin = '';
+    vec($rin, fileno($listen), 1) = 1;
 
-        for (1 .. 10) {
-            last if open($fh, '>', $fifo);
-            die "Could not open fifo ($fifo): $!" unless $! == EINTR;
-            Time::HiRes::sleep(0.2);
-        }
-        die "Could not open fifo ($fifo): $!" unless $fh;
+    while (1) {
+        # Reap the command child if it has exited; that ends the run.
+        my $got = waitpid($pid, POSIX::WNOHANG());
+        $finish->($? >> 8) if $got == $pid;
 
-        $fh->autoflush(1);
-        my $guard = Scope::Guard->new($cleanup);
+        my $ready = select(my $rout = $rin, undef, undef, 0.2);
+        next unless $ready && $ready > 0;
 
-        while (1) {
-            my $data = <STDIN>;
-            if (defined($data) && length($data)) {
-                print $fh $data;
-                next;
-            }
-
-            next if defined($data);
-
-            next if kill(0, $pid);
-            print STDERR "Lost child process $pid\n";
-            $cleanup->();
-            exit 255;
-        }
+        my $conn = $listen->accept or next;
+        _interactive_pass_stdin($conn);
+        close($conn);
     }
+}
 
-    close(STDIN);
-    open(STDIN, '<', '/dev/null');
-
-    while (!-e $fifo) { Time::HiRes::sleep(0.02) }
+# Pass the command's real STDIN descriptor to one dialed-in test. Failures here
+# (a test that dies mid-handshake, a closed socket) must not take the command
+# down -- the next test gets its own connection -- so the send is eval-guarded
+# and a failure is warned, not fatal.
+sub _interactive_pass_stdin ($conn) {
+    my $ok = eval { Test2::Harness2::Util::FdPass::send_fds($conn, [fileno(\*STDIN)]); 1 };
+    warn "Interactive: failed to pass STDIN to a test: $@" unless $ok;
+    return;
 }
 
 sub _post_process_version ($options, $state) {

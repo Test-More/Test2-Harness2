@@ -587,6 +587,14 @@ sub cli_options {
     # Test2::Formatter::Collector is selected by Test2::Collector in the child
     # (T2_FORMATTER=Collector); io-events is handled via collect(io_events=>).
     return (
+        # No-preload interactive: this test is exec'd as a clean perl, so the
+        # in-process goto::file STDIN hook never fires. Inject the interactive
+        # module instead -- its import (run before the test body) dials the
+        # command's listen socket and dup2s the received STDIN fd onto fd 0. It
+        # is gated on YATH_INTERACTIVE being present in the child env (only set
+        # in interactive mode), which is exactly when the module does work. The
+        # preload path uses the goto::file filter hook instead.
+        $self->env_vars->{YATH_INTERACTIVE} ? ('-MTest2::Harness2::Interactive') : (),
         $self->event_uuids ? ('-MTest2::Plugin::UUID')                     : (),
         $self->mem_usage   ? ('-MTest2::Plugin::MemUsage')                 : (),
         (map { @{$_->[1]} ? "-M$_->[0]=" . join(',' => @{$_->[1]}) : "-M$_->[0]" } $self->load_import),
