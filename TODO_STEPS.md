@@ -49,7 +49,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 8a | Database + UI inline (interim DBIx::Class, SQLite logs) | ✅ | — |
 | 8b | Convert inlined UI schema DBIx::Class → DBIx::QuickORM (§2.4/§4.6) | ⬜ (deferred) | — |
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |
-| 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ⬜ (residual) | #2, #3 |
+| 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ✅ | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
 | 12 | Discovery via runner-socket symlink + PID-file fallback (§5.3) | ⬜ | — |
 | 13 | `spawn` bypasses runner: direct `Preload::Host` socket, **SCM_RIGHTS fd-pass** of real STDIN/OUT/ERR, supervisor (no exec → longjump preload path) + dedicated control protocol, kill-on-command-EOF, no collector (§4.8) — needs 12, 29, 30 | ⬜ | #39 |
@@ -126,13 +126,23 @@ carry the specifics.
   DBIx::Class to DBIx::QuickORM (§2.4/§4.6), keeping the default SQLite path on
   `DBD::SQLite`. Until this lands, DBIx::Class is an interim import.
 
-- **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7).**
-  Registration + dispatch-over-registered-channel landed in 9. Residual: the
-  explicit **`starting`/`up`/`restarting`/`down`** enum (TODO_TASKS **#2**) and the
+- **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7). DONE.**
+  Registration + dispatch-over-registered-channel landed in 9. The explicit
+  **`starting`/`up`/`restarting`/`down`** enum (TODO_TASKS **#2**) and the
   collector-driven self-termination + connection-currency that replaces
-  generation-stamping (TODO_TASKS **#3**); plus giving the stage ownership of its
-  restart decision (the preloader monitor currently drives reload-respawn through
-  `set_proc_exit`).
+  generation-stamping (TODO_TASKS **#3**) are both done. **Stage-owned restart** is
+  also done — it landed as a side effect of the chunk-19 split, not as separate work:
+  the preloader monitor no longer drives reload-respawn through the runner's
+  `set_proc_exit`. A named stage's own preloader-monitor detects a watched-file change
+  *inside the stage process* (`Preload::Host::end_test_loop` → `Preloader::check`),
+  sets its own `SIGNAL`, ends its run loop, reports `stage_restarting`, and exits; the
+  **preload-root** (the stage's parent and reaper, `Preload::Host::set_proc_exit`'s
+  `StageProcess` branch) respawns the exited stage via `_preload_stages`. The runner's
+  `set_proc_exit` has **no stage branch** — it forks no preload stages (TODO_TASKS
+  **#22**). `yath reload` is routed to the live base-stage channel, which translates it
+  into the same in-run respawn (TODO_TASKS **#34**); the runner's own self-restart was
+  deleted (TODO_TASKS **#4**). So §4.7's "restart is stage-initiated; respawned by the
+  preload-root" is fully realized.
 
 - **Chunk 11 — preload as a resource (§4.7a) — needs 10, 23.** Model preload
   availability as a single scheduler **resource** with the standard

@@ -662,8 +662,7 @@ service class):
   The stage itself decides when to restart (e.g. on a preload-file change) and
   reports readiness/teardown to the runner; the runner consumes that and does not
   drive the stage's restarts. (The explicit `starting` / `up` / `restarting` /
-  `down` enum is the **target**; the behavior is in place but the explicit state
-  enum is a residual — see `TODO_STEPS.md` chunk 19. **Stale-incarnation reports are
+  `down` enum is in place — see `TODO_STEPS.md` chunk 10. **Stale-incarnation reports are
   rejected by connection-currency** — a report is honored only from the connection
   currently registered for that stage identity — **not** by a wire generation
   counter; the earlier per-report `generation` is removed, bloat #3.)
