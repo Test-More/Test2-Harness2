@@ -401,9 +401,12 @@ command (test / run / watch)
         ├─ App::Yath2::Renderer::Server         (DB + live web server)
         └─ logger (plain filehandle, JSONL)
 
-Test2::Harness2::Renderer::Driver  — subclass of Base used by test/run; orders each
-                                     job as: lifecycle live → whole events file at
-                                     completion → job-end last. Settles a job's
+Test2::Harness2::Renderer::Driver  — subclass of Base used by test/run; per-job
+                                     order only (not cross-job). Default: lifecycle
+                                     live → whole events file at completion →
+                                     job-end last. With --live: every job's events
+                                     file is tailed as it appears, so jobs interleave
+                                     (each line carries its job_id). Settles a job's
                                      verdict from the events-file terminal.
 yath watch                         — uses Renderer::Base directly as a global
                                      subscriber to render runner/stage output.

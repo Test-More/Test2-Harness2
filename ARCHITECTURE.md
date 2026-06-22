@@ -164,8 +164,10 @@ is **not** execution order here — dependencies are noted inline:
 14. **Split `Test2::Harness2::TestFile`** (§1) — move file-reading/decision logic
     into `App::Yath2` (alongside `App::Yath2::RunPlan`); leave a state-only
     object in `Test2::Harness2`; queue jobs carrying the pre-computed state.
-15. **Final renderer ordering** — the cross-job ordering guarantees on top of the
-    §4.5 base renderer (the current `Renderer::Driver` per-job ordering is interim).
+15. **Final renderer ordering** — pinned (#44): per-job chronological order only,
+    not cross-job. `Renderer::Driver` keeps the default (transitions live, a job's
+    events fed at completion) and adds a `--live` tail mode (every job's events
+    file tailed as it appears, interleaved across jobs). See §4.5.
 16. **Concurrent run execution + run-scoped preload stages** — multiple runs
     progressing at once on a persistent runner, and run-scoped preload stages as
     a user feature (naming `runs/<run_id>/preload-<stage>.socket` is reserved,
@@ -556,13 +558,37 @@ concrete `render_event` **sink** renderers (`Renderer::Formatter` →
 the logger. `test` / `run` render through it; `yath watch` is a global
 (no-run-id) subscriber that renders runner/stage output through the same base.
 
-**Interim ordering still in place (one follow-up).** The per-job 3-phase ordering
-(a job's transitions live, then its whole events file at completion, then its
-final status) lives in `Renderer::Base`'s thin subclass `Renderer::Driver`, not
-in the base — so a future streaming / cross-job-chronological renderer can sit on
-the same base. That interim per-job ordering is **not** the final renderer
-contract; the final ordering guarantees are not pinned here — §4.5 stays
-authoritative for the final shape.
+**Ordering contract (pinned, chunk 15 / #44).** The guarantee is **per-job
+chronological order only**: a single job's own events always render in the order
+that job produced them; events from **different** jobs may interleave. Cross-job
+chronological ordering is explicitly **not** a guarantee. The per-job ordering
+policy lives in `Renderer::Base`'s thin subclass `Renderer::Driver`, not in the
+base, so the base stays free of ordering policy for its other consumers (`watch`,
+archived replay). The driver implements the contract two ways, selected by its
+`live` attribute:
+
+- **Default (`--live` off) — transitions live, events at end.** Each test
+  collector's lifecycle (queued / launch / start) renders in realtime; when that
+  collector completes, its whole `events.jsonl.zst` file is fed (by the absolute
+  path the transition carried) and the job's final `harness_job_end` renders
+  last. A job's body renders as one contiguous block at its end, never
+  interleaved with another job's body.
+- **Live tail (`--live` on, default ON in interactive mode) — every job tailed
+  as it appears.** Each job's lifecycle renders as it appears, then the driver
+  opens a tailing `JobReader` on its events file and streams that job's events as
+  they are written; on each tick every open reader is drained, so under
+  concurrency the jobs interleave in arrival order (the 1.0 tail-the-files shape).
+  Per-job order is still preserved (each reader yields its own job in file order);
+  only the cross-job interleave changes. Every emitted event carries its
+  job/process/collector identity (`job_id` / `run_id` / collector uuid ride on the
+  wrapped event), so a renderer attributes each line to its job — the default
+  terminal renderer prefixes each output line with the job's index, derived from
+  the queue plan and therefore stable regardless of arrival order.
+
+The `--live` feeder is the render-loop library's `LiveProducer` routing `poll` to
+the driver's `tail` (vs `step`) based on the engine's `live` flag (§4.12); the
+flag is wired from the `display` option group's `--live`, defaulted ON in
+interactive mode (which is single-job, so it never actually interleaves).
 
 ### 4.6 Logs and database `[target]`
 
@@ -927,6 +953,10 @@ despite running deep in the runner's process tree.
   no-preload path. The test then reads the user's real terminal directly (single
   keystrokes, raw mode), not a proxied byte stream. The fd-pass util / `IO::FDPass`
   optionality and the controlling-terminal limitation are the same as §4.8.
+- **Output streams live (`--live` defaults ON).** A test that prompts or drops into
+  a debugger needs its output as it is produced, not held until the job ends, so
+  interactive defaults the `--live` flag ON (§4.5). Being `-j1`, the live tail
+  never actually interleaves — it just streams the one running test.
 - **One pass per test.** Because interactive is `-j1` there is no contention, but a
   run still has *N* sequential tests. The command keeps its listener open and passes
   the `STDIN` fd **once per test**, with a connect timeout + cleanup, and stops
@@ -991,11 +1021,13 @@ rendering a **live run or a stored log**.
   `done()` → bool (+ optional `finalize`). It does not dispatch or roll up. The
   variants:
   - **`LiveProducer`** — a `Runner::Subscriber`/`Monitor` mirror + the per-job
-    ordering (the current `Renderer::Driver`'s ordering logic; its dispatch +
-    `compute_final` + bounded `wait_terminal` move into the loop, preserving the
-    false-FAIL fix), yielding events read from on-disk `.jsonl.zst` by path.
-    `done()` = socket-closed (`test`) / `run_done` (`run`). The `watch` variant
-    yields runner/service output only.
+    ordering (`Renderer::Driver`'s ordering logic; its dispatch + `compute_final`
+    + bounded `wait_terminal` move into the loop, preserving the false-FAIL fix),
+    yielding events read from on-disk `.jsonl.zst` by path. It routes `poll` to
+    the driver's `step` (default: a job fed whole at completion) or `tail` (the
+    `--live` mode: every job's file tailed as it appears, interleaved) based on
+    the engine's `live` flag (§4.5). `done()` = socket-closed (`test`) /
+    `run_done` (`run`). The `watch` variant yields runner/service output only.
   - **`JSONLFileProducer`** — wraps the existing flat-`.jsonl` reader to keep
     `replay` working through the transition; thrown away once the DB-backed
     `ArchiveProducer` lands.
