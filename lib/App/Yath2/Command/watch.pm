@@ -46,7 +46,7 @@ sub run {
     my $stop = (@$args && $args->[0] eq 'STOP') ? 1 : 0;
 
     my $data = $self->pfile_data;    # prints the discovery banner, dies if none
-    $self->{+RUNNER_PID} = $data->{pid};
+    $self->client->attach_runner($data->{pid});
 
     # Global subscription: no run_id, so the runner forwards every run's frames
     # plus the global/runner-lifecycle frames. If the runner cannot be reached (it

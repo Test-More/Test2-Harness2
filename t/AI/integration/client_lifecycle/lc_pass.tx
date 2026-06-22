@@ -1,0 +1,7 @@
+use Test2::V0;
+
+print "CLIENT-LIFECYCLE-PASS-MARKER\n";
+
+ok(1, "lifecycle pass");
+
+done_testing;

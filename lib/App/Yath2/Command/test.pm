@@ -9,21 +9,16 @@ use Getopt::Yath;
 use Test2::Harness2::Run;
 use Test2::Harness2::Event;
 use Test2::Harness2::Util::File::JSON;
-use Test2::Harness2::Runner;
-use Test2::Harness2::Util::IPC qw/run_cmd/;
 
 use Test2::Harness2::Renderer::Driver;
 
-use App::Yath2::RunPlan;
 use App::Yath2::Client;
 use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
-use Test2::Harness2::Util qw/mod2file open_file runner_events_file/;
+use Test2::Harness2::Util qw/mod2file open_file/;
 use Test2::Util::Table qw/table/;
-
-use POSIX();
 
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 
@@ -33,10 +28,6 @@ use Carp qw/croak/;
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/
-    <runner_pid +owns_runner +runner_exited +sigs_installed +signal
-
-    +run_plan <run_id
-
     +renderers
     +logger
     +last_log
@@ -45,8 +36,6 @@ use Test2::Harness2::Util::HashBase qw/
     +asserts_seen
 
     +client
-
-    +pending_tasks
 
     +driver
     +render_loop
@@ -132,124 +121,24 @@ sub workdir {
     $self->settings->workspace->workdir;
 }
 
-# The command manages exactly ONE child: the runner (its collector wrapper),
-# spawned by start_runner. So it does not need the heavy Test2::Harness2::IPC
-# controller -- it spawns the one child on Util::IPC's run_cmd and reaps/signals
-# it directly here. The persistent run/spawn paths connect to a PRE-EXISTING
-# runner they do not own (owns_runner is false there), so the reap/signal helpers
-# leave it alone.
+# The runner lifecycle (spawn the collector-wrapped runner, own + reap + signal it,
+# trap INT/HUP/TERM and forward them to the runner) now lives in App::Yath2::Client
+# in 'transient' mode. The command keeps a few thin delegations so the rest of the
+# command (start/stop/render) reads naturally; the persistent `run` command runs
+# the same client in 'attach' mode (discover + kill(0), never reap).
 
-# Install INT/HUP/TERM handlers that forward to handle_sig. Idempotent.
-sub install_signal_handlers {
-    my $self = shift;
-
-    return if $self->{+SIGS_INSTALLED};
-    $self->{+SIGS_INSTALLED} = 1;
-
-    for my $sig (qw/INT HUP TERM/) {
-        $SIG{$sig} = sub { $self->handle_sig($sig) };
-    }
-
-    return;
-}
-
-sub remove_signal_handlers {
-    my $self = shift;
-
-    return unless $self->{+SIGS_INSTALLED};
-    $self->{+SIGS_INSTALLED} = 0;
-
-    delete $SIG{$_} for qw/INT HUP TERM/;
-
-    return;
-}
-
-# Non-blocking reap of the one runner child. Sets runner_exited once it is gone
-# (or when there is no child to reap). A no-op on the persistent path (we do not
-# own the runner there).
-sub reap_runner {
-    my $self = shift;
-
-    return if $self->{+RUNNER_EXITED};
-
-    my $pid = $self->{+RUNNER_PID};
-    return unless $pid && $self->{+OWNS_RUNNER};
-
-    local $?;
-    my $got = waitpid($pid, POSIX::WNOHANG());
-    $self->{+RUNNER_EXITED} = 1 if $got == $pid || $got == -1;
-
-    return;
-}
-
-# True once our spawned runner is no longer running. The happy path keys
-# completion on the socket EOF; this is the fallback when there is no
-# subscription (the runner died before it ever bound its socket).
-sub runner_gone {
-    my $self = shift;
-
-    return 1 unless $self->{+RUNNER_PID} && $self->{+OWNS_RUNNER};
-
-    $self->reap_runner;
-    return $self->{+RUNNER_EXITED} ? 1 : 0;
-}
-
-# Block until our spawned runner has been reaped. A no-op on the persistent path.
-sub wait_for_runner {
-    my $self = shift;
-
-    my $pid = $self->{+RUNNER_PID};
-    return unless $pid && $self->{+OWNS_RUNNER};
-    return if $self->{+RUNNER_EXITED};
-
-    local $?;
-    waitpid($pid, 0);
-    $self->{+RUNNER_EXITED} = 1;
-
-    return;
-}
-
-# Forward a signal to our spawned runner; it tears down its own job children.
-# A no-op on the persistent path (we do not own that runner).
-sub signal_runner {
-    my $self = shift;
-    my ($sig) = @_;
-    $sig //= 'TERM';
-
-    my $pid = $self->{+RUNNER_PID};
-    return unless $pid && $self->{+OWNS_RUNNER};
-
-    kill($sig, $pid);
-
-    return;
-}
-
-sub handle_sig {
-    my $self = shift;
-    my ($sig) = @_;
-
-    # Forward the signal to the renderers and stop the render loop. When the loop
-    # exists it both relays to the renderers and marks itself so start() returns;
-    # before it exists (a signal during setup) relay straight to the renderers.
-    if (my $loop = $self->{+RENDER_LOOP}) {
-        $loop->signal($sig);
-    }
-    else {
-        eval { $_->signal($sig) } for grep { $_->can('signal') } @{$self->renderers};
-    }
-
-    print STDERR "\nCaught SIG$sig, forwarding signal to child processes...\n";
-    $self->signal_runner($sig);
-
-    if ($self->{+SIGNAL}) {
-        print STDERR "\nSecond signal ($self->{+SIGNAL} followed by $sig), exiting now without waiting\n";
-        exit 1;
-    }
-
-    $self->{+SIGNAL} = $sig;
-}
-
+# Whether the runner should monitor preloaded files for changes (off for the
+# transient path, on for the persistent runner -- see run.pm).
 sub monitor_preloads { 0 }
+
+# The signal the client caught (if any), used by stop() to decide whether to halt
+# the run and wait for children.
+sub signal { my $self = shift; return $self->client->signal }
+
+sub install_signal_handlers { my $self = shift; return $self->client->install_signal_handlers }
+sub remove_signal_handlers  { my $self = shift; return $self->client->remove_signal_handlers }
+sub wait_for_runner         { my $self = shift; return $self->client->wait_for_runner }
+sub reap_runner             { my $self = shift; return $self->client->reap_runner }
 
 sub run {
     my $self = shift;
@@ -317,60 +206,56 @@ sub start {
     $self->start_runner(jobs_todo => $pop);
 
     # Submit the run + its tasks to the runner over runner.socket, then the queue
-    # terminator (the persistent run command overrides terminate_queue to a no-op,
-    # since its long-lived runner is not shut down per run).
+    # terminator (the persistent run command's client is in attach mode, so its
+    # terminate_queue is a no-op: the long-lived runner is not shut down per run).
     $self->submit_queue();
-    $self->terminate_queue();
+    $self->client->terminate_queue();
 
     return 1;
 }
 
-# The command-side socket client wrapping the runner.socket submit + subscribe
-# transports (App::Yath2::Client). Both the transient `yath test` and persistent
-# `yath run`/`spawn` paths submit and subscribe over runner.socket; they differ
-# only in how runner liveness is checked (see the persistent override in run.pm).
-#
-# The submission client needs to know if the runner dies before it ever accepts
-# (e.g. a broken preload that takes the runner down during startup). We hand it a
-# liveness check that reaps through our IPC and reports whether the runner is
-# still tracked; if it has gone, the client stops trying and submission becomes a
-# no-op, and the empty-monitor render fallback surfaces the runner's own failure.
+# The harness-client bridge (App::Yath2::Client). The transient `yath test`
+# command runs it in 'transient' mode: the client spawns the collector-wrapped
+# runner, owns + reaps + signals it, and traps INT/HUP/TERM, forwarding them to the
+# runner's process group. A second-level signal also forwards to the renderers via
+# on_signal (so they flush) and stops the render loop. The persistent `run` command
+# overrides client_mode to 'attach' (discover + kill(0), never reap).
 sub client {
     my $self = shift;
 
-    return $self->{+CLIENT} //= do {
-        App::Yath2::Client->new(
-            workdir        => $self->workdir,
-            liveness_check => sub {
-                # Single non-blocking reap pass, so a runner that died during
-                # startup is detected and the client can stop trying to connect.
-                return $self->runner_gone ? 0 : 1;
-            },
-        );
-    };
+    return $self->{+CLIENT} //= App::Yath2::Client->new(
+        workdir          => $self->workdir,
+        settings         => $self->settings,
+        mode             => $self->client_mode,
+        spawn_args       => [$self->spawn_args($self->settings)],
+        monitor_preloads => $self->monitor_preloads,
+        finder_args      => [$self->finder_args],
+        on_signal        => sub {
+            my ($sig) = @_;
+            # Relay to the render loop if it exists (it forwards to the renderers
+            # and marks itself so start() returns); before it exists (a signal
+            # during setup) relay straight to the renderers.
+            if (my $loop = $self->{+RENDER_LOOP}) {
+                $loop->signal($sig);
+            }
+            else {
+                eval { $_->signal($sig) } for grep { $_->can('signal') } @{$self->renderers};
+            }
+        },
+    );
 }
 
-# The run/task/end-queue submission target: the socket client's submitter, which
-# sends one-way request frames over runner.socket. Both the transient `yath test`
-# and persistent `yath run`/`spawn` paths submit through it.
+# The runner-lifecycle mode for this command's client; the transient `test` path is
+# always 'transient' (spawn + own + reap). The persistent `run` path overrides this
+# to 'attach'.
+sub client_mode { 'transient' }
+
+# The run/task/end-queue submission target: the client's submitter, which sends
+# one-way request frames over runner.socket. Both the transient `yath test` and
+# persistent `yath run`/`spawn` paths submit through it.
 sub submitter {
     my $self = shift;
     return $self->client->submitter;
-}
-
-# The runner subscription the transient render path consumes: connect to
-# runner.socket, load the snapshot, and keep a live mirror of the runner's
-# canonical state by polling forwarded transitions.
-#
-# If the runner dies before it ever binds/accepts on the socket (e.g. a broken
-# preload that takes the runner down during startup), the connect fails. That is
-# not fatal here: the LiveProducer falls back to a standalone empty monitor so the
-# driver still tails runner-output (the runner's failure renders from
-# runner-events / "no tests seen") and a dead runner ends the loop. Return undef
-# in that case.
-sub subscriber {
-    my $self = shift;
-    return $self->client->subscriber;
 }
 
 # Attempt the subscription once. Returns the subscriber or undef on failure; the
@@ -378,9 +263,15 @@ sub subscriber {
 # is a single run, so it subscribes scoped to its own run_id (per-run routing):
 # with one run this is routing-identity, but it keeps the command on the
 # run-scoped path the persistent run command uses.
+#
+# If the runner dies before it ever binds/accepts on the socket (e.g. a broken
+# preload that takes the runner down during startup), the connect fails. That is
+# not fatal here: the LiveProducer falls back to a standalone empty monitor so the
+# driver still tails runner-output (the runner's failure renders from
+# runner-events / "no tests seen") and a dead runner ends the loop.
 sub connect_subscriber {
     my $self = shift;
-    return $self->client->connect_subscriber(run_id => $self->{+RUN_ID});
+    return $self->client->connect_subscriber(run_id => $self->run_id);
 }
 
 # The command-side renderer ENGINE: a Renderer::Driver that folds the subscription
@@ -401,10 +292,10 @@ sub driver {
         settings           => $settings,
         renderers          => [],
         run                => $self->build_run,
-        run_id             => $self->{+RUN_ID},
+        run_id             => $self->run_id,
         workdir            => $self->workdir,
         show_runner_output => $show_runner_output,
-        tasks              => $self->{+PENDING_TASKS} // [],
+        tasks              => $self->client->pending_tasks,
     );
 }
 
@@ -429,7 +320,7 @@ sub render_loop {
             renderers => $self->renderers,
             logger    => scalar($self->logger),
             settings  => $self->settings,
-            run_id    => $self->{+RUN_ID},
+            run_id    => $self->run_id,
             plugins   => $self->settings->harness->plugins,
             producer  => $producer,
         );
@@ -442,11 +333,11 @@ sub render {
     my $loop = $self->render_loop;
 
     # The loop owns the iteration; each tick also reaps the one runner child (the
-    # runner lifecycle stays in the command). A delivered signal short-circuits the
-    # loop (the loop checks its own signalled flag, set via handle_sig).
+    # client owns the runner lifecycle). A delivered signal short-circuits the loop
+    # (the loop checks its own signalled flag, set via the client's on_signal hook).
     $loop->start(sub { $self->reap_runner });
 
-    return if $self->{+SIGNAL};
+    return if $self->signal;
 
     $self->{+FINAL_DATA}   = $loop->final_data;
     $self->{+TESTS_SEEN}   = $loop->tests_seen;
@@ -464,17 +355,7 @@ sub render {
 sub subscription_complete {
     my $self = shift;
     my ($sub) = @_;
-    return $sub ? $sub->closed : $self->_runner_gone;
-}
-
-# True once the runner process is no longer tracked as live. Used as the
-# completion fallback when there is no subscription (the runner died before it
-# ever bound its socket); the happy path keys completion on the socket EOF. The
-# persistent run path overrides this (its runner is a pre-existing process it
-# does not own, checked via kill(0)).
-sub _runner_gone {
-    my $self = shift;
-    return $self->runner_gone;
+    return $sub ? $sub->closed : $self->client->runner_gone;
 }
 
 
@@ -494,9 +375,10 @@ sub stop {
 
     $_->finish() for @$renderers;
 
-    print STDERR "Waiting for child processes to exit...\n" if $self->{+SIGNAL};
+    my $signal = $self->signal;
+    print STDERR "Waiting for child processes to exit...\n" if $signal;
 
-    $self->signal_shutdown() if $self->{+SIGNAL};
+    $self->signal_shutdown() if $signal;
 
     $self->wait_for_runner;
     $self->remove_signal_handlers;
@@ -517,47 +399,26 @@ sub stop {
     }
 }
 
-sub terminate_queue {
-    my $self = shift;
-
-    # The runner's end-of-queue signal is the socket end_queue request. The
-    # persistent run command overrides this to a no-op (the long-lived runner is
-    # not shut down per run).
-    $self->submitter->end_queue();
-}
-
 # Shutdown work to do when the command itself caught a signal. The run state lives
-# in the runner, so rather than reconstructing it to kill individual
-# job pids, ask the runner to halt the run over the socket. handle_sig already
+# in the runner, so rather than reconstructing it to kill individual job pids, ask
+# the runner to halt the run over the socket. The client's signal handler already
 # forwarded the signal to the runner (and thus its job children) via signal_runner,
 # so the running tests are being torn down regardless.
 sub signal_shutdown {
     my $self = shift;
 
-    my $ok  = eval { $self->submitter->halt_run($self->{+RUN_ID}); 1 };
+    my $ok  = eval { $self->client->halt_run; 1 };
     my $err = $@;
     warn "Could not halt run over runner socket: $err" unless $ok;
 
     return;
 }
 
-# The run + task-queue construction now lives in App::Yath2::RunPlan, a plain
-# settings-driven object shared by the transient `test` and persistent `run`
-# paths. The command holds one and delegates run/queue building to it.
-sub run_plan {
-    my $self = shift;
-
-    return $self->{+RUN_PLAN} //= App::Yath2::RunPlan->new(
-        settings    => $self->settings,
-        workdir     => $self->workdir,
-        finder_args => [$self->finder_args],
-    );
-}
-
-sub build_run {
-    my $self = shift;
-    return $self->run_plan->run;
-}
+# The run + task-queue construction lives in App::Yath2::RunPlan, owned by the
+# client (which finds the files, builds the run + its dir, and builds the tasks).
+# These thin delegations keep the rest of the command reading naturally.
+sub run_id   { my $self = shift; return $self->client->run_id }
+sub build_run { my $self = shift; return $self->client->build_run }
 
 sub job_count {
     my $self = shift;
@@ -567,40 +428,19 @@ sub job_count {
 
 sub finder_args { () }
 
-# Find the test files and build the task list via the run plan. The run id and
-# task list are mirrored onto the command (read directly elsewhere). The run +
-# tasks are NOT submitted to the runner here -- that happens in submit_queue()
-# once the runner is listening (socket submission).
+# Find the test files and build the task list via the client's run plan. The run +
+# tasks are NOT submitted to the runner here -- that happens in submit_queue() once
+# the runner is listening (socket submission).
 sub populate_queue {
     my $self = shift;
-
-    my $plan = $self->run_plan;
-
-    my $job_count = $plan->populate();
-
-    $self->{+RUN_ID}        = $plan->run_id;
-    $self->{+PENDING_TASKS} = $plan->tasks;
-
-    return $job_count;
+    return $self->client->populate;
 }
 
-# Submit the run, its tasks, and the run terminator to the runner through the
-# submitter (the socket client). Used by both the transient and persistent paths.
+# Submit the run, its tasks, and the run terminator to the runner over the socket
+# (the client). Used by both the transient and persistent paths.
 sub submit_queue {
     my $self = shift;
-
-    my $run       = $self->build_run();
-    my $settings  = $self->settings;
-    my $plugins   = $settings->harness->plugins;
-    my $submitter = $self->submitter;
-
-    $submitter->queue_run($run->queue_item($plugins));
-
-    $submitter->queue_task($_) for @{$self->{+PENDING_TASKS} // []};
-
-    $submitter->stop_run($run->run_id);
-
-    return;
+    return $self->client->submit_queue;
 }
 
 sub produce_summary {
@@ -898,60 +738,15 @@ sub renderers {
     return $self->{+RENDERERS} = \@renderers;
 }
 
+# Spawn the collector-wrapped runner via the client (transient mode). The client
+# wraps the `yath test` runner in a non-test Test2::Collector so its
+# stdout/stderr/exit become first-class events in runner-events.jsonl.zst, owns the
+# child, and reaps/signals it. The persistent `run` command's client is in attach
+# mode, so this is a no-op there.
 sub start_runner {
     my $self = shift;
     my %args = @_;
-
-    $args{monitor_preloads} //= $self->monitor_preloads;
-
-    my $settings = $self->settings;
-    my $dir      = $settings->workspace->workdir;
-
-    my @prof;
-    if ($settings->runner->nytprof) {
-        push @prof => '-d:NYTProf';
-    }
-
-    # The runner command that used to be spawned directly (its stdout/stderr
-    # tailed from output.log/error.log). It is now the exec target of a non-test
-    # collector: wraps the `yath test` runner in a Test2::Collector
-    # (is_test => 0) so its stdout/stderr become first-class, timestamped harness
-    # events in runner-events.jsonl.zst -- the same wire format and reader path as
-    # job events.
-    my @runner_cmd = (
-        $^X, @prof, $self->spawn_args($settings), $settings->harness->script,
-        (map { "-D$_" } @{$settings->harness->dev_libs}),
-        '--no-scan-plugins',    # Do not preload any plugin modules
-        runner => $dir,
-        %args,
-    );
-
-    my $runner_events_file = runner_events_file($dir);
-
-    # The command owns exactly this one child, so it spawns it directly on the
-    # fork-exec run_cmd primitive and reaps/signals it itself (#8) -- no heavy IPC
-    # controller. The spawned child becomes the collector PARENT and never
-    # returns: it runs the whole collector and POSIX::_exit()s. This mirrors
-    # Test2::Harness2::Runner::Job::spawn_params and only works under the
-    # fork-exec run_cmd (which invokes the coderef in the already-forked child);
-    # the harness only supports fork-capable systems. The collector forks the
-    # actual runner (exec), captures its stdout/stderr/exit, and records the full
-    # stream into runner-events.jsonl.zst, so there are no separate stdout/stderr
-    # files anymore. The collector-wrap is shared with the persistent path via
-    # Test2::Harness2::Runner->start_collected (ARCH 4.2).
-    my $pid = run_cmd(
-        caller1     => [caller()],
-        caller2     => [caller(1)],
-        env         => {@prof ? (NYTPROF => 'start=no:addpid=1') : ()},
-        no_set_pgrp => 1,
-        command     => Test2::Harness2::Runner->start_collected(\@runner_cmd, $runner_events_file),
-    );
-
-    $self->{+RUNNER_PID}     = $pid;
-    $self->{+OWNS_RUNNER}    = 1;
-    $self->{+RUNNER_EXITED}  = 0;
-
-    return $pid;
+    return $self->client->start_runner(%args);
 }
 
 sub parse_args {

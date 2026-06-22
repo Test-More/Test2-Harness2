@@ -9,13 +9,10 @@ use Getopt::Yath;
 use Test2::Harness2::Run;
 use Test2::Harness2::Util::Queue;
 use Test2::Harness2::Util::File::JSON;
-use Test2::Harness2::IPC;
 
 use App::Yath2::Pfile;
 use App::Yath2::Client;
-use Test2::Harness2::Util qw/open_file/;
 use Test2::Harness2::Util qw/mod2file open_file/;
-use Test2::Harness2::Util::IPC qw/USE_P_GROUPS/;
 use Test2::Util::Table qw/table/;
 
 use File::Spec;
@@ -54,32 +51,16 @@ the start command for details on how to launch a persistant instance.
     EOT
 }
 
-# The persistent `run` submits over runner.socket like the
-# transient `test` path (App::Yath2::Client), and renders from the runner
-# subscription. The persistent runner is long-lived and serves many runs, so the
-# persistent semantics are preserved by what we DON'T send:
+# The persistent `run` runs its harness-client in 'attach' mode: the client
+# discovers the long-lived runner (its pid comes from the pfile, attached in
+# start_runner), checks liveness with kill(0), and never reaps it. The
+# persistent semantics fall out of the mode:
 #
-#   * terminate_queue is a no-op: the run's completeness is signalled by the
-#     stop_run request submit_queue already sent (the runner marks this run's
-#     queue done). We must NOT send end_queue -- that sets QUEUE_ENDED and would
-#     shut the persistent runner down (the transient path's terminate_queue does
-#     send it, which is why we override).
-sub terminate_queue { return }
-
-# Liveness for the submit/subscribe clients: the persistent runner is a separate,
-# pre-existing process (not one we spawned and track via IPC), so liveness is a
-# plain kill(0) on its pid rather than the transient path's ipc->procs check.
-sub client {
-    my $self = shift;
-
-    return $self->{+CLIENT} //= do {
-        my $pid = $self->runner_pid;
-        App::Yath2::Client->new(
-            workdir        => $self->workdir,
-            liveness_check => sub { $pid && kill(0, $pid) ? 1 : 0 },
-        );
-    };
-}
+#   * The client's terminate_queue is a no-op in attach mode: the run's
+#     completeness is signalled by the stop_run request submit_queue already sent
+#     (the runner marks this run's queue done). The end_queue the transient path
+#     sends would set QUEUE_ENDED and shut the persistent runner down.
+sub client_mode { 'attach' }
 
 # The completion test for a run-scoped subscription against a persistent runner:
 # the runner keeps its socket open across runs, so we key on this run's announced
@@ -89,8 +70,8 @@ sub subscription_complete {
     my ($sub) = @_;
 
     # No subscription (runner unreachable): fall back to the runner-liveness test
-    # the transient path uses so the loop still terminates.
-    return $self->_runner_gone unless $sub;
+    # (the client's kill(0) on the persistent pid) so the loop still terminates.
+    return $self->client->runner_gone unless $sub;
 
     return 1 if $sub->run_done;
     return 1 if $sub->closed;
@@ -251,12 +232,14 @@ sub workdir {
     return $self->pfile->workdir;
 }
 
+# In attach mode the runner already exists: discover its pid from the pfile and
+# hand it to the client (which never reaps it; liveness is a kill(0) on this pid).
 sub start_runner {
     my $self = shift;
 
     my $data = $self->pfile_data;
 
-    $self->{+RUNNER_PID} = $data->{pid};
+    return $self->client->attach_runner($data->{pid});
 }
 
 1;

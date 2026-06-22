@@ -30,8 +30,10 @@ sub run {
 
     my $data = $self->pfile_data();
 
-    # Ask the runner for its live scheduling state over runner.socket. The
+    # Attach the client to the live persistent runner (kill(0) liveness, no reap),
+    # then ask the runner for its live scheduling state over runner.socket. The
     # runner is the state authority.
+    $self->client->attach_runner($data->{pid});
     my $status = $self->client->status // {};
 
     print "\n**** Pending tests: ****\n";

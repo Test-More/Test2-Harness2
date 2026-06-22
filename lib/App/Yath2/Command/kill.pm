@@ -32,7 +32,11 @@ sub run {
     my $data = $self->pfile_data();
     my $pfile = $data->{pfile_path};
 
-    $self->App::Yath2::Command::test::terminate_queue();
+    # End the global queue over runner.socket to unblock a runner that is mid-run.
+    # kill's client is in attach mode (its terminate_queue is a no-op there, since a
+    # persistent run must not end the shared queue), so send end_queue directly.
+    $self->client->attach_runner($data->{pid});
+    $self->client->submitter->end_queue();
 
     # Plugin teardown() runs in the RUNNER as it shuts down, not here
     # (kill is forceful; the runner's watch_parent_pid fallback reaps aux processes

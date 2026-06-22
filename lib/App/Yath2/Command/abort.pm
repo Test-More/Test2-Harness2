@@ -34,8 +34,10 @@ sub pfile_params { (no_fatal => 1) }
 sub run {
     my $self = shift;
 
-    # Get the output from finding the pfile
-    $self->pfile_data();
+    # Get the output from finding the pfile, then attach the client to the live
+    # persistent runner (kill(0) liveness, no reap).
+    my $data = $self->pfile_data();
+    $self->client->attach_runner($data->{pid});
 
     # Ask the runner to truncate its queue over runner.socket. The runner itself
     # tears the running tests down -- it records an abort intent per running run and

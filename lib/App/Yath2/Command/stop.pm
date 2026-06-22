@@ -53,19 +53,16 @@ sub run {
     my $render = eval { $self->prime_shutdown };
     warn "Could not prime runner shutdown renderer: $@" unless defined $render || !$@;
 
-    my $ok = eval {
-        my $client = App::Yath2::Client->new(
-            workdir        => $self->workdir,
-            liveness_check => sub { $pid && kill(0, $pid) ? 1 : 0 },
-        );
-        $client->submitter->stop;
-        1;
-    };
+    # The runner already exists, so attach the client to it (kill(0) liveness, no
+    # reaping) and reuse it for both the graceful stop and the end_queue fallback.
+    $self->client->attach_runner($pid);
+
+    my $ok = eval { $self->client->submitter->stop; 1 };
     warn "Could not send graceful shutdown to runner over socket: $@" unless $ok;
 
-    # Fallback: end the global queue through whatever submission path is wired up,
-    # which also unblocks a runner that is mid-run.
-    my $ended = eval { $self->App::Yath2::Command::test::terminate_queue(); 1 };
+    # Fallback: end the global queue, which also unblocks a runner that is mid-run.
+    # (A persistent run never sends end_queue, so the runner is still listening.)
+    my $ended = eval { $self->client->submitter->end_queue; 1 };
     warn "Could not end runner queue: $@" unless $ended;
 
     # Drain the teardown output the runner is now writing.
