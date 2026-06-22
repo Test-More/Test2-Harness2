@@ -202,9 +202,10 @@ sub init {
     return $self->SUPER::init(@_);
 }
 
-# The shared persistent-runner discovery object. find_pfile (via
-# App::Yath2::Pfile) performs the host/user/version/pid liveness checks; a
-# missing pfile is fatal here (run/spawn require a live runner).
+# The shared persistent-runner discovery object. App::Yath2::Pfile (over
+# App::Yath2::Discovery) follows the well-known symlink to the runner socket and
+# verifies it accepts a connection (liveness); a missing or dead runner is fatal
+# here (run/spawn require a live runner).
 sub pfile {
     my $self = shift;
     $self->{+PFILE} //= App::Yath2::Pfile->find($self->settings, $self->pfile_params)
@@ -323,7 +324,7 @@ Where to find persistence files.
 
 =item --no-persist-file
 
-Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.
+Where to find the persistent runner discovery symlink (a link to the runner's socket). The default is /{system-tempdir}/.project-yath-runner.sock. If no project is specified it falls back to the current directory; if the current directory is not writable it defaults to the system temp dir, which limits you to one persistent runner per project on your system.
 
 
 =item --project ARG

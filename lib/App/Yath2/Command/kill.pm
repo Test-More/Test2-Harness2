@@ -5,7 +5,6 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Time::HiRes qw/sleep/;
-use App::Yath2::Util qw/find_pfile/;
 use File::Path qw/remove_tree/;
 
 use Test2::Harness2::Util::File::JSON();
@@ -132,7 +131,7 @@ Where to find persistence files.
 
 =item --no-persist-file
 
-Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.
+Where to find the persistent runner discovery symlink (a link to the runner's socket). The default is /{system-tempdir}/.project-yath-runner.sock. If no project is specified it falls back to the current directory; if the current directory is not writable it defaults to the system temp dir, which limits you to one persistent runner per project on your system.
 
 
 =item --project ARG

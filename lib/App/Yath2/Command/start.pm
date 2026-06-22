@@ -6,20 +6,18 @@ no warnings 'experimental::signatures';
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Util qw/find_runner_link/;
 use Getopt::Yath;
 
 use Test2::Harness2::Run;
-use Test2::Harness2::Util::File::JSON;
 
 use App::Yath2::Client;
+use App::Yath2::Discovery;
 
-use Test2::Harness2::Util qw/open_file parse_exit clean_path/;
+use Test2::Harness2::Util qw/parse_exit clean_path/;
 use Test2::Util::Table qw/table/;
 
 use POSIX;
-use File::Spec;
-use Sys::Hostname qw/hostname/;
 
 use Time::HiRes qw/sleep/;
 
@@ -132,11 +130,17 @@ sub run {
     my $settings = $self->settings;
     my $dir      = $settings->workspace->workdir;
 
-    my $pfile = find_pfile($settings, vivify => 1, no_checks => 1);
+    # The discovery SYMLINK path (a link to this runner's runner.socket). vivify
+    # gives the path to publish; it does not create the link.
+    my $link = find_runner_link($settings, vivify => 1)
+        or die "Could not determine a discovery path for the current settings.\n";
 
-    if (-f $pfile) {
+    # A live runner already publishing this symlink means one is already running.
+    # (A dangling/dead symlink is cleaned by Discovery->find, so a crashed runner's
+    # stale link does not block a fresh start.)
+    if (App::Yath2::Discovery->find($settings)) {
         remove_tree($dir, {safe => 1, keep_root => 0});
-        die "Persistent harness appears to be running, found $pfile\n";
+        die "Persistent harness appears to be running, found $link\n";
     }
 
     $self->write_settings_to($dir, 'settings.json');
@@ -146,11 +150,19 @@ sub run {
     $self->setup_resources();
 
     my $pid = $self->client->start_runner(
-        persist   => $pfile,
+        persist   => $link,
         jobs_todo => 0,
     );
 
-    my $runner_pid = $self->write_pfile($pfile, $dir, $pid);
+    # Publish the discovery symlink: link -> $dir/runner.socket. The runner writes
+    # its own pid to $dir/PID as it boots (clients read that for signal fallback),
+    # and binds runner.socket; the symlink resolves to a live socket from then on.
+    my $disco = App::Yath2::Discovery->publish($settings, workdir => $dir);
+
+    # The runner pid for the banner: prefer the runner's own pid (from $dir/PID,
+    # which survives an exec across a reload-respawn), falling back to the collector
+    # parent pid run_cmd returned if the file has not appeared yet.
+    my $runner_pid = $self->wait_for_runner_pid($disco) // $pid;
 
     unless ($settings->runner->quiet) {
         print "\nPersistent runner started!\n";
@@ -184,61 +196,18 @@ sub run {
     }
 }
 
-# Write the persistence file and return the pid recorded in it. The pid run_cmd
-# returned is the collector PARENT, but the Test2-Collector parent forwards only
-# TERM/INT/QUIT to its child and deliberately IGNORES HUP -- so a SIGHUP for `yath
-# reload` sent to the collector parent would be swallowed and never reach the
-# runner. So the pfile records the RUNNER's own pid (which it writes to $dir/PID as
-# it boots, surviving exec across a reload-respawn) so reload's HUP and the
-# liveness checks (which/status/stop) target the runner directly. The collector
-# parent pid is the fallback.
-#
-# The pfile is written FIRST with the collector parent pid (before discovering the
-# runner pid): the runner checks for it at boot and shuts down as "orphaned" if it
-# is missing, so it must exist by the time the runner reaches its loop.
-sub write_pfile {
-    my $self = shift;
-    my ($pfile, $dir, $parent_pid) = @_;
-
-    my $pfile_obj = Test2::Harness2::Util::File::JSON->new(name => $pfile);
-
-    my %pdata = (
-        pid      => $parent_pid,
-        dir      => $dir,
-        version  => $VERSION,
-        user     => $ENV{USER},
-        hostname => hostname(),
-    );
-    $pfile_obj->write({%pdata});
-
-    my $runner_pid = $self->wait_for_runner_pid($dir) // $parent_pid;
-    if ($runner_pid != $parent_pid) {
-        $pdata{pid} = $runner_pid;
-        $pfile_obj->write({%pdata});
-    }
-
-    return $runner_pid;
-}
-
 # Poll for the runner's own pid, which the runner writes to $dir/PID as it boots
-# (Test2::Harness2::Runner::process). The collector parent ignores SIGHUP, so the
-# persistence file must record this pid for `yath reload` to reach the runner.
-# Returns the pid, or undef if it does not appear within the timeout (the caller
-# then falls back to the collector parent pid).
+# (Test2::Harness2::Runner::process) and which survives the exec across a
+# reload-respawn. Discovery reads this PID file as the signal fallback; here it is
+# used only for the start banner. Returns the pid, or undef if it does not appear
+# within the timeout (the caller then falls back to the collector parent pid).
 sub wait_for_runner_pid {
     my $self = shift;
-    my ($dir) = @_;
-
-    my $pidfile = File::Spec->catfile($dir, 'PID');
+    my ($disco) = @_;
 
     for (1 .. 600) {
-        if (-f $pidfile) {
-            my $fh  = open_file($pidfile, '<');
-            my $pid = <$fh>;
-            close($fh);
-            chomp($pid) if defined $pid;
-            return $pid if defined($pid) && length($pid) && $pid =~ /^\d+$/;
-        }
+        my $pid = $disco->pid;
+        return $pid if defined($pid) && length($pid);
         sleep(0.05);
     }
 
@@ -332,7 +301,7 @@ Where to find persistence files.
 
 =item --no-persist-file
 
-Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.
+Where to find the persistent runner discovery symlink (a link to the runner's socket). The default is /{system-tempdir}/.project-yath-runner.sock. If no project is specified it falls back to the current directory; if the current directory is not writable it defaults to the system temp dir, which limits you to one persistent runner per project on your system.
 
 
 =item --project ARG
