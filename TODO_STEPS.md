@@ -61,7 +61,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11, #26 |
 | 20 | Interactive mode IO: replace FIFO proxy with **STDIN-only SCM_RIGHTS fd-pass** (output stays with collector), command-listens/per-test-accept (§4.10, reuses §4.8 primitive) — needs 29, 13. May be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b), #40 |
 | 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ✅ (base class slimmed, not dismantled — `Preload::Host` is a 3rd consumer, out of scope per 26/#29) | #6, #8, #11 |
-| 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |
+| 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ✅ (via #12 `5ac411700`; status cell was stale) | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
 | 24 | Transition-driven test completion (§5.4): pass/fail/retry/bail from transitions + connection EOF; collector exit health-only; bidirectional conns + runner→collector terminate; fd hygiene. Spans Test2-Collector. | ✅ | #32, #27 |
 | 25 | Runner as child subreaper + preload collectors double-fork/detach (§4.1/§5.4); new `Test2::Harness2::Util::SubReaper` (pure-Perl `syscall`). Lets the preload tree reap nothing. — needs 24 | ✅ | #28 |
