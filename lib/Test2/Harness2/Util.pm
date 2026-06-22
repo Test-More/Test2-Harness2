@@ -58,17 +58,21 @@ our @EXPORT_OK = qw{
 #                        job_try / run_id so the runner can map this connection's
 #                        EOF back to the job it ran -- ARCHITECTURE.md §5.4).
 #   read_control => 1    build the connection BIDIRECTIONAL so the collector reads
-#                        the runner's inbound terminate control (bail/abort). A
-#                        read_control reporter must NOT set no_reply (it reads).
+#                        the runner's inbound terminate control (bail/abort), sent
+#                        via send_control (which no_reply does not gate).
 # Shared by every collector reporter site (the preload-root, per-job, per-stage,
 # and plugin-aux collectors).
 #
-# By default the reporter is one-way -- it only streams transitions. It sets
-# no_reply so the runner does NOT send its identity back: an unread reply would,
-# on the reporter's close, turn into a TCP-RST that discards in-flight
-# transitions. pid => $$ carries the reporter process's real pid in the identity
-# handshake. A read_control reporter is the exception: it reads its connection, so
-# it leaves no_reply off and consumes any reply as input.
+# The reporter ALWAYS sets no_reply so the runner does NOT echo its identity back.
+# Two reasons: (1) an unread echo would, on a one-way reporter's close, turn into
+# a TCP-RST that discards in-flight transitions; (2) writing the echo back to a
+# collector that is busy draining its test child (and only opportunistically reads
+# this socket) can stall the runner's single-threaded service loop under load --
+# the cause of a 60s collector silence-timeout flake. no_reply and read_control
+# are orthogonal: no_reply suppresses only the identity echo, while read_control
+# keeps the connection bidirectional so the collector still reads the runner's
+# terminate control (send_control is not gated by no_reply). pid => $$ carries the
+# reporter process's real pid in the identity handshake.
 sub socket_reporter {
     my ($identity, $socket, %params) = @_;
 
@@ -80,7 +84,7 @@ sub socket_reporter {
     my $extra         = $params{identity}     // {};
 
     my %ident = (name => $identity, pid => $$, %$extra);
-    $ident{no_reply} = 1 unless $read_control;
+    $ident{no_reply} = 1;
 
     my $reporter;
     my $ok = eval {
@@ -570,11 +574,12 @@ Returns C<undef> when C<$socket> is unset, is not a socket, or the connection
 cannot be made -- callers fall back to the file recorder so a missing or
 not-yet-accepting socket only costs the reporter, never the events file.
 
-By default the reporter is one-way: it identifies first (preamble) like every
-connection, sets C<no_reply> so the runner does not send its identity back, and
-still drains and discards any input defensively. Its preamble carries
-C<< pid => $$ >> so the reporter process's real pid is part of the identity
-handshake.
+The reporter identifies first (preamble) like every connection and always sets
+C<no_reply> so the runner does not echo its identity back: the echo is noise to a
+reporter, and writing it back to a busy collector can stall the runner's
+single-threaded loop under load. It still drains and discards any input
+defensively. Its preamble carries C<< pid => $$ >> so the reporter process's real
+pid is part of the identity handshake.
 
 C<%params> may carry:
 
@@ -589,8 +594,9 @@ connection -- and its EOF -- back to the job).
 =item read_control => 1
 
 Build the connection bidirectional so the collector reads the runner's inbound
-terminate control (the bail/abort message). A C<read_control> reporter does B<not>
-set C<no_reply> (it reads its connection).
+terminate control (the bail/abort message), which the runner sends with
+C<send_control>. This is orthogonal to C<no_reply> (which suppresses only the
+runner's identity echo): a C<read_control> reporter still sets C<no_reply>.
 
 =back
 

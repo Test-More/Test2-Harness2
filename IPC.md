@@ -304,11 +304,15 @@ receive unrelated messages before the matching response. Correlation is by
   immediately; one that **accepts** replies with its identity only after seeing the
   peer's. **Every** connection must identify first — including collector reporters,
   which send an identity as their first frame via the `Recorder::Socket` `preamble`.
-  A reporter's identity carries `no_reply` so the runner sends nothing back (the
-  reporter is one-way and never reads — an unread reply would become a TCP-RST on
-  close and discard in-flight transitions); it sets `drain_input` defensively. A
-  non-identity first frame, or no identity before the timeout (~30s), drops the
-  connection.
+  A reporter's identity **always** carries `no_reply` so the runner sends no
+  identity echo back: the echo is noise to a reporter, and writing it back to a
+  collector busy draining its test child (and only opportunistically reading this
+  socket) can stall the runner's single-threaded loop under load. It sets
+  `drain_input` defensively. `no_reply` (no echo) is orthogonal to `read_control`
+  (reads inbound control): a test-job reporter sets both — `no_reply` suppresses
+  the echo while `read_control` keeps the connection bidirectional so it still
+  reads the runner's terminate control (line ~40). A non-identity first frame, or
+  no identity before the timeout (~30s), drops the connection.
 - **Bad-frame policy.** After identity, **3 consecutive corrupt/invalid frames**
   (no valid frame between) close the connection; any valid frame resets the count.
   A fatal `sysread` error (ECONNRESET/EBADF) drops it at once.
