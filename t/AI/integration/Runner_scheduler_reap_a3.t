@@ -28,6 +28,10 @@ skip_all "This test requires forking" unless CAN_REALLY_FORK;
     package ReapHarnessRunner;
     our @ISA = ('Test2::Harness2::Runner');
 
+    # This models a PRELOAD runner (detached collectors re-parent to it), so the
+    # no-preload-scoped wind-down ports in run_scheduler_only stay off.
+    sub _preload_root_hosts_stages { 1 }
+
     sub _ready_to_schedule        { 1 }
     sub service_io                { 0 }
     sub service_tick              { 0 }

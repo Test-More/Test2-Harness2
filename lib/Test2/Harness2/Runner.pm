@@ -1066,6 +1066,17 @@ sub run_scheduler_only {
 
     $self->flush_submit_buffer;
 
+    # No-preload run: there is no preload-root to report a stage map, so the runner's
+    # own in-process 'default' stage stands in. Mark it ready (the scheduler only
+    # dispatches tasks bucketed under an 'up' stage, and every no-preload task resolves
+    # to 'default') and record it as the active stage. The preload path gets its stages
+    # 'up' from each stage's registration instead. (No-op until the no-preload run is
+    # routed here -- #29; guarded so the preload path is untouched.)
+    unless ($self->_preload_root_hosts_stages) {
+        $self->{+STAGE} //= 'default';
+        $self->state->stage_ready($self->{+STAGE});
+    }
+
     while (1) {
         $self->service_io;
         $self->service_tick;
@@ -1100,6 +1111,24 @@ sub run_scheduler_only {
         # their own collectors (watch_parent_pid) independently.
         last if $self->_handle_dead_preload_root;
 
+        # No-preload run: the in-runner shutdown triggers ported from the retired
+        # end_test_loop -- a persistent runner whose workdir/pfile vanished self-shuts
+        # down (orphaned), and a reload request winds down for a HUP respawn. The
+        # preload path winds down on stage-host signals instead, so this is
+        # no-preload-scoped. (Goes live when the no-preload run is routed here -- #29.)
+        unless ($self->_preload_root_hosts_stages) {
+            if ($self->orphaned) {
+                $self->{+SIGNAL} //= 'TERM';
+                last;
+            }
+
+            no warnings 'uninitialized';
+            if ($self->preloader->check($self->state)) {
+                $self->{+SIGNAL} //= 'HUP';
+                last;
+            }
+        }
+
         Time::HiRes::sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
     }
 
@@ -1114,6 +1143,15 @@ sub run_scheduler_only {
     # to us. Once all stages stop, the preload-root's own stage-host run loop ends
     # and that process exits -- stop_preload_root then reaps it.
     $self->stop_preload_stages;
+
+    # No-preload run: the test collectors are THIS runner's own forked children, so
+    # signal them on a wind-down and block until they are reaped (ported from the
+    # retired in-runner run_stage wind-down). The preload path's stages are the
+    # preload-root's children, stopped above. (Goes live when no-preload routes here.)
+    unless ($self->_preload_root_hosts_stages) {
+        $self->killall($self->{+SIGNAL}) if $self->{+SIGNAL};
+        $self->wait(all => 1);
+    }
 
     # Final best-effort reap of any detached collector that has already exited by
     # wind-down (ticket #28 C1); ones still finishing re-parent to init on exit (an
