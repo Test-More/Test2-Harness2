@@ -7,7 +7,8 @@ our $VERSION = '2.000000';
 use Getopt::Yath;
 require App::Yath2::Command::test;
 
-use Test2::Harness2::Util::File::JSONL;
+use App::Yath2::RenderLoop;
+use App::Yath2::RenderLoop::JSONLFileProducer;
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/+renderers <final_data <log_file <tests_seen <asserts_seen/;
@@ -59,42 +60,29 @@ sub run {
 
     my $jobs = @$args ? {map { $_ => 1 } @$args} : undef;
 
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
+    # Replay through the same render loop the live commands use, fed by a flat
+    # .jsonl source (JSONLFileProducer). The producer reads the log in order,
+    # captures the recorded harness_final rollup, applies the optional job filter,
+    # and tallies tests/asserts; the loop fans the events out to the renderers.
+    my $producer = App::Yath2::RenderLoop::JSONLFileProducer->new(
+        log_file => $self->{+LOG_FILE},
+        jobs     => $jobs,
+    );
 
-    while (1) {
-        my @events = $stream->poll(max => 1000) or last;
+    my $loop = App::Yath2::RenderLoop->new(
+        renderers => $renderers,
+        settings  => $settings,
+        producer  => $producer,
+    );
 
-        for my $e (@events) {
-            last unless defined $e;
+    $loop->start;
+    $loop->finish;
 
-            $self->{+TESTS_SEEN}++   if $e->{facet_data}->{harness_job_launch};
-            $self->{+ASSERTS_SEEN}++ if $e->{facet_data}->{assert};
+    $self->{+TESTS_SEEN}   = $producer->tests_seen;
+    $self->{+ASSERTS_SEEN} = $producer->asserts_seen;
 
-            if ($jobs) {
-                my $f = $e->{facet_data}->{harness_job_start} // $e->{facet_data}->{harness_job_queued};
-                if ($f && !$jobs->{$e->{job_id}}) {
-                    for my $field (qw/rel_file abs_file file/) {
-                        my $file = $f->{$field} or next;
-                        next unless $jobs->{$file};
-                        $jobs->{$e->{job_id}} = 1;
-                        last;
-                    }
-                }
-            }
-
-            if (my $final = $e->{facet_data}->{harness_final}) {
-                $self->{+FINAL_DATA} = $final;
-            }
-            else {
-                next if $jobs && !$jobs->{$e->{job_id}};
-                $_->render_event($e) for @$renderers;
-            }
-        }
-    }
-
-    $_->finish() for @$renderers;
-
-    my $final_data = $self->{+FINAL_DATA} or die "Log did not contain final data!\n";
+    my $final_data = $self->{+FINAL_DATA} = $loop->final_data
+        or die "Log did not contain final data!\n";
 
     $self->App::Yath2::Command::test::render_final_data($final_data);
     $self->App::Yath2::Command::test::render_summary($final_data->{pass});
