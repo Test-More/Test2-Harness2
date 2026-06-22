@@ -135,9 +135,18 @@ in `TODO_STEPS.md` (commit history lives in git). The intended order, roughly:
    sample interval) and reports it to the runner so the scheduler can gate
    concurrency in addition to or instead of a static `-j` (§4.4).
 8. **Database + UI inline** — rewrite the former `Test2-Harness-UI` DB+UI
-   layer inline in `App::Yath2`, with `DBIx::QuickORM` schema and sqlite log
-   files (§4.6). Landed as an interim `DBIx::Class` import (8a); the
-   `DBIx::QuickORM` conversion is 8b.
+   layer inline in `App::Yath2`, with sqlite log files (§4.6). Landed as an
+   interim `DBIx::Class` import (8a). The follow-on is **not** a DBIC→QuickORM
+   conversion but a **from-scratch QuickORM rewrite** (§4.6): the old DBIC layer
+   is retired to `reference/old_db` and a fresh hand-written-DDL + `autofill`
+   layer is built, with artifact-blob + folded-summary-row storage and no
+   transitions table. It is broken into the **DB-1..DB-5 + DB-Jsonl** chunk set
+   (move old layer to `reference/old_db`; PostgreSQL-first schema; port to the
+   other flavors; convert the current logger → jsonl **renderer**; the
+   transition-folding DB **logger** process; DB→DB sync + `import`) defined in
+   `TODO_STEPS.md` — superseding the earlier single "8b QuickORM conversion"
+   line. The **webapp UX migration** and the **junit renderer** are separate
+   deferred efforts (§4.6).
 
 The chunks above (1-8a) have landed; the items below are the **post-6
 revised-target** work, settled after chunks 1-8a shipped (the `thoughts` /
@@ -199,7 +208,10 @@ modules must be methods, not functions", and the rest) are in `STYLE_GUIDE.md`.
 
 UUIDs are generated in Perl, using `Test2::Util::UUID`, never in the database.
 They are v7; do not re-pack bits for index locality — v7 is already
-time-ordered.
+time-ordered. (The DB layer *derives* some run-data UUIDs from a base UUID via a
+**v7-preserving** add-with-wrap scheme that touches only the random low bits and
+keeps the version/variant/timestamp intact — §4.6.2 — which is consistent with
+this rule, not an exception to it.)
 
 ### 2.3 Argument parsing: `Getopt::Yath`
 
@@ -209,16 +221,42 @@ machinery has been removed.
 
 ### 2.4 Databases
 
-- The schema is defined with **`DBIx::QuickORM`** (schema-as-Perl), not
-  hand-written DDL files and **not `DBIx::Class`**.
+- **The schema is hand-written per-flavor DDL under `share/schema/<Flavor>.sql`,
+  reflected at runtime by `DBIx::QuickORM`'s `autofill` (reflect-from-DB).**
+  There are **no table / Result classes and no schema-as-Perl** — QuickORM builds
+  its internal schema map by introspecting the live database on first connect, so
+  there is no Perl schema or codegen to keep in sync with the DDL. *(This replaces
+  the earlier rule that the schema was "schema-as-Perl, not hand-written DDL"; the
+  `reference/dbix_quickorm` branch proves DDL + autofill end-to-end. Also **not
+  `DBIx::Class`** — the interim DBIC layer is retired, §4.6.)* Row objects are
+  **dumb** (DCI): algorithms live in functions / modules that act on rows, never
+  in row classes.
+- **All DB code, and the DB logger, live under `App::Yath2`. The backend
+  `Test2::Harness2` layer accesses no database in either direction.** The coupling
+  is one-way: the backend emits **transitions** (read by the App-side client over
+  `runner.socket`, §4.3) and produces **artifact files** (`events.jsonl.zst`); the
+  App-side DB layer consumes those. The backend never reaches into a DB.
+- **The DB layer is OPTIONAL.** No DB module is a hard prerequisite — core
+  `yath test` **without logging** loads and runs with zero DB modules. Logging is
+  **opt-in** (default OFF, §4.6.5). Every DB-touching entry point (the logger,
+  `db` / `server` commands, sync, import) **lazily `require`s** its modules and
+  throws an actionable "install `DBIx::QuickORM` + `DBD::<engine>`" error if they
+  are absent; nothing always-loaded `use`s a DB module at compile time.
+- **`DBIx::QuickORM` = the live ORM** (autofill reflect-from-DB; `autotype
+  JSON/UUID/DateTime`). **`DBIx::QuickDB` = ephemeral / test databases** — both
+  test fixtures and an ephemeral flavor stood up on the fly; never the default
+  sqlite path.
 - The default backend is **`DBD::SQLite`** used directly. Log files are sqlite
   databases (§4.6).
-- UUIDs are generated in Perl as v7 (§2.2), never by the database.
+- UUIDs are generated in Perl as v7 (§2.2), never by the database. Some run-data
+  UUIDs are **derived** from a base UUID by a v7-preserving scheme (§4.6.2) so they
+  are reproducible across loggers/DBs with no coordination.
 - Non-default flavors (Postgres, MySQL, MariaDB, Percona) are driver-loaded on
-  demand; their `DBD::*` modules are Suggests / Recommends in `dist.ini`,
-  never hard requires.
-- `DBIx::QuickDB` is used for ephemeral test databases and for spinning up
-  non-default flavors on the fly; never for the default sqlite path.
+  demand; their `DBD::*` modules are Suggests / Recommends in `dist.ini`, never
+  hard requires. **MariaDB 10.7+ is a hard minimum** when that flavor is used
+  (native `uuid` type; 10.5/10.6 LTS lack it).
+- Each log / DB is **version-stamped** with the yath version (a `schema_meta`
+  row); there are no migrations beyond that for now.
 
 ### 2.5 No `IPC::Manager`
 
@@ -593,6 +631,24 @@ archived runs after the fact. A rewrite of 1.0's renderers.
   renderers consume recorded events rather than a live broadcast.
 - Renderers are consumers of the transition channel for liveness and of the
   events files for detail.
+- **The jsonl log is a renderer, not a command-level concept.** The whole-run
+  jsonl log (the 1.0 "logger") becomes a plain **jsonl renderer**: `render_event`
+  writes `as_json`, `start` opens the FH (+ optional compression), `finish` writes
+  the terminator + closes + symlinks `lastlog`. It is **promoted into the renderers
+  list**, and the inline `logger` sink in `Renderer::Base::dispatch_to_sinks` is
+  **removed** (the DB **logger**, §4.6.5, takes over the "logger" name and is a
+  separate process, not a sink). Implicit-enable paths that used to set
+  `logging->log` instead inject this renderer. *(This is distinct from the DB log
+  store, §4.6 — a renderer writes a flat `.jsonl` file; the DB logger writes a
+  database.)*
+- **Renderers and plugins auto-contribute their options.** Each pluggable source's
+  option (the `renderers` Map, plugins, finders, etc.) carries
+  **`mod_adds_options => 1`** so each named renderer/plugin's own `option_group`
+  auto-loads when it is selected — the `reference/pre_ai_2.0` model (live already
+  does this for finders; renderers/plugins are brought up to the same standard). So
+  `--renderers +My::Renderer` parses a flag the renderer itself defines, and the
+  jsonl renderer owns its `--jsonl-file` / `--jsonl-dir` / `--jsonl-format` /
+  `--bzip2` / `--gzip` options directly.
 - **The event source generalizes from a path to a byte source.** "Locate a
   collector's events file" is, for a live run, an on-disk `.jsonl.zst` **path**; for
   an archived run it is an **artifact blob** read from the log database (§4.6). The
@@ -611,6 +667,10 @@ concrete `render_event` **sink** renderers (`Renderer::Formatter` →
 `Test2::Formatter::*` for the terminal; `App::Yath2::Renderer::{DB,Server}`) plus
 the logger. `test` / `run` render through it; `yath watch` is a global
 (no-run-id) subscriber that renders runner/stage output through the same base.
+*(The DB-layer rewrite changes the sink set: the inline `logger` sink is removed
+in favor of a jsonl renderer + a separate DB logger process, and the
+`Renderer::{DB,Server}` sinks move to `reference/old_db` with the old DB layer —
+see the renderer/options bullets above and §4.6.)*
 
 **Ordering contract (pinned, chunk 15 / #44).** The guarantee is **per-job
 chronological order only**: a single job's own events always render in the order
@@ -648,24 +708,272 @@ interactive mode (which is single-job, so it never actually interleaves).
 
 **Responsibility.** Persist runs for archival, querying, and the UI. Replaces
 the former separate `Test2-Harness-UI` distribution, rewritten inline in
-`App::Yath2`.
+`App::Yath2`. This is a **from-scratch rewrite** of the DB layer (the
+detailed design is the DB-layer rewrite spec,
+`AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md`), not a refactor of the
+interim `DBIx::Class` import (chunk 8a): the two are different enough that
+incremental conversion is not worth it, so the DBIC layer is retired to
+`reference/old_db` and a fresh QuickORM layer is built (§2.4). All of it — schema,
+row classes, logger, importer, sync, controllers — lives under `App::Yath2`; the
+backend touches no DB (§2.4).
 
 **Contract.**
 
-- **Log files are sqlite databases.** A run's `events.jsonl.zst` files are
-  stored in the database's artifacts tables, so a log file is a single,
-  self-contained, queryable artifact.
-- The schema is defined with **`DBIx::QuickORM`** (§2.4); the default backend
-  is `DBD::SQLite` used directly.
+- **The canonical record is artifact blobs + folded summary rows — not a jsonl
+  log and not a transitions table.** Each collector's `events.jsonl.zst`
+  (which already interleaves that collector's transitions, `record_transitions=1`)
+  is stored **whole** as an **artifact blob** (§4.6.4); that blob is the durable,
+  full record. The logger additionally **folds the wire transitions into queryable
+  ROW STATE** — `runs` / `jobs` / `job_tries` summary rows (status, counts, exit,
+  timestamps, verdict) — seeded by the subscribe-time snapshot and updated as it
+  polls (§4.6.5). **There is no `transitions` table** (it would store the blobs'
+  content twice). The old whole-run jsonl log is no longer the canonical record; it
+  survives only as an optional render format (the jsonl **renderer**, §4.5 / §10
+  of the spec).
+- **Log files are sqlite databases by default.** A log file is a single,
+  self-contained, queryable artifact: the run's `events.jsonl.zst` blobs live in
+  the `artifacts` table (§4.6.4). The default backend is `DBD::SQLite` used
+  directly; the schema is hand-written DDL reflected by QuickORM `autofill`
+  (§2.4). The DB layer is **optional and opt-in** (§2.4, §4.6.5).
 - The database is for storing / archiving / querying logs and driving the UI;
   it is **not** the live cross-process coordination substrate (that is the
   transition channel, §4.3).
 - **The render-loop library's `ArchiveProducer` (§4.12) is the read/render consumer
-  of this store** — the DB renderer is the *write* side (it ingests a live run's
-  events into the artifacts tables); the `ArchiveProducer` is the *read* side (it
-  renders a stored run back out from the artifact blobs + state rows). The current
-  DB layer is legacy lifted for backcompat; the concrete artifact-blob shape and the
-  `ArchiveProducer` are settled by the (not-yet-specced) DB-layer rewrite, not here.
+  of this store** — the DB **logger** is the *write* side (it folds a live run's
+  transitions into rows and ingests each collector's events blob into `artifacts`,
+  §4.6.5); the `ArchiveProducer` is the *read* side (it renders a stored run back
+  out from the artifact blobs + state rows). The concrete artifact-blob shape and
+  the `ArchiveProducer` are settled by the DB-layer rewrite spec.
+
+The subsections below pin the schema model (§4.6.1), the key strategy (§4.6.1),
+the derived-UUID scheme (§4.6.2), artifacts (§4.6.3 / §4.6.4), the DB logger
+process (§4.6.5), and multi-DB sync (§4.6.6). The **webapp UX migration** and the
+**junit renderer** are **deferred to separate specs/efforts** and are not part of
+this DB-layer work (the webapp moves to `reference/old_db` and stays inert until
+its own UX-migration spec; the `/artifact/<uuid>.ext` download controller, §4.6.3,
+lands with it).
+
+**§4.6.1 Schema model and key strategy `[target]`.**
+
+**Schema model.** Hand-written per-flavor DDL under `share/schema/<Flavor>.sql`
+(PostgreSQL-first, then ported to SQLite / MySQL / MariaDB / Percona), reflected
+by QuickORM `autofill` — no table/Result classes, no `regen_schema.pl` (§2.4). Row
+objects are dumb (DCI); import / sync / query algorithms live in dedicated modules
+acting on rows.
+
+**Core run-data tables** (plural, current-branch convention): `runs`, `jobs`,
+`job_tries`, `artifacts`. **Natural-key entities:** `users`, `machine_users`,
+`projects`, `test_files`, `hosts`. Plus `schema_meta` (the yath/schema version
+stamp, §2.4). **No `transitions` table** (folded into rows + blobs, above).
+`run_fields` / `job_try_fields` fold into a JSON column on `runs` / `job_tries`;
+`events`, `binaries`, `log_files` are dropped (replaced by `artifacts`); auth /
+session / coverage / resource-telemetry tables are deferred to later feature
+chunks.
+
+**Two distinct user tables.** The OS user who *ran* a run and the account user who
+*submitted* it are different concerns:
+
+- **`machine_users`** — the OS user on the test machine: integer/identity PK,
+  `host` FK **NOT NULL**, `username`, **`UNIQUE(host, username)`**. `runs.ran_by`
+  → `machine_users`.
+- **`users`** — the app/submitter account: integer/identity PK, natural key
+  `username` (email/auth deferred). `runs.submitted_by` is a nullable FK → `users`
+  (null = unknown).
+
+**Key strategy — PK is not the same as the host-stable sync key.** Every table that
+participates in import / sync needs a host-stable **serialization key**, but it is
+not always the PK:
+
+| Table class | PK | Host-stable sync key |
+|---|---|---|
+| Run data (`runs`, `jobs`, `job_tries`, `artifacts`) | **UUID** | the UUID itself (stable by construction, §4.6.2) |
+| Natural-key entities (`users`, `machine_users`, `projects`, `test_files`, `hosts`) | **integer / identity** (host-local) | the **natural unique column(s)** — `users`→`username`, `machine_users`→`(host, username)`, `projects`→`name`, `hosts`→`hostname`, `test_files`→`path` — `UNIQUE`-constrained; import/sync serialize on it, never the host-local PK |
+| DB/web-local (sessions, auth, config) | local identity | none (not synced) |
+
+So sync copies run-data UUID PKs verbatim, but **remaps run-data FK columns that
+point at natural-key entities** by resolving them on the destination via
+`find_or_create` on the natural key (§4.6.6).
+
+**Per-engine UUID storage.** UUIDs are stored natively where possible: native
+`uuid` on PostgreSQL and **MariaDB (10.7+ required, §2.4)** with no mirror;
+`BINARY(16)` on MySQL / Percona; `BLOB(16)` on SQLite. On the engines without a
+native UUID type, only the `runs` and `jobs` tables additionally carry a STORED
+generated **lowercase** `*_uuid_string` mirror column + index (the two IDs a human
+pastes from CI output; everything else is reached relationally). Canonical UUID
+string form is **lowercase everywhere**, normalized **centrally at the DB-layer
+boundary** (`App::Yath2::Util::UUID`'s `gen_uuid` returns lowercase and wire UUIDs
+are lowercased on ingest), not via scattered `lc()` calls; the backend still mints
+uppercase via `Test2::Util::UUID`. Derivation math (§4.6.2) operates on the 128-bit
+integer, so it is case-irrelevant.
+
+**§4.6.2 Derived UUIDs (v7-preserving) `[target]`.**
+
+Some run-data UUIDs are **derived** from a base UUID so they are reproducible on
+every logger/DB with no coordination — required for sync idempotency. Every
+implementation **must** use exactly this algorithm, centralized in one
+well-tested function, or sync keys and facet-rewrites diverge.
+
+`derive(base_uuid, offset)` — `base_uuid` is a backend-minted **v7** UUID,
+`offset` an integer `≥ 0`:
+
+1. Interpret `base_uuid` as a 128-bit big-endian unsigned integer.
+2. Its low **62 bits** are the v7 `rand_b` field; the bits above it are
+   `unix_ts_ms` (48), `version=0111` (4), `rand_a` (12), `variant=10` (2).
+3. `new_rand_b = (rand_b + offset) mod 2^62` — **add-with-wrap**. The carry never
+   leaves `rand_b`, so timestamp / version / `rand_a` / variant are preserved
+   byte-for-byte and the result is **still a valid v7 UUID**.
+
+The result is deterministic (same base + offset everywhere); `offset ≥ 1` ⇒ result
+≠ base; distinct offsets give distinct results per base. **Applications**, each
+with a base whose offset-space is disjoint from any sibling's:
+
+- **`job_try_uuid = derive(job_uuid, try_ord)`** — `job_uuid` is the backend's
+  existing `job_id` (already a `gen_uuid()` v7 UUID, so `job_uuid := job_id`, no
+  backend identity change). `try_ord` is **≥ 1, guaranteed at the source**: the
+  producer (backend) is changed to start try ordinals at **1, never 0**, so wire ==
+  db with no translation. The single derived `job_try_uuid` keeps the existing
+  try-uuid URLs and is deterministic across loggers, so sync matches on one column;
+  `try_ord` remains a column (the derivation input + ordering).
+- **`artifact_uuid = derive(collector_uuid, idx)`** — the base is the artifact's
+  **source collector** (each try runs under its own collector, so this space is
+  per-try and disjoint from the `job_uuid`-derived try space). The **events blob =
+  offset 0** (so the events artifact's uuid `==` its `collector_uuid`); **extracted
+  binaries = offsets 1, 2, …** in extraction order. Binaries deliberately derive
+  from `collector_uuid`, not `job_try_uuid` (the latter would collide with sibling
+  tries). The logger computes these — no backend change — so the same run logged
+  into two DBs yields identical artifact UUIDs *and* identical binary-extraction
+  facet-rewrites (portable blobs); there is no content-hash dedup.
+
+**§4.6.3 Artifacts `[target]`.**
+
+`artifacts` is the single store for everything the old `events`, `binaries`, and
+`log_files` tables held. Shape:
+
+```
+artifacts:
+  artifact_uuid  UUID PK    # deterministic: derive(collector_uuid, idx) — events=0, binaries=1.. (§4.6.2)
+  run_uuid       FK -> runs        NOT NULL   # denormalized: purge a run's artifacts without chasing FKs
+  job_try_uuid   FK -> job_tries   NULL       # null = run/process-level artifact
+  filename       TEXT                          # carries the kind ('events.jsonl.zst', '<name>.json.zst', 'screenshot.png')
+  local_path     TEXT
+  data           BLOB  (nullable)
+```
+
+- **`data` is the canon source-of-truth.** If `data` is populated it is canonical;
+  if missing, the artifact is read from `local_path`. `local_path` is
+  **host-local** — it points into the workdir, is **never** copied on import or
+  DB→DB sync, is **never** cleared by the logger, and **dies with the workdir**. (A
+  `data`-null artifact whose workdir is deleted before import is therefore dangling,
+  which is why the logger imports before workdir cleanup, §4.6.5.)
+- **The `filename` carries the kind** — there is no `type`/`kind` column; events
+  blob vs binary is told by the filename (+ `job_try_uuid` presence).
+- **No `binaries` table.** A binary attachment is just an artifact row; the live
+  `binaries` table's three roles are subsumed — addressability → `artifact_uuid` +
+  the download controller; MIME → filename extension; event→binary linkage → the
+  event facet stores the binary's `artifact_uuid`.
+- **Import binary-extraction.** When the importer reads an events stream, any
+  event carrying embedded binary data (e.g. an image) gets that binary **extracted
+  into its own binary artifact row**; the event **stays in the stream** with the
+  binary bytes removed and its facet **rewritten to reference the new
+  `artifact_uuid`**. Because `artifact_uuid` is derived (§4.6.2), two independent
+  imports of a run produce identical rows and identical rewrites.
+- **Download controller — deferred to the webapp/UX spec.** `GET
+  /artifact/<uuid>.<ext>`: strip `.ext`, look up the artifact by uuid, verify the
+  stored filename's extension matches `.ext` (rejects forged requests), then stream
+  `data` with a `Content-Type` from the extension and `Content-Disposition`
+  carrying the stored filename. It lands with the webapp (§4.6, §4.6.6), not this
+  DB-layer work.
+
+**§4.6.4 Events blobs as the durable record `[target]`.**
+
+Each collector's `events.jsonl.zst` is stored **whole** as an artifact blob
+(§4.6.3) — the file already interleaves that collector's full transition detail
+(run / job / try / collector / stage lifecycle), so the blobs are the durable,
+complete record and there are **no per-event rows** (1.0's per-event rows were the
+"major db issue"). The blob keeps its own compression (it is already zst);
+`system_load` rides into the sampler's own events blob (the sampler emits each load
+snapshot into its events stream). Stage lifecycle likewise lives in the stage's
+blob. Transition detail therefore syncs automatically whenever artifacts sync
+(§4.6.6), with no separate `transitions` table.
+
+**§4.6.5 DB logger process `[target]`.**
+
+**Responsibility.** A dedicated App-side process that consumes a run's transitions
+and persists it into one database. It is **not** the runner and **not** the jsonl
+renderer (§4.5) — those are separate concerns. It is the *write* side of the store
+(§4.6); the `ArchiveProducer` (§4.12) is the read side.
+
+**Contract.**
+
+- **Own subscription per logger.** Each logger is an independent App-side process
+  owning its own `App::Yath2::Client` + `Subscriber` to `runner.socket`, run-scoped
+  via `connect_subscriber(run_id)`. N loggers → N DBs; the runner stays the sole
+  hub. A logger exits on socket-close (transient) or `run_done` /
+  `harness_run_end` (persistent).
+- **Fold transitions into rows + import blobs.** The logger (i) **folds wire
+  transitions into `runs` / `jobs` / `job_tries` ROW STATE** by reading the
+  Monitor's folded state (seeded by the subscribe-time snapshot, updated each
+  `poll()`) and upserting the summary rows — **no `transitions` table**, and no
+  per-frame Subscriber tap needed; and (ii) stores each collector's
+  `events.jsonl.zst` **whole** as an artifact blob (§4.6.4), importing each blob as
+  that collector finalizes (not batched at run-end) to shrink the cleanup race.
+  Binary-extraction (§4.6.3) happens here.
+- **Early spawn.** `test` / `run` fork+exec's the logger **early** — the ordering
+  is **start harness → start logger → queue run** — so it attaches before most
+  transitions occur. `workdir` + `run_id` + DB config are handed over via a
+  temp-JSON settings file.
+- **The runner waits for subscribers before workdir cleanup.** The persistent
+  runner **defers shutdown + workdir cleanup until all subscribers disconnect**;
+  loggers are subscribers, so they stay subscribed until their imports finish, then
+  disconnect, then the runner cleans. The default local sqlite logger is the
+  durability anchor; additional / remote loggers are best-effort and recover
+  anything missed via sync (§4.6.6) — they never gate cleanup. A logger that
+  detects the **workdir vanished early** (runner crash / force-kill) reports a
+  terminal error and marks the log **incomplete / possibly corrupt**.
+- **Enable option — `-L` / `--logger`.** Logging is **opt-in (default OFF, §2.4)**.
+  The option is **repeatable** and **value-polymorphic**: bare `-L` = the default
+  sqlite target, `-L=<path>` = a sqlite file at that path, `-L=<DSN>` = a remote
+  database. Each `-L` forks one logger process (N loggers → N DBs). The default
+  sqlite DB reuses the current logger's naming machinery (the `log_file_format`
+  strftime + `%!` escapes, dir + temp-dir fallback, the `lastlog` symlink) with a
+  DB extension instead of `.jsonl`, lives in the temp dir by default, and is
+  uncompressed (it is a DB; the artifact blobs are already zst). DB modules are
+  optional and lazily required with an actionable error (§2.4).
+
+**§4.6.6 Multi-DB sync `[target]`.**
+
+**Responsibility.** Move runs between databases (e.g. a local sqlite log into a
+shared PostgreSQL / MariaDB). A from-scratch QuickORM module under the DB
+namespace (DCI), driven by the `yath db sync` and `import` commands. The old
+`Schema/Sync.pm` informs only the algorithm and is retired to `reference/old_db`.
+
+**Contract.**
+
+- **Per-run granularity, uuid-upsert idempotency.** The selector is `run_uuid`
+  (or a `run_delta`-style "runs in A not in B"); a run plus all its
+  jobs / tries / artifacts moves as a unit (runs are immutable once complete).
+  Re-sync is an idempotent upsert keyed on the globally-stable UUIDs; conflicts are
+  impossible (distinct runs → distinct uuids).
+- **Marshalling.** Run-data UUID PKs copy verbatim (no surrogate remap). Run-data
+  **FK columns pointing at natural-key entities are host-local integers and are
+  remapped** (§4.6.1): resolve the entity on the destination via `find_or_create`
+  on its natural key (`users`→`username`, `machine_users`→`(host, username)`,
+  `projects`→`name`, `hosts`→`hostname`, `test_files`→`path`), then rewrite the FK
+  before writing. Artifacts copy the `data` blob and **skip `local_path`**
+  (host-local, §4.6.3). Transition detail rides inside the artifact blobs, so it
+  syncs automatically; sessions / auth / config are not synced. QuickORM autotypes
+  handle per-engine UUID storage + datetime.
+- **`submitted_by` attribution flag.** On import / sync, `runs.submitted_by` is
+  either **carried-original** (`find_or_create` by username on the destination —
+  the default) or **overridden** to the user performing the import / sync
+  (`--as-user` / `--override-user`, the common cross-DB case so foreign accounts
+  are not synced).
+- **Commands.** `yath db sync` moves a `run_uuid` list (or a gap-fill delta) from
+  one DB to another. The simpler **`import`** command imports the single run
+  contained in one sqlite log file into another database, **auto-selecting the only
+  run** (no `run_uuid` needed) — a convenience wrapper over the sync engine that
+  replaces the old upload path for the sqlite-log → DB case. No auto-push /
+  server-pull is in scope.
 
 ### 4.7 Preload stage services `[migrating]`
 

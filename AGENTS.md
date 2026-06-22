@@ -81,8 +81,11 @@ for its specific subsystem:
   abandoned-branch era (`fresh_start`, `harness_service`,
   `redirect`).
 
-**Never modify anything under `reference/`.** Copy out, modify the
-copy. The reference trees are immutable history we read against.
+**Never modify anything under an existing `reference/` tree.** Copy
+out, modify the copy. The reference trees are immutable history we read
+against. *(Adding a brand-new `reference/<name>/` subtree as a
+**retirement destination** — e.g. `git mv`-ing a retired layer into
+`reference/old_db/` — is allowed; once placed it is never edited.)*
 
 When borrowing, `reference/old3` and `reference/old4` are usually the
 right starting points for general "how did this used to work"
@@ -338,6 +341,13 @@ guide; walk it before declaring work ready for review.
   branches. Commit directly to the transition branch (currently
   `2.0d`, see `TODO_STEPS.md`). The rules below resume once the user
   declares foundations done.
+  - **Exception — DB-layer rewrite:** the from-scratch database-layer
+    rewrite (spec:
+    `AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md`) is a
+    discrete, tracked effort that **may use a worktree for its code
+    phase** (it runs alongside concurrent foundation work and benefits
+    from isolation). Its doc/spec edits are done directly on `2.0d`
+    (documentation-only, no worktree needed).
 - Significant work requires a worktree. Place worktrees in
   `worktrees/`.
 - Documentation-only work (editing `ARCHITECTURE.md`, `STYLE_GUIDE.md`,

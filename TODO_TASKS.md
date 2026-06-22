@@ -1065,6 +1065,301 @@ unchanged. Record an ARCHITECTURE §4.5 addendum (the now-pinned contract) + fli
 
 ---
 
+## TIER 6 — DB-layer rewrite (DBIx::QuickORM, transition-driven logger, multi-DB sync — designed 2026-06-21/22, reviewed)
+
+> Design context + decisions + the two-reviewer (Gemini/GPT) findings we resolved:
+> `AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md` (read it first — decisions §1-§10,
+> revisions §R R1-R16). A **from-scratch** rewrite of the DB layer, **not** a DBIC→QuickORM
+> refactor; the old DBIC/web layer is retired to `reference/old_db` and the webapp is rebuilt
+> later (its own future spec). Canonical record = **artifact blobs + folded summary rows**,
+> **no transitions table** (R6). DB chunks: **DB-1** (retire old layer) → **DB-2** (PostgreSQL
+> schema) → **DB-3** (port flavors) → **DB-Jsonl** (jsonl renderer + renderer-owned options,
+> lands **before** DB-4 to free the "logger" concept) → **DB-4** (DB logger process) → **DB-5**
+> (sync + import). Suggested sequence **#45 → #46 → #47 → #48 → #50 → #51 → #53 → #54**, with
+> **#49/#52** (backend producer changes) independent, **#55 → #56** (DB-Jsonl) independent and
+> landing before #50, and **#57** deferred (optional). **DB layer is OPTIONAL** — core
+> `yath test` (no logging) loads zero DB modules (R11).
+
+### #45 — Move old DBIC DB/web layer to `reference/old_db`
+**Status:** Decided · **Step:** DB-1 · **Depends:** —
+
+**Problem:** the current DBIx::Class schema + web UI + DB commands are being replaced
+from scratch (spec §0/§1); they must move out of `lib/` so the runner's `yath test`
+critical path imports **zero** DB code, while staying visible as a reference to port
+behaviour from. Verified DB-free: `test.pm` + `Test2::Harness2/*` have no
+`App::Yath2::Schema`/`RunProcessor` imports, so the move keeps the runner suite green.
+
+Steps:
+- `git mv` (preserve history) into `reference/old_db/`, **preserving relative paths**:
+  `lib/App/Yath2/Schema/` (~210 files), `lib/App/Yath2/Server/` + `Server.pm`,
+  `lib/App/Yath2/Renderer/{DB,Server}.pm`, `lib/App/Yath2/Command/{db.pm, db/*, server.pm,
+  recent.pm}`, `lib/App/Yath2/Options/DB.pm`, `lib/App/Yath2/Plugin/DB.pm`,
+  `share/schema/*.sql`, `author_tools/regen_schema.pl`, and the web assets
+  (templates/JS/CSS — locate at execution).
+- Make the `db` / `server` / `recent` commands (+ DB renderer/plugin) **stubs that error
+  if used** (command surface stays visible but inert, §1d); their tests become
+  **`SKIP_ALL`** until the rewrite lands.
+- Add **`exclude_match = ^reference`** to `dist.ini [GatherDir]` (R15 — fixes pre-existing
+  bloat: 3744 `reference/` files ship today) **before** the `git mv`.
+- **Remove the `DBIx::Class*` prereqs** from `dist.ini` (`dist.ini:123-130`) — safe once
+  DBIC leaves `lib/` (reference isn't loaded/shipped) — and **demote `DBD::SQLite` from
+  Requires to Suggests** (R11). Core `yath test` must stay green, **verified DB-free**.
+
+### #46 — New schema, PostgreSQL-first (QuickORM `autofill`)
+**Status:** Decided · **Step:** DB-2 · **Depends:** #45
+
+**Problem:** the new schema must be authored as hand-written DDL (source of truth) and
+reflected by QuickORM (`autofill`), with the accurate column set lifted from the
+current-branch DBIC and the mechanics from `reference/dbix_quickorm` (spec §0 hybrid
+principle, §2/§4/§5). No Perl table/result classes, no codegen.
+
+Steps:
+- **PREREQ (R13):** replace ARCHITECTURE §2.4's "schema-as-Perl, **not** hand-written
+  DDL" wording with "hand-written per-flavor DDL + QuickORM `autofill` (reflect-from-DB)" —
+  prerequisite for this chunk.
+- Hand-write `share/schema/PostgreSQL.sql` (PostgreSQL-first, most capable); build
+  `App::Yath2::Schema` using QuickORM `orm` + `autofill` (autotype JSON/UUID/DateTime),
+  `App::Yath2::Schema::Row::*` (DCI **dumb** rows — algorithms live in functions/modules,
+  not row classes, §2b), and `App::Yath2::DB::Flavor`. **No `regen_schema.pl`.**
+- Tables: `runs, jobs, job_tries, artifacts, users, machine_users, projects, test_files,
+  hosts, schema_meta` (§4/R12). **No** `transitions`/`events`/`binaries`/`log_files`/
+  `collector` tables (R6, §4). Fold `run_fields` → `runs.fields` JSON and `job_try_fields`
+  → `job_tries.fields` JSON; **drop the `mode` enum** (no event rows to prune, §4).
+  Core columns per §4 (e.g. `runs.ran_by`→`machine_users`, `runs.submitted_by`→`users`
+  nullable, version stamp in `schema_meta`).
+- Add **`DBIx::QuickORM` + `DBIx::QuickDB` to `dist.ini` RuntimeSuggests** (NOT Requires —
+  R11); nothing always-loaded may `use` them at compile time.
+
+### #47 — Port schema to SQLite / MySQL / MariaDB / Percona
+**Status:** Decided · **Step:** DB-3 · **Depends:** #46
+
+**Problem:** the PostgreSQL-first schema (#46) must be ported to the other engines with
+correct per-engine UUID storage (spec §3, §0.2), since no single UUID representation is
+portable across all five flavors.
+
+Steps:
+- Per-engine UUID PK storage: **native `uuid`** on PostgreSQL + MariaDB (**MariaDB 10.7+
+  hard minimum** — native `uuid` is 10.7+ only; R8 — document in cpanfile/Makefile note +
+  Flavor/DDL comment); **`BINARY(16)`** on MySQL + Percona; **`BLOB(16)`** on SQLite.
+- On the engines lacking a native string form (mysql/percona/sqlite), add a **STORED
+  generated lowercase `*_uuid_string` mirror column + index on the `runs` + `jobs` tables
+  only** (the two IDs a human pastes from CI; §3b/§3c). Wrap SQLite's generated mirror in
+  `lower(...)` (its `hex()` is uppercase) so the canonical form is lowercase everywhere.
+- Carry the reference's column-ordering convention (fixed-width → variable →
+  generated-last) per §3e.
+
+### #48 — Derived-UUID function (v7-preserving) + central UUID lowercasing
+**Status:** Decided · **Step:** DB-4 · **Depends:** #46
+
+**Problem:** some run-data UUIDs are **derived** from a base UUID so every logger/DB
+computes the same value with no coordination (required for sync idempotency + portable
+binary-extraction facet-rewrites). Every implementation MUST use exactly one algorithm
+or sync keys + facet-rewrites diverge (spec §3.1, R2/R4).
+
+Steps:
+- Implement one centralized, well-tested **`derive(base_uuid, offset)`** per §3.1:
+  interpret `base_uuid` as a 128-bit big-endian int, take `rand_b` = the low 62 bits, set
+  `new_rand_b = (rand_b + offset) mod 2^62` (**add-with-wrap** — carry never leaves
+  `rand_b`, so timestamp/version/`rand_a`/variant are preserved byte-for-byte; still a
+  valid **v7** UUID).
+- Apply it: **`job_try_uuid = derive(job_uuid, try_ord)`** (`try_ord ≥ 1`); the
+  artifact `events` blob = **`derive(collector_uuid, 0)`**, extracted **binaries** =
+  `derive(collector_uuid, 1, 2, …)` in extraction order (NOT from `job_try_uuid` — would
+  collide with sibling tries; R2/R4/§3.1).
+- **Centralize UUID lowercasing at the boundary (R9):** `App::Yath2::Util::UUID` exports a
+  `gen_uuid()` returning **lowercase** and normalizes wire UUIDs to lowercase on ingest;
+  no scattered `lc()` at comparison sites (derive math is on the integer, case-irrelevant).
+- Tests: **wrap at `rand_b` max** (wraps within the 62-bit field, does not flip
+  variant/version/timestamp); **no self-collision for `offset ≥ 1`**; **two independent
+  imports of a run produce identical** derived UUIDs + identical facet-rewrites.
+
+### #49 — Producer emits 1-based try ordinals
+**Status:** Decided · **Step:** DB-4 (backend) · **Depends:** —
+
+**Problem:** §3.1 requires `try_ord ≥ 1` **at the source** so wire == db with no ingest
+translation. Today the backend producer starts `try_ord`/`is_try` at 0; change it to
+start at **1, never 0** (R10), rather than mapping `wire 0 → db 1` at ingest.
+
+Steps:
+- Change the backend so `try_ord`/`is_try` starts at **1**: `Job.pm` `is_try`
+  default/init + the retry increment, and the `job_dir` naming (`job_id + is_try`,
+  `Job.pm:508`).
+- Audit **all** `is_try` uses: any `is_try == 0` "first try" checks, the wire `try`
+  field, and the POD that documents it starting at 0.
+- Tests for first try / first retry. This is a **backend** change (App-side ingest needs
+  no translation afterward).
+
+### #50 — DB logger process
+**Status:** Decided · **Step:** DB-4 · **Depends:** #46, #47, #48
+
+**Problem:** the largest net-new component (spec §5/§7). A standalone App-side process
+that subscribes to a run's transitions, **folds them into run/job/job_try ROW STATE**
+(via the Monitor's folded state — **no transitions table**, R6) and imports each
+collector's `events.jsonl.zst` **whole** as an artifact blob. All DB-side; the backend
+stays DB-free (§2c).
+
+Steps:
+- Standalone `App::Yath2` process owning its **own `App::Yath2::Client` + `Subscriber`**
+  to `runner.socket`, run-scoped via `connect_subscriber(run_id)` (N loggers → N DBs;
+  runner stays the sole hub). Exit on socket-close (transient) or
+  `run_done`/`harness_run_end` (persistent).
+- **Fold-into-rows:** seed run/job/job_try summary rows from the Monitor **subscribe
+  snapshot** (initial state), then upsert from the Monitor's folded state each `poll()`
+  (no per-frame Subscriber tap, no per-event rows — 1.0's per-event rows were the "major
+  db issue").
+- **Blob import:** store each collector's `events.jsonl.zst` whole as an artifact blob,
+  importing each **as that collector finalizes** (`wait_terminal`), not batched at run-end.
+  **Binary-extraction (§5):** split embedded binary facets out of the event stream into
+  their own **binary artifact rows** (`artifact_uuid = derive(collector_uuid, idx≥1)`) and
+  **rewrite the source event's facet** to reference the new `artifact_uuid` (binary bytes
+  removed, event retained).
+- **Spawn early** — harness → logger → queue run (§6d) — fork+exec'ing the logger with
+  `workdir` + `run_id` + DB config via a temp-JSON settings file (the
+  `Renderer::DB._start_process` plumbing pattern; reuse the plumbing, not the per-event
+  ingestion).
+- **Enable option `-L` / `--logger`** (R16): **repeatable**, value-polymorphic — bare =
+  default **SQLite** at the default location, `=path` = sqlite file, `=$DSN` = remote DB;
+  one logger process per `-L`. Reuse the current logger's naming machinery
+  (`log_file_format` + `%!` escapes, dir + temp-dir fallback, `lastlog` symlink when
+  asked) with a DB extension; **no compression** (blobs are already zst).
+- **Logging is OPT-IN (default OFF, R11);** DB modules are **lazily `require`d** with an
+  **actionable** "install DBIx::QuickORM + DBD::<engine>" error; nothing always-loaded
+  `use`s a DB module at compile time.
+
+### #51 — Runner defers workdir cleanup + vanished-workdir detection
+**Status:** Decided · **Step:** DB-4 · **Depends:** #50
+
+**Problem:** a `data`-null artifact whose workdir is deleted before import is dangling
+(spec §5/§7e). The logger must finish importing before the runner cleans the workdir;
+conversely a logger must detect a workdir that vanished early (runner crash/force-kill).
+
+Steps:
+- The persistent runner **defers shutdown + workdir cleanup until all run-scoped
+  subscribers disconnect** (a bounded loop **excluding global subscribers**); loggers are
+  subscribers and stay subscribed until their imports finish, then disconnect → the runner
+  cleans. The **default local sqlite logger is the durability anchor**; additional/remote
+  loggers are best-effort and never gate cleanup (they recover via sync, #53).
+- **Workdir-vanished-early detection:** if a logger/command detects the workdir
+  disappeared before its import completed (runner crash/force-kill), report a **terminal
+  error** and mark the log **incomplete and possibly corrupt**. (`Runner.pm:1316` already
+  handles workdir-removed-out-from-under; the defer-cleanup requirement is new.)
+
+### #52 — Sampler emits `system_load` into its own events stream
+**Status:** Decided · **Step:** DB-4 · **Depends:** —
+
+**Problem:** with no transitions/metrics table (R6), `system_load` snapshots need a
+durable home. Have the sampler emit each snapshot into its own collector events stream so
+it rides into `sampler-events.jsonl.zst` (a blob) like everything else (spec R6 (b)).
+
+Steps:
+- `Service::Sampler` additionally **emits each `system_load` snapshot into its own
+  collector events stream** so it is captured in `sampler-events.jsonl.zst`. Small change;
+  no metrics table. (The existing one-way `system_load` report to the runner for live
+  throttling/render is unaffected.)
+
+### #53 — `yath db sync` command
+**Status:** Decided · **Step:** DB-5 · **Depends:** #50
+
+**Problem:** moving runs between databases (sqlite log → postgres, DB → DB) needs a
+from-scratch QuickORM sync engine (spec §8) — the old raw-SQL `Sync.pm` (now in
+`reference/old_db`) carries inapplicable int-remap machinery; only its algorithm
+(run_delta, per-run dump/load, get_or_create, datetime normalize) informs the new one.
+
+Steps:
+- New sync module under the DB namespace (DCI; reusable by the command). `yath db sync`
+  moves a `run_uuid` list or a `run_delta`-style "runs in A not in B" set; **per-run
+  granularity**, **idempotent uuid-upsert** keyed on `run_uuid` (runs are immutable once
+  complete; distinct runs → distinct uuids → conflicts impossible).
+- Run-data **UUID PKs copy verbatim**, but **natural-key FK columns are host-local ints
+  and MUST be remapped** (R5): resolve each on the **destination** via `find_or_create` on
+  its natural key — `users`→**username**, `machine_users`→**(host, username)**,
+  `projects`→**name**, `hosts`→**hostname**, `test_files`→**path** — then rewrite the FK
+  before writing.
+- Artifacts: **copy the `data` blob, skip `local_path`** (host-local, §5; transition
+  detail rides inside the blobs so it syncs automatically). QuickORM autotypes handle
+  per-engine UUID storage + datetime. Not synced: sessions/auth/config (local).
+- **`submitted_by` attribution flag** (R7): default **carry-original** (`find_or_create`
+  by username on the destination); `--as-user`/`--override-user` attributes to the user
+  performing the sync (the common cross-DB case — don't sync foreign accounts).
+
+### #54 — `import` command
+**Status:** Decided · **Step:** DB-5 · **Depends:** #53
+
+**Problem:** the common case is importing the single run contained in one sqlite log file
+into another database; requiring a `run_uuid` is friction (spec §8). It replaces the old
+`db-publish`/upload role for the sqlite-log → DB path.
+
+Steps:
+- `import` imports the **single run** in a sqlite log file into another DB,
+  **auto-selecting the only run** (no `run_uuid` needed) — a convenience wrapper over the
+  #53 sync engine.
+- Support the **same `submitted_by` attribution flag** (`--as-user`/`--override-user`,
+  default carry-original; R7).
+
+### #55 — Convert current logger → jsonl renderer
+**Status:** Decided · **Step:** DB-Jsonl · **Depends:** —
+
+**Problem:** the new DB logger (#50) takes over the "logger" concept, so the old jsonl
+logger **must** become a plain renderer to make room (land **before** #50). It already
+speaks our event shape, so CONVERT it rather than porting old3 (spec §10a, R16).
+
+Steps:
+- Wrap the existing logger logic — `test.pm::logger()` FH construction + the
+  `dispatch_to_sinks` `as_json` write + `Options/Logging` — as a renderer:
+  `render_event` writes `as_json`; `start` opens the FH (+ compression); `finish` writes
+  the `null` terminator + close + `lastlog` symlink + "Wrote log file".
+- **Promote into the renderers list; delete the inline `logger` sink** in
+  `Renderer::Base::dispatch_to_sinks`.
+- Own `option_group`: `--jsonl-file` / `--jsonl-dir` / `--jsonl-format` +
+  `--bzip2` / `--gzip` (renderer keeps compression). **No `log` in names, no short
+  forms** (R16 frees `-L`/`-F`/`-B`/`-G`).
+- **Rewire implicit-enable** (the old `Logging` post_process + the YathUI force-enable) to
+  **inject the renderer** instead of setting `logging->log`.
+
+### #56 — Renderer-owned options via `mod_adds_options`
+**Status:** Decided · **Step:** DB-Jsonl · **Depends:** #55
+
+**Problem:** the jsonl renderer's option_group (#55) must auto-load when the renderer is
+named; live already does this for **Finder** (`Options/Finder.pm:580`) but **not
+renderers**. Use the pre_ai_2.0 model — `mod_adds_options => 1` on the `renderers` option
+(spec §10b).
+
+Steps:
+- Add **`mod_adds_options => 1`** to the Display `renderers` option (pre_ai_2.0 model,
+  `Options/Renderer.pm:82`) so each named renderer's `option_group` auto-loads.
+- **Audit the other pluggable sources** (plugins / finders / schedulers / resources) and
+  bring them all up to the pre_ai standard (the old3 `args_from_settings` hook) so they
+  contribute options automatically.
+- **Verify** live `Getopt::Yath` `mod_adds_options` works on the **renderers Map** option
+  (pre_ai's renderers was map-ish and used it; chunk-2 migrated the Getopt::Yath
+  machinery) — small fix if the Map case differs from the List case.
+- Test that **`--renderers +My::Renderer`** with a renderer-defined flag parses.
+
+### #57 — (OPTIONAL) try-uuid start-stamp
+**Status:** Deferred · **Step:** DB-4 · **Depends:** #48
+
+**Problem:** nice-to-have time-sortability — overwrite the derived `job_try_uuid`'s
+high-48-bit timestamp with the **try's start time** (the first collector transition's
+`stamp`) so try uuids sort by actual try start instead of inheriting the job's creation
+time (spec §6c). Not required; depends on effort.
+
+Steps:
+- Only if **cheap**, and only if the Monitor's initial-state snapshot **preserves the
+  original transition `stamp`** (a late-joining logger must compute the same value —
+  **verify first**): overwrite the derived `job_try_uuid`'s high-48-bit timestamp with the
+  try's start stamp. Reproducibility holds iff that stamp is stable across loggers.
+
+---
+
+> **Deferred to their own separate efforts (NOT numbered tickets in this effort):**
+> the **artifact-download controller** (`GET /artifact/<uuid>.<ext>` — strip ext, fetch
+> by uuid, verify ext matches the stored filename, stream `data` with `Content-Type` +
+> `Content-Disposition`; §5) lands with the **future webapp UX-migration spec** (§9); the
+> **junit renderer** import (old3 base, optional `XML::Generator` guard; §10c) is **its
+> own separate effort**.
+
+---
+
 ## Explicitly justified — do NOT cut
 
 Load-bearing, all auditors agree: the unified `Role::Service`/`Connection` framing

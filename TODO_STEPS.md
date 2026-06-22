@@ -47,7 +47,12 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 6 | Renderer: interim → §4.5 base-renderer rewrite | ✅ | — |
 | 7 | System-load service (own process, reliable tick → reports load) + opt-in CPU/memory throttling resources — needs 9 | ✅ DONE | #43 |
 | 8a | Database + UI inline (interim DBIx::Class, SQLite logs) | ✅ | — |
-| 8b | Convert inlined UI schema DBIx::Class → DBIx::QuickORM (§2.4/§4.6) | ⬜ (deferred) | — |
+| DB-1 | Move old DBIC DB/web layer → `reference/old_db` (`git mv`); db/server/recent commands → error stubs + tests `SKIP_ALL`; dist.ini `exclude_match = ^reference` + drop DBIx::Class prereqs | ⬜ | #45 |
+| DB-2 | New schema PostgreSQL-first (hand-written DDL + QuickORM autofill + Flavor; `App::Yath2` namespace); add optional DBIx::QuickORM/QuickDB deps; needs ARCHITECTURE §2.4 reword | ⬜ | #46 |
+| DB-3 | Port schema to SQLite/MySQL/MariaDB/Percona (per-engine UUID storage; MariaDB 10.7+) — needs DB-2 | ⬜ | #47 |
+| DB-Jsonl | Convert current jsonl logger → a renderer + renderer-owned options (`mod_adds_options`); lands before DB-4 (frees the "logger" concept) | ⬜ | #55, #56 |
+| DB-4 | DB logger process (own Client+Subscriber; folds transitions into run/job/job_try rows; whole-blob artifact import; SQLite-first; optional DB deps) — needs DB-3 | ⬜ | #48, #49, #50, #51, #52 |
+| DB-5 | DB→DB sync (`yath db sync`) + `import` command — needs DB-4 | ⬜ | #53, #54 |
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |
 | 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ✅ | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
@@ -125,9 +130,80 @@ carry the specifics.
   read the runner's shared snapshot (cross-platform). See ticket #43,
   `AI_DOCS/2026-06-21-system-load-throttling.md`, and the ARCHITECTURE.md §4.4 addendum.
 
-- **Chunk 8b — QuickORM conversion.** Migrate the inlined DB/UI schema from interim
-  DBIx::Class to DBIx::QuickORM (§2.4/§4.6), keeping the default SQLite path on
-  `DBD::SQLite`. Until this lands, DBIx::Class is an interim import.
+- **Chunk DB-1 — move old DB/web layer to `reference/old_db`.** Retire the chunk-8a
+  interim DBIx::Class stack: `git mv` the ~210 `App::Yath2::Schema/Server/Renderer::DB`
+  files (+ `share/schema/*.sql` + `regen_schema.pl`) into `reference/old_db/` preserving
+  relative paths (history-preserving move, not a copy). The `db`/`server`/`recent`
+  commands (and the DB renderer/plugin) become **stubs that error if used**; their tests
+  become `SKIP_ALL` until the rewrite lands — the command surface stays visible but inert.
+  Add `exclude_match = ^reference` to `dist.ini [GatherDir]` (the 3744 already-shipping
+  `reference/` files are pre-existing bloat) and drop the `DBIx::Class*` prereqs +
+  **demote `DBD::SQLite` from Requires** (DB layer is opt-in, R11). The runner / `yath
+  test` path imports zero DB code today, so the move keeps the suite green. TODO_TASKS
+  **#45**; spec `AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md` §1 / R14 / R15.
+
+- **Chunk DB-2 — new schema, PostgreSQL-first.** Build the new DB layer from scratch
+  (not a DBIC refactor): hand-written per-flavor DDL is the **source of truth**, and
+  DBIx::QuickORM `autofill` reflects the schema **from the live DB** — no table/result
+  classes, no `Schema::Loader`-style codegen. All DB code lives under **`App::Yath2`**;
+  the backend `Test2::Harness2` layer touches no DB in either direction. Tables:
+  `runs/jobs/job_tries/artifacts` + `users/machine_users/projects/test_files/hosts/
+  schema_meta` — **no transitions table** (transitions fold into run/job/job_try rows and
+  live in the artifact blobs, R6); artifacts are the blob source-of-truth; run-data uses
+  derived v7-preserving UUIDs (§3.1). Add `DBIx::QuickORM` + `DBIx::QuickDB` to
+  RuntimeRecommends/Suggests (never Requires; lazy-require with an actionable error, R11).
+  **Needs the ARCHITECTURE §2.4 reword** (schema-as-Perl → hand-written DDL + autofill,
+  R13). TODO_TASKS **#46**; spec §2 / §3 / §4 / §5 / R6 / R13.
+
+- **Chunk DB-3 — port schema to the other flavors — needs DB-2.** Carry the PostgreSQL
+  DDL across SQLite/MySQL/MariaDB/Percona via the per-flavor Flavor registry, honoring
+  per-engine UUID storage: native `uuid` on PostgreSQL + MariaDB (**MariaDB 10.7+
+  required**, R8), `BINARY(16)` on MySQL/Percona, `BLOB(16)` on SQLite, with a STORED
+  generated **lowercase** string mirror on the `run`+`job` tables where there is no native
+  type. UUID lowercasing is normalized centrally at the boundary, not via scattered
+  `lc()` (R9). TODO_TASKS **#47**; spec §3 / §3.1 / R8 / R9 / R12.
+
+- **Chunk DB-Jsonl — convert the current logger → jsonl renderer + renderer-owned
+  options.** **Lands before DB-4** — the new DB logger takes over the "logger" concept, so
+  the old jsonl logger must become a plain renderer to free the name. Wrap the existing
+  `test.pm::logger()`/`dispatch_to_sinks` `as_json` logic into a proper renderer
+  (`render_event` writes, `start` opens the FH + compression, `finish` writes the `null`
+  terminator + `lastlog` symlink), promote it into the renderers list, delete the inline
+  `Renderer::Base` `logger` sink, and rewire implicit-enable to inject the renderer. Give
+  it its own `option_group` (`--jsonl-file/dir/format` + `--bzip2`/`--gzip`, long-form
+  only) and make renderers/plugins **auto-contribute options** via `mod_adds_options` on
+  the renderers Map option (the pre_ai_2.0 model), auditing the other pluggable sources to
+  the same standard. TODO_TASKS **#55**, **#56**; spec §10 a/b.
+
+- **Chunk DB-4 — DB logger process — needs DB-3.** The largest net-new component: an
+  independent App-side process owning its own `App::Yath2::Client` + `Subscriber` on
+  `runner.socket` (run-scoped), spawned **early** (harness → logger → queue run). It
+  **folds wire transitions into run/job/job_try ROW STATE** from the Monitor's
+  snapshot-seeded folded state (no transitions table, R6) and imports each collector's
+  `events.jsonl.zst` **whole** as an artifact blob (the blob already holds the full
+  transition detail; no per-event rows). Binary extraction splits embedded binary facets
+  into their own artifact rows with deterministic `artifact_uuid = derive(collector_uuid,
+  idx)` (§3.1). **SQLite-first** for dev; logging is **opt-in** (default OFF, R11) via
+  **`-L`/`--logger`** — repeatable and value-polymorphic (bare = default sqlite, `=path` =
+  sqlite file, `=$DSN` = remote DB; N `-L` → N loggers/N DBs). The runner defers workdir
+  cleanup until subscribers disconnect. TODO_TASKS **#48**, **#49**, **#50**, **#51**,
+  **#52**; spec §6 / §7 / §3.1 / §5 / R2 / R6 / R10 / R16.
+
+- **Chunk DB-5 — DB→DB sync + `import` command — needs DB-4.** A from-scratch QuickORM
+  sync engine (DCI module, reusable by the command): `yath db sync` moves a run + all its
+  jobs/tries/artifacts as a unit, per-run uuid-upsert idempotency (run-data UUID PKs copy
+  verbatim; transition detail rides inside the artifact blobs, so it syncs automatically).
+  Natural-key FK columns are host-local integers and are **remapped on the destination**
+  via `find_or_create` on their natural key (`users`→username, `machine_users`→(host,
+  username), `projects`→name, `hosts`→hostname, `test_files`→path; R5/R7), with a
+  `submitted_by` attribution flag (carry-original vs `--as-user`/`--override-user`).
+  Artifacts copy the `data` blob and skip the host-local `local_path`. Plus a simple
+  `import` command that imports the single run in one sqlite log file into another DB,
+  auto-selecting the only run. TODO_TASKS **#53**, **#54**; spec §8 / R5 / R7.
+
+  *(Webapp UX-migration port (§9) and the junit renderer import (§10c) are **DEFERRED to
+  separate efforts** — not chunks in this set; the `/artifact/<uuid>.<ext>` download
+  controller lands with the future webapp spec.)*
 
 - **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7). DONE.**
   Registration + dispatch-over-registered-channel landed in 9. The explicit
