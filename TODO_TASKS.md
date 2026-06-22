@@ -999,7 +999,8 @@ resource-consumption half was deferred there.)
   an AI_DOC.
 
 ### #44 — Final renderer ordering + `--live` feeder (chunk 15)
-**Status:** ✅ DECIDED (2026-06-21, with the user) — ready to implement · **Step:** 15 ·
+**Status:** ✅ DONE (2026-06-21) — contract pinned (ARCHITECTURE §4.5), `--live` flag
++ LiveProducer tail mode landed; `Renderer::Driver` "interim" framing flipped · **Step:** 15 ·
 **Depends:** #42 (render-loop, done)
 
 **Decided contract (the previously-undefined §4.5 "final ordering guarantees"):**
