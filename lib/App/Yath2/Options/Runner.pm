@@ -407,14 +407,53 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         type           => 'List',
         name           => 'resource',
         short          => 'R',
-        long_examples  => [' Port', ' +Test2::Harness2::Runner::Resource::Port'],
-        short_examples => [' Port'],
-        description    => "Use a resource module to assign resource assignments to individual tests",
+        long_examples  => [' Port', ' CPU', ' CPU=70', ' Memory=20%', ' +Test2::Harness2::Runner::Resource::Port'],
+        short_examples => [' Port', ' CPU', ' CPU=70', ' Memory=20%'],
+        description    => "Use a resource module to assign resource assignments to individual tests. Some resources accept an inline argument after '=' (e.g. CPU=70, Memory=512mb).",
 
+        # An inline '=arg' (e.g. CPU=70) is split off the class name and stored in
+        # the parallel resource_args map keyed by the fully-qualified class, so the
+        # stored resource list holds only loadable class names.
         normalize => sub ($val) {
-            $val = "Test2::Harness2::Runner::Resource::$val"
-                unless $val =~ s/^\+//;
-            return $val;
+            my ($mod) = split /=/, $val, 2;
+            $mod = "Test2::Harness2::Runner::Resource::$mod"
+                unless $mod =~ s/^\+//;
+            return $mod;
+        },
+
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set';
+
+            my $runner = $params{settings}->runner;
+            for my $val (@{$params{val}}) {
+                my ($mod, $arg) = split /=/, $val, 2;
+                next unless defined $arg && length $arg;
+                $mod = "Test2::Harness2::Runner::Resource::$mod"
+                    unless $mod =~ s/^\+//;
+                $runner->create_option(resource_args => {}) unless $runner->check_option('resource_args');
+                $runner->resource_args->{$mod} = $arg;
+            }
+        },
+    );
+
+    option utilize => (
+        type           => 'Scalar',
+        short          => 'U',
+        long_examples  => [' 80', ' 65'],
+        short_examples => [' 80', ' 65'],
+        description    => 'System-utilization threshold percentage (0 < pct < 100) for utilization-aware resources. CPU defers new starts at this CPU percentage; Memory adds a free-memory floor of (100 - pct)% (the more conservative of that and any explicit Memory threshold wins).',
+
+        trigger => sub ($opt, %params) {
+            return unless $params{action} eq 'set' || $params{action} eq 'initialize';
+
+            my ($val) = @{$params{val}};
+            return unless defined $val;
+
+            die "--utilize must be a number\n"
+                unless $val =~ m/^[0-9]+(?:\.[0-9]+)?\z/;
+
+            die "--utilize must be greater than 0 and less than 100 (got '$val')\n"
+                unless $val > 0 && $val < 100;
         },
     );
 

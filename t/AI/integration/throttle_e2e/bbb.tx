@@ -1,0 +1,3 @@
+use Test2::V0;
+ok(1, "THROTTLE-E2E-BBB");
+done_testing;
