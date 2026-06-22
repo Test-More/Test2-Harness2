@@ -55,6 +55,13 @@ are the engine's (L<Test2::Harness2::Renderer::Driver>), reused verbatim so the
 prior false-FAIL fix (a passing job rendered FAILED when its completion was
 settled off a transient EOF before its terminal flushed) is preserved.
 
+When the engine is in B<live tail mode> (C<< $engine->live >>) C<poll> drives
+the engine's C<tail> instead of C<step>: every test collector's events file is
+tailed as it is written, so jobs stream interleaved in arrival order (the 1.0
+tail-the-files shape) while each job stays in its own order. The mode is a
+property of the engine; this producer just routes C<poll> to the right engine
+entry point.
+
 =head1 SYNOPSIS
 
     my $producer = App::Yath2::RenderLoop::LiveProducer->new(
@@ -168,7 +175,7 @@ sub tests_seen   ($self) { return $self->{+ENGINE}->tests_seen }
 sub asserts_seen ($self) { return $self->{+ENGINE}->asserts_seen }
 
 sub poll ($self) {
-    my $sub = $self->{+SUBSCRIBER};
+    my $sub    = $self->{+SUBSCRIBER};
     my $folded = $sub ? ($sub->poll // 0) : 0;
 
     my $engine  = $self->{+ENGINE};
@@ -176,6 +183,9 @@ sub poll ($self) {
 
     if ($self->{+RUNNER_OUTPUT_ONLY}) {
         $engine->step_runner_output($monitor);
+    }
+    elsif ($self->_engine_live) {
+        $engine->tail($monitor);
     }
     else {
         $engine->step($monitor);
@@ -224,6 +234,13 @@ sub finalize ($self) {
 
 Evaluate the injected C<done_check> (or the default socket-EOF check).
 
+=item $bool = $self->_engine_live
+
+True when the engine is a per-job ordering engine running in live tail mode
+(C<< $engine->live >>). In that mode C<poll> drives the engine's C<tail> (every
+appearing job tailed as it is written, interleaved across jobs) instead of
+C<step> (a job's whole events file fed at completion).
+
 =item @events = $self->_drain_queue
 
 Take and clear the events the engine collected via its C<dispatch_cb>.
@@ -244,6 +261,12 @@ exiting, so a single tail pass suffices and we do not block.
 # Bounded so a runner whose collector never writes its terminal cannot hang the
 # command; the drain is condition-driven and this is only the fallback.
 sub DRAIN_RUNNER_OUTPUT_TIMEOUT() { 5 }
+
+sub _engine_live ($self) {
+    my $engine = $self->{+ENGINE};
+    return 0 unless $engine->can('live');
+    return $engine->live ? 1 : 0;
+}
 
 sub done_check_value ($self) {
     if (my $check = $self->{+DONE_CHECK}) {
