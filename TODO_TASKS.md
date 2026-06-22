@@ -943,8 +943,20 @@ the draft were internally inconsistent about who owns the `Driver` (reviewer fla
   own process (not built now). ARCHITECTURE §4.12 (+ §4.5/§4.6).
 
 ### #43 — System-load service + throttling resources (chunk 7)
-**Status:** ✅ DECIDED (2026-06-21, with the user) — ready to implement · **Step:** 7 ·
+**Status:** ✅ DONE (2026-06-21) — built & green · **Step:** 7 ·
 **Depends:** #24 (Resource Role, done), chunk 9 (done)
+
+**Landed:** `Test2::Harness2::SystemLoad` (sampling primitive) +
+`Test2::Harness2::Service::Sampler` (always-on dedicated sampler the runner spawns
+under a collector with `watch_parent_pid`, change-gated 0.2s reporting, one-way
+`system_load` over `runner.socket`); runner-side `request_handler_system_load` →
+`State::set_system_load` + `announce_system_load` (`harness_system` broadcast
+globally, latest retained in `Runner::Monitor`); throttling resources
+`Resource::CPU` / `Resource::Memory` composing the #24 Resource Role +
+`Role::Resource::Utilizer` (min_concurrent floor), reading the shared snapshot
+(cross-platform Linux+BSD); `--utilize`/`-U` + `-R CPU[=70]` / `-R Memory[=20%|512mb]`
+wiring; reap-at-stop handled (`Runner::stop_sampler`). See
+`AI_DOCS/2026-06-21-system-load-throttling.md` and the ARCHITECTURE.md §4.4 addendum.
 
 **Goal:** a dedicated system-load sampler service + opt-in CPU/memory throttling
 resources. The sampler design is locked (ported verbatim-in-spirit from

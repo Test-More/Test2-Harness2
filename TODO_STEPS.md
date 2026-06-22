@@ -45,7 +45,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | — |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ | — |
 | 6 | Renderer: interim → §4.5 base-renderer rewrite | ✅ | — |
-| 7 | System-load service (own process, reliable tick → reports load) + opt-in CPU/memory throttling resources — needs 9 | ⬜ (design ✅, ready) | #43 |
+| 7 | System-load service (own process, reliable tick → reports load) + opt-in CPU/memory throttling resources — needs 9 | ✅ DONE | #43 |
 | 8a | Database + UI inline (interim DBIx::Class, SQLite logs) | ✅ | — |
 | 8b | Convert inlined UI schema DBIx::Class → DBIx::QuickORM (§2.4/§4.6) | ⬜ (deferred) | — |
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |
@@ -115,12 +115,15 @@ Compact record of what landed:
 Steps still to do. Each notes its dependencies and the TODO_TASKS tickets that
 carry the specifics.
 
-- **Chunk 7 — system-load service (needs 9).** Its own global process with a
-  reliable tick (the runner loop can exceed the sample interval), a full service on
-  the §5.2 channel: own listen socket, connects to the runner to push updates,
-  broadcasts load changes; the in-runner scheduler consumes them to gate
-  concurrency. Port `reference/harness_service/.../SystemLoad.pm` + its sampler
-  service shape (drop the run-vs-global split; adopt the §5.2 channel).
+- **Chunk 7 — system-load service (needs 9). ✅ DONE.** Its own global process with a
+  reliable 0.2s tick (the runner loop can exceed the sample interval), a full service
+  on the §5.2 channel: own listen socket, dials the runner to push change-gated load
+  updates, which the runner stores + broadcasts globally as a `harness_system`
+  transition. Ported `SystemLoad.pm` + the sampler shape (dropped the run-vs-global
+  split; adopted the §5.2 channel). Opt-in throttling resources (`-R CPU`/`-R Memory`,
+  `--utilize`) compose the #24 Resource Role + a new `Role::Resource::Utilizer` and
+  read the runner's shared snapshot (cross-platform). See ticket #43,
+  `AI_DOCS/2026-06-21-system-load-throttling.md`, and the ARCHITECTURE.md §4.4 addendum.
 
 - **Chunk 8b — QuickORM conversion.** Migrate the inlined DB/UI schema from interim
   DBIx::Class to DBIx::QuickORM (§2.4/§4.6), keeping the default SQLite path on

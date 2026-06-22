@@ -524,6 +524,60 @@ older rule that an emit-only auxiliary service has *no socket of its own* is
 superseded by the unified connection model (§5.2): every service has one listen
 socket, and reaching out vs being reached are the same channel.
 
+**§4.4 addendum — gating policy and realized implementation (chunk 7 / #43,
+`[landed]`).** The previously-undefined gating policy is now pinned, and the
+sampler half is landed:
+
+- **The sampler is `Test2::Harness2::Service::Sampler`** (consuming
+  `Test2::Harness2::Role::Service`) over the sampling primitive
+  `Test2::Harness2::SystemLoad` (cpu_pct/mem_pct/mem_*/load_avg via Linux `/proc`,
+  BSD `sysctl`; first sample reports `cpu_pct` undef as a baseline since CPU% is a
+  two-reading delta). The runner spawns it **always-on** at startup
+  (`Runner::spawn_sampler`) as a global helper under a collector — the same shape
+  as the preload-root, with `watch_parent_pid` = runner so it self-terminates if
+  the runner dies. It is spawned whenever the runner runs, **independent of whether
+  a throttling resource was requested**, so its transitions are always logged.
+- **Steady 0.2s tick; change-gated reporting.** It samples every tick but reports
+  only on a change. CPU and memory are each rounded **up to the nearest 5%** and
+  tracked independently with the same policy: an **increase reports immediately**, a
+  **decrease only after the lower value holds `decrease_delay` (1.0s ≈ 5 ticks)**,
+  an unchanged value reports nothing. A message carries the current rounded value of
+  both metrics (plus the load average).
+- **One-way `system_load` reports to `runner.socket`.** The sampler dials the runner
+  as a service peer (identity handshake) and sends one-way `system_load` requests.
+  The runner's `request_handler_system_load` stores the snapshot in its canonical
+  `State` (`set_system_load`) **and** announces a `harness_system` transition
+  (`announce_system_load`) that is **broadcast globally** (run-less) to every
+  subscriber, with only the latest retained for a late subscriber (folded into
+  `Runner::Monitor`'s `system_load` slot, carried in every snapshot).
+- **Reap-at-stop gotcha (handled).** The sampler's collector inherits the runner's
+  std-fd write ends, so the runner reaps it (`Runner::stop_sampler`) before exit —
+  graceful `stop` over the socket, then a TERM→KILL+reap fallback — so the runner's
+  own collector is not held open past shutdown by an orphaned sampler. (The 30s
+  `_read_one_frame` EOF busy-spin the reference AI_DOC root-caused does **not** exist
+  on 2.0d: the current `Role::Service::Connection::drain` already treats `sysread`
+  == 0 / a fatal read error as connection-closed and drops the connection.)
+
+**Gating policy = opt-in throttling resources (not a scheduler check).** Throttling
+is modeled as scheduler **resources** composing the #24 Resource Role plus a new
+`Test2::Harness2::Role::Resource::Utilizer`, reading the runner's shared
+`system_load` snapshot (via a `State` backref) rather than sampling `/proc` inline —
+so they are cross-platform (Linux + BSD):
+
+- **`Resource::CPU`** — `available` returns **0 (defer, a transient wait)** when the
+  rounded reported `cpu% >= utilize_percent` (default **80**); opt-in `-R CPU[=70]`.
+- **`Resource::Memory`** — defers when reported free memory `< min_free` (default
+  **5%** of total, or an absolute `512mb`); opt-in `-R Memory[=20%|512mb]`. When
+  `--utilize PCT` is also set the more **conservative** free-memory floor wins
+  (`(100-PCT)%`).
+- **Utilizer starvation floor.** A resource defers **only when `in_flight >=
+  min_concurrent`** (default **1**), so at least that many tests always run even
+  under sustained saturation; the scheduler never stalls. A throttle is always a
+  defer (`0`), never a permanent skip (`-1`).
+- **`--utilize`/`-U`** sets the shared utilization-threshold percentage the
+  utilization-aware resources read. All throttling is **off by default** (opt in
+  with `-R`).
+
 ### 4.5 Renderers `[target]`
 
 **Responsibility.** Format and display results — live during a run, and from
