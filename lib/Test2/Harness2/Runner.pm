@@ -55,7 +55,7 @@ use Test2::Harness2::Util::HashBase(
     },
     # From Construction
     qw{
-        <dir <settings <fork_job_callback <fork_spawn_callback <monitor_preloads
+        <dir <settings <fork_job_callback <monitor_preloads
         <jobs_todo <dump_depmap <persist
     },
     # Other
@@ -1254,9 +1254,9 @@ sub stop_preload_stages {
 # Launch ONE test job locally: the runner forks its own collector for the test (the
 # no-preload path -- there is no preload stage to dispatch to, so the runner is the
 # 'default' stage). The single local-launch implementation, called by dispatch_pending
-# for every task on a no-preload run. Returns the forked job's pid. (A spawn worker
-# never reaches here -- request_handler_queue_spawn rejects a no-preload spawn, and
-# take_dispatch_tasks never yields a spawn.)
+# for every task on a no-preload run. Returns the forked job's pid. (`yath spawn`
+# never reaches the runner at all -- it connects directly to a preload stage's
+# socket, ARCHITECTURE.md §4.8.)
 sub _launch_local_job {
     my $self = shift;
     my ($task, $run) = @_;

@@ -782,45 +782,6 @@ sub request_handler_stop_run {
     return undef;
 }
 
-# `yath spawn` submits its spawn over runner.socket. The runner folds it into
-# the canonical State, which the (persistent) stages pick up to launch the script.
-#
-# Review P2: this is acknowledged (two-way). The command then blocks on a worker
-# tempfile (the legitimate wait while the spawned program runs) whose own timeout
-# is long; if the runner cannot route the spawn -- it is not the state hub, or the
-# target stage does not exist / is not a live ready preload service -- the command
-# would otherwise learn nothing until that long wait expired. So we resolve the
-# spawn's stage and check stage readiness synchronously and return a negative ack
-# in that case, letting `yath spawn` fail promptly with a clear diagnostic. On a
-# live stage we queue the spawn and ack success; the stage launches it and the
-# tempfile wait proceeds as the legitimate run of the spawned program.
-sub request_handler_queue_spawn {
-    my $self = shift;
-    my ($payload) = @_;
-
-    return {ok => 0, error => 'not the runner state hub'}
-        unless $self->{'rootpid'} == $$;
-
-    my $spawn = $payload->{spawn} // {};
-
-    # A spawn worker needs a real PRELOAD stage (a preloaded interpreter) to attach to.
-    # A no-preload runner has only its own in-process 'default' stage, which forks
-    # clean-slate test collectors and cannot host a detached spawn worker -- so reject
-    # the spawn up front rather than queuing a worker the runner can never launch (which
-    # would hang `yath spawn` on its worker tempfile).
-    return {ok => 0, error => "yath spawn requires a preload stage; this runner has no preloads"}
-        unless $self->_preload_root_hosts_stages;
-
-    my ($stage, $ready) = $self->state->spawn_stage_ready($spawn);
-
-    return {ok => 0, stage => $stage, error => "No live preload stage '$stage' is available to run the spawn"}
-        unless $ready;
-
-    $self->state->queue_spawn($spawn);
-
-    return {ok => 1, queued => 1, stage => $stage};
-}
-
 sub request_handler_end_queue {
     my $self = shift;
     $self->submit_action('end_queue');

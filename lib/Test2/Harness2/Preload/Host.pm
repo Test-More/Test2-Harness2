@@ -48,7 +48,7 @@ use Test2::Harness2::Util::HashBase(
     },
     # From Construction
     qw{
-        <dir <settings <fork_job_callback <fork_spawn_callback <monitor_preloads
+        <dir <settings <fork_job_callback <monitor_preloads
         <jobs_todo <dump_depmap <persist
     },
     # Other
@@ -733,18 +733,6 @@ sub run_job {
     my $self = shift;
 
     my $task = $self->state->next_task($self->{+STAGE}) or return 0;
-
-    if ($task->{spawn} && !$task->{resource_skip}) {
-        my $job = Test2::Harness2::Runner::Spawn->new(
-            runner        => $self,
-            task          => $task,
-            settings      => $self->settings,
-            fork_callback => $self->{+FORK_SPAWN_CALLBACK},
-        );
-
-        $self->{+FORK_SPAWN_CALLBACK}->($self, $job);
-        return 1;
-    }
 
     my $run = $self->state->run();
     return 1 unless $run;
