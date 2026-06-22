@@ -827,7 +827,24 @@ middle process.
   ARCHITECTURE §4.8/§4.10, §5.2/§5.3.
 
 ### #39 — `spawn` redesign: direct-to-stage, fd-pass, supervisor (no exec)
-**Status:** Decided · **Step:** 13 · **Depends:** #38, #12 (discovery), `Preload::Host`
+**Status:** ✅ DONE (`680c6d9c5` harness-side supervisor + `Test2::Harness2::Util::FdPass::Control`;
+`f5b85aca6` command direct-to-stage + retired the runner-routed `queue_spawn` path;
+`fa751c2df` end-to-end tests) · **Step:** 13 · **Depends:** #38, #12 (discovery), `Preload::Host`
+
+`yath spawn` now `require_fdpass('yath spawn')`s up front, discovers the workdir via
+the §5.3 symlink, connects **directly** to a live `preload-<stage>.socket` (bypassing
+the runner), and sends a `spawn` request that the stage's `request_handler_spawn` acks
+`{ok=>1}` after async double-forking a detached, preload-holding supervisor. The
+supervisor dials back to the command's listen socket, `recv_fds` the command's real
+STDIN/OUT/ERR, forks a script child that dup2s them onto 0/1/2, sanitizes, and unwinds
+into the preloaded interpreter (`Long::Jump`/`goto::file`, **no exec**, **no
+collector**); the same socket then carries the dedicated control mini-protocol
+(`Test2::Harness2::Util::FdPass::Control`) for forwarded signals + the child's raw wait
+status, and a control EOF ⇒ `kill(-pgid)`. The `/proc/<pid>/fd` proxy + `ipcfile` exit +
+the runner-routed `queue_spawn`/`PENDING_SPAWNS` machinery were retired. Tests
+(`t/AI/integration/spawn_direct_to_stage.t`, `t/AI/integration/spawn_stdin_and_kill.t`,
+`t/AI/unit/Util_FdPass_Control.t`) prove preload-preserved, fd round-trip (stdin + std
+out/err), correct exit/raw-wait status, kill-on-EOF, and clean rejection.
 
 **Problem:** today `yath spawn` goes *through* `runner.socket`, proxies IO via
 `/proc/<pid>/fd`, and delivers exit via an `ipcfile`. Target: bypass the runner, pass
