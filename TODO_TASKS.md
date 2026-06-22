@@ -613,7 +613,13 @@ reaping logic), preload-spawned collectors must detach and re-parent to the runn
   rides EOF regardless of who reaps. ARCHITECTURE §4.1/§5.4.
 
 ### #29 — Collapse to one run path (run_scheduler_only only)
-**Status:** Decided · **Step:** 26 · **Depends:** #27, #28
+**Status:** ✅ DONE (`5729726d9` extract _launch_local_job + no-preload spawn reject;
+`2f186de4d` port the no-preload run-loop duties; `371c82eab` no-preload e2e guard;
+`f7e836182` the collapse — run_scheduler_only is the only loop, run_tests/run_stage/
+run_job/end_test_loop deleted). Kept the flag name `_preload_root_hosts_stages` (still
+accurate; the cosmetic `_has_preload_root` rename was skipped to avoid churning the
+just-stabilized file). No-preload collectors stay WATCHED. Verified both runners 3×.
+· **Step:** 26 · **Depends:** #27, #28
 
 **Problem:** with completion + reaping off the reap, the in-runner stage machinery is
 vestigial. **Steps:** make `run_scheduler_only` the runner's only run loop; the

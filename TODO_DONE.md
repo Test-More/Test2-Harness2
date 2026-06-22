@@ -7,6 +7,46 @@ Newest first.
 
 ---
 
+## #29 — Collapse to one run path; run_scheduler_only is the runner's only loop — DONE
+
+The runner's no-preload and preload runs converge onto a single loop. Designed via a
+map+design+adversarial-review workflow (the naive plan had real blockers -- deleting
+run_stage drops stage_ready('default') => the no-preload run hangs; the discriminator
+must key on the preload flag, not live-peer presence; orphaned/HUP/spawn must be
+ported). Landed green-first in 4 commits:
+
+- **`5729726d9`** -- extract `_launch_local_job` from `run_job` (single local-launch
+  impl, `$task->{via}` preserved); reject a no-preload spawn at queue time
+  (`request_handler_queue_spawn`) -- a spawn needs a real preload stage, and once
+  `run_job` is gone an accepted no-preload spawn would sit unran in PENDING_SPAWNS.
+- **`2f186de4d`** -- port the no-preload run-loop duties into `run_scheduler_only`,
+  no-preload-scoped: `stage_ready('default')` (else nothing schedules -> hang),
+  `orphaned`=>TERM / `preloader->check`=>HUP (from end_test_loop), killall + wait at
+  wind-down to reap the runner's own forked collectors.
+- **`371c82eab`** -- `t/AI/integration/no_preload_scheduler.t`, a real no-preload run
+  e2e guard (the M3 reap test stubs the scheduler, so it would not catch a stage_ready
+  omission).
+- **`f7e836182`** -- the collapse: `process` -> `run_scheduler_only` directly;
+  `dispatch_pending` takes every started task and branches once on
+  `_preload_root_hosts_stages` (service_send vs `_launch_local_job`); delete
+  `run_tests`/`run_stage`/`run_job`/`end_test_loop` (net -96 lines).
+
+**Key decision:** a no-preload collector stays a WATCHED runner child (reaped via
+`set_proc_exit` with job_id known) rather than detaching -- simpler, and completion
+still rides EOF; only preload collectors detach (#28). The discriminator keys on the
+preload flag (NOT live-peer presence) so a transiently-disconnected preload stage still
+requeues (§4.7a). The cosmetic `_has_preload_root` rename was deliberately SKIPPED
+(`_preload_root_hosts_stages` is still accurate; not worth churning the file). Updated
+tests: `Runner_dispatch_abort.t` (preload + new no-preload arm), `Runner_orphan.t`
+(end_test_loop subtest dropped; orphaned() still unit-tested), `Runner_queue_spawn_handler.t`
+(no-preload reject). Completes the #22 residual + #4 Part 4 + #8 Part 4.
+
+Verified: prove -j16 3× (119 files, 1803 tests, 0 silence-timeouts) + yath test -D (120)
+green; no leaked/zombie runner/collector processes after a no-preload AND a preload run.
+Preload::Host (a sibling IPC class with its OWN run_tests/run_stage/run_job) untouched.
+
+---
+
 ## #28 — Runner child-subreaper + detached collector reap, now WORKING (C1/C2/M3) — DONE
 
 The original #28 code (subreaper + double-fork/detach, `7952029e6`..`ab1a95865`) was

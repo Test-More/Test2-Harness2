@@ -1217,12 +1217,18 @@ carried by collectors + sockets.
   reap becomes zombie + local bookkeeping only (and on a subreaper-supported OS the
   stage's detached collectors re-parent away, so it has none to reap).
 
-- **Net structural result.** No-preload and preload runs both reduce to "fork a
-  collector → decide from its transitions/EOF → the runner owns reaping," so
-  `run_scheduler_only` becomes the runner's **only** run path and the in-runner
-  `run_tests`/`run_stage`/`run_job` stage machinery plus
-  `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS` are removed (the remaining #22
-  residual and #4 Part 4 / #8 Part 4 fold into this).
+- **Net structural result (landed, #29).** No-preload and preload runs both reduce
+  to "fork a collector → decide from its transitions/EOF → the runner owns reaping,"
+  so `run_scheduler_only` is the runner's **only** run path; the in-runner
+  `run_tests`/`run_stage`/`run_job`/`end_test_loop` stage machinery is removed (the
+  #22 residual and #4 Part 4 / #8 Part 4 folded into this). `dispatch_pending` branches
+  once on `_preload_root_hosts_stages` (kept; still the preload-vs-no-preload
+  discriminator — NOT live-peer presence, so a transiently-disconnected preload stage
+  still requeues): preload → `service_send` to the stage; no-preload → the runner forks
+  the test collector itself (`_launch_local_job`). A no-preload collector stays a
+  **watched** runner child (reaped via `set_proc_exit`, job_id known) -- completion
+  still rides EOF; only preload collectors detach and re-parent (#28). Spawn requires a
+  preload stage (rejected at queue time on a no-preload runner).
 - **The `IPC` controller base class is dismantled.** Its substantive logic is
   either dead or superseded: category tracking + `cat`/`all_cat` waits
   (`PROCS_BY_CAT`), the three-pass death detection (`_bring_out_yer_dead` /
