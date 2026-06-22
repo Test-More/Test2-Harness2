@@ -7,6 +7,31 @@ Newest first.
 
 ---
 
+## #28 — Runner child-subreaper + detached collector reap, now WORKING (C1/C2/M3) — DONE
+
+The original #28 code (subreaper + double-fork/detach, `7952029e6`..`ab1a95865`) was
+DEAD on the preload path (re-audit finding). Fixed standalone — `run_scheduler_only`
+now actually reaps the detached collectors and runs A3:
+- **C2 (`def11c2fe`)** — pid-keyed `collector_reap` map set at the pass decision
+  (`decide_collector_outcome`), survives the collector's EOF (which clears `job_pids`,
+  the status map), consumed by `_reaped_unwatched_pid` by pid (try-safe), swept at run
+  end. The reverse-scan-of-`job_pids` (which the EOF had already emptied) is gone.
+- **C1 (`f03ff402c`)** — `run_scheduler_only` calls `_bring_out_yer_dead` +
+  `_check_if_dead_yet` each tick and at wind-down. Guard: `_bring_out_yer_dead`'s
+  `waitpid(-1)` can reap the preload-root before `_preload_root_dead`'s targeted
+  `waitpid`; it now flags `PRELOAD_ROOT_REAPED` so a mid-run root crash is still
+  detected (verified: `preload_root_crash.t` / `preload_root_kill_midrun.t` still pass).
+- **M3 (`7e5394bc0`)** — `t/AI/integration/Runner_scheduler_reap_a3.t` drives the REAL
+  loop (only socket/scheduler I/O stubbed): an unwatched detached child is reaped, a
+  post-pass non-zero health exit fires A3, a clean exit does not. This is the coverage
+  the prior helper-only unit test lacked (it green-lit code that never ran).
+
+Both runners green (`prove` 118 files / 1801 tests, `yath test -D` 119). The decision
+to keep no-preload collectors WATCHED (not detached) is recorded in #29's design — the
+chunk-26 collapse no longer carries any #28 work.
+
+---
+
 ## Re-audit follow-ups (2026-06-21) — post-effort-raise recheck of the day's commits
 
 A multi-agent re-audit (the user raised the effort level mid-session and asked for a

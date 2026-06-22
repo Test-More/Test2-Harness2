@@ -584,14 +584,15 @@ it (the stage reaps). The audited result is already on the wire (`harness_final_
   (#32). Retry policy stays runner-side (`--retry` + existing directives).
 
 ### #28 — Runner child-subreaper + detached preload collectors
-**Status:** 🟥 Code landed (`7952029e6`..`ab1a95865`) but **DEAD on the preload path** —
-NOT done. Re-audit (2026-06-21) found the runner's `_bring_out_yer_dead` override is
-only reached via `IPC::wait`, which `run_scheduler_only` never calls (PROCS empty by
-design) ⇒ detached collectors are never reaped (zombies) and A3 never fires (**C1**);
-and `collector_conn_eof` deletes `job_pids{job_id}` *before* the reap so
-`_reaped_unwatched_pid`'s reverse-map can't match (**C2**). **Fix folded into #29**
-(it reworks the same `run_scheduler_only` loop). Do not flip this to DONE until #29
-lands. SubReaper.pm itself is correct. · **Step:** 25 · **Depends:** #27
+**Status:** ✅ DONE. Original code (`7952029e6`..`ab1a95865`) was DEAD on the preload
+path (re-audit 2026-06-21); the two defects are now fixed standalone (no longer folded
+into #29): **C2** — pid-keyed `collector_reap` map populated at the pass decision,
+survives the collector's EOF, consumed by `_reaped_unwatched_pid` (`def11c2fe`);
+**C1** — `run_scheduler_only` now calls `_bring_out_yer_dead`/`_check_if_dead_yet`
+each tick + at wind-down, with a `PRELOAD_ROOT_REAPED` guard so the sweep's
+`waitpid(-1)` can't hide a mid-run preload-root crash (`f03ff402c`); **M3** —
+`t/AI/integration/Runner_scheduler_reap_a3.t` drives the REAL loop (`7e5394bc0`).
+Both runners green. · **Step:** 25 · **Depends:** #27
 
 **Problem:** to make the runner the sole reaper (and free the preload tree from any
 reaping logic), preload-spawned collectors must detach and re-parent to the runner.
@@ -621,19 +622,46 @@ preload path; delete `run_tests`/`run_stage`/`run_job` in-runner stage machinery
 `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes the **#22 residual**,
 **#4 Part 4**, **#8 Part 4**. ARCHITECTURE §5.4.
 
-**Folded in from #28 (re-audit 2026-06-21 — #28's reaping is dead until this lands):**
-- **C1:** make `run_scheduler_only` reap unconditionally each tick **and** at
-  wind-down — call `waitpid(-1, WNOHANG)` + `_reaped_unwatched_pid` (or
-  `_bring_out_yer_dead`) directly, not through `wait()`'s non-empty-PROCS
-  short-circuit. This is what actually reaps the detached preload collectors and
-  fires A3.
-- **C2:** keep a `pid -> job` (or `pid -> passed`) map populated from the collector
-  handshake pid that is **not** cleared by `collector_conn_eof` (cleared only when
-  the reap consumes it or the task stops), so the A3-on-reap reverse-map matches.
-- **Test (M3):** add an integration test that double-forks/detaches a short-lived
-  child reporting a known pid, drives the real scheduler-only reap path, and asserts
-  both the zombie is reaped and a post-pass non-zero exit fires `announce_run_health`.
-- After this lands, flip #28 + TODO_STEPS chunk 25 to DONE.
+**Note:** the #28 C1/C2 reap defects are already fixed standalone (see #28 above), so
+the per-tick reap is ALREADY in `run_scheduler_only` and is NOT part of this chunk.
+
+**Vetted design (workflow map+design+adversarial-review, 2026-06-21 — the naive plan
+had real blockers; these are the corrected requirements):**
+- **Keep no-preload collectors WATCHED** (runner forks via `IPC::spawn`, in `{+PROCS}`,
+  reaped via `set_proc_exit` with `job_id` from the proc's task). Do NOT detach them —
+  it preserves the simpler A3 path and avoids forcing everything through C2. The unified
+  loop runs BOTH reapers (already wired): `_bring_out_yer_dead` (unwatched/preload) +
+  `_check_if_dead_yet` (watched/no-preload). A3-no-double-fire holds because
+  `_check_post_pass_health` DELETE-consumes `job_passed`.
+- **Single launch branch in `dispatch_pending`, keyed on `_has_preload_root`** (the
+  renamed `_preload_root_hosts_stages`), **NOT** on live-peer presence — a transiently
+  disconnected preload stage must still `requeue_task` (§4.7a), not local-fork. Preload
+  run ⇒ `service_send`/requeue (unchanged); no-preload run ⇒ `_launch_local_job`
+  (extracted `run_job` else/spawn body; preserve `$task->{via}` custom-job-class launch;
+  drop only the dead `FORK_JOB_CALLBACK` arm).
+- **Port into `run_scheduler_only` (no-preload-scoped) BEFORE deleting the in-runner
+  loop:** `state->stage_ready('default')` (else no-preload tasks never bucket 'up' and
+  the run HANGS — top blocker); `orphaned()`⇒`SIGNAL TERM` and `preloader->check`⇒HUP
+  from `end_test_loop` (else a persistent no-preload runner never self-shuts-down);
+  `killall($SIGNAL)` at wind-down (from `run_stage`); the `dump_depmap` write (or
+  document --dump-depmap as preload-only).
+- **No-preload spawn: REJECT cleanly.** `take_dispatch_tasks` never returns spawns
+  (they live in `PENDING_SPAWNS`, drained only by `next_task` which `run_job` deletion
+  removes); a no-preload spawn today crashes on an `undef FORK_SPAWN_CALLBACK`. Make
+  `_launch_local_job`/`request_handler_queue_spawn` reject it with a clear error + a test.
+- **Then delete** `run_tests`/`run_stage`/`run_job`/`end_test_loop` + the `<stage` slot;
+  rename `_preload_root_hosts_stages`→`_has_preload_root` (readers: Runner 263/718/791 +
+  `Handlers.pm:1085`); point `process` at `run_scheduler_only`.
+- **Same-commit test edits:** `Runner_dispatch_abort.t` (discriminator), `Runner_orphan.t`
+  (drop/rewrite the `end_test_loop` subtest — `orphaned` survives). ADD a no-preload
+  end-to-end test that schedules+forks a job through `run_scheduler_only` (the existing
+  M3 reap test stubs the scheduler, so it would NOT catch the `stage_ready` omission).
+- **Order green-first:** keep the dual path real until the final commit — `run_job`
+  delegates to `_launch_local_job` first; do `take_dispatch_tasks(undef)` + the
+  discriminator + deletions + ports all in the LAST commit (single rollback point).
+  Verify both runners 3× (flake) + `ps` zombie-free on a no-preload AND a `--preload` run.
+- Completes the **#22 residual**, **#4 Part 4**, **#8 Part 4**. Host (`Preload::Host`, a
+  sibling `IPC` subclass with its OWN run_tests/run_stage/run_job) is OUT OF SCOPE.
 
 ### #30 — Generic `collector_transition` facet + plugin hook
 **Status:** Deferred · **Step:** 27 · **Depends:** #27

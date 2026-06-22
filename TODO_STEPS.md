@@ -64,7 +64,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
 | 24 | Transition-driven test completion (§5.4): pass/fail/retry/bail from transitions + connection EOF; collector exit health-only; bidirectional conns + runner→collector terminate; fd hygiene. Spans Test2-Collector. | ✅ | #32, #27 |
-| 25 | Runner as child subreaper + preload collectors double-fork/detach (§4.1/§5.4); new `Test2::Harness2::Util::SubReaper` (pure-Perl `syscall`). Lets the preload tree reap nothing. — needs 24 | ⬜ | #28 |
+| 25 | Runner as child subreaper + preload collectors double-fork/detach (§4.1/§5.4); new `Test2::Harness2::Util::SubReaper` (pure-Perl `syscall`). Lets the preload tree reap nothing. — needs 24 | ✅ | #28 |
 | 26 | Collapse to one run path (§5.4): `run_scheduler_only` becomes the runner's only run loop; delete the in-runner `run_tests`/`run_stage`/`run_job` stage machinery + `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes #22 residual + #4 P4 + #8 P4. — needs 24, 25 | ⬜ | #29 |
 | 27 | Generic `collector_transition` event facet (Test2-Collector forwards verbatim) + runner→plugin hook for non-builtin transitions. — needs 24 | ⬜ (deferred) | #30 |
 | 28 | Runtime retry-request: a test-facing helper emits an event → collector `retry` transition → runner retries via normal re-queue. — needs 24, 27 | ⬜ (deferred) | #31 |
