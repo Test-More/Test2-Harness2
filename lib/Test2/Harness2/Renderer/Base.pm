@@ -37,6 +37,8 @@ use Test2::Harness2::Util::HashBase qw{
     <asserts_seen
     <final_data
     +run_health
+
+    dispatch_cb
 };
 
 =pod
@@ -413,7 +415,18 @@ collector's rel_file name.
 =item $self->dispatch($event)
 
 Run one harness event through annotate plugins, the logger, the renderers, and
-the handle plugins (the same path the gatherer-fed render loop used).
+the handle plugins (the same path the gatherer-fed render loop used). When a
+C<dispatch_cb> coderef is set the event is handed to it B<instead> of being fanned
+out -- the render-loop library uses this to make a producer a pure source (it
+collects the ordered events the engine would have rendered) so the loop, not the
+engine, owns the sink fan-out (C<dispatch_to_sinks>).
+
+=item $self->dispatch_to_sinks($event)
+
+The sink fan-out itself: annotate plugins, the logger, the C<render_event>
+renderers, the C<asserts_seen> tally, and the handle plugins. C<dispatch> calls
+this directly when no C<dispatch_cb> is set; the render-loop library calls it for
+every event a producer yields.
 
 =item $data = $self->compute_final
 
@@ -503,6 +516,15 @@ sub job_for ($self, $c) {
 }
 
 sub dispatch ($self, $e) {
+    if (my $cb = $self->{+DISPATCH_CB}) {
+        $cb->($e);
+        return;
+    }
+
+    return $self->dispatch_to_sinks($e);
+}
+
+sub dispatch_to_sinks ($self, $e) {
     my $settings = $self->{+SETTINGS};
     my $logger   = $self->{+LOGGER};
 
