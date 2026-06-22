@@ -429,6 +429,19 @@ sub decide_collector_outcome {
         # reap (a post-pass collector failure, A3) flags the suite -- the test
         # itself stays green and is never reopened (ARCHITECTURE.md §5.4).
         $self->{'job_passed'}{$job_id} = $entry->{run_id} // '';
+
+        # A DETACHED preload collector (ticket #28) is reaped by the runner as an
+        # UNWATCHED pid: at reap the runner has only the pid, not the job_id, and
+        # job_pids was already cleared by this collector's EOF (collector_conn_eof,
+        # the status map). Record a pid-keyed reap entry HERE, at the pass, that
+        # survives the EOF so _reaped_unwatched_pid can map the reaped pid back to the
+        # job and run A3. Only passes need it (A3 is post-pass). Each collector
+        # incarnation has a distinct pid, so it is try-safe; the reap (or the run-end
+        # sweep) consumes it. The WATCHED no-preload path does not use this -- its
+        # set_proc_exit knows the job_id from the proc's task.
+        $self->{'collector_reap'}{$entry->{pid}} = {job_id => $job_id, run_id => $entry->{run_id} // ''}
+            if defined $entry->{pid};
+
         $self->_collector_stop($job_id);
         $self->announce_job($job_id, 'done', run_id => $entry->{run_id});
         return;
@@ -1300,6 +1313,14 @@ sub announce_run {
     # that still never connected has nothing left to tear down once the run ends.
     if (my $tj = $self->{'terminated_jobs'}) {
         delete $tj->{$_} for grep { ($tj->{$_}{run_id} // '') eq $run_id } keys %$tj;
+    }
+
+    # Bound the post-pass reap map (ticket #28 C2): a detached collector that is never
+    # reaped (e.g. on a platform without subreaper support, an accepted loss) would
+    # otherwise leak its entry on a persistent runner. Drop this run's entries at run
+    # end; a still-pending reap on a supported platform has already fired by now.
+    if (my $cr = $self->{'collector_reap'}) {
+        delete $cr->{$_} for grep { ($cr->{$_}{run_id} // '') eq $run_id } keys %$cr;
     }
 
     my $payload = {facet_data => {harness_run_end => {run_id => $run_id, stamp => time}}};

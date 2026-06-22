@@ -1375,23 +1375,21 @@ sub _bring_out_yer_dead {
 }
 
 # A pid reaped here that the runner never watched: a re-parented detached preload
-# collector, or a benign child a plugin/3rd-party module forked. Reverse-map it to
-# a job via job_pids (the collector reported its own pid on its handshake) and run
-# the A3 post-pass health check; an unmatched pid is simply ignored.
+# collector, or a benign child a plugin/3rd-party module forked. Map it back to its
+# job via the pid-keyed collector_reap entry (recorded when the job reported a pass,
+# and kept alive past the collector's EOF specifically for this lookup -- job_pids,
+# the status map, is cleared at that EOF and cannot serve here) and run the A3
+# post-pass health check. A pid with no entry -- a non-pass job, or a foreign child
+# -- is simply ignored. Pid-keyed, so each collector incarnation is matched exactly
+# (try-safe) with no reverse scan.
 sub _reaped_unwatched_pid {
     my $self = shift;
     my ($pid, $exit) = @_;
 
-    my $job_pids = $self->{+JOB_PIDS} or return;
+    my $map = $self->{'collector_reap'} or return;
+    my $rec = delete $map->{$pid} or return;
 
-    for my $job_id (keys %$job_pids) {
-        next unless defined $job_pids->{$job_id};
-        next unless $job_pids->{$job_id} == $pid;
-
-        delete $job_pids->{$job_id};
-        $self->_check_post_pass_health($job_id, $exit);
-        last;
-    }
+    $self->_check_post_pass_health($rec->{job_id}, $exit);
 
     return;
 }

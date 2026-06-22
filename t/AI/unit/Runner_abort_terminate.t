@@ -258,6 +258,29 @@ subtest announce_run_sweeps_terminated_jobs => sub {
     ok(exists $runner->{terminated_jobs}{J2}, "an unrelated run's intent is left intact");
 };
 
+subtest c2_collector_reap_survives_eof => sub {
+    # Ticket #28 C2: a passing job's pid->job reap entry (collector_reap) is recorded
+    # at the pass decision and must SURVIVE the collector's EOF -- which clears job_pids
+    # (the status map) -- so the later reap of the detached collector can still run A3.
+    my $runner = mk_runner(running => {J1 => {file => 'a.t', run_id => 'R1', is_try => 0}});
+    my $conn = FakeConn->new;
+    identify($runner, $conn, job_id => 'J1', job_try => 0, run_id => 'R1', pid => 5555);
+
+    # The collector reported a pass (captured on the conn entry), then EOFs.
+    $runner->{collector_conns}{"$conn"}{final_state} = {pass => 1};
+    $conn->close;
+    $runner->collector_conn_eof($conn);
+
+    is($runner->{collector_reap}{5555}{job_id}, 'J1', "collector_reap populated at pass, keyed by the collector pid");
+    ok(!exists $runner->{job_pids}{J1}, "job_pids (status map) cleared at EOF");
+    ok(exists $runner->{job_passed}{J1}, "job_passed retained for the post-pass A3 check");
+
+    # Run end sweeps the reap entry so a never-reaped collector does not leak.
+    $runner->{run_owners}{R1} = 1;    # skip the §4.2 purge so announce_run is self-contained
+    $runner->announce_run('R1');
+    ok(!exists $runner->{collector_reap}{5555}, "collector_reap swept at run end");
+};
+
 subtest handshake_records_job_pid => sub {
     # Ticket #28: a test collector reports its OWN pid on its identity handshake, and
     # the runner records it into job_pids for both run paths (the preload path no
