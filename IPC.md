@@ -296,6 +296,7 @@ self-contained frame, via `Test2::Collector::Util::Socket` (`open_unix_listen` /
 | `runner.socket` | the runner | `test`/`run`/`stop`/`status`/`ps`/`abort`/`resources`; the **preload-root** (handshake: `get_preload_list` / `set_stage_data` / `resolve_file_stages` / `preload_warnings`); the **system-load sampler** (one-way `system_load` reports); every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from preload-root, stage, sampler & job collectors; the bidirectional runner↔stage channel (see below) |
 | `preload-<stage>.socket` (one per preload stage) | that preload stage | `yath spawn` connects directly (bypassing the runner, ARCHITECTURE.md §4.8): a `spawn` request `{file, args, env_vars, cwd, abs_path, correlation_id, listen_socket_path}` → async `{ok=>1}` ack | a Role::Service request/response; the stage async double-forks a detached supervisor that dials back to the command's own listen socket |
 | command spawn listen socket (`File::Temp`, `0600`) | the `yath spawn` command | the detached spawn **supervisor** dials back to it | phase 1: SCM_RIGHTS pass of the command's real STDIN/STDOUT/STDERR (`Test2::Harness2::Util::FdPass`); phase 2: the dedicated control mini-protocol (`Test2::Harness2::Util::FdPass::Control`) — supervisor pid, forwarded signals, the child's raw wait status, EOF = command died → kill the spawned process group |
+| command interactive listen socket (`File::Temp`, `0600`; **only when `--interactive`**) | the `yath test`/`yath run` command (in a fork that keeps the real STDIN; its path is in `$ENV{YATH_INTERACTIVE}`) | each test process dials it (preload: the `goto::file` filter; no-preload: `-MTest2::Harness2::Interactive`) | a single SCM_RIGHTS pass of the command's real **STDIN** (`Test2::Harness2::Util::FdPass::send_fds` / `connect_stdin`), once per sequential test (`-j1`); no control channel, no framing — the test `dup2`s the fd onto fd 0 and the connection closes |
 | `sampler.socket` | the system-load sampler | nothing (**unused**; the sampler dials the runner) | — |
 
 The **preload-root dials** `runner.socket` (it does not listen on a socket of its
@@ -466,8 +467,8 @@ collector events stream like any other, reported over `runner.socket`.)
 
 | Command | Reaches the runner via | Action |
 |---|---|---|
-| `test` | spawns the runner, then `runner.socket` | submit run + subscribe(run_id) + render |
-| `run` | discover (runner-socket symlink, via `Discovery`/`Pfile`) + `runner.socket` | submit run(run_id) + subscribe(run_id) + render |
+| `test` | spawns the runner, then `runner.socket` | submit run + subscribe(run_id) + render. With `--interactive`: also opens a STDIN fd-pass listen socket (forks to keep the real STDIN), forces `-j1`/`-v`/`--live`, and passes its STDIN to each test in turn |
+| `run` | discover (runner-socket symlink, via `Discovery`/`Pfile`) + `runner.socket` | submit run(run_id) + subscribe(run_id) + render. `--interactive` as for `test` |
 | `spawn` | discover the workdir (runner-socket symlink, via `Discovery`/`Pfile`), then connect **directly to a `preload-<stage>.socket`** (bypasses the runner) | `require_fdpass('yath spawn')` up front; send a `spawn` request → async `{ok=>1}` ack; the supervisor dials back to the command's listen socket, the command `send_fds` its real STDIN/STDOUT/STDERR, then the socket flips to the control protocol (signals + the child's raw wait status). Errors cleanly if no live preload stage exists or IO::FDPass is absent |
 | `watch` | `runner.socket` | subscribe (global) + render runner/stage output |
 | `status` / `ps` / `abort` / `resources` | `runner.socket` | request → `Runner::StatusReport` reply |
