@@ -63,6 +63,8 @@ use Test2::Harness2::Util::HashBase(
         <last_job_activity
         <total_started
 
+        <system_load
+
         sorted
     },
 );
@@ -78,9 +80,22 @@ sub init {
     if (!$self->{+RESOURCES} || !@{$self->{+RESOURCES}}) {
         my $settings = $self->settings;
         my $resources = $self->{+RESOURCES} //= [];
+
+        my $runner = $settings->check_group('runner') ? $settings->runner : undef;
+        my $args   = ($runner && $runner->check_option('resource_args')) ? $runner->resource_args : {};
+
         for my $res (@{$self->settings->runner->resources}) {
             require(mod2file($res));
-            push @$resources => $res->new(settings => $self->settings);
+            # A backref to this State lets a resource read live runner state -- the
+            # throttling resources (Resource::CPU / Resource::Memory) read the shared
+            # system-load snapshot through it. The inline 'arg' is the per-resource
+            # '=arg' from '-R Class=arg' (e.g. CPU=70). A resource that does not want
+            # them ignores the extra args.
+            push @$resources => $res->new(
+                settings => $self->settings,
+                state    => $self,
+                (defined $args->{$res} ? (arg => $args->{$res}) : ()),
+            );
         }
     }
 
@@ -120,6 +135,18 @@ sub init {
 sub settings {
     my $self = shift;
     return $self->{+SETTINGS} //= Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($self->{+WORKDIR}, 'settings.json'));
+}
+
+# The runner stores the latest system-load snapshot (cpu_pct/mem_pct/mem_*/load_avg
+# rounded by the sampler, §4.4) here so the throttling resources (Resource::CPU /
+# Resource::Memory) read one shared, cross-platform snapshot instead of sampling
+# /proc inline. The runner sets it from request_handler_system_load; the resources
+# read it via their state backref.
+sub set_system_load {
+    my $self = shift;
+    my ($load) = @_;
+    $self->{+SYSTEM_LOAD} = $load;
+    return;
 }
 
 sub run {

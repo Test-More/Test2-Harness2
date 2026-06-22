@@ -68,6 +68,11 @@ done) so a subscriber's mirror folds it identically.
 
 Fold and forward a runner-originated run-completion mutation.
 
+=item $self->announce_system_load($load)
+
+Fold and forward (globally) a system-load snapshot reported by the sampler service,
+so it is logged and reaches every subscriber.
+
 =item $self->announce_run_health($run_id, $reason)
 
 Report a post-pass collector failure: the runner reaped a collector with a
@@ -950,6 +955,26 @@ sub request_handler_resources {
     return {ok => 1, resources => \@out};
 }
 
+# The system-load sampler service (ARCHITECTURE.md §4.4) dials runner.socket and
+# pushes one-way 'system_load' reports (a change-gated CPU/memory snapshot). Store
+# the latest snapshot in canonical State so the throttling resources read one
+# shared value, and announce a harness_system transition so it is logged + reaches
+# subscribers (broadcast globally, latest retained for late subscribers). One-way:
+# return undef so no response is sent.
+sub request_handler_system_load {
+    my $self = shift;
+    my ($payload) = @_;
+
+    return undef unless $self->{'rootpid'} == $$;
+
+    my $load = $payload->{load} or return undef;
+
+    $self->state->set_system_load($load);
+    $self->announce_system_load($load);
+
+    return undef;
+}
+
 # A forked preload stage forks a dispatched test job from its
 # preloaded interpreter, so the stage -- not the runner -- knows the job's pid.
 # It reports the pid back over runner.socket so the runner's job-pid map (used by
@@ -1346,6 +1371,29 @@ sub announce_run {
     # stays retained until that owner drops (service_conn_closed purges it then).
     $self->state->purge_run($run_id)
         unless $self->{'run_owners'} && $self->{'run_owners'}->{$run_id};
+
+    return;
+}
+
+# The system-load sampler service reports a new load snapshot (ARCHITECTURE.md
+# §4.4). System load is a global singleton, not run-scoped: fold it into the
+# monitor (so a later snapshot carries the latest value) and forward the frame to
+# EVERY subscriber (run_id => undef = global / run-less), so the rendered + archived
+# run records load over time and a late subscriber gets current load from the
+# snapshot. Originated by the runner from request_handler_system_load.
+sub announce_system_load {
+    my $self = shift;
+    my ($load) = @_;
+
+    return unless $self->{'rootpid'} == $$;
+    return unless $load;
+
+    my $payload = {facet_data => {harness_system => $load}};
+
+    $self->monitor->feed($payload);
+
+    my $frame = compress_blob(encode_json($payload));
+    $self->forward_frame($frame, undef);
 
     return;
 }

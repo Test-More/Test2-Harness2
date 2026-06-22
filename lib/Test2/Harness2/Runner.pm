@@ -88,6 +88,8 @@ use Test2::Harness2::Util::HashBase(
         +preload_root_reaped
         +reported_stage_data
         +preload_root_hosts
+
+        +sampler_pid
     },
 );
 
@@ -462,6 +464,11 @@ sub process {
     # handshakes); it forks the stages and launches the tests.
     $self->spawn_preload_root if $self->_preload_root_wanted;
 
+    # Stand up the always-on system-load sampler (it dials this socket and pushes
+    # load snapshots); spawned whenever the runner runs, independent of whether a
+    # throttling resource was requested, so its transitions are always logged.
+    $self->spawn_sampler;
+
     $self->start();
 
     my $ok  = eval { $self->run_scheduler_only(); 1 };
@@ -472,6 +479,12 @@ sub process {
     # Tear the preload-root down before plugin teardown/stop so it is
     # reaped while the runner is still servicing its socket.
     $self->stop_preload_root;
+
+    # Reap the sampler before this process exits. The sampler's collector inherited
+    # this runner's stdout/stderr write ends, so until it is gone the runner's own
+    # collector never sees EOF on those pipes (and would stall on its orphan
+    # timeout). Reaped while we still service the socket so its stop is delivered.
+    $self->stop_sampler;
 
     $self->teardown_plugins;
 
@@ -916,6 +929,91 @@ sub stop_preload_root {
     # waitpid(-1) reaper), and it is still alive here, so a non-blocking reaper
     # sees no dead child to choke on.
     delete $self->{+PRELOAD_ROOT_PID};
+
+    return;
+}
+
+# Stand up the always-on system-load sampler (ARCHITECTURE.md §4.4) as a global
+# helper process under a collector, the same shape as the preload-root: a
+# non-test collector whose ChildMonitor watches this runner (watch_parent_pid) so
+# it self-terminates if the runner dies, recording to its own events file and
+# reporting its transitions to runner.socket. The sampler itself dials runner.socket
+# and pushes change-gated load snapshots. It runs in-process via a run sub (it does
+# no fork+exec), so no separate Perl process is launched for it.
+sub spawn_sampler {
+    my $self = shift;
+
+    return if $self->{+SAMPLER_PID};
+
+    require Test2::Collector;
+    require Test2::Collector::Recorder::Zstd;
+    require Test2::Harness2::Service::Sampler;
+
+    my $socket = $self->service_socket_path;
+    my $events = File::Spec->catfile($self->{+DIR}, 'sampler-events.jsonl.zst');
+
+    my $reporter = socket_reporter("collector:sampler", $socket);
+
+    my $pid = Test2::Collector::spawn_collector(
+        is_test            => 0,
+        name               => 'sampler',
+        record_transitions => 1,
+        recorder           => Test2::Collector::Recorder::Zstd->new(file => $events),
+        ($reporter ? (reporter => $reporter) : ()),
+        watch_parent_pid => $self->{+ROOTPID},
+        run              => sub {
+            Test2::Harness2::Service::Sampler->new(
+                workdir       => $self->{+DIR},
+                name          => 'sampler',
+                runner_socket => $socket,
+            )->run;
+        },
+    );
+
+    $self->{+SAMPLER_PID} = $pid;
+
+    return $pid;
+}
+
+# Tear the sampler down at runner wind-down: ask it to stop over the channel it
+# dialed (pumping the socket so the request is delivered and the sampler exits and
+# its collector EOFs), then reap the collector parent by pid. Reaping it before the
+# runner exits closes the std fds the sampler's collector inherited from this
+# runner, so the runner's own collector is not held open past shutdown (the
+# orphan-timeout stall, ARCHITECTURE.md §4.4). The sampler is tracked OUTSIDE
+# {+PROCS} (like the preload-root and aux processes), so the non-blocking reaper
+# never trips on it.
+sub stop_sampler {
+    my $self = shift;
+
+    my $pid = $self->{+SAMPLER_PID} or return;
+
+    eval { $self->service_send('sampler', 'stop'); 1 };
+
+    for (1 .. 250) {
+        $self->service_io;
+        last if waitpid($pid, POSIX::WNOHANG) == $pid;
+        Time::HiRes::sleep(0.02);
+    }
+
+    # If it did not stop gracefully, the sampler's collector parent (this $pid) is
+    # still alive holding the inherited std fds. Signal the collector parent so it
+    # tears its child down and finalizes; then block-reap it so those fds are
+    # closed before this runner exits.
+    if (kill(0, $pid)) {
+        kill('TERM', $pid);
+        for (1 .. 100) {
+            $self->service_io;
+            last if waitpid($pid, POSIX::WNOHANG) == $pid;
+            Time::HiRes::sleep(0.02);
+        }
+        if (kill(0, $pid)) {
+            kill('KILL', $pid);
+            waitpid($pid, 0);
+        }
+    }
+
+    delete $self->{+SAMPLER_PID};
 
     return;
 }

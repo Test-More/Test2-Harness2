@@ -70,8 +70,22 @@ yath test                          COMMAND: client + renderer host
                                  │                                           └─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] ──► test job (longjump+goto-file via JobLauncher)
                                  │                                              the collector setsid's + DETACHES; it re-parents UP to the runner (subreaper) ······▲ (reaped there)
                                  │
+                                 ├─ spawn ─ [collector:sampler] ─► system-load sampler  (ALWAYS spawned, any run)
+                                 │     │  Test2::Harness2::Service::Sampler->run (in-process via the collector's run sub)
+                                 │     │  binds sampler.socket (unused); dials runner.socket as 'sampler'
+                                 │     └─ pushes one-way `system_load` reports (change-gated, 0.2s tick) to the runner
+                                 │
                                  └─ no-preload / below-threshold: fork ─ [collector:job] ─► test job   (collector fork+EXECs a clean perl; runner's direct child)
 ```
+
+The **system-load sampler** (§4.4) is spawned on **every** run (preload or not),
+right after `runner.socket` is bound, as a non-test collector whose ChildMonitor
+watches the runner (`watch_parent_pid`); it records to `sampler-events.jsonl.zst`.
+It dials `runner.socket` as `sampler` and pushes change-gated `system_load` reports;
+the runner stores the latest snapshot and broadcasts a `harness_system` transition
+to subscribers. The runner reaps it at wind-down (`stop_sampler`) **before** closing
+its socket, so the sampler's collector (which inherited the runner's std-fd write
+ends) does not hold the runner's own collector open past shutdown.
 
 The preload-root level exists **only when preloads are configured** (and not below
 `preload_threshold`); otherwise the runner forks the test-job collector itself and
@@ -106,6 +120,7 @@ yath start  (spawns the runner; publishes the runner-socket discovery symlink; t
                             │                                        │  binds preload-<name>.socket (reserved for spawn)
                             │                                        └─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] (setsid; DETACHES) ──► test job
                             │                                           the detached collector re-parents UP to the runner (subreaper) and is reaped there ··▲
+                            ├─ [collector:sampler] ─► system-load sampler  (dials runner.socket as 'sampler'; pushes change-gated system_load; reaped at stop)
                             └─ no-preload: ─ [collector:job] ─► test job  (runner's direct child)
 
 clients connecting IN to runner.socket:
@@ -161,7 +176,7 @@ command, which forks exactly one child (the runner), reaps it inline on
 | Forks / spawns | Reaps | Notes |
 |---|---|---|
 | `yath test` command | the runner (its collector) | transient only; `start`/`run` do not reap the persistent runner. The command owns exactly this one child, so it spawns it on `Util::IPC::run_cmd` and reaps/signals it with a direct `waitpid`/`kill` (no `Test2::Harness2::IPC` controller instance) |
-| runner | the **preload-root** (its collector); on the no-preload path, the test job (its collector) it forked directly; **as a child subreaper, every re-parented detached preload test collector** | the preload-root pid is tracked **outside** the runner's `{+PROCS}` (so it never trips `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root`). The runner is a child subreaper (§4a), so an orphaned detached preload collector re-parents to it; its `waitpid(-1)` reaper reaps that pid as an **unwatched** zombie (`_bring_out_yer_dead` skips it for verdict purposes) and runs only the A3 post-pass health check on it (`_reaped_unwatched_pid`) |
+| runner | the **preload-root** (its collector); the **system-load sampler** (its collector); on the no-preload path, the test job (its collector) it forked directly; **as a child subreaper, every re-parented detached preload test collector** | the preload-root and sampler pids are tracked **outside** the runner's `{+PROCS}` (so they never trip `IPC::_bring_out_yer_dead`'s `waitpid(-1)`) and reaped explicitly at wind-down (`stop_preload_root` / `stop_sampler`). The sampler is reaped **before** the runner closes its socket so its collector (which inherited the runner's std fds) does not stall the runner's own collector on the orphan timeout. The runner is a child subreaper (§4a), so an orphaned detached preload collector re-parents to it; its `waitpid(-1)` reaper reaps that pid as an **unwatched** zombie (`_bring_out_yer_dead` skips it for verdict purposes) and runs only the A3 post-pass health check on it (`_reaped_unwatched_pid`) |
 | preload-root | each preload stage (its collector) it forked | the base/default/NOPRELOAD stage runs in-process in the preload-root and is not forked/reaped |
 | preload stage | only the **short-lived intermediate** of each test-job launch | a preload test launch **double-forks + detaches** the collector (`JobLauncher::launch_via_double_fork`): the stage forks an intermediate that `setsid`s and forks the collector parent (which `setsid`s into its own session/group) then exits, orphaning the collector. The stage reaps **only the intermediate** (a generic `watch_pid`, pure zombie cleanup) and **never watches the collector** — that re-parents away (to the runner subreaper, else init). The stage tracks **no** collector pid (the detached collector reports its own pid to the runner on its handshake); it still forwards any `reload`. A resource-skip/dummy job (no `via`) still fork-execs its collector as the stage's direct child and reports that pid |
 
@@ -271,8 +286,9 @@ self-contained frame, via `Test2::Collector::Util::Socket` (`open_unix_listen` /
 
 | Socket | Server (accepts) | Clients (connect out) | Carries |
 |---|---|---|---|
-| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; the **preload-root** (handshake: `get_preload_list` / `set_stage_data` / `resolve_file_stages` / `preload_warnings`); every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from preload-root, stage & job collectors; the bidirectional runner↔stage channel (see below) |
+| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; the **preload-root** (handshake: `get_preload_list` / `set_stage_data` / `resolve_file_stages` / `preload_warnings`); the **system-load sampler** (one-way `system_load` reports); every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from preload-root, stage, sampler & job collectors; the bidirectional runner↔stage channel (see below) |
 | `preload-<stage>.socket` (one per preload stage) | that preload stage | nothing yet (**reserved** for `yath spawn`, ARCHITECTURE.md §4.8) | — |
+| `sampler.socket` | the system-load sampler | nothing (**unused**; the sampler dials the runner) | — |
 
 The **preload-root dials** `runner.socket` (it does not listen on a socket of its
 own; its own output goes to `preload-root-events.jsonl.zst` and its collector's
@@ -421,6 +437,7 @@ do not discover or orchestrate.
 | `runner-events.jsonl.zst` | the runner's non-test collector | workdir | the command renderer (`RunnerReader`, by path); `watch` | runner stdout/stderr/exit as events |
 | `preload-root-events.jsonl.zst` | the preload-root's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | preload-root + in-process base-stage stdout/stderr/exit as events (also streamed to `runner.socket`) |
 | `stage-<name>-events.jsonl.zst` | each forked preload stage's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | stage stdout/stderr/exit as events |
+| `sampler-events.jsonl.zst` | the system-load sampler's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | sampler stdout/stderr/exit as events (the load data itself rides the `system_load` request to `runner.socket`, not this file) |
 | `events.jsonl.zst` (per job) | each test job's test collector | the job's run dir | the command renderer (`JobReader`, by the path a transition carries) | the test's full event stream |
 | `aux-<name>-<uuid>.jsonl.zst` | a plugin's `shellcall`/`run_collected` aux collector (chunk 17) | workdir | the command renderer (`RunnerReader`, by the path a transition announces); `watch` | plugin-emitted aux output as events |
 | `.<user>-<host>-<project>-yath-runner.sock` (symlink) | `yath start` (via `App::Yath2::Discovery->publish`) | persist dir (`YATH_PERSISTENCE_DIR` / `--persist-dir`, else system temp or cwd) | `run`/`spawn`/`stop`/`which`/`watch`/`reload` via `App::Yath2::Discovery` (`App::Yath2::Pfile` wraps it) | persistent-runner discovery: a symlink pointing at the workdir's `runner.socket`; follow it → socket + workdir. Liveness is a socket connect; a dangling/connect-fail link ⇒ runner absent ⇒ the stale link is unlinked |
