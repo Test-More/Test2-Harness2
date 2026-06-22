@@ -53,6 +53,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | DB-Jsonl | Convert current jsonl logger → a renderer + renderer-owned options (`mod_adds_options`); lands before DB-4 (frees the "logger" concept) | ⬜ | #55, #56 |
 | DB-4 | DB logger process (own Client+Subscriber; folds transitions into run/job/job_try rows; whole-blob artifact import; SQLite-first; optional DB deps) — needs DB-3 | ⬜ | #48, #49, #50, #51, #52 |
 | DB-5 | DB→DB sync (`yath db sync`) + `import` command — needs DB-4 | ⬜ | #53, #54 |
+| REF-PORT | Reference-port features (directives, UnixLimits+Disk resources, Units helpers, ResetTerm, list/ping) | ⬜ | #58, #59, #60, #61, #62 |
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |
 | 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ✅ | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
@@ -186,8 +187,9 @@ carry the specifics.
   idx)` (§3.1). **SQLite-first** for dev; logging is **opt-in** (default OFF, R11) via
   **`-L`/`--logger`** — repeatable and value-polymorphic (bare = default sqlite, `=path` =
   sqlite file, `=$DSN` = remote DB; N `-L` → N loggers/N DBs). The runner defers workdir
-  cleanup until subscribers disconnect. TODO_TASKS **#48**, **#49**, **#50**, **#51**,
-  **#52**; spec §6 / §7 / §3.1 / §5 / R2 / R6 / R10 / R16.
+  cleanup until subscribers disconnect. TODO_TASKS **#48**, **#49**, **#50** (logger —
+  folds `jobs.passed` from tries + one `job_tries` row per `is_try`; depends on **#49**'s
+  1-based producer), **#51**, **#52**; spec §6 / §7 / §3.1 / §5 / R2 / R6 / R10 / R16.
 
 - **Chunk DB-5 — DB→DB sync + `import` command — needs DB-4.** A from-scratch QuickORM
   sync engine (DCI module, reusable by the command): `yath db sync` moves a run + all its
@@ -204,6 +206,43 @@ carry the specifics.
   *(Webapp UX-migration port (§9) and the junit renderer import (§10c) are **DEFERRED to
   separate efforts** — not chunks in this set; the `/artifact/<uuid>.<ext>` download
   controller lands with the future webapp spec.)*
+
+- **Chunk REF-PORT — reference-port features.** Five features carried over from the
+  reference-feature survey, each a small/medium self-contained port. **(1) Structured
+  directives parser** (TODO_TASKS **#58**): new `Test2::Harness2::Util::Directives` — a
+  field-agnostic `HARNESS2:` grammar parser (block form, boolean sigils, dotted nested keys,
+  quoted values) ported from `reference/harness_service`, plus a separate `::Legacy` compat
+  module that converts 1.0 `HARNESS-…` lines into the same internal representation. **HARNESS2
+  wins silently** — any `HARNESS2:` directive in a file makes us ignore all legacy `HARNESS-`
+  (no mixed-mode warning, E2); a file with no `HARNESS2:` runs the compat parser. Only
+  `App::Yath2::TestFile` (the file reader) loads the scanner, preserving the O(1)
+  early-terminating header scan; `Test2::Harness2::TestFile` stays file-free/state-only. A
+  **parse error → `croak` caught by `App::Yath2::TestFile` → the broken file queues as a
+  synthetic harness-visible test failure** (run continues, E1). Only structural fields
+  (retry/timeout/category/duration/stage/conflicts/slots) flow to the task; **`meta.*`/
+  `feature.*` persistence is DEFERRED** (E5) → no new DB impact. **(2) OS-limit resources**
+  (TODO_TASKS **#59**): port **`UnixLimits` (RLIMIT nproc/nofile/as) + `Disk` (free-space)
+  only** onto the current `Role::Resource` contract — **`PipeLimits` is dropped** (E3).
+  Pure runtime throttling, metrics read **in-resource / runner-local** on tick (not via the
+  system-load sampler, E3); **resource tables stay deferred** (E4) → no DB impact. Adds an
+  `is_supported` hook (graceful no-op on `/proc`-less OSes), optional `Filesys::Df` (Disk,
+  any threshold) + optional `BSD::Resource` (off-Linux RLIMIT), both lazy-required with an
+  actionable error (R11). Needs **#60**. **(3) Units helpers** (TODO_TASKS **#60**, blocks
+  **#59**): port `parse_count_or_pct` (`N`→count / `N%`→pct, on `parse_quantity`) +
+  `parse_duration` into `lib/Test2/Harness2/Util/Units.pm` (`@EXPORT_OK`); `parse_duration`
+  scopes to timeout values only (the `duration` directive stays a scheduling label). **(4)
+  ResetTerm renderer** (TODO_TASKS **#61**): port old3's `ResetTerm` as
+  `App::Yath2::Renderer::ResetTerm` (parent `Test2::Harness2::Renderer`, no `desired_filters`)
+  whose `finish` prints `\e[0m`+`\e[?25h` **only when STDOUT is a TTY**; **default-injected
+  LAST** in the renderer list, fires on abnormal exit (harness teardown calls `finish` + an
+  `END`-block fallback). **(5) `yath list` + `yath ping`** (TODO_TASKS **#62**): two
+  commands under `App::Yath2::Command` — `list` enumerates live **persistent** runners via a
+  new Discovery enumeration API (reuses `find_runner_link`'s dir/name rules; multi-user-safe,
+  cleans only current-UID dangling links); `ping` loops on `App::Yath2::Client` round-tripping
+  a new no-side-effect runner-side ping handler, printing latency. See the spec
+  `AI_DOCS/2026-06-22-reference-port-features-spec.md`. *(Survey #3/#5 — `job_try` verdict
+  columns + retry recording — are **NOT** part of REF-PORT; they FOLD into the existing DB
+  chunks DB-2/DB-4, tickets **#46**/**#50**.)*
 
 - **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7). DONE.**
   Registration + dispatch-over-registered-channel landed in 9. The explicit

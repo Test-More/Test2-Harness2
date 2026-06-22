@@ -275,24 +275,50 @@ Core columns (accurate set lifted from current-branch DBIC, adjusted):
 - **`runs`**: `run_uuid` PK · `project` ref · `host` ref · **`ran_by`** (FK →
   `machine_users` — the OS user on the test machine; R7) · **`submitted_by`** (nullable FK
   → `users`, the account user who uploaded; R7) · counters
-  (passed/failed/to_retry/retried) · concurrency_j/x · status enum
+  (passed/failed/to_retry/retried — **aggregated over the run's resolved jobs**; survey #3,
+  R17) · concurrency_j/x · status enum
   (pending/running/complete/broken/canceled) · canon/pinned · has_coverage/has_resources
   · `parameters` JSONB · **`fields` JSON** (folded `run_fields`) · duration · **version
   stamp** (d2e). **Dropped:** `log_file_id`, `mode`. `worker_id` (import-claim) shape
   TBD under d7.
 - **`jobs`**: `job_uuid` PK (= the existing backend `job_id`, already a `gen_uuid()`;
   d6c) · `run` ref · `test_file` ref · `is_harness_out` (job0 = harness internal log) ·
-  failed/passed.
+  **`passed`** (folded "any try passed" once resolved — survey #3) · **`failed`**
+  (resolved && !passed — survey #3). *(No `should_retry` column — runtime-only, R17.)*
 - **`job_tries`**: PK **`job_try_uuid`** — a *single derived* uuid = `job_uuid` with
   `try_ord` **added (mod 2⁶²) into the low `rand_b` bits** (§3.1/d6c; keeps the existing
   try-uuid URLs, deterministic
-  across loggers) · `job_uuid` ref · `try_ord` (≥1, never 0) · pass_count/fail_count ·
-  exit_code · launch/start/ended timestamps · status enum · fail/retry bools · duration ·
-  `parameters` JSONB · **`fields` JSON** (folded `job_try_fields`) · stdout/stderr text.
+  across loggers) · `job_uuid` ref · `try_ord` (1-based, ≥1 never 0, R10) ·
+  **`result`** (tri-state verdict: null = in-flight / true = pass / false = fail — the
+  top-line "did this try pass", distinct from the counts; survey #5) ·
+  `assertion_count` · `pass_count` · `fail_count` (assertion counts) ·
+  `subtests` (top-level count) · **`subtests_passed`** · **`subtests_failed`** (the
+  split, derived from the auditor's `subtests[]`; survey #5) ·
+  `status` enum · `exit_code` · started/finished timestamps (+ `duration`) ·
+  `parameters` JSONB · **`fields` JSON** (folded `job_try_fields`, directives #1).
+  **Dropped:** the `stdout`/`stderr` text columns — read on demand from the artifact
+  blob (R6 follow-on, now final; survey #5). *(Counts are `pass_count`/`fail_count`,
+  NOT old4's `passed`/`failed` — those collide with the `result` verdict bool.)*
 - **`hosts`**: kept small (host identity) so runs can be listed per host to spot a broken
   host. `runs.host` references it.
 - **`projects` / `test_files`**: kept (a run needs its project; a job references its test
   file).
+
+### 4.1 Retry-recording + verdict-fold rules (RECORD-ONLY — survey #3/#5, R17)
+
+Retry is **record-only**: the **runner owns *when* to retry** (in-memory `Runner/State.pm`,
+DB-free per d2c); the **logger only records outcomes**. The schema therefore stores results,
+never scheduler state.
+
+- **One `job_tries` row per `is_try`.** The logger writes a row per try (keyed by `try_ord`
+  = the runner's `is_try`, **1-based** per R10); `result`/counts/subtest-split are folded
+  from the auditor's `final_state` (survey #5).
+- **`should_retry` is runtime-only — NOT a persisted column.** `retry_limit` is **input** and
+  lives in the job's **params JSON** (`parameters`), not a dedicated column.
+- **`jobs.passed` = folded "any try passed"** (true once the job's tries are resolved);
+  **`jobs.failed` = resolved && !passed** (survey #3).
+- **`runs.passed`/`failed`/`retried` aggregate over the run's resolved jobs** (the run
+  counters above).
 
 ## 5. Decision 5 — artifacts table — **RESOLVED**
 
@@ -635,8 +661,9 @@ These **amend** the decisions above; where they contradict earlier text, these w
   - **Stage lifecycle:** still emitted into the stage's blob (deferred wire-emission, d6e);
     no dedicated rows.
   - **`job_try_uuid` identity (d6c) + §3.1 are UNAFFECTED** — `job_tries` still exists.
-  - Likely row-column trim follow-on: detailed `job_tries.stdout/stderr` move to
-    "read from blob" (deferred webapp, d9); rows keep folded summary only.
+  - Row-column trim follow-on (**now final — R17/survey #5**): the detailed
+    `job_tries.stdout/stderr` columns are **dropped**; that output is read on demand from the
+    artifact blob; rows keep the folded summary only.
 - **R7 — TWO distinct user tables (GPT-7).**
   - **(1) machine-user (ran-by)** = the OS user on the test machine → its **own table
     `machine_users`**: `machine_user_id` (host-local int PK), `host` FK **NOT NULL**,
@@ -715,6 +742,21 @@ These **amend** the decisions above; where they contradict earlier text, these w
   The old `-F`/`-B`/`-G` short letters are **freed** for reuse. The **jsonl renderer uses
   long opts only** (`--jsonl-file`/`--bzip2`/`--gzip`, no shorts). (Amends §7.1 + §7f +
   d7f's `--logger`, + d10a.)
+- **R17 — `job_tries` verdict columns + retry recording folded in (survey #3/#5).** The
+  reference-port survey items **#3 (retry recording)** and **#5 (job_try verdict columns)**
+  fold into this DB schema (no stand-alone tickets). Amends d4 §"core columns" + adds §4.1:
+  - **`job_tries` verdict columns (survey #5):** add **`result`** (tri-state: null=in-flight
+    / true=pass / false=fail), `assertion_count`/`pass_count`/`fail_count`, `subtests`
+    (top-level count) + **`subtests_passed`**/**`subtests_failed`** (split, derived from the
+    auditor's `subtests[]`). Naming `parameters` (not `params`); counts are
+    `pass_count`/`fail_count` (not old4's `passed`/`failed`, which collide with `result`).
+  - **DROP `stdout`/`stderr` text columns** — read on demand from the artifact blob (was the
+    R6 follow-on; now **final**). No duplicating large output already in the blob.
+  - **Retry recording (survey #3, record-only):** retry stays runner-owned (in-memory,
+    DB-free, d2c); the **logger only records** — one `job_tries` row per `is_try` (1-based,
+    R10). **`jobs.passed` = any-try-passed** (folded once resolved); **`jobs.failed` =
+    resolved && !passed**; **`runs.passed`/`failed`/`retried` aggregate over resolved jobs.**
+    **`should_retry` is runtime-only — NOT a column**; `retry_limit` lives in job params.
 
 ## A. Proposed `ARCHITECTURE.md` changes (running list, for the merge agent)
 

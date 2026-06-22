@@ -1127,6 +1127,20 @@ Steps:
   → `job_tries.fields` JSON; **drop the `mode` enum** (no event rows to prune, §4).
   Core columns per §4 (e.g. `runs.ran_by`→`machine_users`, `runs.submitted_by`→`users`
   nullable, version stamp in `schema_meta`).
+- **`job_tries` verdict columns (survey #5)** (reference-port spec items 3/5): `try_ord`
+  (**1-based**, R10); **`result`** (tri-state verdict — null = in-flight / true = pass /
+  false = fail, distinct from the counts); `assertion_count`, `pass_count`, `fail_count`
+  (assertion counts — NOT old4's `passed`/`failed`, which collide with the `result` bool);
+  `subtests` (= top_level_subtests count), `subtests_passed`, `subtests_failed` (the split,
+  derived from the auditor's `subtests[]`); `status` enum, `exit_code`, `started`/`finished`
+  (+ `duration`); `parameters` JSON (GPT4 — align to the spec, **not** `params`); `fields`
+  JSON (directives, #58). **DROP `stdout`/`stderr` columns** — read on demand from the
+  artifact blob (R6); no duplicating large output already in the blob.
+- **Retry recording / fold rules (survey #3)** (reference-port spec items 3/5 + GPT4):
+  `jobs.passed` = **any-try-passed** (resolved true); `jobs.failed` = **resolved &&
+  !passed**; `runs.passed`/`runs.failed`/`runs.retried` aggregate over the run's resolved
+  jobs. `should_retry` is **runtime-only — NOT a persisted column**; `retry_limit` is input
+  in the job's `parameters` JSON.
 - Add **`DBIx::QuickORM` + `DBIx::QuickDB` to `dist.ini` RuntimeSuggests** (NOT Requires —
   R11); nothing always-loaded may `use` them at compile time.
 
@@ -1190,7 +1204,7 @@ Steps:
   no translation afterward).
 
 ### #50 — DB logger process
-**Status:** Decided · **Step:** DB-4 · **Depends:** #46, #47, #48
+**Status:** Decided · **Step:** DB-4 · **Depends:** #46, #47, #48, #49
 
 **Problem:** the largest net-new component (spec §5/§7). A standalone App-side process
 that subscribes to a run's transitions, **folds them into run/job/job_try ROW STATE**
@@ -1207,6 +1221,10 @@ Steps:
   snapshot** (initial state), then upsert from the Monitor's folded state each `poll()`
   (no per-frame Subscriber tap, no per-event rows — 1.0's per-event rows were the "major
   db issue").
+- **Retry recording (survey #3)** (reference-port spec items 3/5): write **one
+  `job_tries` row per `is_try`** (1-based, R10/#49 — the producer prerequisite); **fold
+  `jobs.passed` from the tries** (any-try-passed); `should_retry` stays **runtime-only**
+  (the runner owns *when* to retry — DB-free, never a persisted column).
 - **Blob import:** store each collector's `events.jsonl.zst` whole as an artifact blob,
   importing each **as that collector finalizes** (`wait_terminal`), not batched at run-end.
   **Binary-extraction (§5):** split embedded binary facets out of the event stream into
@@ -1348,6 +1366,155 @@ Steps:
   original transition `stamp`** (a late-joining logger must compute the same value —
   **verify first**): overwrite the derived `job_try_uuid`'s high-48-bit timestamp with the
   try's start stamp. Reproducibility holds iff that stamp is stable across loggers.
+
+---
+
+## TIER 7 — reference-port features (selected reference-survey ports — resolved 2026-06-22)
+
+> Source of truth (read it first):
+> `AI_DOCS/2026-06-22-reference-port-features-spec.md` — the resolved ticket-level detail
+> for the 7 reference-survey features the user selected to port (survey `wkg6c1k4p`),
+> the gemini/gpt Review refinements, and the Escalation resolutions **E1–E5**. The two
+> DB-impacting items (#3 retry recording, #5 verdict columns) FOLD into the existing
+> DB-layer tickets (#46/#50) rather than landing as new tickets; the five subsystem items
+> land here as **#58–#62** on step **REF-PORT**. After E4/E5, items #1 and #10 are **no
+> longer DB-impacting** (resource tables re-deferred; directive meta/feature persistence
+> deferred). **#60 (Units helpers) blocks #59 (resources).**
+
+### #58 — Structured directives parser (HARNESS2 grammar + legacy compat)
+**Status:** Decided · **Step:** REF-PORT · **Depends:** —
+
+**Problem:** `App::Yath2::TestFile::_scan` inline-scans `HARNESS-…` lines into a
+`_headers` hash via a split-based if/elsif loop — no block form, quoting, sigils, nested
+keys, or reuse, and no `Directives` module exists (spec item 1, "Current state"). The
+reference `harness_service` carries a richer, field-agnostic `HARNESS2:` grammar parser
+(431 lines) plus a producer-side `_apply_directives` mapping worth porting.
+
+Steps:
+- New **`Test2::Harness2::Util::Directives`** — a pure, field-agnostic `HARNESS2:` grammar
+  parser ported from `reference/harness_service/lib/Test2/Harness2/Util/Directives.pm`:
+  block form (`key { … key }`), boolean sigils (`@on/@off/@yes/@no/@true/@false/@default`),
+  dotted keys folded into a nested subtree, double-quoted values with escapes,
+  **line-numbered `croak`** on collision/unterminated/bad quote, multi-comment-leader
+  (`['#','//']`). Bring **old3's unit test**
+  (`reference/old3/t/AI/unit/Harness2/Util/Directives.t`) (spec item 1).
+- A **SEPARATE legacy compat module** (e.g. `…::Directives::Legacy`) that parses the 1.0
+  `HARNESS-…` lines and converts them to the **same new internal representation** the new
+  grammar emits (spec item 1 resolution).
+- Replace `App::Yath2::TestFile::_scan` with **detect-and-parse** (new grammar or legacy
+  compat) → `_apply_directives` mapping the nested hash onto harness fields (port the
+  `harness_service` `App/Yath2/TestFile.pm::_apply_directives` mapping, lines 133–345).
+- **Precedence — HARNESS2 presence wins; legacy ignored; silent (E2):** if a file has any
+  `HARNESS2:` directive, parse with the new grammar and ignore all legacy `HARNESS-` lines
+  with **no warning** (E2 = B, silent); otherwise run the compat parser over its `HARNESS-`
+  lines. Either path yields the new internal representation.
+- **Only `App::Yath2::TestFile` reads files** (the file-reading object, GPT1): keep the
+  O(1) header scan — **early-terminate at the first real code line** outside an open block
+  (like current `_scan`'s `last unless …`) plus a ~500-line safety ceiling (G1).
+  `Test2::Harness2::TestFile` stays **file-free / state-only** (post chunk-14 split); it
+  never loads the parser or reads files (GPT1).
+- **Parse errors (E1 = A):** the new parser `croak`s; `App::Yath2::TestFile` **catches**,
+  marks that file **invalid**, and **queueing it emits a synthetic harness-visible test
+  FAILURE** — the run continues, never aborts; the broken file fails.
+- **Structural fields flow as today** (retry/timeout/category/duration/stage/conflicts/
+  slots → the task); **arbitrary `meta.*`/`feature.*` persistence is DEFERRED (E5)** — the
+  durable task-payload/snapshot/logger path is a future spec, so this ticket has **no new
+  DB-schema impact**.
+- Tests: bad quote, mismatched block, and a mixed good/bad-files run (E1 cases).
+
+### #59 — OS-limit throttle resources (UnixLimits + Disk)
+**Status:** Decided · **Step:** REF-PORT · **Depends:** #60
+
+**Problem:** the pipe-heavy architecture (sockets + SCM_RIGHTS fd-pass + collectors
+everywhere) makes `nofile`/RLIMIT and disk-pressure exhaustion under high `-j` a real
+unthrottled failure mode (spec item 10). old3 carries `UnixLimits`/`Disk` resources worth
+porting onto the current `Role::Resource` contract; **`PipeLimits` is dropped (E3)**.
+
+Steps:
+- Port **`UnixLimits`** (cap by RLIMIT `nproc`/`nofile`/`as`, count or %-of-limit) and
+  **`Disk`** (throttle/abort on low free space per mount) from old3 into
+  `Test2::Harness2::Runner::Resource::` on the current `Role::Resource` contract
+  (`available`/`assign` + `tick`/`refresh`/`job_limiter*`/`record`). **Drop `PipeLimits`**
+  (E3).
+- **Read volatile/process-local metrics in-resource, runner-local at assign time** (E3):
+  `nofile`, `/proc/self/fd`, etc. are read by the resource on tick — **NOT** via the
+  system-load sampler (reading `/proc/self` in the sampler would count the *sampler's* fds
+  and a 0.2s snapshot races burst spawns). Static kernel caps are read **once**. (CPU/Memory
+  keep using the sampler snapshot as before; the "extend the sampler to carry pipe/rlimit/
+  disk metrics" lean is dropped.)
+- **`is_supported` hook (G4):** on a non-Linux host (no `/proc`) gracefully **deactivate
+  with no constraint** (infinite / no-throttle) + a **verbose log**; never crash.
+- **Off-Linux RLIMIT (G5):** Linux reads `/proc` (no dep); off-Linux RLIMIT support uses
+  **optional `BSD::Resource`** (Suggests, lazy-`require`d, **disable + warn** if missing
+  *and* requested).
+- **`Filesys::Df` (GPT8, supersedes #10.3):** **optional dep, lazy-required whenever the
+  `Disk` resource is requested at all** — both absolute and percent thresholds need
+  free/total bytes (no portable core statvfs); actionable error if missing.
+- **NO DB impact (E4):** resource telemetry tables (`resources`/`resource_types`) stay
+  **deferred** (d4) — this is **pure runtime throttling**; persistence rides the later
+  deferred resources-table work.
+
+### #60 — Units helpers `parse_count_or_pct` + `parse_duration`
+**Status:** Decided · **Step:** REF-PORT · **Depends:** —
+
+**Problem:** the OS-limit resources (#59) need `parse_count_or_pct` (count vs %-of-limit),
+and the `timeout` directives (#58) need a duration parser; neither exists in current's
+`Units` (spec item 11). Both live in `reference/old3/.../Util/Units.pm` and port cleanly.
+
+Steps:
+- Port **both** `parse_count_or_pct` and `parse_duration` from
+  `reference/old3/.../Util/Units.pm` into `lib/Test2/Harness2/Util/Units.pm` in current's
+  signature style (`sub parse_count_or_pct ($raw, %opts)`); add both to `@EXPORT_OK`.
+- `parse_count_or_pct` = `"NUMBER"` → count / `"NUMBER%"` → pct, built on the existing
+  `parse_quantity` (spec item 11).
+- **Scope `parse_duration` to TIMEOUT values** (`timeout.event`/`timeout.postexit` →
+  seconds) (GPT9); the `duration short|medium|long` directive stays a scheduling **LABEL**,
+  **not** parsed as seconds.
+- **Blocks #59.** No DB impact.
+
+### #61 — ResetTerm renderer
+**Status:** Decided · **Step:** REF-PORT · **Depends:** —
+
+**Problem:** a misbehaving test can leave the terminal in a weird color/mode state; old3's
+16-line `ResetTerm` renderer (a no-op `render_event` whose `finish` prints a terminal
+reset only on a TTY) undoes it (spec item 13). Current has no such renderer.
+
+Steps:
+- New **`App::Yath2::Renderer::ResetTerm`** with parent `Test2::Harness2::Renderer` (not
+  old3's `App::Yath2::Renderer`); swap `Object::HashBase` → `Test2::Harness2::Util::HashBase`;
+  **drop `desired_filters`** (no Filter machinery). `render_event` is a no-op; `finish`
+  prints `\e[0m\e[?25h` (attributes + cursor; avoid `\e[=l`) **only when `-t STDOUT`**
+  (spec item 13 + GPT10).
+- **Default-on when STDOUT is a TTY (Q13.1):** auto-add to the renderer list, **injected
+  LAST** in the renderer `'@'` list (current has no `weight` sorting — list order, GPT10);
+  no-op otherwise.
+- **Fire on abnormal exit (G6):** ensure the harness abort/teardown path calls the
+  renderer `finish()`, **plus an `END`-block fallback** in `ResetTerm`, so the reset prints
+  on Ctrl-C / panic — **not** a renderer-owned signal handler (the harness owns signals).
+- No DB impact.
+
+### #62 — `yath list` + `yath ping` commands
+**Status:** Decided · **Step:** REF-PORT · **Depends:** —
+
+**Problem:** there is no way to enumerate live persistent runners or measure runner
+round-trip latency; `reference/pre_ai_2.0` carries `list.pm`/`ping.pm` worth adapting to
+the current Discovery + `App::Yath2::Client` (spec item 15).
+
+Steps:
+- New **`App::Yath2::Command::list`** + **`App::Yath2::Command::ping`**.
+- **`list` = a Discovery enumeration API** (GPT11), not a naive glob: add
+  `Discovery->list` / `find_runner_links` that **reuses `find_runner_link`'s dir/name
+  rules** (persist_file / persist_dir / `YATH_PERSISTENCE_DIR` / cwd-walk / synthesized
+  user+host+project basename); probe liveness; print live **persistent** runners grouped.
+  **Persistent-only** (Q15.1 = a) — one-off `yath test` runs have no well-known marker, so
+  `list` won't show them (documented limitation).
+- **Multi-user safe (G7):** catch `EACCES`/`ECONNREFUSED` → show "inaccessible (other
+  user)"; clean only dangling links owned by the **current UID**.
+- **`ping` needs runner-side support (GPT12):** add a **no-side-effect ping request
+  handler** on the runner service returning `{ok=>1, pid, stamp}`; expose it via
+  `Test2::Harness2::Runner::Client` / `App::Yath2::Client`, then build the latency-loop
+  command (round-trip `ping()`, print latency, sleep).
+- No DB impact.
 
 ---
 

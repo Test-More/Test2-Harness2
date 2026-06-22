@@ -619,6 +619,48 @@ so they are cross-platform (Linux + BSD):
   utilization-aware resources read. All throttling is **off by default** (opt in
   with `-R`).
 
+**§4.4a OS-limit throttle resources `[target]`.** Two further opt-in throttling
+resources cap concurrency by **OS limits** rather than load average. They compose
+the same `Test2::Harness2::Role::Resource` contract
+(`available`/`assign`/`release` + `tick`/`refresh`/`record`) and live under
+`Test2::Harness2::Runner::Resource::`. The set is **`UnixLimits` + `Disk` only**
+— a third candidate, `PipeLimits` (bound concurrency by pipe FDs / kernel
+pipe-ring pages), was **dropped** for now:
+
+- **`UnixLimits`** — caps by RLIMIT `nproc` / `nofile` / `as` (each a raw count
+  or a percent-of-limit). Static kernel caps are read **once**; the volatile
+  current usage (e.g. `/proc/self/fd`) is read on `tick`.
+- **`Disk`** — throttles / aborts on low free space per mount (absolute free
+  bytes or percent-of-total).
+
+Key decisions:
+
+- **Metrics are read in-resource, runner-local — NOT via the system-load
+  sampler.** Unlike `CPU` / `Memory` (which consume the sampler's shared
+  `system_load` snapshot, §4.4), these read their own metrics on `tick` (and
+  static kernel caps once). The "extend the sampler to also carry pipe / rlimit /
+  disk metrics" lean is **dropped**: reading `/proc/self/*` in the sampler would
+  count the *sampler's* own FDs, and a 0.2s snapshot races burst spawns. So these
+  metrics are process-local and read **runner-local at assign/tick time**;
+  `CPU` / `Memory` keep using the sampler snapshot as before. All throttling is a
+  **defer** (`0`), bounded by the same starvation floor.
+- **`is_supported` graceful-deactivate.** On an OS where the needed source is
+  absent (e.g. `/proc` on macOS / BSD / Windows), `is_supported` returns false and
+  the resource **deactivates** (no constraints / effectively infinite) with a
+  verbose log — it **never crashes** the run.
+- **Optional deps, lazy-required.** `Disk` needs **`Filesys::Df`** (a Suggests):
+  it is lazy-required whenever the `Disk` resource is used **at all** (both
+  absolute and percent thresholds need free/total bytes; there is no portable core
+  `statvfs`), with an actionable error if requested-but-missing. Off-Linux RLIMIT
+  querying uses **optional `BSD::Resource`** (lazy-required, disable + warn if
+  requested and missing); Linux reads RLIMIT from `/proc` with no dep. Count /
+  percent / size knobs parse via `parse_count_or_pct` / `parse_size_or_pct`
+  (`Test2::Harness2::Util::Units`, survey #11).
+- **No DB persistence (deferred).** The `resources` / `resource_types` telemetry
+  tables **remain deferred** — these resources are **pure runtime throttling with
+  no DB impact**; resource-state persistence rides the later deferred
+  resources-table work, not this port.
+
 ### 4.5 Renderers `[target]`
 
 **Responsibility.** Format and display results — live during a run, and from
@@ -657,6 +699,19 @@ archived runs after the fact. A rewrite of 1.0's renderers.
   archived rendering. The driving loop and the live/archive sources are the §4.12
   render-loop library. *(Forward-looking; the archive half lands with the DB-layer
   rewrite.)*
+- **`ResetTerm` is a default-on-when-TTY terminal-reset renderer (survey #13).**
+  `App::Yath2::Renderer::ResetTerm` is a no-op `render_event` renderer whose
+  `finish` prints a terminal reset (`\e[0m` for attributes, `\e[?25h` to restore
+  the cursor — avoid `\e[=l`) **only when STDOUT is a TTY** (`-t STDOUT`), undoing
+  color/mode a misbehaving test left behind. It is **auto-injected last** in the
+  renderer `'@'` list (current has no `weight` sorting — list order, so
+  *default-injected last* = it runs after every other renderer), and is a free
+  no-op when STDOUT is not a TTY. It is **default-on when STDOUT is a TTY**. It must
+  also fire **on abnormal exit**: the harness abort/teardown path calls renderer
+  `finish()`, and ResetTerm carries an `END`-block fallback so the reset prints on
+  Ctrl-C / panic — it is **not** a renderer-owned signal handler (the harness owns
+  signals, §5.4). Parent is `Test2::Harness2::Renderer`;
+  `Test2::Harness2::Util::HashBase`; no `desired_filters` (no Filter machinery).
 
 **Status — base renderer landed.** The base renderer is
 `Test2::Harness2::Renderer::Base`: it holds a transition-state mirror
@@ -806,6 +861,39 @@ are lowercased on ingest), not via scattered `lc()` calls; the backend still min
 uppercase via `Test2::Util::UUID`. Derivation math (§4.6.2) operates on the 128-bit
 integer, so it is case-irrelevant.
 
+**`job_tries` folded-verdict columns + the retry-recording contract (survey
+#3 / #5).** Each *try* of a job is one `job_tries` row. The runner owns *when*
+to retry (in-memory, DB-free — `Runner/State.pm` re-dispatches with `is_try++`
+on a real failure; the separate-process/DB-driven retry was deliberately removed,
+§4.7); recording is **record-only** — the logger writes **one row per `is_try`**
+and the DB is never the scheduler state. `should_retry` is **runtime-only, not a
+persisted column**; `retry_limit` is **input** and lives in the row's
+`parameters` JSON. The folded-verdict columns:
+
+- **`try_ord`** — **1-based** (= the runner's `is_try`, started at 1 at the
+  source, §4.6.2 — wire `==` db, no translation), the derivation input + ordering.
+- **`result`** — tri-state verdict: **null = in-flight / true = passed / false =
+  failed** — the top-line "did this try pass," distinct from the counts below.
+- **`assertion_count`**, **`pass_count`**, **`fail_count`** — assertion tallies
+  (named `*_count` so they do not collide with the `result` verdict bool — *not*
+  the old `passed`/`failed` names).
+- **`subtests`** (= top-level-subtest count), **`subtests_passed`**,
+  **`subtests_failed`** — the split, **derived** from the auditor's `subtests[]`.
+- **`status`** enum, **`exit_code`**, **`started`** / **`finished`** (+
+  **`duration`**).
+- **`parameters`** JSON (per-try input, incl. `retry_limit`), **`fields`** JSON
+  (directive-derived field shapes, #1).
+- **No `stdout` / `stderr` columns.** They are read on demand from the events
+  artifact blob (§4.6.4); the blob already holds the full output, so they are not
+  duplicated into row state.
+
+**Finalize / fold rule (survey #3).** A job is **resolved** once its tries are
+done. Then **`jobs.passed` = any-try-passed** (some `job_tries.result` is true),
+**`jobs.failed` = resolved && !passed**, and the run aggregates over its resolved
+jobs: **`runs.passed` / `runs.failed` / `runs.retried`** (retried = a job with
+> 1 try). The logger folds these from the try rows (§4.6.5) — there is no
+distinct persisted retry decision.
+
 **§4.6.2 Derived UUIDs (v7-preserving) `[target]`.**
 
 Some run-data UUIDs are **derived** from a base UUID so they are reproducible on
@@ -917,7 +1005,11 @@ renderer (§4.5) — those are separate concerns. It is the *write* side of the 
   per-frame Subscriber tap needed; and (ii) stores each collector's
   `events.jsonl.zst` **whole** as an artifact blob (§4.6.4), importing each blob as
   that collector finalizes (not batched at run-end) to shrink the cleanup race.
-  Binary-extraction (§4.6.3) happens here.
+  Binary-extraction (§4.6.3) happens here. **Retry recording is record-only**
+  (survey #3): the logger writes **one `job_tries` row per `is_try`** and, when a
+  job resolves, folds `jobs.passed = any-try-passed` / `jobs.failed = resolved &&
+  !passed` and the `runs.passed/failed/retried` aggregate (§4.6.1) — the runner
+  owns *when* to retry; the logger only records the verdict.
 - **Early spawn.** `test` / `run` fork+exec's the logger **early** — the ordering
   is **start harness → start logger → queue run** — so it attaches before most
   transitions occur. `workdir` + `run_id` + DB config are handed over via a
@@ -1418,6 +1510,58 @@ rendering a **live run or a stored log**.
   `Event` objects (no shared in-memory command state), so a slow sink (DB writes)
   can later run its loop in a forked child fed events over a pipe — not built yet.
 
+### 4.13 Test-file directives `[target]`
+
+**Responsibility.** Parse the in-file harness directives a test declares (retry,
+timeout, category, duration, stage, conflicts, slots, feature toggles) into a
+single internal representation the harness consumes at queue time. Replaces 1.0's
+inline `App::Yath2::TestFile::_scan` split-based if/elsif loop (which only
+understood flat `HARNESS-…` lines).
+
+**Contract.**
+
+- **A new grammar parser — `Test2::Harness2::Util::Directives`.** A pure,
+  field-agnostic parser for the **`HARNESS2:` grammar**: block form
+  (`key { … key }`), boolean sigils (`@on`/`@off`/`@yes`/`@no`/`@true`/`@false`/
+  `@default`), **dotted keys folded into a nested subtree** (`retry.isolated`,
+  `timeout.event`, `feature.*`, `meta.*`), double-quoted values with escapes, and
+  **line-numbered `croak`** on a bad quote / mismatched-or-unterminated block /
+  collision. It emits the nested-hash internal representation; it makes no harness
+  decisions itself.
+- **A separate legacy compat module** parses the 1.0 `HARNESS-…` lines and
+  **converts them to the same internal representation** the new grammar emits, so
+  everything downstream sees one shape.
+- **Precedence — HARNESS2 presence wins, legacy ignored, silent (E2).** If a file
+  contains **any** `HARNESS2:` directive, parse it with the new grammar and
+  **ignore all legacy `HARNESS-` lines, with no warning** (a mixed file just means
+  the author shipped both; we use ours — no mixed-mode diagnostic). If a file has
+  **no** `HARNESS2:` directive, run the compat parser over its `HARNESS-` lines.
+- **Only `App::Yath2::TestFile` (the file-reading object) scans.** It owns the
+  detect-and-parse step and the `_apply_directives` mapping of the nested hash onto
+  harness fields. The scan **early-terminates** at the first real code line outside
+  an open block (preserving the O(1) header scan, like the current `_scan`'s
+  `last unless …`), with a safety **line-limit ceiling** — it never regexes the
+  whole file. **`Test2::Harness2::TestFile` stays file-free / state-only** (post
+  chunk-14 split): it never loads the parser or reads files, and gains accessors
+  only if the task payload carries already-computed directive fields.
+- **Parse errors → a synthetic harness failure, never an aborted run (E1).** When
+  the parser `croak`s, `App::Yath2::TestFile` **catches** it, marks that file
+  invalid, and **queueing the file emits a harness-visible test failure** — the run
+  continues and the broken file fails on its own. A bad directive in one file never
+  takes down the run or any sibling file.
+- **Structural fields flow to the task.** The structural directives —
+  `retry` / `timeout` / `category` / `duration` / `stage` / `conflicts` / slots —
+  map onto dedicated job fields or the job `parameters` JSON and drive scheduling
+  (they already do; #4.7a's preload-stage directives are part of this set). Timeout
+  values parse to seconds via `parse_duration` (`timeout.event` /
+  `timeout.postexit`); the `duration short|medium|long` directive stays a
+  **scheduling label**, not parsed as seconds (survey #11).
+- **Arbitrary `meta.*` / `feature.*` persistence is DEFERRED (E5).** The free-form
+  `meta.*` / `feature.*` nested subtrees parse fine, but durably persisting them
+  (task-payload + snapshot + logger plumbing into the `fields` JSON columns) is a
+  **future spec**. Only the structural fields above flow to the task / DB now, so
+  this subsystem has **no new DB-schema impact**.
+
 ## 5. Cross-cutting concerns
 
 ### 5.1 Event compression: measured conclusions
@@ -1618,6 +1762,31 @@ Direction of connection (the symmetric service model, §5.2):
   `Test2::Collector::Util::Socket` (`connect_unix`, `open_unix_listen`,
   `write_frame`) for sockets/frames, and `Test2::Collector::Util::Zstd::FrameBuffer`
   for frame-boundary buffering + decompression on reads.
+
+**§5.3a Enumerating runners — `yath list` + `yath ping` `[target]`.** Two new
+commands (`App::Yath2::Command::{list,ping}`, adapted from `reference/pre_ai_2.0`)
+build on the discovery model above:
+
+- **`yath list` — enumerate live persistent runners.** Today discovery is
+  single-symlink-per-prefix with a one-resolve `find()`; `list` adds an
+  **enumerate-all** path as a **Discovery enumeration API**
+  (`App::Yath2::Discovery->list` / `find_runner_links`) that **reuses
+  `find_runner_link`'s dir/name rules** (persist-file / persist-dir /
+  `YATH_PERSISTENCE_DIR` / cwd-walk / the `.<user>-<host>-<project>-yath-runner.sock`
+  basename) rather than a naive glob. It follows each link → liveness-connects →
+  prints every **live persistent** runner, grouped. **Multi-user safe:** an
+  `EACCES` / `ECONNREFUSED` link shows as "inaccessible (other user)" rather than
+  failing, and it cleans **only dangling links owned by the current UID**.
+- **`yath ping` — round-trip latency loop.** It loops on `App::Yath2::Client`:
+  `ping()` → print latency → sleep. This needs a **runner-side ping handler** (a
+  no-side-effect request returning `{ ok => 1, pid, stamp }`) exposed through
+  `Test2::Harness2::Runner::Client` and a **`Client->ping()` method**, then the
+  command loop on top.
+- **Persistent-only (decided).** One-off `yath test` runs have a workdir
+  `runner.socket` but publish no well-known discovery marker, so `list` does not
+  show them — a documented limitation; one-off discovery is a separate, larger
+  change (it would require one-off runs to publish a discoverable marker) and is
+  out of scope.
 
 ### 5.4 Process spawning and reaping `[migrating]`
 
