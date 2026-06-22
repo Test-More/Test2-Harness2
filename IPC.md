@@ -65,10 +65,13 @@ yath test                          COMMAND: client + renderer host
                                  │     │  drives a stage host (Test2::Harness2::Preload::Host; rootpid = the REAL runner pid) -- an independent class, NOT a Runner
                                  │     │  HOSTS the base/default/NOPRELOAD stage in-process (dials runner.socket as 'preload-<base>')
                                  │     │
-                                 │     └─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket, reserved for spawn)
+                                 │     └─ fork ─ [collector:stage-<name>] ─► preload stage  (binds preload-<name>.socket -- `yath spawn` connects here directly)
                                  │                                           │  dials runner.socket as 'preload-<name>'; reports up + receives dispatch
-                                 │                                           └─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] ──► test job (longjump+goto-file via JobLauncher)
-                                 │                                              the collector setsid's + DETACHES; it re-parents UP to the runner (subreaper) ······▲ (reaped there)
+                                 │                                           ├─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] ──► test job (longjump+goto-file via JobLauncher)
+                                 │                                           │     the collector setsid's + DETACHES; it re-parents UP to the runner (subreaper) ······▲ (reaped there)
+                                 │                                           └─ `yath spawn`: fork ─ intermediate (setsid; exits) ─ fork ─ supervisor (NO collector, DETACHED)
+                                 │                                                 dials the command's listen socket, recv_fds STDIN/OUT/ERR, fork ─ script child (longjump+goto-file, NO exec)
+                                 │                                                 reports the child's raw wait status over the control channel; kill(-pgid) on command EOF
                                  │
                                  ├─ spawn ─ [collector:sampler] ─► system-load sampler  (ALWAYS spawned, any run)
                                  │     │  Test2::Harness2::Service::Sampler->run (in-process via the collector's run sub)
@@ -117,9 +120,10 @@ yath start  (spawns the runner; publishes the runner-socket discovery symlink; t
                             │                              ├─ in-process base/default/NOPRELOAD stage (dials runner.socket)
                             │                              └─ fork ─ [collector:stage-<name>] ─► preload stage
                             │                                        │  dials runner.socket as 'preload-<name>';
-                            │                                        │  binds preload-<name>.socket (reserved for spawn)
-                            │                                        └─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] (setsid; DETACHES) ──► test job
-                            │                                           the detached collector re-parents UP to the runner (subreaper) and is reaped there ··▲
+                            │                                        │  binds preload-<name>.socket (`yath spawn` connects here directly)
+                            │                                        ├─ fork ─ intermediate (setsid; exits) ─ fork ─ [collector:job] (setsid; DETACHES) ──► test job
+                            │                                        │  the detached collector re-parents UP to the runner (subreaper) and is reaped there ··▲
+                            │                                        └─ `yath spawn`: fork ─ intermediate (setsid; exits) ─ fork ─ supervisor (NO collector, DETACHED) ─ fork ─ script child (NO exec)
                             ├─ [collector:sampler] ─► system-load sampler  (dials runner.socket as 'sampler'; pushes change-gated system_load; reaped at stop)
                             └─ no-preload: ─ [collector:job] ─► test job  (runner's direct child)
 
@@ -130,7 +134,6 @@ clients connecting IN to runner.socket:
    yath abort   'truncate' request → the runner halts the queue AND terminates the
                 running tests itself (abort intent + terminate control, hard-kill
                 fallback); the command no longer snapshots or signals pids
-   yath spawn   submit a spawn over the socket (acknowledged: fails fast if no live stage)
    yath stop    'stop' request (graceful shutdown)
    yath reload  SIGHUP → the runner's own pid (resolved via the runner-socket
                 symlink → workdir `PID` file). On a
@@ -159,6 +162,10 @@ symlink to the socket + workdir, connect to confirm liveness, and read the workd
 unresponsive. A dangling/connect-fail symlink means the runner is absent (the
 stale symlink is cleaned). The persistent runner stays listening until a `stop`
 request.
+
+`yath spawn` uses the same discovery to find the **workdir**, then connects
+**directly to a preload stage** (`preload-<stage>.socket`), bypassing the runner
+entirely (see the spawn flow below).
 
 ---
 
@@ -286,8 +293,9 @@ self-contained frame, via `Test2::Collector::Util::Socket` (`open_unix_listen` /
 
 | Socket | Server (accepts) | Clients (connect out) | Carries |
 |---|---|---|---|
-| `runner.socket` | the runner | `test`/`run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`; the **preload-root** (handshake: `get_preload_list` / `set_stage_data` / `resolve_file_stages` / `preload_warnings`); the **system-load sampler** (one-way `system_load` reports); every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from preload-root, stage, sampler & job collectors; the bidirectional runner↔stage channel (see below) |
-| `preload-<stage>.socket` (one per preload stage) | that preload stage | nothing yet (**reserved** for `yath spawn`, ARCHITECTURE.md §4.8) | — |
+| `runner.socket` | the runner | `test`/`run`/`stop`/`status`/`ps`/`abort`/`resources`; the **preload-root** (handshake: `get_preload_list` / `set_stage_data` / `resolve_file_stages` / `preload_warnings`); the **system-load sampler** (one-way `system_load` reports); every non-runner collector's reporter; each preload stage (its registered service channel) | control **requests** (+ replies); **transitions** from preload-root, stage, sampler & job collectors; the bidirectional runner↔stage channel (see below) |
+| `preload-<stage>.socket` (one per preload stage) | that preload stage | `yath spawn` connects directly (bypassing the runner, ARCHITECTURE.md §4.8): a `spawn` request `{file, args, env_vars, cwd, abs_path, correlation_id, listen_socket_path}` → async `{ok=>1}` ack | a Role::Service request/response; the stage async double-forks a detached supervisor that dials back to the command's own listen socket |
+| command spawn listen socket (`File::Temp`, `0600`) | the `yath spawn` command | the detached spawn **supervisor** dials back to it | phase 1: SCM_RIGHTS pass of the command's real STDIN/STDOUT/STDERR (`Test2::Harness2::Util::FdPass`); phase 2: the dedicated control mini-protocol (`Test2::Harness2::Util::FdPass::Control`) — supervisor pid, forwarded signals, the child's raw wait status, EOF = command died → kill the spawned process group |
 | `sampler.socket` | the system-load sampler | nothing (**unused**; the sampler dials the runner) | — |
 
 The **preload-root dials** `runner.socket` (it does not listen on a socket of its
@@ -460,7 +468,7 @@ collector events stream like any other, reported over `runner.socket`.)
 |---|---|---|
 | `test` | spawns the runner, then `runner.socket` | submit run + subscribe(run_id) + render |
 | `run` | discover (runner-socket symlink, via `Discovery`/`Pfile`) + `runner.socket` | submit run(run_id) + subscribe(run_id) + render |
-| `spawn` | `runner.socket` | submit a spawn (acknowledged — errors fast if the runner has no live stage for it), then attach to the spawned worker's IO |
+| `spawn` | discover the workdir (runner-socket symlink, via `Discovery`/`Pfile`), then connect **directly to a `preload-<stage>.socket`** (bypasses the runner) | `require_fdpass('yath spawn')` up front; send a `spawn` request → async `{ok=>1}` ack; the supervisor dials back to the command's listen socket, the command `send_fds` its real STDIN/STDOUT/STDERR, then the socket flips to the control protocol (signals + the child's raw wait status). Errors cleanly if no live preload stage exists or IO::FDPass is absent |
 | `watch` | `runner.socket` | subscribe (global) + render runner/stage output |
 | `status` / `ps` / `abort` / `resources` | `runner.socket` | request → `Runner::StatusReport` reply |
 | `stop` | `runner.socket` | graceful `stop` request |

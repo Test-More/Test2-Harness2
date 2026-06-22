@@ -41,10 +41,9 @@ API onto C<send_request>.
 
 Most submissions are B<one-way>: the runner's handler returns no response and the
 client moves on. A few are B<two-way> (acknowledged): they send a request and wait
-for the response whose C<request_id> matches -- the status/abort/reload queries and
-C<queue_spawn> (acknowledged so a spawn submission fails promptly when no live stage
-can run it). Because the protocol makes no ordering assumption, the wait drains the
-connection and matches the reply by id.
+for the response whose C<request_id> matches -- the status/abort/reload queries.
+Because the protocol makes no ordering assumption, the wait drains the connection
+and matches the reply by id.
 
 The runner is a separate process spawned just before submission, so it may not be
 listening yet; the connect retries with a short backoff. An optional
@@ -80,12 +79,6 @@ Submit the run definition.
 
 Submit one task.
 
-=item $ack = $client->queue_spawn($spawn)
-
-Submit one spawn request (C<yath spawn>). Two-way (acknowledged): returns the
-decoded ack hash (C<< {ok =E<gt> 1, queued =E<gt> 1, stage =E<gt> $stage} >> on
-success, or C<< {ok =E<gt> 0, error =E<gt> $msg} >> when no live stage exists), or
-C<undef> if the runner could not be reached.
 
 =item $client->stop_run($run_id)
 
@@ -137,7 +130,6 @@ sub identity ($self) {
 
 sub queue_run    ($self, $run)     { $self->_send('queue_run', run => $run);     return }
 sub queue_task   ($self, $task)    { $self->_send('queue_task', task => $task);  return }
-sub queue_spawn  ($self, $spawn)   { return $self->_request('queue_spawn', spawn => $spawn) }
 sub stop_run     ($self, $run_id)  { $self->_send('stop_run', run_id => $run_id); return }
 sub end_queue    ($self)           { $self->_send('end_queue');                  return }
 sub stop         ($self)           { $self->_send('stop');                       return }

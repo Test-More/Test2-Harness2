@@ -17,8 +17,6 @@ use Test2::Harness2::Runner::Constants;
 
 use Test2::Harness2::Runner::Run;
 
-use Test2::Harness2::Util::UUID qw/gen_uuid/;
-
 use Test2::Harness2::Util::HashBase(
     # These are construction arguments
     qw{
@@ -44,7 +42,6 @@ use Test2::Harness2::Util::HashBase(
         <pending_tasks <task_lookup
         <pending_runs  +run <stopped_runs
         <retained_runs
-        <pending_spawns
 
         <running
         <running_categories
@@ -218,13 +215,6 @@ sub next_task {
     $self->clear_finished_run();
 
     while(1) {
-        if (@{$self->{+PENDING_SPAWNS} //= []}) {
-            my $spawn = shift @{$self->{+PENDING_SPAWNS}};
-            next unless $spawn->{stage} eq $stage;
-            $self->start_spawn($spawn);
-            return $spawn;
-        }
-
         my $task = shift @{$self->{+TASK_LIST}} or return undef;
 
         # If we are replaying a state then the task may have already completed,
@@ -364,63 +354,6 @@ sub _stop_run {
     # Assumes a single active run; must be revisited for concurrent multi-run.
     my $sorted = $self->{+SORTED} //= {};
     delete $sorted->{$_} for grep { 0 == index($_, "$run_id\0") } keys %$sorted;
-
-    return;
-}
-
-sub queue_spawn {
-    my $self = shift;
-    my ($spawn) = @_;
-    $spawn->{spawn} //= 1;
-    $spawn->{id} //= gen_uuid();
-    $self->_queue_spawn($spawn);
-}
-
-# Resolve the stage a spawn would be routed to and report whether that stage is
-# currently a live (ready) preload service. Used by the runner's acknowledged
-# queue_spawn handler so a `yath spawn` aimed at a stage that does not exist (or is
-# down) fails promptly instead of the command blocking on its worker tempfile until
-# that wait's own long timeout. Returns ($stage, $ready_bool).
-sub spawn_stage_ready {
-    my $self = shift;
-    my ($spawn) = @_;
-
-    my $stage = $self->task_stage({%$spawn, use_preload => $spawn->{use_preload} // 1});
-
-    my $ready = $self->stage_is_up($stage) ? 1 : 0;
-
-    return ($stage, $ready);
-}
-
-sub _queue_spawn {
-    my $self = shift;
-    my ($spawn) = @_;
-
-    $spawn->{id} //= gen_uuid();
-    $spawn->{spawn} //= 1;
-    $spawn->{use_preload} //= 1;
-
-    $spawn->{stage} //= 'default';
-    $spawn->{stage} = $self->task_stage($spawn);
-
-    push @{$self->{+PENDING_SPAWNS}} => $spawn;
-
-    return;
-}
-
-sub start_spawn {
-    my $self = shift;
-    my ($spec) = @_;
-    $self->_start_spawn($spec);
-}
-
-sub _start_spawn {
-    my $self = shift;
-    my ($spec) = @_;
-
-    my $uuid = $spec->{id} or die "Could not find UUID for spawn";
-
-    @{$self->{+PENDING_SPAWNS}} = grep { $_->{id} ne $uuid } @{$self->{+PENDING_SPAWNS}};
 
     return;
 }

@@ -6,10 +6,18 @@ our $VERSION = '2.000000';
 
 use Getopt::Yath;
 
+use Carp qw/croak/;
+use Cwd qw/getcwd/;
+use File::Spec();
 use Time::HiRes qw/sleep time/;
-use File::Temp qw/tempfile/;
 
-use Test2::Harness2::Util qw/parse_exit/;
+use Test2::Collector::Util::Socket qw/connect_unix/;
+
+use Test2::Harness2::Util qw/clean_path parse_exit/;
+use Test2::Harness2::Util::FdPass qw/require_fdpass command_listen send_fds/;
+use Test2::Harness2::Util::FdPass::Control();
+use Test2::Harness2::Util::UUID qw/gen_uuid/;
+use Test2::Harness2::Role::Service::Connection();
 
 use parent 'App::Yath2::Command::run';
 use Test2::Harness2::Util::HashBase;
@@ -57,45 +65,6 @@ option_group {group => 'spawn', category => 'spawn options'} => sub {
     );
 };
 
-sub read_line {
-    my ($fh, $timeout) = @_;
-
-    $timeout //= 300;
-
-    my $start = time;
-    while (1) {
-        if ($timeout < (time - $start)) {
-            my @caller = caller;
-            die "Timed out at $caller[1] line $caller[2].\n";
-        }
-        seek($fh, 0, 1) if eof($fh);
-        my $out = <$fh>;
-        unless (defined $out) {
-            sleep 0.02;
-            next;
-        }
-        chomp($out);
-        return $out;
-    }
-}
-
-# Submit the spawn over runner.socket (App::Yath2::Client) like the
-# rest of the persistent path. The State adds id/spawn/use_preload/stage
-# defaults in its _queue_spawn handler runner-side, so the raw args are enough
-# here.
-#
-# Review P2: the submission is acknowledged (two-way). queue_spawn returns the
-# runner's ack hash (or undef if the runner could not be reached at all). The
-# caller inspects it and fails fast if the spawn was not accepted/queued, instead
-# of blindly opening the worker tempfile and waiting on it (its read timeout is
-# long, so a dropped spawn would otherwise hang the command for minutes).
-sub queue_spawn {
-    my $self = shift;
-    my ($args) = @_;
-
-    return $self->submitter->queue_spawn($args);
-}
-
 sub run_script { shift @ARGV // die "No script specified" }
 
 sub stage { $_[0]->settings->spawn->stage }
@@ -135,95 +104,248 @@ sub pre_process_argv {
     shift @ARGV if @ARGV && $ARGV[0] eq '--';
 }
 
-sub sig_handlers { qw/INT TERM HUP QUIT USR1 USR2 STOP WINCH/ }
+# Signals the command traps and forwards over the control channel. A spawned child
+# is setsid'd (no controlling terminal), so terminal-generated signals must be
+# relayed by the command rather than reaching the child natively (ARCHITECTURE.md
+# §4.8 limitation).
+sub sig_handlers { qw/INT TERM HUP QUIT USR1 USR2 WINCH/ }
 
-sub set_sig_handlers {
+# Locate a live preload-<stage>.socket to spawn from. A user-chosen stage (-s) must
+# match exactly; otherwise scan the workdir for any preload-<stage>.socket that
+# accepts a connection, preferring a 'default'/'base' stage. Returns (stage, path).
+sub find_stage_socket {
     my $self = shift;
-    my ($wpid) = @_;
+    my ($workdir) = @_;
 
-    local $@;
-    eval {
-        my $s = $_;
-        $SIG{$s} = sub { kill($s, $wpid) }
-    } for $self->sig_handlers;
+    my $chosen      = $self->stage;
+    my $user_chose  = defined($chosen) && $chosen ne 'default';
+
+    if ($user_chose) {
+        my $path = File::Spec->catfile($workdir, "preload-$chosen.socket");
+        die "No live preload stage '$chosen' is available for spawn (its socket is missing or not accepting).\n"
+            unless $self->_socket_live($path);
+        return ($chosen, $path);
+    }
+
+    my @sockets;
+    if (opendir(my $dh, $workdir)) {
+        for my $entry (sort readdir($dh)) {
+            next unless $entry =~ /^preload-(.+)\.socket$/;
+            push @sockets => [$1, File::Spec->catfile($workdir, $entry)];
+        }
+        closedir($dh);
+    }
+
+    # Prefer a default/base stage, then any other live stage.
+    my @ordered = (
+        (grep { $_->[0] eq 'default' || $_->[0] eq 'base' } @sockets),
+        (grep { $_->[0] ne 'default' && $_->[0] ne 'base' } @sockets),
+    );
+
+    for my $pair (@ordered) {
+        return @$pair if $self->_socket_live($pair->[1]);
+    }
+
+    die "No live preload stage is available for spawn. 'yath spawn' requires a persistent runner started with a preload (yath start -P...).\n";
 }
 
-sub clear_sig_handlers {
+sub _socket_live {
     my $self = shift;
+    my ($path) = @_;
 
-    local $@;
-    eval { my $s = $_; $SIG{$s} = 'DEFAULT' } for $self->sig_handlers;
+    return 0 unless -S $path;
+    my $sock = eval { connect_unix($path) } or return 0;
+    close($sock);
+    return 1;
 }
 
-sub pre_exit_hook { }
+# Open a Role::Service connection to the chosen preload stage and send the spawn
+# request, pumping until the stage's async {ok=>1} ack (or a structured rejection)
+# arrives. Returns the ack hashref. The connection is transient and separate from
+# the IO path (the supervisor dials BACK to our listen socket) -- close it after.
+sub request_spawn {
+    my $self = shift;
+    my ($socket_path, $request) = @_;
+
+    my $fh = connect_unix($socket_path)
+        or die "Could not connect to preload stage socket '$socket_path': $!\n";
+    $fh->blocking(0);
+
+    my $conn = Test2::Harness2::Role::Service::Connection->new(
+        fh          => $fh,
+        outbound    => 1,
+        my_identity => 'yath-spawn',
+    );
+
+    my $request_id = $conn->send_request('spawn', spawn => $request);
+    die "Could not send spawn request to the preload stage (connection lost).\n"
+        unless $request_id;
+
+    my $deadline = time + 30;
+    while (1) {
+        die "Timed out waiting for the preload stage to accept the spawn.\n"
+            if time > $deadline;
+
+        my @events = $conn->drain;
+        for my $event (@events) {
+            next unless $event->{kind} eq 'response';
+            next unless ($event->{request_id} // '') eq $request_id;
+            $conn->close;
+            return $event->{payload} // {};
+        }
+
+        die "The preload stage closed the connection before accepting the spawn.\n"
+            if $conn->closed;
+
+        sleep 0.02 unless @events;
+    }
+}
 
 sub run {
     my $self = shift;
 
     $self->pre_process_argv;
 
-    my $run = $self->run_script;
-    $self->set_pname($run);
+    # Fail early (at the command, before any work) with an actionable message if the
+    # optional fd-passing module is absent -- never as a raw load failure deep in the
+    # stage. 'yath spawn' is meaningless without it (the whole point is handing the
+    # child the real terminal descriptors).
+    require_fdpass('yath spawn');
 
-    my ($fh, $name) = tempfile(UNLINK => 1);
-    close($fh);
+    my $script = $self->run_script;
+    $self->set_pname($script);
 
-    my $ack = $self->queue_spawn({
-        stage    => $self->stage // 'default',
-        file     => $run,
-        owner    => $$,
-        ipcfile  => $name,
-        args     => [@ARGV],
-        env_vars => $self->env_vars,
-    });
+    my $cwd      = clean_path(getcwd());
+    my $abs_path = clean_path(File::Spec->file_name_is_absolute($script) ? $script : File::Spec->catfile($cwd, $script));
 
-    # Review P2: fail fast on a missing/negative submission ack instead of waiting
-    # on the worker tempfile (whose read timeout is long). undef means the runner
-    # could not be reached at all; ok=>0 means it refused/could not route the spawn
-    # (e.g. no live preload stage to run it).
-    die "Could not submit spawn: no persistent runner is reachable.\n"
-        unless defined $ack;
+    my $workdir = $self->workdir;
+
+    my ($stage, $socket_path) = $self->find_stage_socket($workdir);
+
+    # The command listens; the spawned side dials back (ARCHITECTURE.md §4.8). Open
+    # the listen socket up front so its path can ride the spawn request.
+    my ($listen, $listen_path) = command_listen();
+
+    my $correlation_id = gen_uuid();
+
+    my $ack = $self->request_spawn(
+        $socket_path,
+        {
+            file               => $script,
+            abs_path           => $abs_path,
+            cwd                => $cwd,
+            args               => [@ARGV],
+            env_vars           => $self->env_vars,
+            correlation_id     => $correlation_id,
+            listen_socket_path => $listen_path,
+        },
+    );
 
     unless ($ack->{ok}) {
-        my $why = $ack->{error} // 'the runner rejected the spawn';
-        die "Could not submit spawn: $why.\n";
+        my $why = $ack->{error} // 'the preload stage rejected the spawn';
+        die "Could not spawn: $why.\n";
     }
 
-    open($fh, '<', $name) or die "Could not open ipcfile: $!";
-    my $mpid = read_line($fh);
-    my $wpid = read_line($fh);
-    my $win  = read_line($fh);
+    my $exit = $self->bridge_io($listen);
 
-    $self->set_sig_handlers($wpid);
+    $self->pre_exit_hook($exit);
 
-    open(my $wfh, '>>', "/proc/$mpid/fd/$win") or die "Could not open /proc/$mpid/fd/$win: $!";
-    $wfh->autoflush(1);
-    STDIN->blocking(0);
-    while (0 < kill(0, $mpid)) {
-        my $line = <STDIN>;
-        if (defined $line) {
-            print $wfh $line;
-        }
-        else {
-            sleep 0.02;
-        }
-    }
-
-    $self->clear_sig_handlers();
-
-    my $exit = read_line($fh) // die "Could not get exit code";
-    $exit = parse_exit($exit);
     if ($exit->{sig}) {
         print STDERR "Terminated with signal: $exit->{sig}.\n";
+        $SIG{$exit->{sig}} = 'DEFAULT';
         kill($exit->{sig}, $$);
     }
 
     print STDERR "Exited with code: $exit->{err}.\n" if $exit->{err};
 
-    $self->pre_exit_hook($exit);
-
     exit($exit->{err});
 }
+
+# Phase two of the one connection: accept the supervisor's dial-back, pass our REAL
+# STDIN/STDOUT/STDERR over SCM_RIGHTS (the child reads/writes the real terminal,
+# the command leaves the byte path entirely), then flip the same socket to the
+# dedicated control protocol. Trap + forward signals to the supervisor (a setsid'd
+# child cannot receive terminal-generated signals natively), and block on the
+# control channel until the supervisor reports the child's raw wait status. Returns
+# the parsed exit (sig/err). Closing the control connection (or the command dying)
+# is the supervisor's "kill the child" signal -- the spawned process is bound to its
+# command (ARCHITECTURE.md §4.8).
+sub bridge_io {
+    my $self = shift;
+    my ($listen) = @_;
+
+    my $conn = $self->_accept_supervisor($listen);
+    close($listen);
+
+    send_fds($conn, [fileno(\*STDIN), fileno(\*STDOUT), fileno(\*STDERR)]);
+
+    my $ctl = Test2::Harness2::Util::FdPass::Control->new(fh => $conn);
+
+    # The supervisor announces its pid as the first control frame.
+    my $hello = $ctl->read_message;
+    die "The spawn supervisor closed the control channel before reporting itself.\n"
+        unless $hello && $hello->{hello};
+
+    $self->_install_sig_forwarding($ctl);
+
+    my $status = 0;
+    while (1) {
+        my $msg = $ctl->read_message;
+        last if $ctl->closed && !$msg;
+
+        if ($msg && $msg->{exit_status}) {
+            $status = $msg->{exit_status}{status} // 0;
+            last;
+        }
+    }
+
+    $self->_clear_sig_forwarding();
+    $ctl->close;
+
+    return parse_exit($status);
+}
+
+sub _accept_supervisor {
+    my $self = shift;
+    my ($listen) = @_;
+
+    $listen->blocking(0);
+
+    my $deadline = time + 30;
+    while (1) {
+        my $conn = $listen->accept;
+        if ($conn) {
+            $conn->blocking(1);
+            return $conn;
+        }
+
+        die "Timed out waiting for the spawn supervisor to connect back.\n"
+            if time > $deadline;
+
+        sleep 0.02;
+    }
+}
+
+sub _install_sig_forwarding {
+    my $self = shift;
+    my ($ctl) = @_;
+
+    for my $sig ($self->sig_handlers) {
+        $SIG{$sig} = sub { $ctl->send_signal($sig) };
+    }
+
+    return;
+}
+
+sub _clear_sig_forwarding {
+    my $self = shift;
+
+    $SIG{$_} = 'DEFAULT' for $self->sig_handlers;
+
+    return;
+}
+
+sub pre_exit_hook { }
 
 1;
 

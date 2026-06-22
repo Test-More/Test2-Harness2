@@ -620,7 +620,7 @@ reap, or attach C<kill(0)>).
 The run/task/end-queue submission transport: a (cached)
 L<Test2::Harness2::Runner::Client> bound to C<< $workdir/runner.socket >> and given
 the L</liveness_check>. Exposes C<queue_run>, C<queue_task>, C<stop_run>,
-C<end_queue>, C<halt_run>, C<queue_spawn>, and the stage-reporting requests.
+C<end_queue>, C<halt_run>, and the stage-reporting requests.
 
 =item $hash = $client->reload_state
 

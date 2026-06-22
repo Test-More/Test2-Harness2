@@ -52,7 +52,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ✅ | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
 | 12 | Discovery via runner-socket symlink + PID-file fallback (§5.3) | ✅ (`App::Yath2::Discovery`) | — |
-| 13 | `spawn` bypasses runner: direct `Preload::Host` socket, **SCM_RIGHTS fd-pass** of real STDIN/OUT/ERR, supervisor (no exec → longjump preload path) + dedicated control protocol, kill-on-command-EOF, no collector (§4.8) — needs 12, 29, 30 | ⬜ | #39 |
+| 13 | `spawn` bypasses runner: direct `Preload::Host` socket, **SCM_RIGHTS fd-pass** of real STDIN/OUT/ERR, supervisor (no exec → longjump preload path) + dedicated control protocol, kill-on-command-EOF, no collector (§4.8) — needs 12, 29, 30 | ✅ | #39 |
 | 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only object (§1) | ✅ | — |
 | 15 | Final renderer ordering (per-job-only guarantee) + `--live` tail-all-events feeder (default-on in interactive) | ✅ | #44 |
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | #13 (%SORTED concurrency); #12 (run lifecycle, primary home ch22) |
@@ -169,7 +169,8 @@ carry the specifics.
   dropped (liveness is the socket connect; the runner's `settings.json` carries
   config). See ARCH §5.3 "Implemented (chunk 12)".
 
-- **Chunk 13 — `spawn` bypasses the runner (§4.8) — needs 12, 29, 30.** `spawn`
+- **Chunk 13 — `spawn` bypasses the runner (§4.8) — needs 12, 29, 30. ✅ DONE**
+  (`680c6d9c5` / `f5b85aca6` / `fa751c2df`). `spawn`
   discovers + connects **directly** to an available preload stage (`Preload::Host`,
   which gains a new `request_handler_spawn` that async-double-forks a supervisor and
   acks `{ok=>1}`). IO sharing is **SCM_RIGHTS fd-passing** (chunk 29): the command
