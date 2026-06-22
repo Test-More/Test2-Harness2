@@ -7,6 +7,48 @@ Newest first.
 
 ---
 
+## TIER 5 batch (2026-06-21) — #38 / #41 / #42 built in parallel (worktree sub-agents)
+
+Three TIER-5 chunks implemented concurrently by isolated worktree sub-agents and
+integrated onto `2.0d` one at a time, full suite green after each. (ch21 ran in the
+same batch — its own entry below.)
+
+- **#38 / chunk 29 — FdPass primitive — DONE (`2feed5304` + `59dd29a05`).**
+  `Test2::Harness2::Util::FdPass`: SCM_RIGHTS `send_fds`/`recv_fds` (per-fd loop,
+  EINTR-retried) + `command_listen`/`target_connect` (private `0700` dir, `0600`
+  random-named socket under the `sun_path` cap, `FD_CLOEXEC`) + `fdpass_available`/
+  `require_fdpass` guards over an OPTIONAL `IO::FDPass` (Recommends in `dist.ini`;
+  actionable die when absent; the lean test/run/start path never loads it). Foundational
+  — no consumers yet (#39 spawn, #40 interactive). Integration notes: the agent's
+  worktree had a STALE base, so the 2 commits were cherry-picked (resolved the `dist.ini`
+  Suggests block by hand); and a real test bug was fixed on integration — the unit test
+  did `skip_all` *after* running guard assertions ("planned 0 ran 3") when `IO::FDPass`
+  is absent (the CI reality); restructured to end cleanly after the absent-path guards.
+- **#41 / chunk 30 — Harness-client library — DONE (`d3f4800e8` + `8e23cd887`).**
+  `App::Yath2::Client` grown into the single `runner.socket` bridge (§4.11, Option A):
+  runner-lifecycle mode enum (transient = spawn/own/reap + trap-forward signals; attach =
+  discover + `kill(0)` liveness; start = spawn daemon), `RunPlan` absorbed (finders +
+  job-spec), state queries over the mirrored Monitor (`jobs_in_state`/`events_file_for`/
+  `run_done`/`run_health`). `test`/`run`/`start` + `watch`/`stop`/`abort`/`kill`/`status`/
+  `resources` thinned onto it; the `run extends test` override pile + inline runner
+  spawn/reap/signal removed (~250 lines). Folded in the ch21 follow-up (dead
+  `use Test2::Harness2::IPC;` dropped from run/start). No backend changes needed.
+- **#42 / chunk 31 — Render-loop library — DONE (`33f5a59ec` + `7a2e6bf9b`).**
+  `App::Yath2::RenderLoop` owns dispatch fan-out + sink lifecycle (`step`/`finish`/
+  `signal`) + run rollup, driving a swappable pure `Producer` (`poll`/`done`):
+  `LiveProducer` (reuses `Renderer::Driver` in a new collect mode — per-job ordering +
+  the bounded-terminal false-FAIL fix preserved) and `JSONLFileProducer` (keeps `replay`
+  working). `test`/`run`/`watch`/`replay` drop their bespoke loops. Backend seam: a
+  `dispatch_cb` slot on `Renderer::Base`. `ArchiveProducer` (DB log) deferred to the DB
+  rewrite. Reviewer note: the loop holds its own `Base` sink for fan-out while
+  `LiveProducer` holds the `Driver` for ordering — two-instance dispatch, validated
+  across concurrency/retry/failed integration tests.
+
+Verified after the final merge: `prove -j16` 2× (123 files, 1850 tests, 0
+silence-timeouts) + `yath test -D` (124) green.
+
+---
+
 ## Chunk 21 / #8 — IPC controller collapse re-audit — DONE (`bc2cb3379` + docs)
 
 Chunk 21 ("collapse the `Test2::Harness2::IPC` controller to spawn + zombie-reap on

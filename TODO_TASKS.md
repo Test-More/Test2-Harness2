@@ -795,7 +795,11 @@ representation. No behavior change.
 > 29/13/20/30/31.
 
 ### #38 — Socket FD-pass primitive `Test2::Harness2::Util::FdPass`
-**Status:** Decided · **Step:** 29 · **Gates:** #39, #40
+**Status:** ✅ DONE (`2feed5304` + `59dd29a05`) — `Test2::Harness2::Util::FdPass`
+(SCM_RIGHTS `send_fds`/`recv_fds` + `command_listen`/`target_connect`; optional
+`IO::FDPass`, actionable die when absent) + unit test (round-trip gated on the module;
+the guard/absent path is always exercised). No consumers yet (#39 spawn / #40
+interactive). · **Step:** 29 · **Gates:** #39, #40
 
 **Problem:** spawn + interactive need to give a child the user's *real* terminal fd
 (single keystrokes, raw mode, debugger-correct), not a byte proxy. The 1.0 `/proc`
@@ -882,7 +886,12 @@ the real terminal fds, preserve the preload, deliver real wait status.
   mode, `/dev/tty`, Ctrl-C, Ctrl-Z, WINCH. Remove the FIFO patch. ARCHITECTURE §4.10.
 
 ### #41 — Harness-client library (grow `App::Yath2::Client`, Option A)
-**Status:** Decided · **Step:** 30
+**Status:** ✅ DONE (`d3f4800e8` + `8e23cd887`) — `App::Yath2::Client` owns the
+runner-lifecycle mode enum (transient/attach/start), absorbs `RunPlan` (finders +
+job-spec), exposes state queries over the mirrored Monitor; `test`/`run`/`start`/`watch`/
+`stop`/`abort`/`kill`/`status`/`resources` thinned onto it (the `run extends test`
+override pile + inline runner spawn/reap/signal gone, ~250 lines). Dead IPC imports
+dropped from run/start (ch21 follow-up). No backend changes needed. · **Step:** 30
 
 **Problem:** `test`/`run`/`start` repeat work and lean on complex polymorphism
 (`run extends test` with ~12 overrides; runner spawn/reap/signal inline in `test.pm`).
@@ -903,7 +912,12 @@ the real terminal fds, preserve the preload, deliver real wait status.
   ARCHITECTURE §4.11.
 
 ### #42 — Render-loop library (`RenderLoop` + `Producer`, Option A)
-**Status:** Decided · **Step:** 31
+**Status:** ✅ DONE (`33f5a59ec` + `7a2e6bf9b`) — `App::Yath2::RenderLoop` (owns dispatch
+fan-out + sink lifecycle + rollup; `iterate()`/`start()`) + pure `Producer` role;
+`LiveProducer` (Driver in collect mode — per-job ordering + bounded-terminal false-FAIL
+fix preserved) + `JSONLFileProducer` (replay). `test`/`run`/`watch`/`replay` drop their
+bespoke loops. Backend seam: `Renderer::Base` `dispatch_cb`. `ArchiveProducer` deferred
+to the DB rewrite. · **Step:** 31
 
 **Problem:** the render loop is duplicated across `test`/`run` (inherited),
 `watch` (own loop), and `replay` (own loop, bypasses `Renderer::Base`). RL-1/RL-2 of
