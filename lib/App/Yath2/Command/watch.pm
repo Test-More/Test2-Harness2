@@ -4,11 +4,11 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Time::HiRes qw/sleep/;
-
 use Test2::Harness2::Renderer::Base;
-use Test2::Harness2::Runner::Monitor;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
+
+use App::Yath2::RenderLoop;
+use App::Yath2::RenderLoop::LiveProducer;
 
 use parent 'App::Yath2::Command::run';
 use Test2::Harness2::Util::HashBase;
@@ -48,42 +48,48 @@ sub run {
     my $data = $self->pfile_data;    # prints the discovery banner, dies if none
     $self->{+RUNNER_PID} = $data->{pid};
 
-    my $renderer = $self->runner_renderer;
-
     # Global subscription: no run_id, so the runner forwards every run's frames
-    # plus the global/runner-lifecycle frames. If the runner cannot be reached
-    # (it died), fall back to a standalone monitor so step_runner_output still
-    # tails the recorded runner events file by path.
-    my $sub     = $self->client->connect_subscriber;
-    my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
+    # plus the global/runner-lifecycle frames. If the runner cannot be reached (it
+    # died), the LiveProducer falls back to a standalone monitor so the base
+    # renderer still tails the recorded runner events file by path.
+    my $sub = $self->client->connect_subscriber;
 
-    while (1) {
-        $_->step for @{$self->renderers};
+    # A runner-output-only LiveProducer (the engine is a plain Renderer::Base, so
+    # it tails runner/stage output and does no per-job ordering or run rollup). It
+    # exits only on an idle tick once a stop condition holds: STOP means stop as
+    # soon as nothing new is pending; otherwise watch until the runner goes away
+    # (its persist file vanishes / its socket closes).
+    my $producer;
+    $producer = App::Yath2::RenderLoop::LiveProducer->new(
+        engine     => $self->runner_renderer,
+        subscriber => $sub,
+        done_check => sub {
+            return 0 unless $producer->idle;
+            return 1 if $stop;
+            return 1 if $sub && $sub->closed;
+            return 1 unless -f $self->pfile->path;
+            return 0;
+        },
+    );
 
-        my $count = 0;
-        $count += $sub->poll if $sub;
-        $renderer->step_runner_output($monitor);
+    my $loop = App::Yath2::RenderLoop->new(
+        renderers => $self->renderers,
+        settings  => $self->settings,
+        run_id    => $producer->engine->run_id,
+        plugins   => $self->settings->harness->plugins,
+        producer  => $producer,
+    );
 
-        # Exit conditions equivalent to the old flat-tail loop: with STOP, exit
-        # as soon as there is nothing new; otherwise keep watching until the
-        # runner goes away (its persist file vanishes / its socket closes).
-        if (!$count) {
-            last if $stop;
-            last if $sub && $sub->closed;
-            last unless -f $self->pfile->path;
-        }
-
-        sleep 0.02;
-    }
-
-    $_->finish for @{$self->renderers};
+    $loop->start;
+    $loop->finish;
 
     return 0;
 }
 
-# A reusable base renderer wired to this command's terminal renderers (Formatter).
-# It owns the events-file-by-path location + runner/stage output tail; watch only
-# drives step_runner_output (it renders runner/global output, not per-job state).
+# The runner-output render ENGINE: a base renderer that owns the
+# events-file-by-path location + the runner/stage output tail. watch only drives
+# step_runner_output through it (runner/global output, not per-job state). It runs
+# in COLLECT mode (no sink renderers) -- the render loop owns the dispatch fan-out.
 sub runner_renderer {
     my $self = shift;
 
@@ -94,15 +100,14 @@ sub runner_renderer {
         if $settings->check_group('display');
 
     # The watch session is a GLOBAL subscriber with no run scope; runner/stage
-    # output is run-level, but the events it dispatches still need a run_id (the
-    # harness Event requires one). Use a synthetic per-session id.
+    # output is run-level, but the events it emits still need a run_id (the harness
+    # Event requires one). Use a synthetic per-session id.
     return Test2::Harness2::Renderer::Base->new(
         settings           => $settings,
-        renderers          => $self->renderers,
+        renderers          => [],
         workdir            => $self->workdir,
         run_id             => gen_uuid(),
         show_runner_output => $show_runner_output,
-        plugins            => $settings->harness->plugins,
     );
 }
 

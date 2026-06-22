@@ -16,6 +16,8 @@ use Test2::Harness2::Renderer::Driver;
 
 use App::Yath2::RunPlan;
 use App::Yath2::Client;
+use App::Yath2::RenderLoop;
+use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
 use Test2::Harness2::Util qw/mod2file open_file runner_events_file/;
@@ -47,6 +49,7 @@ use Test2::Harness2::Util::HashBase qw/
     +pending_tasks
 
     +driver
+    +render_loop
 
     <cleanup_subs
 
@@ -225,7 +228,15 @@ sub handle_sig {
     my $self = shift;
     my ($sig) = @_;
 
-    eval { $_->signal($sig) } for grep { $_->can('signal') } @{$self->renderers};
+    # Forward the signal to the renderers and stop the render loop. When the loop
+    # exists it both relays to the renderers and marks itself so start() returns;
+    # before it exists (a signal during setup) relay straight to the renderers.
+    if (my $loop = $self->{+RENDER_LOOP}) {
+        $loop->signal($sig);
+    }
+    else {
+        eval { $_->signal($sig) } for grep { $_->can('signal') } @{$self->renderers};
+    }
 
     print STDERR "\nCaught SIG$sig, forwarding signal to child processes...\n";
     $self->signal_runner($sig);
@@ -353,8 +364,8 @@ sub submitter {
 #
 # If the runner dies before it ever binds/accepts on the socket (e.g. a broken
 # preload that takes the runner down during startup), the connect fails. That is
-# not fatal here: render_via_subscription falls back to a standalone empty monitor
-# so the driver still tails runner-output (the runner's failure renders from
+# not fatal here: the LiveProducer falls back to a standalone empty monitor so the
+# driver still tails runner-output (the runner's failure renders from
 # runner-events / "no tests seen") and a dead runner ends the loop. Return undef
 # in that case.
 sub subscriber {
@@ -372,13 +383,14 @@ sub connect_subscriber {
     return $self->client->connect_subscriber(run_id => $self->{+RUN_ID});
 }
 
-# The command-side renderer driver. It folds the subscription mirror
-# into rendered output with per-job ordering and computes the run-level
-# harness_final rollup command-side.
+# The command-side renderer ENGINE: a Renderer::Driver that folds the subscription
+# mirror into per-job-ordered events and computes the run-level harness_final
+# rollup. It runs in COLLECT mode -- it gets no sink renderers; the render loop
+# owns the dispatch fan-out (logger / renderers / plugins). The engine keeps the
+# run + task list it needs for ordering and the runner-output tail.
 sub driver {
     my $self = shift;
 
-    my $logger   = $self->logger;
     my $settings = $self->settings;
 
     my $show_runner_output = 1;
@@ -387,118 +399,58 @@ sub driver {
 
     return $self->{+DRIVER} //= Test2::Harness2::Renderer::Driver->new(
         settings           => $settings,
-        renderers          => $self->renderers,
-        logger             => $logger,
+        renderers          => [],
         run                => $self->build_run,
         run_id             => $self->{+RUN_ID},
         workdir            => $self->workdir,
         show_runner_output => $show_runner_output,
         tasks              => $self->{+PENDING_TASKS} // [],
-        plugins            => $settings->harness->plugins,
     );
+}
+
+# The render loop for the transient path: an App::Yath2::RenderLoop driving a
+# LiveProducer (the per-job-ordering Driver engine + the runner subscription
+# mirror). The loop owns dispatch / sink lifecycle / rollup; the producer is the
+# pure source. Completion is decided by subscription_complete (socket EOF for the
+# transient runner; the persistent `run` path overrides it to key on run_done).
+sub render_loop {
+    my $self = shift;
+
+    return $self->{+RENDER_LOOP} //= do {
+        my $sub = $self->connect_subscriber;
+
+        my $producer = App::Yath2::RenderLoop::LiveProducer->new(
+            engine     => $self->driver,
+            subscriber => $sub,
+            done_check => sub { $self->subscription_complete($sub) ? 1 : 0 },
+        );
+
+        App::Yath2::RenderLoop->new(
+            renderers => $self->renderers,
+            logger    => scalar($self->logger),
+            settings  => $self->settings,
+            run_id    => $self->{+RUN_ID},
+            plugins   => $self->settings->harness->plugins,
+            producer  => $producer,
+        );
+    };
 }
 
 sub render {
     my $self = shift;
-    return $self->render_via_subscription();
-}
 
-# Transient render path. Drive the renderers/loggers entirely from the
-# runner subscription (Runner::Subscriber mirrors the runner's canonical state)
-# and from each job's events.jsonl.zst fetched by path at completion. There is
-# no yath-side gatherer on this path: the runner is the completion /
-# stalled-job / timeout / verdict authority, so completion comes from the runner
-# closing its socket (Subscriber::closed) once the run is done and its jobs are
-# reaped, not from a gatherer sentinel.
-sub render_via_subscription {
-    my $self = shift;
+    my $loop = $self->render_loop;
 
-    my $sub    = $self->connect_subscriber;
-    my $driver = $self->driver;
+    # The loop owns the iteration; each tick also reaps the one runner child (the
+    # runner lifecycle stays in the command). A delivered signal short-circuits the
+    # loop (the loop checks its own signalled flag, set via handle_sig).
+    $loop->start(sub { $self->reap_runner });
 
-    # The runner may have died before binding its socket (bad preload). Without a
-    # subscription there is no live mirror; use a standalone empty monitor so the
-    # driver still tails runner output (the runner's failure renders from
-    # runner-events / "no tests seen") and a dead runner ends the loop.
-    require Test2::Harness2::Runner::Monitor;
-    my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
+    return if $self->{+SIGNAL};
 
-    while (1) {
-        return if $self->{+SIGNAL};
-        $_->step for @{$self->renderers};
-
-        $sub->poll if $sub;
-        $driver->step($monitor);
-
-        # Completion: the runner shuts down (and closes the socket) once the
-        # transient run is done and its job children are reaped. A clean EOF on
-        # the subscription (Subscriber::closed) -- or, with no subscription, a
-        # dead runner process -- ends the loop. poll() drains all buffered frames
-        # before flagging EOF, so the mirror is whole; drain once more before
-        # finalize to fold anything batched with the close. The persistent `run`
-        # path overrides subscription_complete to key on its run's announced end
-        # instead (the persistent runner keeps its socket open across runs).
-        my $done = $self->subscription_complete($sub);
-
-        if ($done) {
-            $sub->poll if $sub;
-            $self->drain_runner_output($driver, $monitor, $sub);
-            $driver->finalize($monitor);
-            $self->{+FINAL_DATA}   = $driver->final_data;
-            $self->{+TESTS_SEEN}   = $driver->tests_seen;
-            $self->{+ASSERTS_SEEN} = $driver->asserts_seen;
-            return;
-        }
-
-        $self->reap_runner;
-        sleep 0.02;
-    }
-}
-
-# How long to wait, at most, for the runner's collector to flush the runner's
-# trailing stdout into runner-events.jsonl.zst after the runner has signalled
-# completion. The runner closes its runner.socket the instant its service stops,
-# which can beat its collector PARENT flushing the runner's last print (e.g. a
-# resource-cleanup line) into runner-events -- a different channel than the
-# socket. Bounded so a runner whose collector never writes the terminal record
-# (e.g. it was killed) cannot hang the command; the drain is condition-driven
-# (read until the runner-events terminal), this is only the fallback.
-sub DRAIN_RUNNER_OUTPUT_TIMEOUT() { 5 }
-
-# On completion, pull the runner's trailing output into the log before finalizing.
-# The completion trigger is the runner closing its socket (or, with no
-# subscription, the runner process going away), but the runner's own stdout flows
-# through its collector wrapper's pipe into runner-events.jsonl.zst -- a separate
-# channel that may not be flushed when the socket closes. Keep tailing
-# runner-events until its terminal record (the runner collector's
-# harness_process_exit, which RunnerReader treats as done) is read, or a bounded
-# timeout elapses.
-#
-# This drain only blocks when the RUNNER is shutting down: the transient path's
-# completion is the runner closing its socket (Subscriber::closed), and a missing
-# subscription means the runner is already gone. A persistent runner that merely
-# finished THIS run (subscription still open, run_done) keeps running and never
-# writes a runner terminal, so for it we do a single tail pass and return --
-# never waiting the timeout per run (which would regress persist.t timing).
-sub drain_runner_output {
-    my $self = shift;
-    my ($driver, $monitor, $sub) = @_;
-
-    # A single tail pass always; enough on its own when the runner output is
-    # already complete in the file.
-    $driver->step_runner_output($monitor);
-
-    # Persistent runner still serving (socket open) -- it is not exiting, so there
-    # is no runner terminal record to wait for. Do not block.
-    return if $sub && !$sub->closed;
-
-    my $start = time;
-    until ($driver->runner_output_done) {
-        last if (time - $start) > DRAIN_RUNNER_OUTPUT_TIMEOUT;
-        $sub->poll if $sub;
-        $driver->step_runner_output($monitor);
-        sleep 0.02;
-    }
+    $self->{+FINAL_DATA}   = $loop->final_data;
+    $self->{+TESTS_SEEN}   = $loop->tests_seen;
+    $self->{+ASSERTS_SEEN} = $loop->asserts_seen;
 
     return;
 }

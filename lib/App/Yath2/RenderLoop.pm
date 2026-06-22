@@ -14,6 +14,7 @@ use Test2::Harness2::Util::HashBase qw{
     <producer
     <settings
     <run_id
+    +plugins
 
     +sink
     +signalled
@@ -111,6 +112,11 @@ The injected L<App::Yath2::RenderLoop::Producer>.
 =item run_id
 
 The run settings and id, threaded into the dispatch sink.
+
+=item plugins
+
+The harness plugins (optional). Their C<annotate_event> / C<handle_event> hooks
+run in the dispatch fan-out.
 
 =back
 
@@ -262,6 +268,7 @@ sub sink ($self) {
         renderers => $self->{+RENDERERS},
         logger    => $self->{+LOGGER},
         run_id    => $self->{+RUN_ID},
+        plugins   => $self->{+PLUGINS} // [],
     );
 }
 

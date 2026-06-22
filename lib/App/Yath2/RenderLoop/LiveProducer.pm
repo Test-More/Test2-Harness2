@@ -17,6 +17,7 @@ use Test2::Harness2::Util::HashBase qw{
 
     +queue
     +finalized
+    <idle
 };
 
 use Role::Tiny::With;
@@ -136,6 +137,12 @@ emitted this tick.
 
 True once the injected C<done_check> reports the source exhausted.
 
+=item $bool = $producer->idle
+
+True when the most recent C<poll> yielded no events. A C<done_check> can use this
+to wait for output to drain before declaring the source done (the C<watch> view
+exits only on an idle poll once its stop condition holds).
+
 =item @events = $producer->finalize
 
 A final drain + the engine's final sweep + the run rollup (per-job mode only),
@@ -162,7 +169,7 @@ sub asserts_seen ($self) { return $self->{+ENGINE}->asserts_seen }
 
 sub poll ($self) {
     my $sub = $self->{+SUBSCRIBER};
-    $sub->poll if $sub;
+    my $folded = $sub ? ($sub->poll // 0) : 0;
 
     my $engine  = $self->{+ENGINE};
     my $monitor = $self->{+MONITOR};
@@ -174,7 +181,14 @@ sub poll ($self) {
         $engine->step($monitor);
     }
 
-    return $self->_drain_queue;
+    my @events = $self->_drain_queue;
+
+    # Idle = nothing happened this tick: no subscription frames folded AND no
+    # events rendered. A done_check can wait for an idle tick before declaring the
+    # source done (so trailing output drains first).
+    $self->{+IDLE} = (!$folded && !@events) ? 1 : 0;
+
+    return @events;
 }
 
 sub finalize ($self) {
