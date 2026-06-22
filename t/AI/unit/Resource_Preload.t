@@ -88,7 +88,7 @@ subtest advisory_miss_falls_to_default => sub {
         "advisory + listed stage down => 1 (falls to default)");
 };
 
-subtest startup_timeout_backstop => sub {
+subtest startup_timeout_safeguard => sub {
     require Getopt::Yath::Settings;
 
     # ALPHA is present in the map but not up (restarting). With a 5s per-stage
