@@ -986,6 +986,37 @@ resource-consumption half was deferred there.)
 - Record an ARCHITECTURE §4.4 addendum (fill the previously-undefined gating policy) +
   an AI_DOC.
 
+### #44 — Final renderer ordering + `--live` feeder (chunk 15)
+**Status:** ✅ DECIDED (2026-06-21, with the user) — ready to implement · **Step:** 15 ·
+**Depends:** #42 (render-loop, done)
+
+**Decided contract (the previously-undefined §4.5 "final ordering guarantees"):**
+- **Ordering guarantee = per-JOB chronological only, NOT cross-job.** A job's own events
+  always render in order; events from *different* jobs may interleave. (Cross-job
+  chronological is explicitly NOT a guarantee.)
+- **Default (non-live) feed = transitions-live, events-at-end.** The feeder reports each
+  job's transitions as they arrive, then renders that job's full event stream just
+  before its end is reported (this is the current `Renderer::Driver` per-job
+  render-on-completion shape — now FORMALIZED as the default, no longer "interim TBD").
+- **New `--live` flag** (default OFF; **default ON in interactive mode**): the feeder
+  **tails ALL `events.jsonl.zst` logs as they appear** and streams each event to the
+  renderers in arrival order — like 1.0 did with the files it wrote. Under concurrency
+  this **interleaves** job output; that is fine because every event already carries its
+  job / process / collector identity, so a renderer that cares marks them distinctly
+  (the default renderer already shows a per-output-item **job index** — verify + reuse).
+- **Interactive mode** (chunk 20 / #40, separate) by nature needs live event feeding +
+  `-v` + `-j1`; it therefore turns `--live` ON and, being single-job, never interleaves.
+  Wire the interactive⇒`--live` default as a hook now even though #40 lands later.
+
+**Implementation:** add the `--live` option; give `App::Yath2::RenderLoop::LiveProducer`
+a live/tail mode (poll + tail every appearing `events.jsonl.zst`, emit events as read,
+vs the default complete-on-end read); confirm events carry job/collector identity end to
+end and the default renderer's job-index marking is present (add if missing); keep the
+per-job-in-order / cross-job-interleave invariant. Tests: `--live` interleaved multi-job
+stream with correct per-item job attribution + ordering-within-job; default mode
+unchanged. Record an ARCHITECTURE §4.5 addendum (the now-pinned contract) + flip
+`Renderer::Driver`'s "interim" framing.
+
 ---
 
 ## Explicitly justified — do NOT cut

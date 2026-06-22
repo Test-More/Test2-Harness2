@@ -54,7 +54,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 12 | Discovery via runner-socket symlink + PID-file fallback (§5.3) | ✅ (`App::Yath2::Discovery`) | — |
 | 13 | `spawn` bypasses runner: direct `Preload::Host` socket, **SCM_RIGHTS fd-pass** of real STDIN/OUT/ERR, supervisor (no exec → longjump preload path) + dedicated control protocol, kill-on-command-EOF, no collector (§4.8) — needs 12, 29, 30 | ⬜ | #39 |
 | 14 | Split `Test2::Harness2::TestFile` → `App::Yath2` reader + state-only object (§1) | ✅ | — |
-| 15 | Final renderer ordering (cross-job, post-§4.5 interim) | ⬜ | — |
+| 15 | Final renderer ordering (per-job-only guarantee) + `--live` tail-all-events feeder (default-on in interactive) | ⬜ (design ✅, ready) | #44 |
 | 16 | Concurrent run execution + run-scoped preload stages (§6.1) — needs 9,10 | ⬜ | #13 (%SORTED concurrency); #12 (run lifecycle, primary home ch22) |
 | 17 | Plugin setup/teardown move to the runner; aux output → collectors; retire aux_logs flat files | ✅ | — |
 | 18 | Collectors watch the runner pid → self-terminate if runner dies (§4.1) + audit gate | ✅ | — |
