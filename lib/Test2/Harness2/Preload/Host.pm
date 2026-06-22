@@ -278,6 +278,88 @@ sub request_handler_run_task {
     return undef;
 }
 
+# `yath spawn` connects DIRECTLY to this stage's preload-<stage>.socket (bypassing
+# the runner -- ARCHITECTURE.md §4.8) and requests a spawn: launch the user's
+# script from THIS preloaded interpreter, attached to the command's real terminal,
+# detached from the harness lifecycle. The request carries the command's listen
+# socket path; the spawned side dials back to it and the command passes its real
+# STDIN/STDOUT/STDERR over SCM_RIGHTS.
+#
+# This handler ACKs ({ok=>1}) WITHOUT blocking the host service loop: it
+# double-forks + setsid's a detached SUPERVISOR (which holds the preloaded image,
+# having forked from this preloaded stage) that does the dial-back, fd-receive,
+# script-child fork, and exit-status reporting on its own. The host reaps the
+# short-lived intermediate (pure zombie cleanup) and never watches the detached
+# supervisor.
+sub request_handler_spawn {
+    my $self = shift;
+    my ($payload, $conn) = @_;
+
+    require Test2::Harness2::Runner::JobLauncher;
+
+    my $spawn = $payload->{spawn} // {};
+
+    my $file = $spawn->{abs_path} // $spawn->{file};
+    return {ok => 0, error => 'spawn request missing a script path'}
+        unless defined $file && length $file;
+
+    return {ok => 0, error => 'spawn request missing the command listen_socket_path'}
+        unless defined $spawn->{listen_socket_path} && length $spawn->{listen_socket_path};
+
+    # Build the detached, non-collected spawn job from the request. ch_dir is the
+    # command's cwd so a relative script path / __FILE__ resolves the way the user
+    # expects; file is absolute so the goto::file launch opens it regardless of cwd.
+    my $task = {
+        spawn              => 1,
+        file               => $file,
+        ch_dir             => $spawn->{cwd},
+        args               => $spawn->{args} // [],
+        env_vars           => $spawn->{env_vars} // {},
+        listen_socket_path => $spawn->{listen_socket_path},
+        correlation_id     => $spawn->{correlation_id},
+    };
+
+    my $job = Test2::Harness2::Runner::Spawn->new(
+        runner   => $self,
+        task     => $task,
+        settings => $self->settings,
+    );
+
+    # Double-fork + setsid so the supervisor detaches from the harness (reparents
+    # away, survives runner/stage teardown -- ARCHITECTURE.md §4.8). The host reaps
+    # ONLY the short-lived intermediate; the supervisor runs JobLauncher::launch_spawn,
+    # which dials the command, receives its fds, forks the script child, and reports
+    # the child's raw wait status over the control channel.
+    my $intermediate = fork() // do {
+        warn "$$ $0 spawn handler fork failed: $!";
+        return {ok => 0, error => "spawn fork failed: $!"};
+    };
+
+    if ($intermediate) {
+        $self->watch_pid($intermediate);
+        return {ok => 1, correlation_id => $spawn->{correlation_id}};
+    }
+
+    # Intermediate: detach into a new session and fork the supervisor, then exit so
+    # the supervisor is orphaned and reparents away.
+    require POSIX;
+    POSIX::setsid() or do { warn "spawn setsid failed: $!"; POSIX::_exit(1) };
+
+    my $supervisor = fork();
+    unless (defined $supervisor) {
+        warn "spawn supervisor fork failed: $!";
+        POSIX::_exit(1);
+    }
+
+    POSIX::_exit(0) if $supervisor;
+
+    # The detached supervisor: drop the host's inherited service sockets so it holds
+    # no dup of any peer connection (ARCHITECTURE.md §5.4), then run the supervisor
+    # body. launch_spawn never returns.
+    Test2::Harness2::Runner::JobLauncher->launch_spawn($self, $job, 'preload-root');
+    POSIX::_exit(1);
+}
+
 # A monitored stage forwards a reload/monitor notification so the runner's reload
 # state (diagnostics) stays current; the stage delegate relays it to the runner.
 # One-way.

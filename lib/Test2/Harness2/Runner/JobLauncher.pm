@@ -78,6 +78,8 @@ use Test2::Harness2::IPC();
 
 use Scalar::Util qw/openhandle/;
 
+use Time::HiRes qw/sleep/;
+
 use Test2::Util qw/clone_io/;
 
 use Long::Jump qw/longjump/;
@@ -103,39 +105,143 @@ sub get_stage ($class, $runner) {
     return $p->stage_lookup->{$stage_name};
 }
 
+# The detached spawn supervisor body. The stage host has ALREADY double-forked +
+# setsid'd this process so it is detached from the harness (it is reparented away
+# and survives runner/stage teardown -- ARCHITECTURE.md §4.8), and it holds the
+# preloaded image because it forked from the preloaded stage. It runs entirely
+# here: it dials back to the `yath spawn` command's listen socket, receives the
+# command's real STDIN/STDOUT/STDERR (SCM_RIGHTS), forks the script child (which
+# does NOT exec -- an exec would wipe the preload -- but unwinds into the preloaded
+# interpreter via the host's Long::Jump frame), then watches its control connection:
+# it relays the command's forwarded signals to the child's process group, reports
+# the child's raw wait status at exit, and -- on a control EOF (the command died) --
+# kills the child's process group. NO collector wraps the script child.
+#
+# $spawn is the Test2::Harness2::Runner::Spawn job; its task carries the command's
+# listen_socket_path. $label is the host's Long::Jump frame ('preload-root').
 sub launch_spawn ($class, $runner, $spawn, $label = undef) {
-    my $pid = fork() // die $!;
-    if ($pid) {
-        local $?;
-        waitpid($pid, 0);
-        return;
+    require POSIX;
+    require Test2::Harness2::Util::FdPass;
+    require Test2::Harness2::Util::FdPass::Control;
+
+    my $task = $spawn->task;
+    my $path = $task->{listen_socket_path}
+        or do { warn "spawn supervisor: no listen_socket_path in task"; POSIX::_exit(1) };
+
+    my ($sock, $ctl, @fds);
+    my $ok = eval {
+        # Dial the command and receive its real 0/1/2.
+        $sock = Test2::Harness2::Util::FdPass::target_connect($path);
+        @fds  = @{Test2::Harness2::Util::FdPass::recv_fds($sock, 3)};
+        $ctl  = Test2::Harness2::Util::FdPass::Control->new(fh => $sock);
+        1;
+    };
+    unless ($ok) {
+        warn "spawn supervisor could not receive descriptors: $@";
+        POSIX::_exit(1);
     }
 
-    require POSIX;
-    POSIX::setsid or die "setsid: $!";
+    # Hand the received fds to the job so the script child dup2s them onto 0/1/2
+    # (Spawn->update_io), then close the supervisor's own copies after the fork so
+    # the only holders are the command and the child.
+    $spawn->set_spawn_fds([@fds]);
 
-    $pid = fork // die $!;
-    exit 0 if $pid;
+    my $child = fork() // do { warn "spawn supervisor fork failed: $!"; POSIX::_exit(1) };
 
-    eval {
-        my ($wh);
-        pipe(STDIN, $wh) or die "Could not create pipe: $!";
-        $pid = $class->launch_via_fork($runner, $spawn, $label);
+    if (!$child) {
+        # In the script child: close the control socket (the supervisor owns it) and
+        # unwind into the preloaded interpreter. launch_via_fork single-forks again,
+        # but here we ARE already the process that should run the script, so call the
+        # collected-child body directly with no extra fork. The child setsid's so it
+        # leads its own process group; the supervisor kills that group on command
+        # death.
+        eval { CORE::close($sock); 1 };
+        POSIX::setsid();
+        $class->_run_spawn_child($runner, $spawn, $label);
+        POSIX::_exit(1);    # _run_spawn_child never returns
+    }
 
-        if ($pid) {
-            open(my $fh, '>>', $spawn->{task}->{ipcfile}) or die "Could not open pidfile: $!";
-            print $fh "$$\n$pid\n" . fileno($wh) . "\n";
-            $fh->flush();
-            local $?;
-            waitpid($pid, 0);
-            print $fh "$?\n";
-            close($fh);
+    # In the supervisor: the received fds now live in the child; drop our copies.
+    $class->_close_fds(@fds);
+
+    $ctl->send_hello($$);
+
+    # Watch the control connection for forwarded signals + EOF while the child runs.
+    my $reaped = 0;
+    my $status;
+    while (!$reaped) {
+        my $got = waitpid($child, POSIX::WNOHANG());
+        if ($got == $child) {
+            $status = $?;
+            $reaped = 1;
+            last;
         }
 
-        exit(0);
+        my @msg = $ctl->read_message_nb;
+        if ($ctl->closed) {
+            # The command/terminal died: kill the child's process group and reap.
+            kill('-TERM', $child);
+            local $?;
+            waitpid($child, 0);
+            POSIX::_exit(0);
+        }
+
+        if (@msg && $msg[0]) {
+            if (my $sig = $msg[0]->{signal}) {
+                kill("-$sig->{signal}", $child) if $sig->{signal};
+            }
+        }
+
+        Time::HiRes::sleep(0.02) unless @msg;
+    }
+
+    $ctl->send_exit_status($status // 0);
+    $ctl->close;
+
+    POSIX::_exit(0);
+}
+
+# The script child of the spawn supervisor: it became the spawned process WITHOUT an
+# exec, so it inherited the stage's fds + Test2 state. Sanitize, install the
+# command's real std fds (Spawn->update_io dup2s the received fds), and unwind into
+# the preloaded interpreter via the host's Long::Jump frame so the script runs with
+# everything preloaded. Never returns: it longjumps into the host launch frame, which
+# goto::file's the script in-process. NO collector.
+sub _run_spawn_child ($class, $runner, $spawn, $label) {
+    my $stage = $class->get_stage($runner);
+
+    my $ok = eval {
+        require POSIX;
+        $0 = 'yath-spawn';
+        setpgrp(0, 0) if Test2::Harness2::IPC::USE_P_GROUPS();
+
+        # Stop the host service loop's bookkeeping in this child and close every
+        # inherited service/runner/collector socket + the host listen socket, so this
+        # detached process holds no dup of a peer connection (which would defeat that
+        # connection's EOF, the runner's "collector gone" signal -- ARCHITECTURE.md
+        # §5.4) and cannot interfere with the harness lifecycle.
+        $runner->stop();
+        $runner->close_all_connections if $runner->can('close_all_connections');
+
+        # This child IS the spawned process (no collector), so the stage post_fork
+        # fires here, in the PID that runs the script -- the preload contract that
+        # POST_FORK and PRE_LAUNCH share the test's PID.
+        $stage->do_post_fork($spawn) if $stage;
+
+        longjump $label => ('run_test', $spawn, $stage);
+        1;
     };
-    warn "Unknown problem daemonizing: $@";
-    exit(1);
+    my $err = $@;
+    eval { warn $err } unless $ok;
+    POSIX::_exit(1);
+}
+
+sub _close_fds ($class, @fds) {
+    for my $fd (@fds) {
+        next unless defined $fd;
+        POSIX::close($fd);
+    }
+    return;
 }
 
 sub launch_via_fork ($class, $runner, $job, $label = 'Test-Runner') {
@@ -415,6 +521,13 @@ sub set_env ($class, $job) {
 }
 
 sub update_io ($class, $job) {
+    # A `yath spawn` child was handed the command's REAL std descriptors over
+    # SCM_RIGHTS (no files, no /proc proxy): dup2 those onto 0/1/2 here instead of
+    # opening job files, then close the received duplicates so the only holders are
+    # the command and this child.
+    return $class->_install_spawn_fds($job)
+        if $job->can('spawn_fds') && $job->spawn_fds;
+
     my $out_fh = open_file($job->out_file, '>');
     my $err_fh = open_file($job->err_file, '>');
 
@@ -442,6 +555,40 @@ sub update_io ($class, $job) {
     swap_io(\*STDERR, $err_fh, $die, '>&');
 
     $FIX_STDIN = 1 if $in_file;
+
+    return;
+}
+
+# Install the command's real STDIN/STDOUT/STDERR (received over SCM_RIGHTS as raw
+# fd numbers) onto this spawn child's 0/1/2 via dup2, then close the received
+# duplicates so the only remaining holders are the command (on its terminal) and
+# this child via 0/1/2. The child then reads/writes the user's real terminal
+# directly (single keystrokes, raw mode, isatty) with no relay.
+sub _install_spawn_fds ($class, $job) {
+    require POSIX;
+
+    my $fds = $job->spawn_fds;
+    my ($in, $out, $err) = @$fds;
+
+    POSIX::dup2($in,  0) // die "Could not dup2 spawn STDIN: $!";
+    POSIX::dup2($out, 1) // die "Could not dup2 spawn STDOUT: $!";
+    POSIX::dup2($err, 2) // die "Could not dup2 spawn STDERR: $!";
+
+    # Close the received duplicates (now that 0/1/2 point at the same open files).
+    my %onstd = (0 => 1, 1 => 1, 2 => 1);
+    for my $fd ($in, $out, $err) {
+        next if $onstd{$fd};
+        POSIX::close($fd);
+    }
+
+    # Re-bless the standard handles onto the new descriptors so Perl-level
+    # STDIN/STDOUT/STDERR follow the dup2'd fds.
+    open(\*STDIN,  '<&=', 0) or die "Could not reopen STDIN: $!";
+    open(\*STDOUT, '>&=', 1) or die "Could not reopen STDOUT: $!";
+    open(\*STDERR, '>&=', 2) or die "Could not reopen STDERR: $!";
+
+    STDOUT->autoflush(1);
+    STDERR->autoflush(1);
 
     return;
 }
@@ -529,11 +676,11 @@ jump B<label> into C<launch_via_fork> so the unwind lands in the right frame.
 
 =item $pid = Test2::Harness2::Runner::JobLauncher->launch_via_fork($runner, $job, $label)
 
-Single-fork a job. In the parent, return the child pid (the host's direct child,
-reaped by the host). In the child (the collector parent for a real test, or the
-test process itself for a non-collected spawn worker), unwind to the host's
-C<setjump $label> frame via L<Long::Jump> so the host can C<goto::file> the test
-in-process. C<$label> defaults to C<'Test-Runner'>. Used by the spawn-worker path.
+Single-fork a test job. In the parent, return the child pid (the host's direct
+child, reaped by the host). In the child (the collector parent), unwind to the
+host's C<setjump $label> frame via L<Long::Jump> so the host can C<goto::file> the
+test in-process. C<$label> defaults to C<'Test-Runner'>. Used by the no-preload
+runner's test-job path.
 
 =item $pid = Test2::Harness2::Runner::JobLauncher->launch_via_double_fork($runner, $job, $label)
 
@@ -548,8 +695,17 @@ defaults to C<'preload-root'>.
 
 =item Test2::Harness2::Runner::JobLauncher->launch_spawn($runner, $spawn, $label)
 
-Double-fork + C<setsid> a detached C<yath spawn> worker, then launch it via
-C<launch_via_fork>.
+The detached C<yath spawn> B<supervisor> body. Called by the stage host's spawn
+request handler I<after> it has already double-forked + C<setsid>'d this process
+(so it is detached from the harness and holds the preloaded image). It dials back
+to the command's listen socket (the path is in the spawn task), receives the
+command's real C<STDIN> / C<STDOUT> / C<STDERR> over C<SCM_RIGHTS>, forks the
+script child (which dup2s those onto C<0>/C<1>/C<2>, sanitizes, and unwinds into
+the preloaded interpreter via the host's C<Long::Jump> frame -- B<no exec>, B<no
+collector>), then watches its control connection: it relays forwarded signals to
+the child's process group, reports the child's B<raw> wait status at exit, and on a
+control EOF (the command died) kills the child's process group. Never returns
+(C<POSIX::_exit>).
 
 =item Test2::Harness2::Runner::JobLauncher->cleanup_process($job, $stage)
 

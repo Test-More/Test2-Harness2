@@ -5,7 +5,9 @@ use warnings;
 our $VERSION = '2.000000';
 
 use parent 'Test2::Harness2::Runner::Job';
-use Test2::Harness2::Util::HashBase;
+use Test2::Harness2::Util::HashBase qw{
+    +spawn_fds
+};
 
 sub init {
     my $self = shift;
@@ -13,9 +15,21 @@ sub init {
     $self->{+RUN} //= Test2::Harness2::Runner::Spawn::Run->new();
 }
 
-sub out_file { sprintf('/proc/%i/fd/1', $_[0]->{+TASK}->{owner}) }
-sub err_file { sprintf('/proc/%i/fd/2', $_[0]->{+TASK}->{owner}) }
+# The command's real STDIN/STDOUT/STDERR are passed to the spawn supervisor over
+# SCM_RIGHTS and handed to this job (raw fd numbers); the script child dup2s them
+# onto 0/1/2 (JobLauncher::_install_spawn_fds). There are no job IO files and no
+# /proc proxy -- the child reads/writes the user's real terminal directly.
+sub spawn_fds     { $_[0]->{+SPAWN_FDS} }
+sub set_spawn_fds { $_[0]->{+SPAWN_FDS} = $_[1] }
+
+sub out_file { undef }
+sub err_file { undef }
 sub in_file  { undef }
+
+# The host launch (Test2::Harness2::Preload::launch) goto::file's run_file after
+# chdir'ing into ch_dir (the command's cwd). The command passes an ABSOLUTE script
+# path, so resolve it absolutely -- it opens correctly regardless of the cwd.
+sub run_file { $_[0]->file }
 
 sub args { @{$_[0]->{+TASK}->{args} //= []} }
 
