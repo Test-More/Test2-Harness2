@@ -1370,18 +1370,43 @@ carried by collectors + sockets.
   **watched** runner child (reaped via `set_proc_exit`, job_id known) -- completion
   still rides EOF; only preload collectors detach and re-parent (#28). Spawn requires a
   preload stage (rejected at queue time on a no-preload runner).
-- **The `IPC` controller base class is dismantled.** Its substantive logic is
-  either dead or superseded: category tracking + `cat`/`all_cat` waits
-  (`PROCS_BY_CAT`), the three-pass death detection (`_bring_out_yer_dead` /
-  `_check_if_dead_yet` group-wait / `_ex_parrots` vanished-sweep), die-on-unmonitored,
-  and reap-driven scheduling all go. Only **2** real consumers ever used it: the
-  Runner (multi-child, now spawn + zombie-reap) and the `yath test` command (a
-  single child — the runner — spawn/`waitpid`/signal, inlined on `Util::IPC`).
-- **What stays.** `Test2::Harness2::Util::IPC` (`run_cmd`/`swap_io`/`USE_P_GROUPS`)
-  is the genuine reusable fork-exec primitive and is kept. `IPC::Process` survives
-  only as a thin value object (and may lose its exit-tracking once collectors own
-  results). The runner keeps a minimal `waitpid` zombie-reaper built on
-  `Util::IPC`; the command inlines its one-child spawn+wait.
+- **The `IPC` controller base class is slimmed, not dismantled.** The original plan
+  (ticket #8) was to delete the base class outright, on the premise that only **2**
+  consumers ever used it: the Runner and the `yath test` command. That premise no
+  longer holds. The #22 split created a **third** co-equal consumer,
+  `Test2::Harness2::Preload::Host` (`use parent 'Test2::Harness2::IPC'`): the
+  in-preload-tree stage host runs its **own** `run_stage`/`run_job` loop and is still
+  a genuine multi-child controller — it forks stages + jobs, calls `wait()`, and reaps
+  them through `set_proc_exit` (its Job branch is zombie-only, but its `StageProcess`
+  branch performs live monitor-relaunch of named stages via `longjump`). #29 scoped
+  `Preload::Host` explicitly **out of scope** ("the Host, with its OWN
+  run_tests/run_stage/run_job, is OUT OF SCOPE"). So the shared three-pass reaper
+  (`_bring_out_yer_dead` / `_check_if_dead_yet` group-wait / `_ex_parrots`
+  vanished-sweep) inside `wait()`, plus `killall`, `check_for_fork`, `watch`, `spawn`,
+  and the `category` slot, **remain** — `Preload::Host` depends on all of them. What
+  *was* removed is real but narrower than the original framing:
+  - **`cat`/`all_cat`/`block` waits + `PROCS_BY_CAT`** — gone (ticket #6). `wait()`
+    takes only `all`/`timeout`.
+  - **Reap-driven verdicts** — gone (#27/#28/#29). Both `Runner::set_proc_exit` and
+    `Preload::Host::set_proc_exit` Job branches are now pure zombie cleanup + local
+    bookkeeping; completion rides EOF + transitions.
+  - **die-on-unmonitored** — gone (#8 Part 1): an unmonitored pid reaped here is
+    benign and skipped, never fatal.
+  - **In-runner stage machinery + `run_tests`/`run_stage`/`run_job`/`end_test_loop`**
+    — gone from the *Runner* (#29); they live only in `Preload::Host` now.
+  - **`set_sig_handler`** — gone (chunk 21): zero callers; Runner/Host populate
+    `{+HANDLERS}` directly.
+- **What stays (and why).** `Test2::Harness2::Util::IPC`
+  (`run_cmd`/`swap_io`/`set_cloexec`/`USE_P_GROUPS`) is the genuine reusable
+  fork-exec primitive and is kept. `IPC::Process` survives as a thin value object;
+  it retains `set_exit`/`exit`/`exit_time` (the croak-on-double-set guard prevents a
+  proc being reaped twice — a real invariant, not a verdict input) and the
+  `category` slot (`StageProcess` overrides it). The Runner keeps a minimal `waitpid`
+  zombie-reaper built on the base (`_bring_out_yer_dead` override for the
+  subreaper/detached-collector path + A3); the `yath test`/`start` commands inline
+  their one-child spawn+wait on `Util::IPC::run_cmd` without a controller instance.
+  Fully dismantling the base class is deferred until `Preload::Host` itself collapses
+  its `run_stage`/`run_job` machinery (a separate, larger piece).
 
 ## 6. Open questions
 

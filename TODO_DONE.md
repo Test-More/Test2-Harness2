@@ -7,6 +7,50 @@ Newest first.
 
 ---
 
+## Chunk 21 / #8 — IPC controller collapse re-audit — DONE (`bc2cb3379` + docs)
+
+Chunk 21 ("collapse the `Test2::Harness2::IPC` controller to spawn + zombie-reap on
+`Util::IPC`") was re-audited 2026-06-21. **Finding: the substantive collapse had
+already landed across #6, #8 P1-3, and #27/#28/#29** — by the time #29 made
+`run_scheduler_only` the runner's only loop, it explicitly "Completes #8 Part 4".
+What actually remained for chunk 21 was small, and the original ticket's end goal
+("dismantle the IPC base class") is **no longer achievable as scoped**.
+
+- **Why the base class stays.** The #22 split created a **third** consumer of
+  `Test2::Harness2::IPC`: `Test2::Harness2::Preload::Host` (`use parent
+  'Test2::Harness2::IPC'`). It runs its own `run_stage`/`run_job` loop and is still a
+  genuine multi-child controller — forks stages + jobs, calls the base `wait()`, and
+  reaps via `set_proc_exit` (Job branch = zombie cleanup; **StageProcess branch =
+  live named-stage monitor-relaunch via `longjump`**). #29 scoped `Preload::Host`
+  explicitly OUT OF SCOPE. So the shared three-pass reaper (`_bring_out_yer_dead` /
+  `_check_if_dead_yet` group-wait / `_ex_parrots` vanished-sweep) inside `wait()`,
+  plus `killall`/`check_for_fork`/`watch`/`spawn` and the `category` slot, are all
+  **load-bearing for Host** and must remain. The ticket-#8 / ARCHITECTURE-§5.4 claim
+  "Only 2 real consumers ever used it" was written pre-#22 and is now stale.
+- **What this re-audit changed:**
+  - **`bc2cb3379`** — deleted the dead `IPC::set_sig_handler` (+ POD). Zero callers:
+    `Runner.pm`/`Preload::Host` populate `{+HANDLERS}` directly and `init()` seeds the
+    CHLD entry. (The #25 "moot via #8" item for this stub.)
+  - Corrected ARCHITECTURE.md §5.4 (the "base class is dismantled" / "only 2
+    consumers" bullets → "slimmed, not dismantled," enumerating what was removed by
+    #6/#8/#29 vs what stays and why), and updated TODO_TASKS #8 + TODO_STEPS chunk 21
+    status. IPC.md §4 already correctly named Host as a co-equal consumer — unchanged.
+- **Verified not removable** (confirmed live readers / Host dependence): `wait()`,
+  `_check_if_dead_yet`, `_ex_parrots`, `killall`, `watch`, `spawn`, `check_timeouts`,
+  `category`, `set_exit`/`exit`/`exit_time` (the croak-on-double-set is a reap-once
+  guard). `IPC::Process` exit-tracking kept (the ticket's "drop exit-tracking" is moot
+  — no readers, but the double-set guard is a real invariant and removing it touches
+  `Job::set_exit` for no behavior gain).
+- **Deferred (separately scoped):** the dead `use Test2::Harness2::IPC;` imports in
+  `App/Yath2/Command/run.pm` and `start.pm` (they only use `Util::IPC` symbols) — left
+  for the command-inline agent per the chunk-21 scope limit. Full base-class
+  dismantling waits on `Preload::Host` collapsing its own `run_stage`/`run_job` loop.
+
+Verified: audits (methods/readonly/watch-parent) clean; `prove -Ilib` on
+`t/AI/unit/Runner_*.t` + reap/preload integration green.
+
+---
+
 ## #29 — Collapse to one run path; run_scheduler_only is the runner's only loop — DONE
 
 The runner's no-preload and preload runs converge onto a single loop. Designed via a

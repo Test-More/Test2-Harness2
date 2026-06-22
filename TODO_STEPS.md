@@ -60,7 +60,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 18 | Collectors watch the runner pid → self-terminate if runner dies (§4.1) + audit gate | ✅ | — |
 | 19 | Extract the preload root out of the runner; runner goes scheduler-only (§4.2/§4.7) — needs 14 | ✅ (residuals → 20-23 + tasks) | #1–#4, #8, #10, #11, #26 |
 | 20 | Interactive mode IO: replace FIFO proxy with **STDIN-only SCM_RIGHTS fd-pass** (output stays with collector), command-listens/per-test-accept (§4.10, reuses §4.8 primitive) — needs 29, 13. May be temporarily disabled / xfail until this lands (do not block #4-task) | ⬜ | #7 (7b), #40 |
-| 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ⬜ | #6, #8, #11 |
+| 21 | Collapse the `Test2::Harness2::IPC` controller → spawn + zombie-reap on `Util::IPC` (§5.4) — needs 6 | ✅ (base class slimmed, not dismantled — `Preload::Host` is a 3rd consumer, out of scope per 26/#29) | #6, #8, #11 |
 | 22 | Run state lifecycle (§4.2): fold raw item onto `Run`, connection-gated retention, abort-on-disconnect | ⬜ | #12 |
 | 23 | Client-side stage assignment; eliminate the resolver / `resolve_file_stages` / `file_stage` / `eager` (§4.7/§4.7a). Folds into 11 | ⬜ | #10, #20, #21, #2, #23 |
 | 24 | Transition-driven test completion (§5.4): pass/fail/retry/bail from transitions + connection EOF; collector exit health-only; bidirectional conns + runner→collector terminate; fd hygiene. Spans Test2-Collector. | ✅ | #32, #27 |
@@ -188,12 +188,23 @@ carry the specifics.
   so interactive may be **temporarily disabled / left xfail** until this lands.
   TODO_TASKS **#7** (7b), **#40**.
 
-- **Chunk 21 — collapse the IPC controller (§5.4) — needs 6.** Reduce
-  `Test2::Harness2::IPC` to **spawn + zombie-reap on `Util::IPC`**: move no-preload
-  job completion onto the collector socket report; delete `set_proc_exit`,
-  `PROCS_BY_CAT`, `cat`-waits, the three-pass death detection, die-on-unmonitored;
-  inline the command's one-child spawn+wait. TODO_TASKS **#6** (wait params) +
-  **#8** (the collapse).
+- **Chunk 21 — collapse the IPC controller (§5.4) — needs 6. ✅ DONE (base slimmed,
+  not dismantled).** The substantive collapse landed across #6 (`cat`-waits +
+  `PROCS_BY_CAT` deleted), #8 P1-3 (die-on-unmonitored→skip, debug-gated warns,
+  command inline reaper), and #27/#28/#29 (reap-driven verdicts removed — completion
+  rides EOF; no-preload `set_proc_exit` is zombie cleanup + A3 only). The chunk-21
+  re-audit (2026-06-21) found little net-new remained: it deleted the dead
+  `set_sig_handler` and corrected the §5.4 framing. **The base class is NOT
+  dismantled and the three-pass reaper (`_check_if_dead_yet`/`_ex_parrots`) stays:**
+  `Test2::Harness2::Preload::Host` (created by the chunk-19/22 split) is a THIRD
+  co-equal multi-child consumer — it `use parent 'Test2::Harness2::IPC'` and runs its
+  own `run_stage`/`run_job` loop with `wait()` + `set_proc_exit` + named-stage
+  `longjump` relaunch — and is **out of scope** per chunk 26/#29. `Util::IPC`
+  (`run_cmd`/`swap_io`/`set_cloexec`/`USE_P_GROUPS`) + the thin `IPC::Process` value
+  object stay. The `yath test`/`start` commands already inline their one-child
+  spawn+wait on `Util::IPC::run_cmd` (#8 P3). TODO_TASKS **#6** (wait params) +
+  **#8** (the collapse). Full dismantling waits on `Preload::Host` collapsing its
+  own stage machinery.
 
 - **Chunk 22 — run state lifecycle (§4.2).** Fold the raw queue item onto the `Run`
   object (drop the leaking `run_items` hash); retain/purge run state per the
