@@ -464,7 +464,7 @@ sub process {
 
     $self->start();
 
-    my $ok  = eval { $self->run_tests(); 1 };
+    my $ok  = eval { $self->run_scheduler_only(); 1 };
     my $err = $@;
 
     warn $err unless $ok;
@@ -872,9 +872,9 @@ sub spawn_preload_root {
 
     # The preload-root drives a stage-host Runner
     # (Preload::run_driver) that hosts EVERY stage (base/default/NOPRELOAD + named),
-    # so this runner holds no preloaded state and hosts no stage in-process: it goes
-    # scheduler-only (run_tests -> run_scheduler_only) and dispatches every started
-    # task out over a stage's registered channel. Stage resolution is client-side,
+    # so this runner holds no preloaded state and hosts no stage in-process: its
+    # run_scheduler_only loop dispatches every started task out over a stage's
+    # registered channel. Stage resolution is client-side,
     # from each task's preload directives against the reported stage map (the
     # scheduler-only runner has no loaded preloader). Only the real root sets this
     # (spawn_preload_root is root-only via _preload_root_wanted).
@@ -935,100 +935,61 @@ sub dispatch_pending {
 
     my $state = $self->state;
 
-    # When the preload-root hosts every stage there is NO in-process root stage,
-    # so dispatch EVERY started task out over a stage socket (undef root_stage =>
-    # take_dispatch_tasks dispatches all). This is LIVE for preload runs. The
-    # no-preload path (else branch) keeps tasks for the runner's own 'default'
-    # stage in place for run_job (the runner forks those tests itself).
-    my $root_stage;
+    # Take EVERY started task off the list (slot + resources already accounted by
+    # _start_task, so they stay tracked as RUNNING). A preload run sends each out to
+    # its stage's registered channel; a no-preload run forks each test's collector in
+    # this runner (there is no stage to dispatch to).
+    my @tasks = $state->take_dispatch_tasks(undef) or return;
+
+    # Preload run: dispatch down the registered channel each stage opened to us
+    # (service_send by peer identity).
     if ($self->_preload_root_hosts_stages) {
-        $root_stage = undef;
-    }
-    else {
-        $root_stage = $self->{+STAGE} // return;
-    }
+        my $run_item = $state->run_item;
 
-    my @tasks = $state->take_dispatch_tasks($root_stage) or return;
+        for my $task (@tasks) {
+            my $stage = $task->{stage};
 
-    my $run_item = $state->run_item;
+            my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item);
 
-    for my $task (@tasks) {
-        my $stage = $task->{stage};
-
-        # Dispatch down the registered channel the stage opened to us
-        # (service_send by peer identity). The stage is only schedulable after
-        # its stage_ready arrived on that connection, so the peer normally
-        # exists; if the stage has since died its connection dropped (EOF) and
-        # service_send reports no peer -- the "stage gone" signal.
-        my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item);
-
-        # take_dispatch_tasks already pulled this task off the list while it stays
-        # tracked as RUNNING (slot + resources consumed). service_send returns false
-        # when the stage's channel is gone (no peer, or the write failed because the
-        # peer vanished mid-write) -- the stage NEVER received the task, so it never
-        # forked the job and never took ownership of its completion. This is the
-        # assign->launch race (§4.7a) / a self-restarting stage taking its channel:
-        # the job is owed a run, not a failure. REQUEUE it (bloat #3) -- release its
-        # slot / resources and put it back PENDING (no retry consumed) to be
-        # re-resolved and re-dispatched on a later tick -- instead of aborting it.
-        # Requeuing is safe ONLY because no stage accepted it; once a stage forks the
-        # job, its collector owns completion and requeuing would duplicate-run.
-        unless ($sent) {
-            $self->requeue_task($task);
-            next;
-        }
-
-        # Dispatching a job to a stage is a runner-originated state
-        # mutation; forward it to subscribers so their mirror sees the job move.
-        $self->announce_job($task->{job_id}, 'dispatched', stage => $stage, file => $task->{file}, run_id => $task->{run_id});
-    }
-
-    return;
-}
-
-sub run_tests {
-    my $self = shift;
-
-    # When the preload-root hosts every stage, this runner does NOT preload or
-    # host a stage in-process -- it is scheduler-only. LIVE for preload runs:
-    # _preload_root_hosts_stages is true once spawn_preload_root flipped it on.
-    # The in-runner preload path below is only reached on the no-preload run.
-    return $self->run_scheduler_only if $self->_preload_root_hosts_stages;
-
-    my $preloader = $self->preloader;
-    $preloader->preload();
-
-    my ($stage, @procs) = $preloader->preload_stages();
-
-    if ($self->dump_depmap) {
-        if (my $dtrace = $preloader->dtrace) {
-            if (my $depmap = $dtrace->dep_map) {
-                my $file = "depmap-$stage.json";
-                write_file($file, encode_json($depmap));
+            # service_send returns false when the stage's channel is gone (no peer, or
+            # the write failed because the peer vanished mid-write) -- the stage NEVER
+            # received the task, so it never forked the job and never took ownership of
+            # its completion. This is the assign->launch race (§4.7a) / a self-restarting
+            # stage taking its channel: the job is owed a run, not a failure. REQUEUE it
+            # (bloat #3) -- release its slot / resources and put it back PENDING (no retry
+            # consumed) to be re-resolved on a later tick. Requeuing is safe ONLY because
+            # no stage accepted it; once a stage forks the job its collector owns
+            # completion and requeuing would duplicate-run.
+            unless ($sent) {
+                $self->requeue_task($task);
+                next;
             }
+
+            # Dispatching a job to a stage is a runner-originated state mutation;
+            # forward it to subscribers so their mirror sees the job move.
+            $self->announce_job($task->{job_id}, 'dispatched', stage => $stage, file => $task->{file}, run_id => $task->{run_id});
         }
+
+        return;
     }
 
-    $self->watch($_) for @procs;
-
-    # No-preload only: there are no named stages, and the runner never relaunches a
-    # stage (ticket #22 moved all stage hosting to Test2::Harness2::Preload::Host), so
-    # nothing ever longjumps "Stage-Runner". Run the single 'default' stage directly --
-    # no Long::Jump host frame and no reset/relaunch loop.
-    $self->run_stage($stage);
+    # No-preload run: this runner IS the 'default' stage; fork each test's collector
+    # locally (a clean-slate fork+exec -- no preloaded interpreter, no goto::file).
+    my $run = $state->run() or return;
+    for my $task (@tasks) {
+        $self->_launch_local_job($task, $run);
+    }
 
     return;
 }
 
-# The scheduler-only run loop for when the preload-root hosts every stage. This
-# runner holds NO preloaded state and hosts NO stage: it only services
-# runner.socket (accepting stage registrations + transitions + client requests)
-# and ticks the in-process scheduler, which dispatches every started task out to a
-# stage's registered channel (see dispatch_pending's preload-root branch). It does
-# NOT touch the preloader (the preload-root owns preload + reload), does not
-# run_job (stages fork the tests), and ends on a shutdown signal or run
-# completion. LIVE for preload runs (reached from run_tests once
-# _preload_root_hosts_stages is true).
+# The runner's ONE run loop (#29). It services runner.socket (stage registrations +
+# transitions + client requests) and ticks the in-process scheduler, which dispatches
+# every started task (see dispatch_pending). On a PRELOAD run the preload-root hosts
+# the stages and each task is dispatched out to its stage's registered channel; on a
+# NO-PRELOAD run there is no preload-root and the runner forks each test's collector
+# itself from its in-process 'default' stage (set up below). It ends on a shutdown
+# signal or run completion.
 sub run_scheduler_only {
     my $self = shift;
 
@@ -1066,13 +1027,25 @@ sub run_scheduler_only {
 
     $self->flush_submit_buffer;
 
-    # No-preload run: there is no preload-root to report a stage map, so the runner's
-    # own in-process 'default' stage stands in. Mark it ready (the scheduler only
-    # dispatches tasks bucketed under an 'up' stage, and every no-preload task resolves
-    # to 'default') and record it as the active stage. The preload path gets its stages
-    # 'up' from each stage's registration instead. (No-op until the no-preload run is
-    # routed here -- #29; guarded so the preload path is untouched.)
+    # No-preload run: there is no preload-root, so the runner's own in-process
+    # 'default' stage stands in. preload() builds the dtrace the reload/monitor HUP
+    # check and --dump-depmap need (it preloads nothing when no preloads are
+    # configured; the tests fork+exec fresh, so they need no preheated interpreter).
+    # Then mark 'default' ready -- the scheduler only dispatches tasks bucketed under
+    # an 'up' stage, and every no-preload task resolves to 'default'. The preload path
+    # gets its stages 'up' from each stage's registration instead.
     unless ($self->_preload_root_hosts_stages) {
+        my $preloader = $self->preloader;
+        $preloader->preload();
+
+        if ($self->dump_depmap) {
+            if (my $dtrace = $preloader->dtrace) {
+                if (my $depmap = $dtrace->dep_map) {
+                    write_file("depmap-default.json", encode_json($depmap));
+                }
+            }
+        }
+
         $self->{+STAGE} //= 'default';
         $self->state->stage_ready($self->{+STAGE});
     }
@@ -1180,81 +1153,12 @@ sub stop_preload_stages {
     return;
 }
 
-sub run_stage {
-    my $self = shift;
-    my ($stage) = @_;
-
-    # The runner only ever reaches run_stage on the no-preload path, where the
-    # single 'default' stage is the runner itself (it forks each test job): there
-    # is no preloaded interpreter and no forked stage process here. (The preload
-    # path's named-stage hosting lives in Test2::Harness2::Preload::Host -- ticket
-    # #22.) So this is always the runner's own in-process stage.
-    $self->{+STAGE} = $stage;
-
-    $self->state->stage_ready($stage);
-
-    while (1) {
-        # Accept run/task submissions and stage outcome reports on runner.socket, and
-        # advance the in-process scheduler (which dispatches preload-stage tasks out
-        # to the stage sockets; no-preload 'default' tasks stay here for run_job).
-        $self->service_io;
-        $self->service_tick;
-
-        next if $self->run_job();
-
-        next if $self->wait();
-
-        last if $self->end_test_loop();
-
-        sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
-    }
-
-    $self->state->stage_restarting($stage);
-
-    # The run loop is ending; any task still tracked as running whose
-    # collector never reported completion (e.g. a job left over on a signal-driven
-    # shutdown) will never finish on its own. Synthesize its abort into canonical
-    # state so the command-side driver rolls it up as failed instead of reporting it
-    # as "never ran". Transient path only; the persistent gatherer owns this otherwise.
-    $self->watchdog->abort_remaining unless $self->{+PERSIST};
-
-    $self->killall($self->{+SIGNAL}) if $self->{+SIGNAL};
-
-    $self->wait(all => 1);
-}
-
-sub run_job {
-    my $self = shift;
-
-    my $task = $self->state->next_task($self->{+STAGE}) or return 0;
-
-    if ($task->{spawn} && !$task->{resource_skip}) {
-        # Spawn-worker branch. Unreachable on a no-preload runner -- a spawn needs a
-        # real preload stage and request_handler_queue_spawn rejects a no-preload
-        # spawn before it is ever queued. Kept until run_job is removed with the
-        # run-path collapse (#29); the no-preload runner never sets FORK_SPAWN_CALLBACK.
-        my $job = Test2::Harness2::Runner::Spawn->new(
-            runner        => $self,
-            task          => $task,
-            settings      => $self->settings,
-            fork_callback => $self->{+FORK_SPAWN_CALLBACK},
-        );
-
-        $self->{+FORK_SPAWN_CALLBACK}->($self, $job);
-        return 1;
-    }
-
-    my $run = $self->state->run();
-    return 1 unless $run;
-
-    return $self->_launch_local_job($task, $run);
-}
-
 # Launch ONE test job locally: the runner forks its own collector for the test (the
-# no-preload path -- there is no preload stage to dispatch to). This is the single
-# local-launch implementation; run_job uses it today and dispatch_pending will use it
-# once the two run paths collapse onto run_scheduler_only (#29). Returns the forked
-# job's pid.
+# no-preload path -- there is no preload stage to dispatch to, so the runner is the
+# 'default' stage). The single local-launch implementation, called by dispatch_pending
+# for every task on a no-preload run. Returns the forked job's pid. (A spawn worker
+# never reaches here -- request_handler_queue_spawn rejects a no-preload spawn, and
+# take_dispatch_tasks never yields a spawn.)
 sub _launch_local_job {
     my $self = shift;
     my ($task, $run) = @_;
@@ -1322,29 +1226,6 @@ sub orphaned {
 
     my $pfile = $self->{+PERSIST};
     return 1 if $pfile && !-e $pfile;
-
-    return 0;
-}
-
-sub end_test_loop {
-    my $self = shift;
-
-    if ($self->orphaned) {
-        $self->{+SIGNAL} //= 'TERM';
-        return 1;
-    }
-
-    my $state = $self->state;
-
-    no warnings 'uninitialized';
-    if ($self->preloader->check($state)) {
-        $self->{+SIGNAL} //= 'HUP';
-        return 1;
-    }
-
-    return 1 if $self->{+SIGNAL};
-
-    return 1 if $state->done;
 
     return 0;
 }

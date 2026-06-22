@@ -50,13 +50,8 @@ subtest already_signalled => sub {
     ok(!$r->orphaned, "An already-signalled runner is left alone");
 };
 
-subtest end_test_loop_sets_signal => sub {
-    my $dir = tempdir(CLEANUP => 1);
-    my $r = mk(dir => $dir);
-    remove_tree($dir);
-
-    ok($r->end_test_loop, "end_test_loop() returns true for an orphaned runner");
-    is($r->{$CLASS->SIGNAL}, 'TERM', "end_test_loop() set the TERM signal for shutdown");
-};
+# Note: the orphaned()-drives-shutdown wiring (end_test_loop) was inlined into
+# run_scheduler_only's no-preload loop in the run-path collapse (#29); orphaned()
+# itself is the unit-tested primitive above.
 
 done_testing;

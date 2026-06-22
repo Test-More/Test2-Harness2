@@ -50,6 +50,9 @@ use Test2::Harness2::Runner::Monitor;
         return;
     }
 
+    # The no-preload dispatch arm forks locally and needs the run object.
+    sub run { return {run_id => 'R1'} }
+
     package FakeRunner;
 
     # Exercise the REAL Runner::requeue_task (the Handlers role method) as a
@@ -62,13 +65,15 @@ use Test2::Harness2::Runner::Monitor;
     sub new {
         my ($class, %args) = @_;
         my $self = bless {
-            rootpid   => $$,
-            stage     => 'default',
-            state     => $args{state},
-            monitor   => Test2::Harness2::Runner::Monitor->new,
-            send_ok   => $args{send_ok} // {},
-            sent      => [],
-            job_pids  => $args{job_pids} // {},
+            rootpid     => $$,
+            stage       => 'default',
+            state       => $args{state},
+            monitor     => Test2::Harness2::Runner::Monitor->new,
+            send_ok     => $args{send_ok} // {},
+            sent        => [],
+            launched    => [],
+            has_preload => $args{has_preload} // 1,
+            job_pids    => $args{job_pids} // {},
         }, $class;
         return $self;
     }
@@ -76,9 +81,16 @@ use Test2::Harness2::Runner::Monitor;
     sub settings { $_[0]->{settings} }
     sub monitor  { $_[0]->{monitor} }
 
-    # This fake mirrors the staged-root path (rootpid == $$, hosts the 'default'
-    # stage in-process), so the preload-root does NOT host stages here.
-    sub _preload_root_hosts_stages { 0 }
+    # The dispatch discriminator: a preload run (default here) sends each task to its
+    # stage's channel; a no-preload run (has_preload => 0) forks locally instead.
+    sub _preload_root_hosts_stages { $_[0]->{has_preload} // 1 }
+
+    # No-preload local launch: record the call instead of forking a real collector.
+    sub _launch_local_job {
+        my ($self, $task, $run) = @_;
+        push @{$self->{launched}} => $task->{job_id};
+        return 4242;
+    }
 
     # Mirror Role::Service::service_send($identity, $command, %args): send to the
     # named peer, false if there is no live connection to it. Record the send and
@@ -155,6 +167,22 @@ subtest successful_dispatch_announces_dispatched => sub {
 
     my @states = map { $_->{state} } @{$runner->{announced}};
     is(\@states, ['dispatched'], "announced 'dispatched'");
+};
+
+subtest no_preload_run_forks_locally => sub {
+    # On a no-preload run (#29) there is no stage to dispatch to: dispatch_pending
+    # forks the test's collector in this runner via _launch_local_job instead of
+    # service_send, for every task take_dispatch_tasks yields.
+    my $task = {job_id => 'JOB-C', stage => 'default', file => 't/c.t', run_id => 'R1'};
+
+    my $state = FakeState->new(running => {'JOB-C' => $task}, dispatch => [$task]);
+    my $runner = FakeRunner->new(state => $state, has_preload => 0);
+
+    Test2::Harness2::Runner::dispatch_pending($runner);
+
+    is($runner->{launched}, ['JOB-C'], "the no-preload task was launched locally");
+    is($runner->{sent},     [],        "nothing was service_send'd (no stage to dispatch to)");
+    is($state->{requeued},  [],        "a local launch is never requeued");
 };
 
 done_testing;
