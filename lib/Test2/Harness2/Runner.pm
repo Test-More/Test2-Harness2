@@ -85,6 +85,7 @@ use Test2::Harness2::Util::HashBase(
         +aux_pids
 
         +preload_root_pid
+        +preload_root_reaped
         +reported_stage_data
         +preload_root_hosts
     },
@@ -728,6 +729,11 @@ sub _ready_to_schedule {
 sub _preload_root_dead {
     my $self = shift;
 
+    # The per-tick subreaper sweep (_bring_out_yer_dead) may reap the preload-root
+    # first (its waitpid(-1) cannot avoid it -- the root is the runner's child); it
+    # flags PRELOAD_ROOT_REAPED so the death is still reported here rather than lost.
+    return 1 if delete $self->{+PRELOAD_ROOT_REAPED};
+
     my $pid = $self->{+PRELOAD_ROOT_PID} or return 0;
     return 0 unless waitpid($pid, POSIX::WNOHANG()) == $pid;
 
@@ -1064,6 +1070,15 @@ sub run_scheduler_only {
         $self->service_io;
         $self->service_tick;
 
+        # Reap re-parented detached preload collectors each tick (ticket #28 C1: the
+        # runner is their child subreaper, so nobody else reaps them). Pure zombie
+        # cleanup + the A3 post-pass health escalation -- the completion decision
+        # always rides EOF. Must run BEFORE the dead-preload-root check below: this
+        # sweep's waitpid(-1) may reap the preload-root, and it flags
+        # PRELOAD_ROOT_REAPED so _handle_dead_preload_root still detects the death.
+        $self->_bring_out_yer_dead;
+        $self->_check_if_dead_yet;
+
         last if $self->{+SIGNAL};
         last if $self->state->done;
 
@@ -1099,6 +1114,12 @@ sub run_scheduler_only {
     # to us. Once all stages stop, the preload-root's own stage-host run loop ends
     # and that process exits -- stop_preload_root then reaps it.
     $self->stop_preload_stages;
+
+    # Final best-effort reap of any detached collector that has already exited by
+    # wind-down (ticket #28 C1); ones still finishing re-parent to init on exit (an
+    # accepted loss -- the run is over and every verdict already rode EOF).
+    $self->_bring_out_yer_dead;
+    $self->_check_if_dead_yet;
 
     return;
 }
@@ -1341,13 +1362,13 @@ sub _check_post_pass_health {
 }
 
 # The runner is a child subreaper (ticket #28), so it reaps every re-parented
-# preload test collector here even though it never watched them. The base reaper
-# discards an unwatched pid; the runner additionally maps it back to its job (via
-# the job_pids the collector reported on its handshake) and runs the A3 post-pass
-# health escalation so a detached collector that failed AFTER reporting a pass
-# still flags the suite (ARCHITECTURE.md §5.4). Watched pids (no-preload children)
-# are handled by the base reaper + set_proc_exit as before; the decision itself
-# always rides EOF, so this reap is pure zombie cleanup + the A3 escalation.
+# detached preload test collector here even though it never watched them. The base
+# reaper discards an unwatched pid; the runner additionally maps it back to its job
+# (via the pid-keyed collector_reap map, #28 C2) and runs the A3 post-pass health
+# escalation so a detached collector that failed AFTER reporting a pass still flags
+# the suite (ARCHITECTURE.md §5.4). Watched pids (no-preload children) go to WAITING
+# for set_proc_exit as before; the decision itself always rides EOF, so this reap is
+# pure zombie cleanup + the A3 escalation.
 sub _bring_out_yer_dead {
     my $self = shift;
 
@@ -1360,14 +1381,23 @@ sub _bring_out_yer_dead {
     while ((my $pid = waitpid(-1, POSIX::WNOHANG)) > 0) {
         my $exit = $?;
 
+        # The preload-root is tracked separately (not in PROCS); if this unconditional
+        # sweep reaps it before _preload_root_dead's targeted waitpid, flag the death
+        # so _handle_dead_preload_root still fires rather than missing it forever.
+        if ($self->{+PRELOAD_ROOT_PID} && $pid == $self->{+PRELOAD_ROOT_PID}) {
+            delete $self->{+PRELOAD_ROOT_PID};
+            $self->{+PRELOAD_ROOT_REAPED} = 1;
+            next;
+        }
+
         if ($procs->{$pid}) {
             $found++;
             $waiting->{$pid} = [$exit, time()];
             next;
         }
 
-        # Unwatched pid: a re-parented preload collector (or a benign plugin/3rd-party
-        # child). If it maps to a job that reported a pass, apply the A3 escalation.
+        # Unwatched pid: a re-parented detached preload collector (or a benign
+        # plugin/3rd-party child). If it maps to a passed job, apply the A3 escalation.
         $self->_reaped_unwatched_pid($pid, $exit);
     }
 
