@@ -92,7 +92,7 @@ socket EOF. The runner reaps the preload-root at wind-down (`stop_preload_root`)
 ## 3. Process tree — persistent `yath start` / `run`
 
 ```
-yath start  (writes yath-persist.json {pid,dir}; spawns the runner; then exits)
+yath start  (spawns the runner; publishes the runner-socket discovery symlink; then exits)
    │
    └─ [collector:runner] ─► persistent runner  (service; stays up on runner.socket)
                             │  serialized: one active run at a time
@@ -117,7 +117,8 @@ clients connecting IN to runner.socket:
                 fallback); the command no longer snapshots or signals pids
    yath spawn   submit a spawn over the socket (acknowledged: fails fast if no live stage)
    yath stop    'stop' request (graceful shutdown)
-   yath reload  SIGHUP → the runner's own pid (from yath-persist.json). On a
+   yath reload  SIGHUP → the runner's own pid (resolved via the runner-socket
+                symlink → workdir `PID` file). On a
                 preload run the (scheduler-only) runner does NOT wind down: its HUP
                 handler forwards a 'reload_root' request to the base/default stage's
                 LIVE service channel (the `preload-<base>` peer whose announced pid
@@ -136,8 +137,13 @@ clients connecting IN to runner.socket:
 ```
 
 `yath run`/`spawn`/`stop`/`status`/`ps`/`abort`/`resources`/`which`/`watch`
-discover the runner via `yath-persist.json` (read through `App::Yath2::Pfile`).
-The persistent runner stays listening until a `stop` request.
+discover the runner via a well-known **symlink to its `runner.socket`** (resolved
+through `App::Yath2::Discovery`, wrapped by `App::Yath2::Pfile`): follow the
+symlink to the socket + workdir, connect to confirm liveness, and read the workdir
+`PID` file only as the signal fallback for a wedged runner whose socket is
+unresponsive. A dangling/connect-fail symlink means the runner is absent (the
+stale symlink is cleaned). The persistent runner stays listening until a `stop`
+request.
 
 ---
 
@@ -417,8 +423,8 @@ do not discover or orchestrate.
 | `stage-<name>-events.jsonl.zst` | each forked preload stage's non-test collector | workdir | the command renderer (`RunnerReader`); `watch` | stage stdout/stderr/exit as events |
 | `events.jsonl.zst` (per job) | each test job's test collector | the job's run dir | the command renderer (`JobReader`, by the path a transition carries) | the test's full event stream |
 | `aux-<name>-<uuid>.jsonl.zst` | a plugin's `shellcall`/`run_collected` aux collector (chunk 17) | workdir | the command renderer (`RunnerReader`, by the path a transition announces); `watch` | plugin-emitted aux output as events |
-| `yath-persist.json` | `yath start` | workdir | `run`/`spawn`/`stop`/`which`/`watch`/`reload` via `App::Yath2::Pfile` | persistent-runner discovery: `{pid, dir, ...}` |
-| `PID` file | the runner | workdir | discovery / liveness; `start` records the runner pid into `yath-persist.json` | the runner's own pid |
+| `.<user>-<host>-<project>-yath-runner.sock` (symlink) | `yath start` (via `App::Yath2::Discovery->publish`) | persist dir (`YATH_PERSISTENCE_DIR` / `--persist-dir`, else system temp or cwd) | `run`/`spawn`/`stop`/`which`/`watch`/`reload` via `App::Yath2::Discovery` (`App::Yath2::Pfile` wraps it) | persistent-runner discovery: a symlink pointing at the workdir's `runner.socket`; follow it → socket + workdir. Liveness is a socket connect; a dangling/connect-fail link ⇒ runner absent ⇒ the stale link is unlinked |
+| `PID` file | the runner | workdir | discovery resolves it via the symlink (the `App::Yath2::Discovery` PID-file **signal fallback** for a wedged runner whose socket is unresponsive); `start` reads it for its banner; `reload` HUPs it | the runner's own pid (survives the exec across a reload-respawn) |
 | `settings.json` | `yath start` (persistent) | workdir | `yath run` (merged into its settings on connect) | run configuration carried to clients |
 
 The `*.jsonl.zst` events files are the only files on the IPC/detail path; all
@@ -433,10 +439,10 @@ collector events stream like any other, reported over `runner.socket`.)
 | Command | Reaches the runner via | Action |
 |---|---|---|
 | `test` | spawns the runner, then `runner.socket` | submit run + subscribe(run_id) + render |
-| `run` | discover (Pfile) + `runner.socket` | submit run(run_id) + subscribe(run_id) + render |
+| `run` | discover (runner-socket symlink, via `Discovery`/`Pfile`) + `runner.socket` | submit run(run_id) + subscribe(run_id) + render |
 | `spawn` | `runner.socket` | submit a spawn (acknowledged — errors fast if the runner has no live stage for it), then attach to the spawned worker's IO |
 | `watch` | `runner.socket` | subscribe (global) + render runner/stage output |
 | `status` / `ps` / `abort` / `resources` | `runner.socket` | request → `Runner::StatusReport` reply |
 | `stop` | `runner.socket` | graceful `stop` request |
-| `reload` | `yath-persist.json` → SIGHUP the runner pid | trigger a preload reload |
-| `which` | `yath-persist.json` | print the discovered persistent runner |
+| `reload` | runner-socket symlink → workdir `PID` → SIGHUP the runner pid | trigger a preload reload |
+| `which` | runner-socket symlink (via `Discovery`/`Pfile`) | print the discovered persistent runner |

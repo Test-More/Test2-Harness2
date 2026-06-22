@@ -3,7 +3,7 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Util qw/find_runner_link/;
 use Test2::Harness2::Util qw/mod2file fqmod clean_path/;
 
 use Getopt::Yath;
@@ -69,7 +69,7 @@ Where to find persistence files.
 
 =item --no-persist-file
 
-Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.
+Where to find the persistent runner discovery symlink (a link to the runner's socket). The default is /{system-tempdir}/.project-yath-runner.sock. If no project is specified it falls back to the current directory; if the current directory is not writable it defaults to the system temp dir, which limits you to one persistent runner per project on your system.
 
 
 =item --project ARG
@@ -198,7 +198,7 @@ option_group {group => 'harness', category => 'Yath Options'} => sub {
         category    => 'Environment',
         alt         => ['pfile'],
         normalize   => \&clean_path,
-        description => "Where to find the persistence file. The default is /{system-tempdir}/project-yath-persist.json. If no project is specified then it will fall back to the current directory. If the current directory is not writable it will default to /tmp/yath-persist.json which limits you to one persistent runner on your system.",
+        description => "Where to find the persistent runner discovery symlink (a link to the runner's socket). The default is /{system-tempdir}/.project-yath-runner.sock. If no project is specified it falls back to the current directory; if the current directory is not writable it defaults to the system temp dir, which limits you to one persistent runner per project on your system.",
     );
 
     # -------------------------------------------------------------------------
@@ -258,7 +258,10 @@ option_post_process 0 => sub ($options, $state) {
 
     return if defined $settings->harness->persist_file;
 
-    $settings->harness->create_option(persist_file => find_pfile($settings, vivify => 1, no_checks => 1));
+    # persist_file is now the discovery SYMLINK path (a link to runner.socket), not
+    # a JSON metadata file. Vivify the path to use without creating it here; `yath
+    # start` publishes the symlink, and the runner's orphan guard tests -e on it.
+    $settings->harness->create_option(persist_file => find_runner_link($settings, vivify => 1));
 };
 
 # ---------------------------------------------------------------------------

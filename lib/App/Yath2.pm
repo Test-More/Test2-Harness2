@@ -23,7 +23,7 @@ use Scalar::Util qw/blessed/;
 use Getopt::Yath::Instance;
 use Getopt::Yath::Settings;
 
-use App::Yath2::Util qw/find_pfile/;
+use App::Yath2::Discovery();
 use Test2::Harness2::Util qw/find_libraries clean_path mod2file/;
 
 use App::Yath2::Options::Debug;
@@ -359,7 +359,11 @@ sub _command_from_argv ($self, $state) {
 
     return (help => \@args) if $settings->debug->help;
 
-    if (find_pfile($settings, no_checks => 1)) {
+    # A live persistent runner (its discovery symlink resolves to an accepting
+    # socket) means default to `run`; otherwise default to `test`. no_clean: this
+    # is a read-only probe for command selection, so do not mutate a stale symlink
+    # here -- the command that actually discovers will clean it.
+    if (App::Yath2::Discovery->find($settings, no_clean => 1)) {
         warn "\n** Persistent runner detected, defaulting to the 'run' command **\n\n";
         return (run => \@args);
     }

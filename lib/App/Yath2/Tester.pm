@@ -18,16 +18,15 @@ use App::Yath2::Util qw/find_yath/;
 use Test2::Harness2::Util qw/clean_path apply_encoding/;
 use Test2::Harness2::Util::IPC qw/run_cmd/;
 use Test2::Harness2::Util::File::JSONL;
-use Test2::Harness2::Util::File::JSON;
 
 use Importer Importer => 'import';
 our @EXPORT = qw/yath make_example_dir/;
 
 my $pdir = tempdir(CLEANUP => 1);
 
-# Route every persistent runner's persistence file into our process-unique $pdir
-# (find_pfile honors YATH_PERSISTENCE_DIR). Without this the default location is
-# $TMPDIR/.<user>-<host>-<project>-yath-persist.json -- shared by EVERY
+# Route every persistent runner's discovery symlink into our process-unique $pdir
+# (find_runner_link honors YATH_PERSISTENCE_DIR). Without this the default location
+# is $TMPDIR/.<user>-<host>-<project>-yath-runner.sock -- shared by EVERY
 # persistent-runner test in the suite (same project, same /tmp) -- so concurrent
 # tests under `prove -j` collide ("Persistent harness appears to be running")
 # and flake (notably reload.t). Per-process isolation removes the collision, and
@@ -37,24 +36,33 @@ $ENV{YATH_PERSISTENCE_DIR} //= $pdir;
 # A persistent runner started during a test (yath start) detaches and outlives
 # the command that started it. If the test dies, times out, or is signalled
 # before its `yath stop`, that runner would leak -- and keep respawning its
-# preload stages forever. Stop every runner whose persistence file lives under
-# our $pdir on the way out, however we exit. Registered after File::Temp's
-# tempdir cleanup so (LIFO) this runs first, while the pfiles still exist. A
-# SIGKILL of the test process bypasses both this and File::Temp; the runner's
-# own orphan guard (it self-exits when its workdir/pfile vanishes) is the
-# fallback for that case.
+# preload stages forever. Stop every runner whose discovery symlink lives under
+# our $pdir on the way out, however we exit. The symlink points at the runner's
+# workdir/runner.socket; the runner's own pid is read from workdir/PID. Registered
+# after File::Temp's tempdir cleanup so (LIFO) this runs first, while the symlinks
+# still exist. A SIGKILL of the test process bypasses both this and File::Temp; the
+# runner's own orphan guard (it self-exits when its workdir/symlink vanishes) is
+# the fallback for that case.
 sub _shutdown_persistent_runners {
     return unless -d $pdir;
 
-    my @pfiles;
+    my @links;
     File::Find::find(
-        {no_chdir => 1, wanted => sub { push @pfiles => $_ if m/yath-persist\.json\z/ && -f $_ }},
+        {no_chdir => 1, follow => 0, wanted => sub { push @links => $_ if m/yath-runner\.sock\z/ && -l $_ }},
         $pdir,
     );
 
-    for my $pfile (@pfiles) {
-        my $data = Test2::Harness2::Util::File::JSON->new(name => $pfile)->maybe_read or next;
-        my $pid = $data->{pid} or next;
+    for my $link (@links) {
+        my $target = readlink($link) or next;
+        my ($vol, $dir, undef) = File::Spec->splitpath($target);
+        my $pidfile = File::Spec->catpath($vol, $dir, 'PID');
+        next unless -f $pidfile;
+
+        open(my $fh, '<', $pidfile) or next;
+        my $pid = <$fh>;
+        close($fh);
+        chomp($pid) if defined $pid;
+        next unless defined($pid) && $pid =~ /^\d+$/;
         next unless kill(0 => $pid);
         kill('TERM', $pid);
     }

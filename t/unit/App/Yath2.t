@@ -224,9 +224,11 @@ subtest command_from_argv => sub {
     );
 
     {
-        my $control = mock $CLASS => (override => [find_pfile => sub { 1 }]);
+        # A live persistent runner is now detected via App::Yath2::Discovery->find
+        # (the well-known symlink resolving to an accepting socket), so mock that.
+        my $control = mock 'App::Yath2::Discovery' => (override => [find => sub { bless {}, 'App::Yath2::Discovery' }]);
         like(
-            warning { my ($cmd) = $resolve->([]); is($cmd, 'run', "Default to run if we have a persistence file") },
+            warning { my ($cmd) = $resolve->([]); is($cmd, 'run', "Default to run if a persistent runner is detected") },
             qr/Persistent runner detected, defaulting to the 'run' command/,
             "Warning about default"
         );
