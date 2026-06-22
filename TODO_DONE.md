@@ -7,6 +7,38 @@ Newest first.
 
 ---
 
+## Re-audit follow-ups (2026-06-21) — post-effort-raise recheck of the day's commits
+
+A multi-agent re-audit (the user raised the effort level mid-session and asked for a
+recheck of all of today's commits) plus a clean bisect. Most of the day's work verified
+correct at HEAD; the findings that needed action:
+
+- **#27 silence-timeout flake — FIXED (`6827decca`).** Bisected to the first #27 commit
+  (`472946279`): it flipped `no_reply` OFF for `read_control` reporters, so the runner
+  echoed its identity back to every test-job collector. Under `prove -j16` the write-back
+  to a collector busy draining its child stalls the runner's single-threaded loop ⇒ a 60s
+  collector silence-timeout kills an otherwise-instant preloaded test (`preload/slow.tx`),
+  ~60% of full runs. Pre-#27 (`5edf2ab20`) 3/3 clean; fixed HEAD 6/6 clean. Fix: `no_reply`
+  and `read_control` are orthogonal — set `no_reply` always; terminate rides the separate
+  `send_control`. `IPC.md` reconciled.
+- **#27-2b late-connect orphan — FIXED (`fb8496c86`).** `_enforce_collector_connect_timeout`
+  failed a never-connected job but recorded no intent, so a collector that connected
+  *after* its slot was reclaimed orphaned its test child (the block comment falsely claimed
+  it was torn down). Added a per-job `terminated_jobs` intent; `service_identified` tears
+  down a late collector for that job+try; `announce_run` sweeps at run end. Per-job, not
+  run-scoped (the run continues; a retry is spared). Tests added.
+- **style-purge `backstop` survivor — FIXED (`fc9904e98`).** `954f6476d` banned the term
+  but left `startup_timeout_backstop` at `Resource_Preload.t:91`; renamed `_safeguard`.
+
+**#28 (chunk 25) — code landed but DEAD on the preload path; NOT done; fix folded into
+#29.** The runner's `_bring_out_yer_dead` override is unreachable on the preload path
+(`run_scheduler_only` never calls `wait()`; PROCS empty) ⇒ detached collectors are never
+reaped and A3 never fires (C1); and `collector_conn_eof` deletes `job_pids` before the
+reap so the A3 reverse-map can't match (C2). The unit test only drives the helper, masking
+both. SubReaper.pm itself is correct. Fix plan: TODO_TASKS #28/#29.
+
+---
+
 ## #27 — Transition-driven test completion (the §5.4 core) — DONE (3 agent phases)
 
 The crux rewrite: a test's verdict now comes from its collector's socket transitions
@@ -51,9 +83,11 @@ once #28 reparents).
 **Notes for #28/#29:** the `kill(-pid)` hard-kill fallback needs detached preload
 collectors to `setsid` (#28). A3 currently only fires on the runner-reaped path; #28's
 subreaper reparenting will extend it to preload collectors (the `job_passed` ledger +
-`announce_run_health` are path-agnostic). The `-j16` `settings.json`/oversubscription
-flakes the agents saw were concurrent-machine-load, not code — verified clean at `-j16`
-on integration.
+`announce_run_health` are path-agnostic). **Correction (2026-06-21 re-audit):** the
+`-j16` silence-timeout flake first dismissed as concurrent-machine-load was in fact a
+**#27 code regression** (the `read_control` reporter dropped `no_reply`, so the runner's
+identity echo wedged its single-threaded loop) — fixed in `6827decca`; see the re-audit
+section at the top of this file.
 
 ---
 

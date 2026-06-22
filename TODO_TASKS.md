@@ -584,7 +584,14 @@ it (the stage reaps). The audited result is already on the wire (`harness_final_
   (#32). Retry policy stays runner-side (`--retry` + existing directives).
 
 ### #28 — Runner child-subreaper + detached preload collectors
-**Status:** Decided · **Step:** 25 · **Depends:** #27
+**Status:** 🟥 Code landed (`7952029e6`..`ab1a95865`) but **DEAD on the preload path** —
+NOT done. Re-audit (2026-06-21) found the runner's `_bring_out_yer_dead` override is
+only reached via `IPC::wait`, which `run_scheduler_only` never calls (PROCS empty by
+design) ⇒ detached collectors are never reaped (zombies) and A3 never fires (**C1**);
+and `collector_conn_eof` deletes `job_pids{job_id}` *before* the reap so
+`_reaped_unwatched_pid`'s reverse-map can't match (**C2**). **Fix folded into #29**
+(it reworks the same `run_scheduler_only` loop). Do not flip this to DONE until #29
+lands. SubReaper.pm itself is correct. · **Step:** 25 · **Depends:** #27
 
 **Problem:** to make the runner the sole reaper (and free the preload tree from any
 reaping logic), preload-spawned collectors must detach and re-parent to the runner.
@@ -613,6 +620,20 @@ no-preload dispatch forks a collector child and decides via transitions/EOF like
 preload path; delete `run_tests`/`run_stage`/`run_job` in-runner stage machinery and
 `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes the **#22 residual**,
 **#4 Part 4**, **#8 Part 4**. ARCHITECTURE §5.4.
+
+**Folded in from #28 (re-audit 2026-06-21 — #28's reaping is dead until this lands):**
+- **C1:** make `run_scheduler_only` reap unconditionally each tick **and** at
+  wind-down — call `waitpid(-1, WNOHANG)` + `_reaped_unwatched_pid` (or
+  `_bring_out_yer_dead`) directly, not through `wait()`'s non-empty-PROCS
+  short-circuit. This is what actually reaps the detached preload collectors and
+  fires A3.
+- **C2:** keep a `pid -> job` (or `pid -> passed`) map populated from the collector
+  handshake pid that is **not** cleared by `collector_conn_eof` (cleared only when
+  the reap consumes it or the task stops), so the A3-on-reap reverse-map matches.
+- **Test (M3):** add an integration test that double-forks/detaches a short-lived
+  child reporting a known pid, drives the real scheduler-only reap path, and asserts
+  both the zombie is reaped and a post-pass non-zero exit fires `announce_run_health`.
+- After this lands, flip #28 + TODO_STEPS chunk 25 to DONE.
 
 ### #30 — Generic `collector_transition` facet + plugin hook
 **Status:** Deferred · **Step:** 27 · **Depends:** #27
