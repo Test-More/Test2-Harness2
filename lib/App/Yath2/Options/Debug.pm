@@ -298,6 +298,11 @@ sub _post_process_interactive ($options, $state) {
         my $display = $settings->display;
         $display->create_option(quiet   => 0) if $display->check_option('quiet');
         $display->create_option(verbose => 1) if $display->check_option('verbose') && !$display->verbose;
+
+        # Interactive mode runs one test at a time with stdin forwarded, so its
+        # output must stream live rather than being held until the job ends.
+        # Default --live ON here unless the user already set it.
+        $display->create_option(live => 1) if $display->check_option('live') && !$display->live;
     }
 
     if ($settings->check_group('formatter')) {

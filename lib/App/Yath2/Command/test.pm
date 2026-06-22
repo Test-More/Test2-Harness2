@@ -285,8 +285,11 @@ sub driver {
     my $settings = $self->settings;
 
     my $show_runner_output = 1;
-    $show_runner_output = $settings->display->hide_runner_output ? 0 : 1
-        if $settings->check_group('display');
+    my $live               = 0;
+    if ($settings->check_group('display')) {
+        $show_runner_output = $settings->display->hide_runner_output ? 0 : 1;
+        $live               = $settings->display->live               ? 1 : 0;
+    }
 
     return $self->{+DRIVER} //= Test2::Harness2::Renderer::Driver->new(
         settings           => $settings,
@@ -295,6 +298,7 @@ sub driver {
         run_id             => $self->run_id,
         workdir            => $self->workdir,
         show_runner_output => $show_runner_output,
+        live               => $live,
         tasks              => $self->client->pending_tasks,
     );
 }

@@ -43,6 +43,16 @@ The following environment variables will be set after arguments are processed: C
 Hide output from the runner, showing only test output. (See Also truncate_runner_output)
 
 
+=item --live
+
+=item --no-live
+
+Stream every test's output live as it is produced. Under concurrency this
+interleaves output from different jobs (each line is tagged with its job).
+Without this, each job's output is shown together when that job finishes. On by
+default in interactive mode.
+
+
 =item --no-final-table
 
 =item --no-no-final-table
@@ -256,6 +266,12 @@ option_group {group => 'display', category => "Display Options"} => sub {
     option hide_runner_output => (
         type        => 'Bool',
         description => 'Hide output from the runner, showing only test output. (See Also truncate_runner_output)',
+        default     => 0,
+    );
+
+    option live => (
+        type        => 'Bool',
+        description => "Stream every test's output live as it is produced. Under concurrency this interleaves output from different jobs (each line is tagged with its job). Without this, each job's output is shown together when that job finishes. On by default in interactive mode.",
         default     => 0,
     );
 
