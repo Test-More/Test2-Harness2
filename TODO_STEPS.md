@@ -45,7 +45,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 4 | Collectors everywhere (runner + preload stages) | ✅ | — |
 | 5 | Runner service + socket IPC (state sync, transition pipelining) | ✅ | — |
 | 6 | Renderer: interim → §4.5 base-renderer rewrite | ✅ | — |
-| 7 | System-load service (own process, reliable tick → reports load) — needs 9 | ⬜ | — |
+| 7 | System-load service (own process, reliable tick → reports load) + opt-in CPU/memory throttling resources — needs 9 | ⬜ (design ✅, ready) | #43 |
 | 8a | Database + UI inline (interim DBIx::Class, SQLite logs) | ✅ | — |
 | 8b | Convert inlined UI schema DBIx::Class → DBIx::QuickORM (§2.4/§4.6) | ⬜ (deferred) | — |
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |

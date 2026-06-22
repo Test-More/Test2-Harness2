@@ -942,6 +942,50 @@ the draft were internally inconsistent about who owns the `Driver` (reviewer fla
 - Sinks fed only self-contained `Event` objects, so a slow sink can later run in its
   own process (not built now). ARCHITECTURE §4.12 (+ §4.5/§4.6).
 
+### #43 — System-load service + throttling resources (chunk 7)
+**Status:** ✅ DECIDED (2026-06-21, with the user) — ready to implement · **Step:** 7 ·
+**Depends:** #24 (Resource Role, done), chunk 9 (done)
+
+**Goal:** a dedicated system-load sampler service + opt-in CPU/memory throttling
+resources. The sampler design is locked (ported verbatim-in-spirit from
+`reference/harness_service`); the throttling-resource model is ported from
+`reference/old3` `Resource::CPU`/`Resource::Memory`, rewired to read the sampler's
+snapshot. (Sampler half was previously prototyped exactly as wanted; only the
+resource-consumption half was deferred there.)
+
+**Decided design:**
+- **Sampler** = port `reference/harness_service` `Test2::Harness2::SystemLoad` (sampling
+  primitive: cpu_pct/mem_pct/load_avg/mem_*; Linux `/proc`, BSD `sysctl`) +
+  `Service::Sampler` (dedicated process, steady **0.2s** tick → meaningful CPU delta;
+  one-way `system_load` reports to the runner). **Reporting is change-gated:** round
+  **UP to 5%**, CPU & memory tracked independently; an **increase reports immediately**,
+  a **decrease only after it holds `decrease_delay` (1.0s ≈ 5 ticks)**, unchanged →
+  nothing; a message carries both rounded values. Runner stores the snapshot in a
+  `system_load` slot + announces a `harness_system` transition to the Monitor, broadcast
+  globally (latest retained for late subscribers).
+- **Always-on:** the sampler runs whenever the runner runs (NOT only when a throttling
+  resource is requested) — its transitions are logged so the rendered/archived run shows
+  system load at each point, independent of gating. (User decision.)
+- **Throttling = Resource classes** (the model — resources, NOT an ad-hoc scheduler
+  check; needs only the #24 Resource Role, NOT chunk 11), ported from `reference/old3`
+  via a `Role::Resource::Utilizer`, but reading the sampler's `system_load` snapshot
+  (cross-platform: Linux+BSD) instead of inline `/proc` sampling (drops old3's Linux-only
+  limit):
+  - **`Resource::CPU`** — defer new test starts when `cpu% >= utilize_percent`
+    (**default 80**), gating on the rounded reported value. Opt-in `-R CPU[=70]`.
+  - **`Resource::Memory`** — defer when free memory `< min_free` (**default 5%** of total,
+    or absolute `512mb`); conservative-wins when layered with `--utilize`. Opt-in
+    `-R Memory[=20%|512mb]`.
+  - **Utilizer safety floor:** defer only when `in_flight >= min_concurrent` (**default
+    1**) — at least one job always runs even when saturated (never stalls). Gate = defer
+    (a transient "wait"), **off by default** (opt in with `-R`).
+- Lifecycle gotcha (from the reference AI_DOC): the sampler inherits the service's
+  std fds → reap it in `service_on_stop` before the service exits (else its collector
+  stalls on the orphan timeout). The 30s `_read_one_frame` EOF-busy-spin bug it
+  surfaced is already addressed on 2.0d (verify).
+- Record an ARCHITECTURE §4.4 addendum (fill the previously-undefined gating policy) +
+  an AI_DOC.
+
 ---
 
 ## Explicitly justified — do NOT cut
