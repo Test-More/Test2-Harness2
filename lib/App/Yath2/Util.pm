@@ -9,7 +9,6 @@ use File::ShareDir();
 use Sys::Hostname qw/hostname/;
 
 use Test2::Harness2::Util qw/clean_path/;
-use Test2::Harness2::Util::File::JSON;
 
 use Cwd qw/realpath/;
 use Importer Importer => 'import';
@@ -17,7 +16,7 @@ use Config qw/%Config/;
 use Carp qw/croak/;
 
 our @EXPORT_OK = qw{
-    find_pfile
+    find_runner_link
     find_in_updir
     is_generated_test_pl
     fit_to_width
@@ -133,26 +132,76 @@ sub find_in_updir {
     return;
 }
 
-sub _find_pfile {
+# Absolute path of a discovery symlink at $dir/$name. The directory is realpath'd
+# (safe -- it is a real dir), but the basename is appended WITHOUT resolving it:
+# realpath on the symlink itself would follow it to its target (the socket), and
+# the caller needs the link path, not the socket. Returns undef if the dir cannot
+# be resolved.
+sub _abs_link_path {
+    my ($dir, $name) = @_;
+    my $abs_dir = realpath(File::Spec->rel2abs($dir)) // return;
+    return File::Spec->catfile($abs_dir, $name);
+}
+
+# Like find_in_updir, but for a symlink (the discovery symlink). realpath in
+# find_in_updir resolves the link to its target, so it cannot match a symlink; we
+# walk the directory tree upward and test -l on $dir/$name at each level, returning
+# the link path itself (not its target).
+sub _find_link_in_updir {
+    my ($name) = @_;
+
+    my $dir = eval { realpath(File::Spec->rel2abs('.')) } or return;
+
+    my %seen;
+    while (defined $dir && length $dir && !$seen{$dir}++) {
+        my $link = File::Spec->catfile($dir, $name);
+        return $link if -l $link;
+
+        my $parent = realpath(File::Spec->catdir($dir, '..')) // last;
+        last if $parent eq $dir;    # reached the filesystem root
+        $dir = $parent;
+    }
+
+    return;
+}
+
+sub _runner_link_existsp {
+    my ($path) = @_;
+    # A live OR dangling symlink both count as "present" for discovery purposes:
+    # dangling means a runner crashed without cleanup, and the caller still wants
+    # to find (and clean) it. -l alone catches a dangling link; -e catches a
+    # link resolving to a live socket.
+    return -l $path || -e $path;
+}
+
+# Resolve the discovery symlink path for the current settings. The basename is
+# project-prefixed (and host/user-prefixed) so distinct projects/users/hosts get
+# distinct symlinks under a shared dir -- the multiple-harness-per-project story
+# carried over from the old pfile naming. The extension is plain ".sock" (a
+# symlink to runner.socket), not ".json": this is a symlink, not a metadata
+# document. Liveness is NOT checked here (a socket connect in App::Yath2::Discovery
+# is the live check); this only locates the path.
+sub find_runner_link {
     my ($settings, %params) = @_;
 
     croak "Settings is a required argument" unless $settings;
 
-    # First do the entire search without vivify
+    # First do the entire search without vivify; only fall through to the
+    # vivify-chosen path when nothing already exists.
     if ($params{vivify}) {
-        my $found = find_pfile($settings, %params, vivify => 0);
+        my $found = find_runner_link($settings, %params, vivify => 0);
         return $found if $found;
     }
 
     my $yath = $settings->harness;
 
-    if (my $pfile = $yath->persist_file) {
-        return $pfile if -f $pfile || $params{vivify};
+    if (my $link = $yath->persist_file) {
+        return $link if _runner_link_existsp($link) || $params{vivify};
 
         return; # Specified, but not found and no vivify
     }
 
-    my $basename = "yath-persist.json";
+    my $basename = "yath-runner.sock";
     my $user     = $ENV{USER};
     my $hostname = hostname();
     my $project  = $yath->project;
@@ -169,22 +218,22 @@ sub _find_pfile {
     # If a dir was specified, or if the current dir is not writable then we must use $dir/$name
     if ($project || $set_dir || !-w '.') {
         for my $name (@names) {
-            my $pfile = clean_path(File::Spec->catfile($dir, $name));
-            return $pfile if -f $pfile;
+            my $link = _abs_link_path($dir, $name);
+            return $link if _runner_link_existsp($link);
         }
 
-        return clean_path(File::Spec->catfile($dir, $names[0])) if $params{vivify};
+        return _abs_link_path($dir, $names[0]) if $params{vivify};
         return; # Not found
     }
 
     # Fall back to using the current dir (which must be writable)
     for my $name (@names) {
-        my $pfile = find_in_updir($name);
-        return $pfile if $pfile && -f $pfile;
+        my $link = _find_link_in_updir($name);
+        return $link if $link;
     }
 
     # Creating it here!
-    return clean_path(File::Spec->catfile('.', $names[0])) if $params{vivify};
+    return _abs_link_path('.', $names[0]) if $params{vivify};
 
     # Nope, nothing.
     return;
@@ -214,71 +263,6 @@ sub fit_to_width {
     return join "\n" => @out;
 }
 
-my $SEEN_ERROR = 0;
-sub find_pfile {
-    my ($settings, %params) = @_;
-    my $pfile = _find_pfile($settings, %params) or return;
-
-    return $pfile unless -e $pfile;
-    return $pfile if $params{no_checks};
-    return $pfile if $SEEN_ERROR;
-
-    my $data = Test2::Harness2::Util::File::JSON->new(name => $pfile)->read();
-
-    $data->{version}  //= '';
-    $data->{hostname} //= '';
-    $data->{user}     //= '';
-    $data->{pid}      //= '';
-    $data->{dir}      //= '';
-
-    my $hostname = hostname();
-    my $user = $ENV{USER};
-
-    my @bad;
-
-    push @bad => "** Version mismatch, persistent runner is version $data->{version}, current is version $VERSION. **"
-        if $data->{version} ne $VERSION;
-
-    push @bad => "** Hostname mismatch, persistent runner hostname is '$data->{hostname}', current hostname is '$hostname'. **"
-        if $data->{hostname} ne $hostname;
-
-    push @bad => "** User mismatch, persistent runner user is '$data->{user}', current user is '$user'. **"
-        if $data->{user} ne $user;
-
-    push @bad => "** Workdir missing, persistent runner is supposed to be at '$data->{dir}', but it does not exist. **"
-        unless -d $data->{dir};
-
-    push @bad => "** PID not running, persistent runner is supposed to be running with PID '$data->{pid}', but it is not. **"
-        unless kill(0, $data->{pid});
-
-    return $pfile unless @bad;
-
-    my $break = ('=' x 120) . "\n";
-    my $msg = join "\n" => $break, @bad, <<"    EOT", $break;
-
-Errors like this usually indicate that the persistent runner has gone away.
-Maybe the system was shut down improperly, or maybe the process was killed too
-quickly to clean up after itself.
-
-Here is the information indicated by the persistence file:
-  Runner PID:  $data->{pid}
-  Runner Vers: $data->{version}
-  Runner user: $data->{user}
-  Runner host: $data->{hostname}
-  Working dir: $data->{dir}
-
-If the persistent runner is truly gone you should delete the following file to
-continue:
-
-$pfile
-    EOT
-
-    $SEEN_ERROR = 1;
-    die $msg unless $params{no_fatal};
-    warn $msg unless $params{no_warn};
-    return $pfile;
-}
-
 1;
 
 __END__
@@ -299,7 +283,7 @@ any other package.
 =head1 SYNOPSIS
 
     use App::Yath2::Util qw{
-        find_pfile
+        find_runner_link
         find_in_updir
         is_generated_test_pl
         fit_to_width
@@ -316,15 +300,21 @@ import.
 
 =over 4
 
-=item $path_to_pfile = find_pfile($settings, %params)
+=item $path_to_link = find_runner_link($settings, %params)
 
 The first argument must be an instance of L<Getopt::Yath::Settings>.
 
-Currently the only supported param is C<vivify>, when set to true the pfile
-will be created if one does not already exist.
+Resolve the path of the well-known discovery B<symlink> for the current settings
+(the link that points at a persistent runner's C<runner.socket>). The path is
+chosen by the same project-prefix / tempdir-vs-cwd rules the old persistence file
+used, so distinct projects/users/hosts get distinct symlinks.
 
-The pfile is a file that tells yath that a persistent runner is active, and how
-to communicate with it.
+When C<vivify> is true the path to use is returned even when nothing exists yet,
+so the caller can create the symlink there. Without C<vivify> a path is returned
+only when a symlink (live or dangling) already exists.
+
+This only locates the path; it does not check whether the runner is alive --
+liveness is a socket connect, handled by L<App::Yath2::Discovery>.
 
 =item $path_to_file = find_in_updir($file_name)
 
