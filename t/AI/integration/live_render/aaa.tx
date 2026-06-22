@@ -1,0 +1,13 @@
+use Test2::V0;
+use Time::HiRes qw/sleep/;
+
+# Two jobs (aaa + bbb) print interleaved markers with small staggered sleeps so
+# that under --live -j2 their output is produced concurrently and must interleave
+# in the rendered stream. Each marker is distinct + ordered within the job.
+for my $n (1 .. 4) {
+    print "LIVE-MARKER-AAA-$n\n";
+    ok(1, "aaa step $n");
+    sleep 0.05;
+}
+
+done_testing;

@@ -1,0 +1,13 @@
+use Test2::V0;
+use Time::HiRes qw/sleep/;
+
+# Sibling of aaa.tx: a slightly offset stagger so the two jobs' output overlaps
+# in time, forcing an interleave under --live -j2.
+sleep 0.025;
+for my $n (1 .. 4) {
+    print "LIVE-MARKER-BBB-$n\n";
+    ok(1, "bbb step $n");
+    sleep 0.05;
+}
+
+done_testing;
