@@ -498,9 +498,17 @@ sub _stop_task {
     my $self = shift;
     my ($job_id) = @_;
 
-    my $task = delete $self->{+TASK_LOOKUP}->{$job_id} or die "Could not find task to stop ($job_id)";
+    # TASK_LOOKUP may already be gone: a concurrent halt_run/purge_run can drop a
+    # bailing/aborting run's lookups while this job is still running, and the slot
+    # MUST still be released when its collector finally EOFs. So stop from
+    # RUNNING_TASKS (the authoritative running copy -- the one the start incremented
+    # the counters from) and treat the lookup delete as best-effort. Dropping a
+    # running task's lookup must never strand the RUNNING counter (which would hang
+    # the run, since done() stays false while RUNNING > 0).
+    delete $self->{+TASK_LOOKUP}->{$job_id};
 
-    delete $self->{+RUNNING_TASKS}->{$job_id} or die "Task is not running, cannot stop it ($job_id)";
+    my $task = delete $self->{+RUNNING_TASKS}->{$job_id}
+        or die "Task is not running, cannot stop it ($job_id)";
 
     $_->release($job_id) for @{$self->{+RESOURCES}};
 
@@ -1045,8 +1053,15 @@ sub _drop_run_task_lookup {
     my ($run_id) = @_;
 
     my $lookup = $self->{+TASK_LOOKUP} or return;
+    my $running = $self->{+RUNNING_TASKS} // {};
 
     for my $job_id (keys %$lookup) {
+        # A RUNNING task's lookup must survive until its own stop_task (driven by its
+        # collector's EOF) removes it -- this only drops the run's not-yet-running
+        # (pending/halted) tasks. _stop_task tolerates a missing lookup as a second
+        # line of defense, but keeping a running task addressable here is the correct
+        # invariant.
+        next if $running->{$job_id};
         my $task = $lookup->{$job_id} or next;
         delete $lookup->{$job_id} if defined $task->{run_id} && $task->{run_id} eq $run_id;
     }

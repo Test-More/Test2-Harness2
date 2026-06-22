@@ -123,6 +123,58 @@ subtest purge_run_clears_task_lookup => sub {
     ok(!$state->task_lookup->{'J1'}, "the purged run's task is gone from task_lookup");
 };
 
+# CRITICAL regression (adversarial review of the EOF-completion + #35 interaction):
+# halting/aborting a run must NOT strand a RUNNING task. halt_run drops PENDING
+# lookups, but a RUNNING task's lookup must survive until its own stop_task (driven
+# by its collector's EOF) runs; and stop_task must release the slot even if the
+# lookup was already dropped. Otherwise RUNNING never decrements and the run hangs
+# (done() stays false while RUNNING > 0).
+subtest halt_does_not_strand_running_tasks => sub {
+    my $state = new_state();
+
+    $state->queue_run({run_id => 'R1'});
+    $state->start_run('R1');
+
+    my %task = (run_id => 'R1', category => 'general', duration => 'short', stage => 'default', use_preload => 0);
+    $state->queue_task({%task, job_id => 'J1'});
+    $state->queue_task({%task, job_id => 'J2'});
+
+    # J1 is RUNNING; J2 stays pending.
+    $state->start_task({job_id => 'J1', stage => 'default', res => {env_vars => {}, args => [], record => {}}});
+    is($state->running, 1, "J1 is running");
+
+    $state->halt_run('R1');
+
+    ok($state->task_lookup->{'J1'},  "a RUNNING task's lookup survives halt_run (stopped by its own EOF)");
+    ok(!$state->task_lookup->{'J2'}, "a PENDING task's lookup is dropped by halt_run (#35)");
+    is($state->running, 1, "halt_run did not itself stop the running task");
+
+    # J1's collector EOFs -> stop_task. It must succeed and decrement RUNNING.
+    my $ok  = eval { $state->stop_task('J1'); 1 };
+    my $err = $@;
+    ok($ok, "stop_task on the halted run's running task does not die") or diag($err);
+    is($state->running, 0, "RUNNING decremented to 0 -- the run can complete (no hang)");
+    ok(!$state->running_tasks->{'J1'}, "J1 cleared from running_tasks");
+};
+
+# Defense in depth: even if a running task's lookup is already gone (any concurrent
+# halt/purge ordering), stop_task must still release the slot.
+subtest stop_task_tolerates_missing_lookup => sub {
+    my $state = new_state();
+
+    $state->queue_run({run_id => 'R1'});
+    $state->start_run('R1');
+    $state->queue_task({job_id => 'J1', run_id => 'R1', category => 'general', duration => 'short', stage => 'default', use_preload => 0});
+    $state->start_task({job_id => 'J1', stage => 'default', res => {env_vars => {}, args => [], record => {}}});
+    is($state->running, 1, "running");
+
+    delete $state->task_lookup->{'J1'};    # simulate a lookup dropped by a concurrent halt/purge
+
+    my $ok = eval { $state->stop_task('J1'); 1 };
+    ok($ok, "stop_task succeeds with the lookup already gone") or diag($@);
+    is($state->running, 0, "RUNNING still decremented");
+};
+
 # --- Runner-level owner-drop sweep -------------------------------------------------
 #
 # A tiny harness composes the Handlers role with stub state + watchdog so we can drive

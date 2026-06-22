@@ -377,6 +377,18 @@ sub decide_collector_outcome {
     my $job_id = $entry->{job_id};
     my $fs     = $entry->{final_state};
 
+    # A collector the runner deliberately terminated (a bail/abort terminate) is
+    # recorded 'aborted' -- the runner's terminate is the authoritative outcome,
+    # never a retry or an audited failure. This is checked BEFORE the final_state
+    # branches because a terminated collector can still flush a failing final_state
+    # before it dies (its synthesized exit audits as a failure); without this guard
+    # such a sibling would take the audited-failure/retry path -- mis-rendering the
+    # abort and, on a halted run, leaving the job in RUNNING (a hang).
+    if ($entry->{terminated}) {
+        $self->_collector_no_verdict($entry, $entry->{terminate_reason} // "Job terminated by the runner");
+        return;
+    }
+
     # halt wins over retry: a bailing job is completed (failed), never re-queued.
     if ($entry->{halt} || ($fs && defined($fs->{halt}) && length($fs->{halt}))) {
         $self->_collector_stop($job_id);
@@ -384,14 +396,11 @@ sub decide_collector_outcome {
         return;
     }
 
-    # No verdict at EOF: fail. A deliberately terminated job (a bail/abort) is
-    # recorded as aborted; otherwise the missing final state is itself a collector
-    # problem and the reason flags it as possibly-not-the-test.
+    # No verdict at EOF: fail. The missing final state is itself a collector problem;
+    # the reason flags it as possibly-not-the-test. (A deliberately terminated job is
+    # already handled above, regardless of whether it emitted a final_state.)
     unless ($fs) {
-        my $reason = $entry->{terminated}
-            ? ($entry->{terminate_reason} // "Job terminated by the runner")
-            : "The collector exited without reporting a final state; this may be a harness/collector problem and not a fault in the test itself";
-        $self->_collector_no_verdict($entry, $reason);
+        $self->_collector_no_verdict($entry, "The collector exited without reporting a final state; this may be a harness/collector problem and not a fault in the test itself");
         return;
     }
 
