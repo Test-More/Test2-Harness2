@@ -86,12 +86,6 @@ sub stop {
     $self->{+STARTED} = 0;
 }
 
-sub set_sig_handler {
-    my $self = shift;
-    my ($sig, $sub) = @_;
-    $self->{+HANDLERS}->{$sig} = $sub;
-}
-
 sub handle_sig {
     my $self = shift;
     my ($sig) = @_;
@@ -367,14 +361,6 @@ Start the IPC management (Insert signal handlers).
 =item $ipc->stop
 
 Stop the IPC management (Remove signal handlers).
-
-=item $ipc->set_sig_handler($sig, sub { ... })
-
-Set a custom signal handler. This is a safer version of
-C<< local %SIG{$sig} >> for use with IPC.
-
-The callback will get exactly one argument, the name of the signal that was
-recieved.
 
 =item $ipc->handle_sig($sig)
 

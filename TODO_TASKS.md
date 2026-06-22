@@ -235,23 +235,38 @@ nothing-left / timeout / `all`-mode-remains / default-single-pass.
   (live, called from the Runner loop).
 
 ### #8 — Collapse the `Test2::Harness2::IPC` controller
-**Status:** 🟡 Parts 1-3 DONE (`280720efb`) — die→next, warns debug-gated, command inline reaper; Part 4 (no-preload completion→socket / delete set_proc_exit job branch) DEFERRED as a rewrite (§5.4 follow-up). See TODO_DONE.md
+**Status:** ✅ DONE (the substantive collapse). Parts 1-3 (`280720efb`); Part 4 (the
+no-preload completion→socket / reap-driven verdict removal) was completed by #29
+(`f7e836182` etc.) — that ticket states it "Completes #8 Part 4". Chunk 21 re-audit
+(2026-06-21) closed the residual: deleted the dead `set_sig_handler` (`bc2cb3379`) and
+corrected the §5.4 framing. **The base class is NOT dismantled** — `Preload::Host`
+(created by #22) is a third co-equal multi-child consumer (its `run_stage`/`run_job`
+loop), explicitly OUT OF SCOPE per #29, so the shared three-pass reaper +
+`category`/`spawn`/`watch`/`killall`/`wait` all stay. See TODO_DONE.md.
 
-**Problem:** the IPC controller does spawn + zombie-reap + category tracking +
-reap-driven scheduling. Only the first two should survive. Two real consumers: the
-Runner (multi-child) and `test.pm` (one child — the runner). `Job::set_exit` says
+**Problem (original framing — see Status for what actually happened):** the IPC
+controller does spawn + zombie-reap + category tracking + reap-driven scheduling. Only
+the first two should survive. The original audit assumed only two consumers — the
+Runner and `test.pm` (one child — the runner) — but the #22 split added a third,
+`Preload::Host`, which is still a genuine multi-child controller. `Job::set_exit` says
 results already come from the collector, not the reap.
 
-**Steps:**
-- Migrate **no-preload** job completion onto the collector socket report (like the
-  preload path), then delete `Runner::set_proc_exit` (its job branch → socket; its
-  stage branch is the dead in-runner named-stage path, #4).
-- Delete `PROCS_BY_CAT`/`cat`-waits (#6), the `_check_if_dead_yet` process-group wait
-  (runner reaps only single collector pids now), `_ex_parrots`, die-on-unmonitored.
-- **Keep** `Util::IPC` (`run_cmd`/`swap_io` — the real reusable primitive) and a thin
-  `IPC::Process` value object (drop its exit-tracking). Runner keeps a minimal
-  `waitpid` zombie-reaper; the command inlines its one-child spawn+wait. Dismantle
-  the `IPC` base class.
+**Steps (outcome annotated):**
+- ✅ Migrate **no-preload** job completion onto the collector socket report (like the
+  preload path), then strip the reap-driven verdict from `Runner::set_proc_exit` — done
+  by #29. (Its Job branch is now zombie cleanup + A3 health; the dead in-runner
+  named-stage branch was removed in #4/#22, and the live named-stage relaunch lives in
+  `Preload::Host::set_proc_exit`.)
+- ✅ Delete `PROCS_BY_CAT`/`cat`-waits — done by #6. ❌ **NOT** removing the
+  `_check_if_dead_yet` process-group wait or `_ex_parrots`: they are load-bearing for
+  the watched no-preload reap (group-exit gate) and for `Preload::Host`'s `wait()` loop.
+  ✅ die-on-unmonitored removed (Part 1, `f0c84daa9`).
+- **Keep** `Util::IPC` (`run_cmd`/`swap_io`/`set_cloexec`/`USE_P_GROUPS` — the real
+  reusable primitive) and a thin `IPC::Process` value object (exit-tracking retained —
+  the croak-on-double-set is a reap-once guard, not a verdict input). Runner keeps a
+  minimal `waitpid` zombie-reaper; the command inlines its one-child spawn+wait.
+  **Dismantling the base class is deferred** until `Preload::Host` collapses its own
+  `run_stage`/`run_job` machinery (a separate, larger piece).
 
 ### #9 — Factor the collector-reporter boilerplate into `Util::socket_reporter`
 **Status:** ✅ DONE (batch 2, `fca4f3e42`) — see TODO_DONE.md · **Step:** foundation · **Depends:** —
