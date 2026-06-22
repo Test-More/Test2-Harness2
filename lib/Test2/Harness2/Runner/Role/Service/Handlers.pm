@@ -797,6 +797,15 @@ sub request_handler_queue_spawn {
         unless $self->{'rootpid'} == $$;
 
     my $spawn = $payload->{spawn} // {};
+
+    # A spawn worker needs a real PRELOAD stage (a preloaded interpreter) to attach to.
+    # A no-preload runner has only its own in-process 'default' stage, which forks
+    # clean-slate test collectors and cannot host a detached spawn worker -- so reject
+    # the spawn up front rather than queuing a worker the runner can never launch (which
+    # would hang `yath spawn` on its worker tempfile).
+    return {ok => 0, error => "yath spawn requires a preload stage; this runner has no preloads"}
+        unless $self->_preload_root_hosts_stages;
+
     my ($stage, $ready) = $self->state->spawn_stage_ready($spawn);
 
     return {ok => 0, stage => $stage, error => "No live preload stage '$stage' is available to run the spawn"}

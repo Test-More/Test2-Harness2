@@ -1191,6 +1191,10 @@ sub run_job {
     my $task = $self->state->next_task($self->{+STAGE}) or return 0;
 
     if ($task->{spawn} && !$task->{resource_skip}) {
+        # Spawn-worker branch. Unreachable on a no-preload runner -- a spawn needs a
+        # real preload stage and request_handler_queue_spawn rejects a no-preload
+        # spawn before it is ever queued. Kept until run_job is removed with the
+        # run-path collapse (#29); the no-preload runner never sets FORK_SPAWN_CALLBACK.
         my $job = Test2::Harness2::Runner::Spawn->new(
             runner        => $self,
             task          => $task,
@@ -1204,6 +1208,18 @@ sub run_job {
 
     my $run = $self->state->run();
     return 1 unless $run;
+
+    return $self->_launch_local_job($task, $run);
+}
+
+# Launch ONE test job locally: the runner forks its own collector for the test (the
+# no-preload path -- there is no preload stage to dispatch to). This is the single
+# local-launch implementation; run_job uses it today and dispatch_pending will use it
+# once the two run paths collapse onto run_scheduler_only (#29). Returns the forked
+# job's pid.
+sub _launch_local_job {
+    my $self = shift;
+    my ($task, $run) = @_;
 
     my $job_class;
     if ($task->{job_class}) {
@@ -1227,20 +1243,16 @@ sub run_job {
 
     $job->prepare_dir();
 
-    my $spawn_time;
-
     my $pid;
     my $via = $job->via();
     if ($via) {
         require(mod2file($1)) if !defined(&{$via}) && $via =~ m/^(.+)::[^:]+$/;
 
-        $spawn_time = time();
-        $pid        = $self->$via($job);
+        $pid = $self->$via($job);
         $job->set_pid($pid);
         $self->watch($job);
     }
     else {
-        $spawn_time = time();
         $self->spawn($job);
         $pid = $job->pid;
     }

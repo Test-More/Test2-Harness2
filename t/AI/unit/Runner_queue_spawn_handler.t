@@ -32,9 +32,14 @@ use v5.38;
 {
     package My::Runner;
     use v5.38;
-    use Object::HashBase qw/<rootpid <state <settings/;
+    use Object::HashBase qw/<rootpid <state <settings <has_preload/;
     use Role::Tiny::With;
     with 'Test2::Harness2::Runner::Role::Service::Handlers';
+
+    # The handler rejects a spawn on a no-preload runner (no real preload stage to host
+    # the worker). Default to a preload runner so the stage-based cases below model the
+    # normal path; the no-preload case constructs with has_preload => 0.
+    sub _preload_root_hosts_stages { $_[0]->{+HAS_PRELOAD} // 1 }
 }
 
 subtest accepts_when_live_stage => sub {
@@ -68,6 +73,23 @@ subtest rejects_when_no_live_stage => sub {
     is($resp->{stage}, 'missing', "names the resolved stage");
     like($resp->{error}, qr/No live preload stage 'missing'/, "explains why");
     is($state->queued, undef, "nothing queued in state");
+};
+
+subtest rejects_on_a_no_preload_runner => sub {
+    # A no-preload runner has no real preload stage to host a spawn worker, so the
+    # spawn is rejected before any stage-readiness check (its in-process 'default'
+    # stage is for clean-slate test forks, not detached spawn workers).
+    my $state  = My::State->new(ready_stages => {default => 1});
+    my $runner = My::Runner->new(rootpid => $$, state => $state, has_preload => 0);
+
+    my $resp = $runner->request_handler_queue_spawn(
+        {spawn => {stage => 'default', file => 'foo.pl'}},
+        undef,
+    );
+
+    ok(!$resp->{ok}, "spawn rejected on a no-preload runner");
+    like($resp->{error}, qr/requires a preload stage/, "explains the no-preload reason");
+    is($state->queued, undef, "nothing queued");
 };
 
 subtest not_the_state_hub => sub {
