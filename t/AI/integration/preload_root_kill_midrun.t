@@ -32,7 +32,6 @@ use Test2::Util qw/CAN_REALLY_FORK/;
 use App::Yath2;
 use App::Yath2::Util qw/find_yath/;
 use Test2::Harness2::Util::IPC qw/run_cmd/;
-use Test2::Harness2::Util::JSON qw/decode_json/;
 
 skip_all "Cannot fork, skipping preload-root kill test" unless CAN_REALLY_FORK;
 skip_all "This test requires forking" if $ENV{T2_NO_FORK};
@@ -85,19 +84,21 @@ my $ok = eval {
     waitpid($start_pid, 0);
     $start_pid = undef;
 
-    # 2. Read the runner pid from the pfile.
-    my $pfile;
+    # 2. Follow the discovery symlink to the runner workdir and read its pid.
+    my $link;
     for (1 .. 600) {
         opendir(my $dh, $pdir) or die "opendir $pdir: $!";
-        my ($pname) = grep { /yath-persist\.json\z/ } readdir($dh);
+        my ($pname) = grep { /yath-runner\.sock\z/ } readdir($dh);
         closedir($dh);
-        if (defined $pname) { $pfile = File::Spec->catfile($pdir, $pname); last }
+        if (defined $pname) { $link = File::Spec->catfile($pdir, $pname); last }
         sleep 0.1;
     }
-    ok($pfile && -f $pfile, "persistent runner wrote its pfile") or die "no pfile\n";
-    my $data = decode_json(do { open(my $pf, '<', $pfile) or die $!; local $/; <$pf> });
-    $runner_pid = $data->{pid};
-    $runner_dir = $data->{dir};
+    ok($link && -l $link, "persistent runner published its discovery symlink") or die "no symlink\n";
+    my $target = readlink($link) or die "could not readlink $link: $!";
+    my ($vol, $dir, undef) = File::Spec->splitpath($target);
+    $runner_dir = File::Spec->catpath($vol, $dir, '');
+    $runner_dir =~ s{/\z}{};
+    chomp($runner_pid = do { open(my $pf, '<', File::Spec->catfile($runner_dir, 'PID')) or die $!; <$pf> });
     ok($runner_pid && kill(0, $runner_pid), "runner alive (pid $runner_pid)") or die "runner dead\n";
 
     # 3. Wait for the preload-root to come up and record its pid.

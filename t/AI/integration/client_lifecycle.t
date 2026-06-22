@@ -83,7 +83,7 @@ yath(
     exit    => 0,
     test    => sub {
         my $out = shift;
-        like($out->{output}, qr/^\s*Found: .*yath-persist\.json$/m, "runner still discoverable after two attach runs");
+        like($out->{output}, qr/^\s*Found: .*yath-runner\.sock$/m, "runner still discoverable after two attach runs");
     },
 );
 

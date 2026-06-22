@@ -3,15 +3,13 @@ use Test2::Tools::Spec;
 
 use File::Temp qw/tempdir/;
 use File::Spec;
-use Sys::Hostname qw/hostname/;
 
-use Test2::Harness2::Util::File::JSON;
+use Test2::Collector::Util::Socket qw/open_unix_listen/;
+use Test2::Harness2::Util qw/clean_path/;
 
 use App::Yath2::Pfile;
 
-my $VERSION = $App::Yath2::Pfile::VERSION;
-
-# A minimal stand-in for Getopt::Yath::Settings: find_pfile only ever calls
+# A minimal stand-in for Getopt::Yath::Settings; find_runner_link only ever calls
 # $settings->harness and then accessors on the result.
 {
 
@@ -28,70 +26,72 @@ my $VERSION = $App::Yath2::Pfile::VERSION;
     sub harness { $_[0]->{harness} }
 }
 
-sub write_pfile {
-    my (%data) = @_;
-    my $dir   = tempdir(CLEANUP => 1);
-    my $path  = File::Spec->catfile($dir, 'yath-persist.json');
-    my %full  = (
-        pid      => $$,
-        dir      => $dir,
-        version  => $VERSION,
-        user     => $ENV{USER},
-        hostname => hostname(),
-        %data,
-    );
-    Test2::Harness2::Util::File::JSON->new(name => $path)->write(\%full);
-    return ($path, $dir);
+# Stand up a live runner-style workdir (bound runner.socket + PID file) and publish
+# the discovery symlink for $settings at it. Returns ($settings, $workdir, $listen);
+# keep $listen in scope so the socket stays bound for the connect-based liveness.
+sub live_runner {
+    my (%params) = @_;
+
+    my $workdir = clean_path(tempdir(CLEANUP => 1));
+    my $listen  = open_unix_listen(File::Spec->catfile($workdir, 'runner.socket'));
+
+    my $pidfile = File::Spec->catfile($workdir, 'PID');
+    open(my $fh, '>', $pidfile) or die "Could not write PID file: $!";
+    print $fh ($params{pid} // $$);
+    close($fh);
+
+    my $persist  = tempdir(CLEANUP => 1);
+    my $settings = MockSettings->new(project => 'Pfile-Test', persist_dir => $persist);
+    require App::Yath2::Discovery;
+    App::Yath2::Discovery->publish($settings, workdir => $workdir);
+
+    return ($settings, $workdir, $listen);
 }
 
-tests data_accessors => sub {
-    my ($path, $dir) = write_pfile();
-
-    my $pfile = App::Yath2::Pfile->new(path => $path);
-    isa_ok($pfile, [$CLASS], "got a Pfile");
-    is($pfile->path, $path, "path accessor");
-
-    my $data = $pfile->data;
-    is($data->{dir}, $dir, "data carries the dir");
-    is($data->{pid}, $$,   "data carries the pid");
-    is($data->{pfile_path}, $path, "pfile_path filled in from path");
-
-    is($pfile->workdir, $dir, "workdir derived from dir");
-    is($pfile->dir,     $dir, "dir accessor");
-    is($pfile->pid,     $$,   "pid accessor");
-
-    ref_is($pfile->data, $data, "data is cached");
-};
-
-tests pfile_path_preserved => sub {
-    my ($path, $dir) = write_pfile(pfile_path => '/already/set');
-    my $pfile = App::Yath2::Pfile->new(path => $path);
-    is($pfile->data->{pfile_path}, '/already/set', "existing pfile_path is not overwritten");
-};
-
-tests describe => sub {
-    my ($path, $dir) = write_pfile();
-    my $pfile = App::Yath2::Pfile->new(path => $path);
-
-    is(
-        $pfile->describe,
-        "\nFound: $path\n  PID: $$\n  Dir: $dir\n\n",
-        "describe matches the which/watch banner exactly",
-    );
-};
-
-tests find => sub {
-    my ($path, $dir) = write_pfile();
-
-    my $settings = MockSettings->new(persist_file => $path);
+tests find_and_accessors => sub {
+    my ($settings, $workdir, $listen) = live_runner();
 
     my $pfile = App::Yath2::Pfile->find($settings);
     isa_ok($pfile, [$CLASS], "find returned a Pfile");
-    is($pfile->path,    $path, "found the right pfile path");
-    is($pfile->workdir, $dir,  "workdir resolves through find");
 
-    my $missing = MockSettings->new(persist_file => File::Spec->catfile($dir, 'nope.json'));
-    is(App::Yath2::Pfile->find($missing), undef, "find returns undef when no pfile is present");
+    ok(-l $pfile->path, "path is the discovery symlink");
+    is($pfile->workdir, $workdir, "workdir resolves through the symlink");
+    is($pfile->dir,     $workdir, "dir alias matches workdir");
+    is($pfile->pid,     "$$",     "pid read from the workdir PID file");
+
+    my $data = $pfile->data;
+    is($data->{dir},        $workdir,      "data carries the workdir");
+    is($data->{pid},        "$$",          "data carries the pid");
+    is($data->{pfile_path}, $pfile->path,  "data carries the discovery symlink path");
+    ref_is($pfile->data, $data, "data is cached");
+};
+
+tests describe => sub {
+    my ($settings, $workdir, $listen) = live_runner();
+    my $pfile = App::Yath2::Pfile->find($settings);
+
+    my $link = $pfile->path;
+    is(
+        $pfile->describe,
+        "\nFound: $link\n  PID: $$\n  Dir: $workdir\n\n",
+        "describe matches the which/watch banner",
+    );
+};
+
+tests legacy_params_ignored => sub {
+    my ($settings, $workdir, $listen) = live_runner();
+
+    # The old liveness-banner controls are accepted and ignored now.
+    my $pfile = App::Yath2::Pfile->find($settings, no_fatal => 1, no_checks => 1, no_warn => 1);
+    isa_ok($pfile, [$CLASS], "find still works with legacy params");
+    is($pfile->workdir, $workdir, "discovery still resolved");
+};
+
+tests find_absent => sub {
+    my $persist  = tempdir(CLEANUP => 1);
+    my $settings = MockSettings->new(project => 'Pfile-None', persist_dir => $persist);
+
+    is(App::Yath2::Pfile->find($settings), undef, "find returns undef when no runner is published");
 
     like(
         dies { App::Yath2::Pfile->find() },

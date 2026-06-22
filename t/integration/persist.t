@@ -45,9 +45,9 @@ yath(
     exit    => 0,
     test    => sub {
         my $out = shift;
-        like($out->{output}, qr/^\s*Found: .*yath-persist\.json$/m, "Found the persist file");
-        like($out->{output}, qr/^\s*PID: /m,                        "Found the PID");
-        like($out->{output}, qr/^\s*Dir: /m,                        "Found the Dir");
+        like($out->{output}, qr/^\s*Found: .*yath-runner\.sock$/m, "Found the discovery symlink");
+        like($out->{output}, qr/^\s*PID: /m,                       "Found the PID");
+        like($out->{output}, qr/^\s*Dir: /m,                       "Found the Dir");
     },
 );
 
