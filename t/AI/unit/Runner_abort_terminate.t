@@ -41,6 +41,7 @@ use Test2::Harness2::Runner::Watchdog;
     }
 
     sub truncate { $_[0]->{truncated}++; return }
+    sub purge_run { return }
 
     package FakeRunnerSettings;
     sub new { bless {abort_on_bail => $_[1] // 1, connect_timeout => $_[2] // 30}, $_[0] }
@@ -208,6 +209,53 @@ subtest connect_timeout_cleared_on_connect => sub {
     my $conn = FakeConn->new;
     identify($runner, $conn, job_id => 'J1', job_try => 0, run_id => 'R1');
     ok(!exists $runner->{job_connect_watch}{J1}, "the connect watch is cleared once the collector connects");
+};
+
+subtest connect_timeout_terminates_late_collector => sub {
+    # M1: a collector that connects AFTER the connect-timeout already failed its job
+    # (its slot reclaimed) is terminated on connect so its test child does not run on
+    # as an orphan. A different job (no intent) or a different try is left alone.
+    my $runner = mk_runner(
+        running         => {J1 => {file => 'a.t', run_id => 'R1', is_try => 0}},
+        connect_timeout => 5,
+    );
+
+    $runner->{job_connect_watch}{J1} = {since => time - 10, run_id => 'R1'};
+    $runner->_enforce_collector_connect_timeout;
+    ok($runner->{terminated_jobs}{J1}, "a per-job termination intent was recorded for the timed-out job");
+
+    # The slow collector for the SAME try connects late -> terminated on connect.
+    my $late = FakeConn->new;
+    identify($runner, $late, job_id => 'J1', job_try => 0, run_id => 'R1', pid => 555);
+    is($late->{controls}[0]{control}, 'terminate', "the late-connecting collector is terminated on connect");
+    ok(!exists $runner->{terminated_jobs}{J1}, "the per-job intent is consumed once the late collector connects");
+
+    # A collector for a DIFFERENT job (no intent) connects normally -> NOT terminated.
+    my $other = FakeConn->new;
+    identify($runner, $other, job_id => 'J2', job_try => 0, run_id => 'R1', pid => 666);
+    ok(!@{$other->{controls}}, "a collector for a job with no termination intent is left alone");
+
+    # A retry of J1 (new try) must NOT be terminated by a stale intent for the old try.
+    $runner->{terminated_jobs}{J1} = {job_try => 0, run_id => 'R1', reason => 'old try'};
+    my $retry = FakeConn->new;
+    identify($runner, $retry, job_id => 'J1', job_try => 1, run_id => 'R1', pid => 777);
+    ok(!@{$retry->{controls}}, "a different try's collector is not terminated by a stale per-job intent");
+    ok(exists $runner->{terminated_jobs}{J1}, "the stale intent for the old try is left intact on a try mismatch");
+};
+
+subtest announce_run_sweeps_terminated_jobs => sub {
+    # M1: a per-job termination intent whose collector never connects is dropped when
+    # the run ends, so a persistent runner does not accumulate them. An unrelated run's
+    # intent is untouched.
+    my $runner = mk_runner(running => {});
+    $runner->{run_owners}{R1} = 1;    # skip the §4.2 purge so announce_run is self-contained
+    $runner->{terminated_jobs}{J1} = {job_try => 0, run_id => 'R1', reason => 'x'};
+    $runner->{terminated_jobs}{J2} = {job_try => 0, run_id => 'R2', reason => 'y'};
+
+    $runner->announce_run('R1');
+
+    ok(!exists $runner->{terminated_jobs}{J1}, "R1's per-job intent is swept at run end");
+    ok(exists $runner->{terminated_jobs}{J2}, "an unrelated run's intent is left intact");
 };
 
 subtest handshake_records_job_pid => sub {

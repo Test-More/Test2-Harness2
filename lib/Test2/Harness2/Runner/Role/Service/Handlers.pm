@@ -261,6 +261,19 @@ sub service_identified {
         $self->_terminate_collector($entry, $self->{'aborting_runs'}{$entry->{run_id}}{reason});
     }
 
+    # Per-job late-connect teardown: a collector for a job already failed by the
+    # connect-timeout (_enforce_collector_connect_timeout recorded the intent)
+    # connected after its slot was reclaimed. Terminate it so its test child does
+    # not run on as an orphan. Try-matched so a legitimate retry's collector is left
+    # alone; the intent is consumed here (and otherwise swept at run end).
+    if (my $ti = $self->{'terminated_jobs'} ? $self->{'terminated_jobs'}{$job_id} : undef) {
+        my $same_try = !defined($ti->{job_try}) || !defined($payload->{job_try}) || "$ti->{job_try}" eq "$payload->{job_try}";
+        if ($same_try) {
+            delete $self->{'terminated_jobs'}{$job_id};
+            $self->_terminate_collector($entry, $ti->{reason});
+        }
+    }
+
     return;
 }
 
@@ -659,8 +672,10 @@ sub _collector_connect_timeout {
 # --collector-connect-timeout is failed/aborted -- it would otherwise never EOF and
 # hang the run. Mirrors the #33 _expire_stale_stages per-tick shape. The job is
 # synthesized as aborted (the no-verdict render mutation) and marked decided in the
-# shared fire-once ledger so a collector that connects after this is a no-op (and is
-# also terminated, since the failed mutation cleared its watch but the job is gone).
+# shared fire-once ledger so a collector that connects after this is a no-op. A
+# per-job termination intent (terminated_jobs) is also recorded so such a late
+# collector is torn down on connect (service_identified) rather than running its
+# test child on as an orphan after its slot was reclaimed.
 sub _enforce_collector_connect_timeout {
     my $self = shift;
 
@@ -686,10 +701,18 @@ sub _enforce_collector_connect_timeout {
         $self->mark_job_decided($job_id, $job_try);
         delete $self->{'collector_current_try'}{$job_id};
 
+        my $reason = "The test collector did not connect within ${timeout}s; failing the job (it can never report completion)";
         $self->_collector_no_verdict(
             {job_id => $job_id, run_id => $task->{run_id}, terminated => 1},
-            "The test collector did not connect within ${timeout}s; failing the job (it can never report completion)",
+            $reason,
         );
+
+        # Per-job (NOT run-scoped: the run continues with its other jobs)
+        # termination intent so a collector that connects after this timeout -- its
+        # slot already reclaimed -- is torn down on connect (service_identified)
+        # rather than orphaning its test child. Matched on the try so a legitimate
+        # retry's collector is unaffected; swept at run end (announce_run).
+        $self->{'terminated_jobs'}{$job_id} = {job_try => $job_try, run_id => $task->{run_id}, reason => $reason};
     }
 
     return;
@@ -1272,6 +1295,12 @@ sub announce_run {
     # carry it into a future run that reuses nothing of it (the per-job decision
     # maps are dropped on each job's EOF; this is the one run-scoped map).
     delete $self->{'aborting_runs'}{$run_id} if $self->{'aborting_runs'};
+
+    # Drop any per-job connect-timeout termination intents for this run: a collector
+    # that still never connected has nothing left to tear down once the run ends.
+    if (my $tj = $self->{'terminated_jobs'}) {
+        delete $tj->{$_} for grep { ($tj->{$_}{run_id} // '') eq $run_id } keys %$tj;
+    }
 
     my $payload = {facet_data => {harness_run_end => {run_id => $run_id, stamp => time}}};
 
