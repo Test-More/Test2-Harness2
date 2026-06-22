@@ -39,7 +39,8 @@ sub runner_resources {
     my $pid   = $data->{pid}                                                  or return undef;
     return undef unless kill(0, $pid);
 
-    $self->{+RUNNER_PID} = $pid;
+    # Attach the client to the live persistent runner (kill(0) liveness, no reap).
+    $self->client->attach_runner($pid);
 
     return $self->client->resources;
 }

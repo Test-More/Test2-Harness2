@@ -11,13 +11,11 @@ use Getopt::Yath;
 
 use Test2::Harness2::Run;
 use Test2::Harness2::Util::File::JSON;
-use Test2::Harness2::IPC;
-use Test2::Harness2::Runner;
 
-use Test2::Harness2::Util qw/open_file parse_exit clean_path runner_events_file/;
+use App::Yath2::Client;
+
+use Test2::Harness2::Util qw/open_file parse_exit clean_path/;
 use Test2::Util::Table qw/table/;
-
-use Test2::Harness2::Util::IPC qw/run_cmd USE_P_GROUPS/;
 
 use POSIX;
 use File::Spec;
@@ -29,7 +27,7 @@ use Carp qw/croak/;
 use File::Path qw/remove_tree/;
 
 use parent 'App::Yath2::Command';
-use Test2::Harness2::Util::HashBase;
+use Test2::Harness2::Util::HashBase qw/+client/;
 
 include_options(
     'App::Yath2::Options::Debug',
@@ -108,6 +106,26 @@ file over and over again.
     EOT
 }
 
+# The start-mode harness-client: it spawns the persistent runner under its own
+# non-test collector (the same Test2::Harness2::Runner->start_collected wrap the
+# transient path uses), so the runner's stdout/stderr/exit are recorded as
+# first-class events in runner-events.jsonl.zst -- read back over runner.socket by
+# `yath watch`. start_collected detaches the daemon collector parent's
+# stdout/stderr to /dev/null so a daemon does not hold this command's caller pipe
+# open. The client builds the runner command (the persistent-runner args are
+# threaded through start_runner); a persistent runner takes no plugin spawn args.
+sub client {
+    my $self = shift;
+
+    return $self->{+CLIENT} //= App::Yath2::Client->new(
+        workdir          => $self->settings->workspace->workdir,
+        settings         => $self->settings,
+        mode             => 'start',
+        spawn_args       => [],
+        monitor_preloads => 1,
+    );
+}
+
 sub run {
     my $self = shift;
 
@@ -127,31 +145,9 @@ sub run {
     # not here -- aux work reports to the socket as events.
     $self->setup_resources();
 
-    my @prof;
-    if ($settings->runner->nytprof) {
-        push @prof => '-d:NYTProf';
-    }
-
-    # The persistent runner is launched under its own
-    # non-test collector (the same Test2::Harness2::Runner->start_collected wrap
-    # the transient path uses), so its stdout/stderr/exit are recorded as
-    # first-class events in runner-events.jsonl.zst -- read back over runner.socket
-    # by `yath watch`. Its preload stages are collector-wrapped too (Preloader).
-    my @runner_cmd = (
-        $^X, @prof, $settings->harness->script,
-        (map { "-D$_" } @{$settings->harness->dev_libs}),
-        '--no-scan-plugins',    # Do not preload any plugin modules
-        runner           => $dir,
-        monitor_preloads => 1,
-        persist          => $pfile,
-        jobs_todo        => 0,
-    );
-
-    # start_collected detaches the daemon collector parent's stdout/stderr to
-    # /dev/null itself (so a daemon does not hold this command's caller pipe open).
-    my $pid = run_cmd(
-        no_set_pgrp => !$settings->runner->daemon,
-        command     => Test2::Harness2::Runner->start_collected(\@runner_cmd, runner_events_file($dir)),
+    my $pid = $self->client->start_runner(
+        persist   => $pfile,
+        jobs_todo => 0,
     );
 
     my $runner_pid = $self->write_pfile($pfile, $dir, $pid);
