@@ -739,6 +739,16 @@ sub renderers {
         push @renderers => $renderer;
     }
 
+    # Default-on terminal-reset renderer: when STDOUT is a TTY, append it LAST so
+    # its finish() (terminal reset) runs after every other renderer has flushed.
+    # No-op render_event; only the finish()/END reset matters. Rely on list order
+    # (no renderer weight sorting). Skipped entirely when not a TTY.
+    if (-t STDOUT) {
+        my $class = 'App::Yath2::Renderer::ResetTerm';
+        require(mod2file($class));
+        push @renderers => $class->new(settings => $settings, command_class => ref($self));
+    }
+
     return $self->{+RENDERERS} = \@renderers;
 }
 
