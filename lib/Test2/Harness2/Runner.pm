@@ -501,6 +501,18 @@ sub process {
     # only; the gated persistent path has the gatherer.
     $self->_drain_transitions unless $self->{+PERSIST};
 
+    # Persistent path: before tearing down runner.socket (which evicts every
+    # subscriber) and letting App::Yath2::Command::runner's exit guard remove_tree
+    # the workdir, bounded-wait for the run-SCOPED subscribers to disconnect. A DB
+    # logger is a run-scoped subscriber (db spec §7e) that imports the per-run
+    # events.jsonl.zst artifact blobs out of the workdir, then disconnects; deferring
+    # cleanup until it drops keeps the blobs alive until its import finishes. GLOBAL
+    # subscribers (a persistent `yath watch` / dashboard with no run_id) may stay
+    # connected indefinitely and must NOT gate cleanup, so they are excluded. On the
+    # transient path the runner never removes the workdir (the `test` command does,
+    # after its own render), so this wait is persistent-only.
+    $self->_wait_for_run_subscribers if $self->{+PERSIST};
+
     # The runner closes runner.socket here (its close is the transient command's
     # completion signal).
     $self->close_service;
@@ -528,6 +540,68 @@ sub _drain_transitions {
 
         my $sel = $self->{service_select} or last;
         last unless $sel->can_read(0);
+
+        Time::HiRes::sleep(0.01);
+    }
+
+    return;
+}
+
+# How long (seconds) the persistent runner will bounded-wait for run-scoped
+# subscribers to disconnect before it gives up and cleans the workdir anyway. A
+# package var so it can be tuned/overridden without an option (the ticket asks for
+# a "sane timeout", not a user knob). DB loggers are normally fast; this is the
+# safety bound against a wedged subscriber that never drops.
+our $SUBSCRIBER_DRAIN_TIMEOUT = 60;
+
+# Count the subscribers that are RUN-SCOPED (recorded with a defined run_id by
+# add_subscriber / the subscribe handler). GLOBAL subscribers (run_id => undef --
+# e.g. a persistent `yath watch` / dashboard) are excluded: they may stay connected
+# indefinitely and must never gate workdir cleanup.
+sub _run_scoped_subscriber_count {
+    my $self = shift;
+
+    my $subs = $self->{service_subs} or return 0;
+
+    my $count = 0;
+    for my $sub (values %$subs) {
+        next unless defined $sub->{run_id};
+        my $conn = $sub->{conn};
+        next if $conn && $conn->closed;
+        $count++;
+    }
+
+    return $count;
+}
+
+# Persistent-runner shutdown gate (db spec §7e / "Gemini-2" bounded-wait). Before
+# the workdir holding the per-run events.jsonl.zst artifact blobs is removed, give
+# the run-scoped subscribers (DB loggers) time to finish importing and disconnect.
+# Service the socket each pass so closed subscriber connections are evicted from
+# service_subs (via _drop_conn), then re-check the run-scoped count. Bounded by
+# $SUBSCRIBER_DRAIN_TIMEOUT: on timeout proceed with cleanup and WARN rather than
+# hang forever. GLOBAL subscribers are excluded from the count so they never block.
+sub _wait_for_run_subscribers {
+    my $self = shift;
+
+    # Nothing to gate on: no run-scoped subscriber connected (transient `yath test`
+    # never gets here; a persistent runner with only `watch`/no subscribers exits
+    # immediately).
+    return unless $self->_run_scoped_subscriber_count;
+
+    my $deadline = Time::HiRes::time() + $SUBSCRIBER_DRAIN_TIMEOUT;
+    while (1) {
+        # Service IO so a subscriber that just closed its end is drained + dropped
+        # from service_subs this pass, and so any final frames still reach it.
+        $self->service_io;
+
+        last unless $self->_run_scoped_subscriber_count;
+
+        if (Time::HiRes::time() >= $deadline) {
+            my $left = $self->_run_scoped_subscriber_count;
+            warn "$$ $0: timed out after ${SUBSCRIBER_DRAIN_TIMEOUT}s waiting for $left run-scoped subscriber(s) (e.g. a DB logger) to disconnect; cleaning the workdir anyway -- a log import may be incomplete\n";
+            last;
+        }
 
         Time::HiRes::sleep(0.01);
     }
