@@ -27,6 +27,7 @@ include_options(
     'App::Yath2::Options::Display',
     'App::Yath2::Options::Finder',
     'App::Yath2::Options::Logging',
+    'App::Yath2::Options::Logger',
     'App::Yath2::Options::PreCommand',
     'App::Yath2::Options::Run',
 );
