@@ -7,6 +7,8 @@ use Carp qw/croak/;
 use POSIX qw/ceil/;
 use Time::HiRes qw/time/;
 
+use Test2::Harness2::Util::JSON qw/encode_canon_json/;
+
 use Test2::Harness2::SystemLoad;
 
 use Test2::Harness2::Util::HashBase qw{
@@ -69,6 +71,12 @@ No change (or a same-valued plateau) sends nothing.
 A message is sent when B<either> CPU or memory triggers, and it carries the
 current rounded value of both (plus the load average, which rides along). The
 reported C<cpu_pct> / C<mem_pct> are the rounded values.
+
+Each reported snapshot is B<also> printed to the sampler's own STDOUT as a single
+JSON line (envelope key C<system_load>). The sampler runs under a collector that
+captures its STDOUT, so this gives every snapshot a durable home in the sampler's
+own C<sampler-events.jsonl.zst> events stream, in addition to the live one-way
+report to the runner.
 
 It consumes L<Test2::Harness2::Role::Service> for the shared connection model: it
 dials the runner's socket and identifies, then sends one-way C<system_load>
@@ -204,6 +212,13 @@ sub service_tick ($self) {
     $snap->{cpu_pct} = $cpu if defined $cpu;
     $snap->{mem_pct} = $mem if defined $mem;
 
+    # ALSO emit the snapshot into the sampler's own captured output stream, so it
+    # rides into its collector's events file (sampler-events.jsonl.zst) as a
+    # durable record. The collector wraps each STDOUT line in a from_stream/info
+    # event; we print a single self-describing JSON line (envelope key
+    # 'system_load') that a later reader can pluck back out of the line's text.
+    $self->_emit_load_event($snap);
+
     # One-way request: the runner's handler stores the snapshot and returns no
     # response. service_send returns false if the write failed (the runner
     # vanished mid-write, closing the connection) -- stop in that case.
@@ -213,11 +228,31 @@ sub service_tick ($self) {
     return;
 }
 
+sub _emit_load_event ($self, $snap) {
+    my $line = encode_canon_json({system_load => $snap});
+
+    # Best effort: a captured-stream write failure must not take the sampler
+    # down -- the live service_send report is the load path the runner needs.
+    local $SIG{PIPE} = 'IGNORE';
+    eval { print STDOUT $line, "\n"; 1 };
+
+    return;
+}
+
 =head1 PRIVATE METHODS
 
 =cut
 
 =over 4
+
+=item $self->_emit_load_event($snap)
+
+Print one C<system_load> snapshot to STDOUT as a single self-describing JSON
+line (envelope C<< {"system_load":{...}} >>). The sampler runs under a collector
+that captures its STDOUT line-by-line, so this is what carries each snapshot into
+the sampler's own C<sampler-events.jsonl.zst> events stream (in addition to the
+live one-way report to the runner). Canonical, compact JSON keeps it to one line
+and starts with C<{>, so it is never mistaken for a stream sync marker.
 
 =item $bool = $self->_metric_triggers($name, $rounded, $now)
 
