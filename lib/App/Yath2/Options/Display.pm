@@ -302,6 +302,19 @@ option_group {group => 'display', category => "Display Options"} => sub {
         description    => 'Specify renderers, (Default: "Formatter=Test2"). Use "+" to give a fully qualified module name. Without "+" "Test2::Harness2::Renderer::" will be prepended to your argument.',
         long_examples  => [' +My::Renderer', ' Renderer=arg1,arg2,...'],
         short_examples => [' +My::Renderer', ' Renderer=arg1,arg2,...'],
+
+        # Auto-load each named renderer's own option_group (the pre_ai_2.0
+        # model, App/Yath/Options/Renderer.pm:82). Getopt::Yath::Instance's
+        # mod_adds_options handler takes the FIRST element of the normalized
+        # value as the class name -- for this Map, normalize() returns
+        # ($class, \@args), so $class is exactly what it needs. A renderer that
+        # declares `use Getopt::Yath; option_group ...` thereby contributes its
+        # flags to the parse the moment it is named. This works for the per-flag
+        # CLI form (one renderer per --renderer); a single JSON-hashref naming
+        # multiple renderers only auto-loads the first one's options (same
+        # limitation pre_ai_2.0 had -- the per-flag form is the supported path).
+        mod_adds_options => 1,
+
         normalize      => sub ($class, $args = undef) {
             $class = "Test2::Harness2::Renderer::$class"
                 unless $class =~ s/^\+//;
