@@ -4,125 +4,29 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Schema::Sweeper;
-
-use App::Yath2::Schema::Util qw/schema_config_from_settings/;
-
-sub name        { "db-sweeper" }
-sub summary     { "Sweep a database" }
-sub description { "Deletes old data from a database" }
-sub group       { "database" }
-
 use parent 'App::Yath2::Command';
-use Getopt::Yath;
+use Test2::Harness2::Util::HashBase;
 
+use Getopt::Yath;
 include_options(
-    'App::Yath2::Options::DB',
+    'App::Yath2::Options::Yath',
 );
 
-option_group {group => 'sweeper', category => "Sweeper Options"} => sub {
-    option coverage => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old coverage data (default: yes)',
-    );
+sub name        { "db-sweeper" }
+sub summary     { "Sweep a database (temporarily unavailable)" }
+sub description { "Deletes old data from a database. NOTE: the DB/web layer is being rewritten; this command is temporarily unavailable." }
+sub group       { "database" }
 
-    option events => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old event data (default: yes)',
-    );
-
-    option job_try_fields => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old job field data (default: yes)',
-    );
-
-    option jobs => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old job data (default: yes)',
-    );
-
-    option job_tries => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old job try data (default: yes)',
-    );
-
-    option reports => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old report data (default: yes)',
-    );
-
-    option resources => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old resource data (default: yes)',
-    );
-
-    option run_fields => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old run_field data (default: yes)',
-    );
-
-    option runs => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old run data (default: yes)',
-    );
-
-    option subtests => (
-        type => 'Bool',
-        default => 1,
-        description => 'Delete old subtest data (default: yes)',
-    );
-
-    option interval => (
-        type => 'Scalar',
-        default => "7 days",
-        description => "Interval (sql format) to delete (things older than this) defeult: '7 days'",
-    );
-
-    option job_concurrency => (
-        type => 'Scalar',
-        default => 1,
-        from_env_vars => ['YATH_SWEEPER_JOB_CONCURRENCY'],
-        description => "How many jobs to process concurrently (This compounds with run concurrency)",
-    );
-
-    option run_concurrency => (
-        type => 'Scalar',
-        default => 1,
-        from_env_vars => ['YATH_SWEEPER_RUN_CONCURRENCY'],
-        description => "How many runs to process concurrently (This compounds with job concurrency)",
-    );
-
-    option name => (
-        type => 'Scalar',
-        default => sub { $ENV{USER} },
-        from_env_vars => ['YATH_SWEEPER_NAME'],
-        description => "Give a name to the sweep",
-    );
-};
-
+# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket #45)
+# and is being rewritten on QuickORM. Keep the command visible in `yath help`
+# but error clearly if anyone tries to run it.
 sub run {
-    my $self = shift;
+    die <<"    EOT";
 
-    my $settings = $self->settings;
-    my $config = schema_config_from_settings($settings);
+The DB/web layer is being rewritten; this command is temporarily unavailable.
+See AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md for details.
 
-    my $sweeper = App::Yath2::Schema::Sweeper->new(
-        interval => $settings->sweeper->interval,
-        config   => $config,
-    );
-
-    $sweeper->sweep($settings->sweeper->all);
-
-    return 0;
+    EOT
 }
 
 1;

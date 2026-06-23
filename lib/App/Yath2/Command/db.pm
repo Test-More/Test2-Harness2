@@ -4,85 +4,30 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use POSIX();
-
-use App::Yath2::Server;
-use App::Yath2::Schema::Util qw/schema_config_from_settings/;
-
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase;
-
-sub summary     { "Start a yath database server" }
-sub description { "Starts a database that can be used to temporarily store data (data is deleted when server shuts down)" }
-sub group       { "database" }
-
-sub cli_args { "" }
 
 use Getopt::Yath;
 include_options(
     'App::Yath2::Options::Yath',
-    'App::Yath2::Options::DB',
-    'App::Yath2::Options::Server',
 );
 
+sub summary     { "Start a yath database server (temporarily unavailable)" }
+sub description { "Starts a database that can be used to temporarily store data. NOTE: the DB/web layer is being rewritten; this command is temporarily unavailable." }
+sub group       { "database" }
+
+sub cli_args { "" }
+
+# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket #45)
+# and is being rewritten on QuickORM. Keep the command visible in `yath help`
+# but error clearly if anyone tries to run it.
 sub run {
-    my $self = shift;
+    die <<"    EOT";
 
-    my $args = $self->args;
-    my $settings = $self->settings;
+The DB/web layer is being rewritten; this command is temporarily unavailable.
+See AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md for details.
 
-    my $daemon = $settings->server->daemon;
-
-    if ($daemon) {
-        my $pid = fork // die "Could not fork";
-        exit(0) if $pid;
-
-        POSIX::setsid();
-        setpgrp(0, 0);
-
-        $pid = fork // die "Could not fork";
-        exit(0) if $pid;
-    }
-
-    my $ephemeral = $settings->server->ephemeral;
-    unless($ephemeral) {
-        $ephemeral = 'Auto';
-        $settings->server->ephemeral($ephemeral);
-    }
-
-    my $config = schema_config_from_settings($settings, ephemeral => $ephemeral);
-
-    my $qdb_params = {
-        single_user => $settings->server->single_user // 0,
-        single_run  => $settings->server->single_run  // 0,
-        no_upload   => $settings->server->no_upload   // 0,
-        email       => $settings->server->email       // undef,
-    };
-
-    my $server = App::Yath2::Server->new(schema_config => $config, qdb_params => $qdb_params);
-    $server->start_ephemeral_db;
-
-    my $dsn = $config->dbi_dsn;
-
-    print "\nDBI_DSN: $dsn\n";
-
-    my $done = 0;
-    $SIG{TERM} = sub { $done++; print "Caught SIGTERM shutting down...\n" unless $daemon; $SIG{TERM} = 'DEFAULT' };
-    $SIG{INT}  = sub { $done++; print "Caught SIGINT shutting down...\n"  unless $daemon; $SIG{INT}  = 'DEFAULT' };
-
-    if ($settings->server->shell) {
-        print "\n";
-        local $ENV{YATH_SHELL} = 1;
-        system($ENV{SHELL});
-    }
-    else {
-        $server->qdb->watcher->detach if $daemon;
-        sleep 1 until $done;
-    }
-
-    $server->stop_ephemeral_db if $server->qdb;
-
-    return 0;
+    EOT
 }
 
 1;

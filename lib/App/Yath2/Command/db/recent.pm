@@ -4,24 +4,35 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use parent 'App::Yath2::Command::recent';
+use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase;
+
+use Getopt::Yath;
+include_options(
+    'App::Yath2::Options::Yath',
+);
 
 sub name    { "db-recent" }
 sub group   { "database" }
-sub summary { "Show a list of recent runs in the database" }
+sub summary { "Show a list of recent runs in the database (temporarily unavailable)" }
 
 sub description {
     return <<"    EOT";
-This command will find the last several runs from a yath database.
+Show a list of recent runs in the database. NOTE: the DB/web layer is being
+rewritten; this command is temporarily unavailable.
     EOT
 }
 
-sub get_data {
-    my $self = shift;
-    my ($project, $count, $user) = @_;
+# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket #45)
+# and is being rewritten on QuickORM. Keep the command visible in `yath help`
+# but error clearly if anyone tries to run it.
+sub run {
+    die <<"    EOT";
 
-    return $self->get_from_db($project, $count, $user) // die "Could not get data from the database.\n";
+The DB/web layer is being rewritten; this command is temporarily unavailable.
+See AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md for details.
+
+    EOT
 }
 
 1;

@@ -59,8 +59,10 @@ L<Test2::Harness2::Runner::Monitor> mirror), open it B<by the absolute path the
 transition carried> via L<Test2::Harness2::JobReader> /
 L<Test2::Harness2::RunnerReader>, and feed the recorded events out to a list of
 concrete renderers (the C<render_event> sinks --
-L<Test2::Harness2::Renderer::Formatter>, L<App::Yath2::Renderer::DB>,
-L<App::Yath2::Renderer::Server>) plus the logger. Concrete renderers therefore
+L<Test2::Harness2::Renderer::Formatter>, plus the DB/web renderers
+C<App::Yath2::Renderer::DB> / C<App::Yath2::Renderer::Server>, which are
+currently being rewritten and live under C<reference/old_db>) plus the logger.
+Concrete renderers therefore
 consume B<recorded> events rather than a live broadcast.
 
 The base owns the reusable mechanics that any events-file consumer needs and that
@@ -481,7 +483,12 @@ sub note_verdict ($self, $job, $try, $end) {
     my $task         = $self->task_for($job->{job_id});
     my $retry_budget = ($task ? $task->{retry} : undef) // ($self->{+RUN} ? $self->{+RUN}->retry : 0) // 0;
 
-    my $will_retry = $end->{fail} && (($try // 0) < $retry_budget);
+    # Try ordinals are 1-based (R10 / #49): the first attempt is $try == 1 and the
+    # job is allowed $retry_budget retries, so it will retry while $try <=
+    # $retry_budget -- mirroring the runner's _collector_retry_if_tries decision. An
+    # aborted end is terminal: the runner already made the no-retry decision, so it
+    # always settles (a synthetic aborted render carries no real try ordinal).
+    my $will_retry = $end->{fail} && !$end->{aborted} && (($try // 1) <= $retry_budget);
     $end->{retry} = 1 if $will_retry;
 
     # Last-try-wins verdict (overwritten each try); only settle on a try that is

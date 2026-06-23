@@ -1,19 +1,15 @@
-package App::Yath2::Command::client::recent;
+package App::Yath2::Command::recent;
 use strict;
 use warnings;
 
 our $VERSION = '2.000000';
 
-# NOTE (ticket #45): this command used to inherit from App::Yath2::Command::recent,
-# which has moved to reference/old_db as part of retiring the old DBIx::Class
-# DB/web layer. It is HTTP-only (it never touched the DB), so rather than stub it
-# we make it self-contained: the small amount of display + HTTP-fetch logic it
-# needed from the old parent is inlined here.
-use parent 'App::Yath2::Command';
-use Test2::Harness2::Util::HashBase;
-
 use Term::Table;
 use Test2::Harness2::Util::JSON qw/decode_json/;
+use App::Yath2::Schema::Util qw/schema_config_from_settings/;
+
+use parent 'App::Yath2::Command';
+use Test2::Harness2::Util::HashBase;
 
 use Getopt::Yath;
 
@@ -21,19 +17,18 @@ include_options(
     'App::Yath2::Options::Yath',
     'App::Yath2::Options::Recent',
     'App::Yath2::Options::WebClient',
+    'App::Yath2::Options::DB',
 );
 
-sub name { "client-recent" }
+sub summary { "Show a list of recent runs (using logs, database and/or web server)" }
 
-sub summary { "Show a list of recent runs on a yath web server" }
-
-sub group { "web client" }
+sub group { 'history' }
 
 sub cli_args { "" }
 
 sub description {
     return <<"    EOT";
-This command will find the last several runs from a yath web server
+This command will find the last several runs from a yath server
     EOT
 }
 
@@ -60,6 +55,8 @@ sub run {
 
     @$data = reverse @$data;
 
+    # NOTE: pre_ai read this from $settings->server->url, but the 'server'
+    # option group provides no url; the webclient group does.
     my $url = $settings->webclient->url;
     $url =~ s{/$}{}g if $url;
 
@@ -91,7 +88,7 @@ sub run {
 
     my $table = Term::Table->new(
         header => $header,
-        rows   => $rows,
+        rows => $rows,
     );
 
     print "$_\n" for $table->render;
@@ -103,7 +100,35 @@ sub get_data {
     my $self = shift;
     my ($project, $count, $user) = @_;
 
-    return $self->get_from_http($project, $count, $user) // die "Could not get data from the server.\n";
+    return $self->get_from_db($project, $count, $user)
+        || $self->get_from_http($project, $count, $user);
+}
+
+sub get_from_db {
+    my $self = shift;
+    my ($project, $count, $user) = @_;
+
+    my $settings = $self->settings;
+    my $config = schema_config_from_settings($settings) or return undef;
+    my $schema = $config->schema or return undef;
+
+    my $runs = $schema->vague_run_search(
+        username     => $user,
+        project_name => $project,
+        query        => {},
+        attrs        => {order_by => {'-desc' => 'added'}, rows => $count},
+        list         => 1,
+    );
+
+    my $data = [];
+
+    while (my $run = $runs->next) {
+        push @$data => $run->TO_JSON;
+    }
+
+    return undef unless @$data;
+
+    return $data;
 }
 
 sub get_from_http {
