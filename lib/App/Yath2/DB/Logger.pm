@@ -148,7 +148,9 @@ sub subscriber ($self) {
 
     require App::Yath2::Client;
     my $client = App::Yath2::Client->new(workdir => $self->{+WORKDIR});
-    my $sub    = $client->connect_subscriber(run_id => $self->{+RUN_ID});
+    # drain_gate: ask the persistent runner to defer workdir cleanup until we
+    # disconnect (after importing the run's events.jsonl.zst blobs, db spec §7e).
+    my $sub    = $client->connect_subscriber(run_id => $self->{+RUN_ID}, drain_gate => 1);
 
     croak "DB logger could not subscribe to the runner socket"
         unless $sub;

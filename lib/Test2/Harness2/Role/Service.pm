@@ -269,8 +269,8 @@ sub request_handler_stop ($self, $payload = undef, $conn = undef) {
     return {ok => 1, stopping => 1};
 }
 
-sub add_subscriber ($self, $conn, $run_id = undef) {
-    $self->{service_subs}{$conn} = {conn => $conn, run_id => $run_id};
+sub add_subscriber ($self, $conn, $run_id = undef, $drain_gate = undef) {
+    $self->{service_subs}{$conn} = {conn => $conn, run_id => $run_id, drain_gate => $drain_gate};
     return;
 }
 

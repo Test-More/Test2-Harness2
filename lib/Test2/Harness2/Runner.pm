@@ -554,10 +554,13 @@ sub _drain_transitions {
 # safety bound against a wedged subscriber that never drops.
 our $SUBSCRIBER_DRAIN_TIMEOUT = 60;
 
-# Count the subscribers that are RUN-SCOPED (recorded with a defined run_id by
-# add_subscriber / the subscribe handler). GLOBAL subscribers (run_id => undef --
-# e.g. a persistent `yath watch` / dashboard) are excluded: they may stay connected
-# indefinitely and must never gate workdir cleanup.
+# Count the subscribers that asked to GATE workdir cleanup: run-scoped (defined
+# run_id) AND drain_gate (a DB logger that subscribed with drain_gate=>1, db spec
+# §7e). Excluded: GLOBAL subscribers (run_id => undef -- a `yath watch` / dashboard;
+# may stay connected indefinitely) AND plain render subscribers (the `test`/`run`
+# command's own subscription -- it never disconnects until the runner closes the
+# socket, so gating on it would deadlock the shutdown wait). Only a logger
+# voluntarily disconnects after importing, so only a logger should gate.
 sub _run_scoped_subscriber_count {
     my $self = shift;
 
@@ -565,7 +568,7 @@ sub _run_scoped_subscriber_count {
 
     my $count = 0;
     for my $sub (values %$subs) {
-        next unless defined $sub->{run_id};
+        next unless defined $sub->{run_id} && $sub->{drain_gate};
         my $conn = $sub->{conn};
         next if $conn && $conn->closed;
         $count++;

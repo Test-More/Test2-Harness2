@@ -15,6 +15,7 @@ use Test2::Harness2::Runner::Monitor();
 use Test2::Harness2::Util::HashBase qw{
     <workdir
     <run_id
+    <drain_gate
     +identity
     +socket_path
     +connection
@@ -124,6 +125,11 @@ sub subscribe ($self) {
 
     my %args;
     $args{run_id} = $self->{+RUN_ID} if defined $self->{+RUN_ID};
+    # A "drain gate" subscriber (e.g. a DB logger) asks the persistent runner to
+    # defer workdir cleanup until it disconnects; a plain render subscriber does not
+    # (it never disconnects until the runner closes the socket, so gating on it would
+    # deadlock the shutdown wait).
+    $args{drain_gate} = 1 if $self->{+DRAIN_GATE};
     my $id = $conn->send_request('subscribe', %args);
 
     # A forwarded transition can arrive batched with (or before) the snapshot

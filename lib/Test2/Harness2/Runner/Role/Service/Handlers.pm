@@ -1217,7 +1217,7 @@ sub request_handler_subscribe {
 
     my $run_id = $payload->{run_id};
 
-    $self->add_subscriber($conn, $run_id) if defined $conn;
+    $self->add_subscriber($conn, $run_id, $payload->{drain_gate}) if defined $conn;
 
     return {ok => 1, snapshot => $self->monitor->snapshot($run_id)};
 }
