@@ -1,0 +1,7 @@
+use Test2::V0;
+ok(1, 'a passing assertion');
+subtest inner => sub {
+    ok(1, 'sub passes');
+    ok(1, 'sub passes again');
+};
+done_testing;
