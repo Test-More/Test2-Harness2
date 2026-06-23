@@ -838,6 +838,17 @@ sub request_handler_reload_state {
     return {ok => 1, reload_state => $self->state->reload_state // {}};
 }
 
+# A no-side-effect liveness check (`yath ping`). Answer from ANY process the
+# connection lands on (the root runner on runner.socket, or a stage) -- the point
+# is just to prove the runner accepted a request and replied over the socket, and
+# to report round-trip latency. It touches no state. Two-way: returns the ack,
+# carrying this process's pid (so the caller can show which process answered) and a
+# server-side timestamp.
+sub request_handler_ping {
+    my $self = shift;
+    return {ok => 1, pid => $$, stamp => time};
+}
+
 # The persistent `status`/`ps`/`abort` commands ask the runner for
 # its live scheduling state over runner.socket. The runner is the state authority;
 # it builds a serializable report from its canonical State plus its in-memory

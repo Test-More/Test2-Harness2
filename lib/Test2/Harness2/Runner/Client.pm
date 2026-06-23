@@ -116,6 +116,12 @@ still-running jobs (with pids). Two-way.
 Query the runner's live resource status. Two-way: returns the rendered resource
 list, or C<undef> if the runner could not be reached.
 
+=item $reply = $client->ping
+
+A no-side-effect liveness round-trip (used by C<yath ping>). Two-way: returns the
+runner's ack hashref (C<< {ok =E<gt> 1, pid =E<gt> $runner_pid, stamp =E<gt> $time} >>),
+or C<undef> if the runner could not be reached.
+
 =back
 
 =cut
@@ -153,6 +159,10 @@ sub truncate ($self) {
 sub resources ($self) {
     my $reply = $self->_request('resources') or return undef;
     return $reply->{resources} // [];
+}
+
+sub ping ($self) {
+    return $self->_request('ping');
 }
 
 =head1 PRIVATE METHODS
