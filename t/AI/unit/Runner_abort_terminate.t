@@ -236,9 +236,10 @@ subtest connect_timeout_terminates_late_collector => sub {
     ok(!@{$other->{controls}}, "a collector for a job with no termination intent is left alone");
 
     # A retry of J1 (new try) must NOT be terminated by a stale intent for the old try.
-    $runner->{terminated_jobs}{J1} = {job_try => 0, run_id => 'R1', reason => 'old try'};
+    # Try ordinals are 1-based (R10/#49): the first try is 1, the retry is 2.
+    $runner->{terminated_jobs}{J1} = {job_try => 1, run_id => 'R1', reason => 'old try'};
     my $retry = FakeConn->new;
-    identify($runner, $retry, job_id => 'J1', job_try => 1, run_id => 'R1', pid => 777);
+    identify($runner, $retry, job_id => 'J1', job_try => 2, run_id => 'R1', pid => 777);
     ok(!@{$retry->{controls}}, "a different try's collector is not terminated by a stale per-job intent");
     ok(exists $runner->{terminated_jobs}{J1}, "the stale intent for the old try is left intact on a try mismatch");
 };

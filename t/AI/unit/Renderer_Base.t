@@ -52,8 +52,9 @@ write_events_file($ffile, 0);
 my $mon = Test2::Harness2::Runner::Monitor->new;
 
 my %starts = (
-    'UUID-PASS' => {name => 't/pass.t', events_file => $pfile, run_uuid => 'RUN-1', try => 0},
-    'UUID-FAIL' => {name => 't/fail.t', events_file => $ffile, run_uuid => 'RUN-1', try => 0},
+    # Try ordinals are 1-based (R10 / #49): the first attempt is try == 1.
+    'UUID-PASS' => {name => 't/pass.t', events_file => $pfile, run_uuid => 'RUN-1', try => 1},
+    'UUID-FAIL' => {name => 't/fail.t', events_file => $ffile, run_uuid => 'RUN-1', try => 1},
 );
 
 for my $uuid (sort keys %starts) {
@@ -91,13 +92,14 @@ subtest locate_and_read => sub {
         my @held = $base->feed_events_file(
             $c->{events_file},
             job_id  => $job->{job_id},
-            job_try => 0,
+            job_try => 1,
             file    => $c->{name},
             hold    => sub ($e) { $e->{facet_data}{harness_job_end} ? 1 : 0 },
         );
 
         # The held event is the synthesized job_end; record the verdict from it.
-        $base->note_verdict($job, 0, $held[0]->{facet_data}{harness_job_end}) if @held;
+        # Try ordinals are 1-based (R10 / #49): the first attempt is try == 1.
+        $base->note_verdict($job, 1, $held[0]->{facet_data}{harness_job_end}) if @held;
     }
 
     my %facets;

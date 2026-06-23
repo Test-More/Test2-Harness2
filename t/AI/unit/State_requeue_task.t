@@ -30,7 +30,7 @@ sub mk_task {
         category => 'general',
         duration => 'medium',
         use_preload => 1,
-        is_try   => 0,
+        is_try   => 1,    # 1-based first try (R10 / #49)
         %over,
     };
 }
@@ -56,7 +56,7 @@ subtest requeue_releases_slot_and_keeps_try => sub {
     # try number -- a requeue does not consume a retry.
     my $requeued = $state->{task_lookup}{'JOB-1'};
     ok($requeued, "the task is back in the queue (TASK_LOOKUP)");
-    is($requeued->{is_try}, 0, "try number unchanged -- no retry consumed");
+    is($requeued->{is_try}, 1, "try number unchanged -- no retry consumed");
 };
 
 subtest requeue_does_not_requeue_a_halted_run => sub {

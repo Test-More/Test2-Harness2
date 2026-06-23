@@ -501,7 +501,11 @@ sub _retry_task {
 
     return if $self->{+HALTED_RUNS}->{$task->{run_id}};
 
-    $task = {is_try => 0, %$task};
+    # Try ordinals are 1-based (R10 / #49): the first attempt is is_try == 1, so a
+    # task that has never been tried (no is_try yet) seeds at 1 and increments to 2
+    # for its first retry. A task that already carries an is_try (a later retry)
+    # keeps its value via %$task and just increments from there.
+    $task = {is_try => 1, %$task};
     $task->{is_try}++;
     $task->{category} = 'isolation' if $self->{+RUN}->retry_isolated;
 

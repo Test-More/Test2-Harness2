@@ -492,7 +492,11 @@ sub _collector_retry_if_tries {
     my $task    = $running->{$job_id} or return 0;
 
     my $retries = $self->_job_retry_count($task, $entry->{run_id});
-    return 0 unless defined($try) && $try < $retries;
+    # Try ordinals are 1-based (R10 / #49): the first attempt is $try == 1, and the
+    # job is allowed $retries retries (so 1 + $retries total attempts). Retry while
+    # the current try is within budget: $try <= $retries (equivalently the 0-based
+    # attempt index $try - 1 is still < $retries).
+    return 0 unless defined($try) && $try <= $retries;
 
     my $ok = eval { $self->state->retry_task($job_id); 1 };
     return 0 unless $ok;
