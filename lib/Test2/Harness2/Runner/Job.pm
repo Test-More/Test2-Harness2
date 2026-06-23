@@ -159,6 +159,15 @@ sub collector_target {
         $skip = $msg;
         $resource_skip_is_fail = 1 if $self->{+SETTINGS}->runner->fail_on_resource_skip;
     }
+    if (defined $task->{directive_error}) {
+        # A test file whose in-file directives failed to parse (App::Yath2::TestFile,
+        # E1): always run as a synthetic FAILURE (never a skip), independent of
+        # fail_on_resource_skip -- a broken directive must not be silently honored.
+        my $msg = $task->{directive_error};
+        $msg =~ s/\s+/ /g;
+        $skip = "Invalid harness directive: $msg";
+        $resource_skip_is_fail = 1;
+    }
 
     if (!$skip && ($task->{binary} || $task->{non_perl})) {
         my $file = clean_path($self->ch_dir ? $self->file : $self->rel_file);
