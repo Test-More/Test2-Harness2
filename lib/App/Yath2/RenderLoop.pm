@@ -10,7 +10,6 @@ use Test2::Harness2::Renderer::Base;
 
 use Test2::Harness2::Util::HashBase qw{
     <renderers
-    +logger
     <producer
     <settings
     <run_id
@@ -35,8 +34,9 @@ lifecycle, and the run rollup.
 =head1 DESCRIPTION
 
 The render loop is the same across C<test>, C<run>, C<watch>, and C<replay>: poll
-a source for ready events, push each through the sink renderers (and the log and
-plugins), step the sinks each tick, and stop when the source is exhausted. This
+a source for ready events, push each through the sink renderers (the jsonl log is
+now one of them) and plugins, step the sinks each tick, and stop when the source
+is exhausted. This
 class is that loop, factored out of the command classes so it is written once and
 reused for a live run, a flat event log, or (later) an archived database log.
 
@@ -47,8 +47,8 @@ It owns:
 =item *
 
 The B<dispatch fan-out>: every event a producer yields is run through the sink
-renderers' C<render_event>, the log, and the annotate/handle plugins (via a
-private L<Test2::Harness2::Renderer::Base> sink).
+renderers' C<render_event> (the jsonl log is one of those renderers) and the
+annotate/handle plugins (via a private L<Test2::Harness2::Renderer::Base> sink).
 
 =item *
 
@@ -71,7 +71,6 @@ archived runs.
 
     my $loop = App::Yath2::RenderLoop->new(
         renderers => $renderers,
-        logger    => $logger,        # optional
         producer  => $producer,
         settings  => $settings,
         run_id    => $run_id,
@@ -96,12 +95,8 @@ archived runs.
 
 =item renderers
 
-The sink renderers (C<render_event> consumers): the terminal formatter, the DB /
-Server renderers, etc.
-
-=item logger
-
-An optional open filehandle the dispatched events are also written to as JSON.
+The sink renderers (C<render_event> consumers): the terminal formatter, the
+jsonl log renderer, the DB / Server renderers, etc.
 
 =item producer
 
@@ -248,7 +243,8 @@ sub finish ($self) {
 =item $self->sink
 
 The private L<Test2::Harness2::Renderer::Base> used for the dispatch fan-out
-(annotate plugins, the log, C<render_event>, the assertion tally, handle plugins).
+(annotate plugins, C<render_event> -- the jsonl log is one of those renderers --
+the assertion tally, handle plugins).
 
 =item $self->_dispatch($event)
 
@@ -266,7 +262,6 @@ sub sink ($self) {
     return $self->{+SINK} //= Test2::Harness2::Renderer::Base->new(
         settings  => $self->{+SETTINGS},
         renderers => $self->{+RENDERERS},
-        logger    => $self->{+LOGGER},
         run_id    => $self->{+RUN_ID},
         plugins   => $self->{+PLUGINS} // [],
     );

@@ -17,7 +17,7 @@ use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
-use Test2::Harness2::Util qw/mod2file open_file/;
+use Test2::Harness2::Util qw/mod2file/;
 use Test2::Util::Table qw/table/;
 
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
@@ -29,8 +29,6 @@ use Carp qw/croak/;
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/
     +renderers
-    +logger
-    +last_log
 
     +tests_seen
     +asserts_seen
@@ -322,7 +320,6 @@ sub render_loop {
 
         App::Yath2::RenderLoop->new(
             renderers => $self->renderers,
-            logger    => scalar($self->logger),
             settings  => $self->settings,
             run_id    => $self->run_id,
             plugins   => $self->settings->harness->plugins,
@@ -368,15 +365,11 @@ sub stop {
 
     my $settings  = $self->settings;
     my $renderers = $self->renderers;
-    my $logger    = $self->logger;
 
     # Plugin teardown() runs in the RUNNER (when it shuts down), not here.
-    # finalize()/finish() (client/render-side) still run command-side.
-    if ($logger) {
-        print $logger "null\n";
-        close($logger);
-    }
-
+    # finalize()/finish() (client/render-side) still run command-side. The jsonl
+    # log is now a renderer (App::Yath2::Renderer::Jsonl): its finish() writes the
+    # 'null' terminator, closes the file, and prints "Wrote log file".
     $_->finish() for @$renderers;
 
     my $signal = $self->signal;
@@ -392,12 +385,6 @@ sub stop {
 
         printf("\nKeeping work dir: %s\n", $self->workdir)
             if $settings->debug->keep_dirs;
-
-        if ($settings->logging->log) {
-            print "\n";
-            print "Wrote log file: " . $settings->logging->log_file . "\n";
-            print " (Symlinked to: " . $self->{+LAST_LOG} . ")\n";
-        }
 
         $self->finalize_plugins();
     }
@@ -676,52 +663,6 @@ sub stringify_subtest_map {
     }
 
     return $out;
-}
-
-sub logger {
-    my $self = shift;
-
-    return $self->{+LOGGER} if $self->{+LOGGER};
-
-    my $settings = $self->{+SETTINGS};
-
-    return unless $settings->logging->log;
-
-    my $file = $settings->logging->log_file;
-
-    if ($settings->logging->bzip2) {
-        no warnings 'once';
-        require IO::Compress::Bzip2;
-        $self->{+LOGGER} = IO::Compress::Bzip2->new($file) or die "Could not open log file '$file': $IO::Compress::Bzip2::Bzip2Error";
-    }
-    elsif ($settings->logging->gzip) {
-        no warnings 'once';
-        require IO::Compress::Gzip;
-        $self->{+LOGGER} = IO::Compress::Gzip->new($file) or die "Could not open log file '$file': $IO::Compress::Gzip::GzipError";
-    }
-    else {
-        $self->{+LOGGER} = open_file($file, '>');
-    }
-
-    for my $ext ('jsonl', 'jsonl.bz2', 'jsonl.gz') {
-        my $name = "./lastlog.$ext";
-        next unless -f $name;
-        local ($!, $@) = (0, '');
-        eval { unlink($name) } or warn "Could not unlink '$name': ($!) $@";
-    }
-
-    if ($file =~ m/\.(jsonl(?:\.(?:bz2|gz))?)$/) {
-        my $ext  = $1;
-        my $name = "./lastlog.$ext";
-        if (eval { symlink($file, $name); 1 }) {
-            $self->{+LAST_LOG} = $name;
-        }
-        else {
-            warn "Could not symlink the log file to '$name': $@";
-        }
-    }
-
-    return $self->{+LOGGER};
 }
 
 sub renderers {

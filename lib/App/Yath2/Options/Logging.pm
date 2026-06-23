@@ -15,88 +15,74 @@ use Getopt::Yath;
 
 =head1 NAME
 
-App::Yath2::Options::Logging - Logging options for yath
+App::Yath2::Options::Logging - jsonl-renderer options for yath
 
 =head1 DESCRIPTION
 
-This is where the command line options for logging are defined.
+This is where the command line options for the jsonl renderer are defined. The
+old whole-run jsonl log is no longer a command-level "logger" sink: it is a plain
+renderer (L<App::Yath2::Renderer::Jsonl>). These options control that renderer
+and, when any of them is given, inject it into the renderer list. The C<-L> short
+form (and C<--log>) was retired -- C<-L> is being repurposed for the DB logger --
+along with the C<-F>/C<-B>/C<-G> short forms.
 
 =head1 PROVIDED OPTIONS
 
-=head3 Logging Options
+=head3 JSONL Renderer Options
 
 =over 4
 
-=item -B
+=item --bzip2
 
 =item --bz2
 
-=item --bzip2
-
-=item --bzip2-log
-
 =item --no-bzip2
 
-Use bzip2 compression when writing the log. This option implies -L. The .bz2 prefix is added to log file name for you
+Use bzip2 compression when writing the jsonl log. Enabling this turns on the jsonl
+renderer. The .bz2 suffix is added to the file name for you.
 
-
-=item -G
-
-=item --gz
 
 =item --gzip
 
-=item --gzip-log
+=item --gz
 
 =item --no-gzip
 
-Use gzip compression when writing the log. This option implies -L. The .gz prefix is added to log file name for you
+Use gzip compression when writing the jsonl log. Enabling this turns on the jsonl
+renderer. The .gz suffix is added to the file name for you.
 
 
-=item -L
+=item --jsonl-dir ARG
 
-=item --log
+=item --jsonl-dir=ARG
 
-=item --no-log
+=item --no-jsonl-dir
 
-Turn on logging
-
-
-=item --log-dir ARG
-
-=item --log-dir=ARG
-
-=item --no-log-dir
-
-Specify a log directory. Will fall back to the system temp dir.
+Specify a directory for the jsonl log. Will fall back to the system temp dir.
 
 
-=item -FARG
+=item --jsonl-file ARG
 
-=item -F ARG
+=item --jsonl-file=ARG
 
-=item -F=ARG
+=item --no-jsonl-file
 
-=item --log-file ARG
-
-=item --log-file=ARG
-
-=item --no-log-file
-
-Specify the name of the log file. This option implies -L.
+Specify the name of the jsonl log file. Enabling this turns on the jsonl renderer.
 
 
-=item --lff ARG
+=item --jsonl-format ARG
 
-=item --lff=ARG
+=item --jsonl-format=ARG
 
-=item --log-file-format ARG
+=item --no-jsonl-format
 
-=item --log-file-format=ARG
-
-=item --no-log-file-format
-
-Specify the format for automatically-generated log files. Overridden by --log-file, if given. This option implies -L (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else "%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl"). This is a string in which percent-escape sequences will be replaced as per POSIX::strftime. The following special escape sequences are also replaced: (%!P : Project name followed by a ~, if a project is defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process ID) (%!S : the number of seconds since local midnight UTC)
+Specify the format for automatically-generated jsonl log files. Overridden by
+--jsonl-file, if given. (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else
+"%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl"). This is a string in which percent-escape
+sequences will be replaced as per POSIX::strftime. The following special escape
+sequences are also replaced: (%!P : Project name followed by a ~, if a project is
+defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process
+ID) (%!S : the number of seconds since local midnight UTC)
 
 Can also be set with the following environment variables: C<YATH_LOG_FILE_FORMAT>, C<TEST2_HARNESS_LOG_FORMAT>
 
@@ -106,84 +92,127 @@ Can also be set with the following environment variables: C<YATH_LOG_FILE_FORMAT
 
 =cut
 
-option_group {group => 'logging', category => "Logging Options"} => sub {
-    option log => (
+# The renderer the jsonl options inject when enabled.
+sub JSONL_RENDERER() { 'App::Yath2::Renderer::Jsonl' }
+
+option_group {group => 'jsonl', category => "JSONL Renderer Options"} => sub {
+    # Internal flag: another module (e.g. the YathUI plugin force-enable, or this
+    # group's own implicit-enable) sets it to inject the renderer. Not a CLI option
+    # the user sets directly -- there is no short/long for it.
+    option enabled => (
         type        => 'Bool',
-        short       => 'L',
-        description => 'Turn on logging',
+        description => 'Internal: when true the jsonl renderer is injected into the renderer list.',
     );
 
-    option log_file_format => (
+    option format => (
         type          => 'Scalar',
-        alt           => ['lff'],
+        alt           => ['jsonl-format'],
         from_env_vars => [qw/YATH_LOG_FILE_FORMAT TEST2_HARNESS_LOG_FORMAT/],
         default       => '%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl',
-        description   => 'Specify the format for automatically-generated log files. Overridden by --log-file, if given. This option implies -L (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else "%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl"). This is a string in which percent-escape sequences will be replaced as per POSIX::strftime. The following special escape sequences are also replaced: (%!P : Project name followed by a ~, if a project is defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process ID) (%!S : the number of seconds since local midnight UTC)',
+        description   => 'Specify the format for automatically-generated jsonl log files. Overridden by --jsonl-file, if given. (Default: $YATH_LOG_FILE_FORMAT, if that is set, or else "%!P%Y-%m-%d_%H:%M:%S_%!U.jsonl"). This is a string in which percent-escape sequences will be replaced as per POSIX::strftime. The following special escape sequences are also replaced: (%!P : Project name followed by a ~, if a project is defined, otherwise empty string) (%!U : the unique test run ID) (%!p : the process ID) (%!S : the number of seconds since local midnight UTC)',
     );
 
     option bzip2 => (
         type        => 'Bool',
-        short       => 'B',
-        alt         => ['bz2', 'bzip2-log'],
-        description => 'Use bzip2 compression when writing the log. This option implies -L. The .bz2 prefix is added to log file name for you',
+        alt         => ['bz2'],
+        description => 'Use bzip2 compression when writing the jsonl log. Enabling this turns on the jsonl renderer. The .bz2 suffix is added to the file name for you.',
     );
 
     option gzip => (
         type        => 'Bool',
-        short       => 'G',
-        alt         => ['gz', 'gzip-log'],
-        description => 'Use gzip compression when writing the log. This option implies -L. The .gz prefix is added to log file name for you',
+        alt         => ['gz'],
+        description => 'Use gzip compression when writing the jsonl log. Enabling this turns on the jsonl renderer. The .gz suffix is added to the file name for you.',
     );
 
-    option log_dir => (
+    option dir => (
         type        => 'Scalar',
+        alt         => ['jsonl-dir'],
         normalize   => \&clean_path,
-        description => 'Specify a log directory. Will fall back to the system temp dir.',
+        description => 'Specify a directory for the jsonl log. Will fall back to the system temp dir.',
     );
 
-    option log_file => (
+    option file => (
         type        => 'Scalar',
-        short       => 'F',
+        alt         => ['jsonl-file'],
         normalize   => \&clean_path,
-        description => 'Specify the name of the log file. This option implies -L.',
+        description => 'Specify the name of the jsonl log file. Enabling this turns on the jsonl renderer.',
     );
 };
 
-option_post_process 0 => sub ($options, $state) {
+# Resolve the jsonl renderer settings + inject it into the renderer list.
+#
+# Runs at weight 101 -- AFTER App::Yath2::Options::Display's weight-100
+# post_process, which sets up the default Formatter renderer by checking whether
+# the renderer '@' list is already populated. Injecting before that would make
+# Display think a renderer was already requested and skip the default formatter.
+#
+# Enable when any jsonl option was given OR when another module set jsonl->enabled
+# (the YathUI force-enable -- replacing the old logging->log force-set). The
+# resolved file path is stored back on jsonl->file so replay/YathUI can find it.
+option_post_process 101 => sub ($options, $state) {
     my $settings = $state->{settings};
-    my $logging  = $settings->logging;
 
-    die "You cannot specify both bzip2-log and gzip-log\n" if $logging->bzip2 && $logging->gzip;
+    return unless $settings->check_group('jsonl');
+    my $jsonl = $settings->jsonl;
 
-    return unless $logging->log || $logging->bzip2 || $logging->gzip || $logging->log_file;
+    die "You cannot use both --bzip2 and --gzip\n" if $jsonl->bzip2 && $jsonl->gzip;
 
-    # We want to keep the log and put it in a findable location
-    $logging->create_option(log => 1);
+    # Implicit-enable: any explicit jsonl request turns the renderer on (the old
+    # -L/--log enable flag was retired; -L is reserved for the DB logger). The
+    # 'enabled' flag is the other-module force-enable channel (YathUI). 'format'
+    # has a default so it is NOT an enable trigger; 'dir' has none, so an explicit
+    # --jsonl-dir is.
+    my $enabled = $jsonl->enabled || $jsonl->bzip2 || $jsonl->gzip || $jsonl->file || $jsonl->dir;
+    return unless $enabled;
 
-    unless ($logging->log_file) {
-        my $log_dir = $logging->log_dir // ($settings->check_group('workspace') ? $settings->workspace->tmp_dir : File::Spec->tmpdir);
+    # Make sure the flag is recorded (so other consumers see a single truth).
+    $jsonl->create_option(enabled => 1);
 
-        mkdir($log_dir) or die "Could not create dir '$log_dir': $!"
-            unless -d $log_dir;
+    unless ($jsonl->file) {
+        my $dir = $jsonl->dir // ($settings->check_group('workspace') ? $settings->workspace->tmp_dir : File::Spec->tmpdir);
 
-        my $format   = $logging->log_file_format;
-        my $filename = expand_log_file_format($format, $settings);
-        $logging->create_option(log_file => clean_path(File::Spec->catfile($log_dir, $filename)));
+        mkdir($dir) or die "Could not create dir '$dir': $!"
+            unless -d $dir;
+
+        my $format   = $jsonl->format;
+        my $filename = expand_jsonl_format($format, $settings);
+        $jsonl->create_option(file => clean_path(File::Spec->catfile($dir, $filename)));
     }
 
-    my $log_file = $logging->log_file;
-    $log_file =~ s{/+$}{}g;
-    $log_file =~ s/\.(gz|bz2)$//;
-    $log_file =~ s/\.jsonl?$//;
-    $log_file .= ".jsonl";
-    $log_file .= ".bz2" if $logging->bzip2;
-    $log_file .= ".gz"  if $logging->gzip;
-    $logging->create_option(log_file => $log_file);
+    my $file = $jsonl->file;
+    $file =~ s{/+$}{}g;
+    $file =~ s/\.(gz|bz2)$//;
+    $file =~ s/\.jsonl?$//;
+    $file .= ".jsonl";
+    $file .= ".bz2" if $jsonl->bzip2;
+    $file .= ".gz"  if $jsonl->gzip;
+    $jsonl->create_option(file => $file);
+
+    inject_jsonl_renderer($settings);
 };
+
+# Push the jsonl renderer onto the display renderer list (idempotently), the same
+# shape Options/Display builds: the insertion-ordered '@' list + a per-class args
+# arrayref. Shared by this group's implicit-enable and any other force-enable.
+sub inject_jsonl_renderer ($settings) {
+    return unless $settings->check_group('display');
+
+    my $display = $settings->display;
+    $display->create_option(renderers => {}) unless defined $display->renderers;
+    my $renderers = $display->renderers;
+
+    my $class = JSONL_RENDERER();
+    return if grep { $_ eq $class } @{$renderers->{'@'} // []};
+
+    push @{$renderers->{'@'}} => $class;
+    $renderers->{$class} //= [];
+
+    return;
+}
 
 sub time_for_strftime { time() }
 
-sub expand_log_file_format ($pattern, $settings) {
+sub expand_jsonl_format ($pattern, $settings) {
     $pattern =~ s{%!(\w)}{expand($1, $settings)}ge;
     my $res = strftime($pattern, localtime(time_for_strftime()));
     return $res;
