@@ -1,0 +1,266 @@
+-- App::Yath2 SQLite schema (DB layer rewrite, #47 / chunk DB-3).
+--
+-- SOURCE OF TRUTH: this hand-written DDL is the canonical schema. DBIx::QuickORM
+-- reflects it via autofill (reflect-from-DB); there are no Perl table/result
+-- classes and no codegen. When this DDL changes, every flavor file under
+-- share/schema/ moves together. PostgreSQL.sql is the canonical reference
+-- (authored first, #46); this is the #47 SQLite port -- SAME table set, columns,
+-- constraints, and CHECK enums, with SQLite-flavor types.
+--
+-- PER-ENGINE UUID STORAGE (spec §3/§0.2, R8/R9):
+--   * SQLite has no native uuid type, so UUID PKs are stored as BLOB (16 bytes).
+--     v7 UUIDs are generated in Perl with App::Yath2::Util::UUID (lowercase);
+--     DBIx::QuickORM's UUID autotype packs/unpacks the canonical hyphenated
+--     string to/from the 16-byte blob via the column's binary affinity, so
+--     callers always see the canonical lowercase string.
+--   * The `runs` + `jobs` tables additionally carry a STORED GENERATED
+--     *_uuid_string mirror (run_uuid_string / job_uuid_string) holding the
+--     human-readable form -- the two IDs a human pastes from CI output (spec
+--     §3b). It is maintained by SQLite (never touched by the app) and indexed.
+--     SQLite's hex() returns UPPERCASE, so the expression is wrapped in lower()
+--     to keep the canonical string lowercase everywhere (spec §3c/R9).
+--
+-- TYPE MAPPING vs PostgreSQL.sql:
+--   * native uuid                  -> BLOB (16 bytes)
+--   * INTEGER GENERATED ... IDENTITY -> INTEGER PRIMARY KEY AUTOINCREMENT
+--   * JSONB                        -> JSON. SQLite has no JSON storage class --
+--                                     it is TEXT affinity -- but the declared
+--                                     `JSON` type token is preserved in the
+--                                     schema, which is what QuickORM's JSON
+--                                     autotype detects to encode/decode (a plain
+--                                     `TEXT` column would NOT be autotyped).
+--   * BYTEA                        -> BLOB
+--   * TIMESTAMPTZ + now()          -> DATETIME stored as ISO-8601 TEXT,
+--                                     DEFAULT CURRENT_TIMESTAMP. Sub-second
+--                                     resolution lives in the events.jsonl.zst
+--                                     artifacts (lossless), not these row stamps.
+--   * BOOLEAN / TRUE / FALSE       -> BOOLEAN with a 0/1 default; tri-state
+--                                     booleans (NULL = undecided) get a CHECK IN
+--                                     (0,1) (PG gets 3-state free from its native
+--                                     BOOLEAN; SQLite relies on the CHECK).
+--   * NUMERIC(14,4)                -> NUMERIC (SQLite is typeless; affinity only)
+--
+-- Column-ordering convention (spec §3e): fixed-width -> variable -> generated
+-- last. SQLite's row format is variable-width and doesn't care, but the ordering
+-- is kept consistent with PostgreSQL.sql for readability across flavors.
+
+-- ====================================================================
+-- schema_meta -- the yath/schema version stamp (one row, spec §2e/§4).
+-- ====================================================================
+CREATE TABLE schema_meta (
+    schema_meta_id  INTEGER         PRIMARY KEY AUTOINCREMENT,
+    yath_version    TEXT            NOT NULL,
+    schema_version  TEXT            NOT NULL,
+    created         DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO schema_meta (yath_version, schema_version) VALUES ('2.000000', '2.000000');
+
+-- ====================================================================
+-- Natural-key entities (host-local integer PK + UNIQUE natural key).
+-- ====================================================================
+
+-- hosts -- host identity, so runs can be listed per host to spot a broken host
+-- (spec §4). runs.host references it; machine_users.host references it.
+CREATE TABLE hosts (
+    host_id     INTEGER         PRIMARY KEY AUTOINCREMENT,
+    hostname    TEXT            NOT NULL,
+
+    UNIQUE(hostname)
+);
+
+-- users -- the app/account user who SUBMITTED a run (may differ from the OS user
+-- who ran it). Natural key = username; email/auth columns deferred (spec §4/R7).
+CREATE TABLE users (
+    user_id     INTEGER         PRIMARY KEY AUTOINCREMENT,
+    username    TEXT            NOT NULL,
+
+    UNIQUE(username)
+);
+
+-- machine_users -- the OS user who RAN a run, per machine (spec §4/R7).
+-- Natural/sync key = (host, username); host FK is NOT NULL.
+CREATE TABLE machine_users (
+    machine_user_id INTEGER     PRIMARY KEY AUTOINCREMENT,
+    host_id         INTEGER     NOT NULL REFERENCES hosts(host_id),
+    username        TEXT        NOT NULL,
+
+    UNIQUE(host_id, username)
+);
+CREATE INDEX machine_users_host_idx ON machine_users(host_id);
+
+-- projects -- a run needs its project. Natural key = name.
+CREATE TABLE projects (
+    project_id  INTEGER         PRIMARY KEY AUTOINCREMENT,
+    name        TEXT            NOT NULL,
+
+    UNIQUE(name)
+);
+
+-- test_files -- a job references its test file. Natural key = filename.
+CREATE TABLE test_files (
+    test_file_id    INTEGER     PRIMARY KEY AUTOINCREMENT,
+    filename        TEXT        NOT NULL,
+
+    UNIQUE(filename)
+);
+
+INSERT INTO test_files (filename) VALUES ('HARNESS INTERNAL LOG');
+
+-- ====================================================================
+-- Run-data tables (UUID PKs; the UUID is the host-stable sync key).
+-- ====================================================================
+
+-- runs -- one row per run. run_uuid is the backend-minted v7 UUID (spec §3/§6c),
+-- stored as a 16-byte BLOB. Counters (passed/failed/to_retry/retried) AGGREGATE
+-- over the run's resolved jobs (spec §4.1/R17). ran_by -> machine_users (the OS
+-- user on the test machine, NOT NULL); submitted_by -> users (the account user
+-- who uploaded, nullable = unknown). `fields` is the folded run_fields JSON.
+-- `version` is the per-run yath/schema version stamp (spec §2e/§4).
+-- run_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
+CREATE TABLE runs (
+    run_uuid        BLOB(16)        PRIMARY KEY,
+
+    project_id      INTEGER         NOT NULL     REFERENCES projects(project_id),
+    host_id         INTEGER         NOT NULL     REFERENCES hosts(host_id),
+    ran_by          INTEGER         NOT NULL     REFERENCES machine_users(machine_user_id),
+    submitted_by    INTEGER         DEFAULT NULL REFERENCES users(user_id),
+
+    passed          INTEGER         DEFAULT NULL,
+    failed          INTEGER         DEFAULT NULL,
+    to_retry        INTEGER         DEFAULT NULL,
+    retried         INTEGER         DEFAULT NULL,
+
+    concurrency_j   INTEGER         DEFAULT NULL,
+    concurrency_x   INTEGER         DEFAULT NULL,
+
+    status          TEXT            NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','running','complete','broken','canceled')),
+
+    canon           BOOLEAN         NOT NULL DEFAULT 0 CHECK(canon IN (0, 1)),
+    pinned          BOOLEAN         NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
+    has_coverage    BOOLEAN         DEFAULT NULL CHECK(has_coverage IN (0, 1)),
+    has_resources   BOOLEAN         DEFAULT NULL CHECK(has_resources IN (0, 1)),
+
+    duration        NUMERIC         DEFAULT NULL,
+
+    added           DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    version         TEXT            DEFAULT NULL,
+    parameters      JSON            DEFAULT NULL,
+    fields          JSON            DEFAULT NULL,
+
+    run_uuid_string TEXT GENERATED ALWAYS AS (
+        lower(
+            substr(hex(run_uuid),  1,  8) || '-' ||
+            substr(hex(run_uuid),  9,  4) || '-' ||
+            substr(hex(run_uuid), 13,  4) || '-' ||
+            substr(hex(run_uuid), 17,  4) || '-' ||
+            substr(hex(run_uuid), 21, 12)
+        )
+    ) STORED
+);
+CREATE INDEX run_project_idx     ON runs(project_id);
+CREATE INDEX run_host_idx        ON runs(host_id);
+CREATE INDEX run_status_idx      ON runs(status);
+CREATE INDEX run_canon_idx       ON runs(canon);
+CREATE INDEX run_uuid_string_idx ON runs(run_uuid_string);
+
+-- jobs -- one row per test file in a run. job_uuid = the backend job_id (already
+-- a v7 gen_uuid(); spec §6c, no backend fix). is_harness_out = job0 / harness
+-- internal log. passed = folded "any try passed" (resolved); failed = resolved
+-- && !passed (spec §4/§4.1). NO should_retry column (runtime-only, R17).
+-- job_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
+CREATE TABLE jobs (
+    job_uuid        BLOB(16)        PRIMARY KEY,
+
+    run_uuid        BLOB(16)        NOT NULL REFERENCES runs(run_uuid),
+    test_file_id    INTEGER         NOT NULL REFERENCES test_files(test_file_id),
+
+    is_harness_out  BOOLEAN         NOT NULL DEFAULT 0 CHECK(is_harness_out IN (0, 1)),
+    passed          BOOLEAN         DEFAULT NULL CHECK(passed IN (0, 1)),
+    failed          BOOLEAN         DEFAULT NULL CHECK(failed IN (0, 1)),
+
+    job_uuid_string TEXT GENERATED ALWAYS AS (
+        lower(
+            substr(hex(job_uuid),  1,  8) || '-' ||
+            substr(hex(job_uuid),  9,  4) || '-' ||
+            substr(hex(job_uuid), 13,  4) || '-' ||
+            substr(hex(job_uuid), 17,  4) || '-' ||
+            substr(hex(job_uuid), 21, 12)
+        )
+    ) STORED
+);
+CREATE INDEX job_run_idx         ON jobs(run_uuid);
+CREATE INDEX job_file_idx        ON jobs(test_file_id);
+CREATE INDEX job_uuid_string_idx ON jobs(job_uuid_string);
+
+-- job_tries -- one row per try (is_try, 1-based per R10). The PK job_try_uuid is
+-- a single DERIVED uuid = derive(job_uuid, try_ord) (v7-preserving, spec §3.1) --
+-- deterministic across loggers, preserves the existing try-uuid URLs. Stored as a
+-- 16-byte BLOB; NOT a *_uuid_string-bearing table (mirror is run+job only, §3b).
+--
+-- VERDICT columns (spec §4/§4.1/R17, survey #5):
+--   result          tri-state verdict: NULL = in-flight / 1 = pass / 0 = fail
+--                   (the top-line "did this try pass", distinct from counts).
+--   assertion_count, pass_count, fail_count -- assertion counts (NOT a pass/fail
+--                   verdict; those names would collide with `result`).
+--   subtests        -- top-level subtest count.
+--   subtests_passed / subtests_failed -- the split (derived from the auditor's
+--                   subtests[]).
+-- NO stdout/stderr columns -- read on demand from the artifact blob (R6/R17).
+-- `parameters` (NOT `params`); retry_limit lives in parameters, not a column.
+-- `fields` is the folded job_try_fields JSON (directives).
+CREATE TABLE job_tries (
+    job_try_uuid    BLOB(16)        PRIMARY KEY,
+
+    job_uuid        BLOB(16)        NOT NULL REFERENCES jobs(job_uuid),
+
+    try_ord         INTEGER         NOT NULL,
+
+    assertion_count INTEGER         DEFAULT NULL,
+    pass_count      INTEGER         DEFAULT NULL,
+    fail_count      INTEGER         DEFAULT NULL,
+    subtests        INTEGER         DEFAULT NULL,
+    subtests_passed INTEGER         DEFAULT NULL,
+    subtests_failed INTEGER         DEFAULT NULL,
+    exit_code       INTEGER         DEFAULT NULL,
+
+    result          BOOLEAN         DEFAULT NULL CHECK(result IN (0, 1)),
+
+    status          TEXT            NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','running','complete','broken','canceled')),
+
+    duration        NUMERIC         DEFAULT NULL,
+
+    started         DATETIME        DEFAULT NULL,
+    finished        DATETIME        DEFAULT NULL,
+
+    parameters      JSON            DEFAULT NULL,
+    fields          JSON            DEFAULT NULL,
+
+    UNIQUE(job_uuid, try_ord)
+);
+CREATE INDEX job_try_job_idx    ON job_tries(job_uuid);
+CREATE INDEX job_try_result_idx ON job_tries(result);
+
+-- artifacts -- canonical run data (spec §5). artifact_uuid is DETERMINISTIC:
+-- derive(collector_uuid, idx) -- events blob = offset 0, extracted binaries =
+-- offsets 1,2,... (spec §3.1/R2). run_uuid is denormalized + NOT NULL so a run's
+-- artifacts can be purged without chasing FKs. job_try_uuid NULL = a
+-- run/process-level artifact. `filename` carries the kind (no type/kind column;
+-- spec §5). If `data` is populated it is canon; if NULL, read host-local
+-- `local_path` (never synced/copied, spec §5).
+CREATE TABLE artifacts (
+    artifact_uuid   BLOB(16)        PRIMARY KEY,
+
+    run_uuid        BLOB(16)        NOT NULL     REFERENCES runs(run_uuid),
+    job_try_uuid    BLOB(16)        DEFAULT NULL REFERENCES job_tries(job_try_uuid),
+
+    filename        TEXT            NOT NULL,
+    local_path      TEXT            DEFAULT NULL,
+    data            BLOB            DEFAULT NULL
+);
+CREATE INDEX artifact_run_idx      ON artifacts(run_uuid);
+CREATE INDEX artifact_job_try_idx  ON artifacts(job_try_uuid);
+CREATE INDEX artifact_filename_idx ON artifacts(filename);
