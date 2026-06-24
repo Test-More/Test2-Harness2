@@ -1367,6 +1367,40 @@ Steps:
   **verify first**): overwrite the derived `job_try_uuid`'s high-48-bit timestamp with the
   try's start stamp. Reproducibility holds iff that stamp is stable across loggers.
 
+### #63 — Multi-flavor / multi-version DB test matrix via DBIx::QuickDB
+**Status:** Decided · **Step:** DB-3 · **Depends:** #47
+
+**Problem:** the DB tests (`Schema_quickorm.t`, `db_logger.t`, `db_sync.t`, etc.)
+currently exercise only SQLite always + PostgreSQL when a connection happens to be
+available. The 5 flavor DDLs (PostgreSQL/SQLite/MySQL/MariaDB/Percona) and the
+autofill ORM + cross-DB sync must be proven against **every flavor AND every installed
+version**, not one ambient server. `~/dbs` has multiple versions of all flavors
+installed (plus some under `legacy/` and on other branches); the test suite must spin
+each up, run against it, and skip a specific flavor/version **only** when neither
+`~/dbs` nor a system install provides it.
+
+**Reference (read first):** `~/projects/DBIx-QuickDB` and `~/projects/DBIx-QuickORM`
+have working examples of using **DBIx::QuickDB** to launch every available version of
+each flavor (server discovery, per-version spin-up, teardown). Mirror that pattern —
+do not reinvent discovery.
+
+Steps:
+- Add a shared test helper (e.g. `t/lib` DB-matrix module) that, per flavor, asks
+  QuickDB for **all installed versions** under `~/dbs` (incl. `legacy/`), yields a
+  ready connection per (flavor, version), and tears it down after. Fall back to a
+  system install if `~/dbs` lacks that flavor.
+- Drive every DB test over that matrix: load the flavor's DDL, run the existing
+  assertions per (flavor, version). The cross-DB sync test (#53) should also cover
+  **cross-flavor** pairs (e.g. sqlite-log → each server flavor).
+- **Skip granularity:** skip a single (flavor, version) cell only when QuickDB cannot
+  provide it AND no system binary is found — never skip the whole flavor blanket.
+  Emit a clear `skip` reason naming the missing flavor+version so CI/log shows the gap.
+- Keep SQLite always-on (no server needed). Gate server spin-up on `AUTHOR_TESTING`
+  to keep the default user install fast.
+- Confirm autofill + per-engine UUID storage (BLOB(16)/BINARY(16)/native uuid),
+  datetime, and JSON round-trip on each real server version — the bug class these
+  catch is per-version SQL/typing drift the single-engine run hides.
+
 ---
 
 ## TIER 7 — reference-port features (selected reference-survey ports — resolved 2026-06-22)
