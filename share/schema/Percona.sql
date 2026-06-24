@@ -89,15 +89,19 @@ CREATE TABLE projects (
     UNIQUE(name)
 );
 
--- test_files -- a job references its test file. Natural key = filename.
+-- test_files -- project-scoped dedup of test paths. filename = the full
+-- in-project path (the LONG display name); the SHORT name = basename(filename),
+-- derived at render, never stored. Same path under two projects = two rows, so
+-- per-project history/coverage never merges. No fake "HARNESS INTERNAL LOG" row
+-- -- the harness log is a collector now, not a test file.
 CREATE TABLE test_files (
     test_file_id    INTEGER     NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    project_id      INTEGER     NOT NULL REFERENCES projects(project_id),
     filename        VARCHAR(512) NOT NULL,
 
-    UNIQUE(filename)
+    UNIQUE(project_id, filename)
 );
-
-INSERT INTO test_files (filename) VALUES ('HARNESS INTERNAL LOG');
+CREATE INDEX test_file_project_idx ON test_files(project_id);
 
 -- ====================================================================
 -- Run-data tables (UUID PKs; the UUID is the host-stable sync key).
@@ -159,9 +163,10 @@ CREATE INDEX run_canon_idx       ON runs(canon);
 CREATE INDEX run_uuid_string_idx ON runs(run_uuid_string);
 
 -- jobs -- one row per test file in a run. job_uuid = the backend job_id (already
--- a v7 gen_uuid(); spec §6c, no backend fix). is_harness_out = job0 / harness
--- internal log. passed = folded "any try passed" (resolved); failed = resolved
--- && !passed (spec §4/§4.1). NO should_retry column (runtime-only, R17).
+-- a v7 gen_uuid(); spec §6c, no backend fix). passed = folded "any try passed"
+-- (resolved); failed = resolved && !passed (spec §4/§4.1). NO should_retry
+-- column (runtime-only, R17). NO is_harness_out: the harness internal log is a
+-- collector now (collectors.job_try_uuid NULL), not a fake job.
 -- job_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
 CREATE TABLE jobs (
     job_uuid        BINARY(16)      PRIMARY KEY,
@@ -169,7 +174,6 @@ CREATE TABLE jobs (
     run_uuid        BINARY(16)      NOT NULL REFERENCES runs(run_uuid),
     test_file_id    INTEGER         NOT NULL REFERENCES test_files(test_file_id),
 
-    is_harness_out  BOOLEAN         NOT NULL DEFAULT 0 CHECK(is_harness_out IN (0, 1)),
     passed          BOOLEAN         DEFAULT NULL CHECK(passed IN (0, 1)),
     failed          BOOLEAN         DEFAULT NULL CHECK(failed IN (0, 1)),
 
@@ -236,23 +240,47 @@ CREATE TABLE job_tries (
 CREATE INDEX job_try_job_idx    ON job_tries(job_uuid);
 CREATE INDEX job_try_result_idx ON job_tries(result);
 
+-- collectors -- the universal events.jsonl.zst producer (spec hub). EVERY events
+-- blob has exactly one collector. collector_uuid is the derive base, so the
+-- events artifact is the row WHERE artifact_uuid = collector_uuid (offset 0 ==
+-- identity, spec §244) -- no stored events pointer needed. job_try_uuid set => a
+-- test try (1:1, UNIQUE); NULL => a run/process-level producer (harness,
+-- preload, system load). display_name: REQUIRED for non-test collectors, and an
+-- OPTIONAL override for test collectors (NULL => resolve the LONG name via
+-- test_file.filename, the SHORT name via basename). The CHECK enforces
+-- "non-test collector must be named."
+CREATE TABLE collectors (
+    collector_uuid  BINARY(16)      PRIMARY KEY,
+
+    run_uuid        BINARY(16)      NOT NULL     REFERENCES runs(run_uuid),
+    job_try_uuid    BINARY(16)      DEFAULT NULL REFERENCES job_tries(job_try_uuid),
+
+    display_name    VARCHAR(512)    DEFAULT NULL,
+
+    CHECK (job_try_uuid IS NOT NULL OR display_name IS NOT NULL),
+    UNIQUE(job_try_uuid)
+);
+CREATE INDEX collector_run_idx     ON collectors(run_uuid);
+CREATE INDEX collector_job_try_idx ON collectors(job_try_uuid);
+
 -- artifacts -- canonical run data (spec §5). artifact_uuid is DETERMINISTIC:
--- derive(collector_uuid, idx) -- events blob = offset 0, extracted binaries =
--- offsets 1,2,... (spec §3.1/R2). run_uuid is denormalized + NOT NULL so a run's
--- artifacts can be purged without chasing FKs. job_try_uuid NULL = a
--- run/process-level artifact. `filename` carries the kind (no type/kind column;
+-- derive(collector_uuid, idx) -- events blob = offset 0 (artifact_uuid ==
+-- collector_uuid), extracted binaries = offsets 1,2,... (spec §3.1/R2).
+-- collector_uuid is the SINGLE owner -- reach the job_try (if any) via the
+-- collector. run_uuid is denormalized + NOT NULL so a run's artifacts can be
+-- purged without chasing FKs. `filename` carries the kind (no type/kind column;
 -- spec §5). If `data` is populated it is canon; if NULL, read host-local
 -- `local_path` (never synced/copied, spec §5).
 CREATE TABLE artifacts (
     artifact_uuid   BINARY(16)      PRIMARY KEY,
 
-    run_uuid        BINARY(16)      NOT NULL     REFERENCES runs(run_uuid),
-    job_try_uuid    BINARY(16)      DEFAULT NULL REFERENCES job_tries(job_try_uuid),
+    run_uuid        BINARY(16)      NOT NULL REFERENCES runs(run_uuid),
+    collector_uuid  BINARY(16)      NOT NULL REFERENCES collectors(collector_uuid),
 
     filename        VARCHAR(512)    NOT NULL,
     local_path      VARCHAR(1024)   DEFAULT NULL,
     data            LONGBLOB        DEFAULT NULL
 );
-CREATE INDEX artifact_run_idx      ON artifacts(run_uuid);
-CREATE INDEX artifact_job_try_idx  ON artifacts(job_try_uuid);
-CREATE INDEX artifact_filename_idx ON artifacts(filename(255));
+CREATE INDEX artifact_run_idx       ON artifacts(run_uuid);
+CREATE INDEX artifact_collector_idx ON artifacts(collector_uuid);
+CREATE INDEX artifact_filename_idx  ON artifacts(filename(255));
