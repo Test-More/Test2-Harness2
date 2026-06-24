@@ -104,8 +104,8 @@ sub run {
     }
 
     printf(
-        "Done. runs=%d jobs=%d job_tries=%d artifacts=%d.\n\n",
-        @{$stats}{qw/runs jobs job_tries artifacts/},
+        "Done. runs=%d jobs=%d job_tries=%d collectors=%d artifacts=%d.\n\n",
+        @{$stats}{qw/runs jobs job_tries collectors artifacts/},
     );
 
     return 0;

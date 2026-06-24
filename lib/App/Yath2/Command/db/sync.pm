@@ -105,8 +105,8 @@ sub run {
     my $stats = $sync->sync_runs(\@uuids);
 
     printf(
-        "Done. runs=%d jobs=%d job_tries=%d artifacts=%d (skipped %d already-present run(s)).\n\n",
-        @{$stats}{qw/runs jobs job_tries artifacts skipped_runs/},
+        "Done. runs=%d jobs=%d job_tries=%d collectors=%d artifacts=%d (skipped %d already-present run(s)).\n\n",
+        @{$stats}{qw/runs jobs job_tries collectors artifacts skipped_runs/},
     );
 
     return 0;

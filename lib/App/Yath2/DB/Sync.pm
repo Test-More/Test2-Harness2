@@ -55,7 +55,12 @@ rewritten before the run-data row is written:
   runs.host_id      -> hosts         (natural key: hostname)
   runs.ran_by       -> machine_users (natural key: host + username)
   runs.submitted_by -> users         (natural key: username)  [attribution, R7]
-  jobs.test_file_id -> test_files    (natural key: filename)
+  jobs.test_file_id -> test_files    (natural key: project_id + filename)
+
+The C<collectors> table (one row per events producer; test collectors carry a
+job_try, service collectors carry a display_name) syncs after jobs/tries and
+before artifacts -- its C<run_uuid> / C<job_try_uuid> are UUID FKs (verbatim),
+and C<artifacts.collector_uuid> points at it.
 
 =head2 ARTIFACTS
 
@@ -116,7 +121,9 @@ the override user when overriding.
 my %NATURAL = (
     projects      => {key => ['name'],                pk => 'project_id'},
     hosts         => {key => ['hostname'],            pk => 'host_id'},
-    test_files    => {key => ['filename'],            pk => 'test_file_id'},
+    # test_files has a composite natural key (project_id, filename); project_id is
+    # itself a remapped FK, so it is resolved specially in _remap_test_file.
+    test_files    => {key => ['project_id', 'filename'], pk => 'test_file_id'},
     users         => {key => ['username'],            pk => 'user_id'},
     # machine_users has a composite natural key (host, username); the host FK is
     # itself remapped (resolve the host on the dest first), so this is handled
@@ -132,7 +139,7 @@ sub init ($self) {
     $self->{+AS_USER} //= $self->{+OVERRIDE_USER};
 
     $self->{+CACHE} = {};
-    $self->{+STATS} = {runs => 0, jobs => 0, job_tries => 0, artifacts => 0, skipped_runs => 0};
+    $self->{+STATS} = {runs => 0, jobs => 0, job_tries => 0, collectors => 0, artifacts => 0, skipped_runs => 0};
 
     return;
 }
@@ -272,8 +279,10 @@ sub _sync_one_run ($self, $run_uuid) {
     $dest->handle('runs')->insert($row);
     $self->{+STATS}{runs}++;
 
-    # --- jobs (+ test_file remap), then this run's tries, then artifacts. ---
+    # --- jobs (+ test_file remap) & their tries, then collectors, then
+    # artifacts (FK order: artifacts -> collectors -> job_tries). ---
     $self->_sync_jobs($run_uuid);
+    $self->_sync_collectors($run_uuid);
     $self->_sync_artifacts($run_uuid);
 
     return;
@@ -288,7 +297,7 @@ sub _sync_jobs ($self, $run_uuid) {
 
         my $row = $self->_row_data($src_job);
         $row->{run_uuid}     = $run_uuid;                                          # UUID PK, verbatim
-        $row->{test_file_id} = $self->_remap_fk('test_files', $src, $row->{test_file_id});    # R5
+        $row->{test_file_id} = $self->_remap_test_file($src, $row->{test_file_id});    # R5 (composite key)
 
         unless ($dest->handle('jobs', where => {job_uuid => $job_uuid})->first) {
             $dest->handle('jobs')->insert($row);
@@ -318,6 +327,24 @@ sub _sync_tries ($self, $job_uuid) {
     return;
 }
 
+sub _sync_collectors ($self, $run_uuid) {
+    my $src  = $self->{+SOURCE};
+    my $dest = $self->{+DEST};
+
+    for my $src_col ($src->handle('collectors', where => {run_uuid => $run_uuid})->all) {
+        my $collector_uuid = lc($src_col->field('collector_uuid'));
+        next if $dest->handle('collectors', where => {collector_uuid => $collector_uuid})->first;
+
+        my $row = $self->_row_data($src_col);
+        # collector_uuid + run_uuid + job_try_uuid are UUID PKs/FKs -> verbatim;
+        # display_name copies straight across.
+        $dest->handle('collectors')->insert($row);
+        $self->{+STATS}{collectors}++;
+    }
+
+    return;
+}
+
 sub _sync_artifacts ($self, $run_uuid) {
     my $src  = $self->{+SOURCE};
     my $dest = $self->{+DEST};
@@ -328,7 +355,7 @@ sub _sync_artifacts ($self, $run_uuid) {
 
         my $row = $self->_row_data($src_art);
 
-        # run_uuid + job_try_uuid are UUID PKs/FKs -> verbatim. Copy `data`,
+        # run_uuid + collector_uuid are UUID PKs/FKs -> verbatim. Copy `data`,
         # SKIP `local_path` (host-local, spec §5).
         delete $row->{local_path};
 
@@ -361,6 +388,27 @@ sub _remap_fk ($self, $table, $src_con, $src_id) {
     my %natural = map { ($_ => $src_row->field($_)) } @{$spec->{key}};
 
     return $cache->{$src_id} = $self->_find_or_create($table, \%natural, $spec->{pk});
+}
+
+# test_files has a composite natural key (project_id, filename). The source row's
+# project_id must itself be remapped to the dest project first, then
+# find_or_create the test_file by (dest_project_id, filename).
+sub _remap_test_file ($self, $src_con, $src_id) {
+    return undef unless defined $src_id;
+
+    my $cache = $self->{+CACHE}{test_files} //= {};
+    return $cache->{$src_id} if exists $cache->{$src_id};
+
+    my $src_row = $src_con->handle('test_files', where => {test_file_id => $src_id})->first
+        or croak "source test_files id '$src_id' not found (dangling FK)";
+
+    my $dest_project = $self->_remap_fk('projects', $src_con, $src_row->field('project_id'));
+
+    return $cache->{$src_id} = $self->_find_or_create(
+        'test_files',
+        {project_id => $dest_project, filename => $src_row->field('filename')},
+        'test_file_id',
+    );
 }
 
 # machine_users has a composite natural key (host, username). The source row's

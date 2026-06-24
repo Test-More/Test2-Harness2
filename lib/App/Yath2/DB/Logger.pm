@@ -236,8 +236,8 @@ sub _all_finalized_imported ($self) {
 }
 
 # ---------------------------------------------------------------------------
-# Fold the Monitor's state into rows (run / job / job_try) + import finalized
-# collectors' blobs.
+# Fold the Monitor's state into rows (run / job / job_try / collector) + import
+# finalized collectors' blobs.
 # ---------------------------------------------------------------------------
 sub _sync ($self) {
     my $mon = $self->monitor;
@@ -245,6 +245,7 @@ sub _sync ($self) {
     $self->_ensure_run_row($mon);
     $self->_upsert_jobs($mon);
     $self->_upsert_tries($mon);
+    $self->_upsert_collectors($mon);
     $self->_import_finalized($mon);
 
     return;
@@ -307,17 +308,22 @@ sub _upsert_jobs ($self, $mon) {
         next if $con->handle('jobs', where => {job_uuid => $job_uuid})->first;
 
         my $file = $job->{file};
+
+        # Real test files only. A fileless job (the old harness-internal-log
+        # job0) is no longer a job -- the harness log is a service collector now.
+        next unless defined($file) && length($file);
+
+        # test_files is project-scoped: the natural key is (project_id, filename).
         my $test_file_id = $self->_find_or_create(
             'test_files',
-            {filename => (defined($file) && length($file)) ? $file : 'HARNESS INTERNAL LOG'},
+            {project_id => $self->{+PROJECT_ID}, filename => $file},
             'test_file_id',
         );
 
         $con->handle('jobs')->insert({
-            job_uuid       => $job_uuid,
-            run_uuid       => $run_uuid,
-            test_file_id   => $test_file_id,
-            is_harness_out => 0,
+            job_uuid     => $job_uuid,
+            run_uuid     => $run_uuid,
+            test_file_id => $test_file_id,
         });
     }
 
@@ -361,6 +367,40 @@ sub _upsert_tries ($self, $mon) {
         }
 
         $self->{+JOB_TRY_SEEN}{$uuid} = {job_uuid => lc($job_uuid), job_try_uuid => $job_try_uuid};
+    }
+
+    return;
+}
+
+# Populate the collectors table: one row per collector (test + service). The
+# events artifact's uuid == collector_uuid (offset 0), so no events pointer is
+# stored. A test collector carries its job_try (display_name NULL -> resolve via
+# the test_file); a service collector carries NULL job_try + a display_name (the
+# collector name, e.g. "harness"). Must run AFTER _upsert_tries (reads
+# JOB_TRY_SEEN) and BEFORE _import_finalized (artifacts reference collectors).
+sub _upsert_collectors ($self, $mon) {
+    my $con      = $self->con;
+    my $run_uuid = lc($self->{+RUN_ID});
+
+    for my $uuid ($mon->collectors) {
+        my $c = $mon->collector($uuid) or next;
+
+        my $collector_uuid = lc($uuid);
+        next if $con->handle('collectors', where => {collector_uuid => $collector_uuid})->first;
+
+        my $seen         = $self->{+JOB_TRY_SEEN}{$uuid};
+        my $job_try_uuid = $seen ? $seen->{job_try_uuid} : undef;
+
+        # CHECK constraint: a collector with no try MUST be named. Service
+        # collectors carry a name; fall back so the row is always valid.
+        my $display_name = $job_try_uuid ? undef : ($c->{name} // 'unknown');
+
+        $con->handle('collectors')->insert({
+            collector_uuid => $collector_uuid,
+            run_uuid       => $run_uuid,
+            job_try_uuid   => $job_try_uuid,
+            display_name   => $display_name,
+        });
     }
 
     return;
@@ -429,36 +469,35 @@ sub _import_collector ($self, $mon, $uuid, $events_file) {
     my $con      = $self->con;
     my $run_uuid = lc($self->{+RUN_ID});
 
-    # Resolve the owning try (null for run/service-level collectors).
-    my $c            = $mon->collector($uuid);
-    my $job_try_uuid = $self->{+JOB_TRY_SEEN}{$uuid} ? $self->{+JOB_TRY_SEEN}{$uuid}{job_try_uuid} : undef;
+    my $collector_uuid = lc($uuid);
 
-    my $events_uuid = derive_uuid(lc($uuid), EVENTS_OFFSET);
+    # Events blob = offset 0, so artifact_uuid == collector_uuid (spec §244).
+    my $events_uuid = derive_uuid($collector_uuid, EVENTS_OFFSET);
 
     # Read + (if needed) rewrite the events stream, extracting binaries.
-    my ($blob, $binaries) = $self->_read_and_extract($events_file, $uuid, $run_uuid, $job_try_uuid);
+    my ($blob, $binaries) = $self->_read_and_extract($events_file, $uuid, $run_uuid);
 
     my $basename = (File::Spec->splitpath($events_file))[2] // 'events.jsonl.zst';
 
     unless ($con->handle('artifacts', where => {artifact_uuid => $events_uuid})->first) {
         $con->handle('artifacts')->insert({
-            artifact_uuid => $events_uuid,
-            run_uuid      => $run_uuid,
-            job_try_uuid  => $job_try_uuid,
-            filename      => $basename,
-            local_path    => $events_file,
-            data          => $blob,
+            artifact_uuid  => $events_uuid,
+            run_uuid       => $run_uuid,
+            collector_uuid => $collector_uuid,
+            filename       => $basename,
+            local_path     => $events_file,
+            data           => $blob,
         });
     }
 
     for my $bin (@$binaries) {
         next if $con->handle('artifacts', where => {artifact_uuid => $bin->{artifact_uuid}})->first;
         $con->handle('artifacts')->insert({
-            artifact_uuid => $bin->{artifact_uuid},
-            run_uuid      => $run_uuid,
-            job_try_uuid  => $job_try_uuid,
-            filename      => $bin->{filename},
-            data          => $bin->{data},
+            artifact_uuid  => $bin->{artifact_uuid},
+            run_uuid       => $run_uuid,
+            collector_uuid => $collector_uuid,
+            filename       => $bin->{filename},
+            data           => $bin->{data},
         });
     }
 
@@ -470,7 +509,7 @@ sub _import_collector ($self, $mon, $uuid, $events_file) {
 # rebuild the stream frame-by-frame with the binary bytes removed and the facet
 # rewritten to reference the new binary artifact_uuid (spec §5). Returns
 # ($blob, \@binaries) where each binary is {artifact_uuid, filename, data}.
-sub _read_and_extract ($self, $events_file, $collector_uuid, $run_uuid, $job_try_uuid) {
+sub _read_and_extract ($self, $events_file, $collector_uuid, $run_uuid) {
     require MIME::Base64;
     require Test2::Collector::Util::Zstd;
     require Test2::Collector::Util::JSON;
