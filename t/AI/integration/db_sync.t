@@ -115,7 +115,7 @@ sub fresh_dest {
     $dbh->do("INSERT INTO projects (name) VALUES ('zzz-unrelated-project')");
     $dbh->do("INSERT INTO projects (name) VALUES ('zzz-unrelated-project-2')");
     $dbh->do("INSERT INTO projects (name) VALUES ('zzz-unrelated-project-3')");
-    $dbh->do("INSERT INTO test_files (filename) VALUES ('zzz/unrelated/file.t')");
+    $dbh->do("INSERT INTO test_files (project_id, filename) SELECT MIN(project_id), 'zzz/unrelated/file.t' FROM projects");
     $dbh->disconnect;
 
     return $path;

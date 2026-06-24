@@ -130,7 +130,10 @@ sub round_trip {
         host_id  => $host->field('host_id'),
         username => 'osuser',
     });
-    my $file = $con->handle('test_files')->insert({filename => 't/foo.t'});
+    my $file = $con->handle('test_files')->insert({
+        project_id => $proj->field('project_id'),    # test_files is project-scoped now
+        filename   => 't/foo.t',
+    });
 
     ok($host->field('host_id'),          "[$name] host insert returns identity id");
     ok($proj->field('project_id'),       "[$name] project insert returns identity id");
@@ -187,12 +190,11 @@ sub round_trip {
     # ---- job (uuid PK + folded verdict booleans + the second string mirror) ----
     my $job_uuid = gen_uuid();
     my $job = $con->handle('jobs')->insert({
-        job_uuid       => $job_uuid,
-        run_uuid       => $run_uuid,
-        test_file_id   => $file->field('test_file_id'),
-        is_harness_out => 0,
-        passed         => 1,
-        failed         => 0,
+        job_uuid     => $job_uuid,
+        run_uuid     => $run_uuid,
+        test_file_id => $file->field('test_file_id'),
+        passed       => 1,
+        failed       => 0,
     });
     ok($job, "[$name] job inserted");
 
@@ -252,15 +254,40 @@ sub round_trip {
     my $got_try2 = $con->handle('job_tries', where => {job_try_uuid => $job_try_uuid2})->first;
     is($got_try2->field('result'), undef, "[$name] result NULL = in-flight (tri-state, second try)");
 
-    # ---- artifact (uuid PK, run_uuid NOT NULL, job_try_uuid FK, blob data) ----
+    # ---- collectors (the events producers; test vs service) ----
+    # A test collector: carries its job_try, display_name NULL (resolve via the
+    # test_file). artifact_uuid == collector_uuid for the events blob (offset 0).
+    my $collector_uuid = gen_uuid();
+    $con->handle('collectors')->insert({
+        collector_uuid => $collector_uuid,
+        run_uuid       => $run_uuid,
+        job_try_uuid   => $job_try_uuid,
+    });
+    my $got_col = $con->handle('collectors', where => {collector_uuid => $collector_uuid})->first;
+    ok($got_col, "[$name] test collector fetched by uuid PK");
+    is($got_col->field('display_name'), undef, "[$name] test collector has NULL display_name (resolve via test_file)");
+
+    # A service collector: NULL job_try + a display_name (the CHECK requires the
+    # name when there is no try).
+    my $svc_uuid = gen_uuid();
+    $con->handle('collectors')->insert({
+        collector_uuid => $svc_uuid,
+        run_uuid       => $run_uuid,
+        display_name   => 'harness',
+    });
+    my $got_svc = $con->handle('collectors', where => {collector_uuid => $svc_uuid})->first;
+    is($got_svc->field('display_name'), 'harness', "[$name] service collector stores display_name");
+    is($got_svc->field('job_try_uuid'), undef,     "[$name] service collector has NULL job_try_uuid");
+
+    # ---- artifact (uuid PK, run_uuid NOT NULL, collector_uuid FK, blob data) ----
     my $artifact_uuid = gen_uuid();    # (the real logger derives this; any uuid is fine for the round-trip)
     $con->handle('artifacts')->insert({
-        artifact_uuid => $artifact_uuid,
-        run_uuid      => $run_uuid,
-        job_try_uuid  => $job_try_uuid,
-        filename      => 'events.jsonl.zst',
-        local_path    => '/tmp/workdir/events.jsonl.zst',
-        data          => "\x00\x01\x02binary",
+        artifact_uuid  => $artifact_uuid,
+        run_uuid       => $run_uuid,
+        collector_uuid => $collector_uuid,
+        filename       => 'events.jsonl.zst',
+        local_path     => '/tmp/workdir/events.jsonl.zst',
+        data           => "\x00\x01\x02binary",
     });
     my $got_art = $con->handle('artifacts', where => {artifact_uuid => $artifact_uuid})->first;
     ok($got_art, "[$name] artifact fetched by uuid PK");

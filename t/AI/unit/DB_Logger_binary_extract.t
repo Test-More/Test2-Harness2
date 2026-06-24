@@ -67,10 +67,9 @@ my $logger = App::Yath2::DB::Logger->new(
     target  => '/tmp/unused.sqlite',
 );
 
-my $run_uuid     = gen_uuid();
-my $job_try_uuid = gen_uuid();
+my $run_uuid = gen_uuid();
 
-my ($blob, $binaries) = $logger->_read_and_extract($events_file, $collector_uuid, $run_uuid, $job_try_uuid);
+my ($blob, $binaries) = $logger->_read_and_extract($events_file, $collector_uuid, $run_uuid);
 
 # ---- the extracted binary artifact -------------------------------------------
 is(scalar(@$binaries), 1, "exactly one binary extracted");
@@ -122,7 +121,7 @@ open(my $raw_fh, '<:raw', $plain_file) or die $!;
 my $raw = do { local $/; <$raw_fh> };
 close($raw_fh);
 
-my ($plain_blob, $plain_bins) = $logger->_read_and_extract($plain_file, gen_uuid(), $run_uuid, undef);
+my ($plain_blob, $plain_bins) = $logger->_read_and_extract($plain_file, gen_uuid(), $run_uuid);
 is(scalar(@$plain_bins), 0, "no binaries extracted from a plain stream");
 is($plain_blob, $raw, "a binary-free stream is stored verbatim (canonical on-disk blob)");
 
