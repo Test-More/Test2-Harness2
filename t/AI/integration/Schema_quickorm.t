@@ -1,117 +1,52 @@
 use Test2::V0;
 
-# Schema round-trip for the DB-layer rewrite (#46 PostgreSQL / #47 SQLite +
-# MySQL/MariaDB/Percona). For each engine: load the hand-written
+# Schema round-trip for the DB-layer rewrite, driven over the FULL flavor x
+# version matrix (#63, step DB-3). For each engine: load the hand-written
 # share/schema/<Flavor>.sql, attach the App::Yath2::Schema ORM (DBIx::QuickORM
 # autofill / reflect-from-DB), and exercise an insert+read on the core tables --
 # the per-engine UUID PK storage, the lowercase *_uuid_string mirror (where the
-# engine lacks a native uuid type), the JSON columns, and the verdict columns.
+# engine lacks a native uuid type), the JSON columns, the verdict columns, and the
+# collectors hub.
 #
-#   * SQLite  -- always run (DBD::SQLite + QuickORM are the only hard needs; a
-#               temp file, no QuickDB server). This is the #47 baseline.
-#   * PostgreSQL / MySQL / MariaDB / Percona -- attempt an ephemeral QuickDB
-#               round-trip; skip cleanly if the driver/server can't spin up here.
+#   * SQLite  -- always run (a temp file, no server). The #47 baseline.
+#   * PostgreSQL / MySQL / MariaDB / Percona -- EVERY version installed under
+#               ~/dbs (plus a system install when ~/dbs lacks the flavor), spun up
+#               ephemerally via DBIx::QuickDB. Gated on AUTHOR_TESTING; a single
+#               (flavor, version) cell is skipped (never the whole flavor) when it
+#               cannot be provisioned. The per-version run is what catches the
+#               SQL/typing drift a single-engine run hides.
 #
 # Per-engine UUID storage (spec §3): native `uuid` on PostgreSQL + MariaDB (no
 # string mirror); BINARY(16) + VARCHAR(36) lowercase mirror on MySQL/Percona;
-# BLOB(16) + TEXT lowercase mirror (lower(hex(...))) on SQLite -- mirror on the
-# `runs` + `jobs` tables only (spec §3b).
+# BLOB(16) + TEXT lowercase mirror on SQLite -- mirror on the `runs` + `jobs`
+# tables only (spec §3b). The (flavor, version) discovery + spin-up lives in the
+# shared App::Yath2::Test::DBMatrix helper.
+
+use File::Basename qw/dirname/;
+use lib dirname(__FILE__) . '/../lib';
 
 use App::Yath2::DB::Flavor;
 use App::Yath2::Util::UUID qw/gen_uuid derive_uuid/;
-
-# QuickORM DSL helpers. 'connect' is renamed so it does not collide. We need the
-# ORM-builder DSL (orm/autofill/autotype/autorow) so each engine gets its OWN
-# fresh ORM instance: a DBIx::QuickORM::ORM's `db` is settable only once, so the
-# shared App::Yath2::Schema `yath` singleton cannot be re-attached to a second
-# engine in the same process. Each subtest therefore builds an ORM with the SAME
-# autofill block App::Yath2::Schema uses (kept in sync via _attach_yath_autofill).
-use DBIx::QuickORM
-    rename => {connect => 'qorm_connect'},
-    only   => [qw/orm autofill autotype autorow db dialect connect db_name/];
-
-use App::Yath2::Schema;    # also installs qorm() (used for the SQLite baseline)
-
-# ---------------------------------------------------------------------------
-# load_ddl($dbh, $flavor) -- apply the flavor's DDL statement-by-statement.
-# The DDL files are plain top-level statements separated by ";\n". PostgreSQL
-# emits benign empty NOTICEs on the comment-led statements; silence warnings so
-# the test output is clean across engines.
-# ---------------------------------------------------------------------------
-sub load_ddl {
-    my ($dbh, $flavor) = @_;
-    my $ddl = do {
-        open my $fh, '<', $flavor->ddl_path or die "open DDL: $!";
-        local $/;
-        <$fh>;
-    };
-    my @stmts = grep { /\S/ } split /;\s*\n/, $ddl;
-    for my $stmt (@stmts) {
-        local $SIG{__WARN__} = sub { };
-        $dbh->do($stmt);
-    }
-    return scalar @stmts;
-}
-
-my $ORM_SEQ = 0;
-
-# ---------------------------------------------------------------------------
-# attach_orm($flavor, $db_name, $connect_cb) -- build a FRESH ORM for this engine
-# (a DBIx::QuickORM::ORM's `db` is write-once, so each engine needs its own) via
-# the exported orm() DSL with the SAME autofill block App::Yath2::Schema
-# declares, attach the db, and return the live connection (autofill introspects
-# the live DB here).
-# ---------------------------------------------------------------------------
-sub attach_orm {
-    my ($flavor, $db_name, $connect_cb) = @_;
-
-    my $name = 'yath_test_' . $flavor->name . '_' . ++$ORM_SEQ;
-
-    # Mirror of App::Yath2::Schema's autofill block (JSON/UUID/DateTime autotypes
-    # + the dumb autorow under App::Yath2::Schema::Row::).
-    my $orm = orm($name => sub {
-        autofill(sub {
-            autotype 'JSON';
-            autotype 'UUID';
-            autotype 'DateTime';
-            autorow 'App::Yath2::Schema::Row';
-        });
-    });
-
-    $orm->db(db(sub {
-        db_name $db_name;
-        dialect $flavor->dialect;
-        qorm_connect($connect_cb);
-    }));
-    return $orm->connection;
-}
+use App::Yath2::Test::DBMatrix qw/for_each_db_set/;
 
 use Cpanel::JSON::XS qw/encode_json decode_json/;
 
 # ---------------------------------------------------------------------------
-# round_trip($flavor, $con, %opts) -- the engine-agnostic insert+read assertions
-# run against a live connection whose schema came from $flavor's DDL.
-#   has_string_mirror => 1   the engine carries the *_uuid_string mirror columns
-#                            (BINARY(16)/BLOB(16) engines: mysql/percona/sqlite)
-#   json_autotype => 0       QuickORM's JSON autotype does NOT inflate/deflate on
-#                            this engine, so the test pre-encodes JSON columns and
-#                            decodes them on read. This is true for the MySQL
-#                            family: DBD::MariaDB's column_info reflects a `JSON`
-#                            column as `LONGTEXT` (MariaDB makes JSON a LONGTEXT
-#                            alias; MySQL 8's json also surfaces as LONGTEXT
-#                            through this DBD), and the column name isn't "*json*",
-#                            so autofill can't claim it. The DDL `JSON` type is
-#                            still correct (its json_valid CHECK passes on the
-#                            encoded string); wiring an explicit JSON autotype for
-#                            the mysql family is the logger's job (#50), not the
-#                            #47 DDL port. PostgreSQL (jsonb) + SQLite (preserved
-#                            `JSON` type token) autotype fine.
+# round_trip($prov) -- the engine-agnostic insert+read assertions run against a
+# live connection whose schema came from $prov->{flavor}'s DDL. Reads the engine
+# shape (has_string_mirror, json_autotype) from the provision.
+#   has_string_mirror   the engine carries the *_uuid_string mirror columns
+#                       (BINARY(16)/BLOB(16) engines: mysql/percona/sqlite)
+#   json_autotype       QuickORM's JSON autotype inflates/deflates on this engine;
+#                       when false the test pre-encodes on write + decodes on read.
 # ---------------------------------------------------------------------------
 sub round_trip {
-    my ($flavor, $con, %opts) = @_;
+    my ($prov) = @_;
+    my $flavor            = $prov->{flavor};
+    my $con               = $prov->{con};
     my $name              = $flavor->name;
-    my $has_string_mirror = $opts{has_string_mirror};
-    my $json_autotype     = $opts{json_autotype} // 1;
+    my $has_string_mirror = $prov->{has_string_mirror};
+    my $json_autotype     = $prov->{json_autotype} // 1;
 
     # JSON marshalling helpers: with autotype, pass/read native refs; without,
     # pre-encode on write and decode on read (the engine stores a JSON string).
@@ -279,6 +214,17 @@ sub round_trip {
     is($got_svc->field('display_name'), 'harness', "[$name] service collector stores display_name");
     is($got_svc->field('job_try_uuid'), undef,     "[$name] service collector has NULL job_try_uuid");
 
+    # A SECOND service collector with NULL job_try -- proves UNIQUE(job_try_uuid)
+    # allows multiple NULLs (many service collectors per run) on every engine.
+    my $svc_uuid2 = gen_uuid();
+    $con->handle('collectors')->insert({
+        collector_uuid => $svc_uuid2,
+        run_uuid       => $run_uuid,
+        display_name   => 'system-load',
+    });
+    my $got_svc2 = $con->handle('collectors', where => {collector_uuid => $svc_uuid2})->first;
+    ok($got_svc2, "[$name] a second NULL-try service collector is allowed (UNIQUE(job_try_uuid) permits multiple NULLs)");
+
     # ---- artifact (uuid PK, run_uuid NOT NULL, collector_uuid FK, blob data) ----
     my $artifact_uuid = gen_uuid();    # (the real logger derives this; any uuid is fine for the round-trip)
     $con->handle('artifacts')->insert({
@@ -304,93 +250,12 @@ for my $name (qw/sqlite postgresql mysql mariadb percona/) {
 }
 
 # ===========================================================================
-# SQLite -- always-run baseline (#47): temp file, no QuickDB server needed.
+# Drive the round-trip over the full (flavor, version) matrix.
 # ===========================================================================
-subtest sqlite => sub {
-    eval { require DBD::SQLite; 1 } or skip_all "DBD::SQLite not available";
-    require DBIx::QuickORM;    # the ORM is required for the autofill round-trip
-
-    require File::Temp;
-    my $tmp  = File::Temp->newdir(CLEANUP => 1);
-    my $path = "$tmp/yath_schema_test.sqlite";
-
-    my $flavor = App::Yath2::DB::Flavor->by_name('sqlite');
-    is($flavor->dialect, 'SQLite', 'flavor dialect is SQLite');
-    like($flavor->ddl_path, qr{share/schema/SQLite\.sql$}, 'ddl_path points at SQLite.sql');
-
-    my $connect_cb = sub {
-        my $dbh = DBI->connect("dbi:SQLite:dbname=$path", '', '',
-            {AutoCommit => 1, RaiseError => 1, PrintError => 0});
-        $flavor->post_connect($dbh);    # foreign_keys / WAL / busy_timeout PRAGMAs
-        return $dbh;
-    };
-
-    # load the DDL into the file via a bootstrap handle.
-    my $boot  = $connect_cb->();
-    my $count = load_ddl($boot, $flavor);
-    ok($count > 0, "SQLite.sql loaded ($count statements)");
-    $boot->disconnect;
-
-    my $con = attach_orm($flavor, $path, $connect_cb);
-    ok($con, 'connected to SQLite via QuickORM autofill');
-
-    # SQLite preserves the declared `JSON` type token, so QuickORM's JSON
-    # autotype inflates/deflates the parameters/fields columns natively.
-    round_trip($flavor, $con, has_string_mirror => 1, json_autotype => 1);
-};
-
-# ===========================================================================
-# PostgreSQL / MySQL / MariaDB / Percona -- ephemeral QuickDB if provisionable.
-# ===========================================================================
-# json_autotype: PostgreSQL (jsonb) reflects + autotypes natively; the MySQL
-# family reflects `JSON` as `LONGTEXT` through DBD::MariaDB so the autotype can't
-# claim it -- the test pre-encodes/decodes there (see round_trip's json_autotype
-# note; wiring an explicit mysql-family JSON autotype is the logger's job, #50).
-my %ENGINES = (
-    postgresql => {dbd => 'DBD::Pg',    driver => 'PostgreSQL', has_string_mirror => 0, json_autotype => 1},
-    mysql      => {dbd => 'DBD::mysql', driver => 'MySQL',      has_string_mirror => 1, json_autotype => 0},
-    mariadb    => {dbd => 'DBD::mysql', driver => 'MariaDB',    has_string_mirror => 0, json_autotype => 0},
-    percona    => {dbd => 'DBD::mysql', driver => 'Percona',    has_string_mirror => 1, json_autotype => 0},
-);
-
-for my $name (qw/postgresql mysql mariadb percona/) {
-    my $spec = $ENGINES{$name};
-    subtest $name => sub {
-        eval { require DBIx::QuickDB; 1 }   or skip_all "DBIx::QuickDB not available";
-        eval { require $spec->{dbd}; 1 }
-            or do { (my $m = $spec->{dbd}) =~ s{::}{/}g; eval { require "$m.pm"; 1 } }
-            or skip_all "$spec->{dbd} not available";
-
-        my $drv = "DBIx::QuickDB::Driver::$spec->{driver}";
-        (my $drv_file = "$drv.pm") =~ s{::}{/}g;
-        eval { require $drv_file; 1 } or skip_all "$drv not available";
-        my ($ok, $why) = $drv->viable({bootstrap => 1, autostart => 1});
-        skip_all "$name not provisionable: " . ($why // 'unknown') unless $ok;
-
-        my $flavor = App::Yath2::DB::Flavor->by_name($name);
-
-        my $qdb = DBIx::QuickDB->build_db("yath_schema_$name" => {driver => $spec->{driver}});
-
-        my $connect_cb = sub {
-            my $dbh = $qdb->connect('quickdb', AutoCommit => 1, RaiseError => 1, PrintError => 0);
-            $flavor->post_connect($dbh);
-            return $dbh;
-        };
-
-        my $boot  = $connect_cb->();
-        my $count = load_ddl($boot, $flavor);
-        ok($count > 0, "$flavor->{name} DDL loaded ($count statements)");
-        $boot->disconnect;
-
-        my $con = attach_orm($flavor, 'quickdb', $connect_cb);
-        ok($con, "connected to ephemeral $name via QuickORM autofill");
-
-        round_trip(
-            $flavor, $con,
-            has_string_mirror => $spec->{has_string_mirror},
-            json_autotype     => $spec->{json_autotype},
-        );
-    };
-}
+for_each_db_set(sub {
+    my ($set, $prov) = @_;
+    ok($prov->{con}, "connected to $set->{name} via QuickORM autofill");
+    round_trip($prov);
+});
 
 done_testing;

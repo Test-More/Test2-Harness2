@@ -31,7 +31,11 @@ eval { require DBIx::QuickORM;  1 } or skip_all "DBIx::QuickORM not available";
 require DBI;
 require File::Temp;
 
+use File::Basename qw/dirname/;
+use lib dirname(__FILE__) . '/../lib';
+
 use App::Yath2::Tester qw/yath/;
+use App::Yath2::Test::DBMatrix qw/for_each_db_set/;
 
 my $dir = __FILE__;
 $dir =~ s{\.t$}{}g;
@@ -152,5 +156,55 @@ yath(
         $dbh->disconnect;
     },
 );
+
+# ===========================================================================
+# Server matrix (#63): run the same suite under `yath test -L=<server DSN>` for
+# EACH installed (flavor, version) and assert the logger wrote run/job/job_try/
+# collector/artifact rows. The forked logger connects to the ephemeral QuickDB
+# server by DSN; assertions read back through the provision's QuickORM connection
+# (engine-agnostic). AUTHOR_TESTING gates server spin-up; the sqlite end-to-end
+# above already covers the default path.
+# ===========================================================================
+for_each_db_set(sub {
+    my ($set, $prov) = @_;
+    my $label = $set->{name};
+    my $con   = $prov->{con};
+
+    yath(
+        command => 'test',
+        args    => ["$dir/aaa_pass.tx", "$dir/bbb_fail.tx", '--ext=tx', "-L=$prov->{dsn}"],
+        exit    => T(),    # the failing test makes the run fail; expected
+        test    => sub {
+            my $out = shift;
+
+            my @runs = $con->handle('runs')->all;
+            is(scalar(@runs), 1, "[$label] exactly one run logged")
+                or diag("output:\n$out->{output}");
+            return unless @runs;
+
+            my $run = $runs[0];
+            is($run->field('status'), 'complete', "[$label] run status folded to complete");
+            is($run->field('passed'), 1, "[$label] one job passed (folded)");
+            is($run->field('failed'), 1, "[$label] one job failed (folded)");
+
+            my @jobs = $con->handle('jobs')->all;
+            is(scalar(@jobs), 2, "[$label] one jobs row per test file");
+
+            my @tries = $con->handle('job_tries')->all;
+            ok(scalar(@tries) >= 2, "[$label] a job_tries row per job");
+            my @resolved = grep { defined($_->field('result')) } @tries;
+            ok((grep {  $_->field('result') } @resolved), "[$label] a passing try (result true) recorded");
+            ok((grep { !$_->field('result') } @resolved), "[$label] a failing try (result false) recorded");
+
+            my @cols = $con->handle('collectors')->all;
+            ok(scalar(@cols) >= 2, "[$label] a collectors row per finalized collector");
+
+            my @arts = $con->handle('artifacts')->all;
+            ok(scalar(@arts) >= 2, "[$label] an events artifact blob per finalized collector");
+            my $with_data = grep { defined($_->field('data')) && length($_->field('data')) } @arts;
+            ok($with_data >= 2, "[$label] events artifact blobs carry their data");
+        },
+    );
+}, servers_only => 1);
 
 done_testing;

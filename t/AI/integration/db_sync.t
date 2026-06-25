@@ -34,7 +34,11 @@ eval { require DBIx::QuickORM; 1 } or skip_all "DBIx::QuickORM not available";
 require DBI;
 require File::Temp;
 
+use File::Basename qw/dirname/;
+use lib dirname(__FILE__) . '/../lib';
+
 use App::Yath2::Tester qw/yath/;
+use App::Yath2::Test::DBMatrix qw/for_each_db_set/;
 
 require App::Yath2::DB::Connect;
 require App::Yath2::Schema;
@@ -85,9 +89,11 @@ like($src_run_uuid, qr/^[0-9a-f-]{36}$/, "source run_uuid_string is canonical lo
 my ($src_njobs) = $src_dbh->selectrow_array("SELECT COUNT(*) FROM jobs");
 my ($src_ntries) = $src_dbh->selectrow_array("SELECT COUNT(*) FROM job_tries");
 my ($src_narts)  = $src_dbh->selectrow_array("SELECT COUNT(*) FROM artifacts");
+my ($src_ncols)  = $src_dbh->selectrow_array("SELECT COUNT(*) FROM collectors");
 ok($src_njobs >= 2, "source has >= 2 jobs (one per test file)");
 ok($src_ntries >= 2, "source has >= 2 job_tries");
 ok($src_narts >= 1, "source has >= 1 artifact (events blob)");
+ok($src_ncols >= 1, "source has >= 1 collector");
 
 # The source's natural-key entities (by natural key) we expect to arrive on dest.
 my $src_hosts = $src_dbh->selectall_arrayref("SELECT hostname FROM hosts", {Slice => {}});
@@ -353,5 +359,78 @@ subtest only_run_uuid_guard => sub {
     ok(!$ok, "only_run_uuid croaks on a multi-run source (import auto-select)");
     like($err, qr/2 runs/, "the error names the run count");
 };
+
+# ===========================================================================
+# 6. Cross-flavor sync: the sqlite log source -> EACH server (flavor, version)
+#    destination (#63 Q2). Proves the sync engine carries UUID PKs + remaps the
+#    natural keys + copies the blobs ACROSS engines (e.g. sqlite BLOB(16) uuid ->
+#    PostgreSQL native uuid -> MySQL BINARY(16)). AUTHOR_TESTING gates server
+#    spin-up; the sqlite->sqlite subtests above already cover the same-engine path.
+# ===========================================================================
+
+# Engine-agnostic cross-DB assertions via the QuickORM connection: the UUID
+# autotype normalizes each engine's storage to a canonical string, so these read
+# identically on every flavor (raw DBI would see BLOB/BINARY/native-uuid bytes).
+sub assert_synced_orm {
+    my ($con, $set) = @_;
+    my $label = $set->{name};
+
+    my @runs = $con->handle('runs')->all;
+    is(scalar(@runs), 1, "[$label] exactly one run synced");
+    my $run = $runs[0];
+    is(lc($run->field('run_uuid')), $src_run_uuid, "[$label] run_uuid copied verbatim (UUID PK)");
+    is($run->field('status'), $src_run->{status}, "[$label] run status carried");
+
+    # FK remap: host/project resolve to the SOURCE natural keys, and the dest id
+    # is past the pre-seeded offset (a verbatim integer copy would mis-point).
+    my $host = $con->handle('hosts',    where => {host_id    => $run->field('host_id')})->first;
+    my $proj = $con->handle('projects', where => {project_id => $run->field('project_id')})->first;
+    is($host->field('hostname'), $src_hosts->[0]{hostname}, "[$label] runs.host_id remapped to source hostname (R5)") if @$src_hosts;
+    is($proj->field('name'),     $src_projs->[0]{name},     "[$label] runs.project_id remapped to source project (R5)") if @$src_projs;
+    ok($run->field('host_id') >= 3, "[$label] run host_id past the pre-seeded offset (remap, not integer copy)");
+
+    my @jobs  = $con->handle('jobs')->all;
+    my @tries = $con->handle('job_tries')->all;
+    my @cols  = $con->handle('collectors')->all;
+    my @arts  = $con->handle('artifacts')->all;
+    is(scalar(@jobs),  $src_njobs,  "[$label] all jobs synced");
+    is(scalar(@tries), $src_ntries, "[$label] all job_tries synced");
+    is(scalar(@cols),  $src_ncols,  "[$label] all collectors synced");
+    is(scalar(@arts),  $src_narts,  "[$label] all artifacts synced");
+
+    my $with_data = grep { defined($_->field('data')) && length($_->field('data')) } @arts;
+    ok($with_data >= 1, "[$label] artifact data blob copied");
+    my $with_localpath = grep { defined($_->field('local_path')) } @arts;
+    is($with_localpath, 0, "[$label] artifact local_path NOT copied (host-local, spec section 5)");
+
+    # A passing + a failing try arrived with their verdict columns.
+    my @resolved = grep { defined($_->field('result')) } @tries;
+    ok((grep {  $_->field('result') } @resolved), "[$label] a passing try (result true) arrived");
+    ok((grep { !$_->field('result') } @resolved), "[$label] a failing try (result false) arrived");
+}
+
+for_each_db_set(sub {
+    my ($set, $prov) = @_;
+    my $con = $prov->{con};
+
+    # Pre-seed offset natural-key rows so dest ids != source ids (makes the FK
+    # remap observable: a verbatim integer copy would mis-point at these).
+    $con->handle('hosts')->insert({hostname => 'zzz-unrelated-host-1'});
+    $con->handle('hosts')->insert({hostname => 'zzz-unrelated-host-2'});
+    my $p = $con->handle('projects')->insert({name => 'zzz-unrelated-project'});
+    $con->handle('projects')->insert({name => 'zzz-unrelated-project-2'});
+    $con->handle('test_files')->insert({project_id => $p->field('project_id'), filename => 'zzz/unrelated/file.t'});
+
+    my $sync  = App::Yath2::DB::Sync->new(source => con_for($src_db), dest => $con);
+    my $stats = $sync->sync_run($src_run_uuid);
+    is($stats->{runs}, 1, "[$set->{name}] sync reports 1 run (sqlite -> $set->{flavor})");
+
+    assert_synced_orm($con, $set);
+
+    # Re-sync is idempotent across engines.
+    my $sync2  = App::Yath2::DB::Sync->new(source => con_for($src_db), dest => $con);
+    my $stats2 = $sync2->sync_run($src_run_uuid);
+    is($stats2->{skipped_runs}, 1, "[$set->{name}] cross-flavor re-sync is idempotent (skipped)");
+}, servers_only => 1);
 
 done_testing;

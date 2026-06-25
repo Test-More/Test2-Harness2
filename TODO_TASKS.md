@@ -1368,7 +1368,25 @@ Steps:
   try's start stamp. Reproducibility holds iff that stamp is stable across loggers.
 
 ### #63 — Multi-flavor / multi-version DB test matrix via DBIx::QuickDB
-**Status:** Decided · **Step:** DB-3 · **Depends:** #47
+**Status:** DONE · **Step:** DB-3 · **Depends:** #47
+
+**Landed:** shared helper `t/AI/lib/App/Yath2/Test/DBMatrix.pm` discovers every
+`~/dbs/<engine>-<version>` install (+ a system fallback when `~/dbs` lacks a
+flavor) and drives `Schema_quickorm.t` (DDL+autofill+per-engine UUID/JSON/datetime
+round-trip), `db_sync.t` (cross-flavor: the sqlite log source → each server
+flavor/version), and `db_logger.t` (end-to-end `yath test -L=<server DSN>` per
+version) over it. SQLite is always-on (inline); server cells are gated on
+`AUTHOR_TESTING` and **forked per cell** — DBIx::QuickDB resolves each driver's
+binary paths into file-scoped lexicals at first load per process, so without
+process isolation every version of a flavor would silently reuse whichever loaded
+first. `has_string_mirror`/`json_autotype` are self-calibrated off the live
+autofilled schema (the JSON-autotype claim varies by DBD). A cell skips with a
+clear flavor+version reason when below the flavor minimum (pg 10+ / mariadb 10.7+
+/ mysql+percona 8.0+) or when the server/driver is unavailable; a schema failure
+on a *supported* version is a real failure, not a skip. Required a fix to
+`build_connection` (derive the ORM `db_name` from the DSN — see the `fix(db):
+derive ORM db_name from the DSN` commit) so the DB logger autofills a server whose
+database is not named `yath`.
 
 **Problem:** the DB tests (`Schema_quickorm.t`, `db_logger.t`, `db_sync.t`, etc.)
 currently exercise only SQLite always + PostgreSQL when a connection happens to be
