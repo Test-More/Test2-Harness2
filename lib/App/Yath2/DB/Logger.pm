@@ -471,7 +471,7 @@ sub _import_collector ($self, $mon, $uuid, $events_file) {
 
     my $collector_uuid = lc($uuid);
 
-    # Events blob = offset 0, so artifact_uuid == collector_uuid (spec §244).
+    # Events blob = offset 0, so artifact_uuid == collector_uuid (spec §3.1/R2).
     my $events_uuid = derive_uuid($collector_uuid, EVENTS_OFFSET);
 
     # Read + (if needed) rewrite the events stream, extracting binaries.

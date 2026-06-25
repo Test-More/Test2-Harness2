@@ -101,7 +101,6 @@ CREATE TABLE test_files (
 
     UNIQUE(project_id, filename)
 );
-CREATE INDEX test_file_project_idx ON test_files(project_id);
 
 -- ====================================================================
 -- Run-data tables (UUID PKs; the UUID is the host-stable sync key).
@@ -243,7 +242,7 @@ CREATE INDEX job_try_result_idx ON job_tries(result);
 -- collectors -- the universal events.jsonl.zst producer (spec hub). EVERY events
 -- blob has exactly one collector. collector_uuid is the derive base, so the
 -- events artifact is the row WHERE artifact_uuid = collector_uuid (offset 0 ==
--- identity, spec §244) -- no stored events pointer needed. job_try_uuid set => a
+-- identity, spec §3.1/R2) -- no stored events pointer needed. job_try_uuid set => a
 -- test try (1:1, UNIQUE); NULL => a run/process-level producer (harness,
 -- preload, system load). display_name: REQUIRED for non-test collectors, and an
 -- OPTIONAL override for test collectors (NULL => resolve the LONG name via
@@ -261,7 +260,6 @@ CREATE TABLE collectors (
     UNIQUE(job_try_uuid)
 );
 CREATE INDEX collector_run_idx     ON collectors(run_uuid);
-CREATE INDEX collector_job_try_idx ON collectors(job_try_uuid);
 
 -- artifacts -- canonical run data (spec §5). artifact_uuid is DETERMINISTIC:
 -- derive(collector_uuid, idx) -- events blob = offset 0 (artifact_uuid ==
