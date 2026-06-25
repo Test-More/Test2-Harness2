@@ -188,8 +188,13 @@ sub build_connection {
         $db_name = $spec;
     }
     else {
-        $dsn     = $spec;
-        $db_name = 'yath';
+        $dsn = $spec;
+        # QuickORM uses db_name to scope its reflection (e.g. the MySQL-family
+        # information_schema filter), so it must match the DSN's ACTUAL database;
+        # derive it from the DSN rather than assuming a fixed name (a remote DB
+        # whose database is not 'yath' would otherwise autofill zero tables).
+        ($db_name) = $spec =~ /\b(?:dbname|database)=([^;]+)/i;
+        $db_name //= 'yath';
     }
 
     require DBI;
