@@ -115,10 +115,12 @@ my %REGISTRY = (
         is_default     => 0,
     },
     mysql => {
+        # The harness drives the whole MySQL family (mysql/mariadb/percona) through
+        # DBD::MariaDB, never DBD::mysql -- so the DSN prefix is dbi:MariaDB:.
         name           => 'mysql',
         dialect        => 'MySQL',
         ddl_file       => 'MySQL.sql',
-        dbd_dsn_prefix => 'dbi:mysql:',
+        dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'MySQL',
         is_default     => 0,
     },
@@ -132,10 +134,11 @@ my %REGISTRY = (
         is_default     => 0,
     },
     percona => {
+        # Driven through DBD::MariaDB like the rest of the MySQL family (dbi:MariaDB:).
         name           => 'percona',
         dialect        => 'MySQL::Percona',
         ddl_file       => 'Percona.sql',
-        dbd_dsn_prefix => 'dbi:mysql:',
+        dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'Percona',
         is_default     => 0,
     },
@@ -167,9 +170,10 @@ Return the flavor whose DSN prefix unambiguously matches C<$dsn>, or C<undef>
 when no unambiguous match exists.
 
 C<dbi:Pg:> resolves to C<postgresql>. C<dbi:SQLite:> resolves to C<sqlite>.
-C<dbi:mysql:> and C<dbi:MariaDB:> both return C<undef> because MySQL, MariaDB,
-and Percona share those prefixes; callers that need to distinguish them should
-call C<detect_from_dbh> on a live handle.
+A C<dbi:MariaDB:> DSN returns C<undef> because MySQL, MariaDB, and Percona are
+all driven through C<DBD::MariaDB> and share that prefix; callers that need to
+distinguish them should call C<detect_from_dbh> on a live handle. (A legacy
+C<dbi:mysql:> DSN also returns C<undef>; the harness itself never builds one.)
 
 =cut
 
@@ -189,7 +193,7 @@ version strings match.
 
 The probe runs C<SELECT VERSION()> and C<SELECT @@version_comment> and looks for
 C<MariaDB>, C<Percona>, or C<MySQL> in the concatenated result. This is how the
-shared C<dbi:mysql:> DSN prefix is disambiguated (DSN inference cannot).
+shared C<dbi:MariaDB:> DSN prefix is disambiguated (DSN inference cannot).
 
 =cut
 

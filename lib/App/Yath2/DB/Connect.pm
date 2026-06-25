@@ -82,13 +82,14 @@ exist (idempotent). Returns the path.
 
 =cut
 
-# Human-facing install hint for each flavor's DBD driver.
+# Human-facing install hint for each flavor's DBD driver. The whole MySQL family
+# (mysql/mariadb/percona) is driven through DBD::MariaDB, never DBD::mysql.
 my %DBD_FOR = (
     sqlite     => 'DBD::SQLite',
     postgresql => 'DBD::Pg',
-    mysql      => 'DBD::mysql',
+    mysql      => 'DBD::MariaDB',
     mariadb    => 'DBD::MariaDB',
-    percona    => 'DBD::mysql',
+    percona    => 'DBD::MariaDB',
 );
 
 sub require_db_modules {
@@ -117,12 +118,19 @@ sub target_to_flavor {
     croak "a logging target is required" unless defined $target && length $target;
 
     if ($target =~ /^dbi:/i) {
+        # The harness drives the whole MySQL family through DBD::MariaDB, never
+        # DBD::mysql. Normalize a legacy dbi:mysql: DSN onto dbi:MariaDB: (and its
+        # local-socket attribute) so one driver serves mysql/mariadb/percona.
+        if ($target =~ /^dbi:mysql:/i) {
+            $target =~ s/^dbi:mysql:/dbi:MariaDB:/i;
+            $target =~ s/\bmysql_socket=/mariadb_socket=/g;
+        }
+
         my $flavor = App::Yath2::DB::Flavor->infer_from_dsn($target);
 
-        # dbi:mysql: is shared by mysql/mariadb/percona; the prefix alone cannot
-        # disambiguate. Default to mysql here -- detect_from_dbh refines it after a
-        # live handle is open (build_connection probes it).
-        $flavor //= App::Yath2::DB::Flavor->by_name('mysql') if $target =~ /^dbi:mysql:/i;
+        # dbi:MariaDB: is shared by mysql/mariadb/percona; the prefix alone cannot
+        # disambiguate. Default to mariadb here -- detect_from_dbh refines it after
+        # a live handle is open (build_connection probes it).
         $flavor //= App::Yath2::DB::Flavor->by_name('mariadb') if $target =~ /^dbi:MariaDB:/i;
 
         croak "Could not determine a database flavor from DSN '$target'" unless $flavor;
@@ -205,7 +213,7 @@ sub build_connection {
         return $dbh;
     };
 
-    # For a shared dbi:mysql: DSN, refine the flavor on a live handle.
+    # For a shared dbi:MariaDB: DSN, refine the flavor on a live handle.
     if ($kind eq 'dsn' && $flavor->is_mysql_family) {
         my $probe = $connect_cb->();
         my $refined = App::Yath2::DB::Flavor->detect_from_dbh($probe);

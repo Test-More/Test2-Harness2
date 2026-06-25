@@ -117,9 +117,10 @@ Apply a flavor's DDL to a live handle statement-by-statement. Returns the count.
 my %META = (
     sqlite     => {has_string_mirror => 1, json_autotype => 1, dbd => 'DBD::SQLite',  server => 0},
     postgresql => {has_string_mirror => 0, json_autotype => 1, dbd => 'DBD::Pg',      server => 1},
-    mysql      => {has_string_mirror => 1, json_autotype => 0, dbd => 'DBD::mysql',   server => 1},
-    mariadb    => {has_string_mirror => 0, json_autotype => 0, dbd => 'DBD::mysql',   server => 1},
-    percona    => {has_string_mirror => 1, json_autotype => 0, dbd => 'DBD::mysql',   server => 1},
+    # The whole MySQL family is driven through DBD::MariaDB, never DBD::mysql.
+    mysql      => {has_string_mirror => 1, json_autotype => 0, dbd => 'DBD::MariaDB', server => 1},
+    mariadb    => {has_string_mirror => 0, json_autotype => 0, dbd => 'DBD::MariaDB', server => 1},
+    percona    => {has_string_mirror => 1, json_autotype => 0, dbd => 'DBD::MariaDB', server => 1},
 );
 
 # Minimum server version the schema supports, so an older install present under
