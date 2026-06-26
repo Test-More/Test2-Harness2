@@ -7,7 +7,7 @@ use Carp qw/croak/;
 use POSIX qw/ceil/;
 use Time::HiRes qw/time/;
 
-use Test2::Harness2::Util::JSON qw/encode_canon_json/;
+use Test2::Collector::Util::EventEmitter;
 
 use Test2::Harness2::SystemLoad;
 
@@ -21,6 +21,7 @@ use Test2::Harness2::Util::HashBase qw{
     +conn
     +next_at
     +metrics
+    +emitter
 };
 
 use Role::Tiny::With;
@@ -72,11 +73,13 @@ A message is sent when B<either> CPU or memory triggers, and it carries the
 current rounded value of both (plus the load average, which rides along). The
 reported C<cpu_pct> / C<mem_pct> are the rounded values.
 
-Each reported snapshot is B<also> printed to the sampler's own STDOUT as a single
-JSON line (envelope key C<system_load>). The sampler runs under a collector that
-captures its STDOUT, so this gives every snapshot a durable home in the sampler's
-own C<sampler-events.jsonl.zst> events stream, in addition to the live one-way
-report to the runner.
+Each reported snapshot is B<also> emitted as a structured C<harness_system> facet
+event into the sampler's own collector event stream (via
+L<Test2::Collector::Util::EventEmitter>), giving every snapshot a durable home in
+the sampler's own C<sampler-events.jsonl.zst> events stream, in addition to the
+live one-way report to the runner. C<harness_system> has no render path, so this
+durable record is never shown as a line by the default renderer; archive / replay
+consumers pick it up by that facet.
 
 It consumes L<Test2::Harness2::Role::Service> for the shared connection model: it
 dials the runner's socket and identifies, then sends one-way C<system_load>
@@ -212,11 +215,13 @@ sub service_tick ($self) {
     $snap->{cpu_pct} = $cpu if defined $cpu;
     $snap->{mem_pct} = $mem if defined $mem;
 
-    # ALSO emit the snapshot into the sampler's own captured output stream, so it
-    # rides into its collector's events file (sampler-events.jsonl.zst) as a
-    # durable record. The collector wraps each STDOUT line in a from_stream/info
-    # event; we print a single self-describing JSON line (envelope key
-    # 'system_load') that a later reader can pluck back out of the line's text.
+    # ALSO emit the snapshot into the sampler's own collector event stream, so it
+    # rides into the events file (sampler-events.jsonl.zst) as a durable record for
+    # archive / replay consumers. It is emitted as a structured harness_system
+    # facet event (NOT a raw print): the default renderer has no render path for
+    # harness_system, so it is never shown as a line, while the monitor and any
+    # archive consumer pick it up by that facet -- the same shape the live one-way
+    # report folds into runner state.
     $self->_emit_load_event($snap);
 
     # One-way request: the runner's handler stores the snapshot and returns no
@@ -229,14 +234,30 @@ sub service_tick ($self) {
 }
 
 sub _emit_load_event ($self, $snap) {
-    my $line = encode_canon_json({system_load => $snap});
+    my $emitter = $self->_emitter or return;
 
     # Best effort: a captured-stream write failure must not take the sampler
     # down -- the live service_send report is the load path the runner needs.
     local $SIG{PIPE} = 'IGNORE';
-    eval { print STDOUT $line, "\n"; 1 };
+    eval {
+        $emitter->emit_raw({facet_data => {harness_system => $snap}});
+        1;
+    };
 
     return;
+}
+
+# The event emitter the durable snapshot is written through. The default is the
+# collector's captured-STDOUT emitter (EventEmitter->std), which is only
+# meaningful inside the collector child that wraps the sampler -- that is where
+# STDOUT is the event pipe. T2_COLLECTOR_PIPE_COUNT is set by Test2::Collector in
+# every child it wraps; outside one there is nothing to capture the event and the
+# emitter's binary frame would corrupt a plain STDOUT, so we emit nothing. A test
+# may inject its own emitter to bypass that gate.
+sub _emitter ($self) {
+    return $self->{+EMITTER} if defined $self->{+EMITTER};
+    return undef unless defined $ENV{T2_COLLECTOR_PIPE_COUNT};
+    return $self->{+EMITTER} = Test2::Collector::Util::EventEmitter->std;
 }
 
 =head1 PRIVATE METHODS
@@ -247,12 +268,13 @@ sub _emit_load_event ($self, $snap) {
 
 =item $self->_emit_load_event($snap)
 
-Print one C<system_load> snapshot to STDOUT as a single self-describing JSON
-line (envelope C<< {"system_load":{...}} >>). The sampler runs under a collector
-that captures its STDOUT line-by-line, so this is what carries each snapshot into
-the sampler's own C<sampler-events.jsonl.zst> events stream (in addition to the
-live one-way report to the runner). Canonical, compact JSON keeps it to one line
-and starts with C<{>, so it is never mistaken for a stream sync marker.
+Emit one snapshot as a structured C<harness_system> facet event into the
+sampler's own collector event stream (via L<Test2::Collector::Util::EventEmitter>),
+so it is recorded in C<sampler-events.jsonl.zst> as a durable record (in addition
+to the live one-way report to the runner). It is deliberately B<not> a raw print:
+a captured raw line would be wrapped as an C<INTERNAL>-tagged info line and shown
+by the default renderer, whereas C<harness_system> has no render path and is
+instead consumed by the monitor / archive consumers by that facet.
 
 =item $bool = $self->_metric_triggers($name, $rounded, $now)
 
