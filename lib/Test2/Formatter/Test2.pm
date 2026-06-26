@@ -45,6 +45,7 @@ use Test2::Util::HashBase qw{
     -job_names
     -is_persistent
     -interactive
+    -_sysload
 };
 
 sub TAG_WIDTH() { 8 }
@@ -251,6 +252,13 @@ if ($^C) {
 sub write {
     my ($self, $e, $num, $f) = @_;
     $f ||= $e->facet_data;
+
+    # System load is a global signal, not a test event: fold the latest snapshot
+    # into the status bar (cpu/mem %) and never render it as a line.
+    if (my $sys = $f->{harness_system}) {
+        $self->set_system_load($sys);
+        return;
+    }
 
     my $should_show = $self->update_active_disp($f);
 
@@ -493,13 +501,37 @@ sub colorstrip {
     return Term::ANSIColor::colorstrip($str);
 }
 
+sub set_system_load {
+    my $self = shift;
+    ($self->{+_SYSLOAD}) = @_;
+    return;
+}
+
+# The cpu/mem segment shown in the status bar, e.g. " [Cpu:50% Mem:10%]", or ''
+# when no snapshot has arrived yet (or it carries neither percentage).
+sub _sysload_str {
+    my $self = shift;
+
+    my $load = $self->{+_SYSLOAD} or return '';
+
+    my @parts;
+    push @parts => sprintf('Cpu:%d%%', $load->{cpu_pct}) if defined $load->{cpu_pct};
+    push @parts => sprintf('Mem:%d%%', $load->{mem_pct}) if defined $load->{mem_pct};
+    return '' unless @parts;
+
+    my $reset = $self->reset;
+    my $blue  = $self->{+COLOR} ? Term::ANSIColor::color('blue') : '';
+
+    return " ${blue}[" . join(' ', @parts) . "]${reset}";
+}
+
 sub render_status {
     my $self = shift;
 
     my $reset = $self->reset;
     my $cyan = $self->{+COLOR} ? Term::ANSIColor::color('cyan') : '';
 
-    my $str = "$self->{+_ACTIVE_DISP}->[0] Events: $self->{+ECOUNT} ${cyan}$self->{+_ACTIVE_DISP}->[1]${reset}";
+    my $str = "$self->{+_ACTIVE_DISP}->[0]" . $self->_sysload_str . " Events: $self->{+ECOUNT} ${cyan}$self->{+_ACTIVE_DISP}->[1]${reset}";
 
     my $max = term_size() || 80;
 

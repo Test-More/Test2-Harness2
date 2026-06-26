@@ -214,6 +214,7 @@ sub iterate ($self) {
 
     my $producer = $self->{+PRODUCER};
 
+    $self->_update_system_load($producer);
     $_->step for @{$self->{+RENDERERS}};
 
     my @events = $producer->poll;
@@ -233,6 +234,25 @@ sub iterate ($self) {
 
 sub finish ($self) {
     $_->finish for @{$self->{+RENDERERS}};
+    return;
+}
+
+# System load is folded into the subscription mirror (the runner consumes the
+# sampler's harness_system snapshots into Monitor state, ARCHITECTURE.md §4.4); it
+# is never an event, so it does not flow through dispatch. Pull the latest snapshot
+# off the producer's monitor each tick and hand it to any sink renderer that shows
+# it (the terminal formatter's status bar). Guarded so non-live producers / sinks
+# that do not track load are unaffected.
+sub _update_system_load ($self, $producer) {
+    return unless $producer->can('monitor');
+    my $monitor = $producer->monitor                  or return;
+    return unless $monitor->can('system_load');
+    my $load = $monitor->system_load                  or return;
+
+    for my $r (@{$self->{+RENDERERS}}) {
+        $r->set_system_load($load) if $r->can('set_system_load');
+    }
+
     return;
 }
 
