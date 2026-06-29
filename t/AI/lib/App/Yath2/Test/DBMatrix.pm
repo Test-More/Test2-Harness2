@@ -34,8 +34,8 @@ installed flavor B<and> version (DB-3 / ticket #63).
 
 =head1 DESCRIPTION
 
-The DB layer ships five hand-written flavor DDLs (PostgreSQL / SQLite / MySQL /
-MariaDB / Percona) reflected by L<DBIx::QuickORM> C<autofill>. A single ambient
+The DB layer ships six hand-written flavor DDLs (PostgreSQL / SQLite / DuckDB /
+MySQL / MariaDB / Percona) reflected by L<DBIx::QuickORM> C<autofill>. A single ambient
 server only proves one engine at one version; per-version SQL / typing drift (the
 exact bug class the multi-engine port risks) hides behind that. This module
 discovers B<every> versioned server install under C<~/dbs> (plus a system install
@@ -60,8 +60,9 @@ the entire point of a per-version matrix. Each server cell therefore runs in its
 B<own forked process> (via L<Parallel::Runner>, like C<do_for_all_dbs>) so the
 driver resolves that cell's PATH afresh. SQLite needs no server and runs inline.
 
-SQLite is always on (a temp file). Server spin-up is gated on C<AUTHOR_TESTING> so
-a default user install stays fast.
+SQLite and DuckDB (embedded file engines) are always on (a temp file each, each
+self-skipping if its DBD is absent). Server spin-up is gated on C<AUTHOR_TESTING>
+so a default user install stays fast.
 
 =head1 EXPORTS
 
@@ -116,6 +117,10 @@ Apply a flavor's DDL to a live handle statement-by-statement. Returns the count.
 # mirror; BINARY(16)/BLOB(16) engines (mysql, percona, sqlite) do (§3b).
 my %META = (
     sqlite     => {has_string_mirror => 1, json_autotype => 1, dbd => 'DBD::SQLite',  server => 0},
+    # DuckDB: embedded file engine (like sqlite, server => 0) but native uuid (NO
+    # string mirror) + native JSON. Runs in-process; excluded from servers_only
+    # because a .duckdb file is single-writer (one logger + a reader cannot share).
+    duckdb     => {has_string_mirror => 0, json_autotype => 1, dbd => 'DBD::DuckDB',  server => 0},
     postgresql => {has_string_mirror => 0, json_autotype => 1, dbd => 'DBD::Pg',      server => 1},
     # The whole MySQL family is driven through DBD::MariaDB, never DBD::mysql.
     mysql      => {has_string_mirror => 1, json_autotype => 0, dbd => 'DBD::MariaDB', server => 1},
@@ -207,9 +212,12 @@ sub db_matrix_sets {
 
     my @sets;
 
-    # SQLite: always on (no server), unless the caller wants servers only.
-    push @sets => _set(flavor => 'sqlite', name => 'sqlite', version => undef, env => {})
-        unless $opts{servers_only};
+    # SQLite + DuckDB: embedded file engines, always on (no server), unless the
+    # caller wants servers only. Each self-skips if its DBD is missing.
+    unless ($opts{servers_only}) {
+        push @sets => _set(flavor => 'sqlite', name => 'sqlite', version => undef, env => {});
+        push @sets => _set(flavor => 'duckdb', name => 'duckdb', version => undef, env => {});
+    }
 
     # Servers: only under AUTHOR_TESTING (full sweep). Discover every ~/dbs
     # version; for any server flavor ~/dbs does not provide, add a single
@@ -234,7 +242,11 @@ sub load_ddl_into {
     my $ddl = do { local $/; <$fh> };
     close($fh);
 
-    my @stmts = grep { /\S/ } split /;\s*\n/, $ddl;
+    # Skip comment/whitespace-only fragments (a comment line ending in ";" yields
+    # one): strict drivers (DBD::DuckDB) reject a comment-only statement, while
+    # DBD::Pg/SQLite tolerate it. The comment-strip only gates the skip; the
+    # original fragment is executed verbatim.
+    my @stmts = grep { (my $c = $_) =~ s/--[^\n]*//g; $c =~ /\S/ } split /;\s*\n/, $ddl;
     for my $stmt (@stmts) {
         local $SIG{__WARN__} = sub { };    # silence benign PostgreSQL NOTICEs
         $dbh->do($stmt);
@@ -303,6 +315,38 @@ sub _provision_sqlite {
         %$set,
         con               => $con,
         dsn               => $path,    # a sqlite -L target is a plain path
+        flavor            => $flavor,
+        qdb               => undef,
+        tmp               => $tmp,     # hold the tempdir alive
+        has_string_mirror => $mirror,
+        json_autotype     => $json_autotype,
+    };
+}
+
+# Provision a duckdb set: a fresh temp .duckdb file, DDL bootstrapped by the
+# production Connect path (the .duckdb extension routes to the duckdb flavor),
+# returning a QuickORM connection + the path as the -L target. Like sqlite this
+# runs in-process with its OWN file -- one read-write opener, no lock conflict.
+sub _provision_duckdb {
+    my ($set) = @_;
+
+    eval { require DBD::DuckDB;    1 } or return (undef, "DBD::DuckDB not available", 'skip');
+    eval { require DBIx::QuickORM; 1 } or return (undef, "DBIx::QuickORM not available", 'skip');
+
+    require App::Yath2::DB::Connect;
+    require App::Yath2::Schema;    # installs qorm() + the autorow namespace
+
+    my $tmp  = File::Temp->newdir(CLEANUP => 1);
+    my $path = "$tmp/yath_matrix_${$}_" . (++$PROV_SEQ) . ".duckdb";
+
+    my ($con, $flavor) = App::Yath2::DB::Connect::build_connection($path);
+
+    my ($mirror, $json_autotype) = _detect_schema_shape($con);
+
+    return {
+        %$set,
+        con               => $con,
+        dsn               => $path,    # a duckdb -L target is a plain .duckdb path
         flavor            => $flavor,
         qdb               => undef,
         tmp               => $tmp,     # hold the tempdir alive
@@ -387,7 +431,9 @@ sub _provision_server {
 
 sub provision_db_set {
     my ($set) = @_;
-    return $set->{server} ? _provision_server($set) : _provision_sqlite($set);
+    return _provision_server($set) if $set->{server};
+    return _provision_duckdb($set) if $set->{flavor} eq 'duckdb';
+    return _provision_sqlite($set);
 }
 
 # Stop the server (while its bin/ is still on PATH) and drop held temp handles.

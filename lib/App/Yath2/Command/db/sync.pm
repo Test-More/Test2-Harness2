@@ -83,7 +83,9 @@ sub run {
     require App::Yath2::Schema;    # installs qorm() + the autorow namespace
     require App::Yath2::DB::Sync;
 
-    my ($source_con) = App::Yath2::DB::Connect::build_connection($from);
+    # --from is read-only (Sync never writes the source). Mandatory for a DuckDB
+    # source (process-exclusive write lock): the source's writer must have detached.
+    my ($source_con) = App::Yath2::DB::Connect::build_connection($from, read_only => 1);
     my ($dest_con)   = App::Yath2::DB::Connect::build_connection($to);
 
     my $sync = App::Yath2::DB::Sync->new(

@@ -244,7 +244,7 @@ sub round_trip {
 # ---------------------------------------------------------------------------
 # basic flavor-registry sanity (cheap, always runs).
 # ---------------------------------------------------------------------------
-for my $name (qw/sqlite postgresql mysql mariadb percona/) {
+for my $name (qw/sqlite duckdb postgresql mysql mariadb percona/) {
     my $f = App::Yath2::DB::Flavor->by_name($name);
     ok(-f $f->ddl_path, "$name: share/schema/" . $f->ddl_file . " exists on disk");
 }

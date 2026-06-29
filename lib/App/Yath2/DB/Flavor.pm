@@ -27,15 +27,15 @@ App::Yath2::DB::Flavor - Registry of supported database flavors.
 =head1 DESCRIPTION
 
 C<App::Yath2::DB::Flavor> is a small registry that maps symbolic flavor names
-(C<sqlite>, C<postgresql>, C<mysql>, C<mariadb>, C<percona>) to the metadata the
-DB layer needs when working with a given database engine: the SQL dialect name
-for L<DBIx::QuickORM>, the DDL filename under C<share/schema/>, the DSN prefix
-used to detect the engine from a connection string, and the L<DBIx::QuickDB>
-driver token for ephemeral databases.
+(C<sqlite>, C<duckdb>, C<postgresql>, C<mysql>, C<mariadb>, C<percona>) to the
+metadata the DB layer needs when working with a given database engine: the SQL
+dialect name for L<DBIx::QuickORM>, the DDL filename under C<share/schema/>, the
+DSN prefix used to detect the engine from a connection string, and the
+L<DBIx::QuickDB> driver token for ephemeral databases.
 
-PostgreSQL is the first fully-supported flavor (#46); the per-engine DDL for the
-others lands in #47. The registry already lists all five engines so detection /
-DSN inference work; only the DDL files are added per chunk.
+Every flavor ships a hand-written DDL under C<share/schema/>. C<sqlite> and
+C<duckdb> are embedded I<file> engines (a path is bootstrapped on first open);
+the rest are server DSNs.
 
 Each flavor is a singleton instance. Look one up by name with C<by_name>, infer
 one from a DSN with C<infer_from_dsn>, or probe a live MySQL-family handle with
@@ -62,13 +62,13 @@ with no binary fallback for MariaDB.
 
 =item name
 
-Lowercase symbolic key for this flavor: C<sqlite>, C<postgresql>, C<mysql>,
-C<mariadb>, or C<percona>.
+Lowercase symbolic key for this flavor: C<sqlite>, C<duckdb>, C<postgresql>,
+C<mysql>, C<mariadb>, or C<percona>.
 
 =item dialect
 
-The dialect string passed to L<DBIx::QuickORM>: C<SQLite>, C<PostgreSQL>,
-C<MySQL>, C<MySQL::MariaDB>, or C<MySQL::Percona>.
+The dialect string passed to L<DBIx::QuickORM>: C<SQLite>, C<DuckDB>,
+C<PostgreSQL>, C<MySQL>, C<MySQL::MariaDB>, or C<MySQL::Percona>.
 
 =item ddl_file
 
@@ -94,9 +94,9 @@ explicit flavor is configured (logging is still opt-in -- spec R11).
 
 =cut
 
-# All registered flavors. All flavors must move together when the DDL changes.
-# Only PostgreSQL ships a DDL file today (#46); the others (#47) carry their
-# metadata here already so detection/inference work before their DDL lands.
+# All registered flavors. All flavors must move together when the DDL changes;
+# each ships a hand-written DDL under share/schema/. sqlite + duckdb are embedded
+# file engines; the rest are server DSNs.
 my %REGISTRY = (
     sqlite => {
         name           => 'sqlite',
@@ -105,6 +105,18 @@ my %REGISTRY = (
         dbd_dsn_prefix => 'dbi:SQLite:dbname=',
         quickdb_driver => 'SQLite',
         is_default     => 1,
+    },
+    duckdb => {
+        # DuckDB is an embedded file engine (like sqlite) but with native uuid /
+        # json / blob, so its DDL ports from PostgreSQL.sql, not SQLite.sql. Only
+        # ONE process may hold a .duckdb file read-write at a time; readers open
+        # it read-only (see connect_attrs) once the writer has detached.
+        name           => 'duckdb',
+        dialect        => 'DuckDB',
+        ddl_file       => 'DuckDB.sql',
+        dbd_dsn_prefix => 'dbi:DuckDB:dbname=',
+        quickdb_driver => 'DuckDB',
+        is_default     => 0,
     },
     postgresql => {
         name           => 'postgresql',
@@ -182,6 +194,7 @@ sub infer_from_dsn {
     return undef unless defined $dsn;
     return $class->by_name('postgresql') if $dsn =~ /^dbi:Pg:/i;
     return $class->by_name('sqlite')     if $dsn =~ /^dbi:SQLite:/i;
+    return $class->by_name('duckdb')     if $dsn =~ /^dbi:DuckDB:/i;
     return undef;
 }
 
@@ -234,20 +247,72 @@ sub ddl_path {
     return share_dir('schema') . '/' . $self->{+DDL_FILE};
 }
 
-=item $flavor->post_connect($dbh)
+=item \%attrs = $flavor->connect_attrs(%opts)
+
+Return the C<DBI-E<gt>connect> attribute hashref for this flavor. The base attrs
+(C<AutoCommit>/C<RaiseError>/C<PrintError>) are the same for every engine; the
+C<read_only> option layers on the per-engine knob needed to open a handle that
+B<cannot write>:
+
+=over 4
+
+=item C<duckdb>
+
+C<< duckdb_config =E<gt> { access_mode =E<gt> 'read_only' } >> plus
+C<< duckdb_checkpoint_on_disconnect =E<gt> 0 >>. This is an B<open-time> engine
+config -- it is NOT a DSN attribute and cannot be applied in C<post_connect>.
+A DuckDB file permits exactly one read-write process but many concurrent
+read-only readers, so reader connections B<must> use this.
+
+=item C<sqlite>
+
+C<< sqlite_open_flags =E<gt> DBD::SQLite::OPEN_READONLY() >>.
+
+=item server flavors (postgresql / mysql-family)
+
+No open-time read-only attribute; the source connection is simply never written.
+
+=back
+
+=cut
+
+sub connect_attrs {
+    my ($self, %opts) = @_;
+
+    my %attrs = (AutoCommit => 1, RaiseError => 1, PrintError => 0);
+
+    if ($opts{read_only}) {
+        my $name = $self->{+NAME};
+        if ($name eq 'duckdb') {
+            $attrs{duckdb_config}                   = {access_mode => 'read_only'};
+            $attrs{duckdb_checkpoint_on_disconnect} = 0;
+        }
+        elsif ($name eq 'sqlite') {
+            require DBD::SQLite;
+            $attrs{sqlite_open_flags} = DBD::SQLite::OPEN_READONLY();
+        }
+    }
+
+    return \%attrs;
+}
+
+=item $flavor->post_connect($dbh, %opts)
 
 Run any flavor-specific setup on a freshly opened database handle. Currently only
 C<sqlite> needs work: it enables foreign-key enforcement, WAL journal mode, and a
-60-second busy timeout. (PostgreSQL needs none; the hook exists for the #47
-SQLite port and the later logger.)
+60-second busy timeout. Those are B<write> pragmas, so they are skipped when
+C<read_only> is true (a read-only sqlite handle cannot run them and does not need
+them). DuckDB's read-only mode is an open-time attr (see C<connect_attrs>), so
+C<post_connect> is a no-op for it. (PostgreSQL/MySQL-family need none.)
 
 =back
 
 =cut
 
 sub post_connect {
-    my ($self, $dbh) = @_;
+    my ($self, $dbh, %opts) = @_;
     return unless $self->{+NAME} eq 'sqlite';
+    return if $opts{read_only};
     $dbh->do('PRAGMA foreign_keys = ON');
     $dbh->do('PRAGMA journal_mode = WAL');
     $dbh->do('PRAGMA busy_timeout = 60000');

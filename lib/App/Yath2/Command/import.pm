@@ -79,10 +79,11 @@ sub run {
     require App::Yath2::Schema;    # installs qorm() + the autorow namespace
     require App::Yath2::DB::Sync;
 
-    # The source is a sqlite log FILE -> a sqlite target. build_connection opens
-    # it read-as-is (it already has its schema; ensure_sqlite_db is a no-op on a
-    # non-empty file).
-    my ($source_con) = App::Yath2::DB::Connect::build_connection($source_file);
+    # The source is an existing log FILE/DSN (sqlite or duckdb, by extension) that
+    # Sync only reads -- open it read-only (mandatory for DuckDB, whose read-write
+    # lock is process-exclusive; the source run's logger must have already
+    # detached). The dest is the write target.
+    my ($source_con) = App::Yath2::DB::Connect::build_connection($source_file, read_only => 1);
     my ($dest_con)   = App::Yath2::DB::Connect::build_connection($to);
 
     my $sync = App::Yath2::DB::Sync->new(

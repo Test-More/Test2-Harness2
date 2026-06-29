@@ -248,11 +248,34 @@ machinery has been removed.
   sqlite path.
 - The default backend is **`DBD::SQLite`** used directly. Log files are sqlite
   databases (§4.6).
+- **DuckDB is a SYNC / READ target, not a live logging target** (`DBD::DuckDB`).
+  Its DDL (`share/schema/DuckDB.sql`) ports from PostgreSQL (native
+  `uuid`/`json`/`blob`, full FK set). **DuckDB is SINGLE-WRITER** — a file allows
+  only one read-write process at a time (a process-exclusive lock) AND DuckDB
+  blocks an index-maintaining UPDATE of a FK-referenced row, which a live logger's
+  insert-then-update model needs. So `-L=<.duckdb>` / `-L=dbi:DuckDB:` is
+  **rejected**. Instead you log to sqlite or a server DB and `yath db sync` /
+  `import` **into** a `.duckdb` file (insert-only, parents-before-children, so
+  every FK is satisfiable), then point a **read-only** `yath db` / web server at
+  the finished DuckDB log. (DuckDB has no `ALTER TABLE ADD FOREIGN KEY`, so FKs
+  cannot be added post-hoc; they ship in the DDL and sync respects them.)
+- **FUTURE (web/read serving, not yet built):** the read/UI server work needs a
+  few things the schema/connection layer should anticipate:
+  - **Split the schema into `share/schema/<FLAVOR>/{log,web}.sql`** — `log.sql` is
+    the run-data schema (current `share/schema/<FLAVOR>.sql`), `web.sql` adds the
+    session / user / web tables the server needs. **No `web.sql` for DuckDB** — it
+    is single-writer, so a live web server cannot own session/write tables in it.
+  - **A read-only, sessionless serve mode**: every connection is a single
+    see-everything user (no login/session), for pointing a read-only web server at
+    a finished log (DuckDB or sqlite).
+  - **Two-connection serving**: the **log** DB may be DuckDB (read-only) while the
+    **session/user/web** DB is a separate sqlite (read-write) — i.e. the server
+    holds two distinct connections with different flavors/roles.
 - UUIDs are generated in Perl as v7 (§2.2), never by the database. Some run-data
   UUIDs are **derived** from a base UUID by a v7-preserving scheme (§4.6.2) so they
   are reproducible across loggers/DBs with no coordination.
-- Non-default flavors (Postgres, MySQL, MariaDB, Percona) are driver-loaded on
-  demand; their `DBD::*` modules are Suggests / Recommends in `dist.ini`, never
+- Non-default flavors (DuckDB, Postgres, MySQL, MariaDB, Percona) are driver-loaded
+  on demand; their `DBD::*` modules are Suggests / Recommends in `dist.ini`, never
   hard requires. **MariaDB 10.7+ is a hard minimum** when that flavor is used
   (native `uuid` type; 10.5/10.6 LTS lack it).
 - Each log / DB is **version-stamped** with the yath version (a `schema_meta`
@@ -789,7 +812,9 @@ backend touches no DB (§2.4).
   self-contained, queryable artifact: the run's `events.jsonl.zst` blobs live in
   the `artifacts` table (§4.6.4). The default backend is `DBD::SQLite` used
   directly; the schema is hand-written DDL reflected by QuickORM `autofill`
-  (§2.4). The DB layer is **optional and opt-in** (§2.4, §4.6.5).
+  (§2.4). The DB layer is **optional and opt-in** (§2.4, §4.6.5). A **DuckDB**
+  file is NOT a valid logging target (single-writer; see §2.4) — it is produced by
+  `yath db sync` / `import` from another log and then read read-only.
 - The database is for storing / archiving / querying logs and driving the UI;
   it is **not** the live cross-process coordination substrate (that is the
   transition channel, §4.3).
@@ -811,8 +836,9 @@ lands with it).
 **§4.6.1 Schema model and key strategy `[target]`.**
 
 **Schema model.** Hand-written per-flavor DDL under `share/schema/<Flavor>.sql`
-(PostgreSQL-first, then ported to SQLite / MySQL / MariaDB / Percona), reflected
-by QuickORM `autofill` — no table/Result classes, no `regen_schema.pl` (§2.4). Row
+(PostgreSQL-first, then ported to SQLite / DuckDB / MySQL / MariaDB / Percona),
+reflected by QuickORM `autofill` — no table/Result classes, no `regen_schema.pl`
+(§2.4). Row
 objects are dumb (DCI); import / sync / query algorithms live in dedicated modules
 acting on rows.
 

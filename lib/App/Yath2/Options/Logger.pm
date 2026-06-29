@@ -48,6 +48,13 @@ once enabled. The DB modules are loaded lazily by the logger, not here. C<-L> wa
 freed from the old jsonl logger (now a renderer, #55) for exactly this (R16); the
 jsonl renderer keeps long-form C<--bzip2>/C<--gzip> only.
 
+B<DuckDB is NOT a logging target>: a C<.duckdb> file is single-writer and a live
+logger does insert-then-update on referenced rows (which DuckDB forbids), so a
+C<.duckdb>/C<.ddb> path or a C<dbi:DuckDB:> DSN passed to C<-L> is rejected.
+DuckDB is instead a B<sync / read> target: log to sqlite or a server DB, then
+C<yath db sync> / C<yath import> B<into> a C<.duckdb> file (insert-only), and
+point a read-only C<yath db> / web server at the result.
+
 =head1 PROVIDED OPTIONS
 
 =head3 DB Logger Options
@@ -67,7 +74,9 @@ jsonl renderer keeps long-form C<--bzip2>/C<--gzip> only.
 =item --no-logger
 
 Enable DB logging. Repeatable; value-polymorphic (bare = default sqlite, a path =
-a sqlite file, a C<dbi:...> DSN = a remote DB). Each C<-L> starts one logger.
+a sqlite file, a C<dbi:...> DSN = a remote DB). Each C<-L> starts one logger. A
+DuckDB target (a C<.duckdb>/C<.ddb> path or a C<dbi:DuckDB:> DSN) is B<rejected>
+(DuckDB is single-writer / sync-only).
 
 =item --logger-dir ARG
 
@@ -99,7 +108,7 @@ option_group {group => 'logger', category => "DB Logger Options"} => sub {
         long_examples  => ['', '=path/to/db.sqlite', '=$DSN'],
         short_examples => ['', '=path/to/db.sqlite', '=$DSN'],
         autofill       => sub { (DEFAULT_TOKEN()) },
-        description     => 'Enable DB logging. Repeatable; value-polymorphic (bare = default sqlite, a path = a sqlite file, a dbi:... DSN = a remote DB). Each -L starts one logger.',
+        description     => 'Enable DB logging. Repeatable; value-polymorphic (bare = default sqlite, a path = a sqlite file, a dbi:... DSN = a remote DB). Each -L starts one logger. DuckDB is NOT a valid logging target (single-writer); sync/import into a .duckdb file instead.',
     );
 
     # Distinct primary names (--logger-dir/--logger-format/--logger-lastlog) so the
@@ -109,7 +118,7 @@ option_group {group => 'logger', category => "DB Logger Options"} => sub {
         type        => 'Scalar',
         name        => 'logger-dir',
         normalize   => \&clean_path,
-        description => 'Directory for the default sqlite log file. Falls back to the system temp dir.',
+        description => 'Directory for the default log file. Falls back to the system temp dir.',
     );
 
     option logger_format => (
@@ -154,6 +163,20 @@ option_post_process 102 => sub ($options, $state) {
         else {
             push @resolved => $t;
         }
+    }
+
+    # DuckDB is single-writer: a .duckdb file allows only one read-write process,
+    # and a live logger does insert-then-update on referenced rows (which DuckDB
+    # forbids). So DuckDB is NOT a valid logging target -- reject any .duckdb/.ddb
+    # path or dbi:DuckDB: DSN here (the same two signals target_to_flavor uses).
+    # This is a plain string check; NO DB module is loaded (core test path stays
+    # DB-free, R11). DuckDB is still a SYNC/READ target: `yath db sync --to
+    # x.duckdb` / `yath import --to x.duckdb` write it insert-only.
+    for my $t (@resolved) {
+        next unless $t =~ /\.(?:duckdb|ddb)\z/i || $t =~ /^dbi:DuckDB:/i;
+        die "DuckDB ('$t') is not a valid live-logging target: a .duckdb file is "
+          . "single-writer and the logger updates rows DuckDB will not let it. Log "
+          . "to sqlite or a server DB, then `yath db sync`/`import` into a .duckdb file.\n";
     }
 
     $logger->create_option(targets => \@resolved);

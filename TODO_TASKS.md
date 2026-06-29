@@ -1390,9 +1390,11 @@ database is not named `yath`.
 
 **Problem:** the DB tests (`Schema_quickorm.t`, `db_logger.t`, `db_sync.t`, etc.)
 currently exercise only SQLite always + PostgreSQL when a connection happens to be
-available. The 5 flavor DDLs (PostgreSQL/SQLite/MySQL/MariaDB/Percona) and the
+available. The 6 flavor DDLs (PostgreSQL/SQLite/DuckDB/MySQL/MariaDB/Percona) and the
 autofill ORM + cross-DB sync must be proven against **every flavor AND every installed
-version**, not one ambient server. `~/dbs` has multiple versions of all flavors
+version**, not one ambient server. (DuckDB, like SQLite, is an inline embedded-file
+cell -- always on, self-skipping when `DBD::DuckDB` is absent; it is excluded from
+the `servers_only` logger/sync matrices because a `.duckdb` file is single-writer.) `~/dbs` has multiple versions of all flavors
 installed (plus some under `legacy/` and on other branches); the test suite must spin
 each up, run against it, and skip a specific flavor/version **only** when neither
 `~/dbs` nor a system install provides it.

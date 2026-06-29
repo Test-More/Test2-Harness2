@@ -40,15 +40,21 @@ A B<target> is the polymorphic C<-L> value (spec R16):
 
 =item a filesystem path (or the default temp path)
 
-A new SQLite database; bootstrapped from C<share/schema/SQLite.sql> the first
-time it is opened.
+An embedded-file database; bootstrapped from the flavor DDL the first time it is
+opened. A C<.duckdb>/C<.ddb> extension selects DuckDB
+(C<share/schema/DuckDB.sql>); any other path is SQLite
+(C<share/schema/SQLite.sql>).
 
 =item a C<dbi:...> DSN
 
-A remote/other database (postgres/mariadb/...); the flavor is inferred from the
-DSN prefix (MySQL-family is probed on a live handle).
+A remote/other database (postgres/mariadb/duckdb/...); the flavor is inferred
+from the DSN prefix (MySQL-family is probed on a live handle).
 
 =back
+
+DuckDB is single-writer: a C<.duckdb> file allows only one read-write process at
+a time, so a reader must open it read-only (C<< build_connection($t, read_only =E<gt> 1) >>)
+and only after the writing logger has detached.
 
 Nothing here is loaded at compile time by the always-loaded command path; the
 logger process and the DB commands C<require> this module at runtime.
@@ -64,19 +70,26 @@ clear "install ..." exception when either is missing. Returns nothing.
 
 =item ($flavor, $kind, $spec) = target_to_flavor($target)
 
-Classify a C<-L> target string. C<$kind> is C<'sqlite'> (a path) or C<'dsn'> (a
-C<dbi:...> string); C<$spec> is the sqlite path or the DSN; C<$flavor> is the
-matching L<App::Yath2::DB::Flavor>.
+Classify a C<-L> target string. C<$kind> is C<'sqlite'> or C<'duckdb'> (an
+embedded-file path, distinguished by extension) or C<'dsn'> (a C<dbi:...>
+string); C<$spec> is the file path or the DSN; C<$flavor> is the matching
+L<App::Yath2::DB::Flavor>.
 
-=item ($con, $flavor) = build_connection($target)
+=item ($con, $flavor) = build_connection($target, %opts)
 
-Build (and bootstrap, for a fresh sqlite file) the live QuickORM connection for
-C<$target>. Croaks with an actionable error if a required DB module is missing.
+Build (and bootstrap, for a fresh embedded-file database) the live QuickORM
+connection for C<$target>. Croaks with an actionable error if a required DB
+module is missing. With C<< read_only =E<gt> 1 >> the handle is opened read-only
+(engine-specific, see L<App::Yath2::DB::Flavor/connect_attrs>): no bootstrap is
+done and the file must already exist. Use it for reader call sites (import / db
+sync source); it is mandatory for reading a DuckDB file (its read-write lock is
+process-exclusive).
 
 =item ensure_sqlite_db($path, $flavor)
 
-Create the sqlite DB file at C<$path> from the flavor DDL if it does not already
-exist (idempotent). Returns the path.
+Create the embedded-file DB (sqlite or duckdb, per C<$flavor>) at C<$path> from
+the flavor DDL if it does not already exist (idempotent). Returns the path. (The
+name is historical; it serves both file engines.)
 
 =back
 
@@ -86,6 +99,7 @@ exist (idempotent). Returns the path.
 # (mysql/mariadb/percona) is driven through DBD::MariaDB, never DBD::mysql.
 my %DBD_FOR = (
     sqlite     => 'DBD::SQLite',
+    duckdb     => 'DBD::DuckDB',
     postgresql => 'DBD::Pg',
     mysql      => 'DBD::MariaDB',
     mariadb    => 'DBD::MariaDB',
@@ -137,7 +151,13 @@ sub target_to_flavor {
         return ($flavor, 'dsn', $target);
     }
 
-    # Anything else is a sqlite file path.
+    # A file path. A .duckdb/.ddb extension selects the DuckDB embedded engine;
+    # anything else is a sqlite file. (The extension is the ONLY signal here -- a
+    # bare path with no recognized extension stays sqlite, the historical default.)
+    if ($target =~ /\.(?:duckdb|ddb)\z/i) {
+        return (App::Yath2::DB::Flavor->by_name('duckdb'), 'duckdb', $target);
+    }
+
     return (App::Yath2::DB::Flavor->by_name('sqlite'), 'sqlite', $target);
 }
 
@@ -151,7 +171,14 @@ sub _load_ddl {
     my $ddl = do { local $/; <$fh> };
     close($fh);
 
-    for my $stmt (grep { /\S/ } split /;\s*\n/, $ddl) {
+    # Split on ";\n" into top-level statements. A fragment that is only SQL line
+    # comments + whitespace -- e.g. a comment line that itself ends in ";" -- is a
+    # no-op: skip it. Strict drivers (DBD::DuckDB) reject a comment-only "statement"
+    # with "No statement to prepare!"; DBD::Pg/SQLite silently tolerate it. The
+    # comment-strip is only for the emptiness test; the ORIGINAL $stmt is executed.
+    for my $stmt (split /;\s*\n/, $ddl) {
+        (my $code = $stmt) =~ s/--[^\n]*//g;
+        next unless $code =~ /\S/;
         local $SIG{__WARN__} = sub { };
         $dbh->do($stmt);
     }
@@ -159,6 +186,10 @@ sub _load_ddl {
     return;
 }
 
+# Bootstrap a fresh embedded-file DB (sqlite or duckdb) from its flavor DDL. The
+# body is flavor-generic -- it keys off $flavor->dbd_dsn_prefix + $flavor->ddl_path
+# -- so it serves both file engines; the name is kept for back-compat (it is an
+# exported symbol used by the DB tests). The bootstrap handle is always read-write.
 sub ensure_sqlite_db {
     my ($path, $flavor) = @_;
 
@@ -169,8 +200,8 @@ sub ensure_sqlite_db {
     require DBI;
     my $dbh = DBI->connect(
         $flavor->dbd_dsn_prefix . $path, '', '',
-        {AutoCommit => 1, RaiseError => 1, PrintError => 0},
-    ) or croak "Could not create sqlite DB '$path': $DBI::errstr";
+        $flavor->connect_attrs,
+    ) or croak "Could not create " . $flavor->name . " DB '$path': $DBI::errstr";
 
     $flavor->post_connect($dbh);
     _load_ddl($dbh, $flavor);
@@ -182,20 +213,16 @@ sub ensure_sqlite_db {
 my $ORM_SEQ = 0;
 
 sub build_connection {
-    my ($target) = @_;
+    my ($target, %opts) = @_;
+
+    my $read_only = $opts{read_only} ? 1 : 0;
 
     my ($flavor, $kind, $spec) = target_to_flavor($target);
 
     require_db_modules($flavor);
 
-    # A fresh sqlite file is bootstrapped from the DDL before the ORM autofills.
     my ($dsn, $db_name);
-    if ($kind eq 'sqlite') {
-        ensure_sqlite_db($spec, $flavor);
-        $dsn     = $flavor->dbd_dsn_prefix . $spec;
-        $db_name = $spec;
-    }
-    else {
+    if ($kind eq 'dsn') {
         $dsn = $spec;
         # QuickORM uses db_name to scope its reflection (e.g. the MySQL-family
         # information_schema filter), so it must match the DSN's ACTUAL database;
@@ -204,12 +231,27 @@ sub build_connection {
         ($db_name) = $spec =~ /\b(?:dbname|database)=([^;]+)/i;
         $db_name //= 'yath';
     }
+    else {
+        # An embedded-file flavor (sqlite or duckdb). A WRITER bootstraps a fresh
+        # file from the DDL before the ORM autofills; a READER must NOT create a DB
+        # it only intends to read -- the file must already exist (and for DuckDB the
+        # writing logger must have detached, since its lock is process-exclusive).
+        if ($read_only) {
+            croak "Cannot open '$spec' read-only: the database file does not exist"
+                unless -e $spec && -s _;
+        }
+        else {
+            ensure_sqlite_db($spec, $flavor);
+        }
+        $dsn     = $flavor->dbd_dsn_prefix . $spec;
+        $db_name = $spec;
+    }
 
     require DBI;
     my $connect_cb = sub {
-        my $dbh = DBI->connect($dsn, '', '', {AutoCommit => 1, RaiseError => 1, PrintError => 0})
+        my $dbh = DBI->connect($dsn, '', '', $flavor->connect_attrs(read_only => $read_only))
             or croak "Could not connect to '$dsn': $DBI::errstr";
-        $flavor->post_connect($dbh);
+        $flavor->post_connect($dbh, read_only => $read_only);
         return $dbh;
     };
 

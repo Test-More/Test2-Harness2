@@ -459,22 +459,39 @@ sub _find_or_create ($self, $table, $natural, $pk_col) {
 # Helpers.
 # ---------------------------------------------------------------------------
 
+# Per-table BOOLEAN columns. A native-boolean source (DuckDB / PostgreSQL) returns
+# FALSE as '' (empty string), which violates the 0/1 CHECK on a sqlite/mysql/percona
+# dest; we normalize every boolean to 0/1/undef below so it re-deflates portably on
+# ANY dest. IMPORTANT: runs.passed/failed are INTEGER counters, NOT booleans -- only
+# the columns listed here are coerced (the rest copy verbatim).
+my %BOOLEAN_COLUMNS = (
+    runs      => {map { $_ => 1 } qw/canon pinned has_coverage has_resources/},
+    jobs      => {map { $_ => 1 } qw/passed failed/},
+    job_tries => {map { $_ => 1 } qw/result/},
+);
+
 # Extract a portable column hash from a QuickORM row: the INFLATED field values
 # (canonical UUID strings, DateTime objects, decoded JSON refs) so the dest
 # re-deflates them through its own per-engine autotypes. STORED GENERATED columns
 # (the *_uuid_string mirrors, spec §3b) are maintained by the DB and MUST NOT be
 # written, so they are filtered out via the source's generated-column flag.
+# Boolean columns are normalized to 0/1/undef (a native-boolean source returns
+# FALSE as '', which would fail a 0/1-CHECK dest; the coercion is idempotent for
+# an already-0/1 source).
 #
 # Note: $row->fields only returns already-loaded columns (it does not force a
 # fetch), so we enumerate the source's columns and read each via field(), which
 # lazily fetches + inflates on demand.
 sub _row_data ($self, $row) {
     my $source = $row->source;
+    my $bool   = $BOOLEAN_COLUMNS{$source->name} // {};
 
     my %data;
     for my $name ($source->column_names) {
         next if $source->field_is_generated($name);
-        $data{$name} = $row->field($name);
+        my $val = $row->field($name);
+        $val = $val ? 1 : 0 if $bool->{$name} && defined $val;
+        $data{$name} = $val;
     }
 
     return \%data;
