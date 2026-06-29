@@ -1117,7 +1117,7 @@ Steps:
 - **PREREQ (R13):** replace ARCHITECTURE §2.4's "schema-as-Perl, **not** hand-written
   DDL" wording with "hand-written per-flavor DDL + QuickORM `autofill` (reflect-from-DB)" —
   prerequisite for this chunk.
-- Hand-write `share/schema/PostgreSQL.sql` (PostgreSQL-first, most capable); build
+- Hand-write `share/schema/PostgreSQL/log.sql` (PostgreSQL-first, most capable); build
   `App::Yath2::Schema` using QuickORM `orm` + `autofill` (autotype JSON/UUID/DateTime),
   `App::Yath2::Schema::Row::*` (DCI **dumb** rows — algorithms live in functions/modules,
   not row classes, §2b), and `App::Yath2::DB::Flavor`. **No `regen_schema.pl`.**

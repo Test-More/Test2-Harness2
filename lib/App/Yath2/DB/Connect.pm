@@ -42,8 +42,8 @@ A B<target> is the polymorphic C<-L> value (spec R16):
 
 An embedded-file database; bootstrapped from the flavor DDL the first time it is
 opened. A C<.duckdb>/C<.ddb> extension selects DuckDB
-(C<share/schema/DuckDB.sql>); any other path is SQLite
-(C<share/schema/SQLite.sql>).
+(C<share/schema/DuckDB/log.sql>); any other path is SQLite
+(C<share/schema/SQLite/log.sql>).
 
 =item a C<dbi:...> DSN
 

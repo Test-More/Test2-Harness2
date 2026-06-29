@@ -36,7 +36,7 @@ my ($vol, $dir) = File::Spec->splitpath($here);
 my $root = File::Spec->rel2abs(File::Spec->catdir($dir, File::Spec->updir, File::Spec->updir, File::Spec->updir));
 
 my $fixture = File::Spec->catfile($root, qw/t AI fixtures ui sample-run.jsonl/);
-my $sqlfile = File::Spec->catfile($root, qw/share schema SQLite.sql/);
+my $sqlfile = File::Spec->catfile($root, qw/share schema SQLite log.sql/);
 
 plan skip_all => "fixture not found: $fixture" unless -f $fixture;
 plan skip_all => "schema sql not found: $sqlfile" unless -f $sqlfile;

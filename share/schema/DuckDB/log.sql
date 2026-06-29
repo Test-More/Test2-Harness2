@@ -1,57 +1,78 @@
--- App::Yath2 SQLite schema (DB layer rewrite, #47 / chunk DB-3).
+-- App::Yath2 DuckDB schema (DB layer rewrite). DuckDB is a SYNC / READ target,
+-- NOT a live logging target -- see WHY FULL FKs and CONCURRENCY below.
 --
 -- SOURCE OF TRUTH: this hand-written DDL is the canonical schema. DBIx::QuickORM
 -- reflects it via autofill (reflect-from-DB); there are no Perl table/result
 -- classes and no codegen. When this DDL changes, every flavor file under
--- share/schema/ moves together. PostgreSQL.sql is the canonical reference
--- (authored first, #46); this is the #47 SQLite port -- SAME table set, columns,
--- constraints, and CHECK enums, with SQLite-flavor types.
+-- share/schema/ moves together.
 --
--- PER-ENGINE UUID STORAGE (spec §3/§0.2, R8/R9):
---   * SQLite has no native uuid type, so UUID PKs are stored as BLOB (16 bytes).
---     v7 UUIDs are generated in Perl with App::Yath2::Util::UUID (lowercase);
---     DBIx::QuickORM's UUID autotype packs/unpacks the canonical hyphenated
---     string to/from the 16-byte blob via the column's binary affinity, so
---     callers always see the canonical lowercase string.
---   * The `runs` + `jobs` tables additionally carry a STORED GENERATED
---     *_uuid_string mirror (run_uuid_string / job_uuid_string) holding the
---     human-readable form -- the two IDs a human pastes from CI output (spec
---     §3b). It is maintained by SQLite (never touched by the app) and indexed.
---     SQLite's hex() returns UPPERCASE, so the expression is wrapped in lower()
---     to keep the canonical string lowercase everywhere (spec §3c/R9).
+-- DuckDB is an EMBEDDED file engine (like SQLite) but with PostgreSQL-grade
+-- types, so this file is a near-verbatim port of PostgreSQL/log.sql -- the
+-- NATIVE-uuid model -- NOT the SQLite/MySQL binary-storage model. The only
+-- DuckDB-specific divergences from PostgreSQL/log.sql are:
+--   * Auto-increment: DuckDB rejects `GENERATED ALWAYS AS IDENTITY`, so each
+--     host-local integer PK is `INTEGER DEFAULT nextval('<table>_seq')`, with a
+--     `CREATE SEQUENCE <table>_seq` emitted immediately before its table.
+--   * JSON columns use the native `JSON` type (DuckDB has no `JSONB` token).
+--   * The blob column uses native `BLOB` (DuckDB has no `BYTEA` token).
+--   * Timestamps use tz-naive `TIMESTAMP` (NOT PostgreSQL's `timestamptz`). The
+--     QuickORM DuckDB dialect inflates datetimes with DateTime::Format::SQLite,
+--     which parses a tz-naive `YYYY-MM-DD HH:MM:SS[.ffffff]` string but REJECTS a
+--     `+00`/`-07` offset suffix; `TIMESTAMP` emits no offset (microsecond
+--     precision is still retained in storage). `now()` is implicitly cast to a
+--     local TIMESTAMP (the session TimeZone), so stamps stay server-local.
+-- Everything else -- native `uuid` PKs (NO *_uuid_string mirror), native
+-- tri-state `BOOLEAN` (NO 0/1 CHECK crutch), `numeric(14,4)`, the CHECK status
+-- enums, the FULL set of inline `REFERENCES` FKs, and every index -- is identical
+-- to PostgreSQL/log.sql.
 --
--- TYPE MAPPING vs PostgreSQL.sql:
---   * native uuid                  -> BLOB (16 bytes)
---   * INTEGER GENERATED ... IDENTITY -> INTEGER PRIMARY KEY AUTOINCREMENT
---   * JSONB                        -> JSON. SQLite has no JSON storage class --
---                                     it is TEXT affinity -- but the declared
---                                     `JSON` type token is preserved in the
---                                     schema, which is what QuickORM's JSON
---                                     autotype detects to encode/decode (a plain
---                                     `TEXT` column would NOT be autotyped).
---   * BYTEA                        -> BLOB
---   * TIMESTAMPTZ + now()          -> DATETIME stored as ISO-8601 TEXT,
---                                     DEFAULT CURRENT_TIMESTAMP. Sub-second
---                                     resolution lives in the events.jsonl.zst
---                                     artifacts (lossless), not these row stamps.
---   * BOOLEAN / TRUE / FALSE       -> BOOLEAN with a 0/1 default; tri-state
---                                     booleans (NULL = undecided) get a CHECK IN
---                                     (0,1) (PG gets 3-state free from its native
---                                     BOOLEAN; SQLite relies on the CHECK).
---   * NUMERIC(14,4)                -> NUMERIC (SQLite is typeless; affinity only)
+-- WHY FULL FKs (and why DuckDB is NOT a logger target): DuckDB blocks an
+-- index-maintaining UPDATE of a row that is REFERENCED by a foreign key (verified:
+-- updating an indexed column -- e.g. runs.status / job_tries.result -- of a
+-- referenced row raises "key ... is still referenced by a foreign key"). That
+-- collides with a LIVE LOGGER's insert-then-update model, so DuckDB is excluded as
+-- a logging target. It is populated ONLY by `yath db sync` / `import`, which are
+-- INSERT-ONLY and write parents before children -- never insert-then-update -- so
+-- every FK is satisfiable. Keeping the full FK set gives a synced DuckDB log the
+-- same referential integrity as the other flavors. (DuckDB also has no
+-- ALTER TABLE ADD FOREIGN KEY, so FKs cannot be added after the fact.)
 --
--- Column-ordering convention (spec §3e): fixed-width -> variable -> generated
--- last. SQLite's row format is variable-width and doesn't care, but the ordering
--- is kept consistent with PostgreSQL.sql for readability across flavors.
+-- CONCURRENCY: a DuckDB database file permits only ONE read-write process at a
+-- time (an exclusive file lock held for the life of the holding process); other
+-- processes may open it only read-only, and only once the writer has detached.
+-- This single-writer constraint is the reason DuckDB is a sync/read target, not a
+-- live logger. As a READ target it shines: point a read-only web server / `yath
+-- db` at a finished DuckDB log. Sync writes it single-writer; readers then open
+-- read-only.
+--
+-- DESIGN (spec AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md):
+--   * Run-data tables (runs, jobs, job_tries, artifacts) use UUID PKs -- native
+--     `uuid` on DuckDB. The UUID is itself the host-stable sync key, stable by
+--     construction (spec §0.2/§3). No *_uuid_string mirror is needed: the native
+--     uuid PK is already human-readable and indexed.
+--   * Natural-key entities (users, machine_users, projects, test_files, hosts)
+--     use a host-local integer identity PK + a UNIQUE natural key; import/sync
+--     serialize on the natural key, never the PK (spec §0.2/§3, R5/R7).
+--   * NO transitions/events/binaries/log_files/collector tables (R6, §4):
+--     transition + event detail lives durably inside the artifact blobs; the
+--     logger folds wire transitions into the run/job/job_try summary rows.
+--   * run_fields -> runs.fields JSON; job_try_fields -> job_tries.fields JSON
+--     (folded, table dropped, §4). The `mode` enum is dropped (no event rows to
+--     prune, §4).
+--   * Timestamps use `TIMESTAMP` (microsecond precision); all stamps are
+--     server-local.  Booleans are native tri-state (NULL = undecided).
+--   * Column-ordering convention: fixed-width -> variable -> generated-last
+--     (spec §3e).
 
 -- ====================================================================
 -- schema_meta -- the yath/schema version stamp (one row, spec §2e/§4).
 -- ====================================================================
+CREATE SEQUENCE schema_meta_seq;
 CREATE TABLE schema_meta (
-    schema_meta_id  INTEGER         PRIMARY KEY AUTOINCREMENT,
+    schema_meta_id  INTEGER         DEFAULT nextval('schema_meta_seq') PRIMARY KEY,
     yath_version    TEXT            NOT NULL,
     schema_version  TEXT            NOT NULL,
-    created         DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created         TIMESTAMP       NOT NULL DEFAULT now()
 );
 
 INSERT INTO schema_meta (yath_version, schema_version) VALUES ('2.000000', '2.000000');
@@ -62,8 +83,9 @@ INSERT INTO schema_meta (yath_version, schema_version) VALUES ('2.000000', '2.00
 
 -- hosts -- host identity, so runs can be listed per host to spot a broken host
 -- (spec §4). runs.host references it; machine_users.host references it.
+CREATE SEQUENCE hosts_seq;
 CREATE TABLE hosts (
-    host_id     INTEGER         PRIMARY KEY AUTOINCREMENT,
+    host_id     INTEGER         DEFAULT nextval('hosts_seq') PRIMARY KEY,
     hostname    TEXT            NOT NULL,
 
     UNIQUE(hostname)
@@ -71,8 +93,9 @@ CREATE TABLE hosts (
 
 -- users -- the app/account user who SUBMITTED a run (may differ from the OS user
 -- who ran it). Natural key = username; email/auth columns deferred (spec §4/R7).
+CREATE SEQUENCE users_seq;
 CREATE TABLE users (
-    user_id     INTEGER         PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER         DEFAULT nextval('users_seq') PRIMARY KEY,
     username    TEXT            NOT NULL,
 
     UNIQUE(username)
@@ -80,8 +103,9 @@ CREATE TABLE users (
 
 -- machine_users -- the OS user who RAN a run, per machine (spec §4/R7).
 -- Natural/sync key = (host, username); host FK is NOT NULL.
+CREATE SEQUENCE machine_users_seq;
 CREATE TABLE machine_users (
-    machine_user_id INTEGER     PRIMARY KEY AUTOINCREMENT,
+    machine_user_id INTEGER     DEFAULT nextval('machine_users_seq') PRIMARY KEY,
     host_id         INTEGER     NOT NULL REFERENCES hosts(host_id),
     username        TEXT        NOT NULL,
 
@@ -90,8 +114,9 @@ CREATE TABLE machine_users (
 CREATE INDEX machine_users_host_idx ON machine_users(host_id);
 
 -- projects -- a run needs its project. Natural key = name.
+CREATE SEQUENCE projects_seq;
 CREATE TABLE projects (
-    project_id  INTEGER         PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER         DEFAULT nextval('projects_seq') PRIMARY KEY,
     name        TEXT            NOT NULL,
 
     UNIQUE(name)
@@ -102,8 +127,9 @@ CREATE TABLE projects (
 -- derived at render, never stored. Same path under two projects = two rows, so
 -- per-project history/coverage never merges. No fake "HARNESS INTERNAL LOG" row
 -- -- the harness log is a collector now, not a test file.
+CREATE SEQUENCE test_files_seq;
 CREATE TABLE test_files (
-    test_file_id    INTEGER     PRIMARY KEY AUTOINCREMENT,
+    test_file_id    INTEGER     DEFAULT nextval('test_files_seq') PRIMARY KEY,
     project_id      INTEGER     NOT NULL REFERENCES projects(project_id),
     filename        TEXT        NOT NULL,
 
@@ -114,15 +140,14 @@ CREATE TABLE test_files (
 -- Run-data tables (UUID PKs; the UUID is the host-stable sync key).
 -- ====================================================================
 
--- runs -- one row per run. run_uuid is the backend-minted v7 UUID (spec §3/§6c),
--- stored as a 16-byte BLOB. Counters (passed/failed/to_retry/retried) AGGREGATE
--- over the run's resolved jobs (spec §4.1/R17). ran_by -> machine_users (the OS
--- user on the test machine, NOT NULL); submitted_by -> users (the account user
--- who uploaded, nullable = unknown). `fields` is the folded run_fields JSON.
--- `version` is the per-run yath/schema version stamp (spec §2e/§4).
--- run_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
+-- runs -- one row per run. run_uuid is the backend-minted v7 UUID (spec §3/§6c).
+-- Counters (passed/failed/to_retry/retried) AGGREGATE over the run's resolved
+-- jobs (spec §4.1/R17). ran_by -> machine_users (the OS user on the test
+-- machine, NOT NULL); submitted_by -> users (the account user who uploaded,
+-- nullable = unknown). `fields` is the folded run_fields JSON. `version` is the
+-- per-run yath/schema version stamp (spec §2e/§4).
 CREATE TABLE runs (
-    run_uuid        BLOB(16)        PRIMARY KEY,
+    run_uuid        UUID            PRIMARY KEY,
 
     project_id      INTEGER         NOT NULL     REFERENCES projects(project_id),
     host_id         INTEGER         NOT NULL     REFERENCES hosts(host_id),
@@ -140,72 +165,48 @@ CREATE TABLE runs (
     status          TEXT            NOT NULL DEFAULT 'pending'
                         CHECK(status IN ('pending','running','complete','broken','canceled')),
 
-    canon           BOOLEAN         NOT NULL DEFAULT 0 CHECK(canon IN (0, 1)),
-    pinned          BOOLEAN         NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
-    has_coverage    BOOLEAN         DEFAULT NULL CHECK(has_coverage IN (0, 1)),
-    has_resources   BOOLEAN         DEFAULT NULL CHECK(has_resources IN (0, 1)),
+    canon           BOOLEAN         NOT NULL DEFAULT FALSE,
+    pinned          BOOLEAN         NOT NULL DEFAULT FALSE,
+    has_coverage    BOOLEAN         DEFAULT NULL,
+    has_resources   BOOLEAN         DEFAULT NULL,
 
-    duration        NUMERIC         DEFAULT NULL,
+    duration        NUMERIC(14,4)   DEFAULT NULL,
 
-    added           DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    added           TIMESTAMP       NOT NULL DEFAULT now(),
 
     version         TEXT            DEFAULT NULL,
     parameters      JSON            DEFAULT NULL,
-    fields          JSON            DEFAULT NULL,
-
-    run_uuid_string TEXT GENERATED ALWAYS AS (
-        lower(
-            substr(hex(run_uuid),  1,  8) || '-' ||
-            substr(hex(run_uuid),  9,  4) || '-' ||
-            substr(hex(run_uuid), 13,  4) || '-' ||
-            substr(hex(run_uuid), 17,  4) || '-' ||
-            substr(hex(run_uuid), 21, 12)
-        )
-    ) STORED
+    fields          JSON            DEFAULT NULL
 );
-CREATE INDEX run_project_idx     ON runs(project_id);
-CREATE INDEX run_host_idx        ON runs(host_id);
-CREATE INDEX run_status_idx      ON runs(status);
-CREATE INDEX run_canon_idx       ON runs(canon);
-CREATE INDEX run_uuid_string_idx ON runs(run_uuid_string);
+CREATE INDEX run_project_idx ON runs(project_id);
+CREATE INDEX run_host_idx    ON runs(host_id);
+CREATE INDEX run_status_idx  ON runs(status);
+CREATE INDEX run_canon_idx   ON runs(canon);
 
 -- jobs -- one row per test file in a run. job_uuid = the backend job_id (already
 -- a v7 gen_uuid(); spec §6c, no backend fix). passed = folded "any try passed"
 -- (resolved); failed = resolved && !passed (spec §4/§4.1). NO should_retry
 -- column (runtime-only, R17). NO is_harness_out: the harness internal log is a
 -- collector now (collectors.job_try_uuid NULL), not a fake job.
--- job_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
 CREATE TABLE jobs (
-    job_uuid        BLOB(16)        PRIMARY KEY,
+    job_uuid        UUID            PRIMARY KEY,
 
-    run_uuid        BLOB(16)        NOT NULL REFERENCES runs(run_uuid),
+    run_uuid        UUID            NOT NULL REFERENCES runs(run_uuid),
     test_file_id    INTEGER         NOT NULL REFERENCES test_files(test_file_id),
 
-    passed          BOOLEAN         DEFAULT NULL CHECK(passed IN (0, 1)),
-    failed          BOOLEAN         DEFAULT NULL CHECK(failed IN (0, 1)),
-
-    job_uuid_string TEXT GENERATED ALWAYS AS (
-        lower(
-            substr(hex(job_uuid),  1,  8) || '-' ||
-            substr(hex(job_uuid),  9,  4) || '-' ||
-            substr(hex(job_uuid), 13,  4) || '-' ||
-            substr(hex(job_uuid), 17,  4) || '-' ||
-            substr(hex(job_uuid), 21, 12)
-        )
-    ) STORED
+    passed          BOOLEAN         DEFAULT NULL,
+    failed          BOOLEAN         DEFAULT NULL
 );
-CREATE INDEX job_run_idx         ON jobs(run_uuid);
-CREATE INDEX job_file_idx        ON jobs(test_file_id);
-CREATE INDEX job_uuid_string_idx ON jobs(job_uuid_string);
+CREATE INDEX job_run_idx  ON jobs(run_uuid);
+CREATE INDEX job_file_idx ON jobs(test_file_id);
 
 -- job_tries -- one row per try (is_try, 1-based per R10). The PK job_try_uuid is
 -- a single DERIVED uuid = derive(job_uuid, try_ord) (v7-preserving, spec §3.1) --
--- deterministic across loggers, preserves the existing try-uuid URLs. Stored as a
--- 16-byte BLOB; NOT a *_uuid_string-bearing table (mirror is run+job only, §3b).
+-- deterministic across loggers, preserves the existing try-uuid URLs.
 --
 -- VERDICT columns (spec §4/§4.1/R17, survey #5):
---   result          tri-state verdict: NULL = in-flight / 1 = pass / 0 = fail
---                   (the top-line "did this try pass", distinct from counts).
+--   result          tri-state verdict: NULL = in-flight / TRUE = pass / FALSE =
+--                   fail (the top-line "did this try pass", distinct from counts).
 --   assertion_count, pass_count, fail_count -- assertion counts (NOT a pass/fail
 --                   verdict; those names would collide with `result`).
 --   subtests        -- top-level subtest count.
@@ -215,9 +216,9 @@ CREATE INDEX job_uuid_string_idx ON jobs(job_uuid_string);
 -- `parameters` (NOT `params`); retry_limit lives in parameters, not a column.
 -- `fields` is the folded job_try_fields JSON (directives).
 CREATE TABLE job_tries (
-    job_try_uuid    BLOB(16)        PRIMARY KEY,
+    job_try_uuid    UUID            PRIMARY KEY,
 
-    job_uuid        BLOB(16)        NOT NULL REFERENCES jobs(job_uuid),
+    job_uuid        UUID            NOT NULL REFERENCES jobs(job_uuid),
 
     try_ord         INTEGER         NOT NULL,
 
@@ -229,15 +230,15 @@ CREATE TABLE job_tries (
     subtests_failed INTEGER         DEFAULT NULL,
     exit_code       INTEGER         DEFAULT NULL,
 
-    result          BOOLEAN         DEFAULT NULL CHECK(result IN (0, 1)),
+    result          BOOLEAN         DEFAULT NULL,
 
     status          TEXT            NOT NULL DEFAULT 'pending'
                         CHECK(status IN ('pending','running','complete','broken','canceled')),
 
-    duration        NUMERIC         DEFAULT NULL,
+    duration        NUMERIC(14,4)   DEFAULT NULL,
 
-    started         DATETIME        DEFAULT NULL,
-    finished        DATETIME        DEFAULT NULL,
+    started         TIMESTAMP       DEFAULT NULL,
+    finished        TIMESTAMP       DEFAULT NULL,
 
     parameters      JSON            DEFAULT NULL,
     fields          JSON            DEFAULT NULL,
@@ -257,10 +258,10 @@ CREATE INDEX job_try_result_idx ON job_tries(result);
 -- test_file.filename, the SHORT name via basename). The CHECK enforces
 -- "non-test collector must be named."
 CREATE TABLE collectors (
-    collector_uuid  BLOB(16)        PRIMARY KEY,
+    collector_uuid  UUID            PRIMARY KEY,
 
-    run_uuid        BLOB(16)        NOT NULL     REFERENCES runs(run_uuid),
-    job_try_uuid    BLOB(16)        DEFAULT NULL REFERENCES job_tries(job_try_uuid),
+    run_uuid        UUID            NOT NULL     REFERENCES runs(run_uuid),
+    job_try_uuid    UUID            DEFAULT NULL REFERENCES job_tries(job_try_uuid),
 
     display_name    TEXT            DEFAULT NULL,
 
@@ -278,10 +279,10 @@ CREATE INDEX collector_run_idx     ON collectors(run_uuid);
 -- spec §5). If `data` is populated it is canon; if NULL, read host-local
 -- `local_path` (never synced/copied, spec §5).
 CREATE TABLE artifacts (
-    artifact_uuid   BLOB(16)        PRIMARY KEY,
+    artifact_uuid   UUID            PRIMARY KEY,
 
-    run_uuid        BLOB(16)        NOT NULL REFERENCES runs(run_uuid),
-    collector_uuid  BLOB(16)        NOT NULL REFERENCES collectors(collector_uuid),
+    run_uuid        UUID            NOT NULL REFERENCES runs(run_uuid),
+    collector_uuid  UUID            NOT NULL REFERENCES collectors(collector_uuid),
 
     filename        TEXT            NOT NULL,
     local_path      TEXT            DEFAULT NULL,

@@ -221,8 +221,10 @@ machinery has been removed.
 
 ### 2.4 Databases
 
-- **The schema is hand-written per-flavor DDL under `share/schema/<Flavor>.sql`,
+- **The schema is hand-written per-flavor DDL under `share/schema/<Flavor>/log.sql`,
   reflected at runtime by `DBIx::QuickORM`'s `autofill` (reflect-from-DB).**
+  (`log.sql` = the run-data schema; a per-flavor `web.sql` for the session / web
+  tables is a later addition — no `web.sql` for single-writer DuckDB.)
   There are **no table / Result classes and no schema-as-Perl** — QuickORM builds
   its internal schema map by introspecting the live database on first connect, so
   there is no Perl schema or codegen to keep in sync with the DDL. *(This replaces
@@ -249,7 +251,7 @@ machinery has been removed.
 - The default backend is **`DBD::SQLite`** used directly. Log files are sqlite
   databases (§4.6).
 - **DuckDB is a SYNC / READ target, not a live logging target** (`DBD::DuckDB`).
-  Its DDL (`share/schema/DuckDB.sql`) ports from PostgreSQL (native
+  Its DDL (`share/schema/DuckDB/log.sql`) ports from PostgreSQL (native
   `uuid`/`json`/`blob`, full FK set). **DuckDB is SINGLE-WRITER** — a file allows
   only one read-write process at a time (a process-exclusive lock) AND DuckDB
   blocks an index-maintaining UPDATE of a FK-referenced row, which a live logger's
@@ -261,10 +263,10 @@ machinery has been removed.
   cannot be added post-hoc; they ship in the DDL and sync respects them.)
 - **FUTURE (web/read serving, not yet built):** the read/UI server work needs a
   few things the schema/connection layer should anticipate:
-  - **Split the schema into `share/schema/<FLAVOR>/{log,web}.sql`** — `log.sql` is
-    the run-data schema (current `share/schema/<FLAVOR>.sql`), `web.sql` adds the
-    session / user / web tables the server needs. **No `web.sql` for DuckDB** — it
-    is single-writer, so a live web server cannot own session/write tables in it.
+  - **Per-flavor `share/schema/<FLAVOR>/{log,web}.sql`** — `log.sql` (the run-data
+    schema) already exists; `web.sql` (session / user / web-server tables) is the
+    later addition. **No `web.sql` for DuckDB** — it is single-writer, so a live
+    web server cannot own session/write tables in it.
   - **A read-only, sessionless serve mode**: every connection is a single
     see-everything user (no login/session), for pointing a read-only web server at
     a finished log (DuckDB or sqlite).
@@ -835,7 +837,7 @@ lands with it).
 
 **§4.6.1 Schema model and key strategy `[target]`.**
 
-**Schema model.** Hand-written per-flavor DDL under `share/schema/<Flavor>.sql`
+**Schema model.** Hand-written per-flavor DDL under `share/schema/<Flavor>/log.sql`
 (PostgreSQL-first, then ported to SQLite / DuckDB / MySQL / MariaDB / Percona),
 reflected by QuickORM `autofill` — no table/Result classes, no `regen_schema.pl`
 (§2.4). Row

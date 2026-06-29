@@ -1,45 +1,40 @@
--- App::Yath2 MySQL schema (DB layer rewrite, #47 / chunk DB-3).
+-- App::Yath2 Percona schema (DB layer rewrite, #47 / chunk DB-3).
+--
+-- Percona Server is a drop-in MySQL replacement; apart from this header this
+-- file is byte-identical to share/schema/MySQL/log.sql (same table set, columns,
+-- constraints, CHECK enums, and per-engine UUID storage). When the DDL changes,
+-- every flavor file under share/schema/ moves together.
 --
 -- SOURCE OF TRUTH: this hand-written DDL is the canonical schema. DBIx::QuickORM
 -- reflects it via autofill (reflect-from-DB); there are no Perl table/result
--- classes and no codegen. When this DDL changes, every flavor file under
--- share/schema/ moves together. PostgreSQL.sql is the canonical reference
--- (authored first, #46); this is the #47 MySQL port -- SAME table set, columns,
--- constraints, and CHECK enums, with MySQL-flavor types. Percona.sql is
--- byte-identical apart from its header (Percona Server is a drop-in MySQL).
+-- classes and no codegen. PostgreSQL/log.sql is the canonical reference (authored
+-- first, #46); this is the #47 Percona port.
 --
 -- PER-ENGINE UUID STORAGE (spec §3/§0.2, R9):
---   * MySQL has no native uuid type, so UUID PKs are stored as BINARY(16).
---     v7 UUIDs are generated in Perl with App::Yath2::Util::UUID (lowercase);
---     DBIx::QuickORM's UUID autotype packs/unpacks the canonical hyphenated
---     string to/from the 16-byte binary, so callers always see the canonical
---     lowercase string.
+--   * Percona (MySQL) has no native uuid type, so UUID PKs are stored as
+--     BINARY(16). v7 UUIDs are generated in Perl with App::Yath2::Util::UUID
+--     (lowercase); DBIx::QuickORM's UUID autotype packs/unpacks the canonical
+--     hyphenated string to/from the 16-byte binary, so callers always see the
+--     canonical lowercase string.
 --   * The `runs` + `jobs` tables additionally carry a STORED GENERATED
 --     VARCHAR(36) *_uuid_string mirror (run_uuid_string / job_uuid_string)
 --     holding the human-readable form -- the two IDs a human pastes from CI
 --     output (spec §3b) -- and indexed. The LOWER(CONCAT(SUBSTR(HEX(...))))
---     expression keeps the canonical string lowercase (spec §3c/R9) and is
---     portable across MySQL 8+ and MariaDB (BIN_TO_UUID is not available in
---     GENERATED columns on all builds).
+--     expression keeps the canonical string lowercase (spec §3c/R9).
 --
--- TYPE MAPPING vs PostgreSQL.sql:
+-- TYPE MAPPING vs PostgreSQL/log.sql:
 --   * native uuid                  -> BINARY(16)
 --   * INTEGER GENERATED ... IDENTITY -> INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY
 --   * JSONB                        -> JSON
 --   * BYTEA                        -> LONGBLOB
 --   * TIMESTAMPTZ + now()          -> DATETIME, DEFAULT CURRENT_TIMESTAMP.
---                                     Sub-second resolution lives in the
---                                     events.jsonl.zst artifacts (lossless).
---   * BOOLEAN / TRUE / FALSE       -> BOOLEAN (TINYINT(1)); tri-state booleans
---                                     (NULL = undecided) get a CHECK IN (0,1).
+--   * BOOLEAN / TRUE / FALSE       -> BOOLEAN (TINYINT(1)) + CHECK IN (0,1) for tri-state.
 --   * NUMERIC(14,4)                -> DECIMAL(14,4)
---   * TEXT in a UNIQUE/index       -> VARCHAR(n) (MySQL cannot index unbounded
---                                     TEXT without a prefix length).
+--   * TEXT in a UNIQUE/index       -> VARCHAR(n) (cannot index unbounded TEXT).
 --
--- Column-level REFERENCES are parsed but not enforced by MySQL/InnoDB; they
--- document intended foreign-key relationships only. Column-ordering convention
--- (spec §3e): fixed-width -> variable -> generated last (kept consistent with
--- PostgreSQL.sql).
+-- Column-level REFERENCES are parsed but not enforced by InnoDB; they document
+-- intended foreign-key relationships only. Column-ordering convention (spec §3e):
+-- fixed-width -> variable -> generated last (kept consistent with PostgreSQL/log.sql).
 
 -- ====================================================================
 -- schema_meta -- the yath/schema version stamp (one row, spec §2e/§4).

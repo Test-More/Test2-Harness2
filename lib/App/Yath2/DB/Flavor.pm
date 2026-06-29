@@ -10,7 +10,7 @@ use App::Yath2::Util qw/share_dir/;
 use Test2::Harness2::Util::HashBase qw{
     <name
     <dialect
-    <ddl_file
+    <schema_dir
     <dbd_dsn_prefix
     <quickdb_driver
     <is_default
@@ -29,13 +29,15 @@ App::Yath2::DB::Flavor - Registry of supported database flavors.
 C<App::Yath2::DB::Flavor> is a small registry that maps symbolic flavor names
 (C<sqlite>, C<duckdb>, C<postgresql>, C<mysql>, C<mariadb>, C<percona>) to the
 metadata the DB layer needs when working with a given database engine: the SQL
-dialect name for L<DBIx::QuickORM>, the DDL filename under C<share/schema/>, the
-DSN prefix used to detect the engine from a connection string, and the
-L<DBIx::QuickDB> driver token for ephemeral databases.
+dialect name for L<DBIx::QuickORM>, the per-flavor DDL directory under
+C<share/schema/>, the DSN prefix used to detect the engine from a connection
+string, and the L<DBIx::QuickDB> driver token for ephemeral databases.
 
-Every flavor ships a hand-written DDL under C<share/schema/>. C<sqlite> and
-C<duckdb> are embedded I<file> engines (a path is bootstrapped on first open);
-the rest are server DSNs.
+Every flavor ships hand-written DDL under C<share/schema/E<lt>schema_dirE<gt>/>:
+C<log.sql> is the run-data schema (the only one today); a per-flavor C<web.sql>
+(session / user / web-server tables) is a later addition. C<sqlite> and C<duckdb>
+are embedded I<file> engines (a path is bootstrapped on first open); the rest are
+server DSNs.
 
 Each flavor is a singleton instance. Look one up by name with C<by_name>, infer
 one from a DSN with C<infer_from_dsn>, or probe a live MySQL-family handle with
@@ -51,7 +53,7 @@ with no binary fallback for MariaDB.
 
     my $f = App::Yath2::DB::Flavor->by_name('postgresql');
     say $f->dialect;     # PostgreSQL
-    say $f->ddl_path;    # /path/to/share/schema/PostgreSQL.sql
+    say $f->ddl_path;    # /path/to/share/schema/PostgreSQL/log.sql
 
     my $g = App::Yath2::DB::Flavor->infer_from_dsn('dbi:Pg:dbname=yath');
     say $g->name;        # postgresql
@@ -70,10 +72,11 @@ C<mysql>, C<mariadb>, or C<percona>.
 The dialect string passed to L<DBIx::QuickORM>: C<SQLite>, C<DuckDB>,
 C<PostgreSQL>, C<MySQL>, C<MySQL::MariaDB>, or C<MySQL::Percona>.
 
-=item ddl_file
+=item schema_dir
 
-Basename of the DDL file under C<share/schema/> (e.g. C<PostgreSQL.sql>). Use
-C<ddl_path> to get the full absolute path.
+This flavor's DDL directory name under C<share/schema/> (e.g. C<PostgreSQL>). The
+DDL files live at C<share/schema/E<lt>schema_dirE<gt>/log.sql> (and a future
+C<web.sql>); use C<ddl_path> to get the full absolute path.
 
 =item dbd_dsn_prefix
 
@@ -101,19 +104,19 @@ my %REGISTRY = (
     sqlite => {
         name           => 'sqlite',
         dialect        => 'SQLite',
-        ddl_file       => 'SQLite.sql',
+        schema_dir     => 'SQLite',
         dbd_dsn_prefix => 'dbi:SQLite:dbname=',
         quickdb_driver => 'SQLite',
         is_default     => 1,
     },
     duckdb => {
         # DuckDB is an embedded file engine (like sqlite) but with native uuid /
-        # json / blob, so its DDL ports from PostgreSQL.sql, not SQLite.sql. Only
+        # json / blob, so its DDL ports from PostgreSQL/log.sql, not SQLite/log.sql. Only
         # ONE process may hold a .duckdb file read-write at a time; readers open
         # it read-only (see connect_attrs) once the writer has detached.
         name           => 'duckdb',
         dialect        => 'DuckDB',
-        ddl_file       => 'DuckDB.sql',
+        schema_dir     => 'DuckDB',
         dbd_dsn_prefix => 'dbi:DuckDB:dbname=',
         quickdb_driver => 'DuckDB',
         is_default     => 0,
@@ -121,7 +124,7 @@ my %REGISTRY = (
     postgresql => {
         name           => 'postgresql',
         dialect        => 'PostgreSQL',
-        ddl_file       => 'PostgreSQL.sql',
+        schema_dir     => 'PostgreSQL',
         dbd_dsn_prefix => 'dbi:Pg:',
         quickdb_driver => 'PostgreSQL',
         is_default     => 0,
@@ -131,7 +134,7 @@ my %REGISTRY = (
         # DBD::MariaDB, never DBD::mysql -- so the DSN prefix is dbi:MariaDB:.
         name           => 'mysql',
         dialect        => 'MySQL',
-        ddl_file       => 'MySQL.sql',
+        schema_dir     => 'MySQL',
         dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'MySQL',
         is_default     => 0,
@@ -140,7 +143,7 @@ my %REGISTRY = (
         # Native uuid requires MariaDB 10.7+ (R8) -- a hard minimum, no fallback.
         name           => 'mariadb',
         dialect        => 'MySQL::MariaDB',
-        ddl_file       => 'MariaDB.sql',
+        schema_dir     => 'MariaDB',
         dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'MariaDB',
         is_default     => 0,
@@ -149,7 +152,7 @@ my %REGISTRY = (
         # Driven through DBD::MariaDB like the rest of the MySQL family (dbi:MariaDB:).
         name           => 'percona',
         dialect        => 'MySQL::Percona',
-        ddl_file       => 'Percona.sql',
+        schema_dir     => 'Percona',
         dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'Percona',
         is_default     => 0,
@@ -237,14 +240,20 @@ sub is_mysql_family {
 
 =item $path = $flavor->ddl_path
 
-Absolute (or in-repo, during development) path to this flavor's DDL file under
-the distribution's C<share/schema/> directory.
+=item $path = $flavor->ddl_path($kind)
+
+Absolute (or in-repo, during development) path to one of this flavor's DDL files
+under C<share/schema/E<lt>schema_dirE<gt>/>. C<$kind> defaults to C<'log'> (the
+run-data schema, C<.../log.sql>); the per-flavor C<web.sql> -- the session / user
+/ web-server tables -- is a later addition (no C<web.sql> for DuckDB, which is
+single-writer).
 
 =cut
 
 sub ddl_path {
-    my ($self) = @_;
-    return share_dir('schema') . '/' . $self->{+DDL_FILE};
+    my ($self, $kind) = @_;
+    $kind //= 'log';
+    return share_dir('schema') . '/' . $self->{+SCHEMA_DIR} . '/' . $kind . '.sql';
 }
 
 =item \%attrs = $flavor->connect_attrs(%opts)

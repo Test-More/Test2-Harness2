@@ -1,40 +1,42 @@
--- App::Yath2 Percona schema (DB layer rewrite, #47 / chunk DB-3).
---
--- Percona Server is a drop-in MySQL replacement; apart from this header this
--- file is byte-identical to share/schema/MySQL.sql (same table set, columns,
--- constraints, CHECK enums, and per-engine UUID storage). When the DDL changes,
--- every flavor file under share/schema/ moves together.
+-- App::Yath2 MariaDB schema (DB layer rewrite, #47 / chunk DB-3).
 --
 -- SOURCE OF TRUTH: this hand-written DDL is the canonical schema. DBIx::QuickORM
 -- reflects it via autofill (reflect-from-DB); there are no Perl table/result
--- classes and no codegen. PostgreSQL.sql is the canonical reference (authored
--- first, #46); this is the #47 Percona port.
+-- classes and no codegen. When this DDL changes, every flavor file under
+-- share/schema/ moves together. PostgreSQL/log.sql is the canonical reference
+-- (authored first, #46); this is the #47 MariaDB port -- SAME table set,
+-- columns, constraints, and CHECK enums, with MariaDB-flavor types.
 --
--- PER-ENGINE UUID STORAGE (spec §3/§0.2, R9):
---   * Percona (MySQL) has no native uuid type, so UUID PKs are stored as
---     BINARY(16). v7 UUIDs are generated in Perl with App::Yath2::Util::UUID
---     (lowercase); DBIx::QuickORM's UUID autotype packs/unpacks the canonical
---     hyphenated string to/from the 16-byte binary, so callers always see the
---     canonical lowercase string.
---   * The `runs` + `jobs` tables additionally carry a STORED GENERATED
---     VARCHAR(36) *_uuid_string mirror (run_uuid_string / job_uuid_string)
---     holding the human-readable form -- the two IDs a human pastes from CI
---     output (spec §3b) -- and indexed. The LOWER(CONCAT(SUBSTR(HEX(...))))
---     expression keeps the canonical string lowercase (spec §3c/R9).
+-- PER-ENGINE UUID STORAGE (spec §3/§0.2, R8/R9):
+--   * MariaDB has a NATIVE `uuid` column type, so UUID PKs use it directly --
+--     stored/returned in human-readable canonical form, mirroring PostgreSQL.
+--     Therefore there is NO *_uuid_string mirror column here (the BINARY(16)
+--     engines -- MySQL/Percona -- and BLOB(16) SQLite need the mirror; the
+--     native-uuid engines -- PostgreSQL/MariaDB -- do not, spec §3b).
+--   * HARD MINIMUM: MariaDB 10.7+ (R8). The native `uuid` type is MariaDB 10.7+
+--     only (10.5/10.6 LTS lack it); there is no binary fallback. This minimum is
+--     also documented in lib/App/Yath2/DB/Flavor.pm and the cpanfile/Makefile.
+--   * v7 UUIDs are generated in Perl with App::Yath2::Util::UUID (lowercase);
+--     DBIx::QuickORM's UUID autotype maps the native uuid <-> canonical string.
 --
--- TYPE MAPPING vs PostgreSQL.sql:
---   * native uuid                  -> BINARY(16)
+-- TYPE MAPPING vs PostgreSQL/log.sql:
+--   * native uuid                  -> native uuid (MariaDB 10.7+)
 --   * INTEGER GENERATED ... IDENTITY -> INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY
 --   * JSONB                        -> JSON
 --   * BYTEA                        -> LONGBLOB
 --   * TIMESTAMPTZ + now()          -> DATETIME, DEFAULT CURRENT_TIMESTAMP.
---   * BOOLEAN / TRUE / FALSE       -> BOOLEAN (TINYINT(1)) + CHECK IN (0,1) for tri-state.
+--                                     Sub-second resolution lives in the
+--                                     events.jsonl.zst artifacts (lossless).
+--   * BOOLEAN / TRUE / FALSE       -> BOOLEAN (TINYINT(1)); tri-state booleans
+--                                     (NULL = undecided) get a CHECK IN (0,1).
 --   * NUMERIC(14,4)                -> DECIMAL(14,4)
---   * TEXT in a UNIQUE/index       -> VARCHAR(n) (cannot index unbounded TEXT).
+--   * TEXT in a UNIQUE/index       -> VARCHAR(n) (MariaDB cannot index unbounded
+--                                     TEXT without a prefix length).
 --
--- Column-level REFERENCES are parsed but not enforced by InnoDB; they document
--- intended foreign-key relationships only. Column-ordering convention (spec §3e):
--- fixed-width -> variable -> generated last (kept consistent with PostgreSQL.sql).
+-- Column-level REFERENCES are parsed but not enforced by MariaDB/InnoDB; they
+-- document intended foreign-key relationships only. Column-ordering convention
+-- (spec §3e): fixed-width -> variable -> generated last (kept consistent with
+-- PostgreSQL/log.sql; no generated columns here as there is no uuid_string mirror).
 
 -- ====================================================================
 -- schema_meta -- the yath/schema version stamp (one row, spec §2e/§4).
@@ -107,14 +109,14 @@ CREATE TABLE test_files (
 -- ====================================================================
 
 -- runs -- one row per run. run_uuid is the backend-minted v7 UUID (spec §3/§6c),
--- stored as BINARY(16). Counters (passed/failed/to_retry/retried) AGGREGATE over
--- the run's resolved jobs (spec §4.1/R17). ran_by -> machine_users (the OS user
--- on the test machine, NOT NULL); submitted_by -> users (the account user who
--- uploaded, nullable = unknown). `fields` is the folded run_fields JSON.
--- `version` is the per-run yath/schema version stamp (spec §2e/§4).
--- run_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
+-- stored in the native `uuid` type. Counters (passed/failed/to_retry/retried)
+-- AGGREGATE over the run's resolved jobs (spec §4.1/R17). ran_by -> machine_users
+-- (the OS user on the test machine, NOT NULL); submitted_by -> users (the account
+-- user who uploaded, nullable = unknown). `fields` is the folded run_fields JSON.
+-- `version` is the per-run yath/schema version stamp (spec §2e/§4). No
+-- run_uuid_string mirror: the native uuid PK is already human-readable (§3b).
 CREATE TABLE runs (
-    run_uuid        BINARY(16)      PRIMARY KEY,
+    run_uuid        uuid            PRIMARY KEY,
 
     project_id      INTEGER         NOT NULL     REFERENCES projects(project_id),
     host_id         INTEGER         NOT NULL     REFERENCES hosts(host_id),
@@ -143,57 +145,35 @@ CREATE TABLE runs (
 
     version         VARCHAR(64)     DEFAULT NULL,
     parameters      JSON            DEFAULT NULL,
-    fields          JSON            DEFAULT NULL,
-
-    run_uuid_string VARCHAR(36) GENERATED ALWAYS AS (
-        LOWER(CONCAT(
-            SUBSTR(HEX(run_uuid),  1,  8), '-',
-            SUBSTR(HEX(run_uuid),  9,  4), '-',
-            SUBSTR(HEX(run_uuid), 13,  4), '-',
-            SUBSTR(HEX(run_uuid), 17,  4), '-',
-            SUBSTR(HEX(run_uuid), 21, 12)
-        ))
-    ) STORED
+    fields          JSON            DEFAULT NULL
 );
-CREATE INDEX run_project_idx     ON runs(project_id);
-CREATE INDEX run_host_idx        ON runs(host_id);
-CREATE INDEX run_status_idx      ON runs(status);
-CREATE INDEX run_canon_idx       ON runs(canon);
-CREATE INDEX run_uuid_string_idx ON runs(run_uuid_string);
+CREATE INDEX run_project_idx ON runs(project_id);
+CREATE INDEX run_host_idx    ON runs(host_id);
+CREATE INDEX run_status_idx  ON runs(status);
+CREATE INDEX run_canon_idx   ON runs(canon);
 
 -- jobs -- one row per test file in a run. job_uuid = the backend job_id (already
--- a v7 gen_uuid(); spec §6c, no backend fix). passed = folded "any try passed"
--- (resolved); failed = resolved && !passed (spec §4/§4.1). NO should_retry
--- column (runtime-only, R17). NO is_harness_out: the harness internal log is a
--- collector now (collectors.job_try_uuid NULL), not a fake job.
--- job_uuid_string is the STORED-GENERATED lowercase human-readable mirror (§3b/R9).
+-- a v7 gen_uuid(); spec §6c, no backend fix), stored in the native `uuid` type.
+-- passed = folded "any try passed" (resolved); failed = resolved && !passed
+-- (spec §4/§4.1). NO should_retry column (runtime-only, R17). No job_uuid_string
+-- mirror: native uuid is readable (§3b). NO is_harness_out: the harness internal
+-- log is a collector now (collectors.job_try_uuid NULL), not a fake job.
 CREATE TABLE jobs (
-    job_uuid        BINARY(16)      PRIMARY KEY,
+    job_uuid        uuid            PRIMARY KEY,
 
-    run_uuid        BINARY(16)      NOT NULL REFERENCES runs(run_uuid),
+    run_uuid        uuid            NOT NULL REFERENCES runs(run_uuid),
     test_file_id    INTEGER         NOT NULL REFERENCES test_files(test_file_id),
 
     passed          BOOLEAN         DEFAULT NULL CHECK(passed IN (0, 1)),
-    failed          BOOLEAN         DEFAULT NULL CHECK(failed IN (0, 1)),
-
-    job_uuid_string VARCHAR(36) GENERATED ALWAYS AS (
-        LOWER(CONCAT(
-            SUBSTR(HEX(job_uuid),  1,  8), '-',
-            SUBSTR(HEX(job_uuid),  9,  4), '-',
-            SUBSTR(HEX(job_uuid), 13,  4), '-',
-            SUBSTR(HEX(job_uuid), 17,  4), '-',
-            SUBSTR(HEX(job_uuid), 21, 12)
-        ))
-    ) STORED
+    failed          BOOLEAN         DEFAULT NULL CHECK(failed IN (0, 1))
 );
-CREATE INDEX job_run_idx         ON jobs(run_uuid);
-CREATE INDEX job_file_idx        ON jobs(test_file_id);
-CREATE INDEX job_uuid_string_idx ON jobs(job_uuid_string);
+CREATE INDEX job_run_idx  ON jobs(run_uuid);
+CREATE INDEX job_file_idx ON jobs(test_file_id);
 
 -- job_tries -- one row per try (is_try, 1-based per R10). The PK job_try_uuid is
 -- a single DERIVED uuid = derive(job_uuid, try_ord) (v7-preserving, spec §3.1) --
--- deterministic across loggers, preserves the existing try-uuid URLs. Stored as
--- BINARY(16); NOT a *_uuid_string-bearing table (mirror is run+job only, §3b).
+-- deterministic across loggers, preserves the existing try-uuid URLs. Stored in
+-- the native `uuid` type.
 --
 -- VERDICT columns (spec §4/§4.1/R17, survey #5):
 --   result          tri-state verdict: NULL = in-flight / 1 = pass / 0 = fail
@@ -207,9 +187,9 @@ CREATE INDEX job_uuid_string_idx ON jobs(job_uuid_string);
 -- `parameters` (NOT `params`); retry_limit lives in parameters, not a column.
 -- `fields` is the folded job_try_fields JSON (directives).
 CREATE TABLE job_tries (
-    job_try_uuid    BINARY(16)      PRIMARY KEY,
+    job_try_uuid    uuid            PRIMARY KEY,
 
-    job_uuid        BINARY(16)      NOT NULL REFERENCES jobs(job_uuid),
+    job_uuid        uuid            NOT NULL REFERENCES jobs(job_uuid),
 
     try_ord         INTEGER         NOT NULL,
 
@@ -249,10 +229,10 @@ CREATE INDEX job_try_result_idx ON job_tries(result);
 -- test_file.filename, the SHORT name via basename). The CHECK enforces
 -- "non-test collector must be named."
 CREATE TABLE collectors (
-    collector_uuid  BINARY(16)      PRIMARY KEY,
+    collector_uuid  uuid            PRIMARY KEY,
 
-    run_uuid        BINARY(16)      NOT NULL     REFERENCES runs(run_uuid),
-    job_try_uuid    BINARY(16)      DEFAULT NULL REFERENCES job_tries(job_try_uuid),
+    run_uuid        uuid            NOT NULL     REFERENCES runs(run_uuid),
+    job_try_uuid    uuid            DEFAULT NULL REFERENCES job_tries(job_try_uuid),
 
     display_name    VARCHAR(512)    DEFAULT NULL,
 
@@ -270,10 +250,10 @@ CREATE INDEX collector_run_idx     ON collectors(run_uuid);
 -- spec §5). If `data` is populated it is canon; if NULL, read host-local
 -- `local_path` (never synced/copied, spec §5).
 CREATE TABLE artifacts (
-    artifact_uuid   BINARY(16)      PRIMARY KEY,
+    artifact_uuid   uuid            PRIMARY KEY,
 
-    run_uuid        BINARY(16)      NOT NULL REFERENCES runs(run_uuid),
-    collector_uuid  BINARY(16)      NOT NULL REFERENCES collectors(collector_uuid),
+    run_uuid        uuid            NOT NULL REFERENCES runs(run_uuid),
+    collector_uuid  uuid            NOT NULL REFERENCES collectors(collector_uuid),
 
     filename        VARCHAR(512)    NOT NULL,
     local_path      VARCHAR(1024)   DEFAULT NULL,

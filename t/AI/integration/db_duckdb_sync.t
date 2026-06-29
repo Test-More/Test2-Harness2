@@ -3,7 +3,7 @@ use Test2::V0;
 # Cross-engine sync/import with DuckDB at one end. DuckDB is a SYNC/READ target
 # (never a logger), so this is its primary coverage: the production READER path
 # (build_connection(..., read_only => 1) on a .duckdb) and the App::Yath2::DB::Sync
-# engine in both directions. DuckDB.sql carries the FULL FK set; sync is
+# engine in both directions. DuckDB/log.sql carries the FULL FK set; sync is
 # INSERT-ONLY (parents before children), so the FKs are always satisfiable -- this
 # test pins that syncing TO a .duckdb works with the FKs in place.
 #

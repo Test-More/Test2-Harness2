@@ -45,7 +45,7 @@ use Test2::Util::UUID qw/gen_uuid/;
 my $here = __FILE__;
 my ($vol, $dir) = File::Spec->splitpath($here);
 my $root = File::Spec->rel2abs(File::Spec->catdir($dir, File::Spec->updir, File::Spec->updir, File::Spec->updir));
-my $sqlfile = File::Spec->catfile($root, qw/share schema SQLite.sql/);
+my $sqlfile = File::Spec->catfile($root, qw/share schema SQLite log.sql/);
 
 plan skip_all => "schema sql not found: $sqlfile" unless -f $sqlfile;
 

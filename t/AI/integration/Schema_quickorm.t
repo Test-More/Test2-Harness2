@@ -2,7 +2,7 @@ use Test2::V0;
 
 # Schema round-trip for the DB-layer rewrite, driven over the FULL flavor x
 # version matrix (#63, step DB-3). For each engine: load the hand-written
-# share/schema/<Flavor>.sql, attach the App::Yath2::Schema ORM (DBIx::QuickORM
+# share/schema/<Flavor>/log.sql, attach the App::Yath2::Schema ORM (DBIx::QuickORM
 # autofill / reflect-from-DB), and exercise an insert+read on the core tables --
 # the per-engine UUID PK storage, the lowercase *_uuid_string mirror (where the
 # engine lacks a native uuid type), the JSON columns, the verdict columns, and the
@@ -246,7 +246,7 @@ sub round_trip {
 # ---------------------------------------------------------------------------
 for my $name (qw/sqlite duckdb postgresql mysql mariadb percona/) {
     my $f = App::Yath2::DB::Flavor->by_name($name);
-    ok(-f $f->ddl_path, "$name: share/schema/" . $f->ddl_file . " exists on disk");
+    ok(-f $f->ddl_path, "$name: share/schema/" . $f->schema_dir . "/log.sql exists on disk");
 }
 
 # ===========================================================================
