@@ -829,11 +829,12 @@ backend touches no DB (§2.4).
 
 The subsections below pin the schema model (§4.6.1), the key strategy (§4.6.1),
 the derived-UUID scheme (§4.6.2), artifacts (§4.6.3 / §4.6.4), the DB logger
-process (§4.6.5), and multi-DB sync (§4.6.6). The **webapp UX migration** and the
+process (§4.6.5), and multi-DB sync (§4.6.6); §4.6.7 records the cross-job
+event-query (Interactions) read-path decision. The **webapp UX migration** and the
 **junit renderer** are **deferred to separate specs/efforts** and are not part of
 this DB-layer work (the webapp moves to `reference/old_db` and stays inert until
 its own UX-migration spec; the `/artifact/<uuid>.ext` download controller, §4.6.3,
-lands with it).
+and the §4.6.7 read path both land with it).
 
 **§4.6.1 Schema model and key strategy `[target]`.**
 
@@ -1094,6 +1095,71 @@ namespace (DCI), driven by the `yath db sync` and `import` commands. The old
   run** (no `run_uuid` needed) — a convenience wrapper over the sync engine that
   replaces the old upload path for the sqlite-log → DB case. No auto-push /
   server-pull is in scope.
+
+**§4.6.7 Cross-job event queries — the Interactions read path `[target]`.**
+
+The UI's one cross-job event query — **"what failed near this one"** / Interactions
+(find other tests running at the same moment, the classic *two tests collided on a
+shared DB row or temp file* detector) — is recorded here so the decision is not
+relitigated, but it **lands with the deferred webapp/UX spec** (§4.6 intro), not
+this DB-layer work. Every *other* event view (single-try Events / Files / live
+Stream) reads one collector's blob and needs none of this.
+
+**Decision: no events table — temp or persistent. Decode blobs + in-process
+streaming filter + (later) a result cache.** Rationale and contract:
+
+- **No persistent events table.** Events live only in the per-collector
+  `events.jsonl.zst` blobs (§4.6.4). A persistent/queryable events table is
+  **rejected** — it re-creates 1.0's per-event rows (the "major db issue",
+  §4.6.4), double-stores blob content (the same reason there is no `transitions`
+  table, §4.6), and forces a retention/purge story the design avoids (its expiry
+  could not even be tuned independently — events derive from blobs swept by run
+  retention, so it would FK-cascade with the run anyway, or orphan).
+- **Two-phase query.** **Phase 1** — a cheap SQL query over `job_tries` timing
+  (`started` / `finished`), scoped by `jobs.run_uuid` and `runs.host_id` (overlapping
+  runs on one machine), finds the tries whose `[started, finished]` window overlaps
+  the target stamp window. **Concurrency caps this set** (≤ ~`-j` tries overlap at
+  any instant), so it is small by construction. **Phase 2** — decode only those
+  overlapping blobs, streaming-filter to events within `[T−Δ, T+Δ]`, and **k-way
+  merge** them by stamp (optionally bucketing where ≥2 distinct tries fall within
+  Δt — the "collision" cluster).
+- **The decode is the shared floor; a table is pure overhead on top.** Events only
+  exist inside the blob, so any approach must decode the overlapping blobs. A temp
+  table would then *add* insert + index + a SQL round-trip (plus a second
+  serialize/deserialize hop) on top of that decode — strictly more work than keeping
+  the decoded events in-process and filtering them in the same pass.
+- **The streaming filter caps memory.** Filtering happens *during* the decode pass,
+  so only the in-window survivors are held, never whole blobs — a 500k-line blob
+  yields just the handful of events in the window. The **survivor set, not the event
+  count, bounds RAM**, which is what removes the usual reason to reach for a table.
+- **Cheap pre-filter before full decode.** Match a substring on the raw line (e.g.
+  fail / assert kinds) before `decode_json` — streams run to hundreds of thousands
+  of lines and per-line decode is the dominant cost (db-review note). Events are in
+  `event_idx` / `event_sdx` file order, so a try's scan can **early-exit** once the
+  stamp passes `T+Δ`.
+- **A result cache — not a table — gives revisit reuse.** Cache the *merged
+  event-list result*, keyed by `(target_event_uuid, Δ, mode)`; this is orthogonal to
+  storage and is built only when proven necessary ("cache later if needed"). A SQL
+  temp table would not survive across requests anyway (it is session/connection
+  scoped, and the read path uses a fresh per-fork handle), so caching the *result*
+  is the correct cross-request reuse mechanism.
+- **Read-only-safe.** Streaming decode (and the fallback below) run **read-only**
+  against whichever one log DB `yath server` is pointed at; a persistent events
+  table would require write access to the served DB.
+- **Temp table = profiling-only fallback, not designed in.** Materialize a
+  per-request TEMP events table **only** if a real run hits a wall both ways: the
+  in-window survivor set is too large for RAM **and** a relational op (e.g. a
+  multi-way time-cluster join) genuinely beats the in-process k-way merge. It is a
+  bounded escape hatch, added only if profiling forces it.
+
+Reference: the phase-1 overlap SQL shape is
+`reference/pre_ai_2.0/lib/App/Yath/Server/Controller/Interactions.pm` (it used the
+old `launch` / `start` / `ended` columns — the new schema collapses these to
+`started` / `finished`, §4.6.1); the current
+`reference/old_db/lib/App/Yath2/Server/Controller/Interactions.pm` is the DBIC
+version to re-express against blobs. **Index note:** `job_tries.started` / `finished` are unindexed in the
+current DDL — add a timing-window index if phase-1 scans get hot. Cross-ref the spec
+§9 parked research (`AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md`).
 
 ### 4.7 Preload stage services `[migrating]`
 
