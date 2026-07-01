@@ -72,6 +72,16 @@ sub step {
     $self->{+FORMATTER}->step;
 }
 
+# The render loop pushes the latest system-load snapshot here each tick; forward
+# it to the underlying formatter so it can show cpu/mem in its status bar. A
+# formatter that does not track system load simply ignores it.
+sub set_system_load {
+    my $self = shift;
+    my $fmt  = $self->{+FORMATTER} or return;
+    $fmt->set_system_load(@_) if $fmt->can('set_system_load');
+    return;
+}
+
 sub render_event {
     my $self = shift;
     my ($event) = @_;

@@ -11,7 +11,7 @@ use Getopt::Yath;
 use parent 'App::Yath2::Plugin';
 
 sub can_log ($opt, $options, $settings) {
-    return $options && $options->option_groups->{logging} ? 1 : 0;
+    return $options && $options->option_groups->{jsonl} ? 1 : 0;
 }
 
 sub can_finder ($opt, $options, $settings) {
@@ -106,7 +106,7 @@ option_group {group => 'yathui', prefix => 'yathui', category => "YathUI Options
         my $settings = $state->{settings};
 
         my $has_finder = $options && $options->option_groups->{finder};
-        my $has_logger = $options && $options->option_groups->{logging};
+        my $has_logger = $options && $options->option_groups->{jsonl};
 
         my $has_durations = $has_finder && $settings->yathui->durations;
         my $has_upload    = $has_logger && $settings->yathui->upload;
@@ -123,9 +123,16 @@ option_group {group => 'yathui', prefix => 'yathui', category => "YathUI Options
         # Cross-group writes: use create_option (set-or-create, matching the
         # old Settings 'field' semantics) since the target group/option may not
         # have been initialized by another module.
+        #
+        # Force-enable the jsonl renderer (bzip2, the format YathUI uploads). This
+        # post_process runs at weight -1, BEFORE the jsonl group's own weight-101
+        # resolver, so we only set the enable/compression FLAGS here -- the jsonl
+        # resolver then resolves the file path and injects the renderer into the
+        # renderer list (replacing the old logging->log force-set).
         if ($has_upload) {
-            $settings->logging->create_option(log => 1);
-            $settings->logging->create_option(bzip2 => 1);
+            my $jsonl = $settings->group('jsonl', 1);
+            $jsonl->create_option(enabled => 1);
+            $jsonl->create_option(bzip2   => 1);
         }
 
         if ($has_coverage) {
@@ -250,7 +257,7 @@ sub finish {
 
     return unless $settings->yathui->upload;
 
-    my $log_file = $settings->logging->log_file;
+    my $log_file = $settings->jsonl->file;
     my ($filename) = reverse File::Spec->splitpath($log_file);
 
     my ($ok, $res, $data) = $this->_request(

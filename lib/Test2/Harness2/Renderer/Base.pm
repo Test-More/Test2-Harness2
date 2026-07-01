@@ -17,7 +17,6 @@ use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::HashBase qw{
     <settings
     <renderers
-    +logger
     <run
     <run_id
     <workdir
@@ -59,8 +58,11 @@ L<Test2::Harness2::Runner::Monitor> mirror), open it B<by the absolute path the
 transition carried> via L<Test2::Harness2::JobReader> /
 L<Test2::Harness2::RunnerReader>, and feed the recorded events out to a list of
 concrete renderers (the C<render_event> sinks --
-L<Test2::Harness2::Renderer::Formatter>, L<App::Yath2::Renderer::DB>,
-L<App::Yath2::Renderer::Server>) plus the logger. Concrete renderers therefore
+L<Test2::Harness2::Renderer::Formatter>, plus the DB/web renderers
+C<App::Yath2::Renderer::DB> / C<App::Yath2::Renderer::Server>, which are
+currently being rewritten and live under C<reference/old_db>; the whole-run jsonl
+log is now itself a renderer, L<App::Yath2::Renderer::Jsonl>).
+Concrete renderers therefore
 consume B<recorded> events rather than a live broadcast.
 
 The base owns the reusable mechanics that any events-file consumer needs and that
@@ -87,8 +89,8 @@ verdict bookkeeping.
 
 =item *
 
-The C<render_event> fan-out (C<dispatch>) to the sink renderers + logger,
-including the plugin C<annotate_event> / C<handle_event> hooks.
+The C<render_event> fan-out (C<dispatch>) to the sink renderers (the jsonl log is
+now one of them), including the plugin C<annotate_event> / C<handle_event> hooks.
 
 =back
 
@@ -163,7 +165,7 @@ progress counters, and the log have the run context. Idempotent.
 =item $renderer->feed_events_file($events_file, %args)
 
 Locate (open by absolute path) and feed every recorded event from one
-collector's C<events.jsonl.zst> through the sink renderers + logger. C<%args> map
+collector's C<events.jsonl.zst> through the sink renderers. C<%args> map
 onto the L<Test2::Harness2::JobReader> (C<job_id>, C<job_try>, C<file>). If
 C<hold> is a coderef it is called with each decoded event B<before> dispatch and,
 when it returns true, the event is withheld from dispatch and returned to the
@@ -264,7 +266,7 @@ sub render_run_start ($self) {
 sub FEED_TERMINAL_TIMEOUT() { 5 }
 
 # Read one collector's recorded events file BY PATH and feed every event through
-# the renderers/logger. This is the §4.5 events-file location mechanic, promoted
+# the renderers. This is the §4.5 events-file location mechanic, promoted
 # out of the command-only Driver so watch + archived replay can reuse it. The
 # optional `hold` coderef lets a subclass withhold specific events (e.g. the
 # job's final harness_job_end) for its own ordering policy.
@@ -414,8 +416,9 @@ collector's rel_file name.
 
 =item $self->dispatch($event)
 
-Run one harness event through annotate plugins, the logger, the renderers, and
-the handle plugins (the same path the gatherer-fed render loop used). When a
+Run one harness event through annotate plugins, the renderers (the jsonl log is
+one of them), and the handle plugins (the same path the gatherer-fed render loop
+used). When a
 C<dispatch_cb> coderef is set the event is handed to it B<instead> of being fanned
 out -- the render-loop library uses this to make a producer a pure source (it
 collects the ordered events the engine would have rendered) so the loop, not the
@@ -423,8 +426,9 @@ engine, owns the sink fan-out (C<dispatch_to_sinks>).
 
 =item $self->dispatch_to_sinks($event)
 
-The sink fan-out itself: annotate plugins, the logger, the C<render_event>
-renderers, the C<asserts_seen> tally, and the handle plugins. C<dispatch> calls
+The sink fan-out itself: annotate plugins, the C<render_event>
+renderers (the jsonl log is one of them), the C<asserts_seen> tally, and the
+handle plugins. C<dispatch> calls
 this directly when no C<dispatch_cb> is set; the render-loop library calls it for
 every event a producer yields.
 
@@ -481,7 +485,12 @@ sub note_verdict ($self, $job, $try, $end) {
     my $task         = $self->task_for($job->{job_id});
     my $retry_budget = ($task ? $task->{retry} : undef) // ($self->{+RUN} ? $self->{+RUN}->retry : 0) // 0;
 
-    my $will_retry = $end->{fail} && (($try // 0) < $retry_budget);
+    # Try ordinals are 1-based (R10 / #49): the first attempt is $try == 1 and the
+    # job is allowed $retry_budget retries, so it will retry while $try <=
+    # $retry_budget -- mirroring the runner's _collector_retry_if_tries decision. An
+    # aborted end is terminal: the runner already made the no-retry decision, so it
+    # always settles (a synthetic aborted render carries no real try ordinal).
+    my $will_retry = $end->{fail} && !$end->{aborted} && (($try // 1) <= $retry_budget);
     $end->{retry} = 1 if $will_retry;
 
     # Last-try-wins verdict (overwritten each try); only settle on a try that is
@@ -526,7 +535,6 @@ sub dispatch ($self, $e) {
 
 sub dispatch_to_sinks ($self, $e) {
     my $settings = $self->{+SETTINGS};
-    my $logger   = $self->{+LOGGER};
 
     my $fd = $e->{facet_data} //= {};
 
@@ -547,10 +555,6 @@ sub dispatch_to_sinks ($self, $e) {
                 $fd->{$f} = $inject{$f};
             }
         }
-    }
-
-    if ($logger) {
-        print $logger $e->as_json, "\n";
     }
 
     $_->render_event($e) for @{$self->{+RENDERERS}};

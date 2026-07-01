@@ -1,0 +1,4 @@
+use Test2::Tools::Tiny;
+ok(1, 'one good assertion');
+ok(0, 'one bad assertion');
+done_testing;

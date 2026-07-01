@@ -6,9 +6,11 @@ our $VERSION = '2.000000';
 
 use Getopt::Yath;
 
-include_options(
-    'App::Yath2::Options::DB',
-);
+# NOTE (ticket #45): this used to include_options('App::Yath2::Options::DB'),
+# but that module moved to reference/old_db with the retired DBIx::Class DB/web
+# layer. The webserver option group below does not depend on the DB group, and
+# the only consumers of these options (the 'server' command + the Server
+# renderer) also moved, so the include is dropped to keep this module loadable.
 
 option_group {group => 'webserver', category => "Web Server Options"} => sub {
     option launcher => (

@@ -5,10 +5,11 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
+use Errno qw/EACCES EPERM ECONNREFUSED/;
 
 use Test2::Collector::Util::Socket qw/connect_unix/;
 
-use App::Yath2::Util qw/find_runner_link/;
+use App::Yath2::Util qw/find_runner_link find_runner_links/;
 use Test2::Harness2::Util qw/clean_path open_file/;
 
 use Test2::Harness2::Util::HashBase qw{
@@ -161,6 +162,57 @@ sub find ($class, $settings = undef, %params) {
     return;
 }
 
+=item @records = App::Yath2::Discovery->list($settings, %params)
+
+Enumerate B<all> candidate discovery symlinks (via
+L<App::Yath2::Util/find_runner_links>, which reuses C<find_runner_link>'s
+directory/name rules), probe each for liveness, and return one record hashref per
+symlink that is either B<live> or B<inaccessible> (another user's runner we lack
+permission to connect to). Dangling symlinks -- a crashed runner that left a link
+pointing at a dead socket -- are dropped, and (unless C<< no_clean => 1 >>) cleaned
+up B<only> when the link is owned by the current UID (multi-user safety: never
+unlink another user's stale link).
+
+Each record is:
+
+    {
+        link    => $symlink_path,
+        state   => 'live' | 'inaccessible',
+        disco   => $discovery_instance,   # for a 'live' record
+        socket  => $socket_path,          # the link's target
+        workdir => $workdir,              # 'live' only (the dir is reachable)
+        pid     => $pid,                  # 'live' only (read from the PID file)
+    }
+
+This never throws on an unreadable directory or a connect that fails with
+C<EACCES>/C<EPERM> (those become C<inaccessible> records); a C<ECONNREFUSED> or
+missing target is a dead runner (dropped/cleaned).
+
+=cut
+
+sub list ($class, $settings = undef, %params) {
+    croak "Settings is a required argument" unless $settings;
+
+    my $no_clean = delete $params{no_clean};
+
+    my @records;
+    for my $link (find_runner_links($settings, %params)) {
+        my $self = $class->new(link => $link);
+        my $rec  = $self->probe;
+
+        if ($rec->{state} eq 'live' || $rec->{state} eq 'inaccessible') {
+            push @records => $rec;
+            next;
+        }
+
+        # 'dead' / 'dangling': clean the stale link, but only when WE own it
+        # (multi-user safety -- never unlink another user's link).
+        $self->clean_if_owned unless $no_clean;
+    }
+
+    return @records;
+}
+
 =item $path = $disco->socket
 
 The runner socket the symlink points at (its readlink target). Built from the
@@ -230,6 +282,90 @@ sub resolves ($self) {
     close($sock);
 
     return 1;
+}
+
+=item $rec = $disco->probe
+
+Classify this one symlink for L</list> without dying. Resolves the link, attempts a
+connect, and returns a record hashref whose C<state> is:
+
+=over 4
+
+=item C<live>
+
+The link resolves to a socket that accepts a connection. The record carries the
+C<disco> (this instance), C<socket>, C<workdir>, and C<pid>.
+
+=item C<inaccessible>
+
+The socket exists but the connect failed with C<EACCES>/C<EPERM> -- another user's
+runner we lack permission to reach. The record carries C<socket> only (the workdir
+and pid may not be readable either).
+
+=item C<dead>
+
+A dangling link, a missing/non-socket target, or a connect refused with
+C<ECONNREFUSED> -- there is no live runner here.
+
+=back
+
+=cut
+
+sub probe ($self) {
+    my $link = $self->{+LINK};
+
+    my $target = readlink($link);
+    return {link => $link, state => 'dead'} unless defined $target;
+    $target = clean_path($target);
+
+    # A link whose target is gone or is not a socket is a dead/crashed runner.
+    return {link => $link, state => 'dead'} unless -S $target;
+
+    # Probe liveness with a connect. Classify the failure by errno so another
+    # user's runner (EACCES/EPERM on the socket) is reported as inaccessible rather
+    # than mistaken for dead -- and never cleaned.
+    my $sock = eval { connect_unix($target) };
+    if ($sock) {
+        close($sock);
+        return {
+            link    => $link,
+            state   => 'live',
+            disco   => $self,
+            socket  => $target,
+            workdir => $self->workdir,
+            pid     => $self->pid,
+        };
+    }
+
+    my $errno = $!;
+    if ($errno == EACCES || $errno == EPERM) {
+        return {link => $link, state => 'inaccessible', socket => $target};
+    }
+
+    # ECONNREFUSED (no listener) or anything else: the runner is gone.
+    return {link => $link, state => 'dead', socket => $target};
+}
+
+=item $disco->clean_if_owned
+
+Remove the symlink, but B<only> when it is a symlink owned by the current effective
+UID (multi-user safety: L</list> must never unlink another user's stale link). A
+no-op for a non-symlink, an other-user-owned link, or one whose ownership cannot be
+read.
+
+=cut
+
+sub clean_if_owned ($self) {
+    my $link = $self->{+LINK};
+    return unless -l $link;
+
+    # lstat the LINK itself (not its target) to read the symlink's own owner.
+    my $uid = (lstat($link))[4];
+    return unless defined $uid;
+    return unless $uid == $>;
+
+    unlink($link);
+    return;
 }
 
 =item $disco->write_link

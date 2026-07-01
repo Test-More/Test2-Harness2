@@ -17,6 +17,7 @@ use Carp qw/croak/;
 
 our @EXPORT_OK = qw{
     find_runner_link
+    find_runner_links
     find_in_updir
     is_generated_test_pl
     fit_to_width
@@ -25,6 +26,11 @@ our @EXPORT_OK = qw{
     share_dir
     share_file
 };
+
+# The fixed suffix every discovery symlink basename ends with (the project /
+# host / user prefixes vary, but this trailer is constant -- see find_runner_link).
+# Used by find_runner_links to enumerate ALL candidate symlinks in a directory.
+our $RUNNER_LINK_SUFFIX = 'yath-runner.sock';
 
 sub share_file {
     my ($file) = @_;
@@ -239,6 +245,116 @@ sub find_runner_link {
     return;
 }
 
+# Enumerate EVERY candidate discovery symlink reachable under the same dir/name
+# rules find_runner_link uses for the single-link lookup, so `yath list` can find
+# all persistent runners (not just the one for the current project). Returns a
+# de-duplicated list of absolute symlink paths (live or dangling -- liveness is a
+# socket connect, done in App::Yath2::Discovery, not here).
+#
+# The rules mirror find_runner_link exactly:
+#   * an explicit --pfile (persist_file) names a single link -- return just it;
+#   * otherwise the search directory is --persist-dir / $YATH_PERSISTENCE_DIR /
+#     the system temp dir, and we glob that dir for every `.*-${SUFFIX}` symlink
+#     (all users/hosts/projects that published there);
+#   * additionally, when no dir was forced and the cwd is writable (the cwd-walk
+#     case find_runner_link falls back to), walk the directory tree upward and
+#     collect any matching symlink at each level (a project that published into
+#     its own checkout root rather than the temp dir).
+sub find_runner_links {
+    my ($settings, %params) = @_;
+
+    croak "Settings is a required argument" unless $settings;
+
+    my $yath = $settings->harness;
+
+    my %seen;
+    my @links;
+
+    my $set_dir = $yath->persist_dir // $ENV{YATH_PERSISTENCE_DIR};
+    my $dir     = $set_dir // $ENV{TMPDIR} // $ENV{TEMPDIR} // File::Spec->tmpdir;
+
+    # Glob the search directory for every published discovery symlink. NOTE: we
+    # cannot collapse to persist_file the way the single-runner find_runner_link
+    # does -- the PreCommand post-process VIVIFIES persist_file to a single
+    # candidate path for every command (App::Yath2::Options::PreCommand), so a set
+    # persist_file is NOT a reliable "user named one specific link" signal here.
+    # Instead we always enumerate the directory and ALSO fold in persist_file when
+    # it exists (covering both an explicit --pfile pointing outside this dir and a
+    # vivified-but-real path), de-duplicated.
+    for my $link (_glob_runner_links($dir)) {
+        next if $seen{$link}++;
+        push @links => $link;
+    }
+
+    # The cwd-walk fallback (find_runner_link uses _find_link_in_updir when no dir
+    # is forced and the cwd is writable): a runner may have published into a
+    # project checkout root rather than the shared temp dir. Collect those too.
+    unless ($set_dir) {
+        for my $link (_glob_runner_links_updir()) {
+            next if $seen{$link}++;
+            push @links => $link;
+        }
+    }
+
+    # Fold in persist_file when it names a real (live or dangling) symlink -- an
+    # explicit --pfile, or a vivified default that happens to exist.
+    if (my $pf = $yath->persist_file) {
+        push @links => $pf if !$seen{$pf}++ && _runner_link_existsp($pf);
+    }
+
+    return @links;
+}
+
+# Glob one directory for every discovery symlink ($dir/.*-${SUFFIX}) and return the
+# absolute link paths (the link itself, NOT its target -- see _abs_link_path). A
+# directory we cannot read (EACCES, missing) yields nothing rather than dying:
+# enumeration must be tolerant of other users' unreadable dirs.
+sub _glob_runner_links {
+    my ($dir) = @_;
+
+    my $abs_dir = eval { realpath(File::Spec->rel2abs($dir)) } // return;
+    return unless -d $abs_dir;
+
+    # Every discovery symlink basename is a dotfile ending in the fixed trailer:
+    # `.yath-runner.sock` or `.{user}-{host}-{project}-yath-runner.sock` (see
+    # find_runner_link's @names construction). Match exactly that shape.
+    opendir(my $dh, $abs_dir) or return;
+    my @names = grep { $_ =~ m/^\..*\Q$RUNNER_LINK_SUFFIX\E$/ } readdir($dh);
+    closedir($dh);
+
+    my @links;
+    for my $name (@names) {
+        # The dir is already realpath'd; append the basename WITHOUT resolving it
+        # (clean_path/realpath on the symlink itself would follow it to its target,
+        # the socket -- the caller needs the link path, not the socket; same gotcha
+        # _abs_link_path documents).
+        my $link = File::Spec->catfile($abs_dir, $name);
+        # Match find_runner_link's "present" test: a live OR dangling symlink both
+        # count (a dangling one is a crashed runner the caller may want to clean).
+        push @links => $link if _runner_link_existsp($link);
+    }
+
+    return @links;
+}
+
+# The cwd-walk leg: walk from the cwd up to the filesystem root and collect every
+# discovery symlink found at each level (the _find_link_in_updir shape, but
+# globbing all matching names at each level instead of stopping at the first).
+sub _glob_runner_links_updir {
+    my $dir = eval { realpath(File::Spec->rel2abs('.')) } or return;
+
+    my (%seen_dir, @links);
+    while (defined $dir && length $dir && !$seen_dir{$dir}++) {
+        push @links => _glob_runner_links($dir);
+
+        my $parent = realpath(File::Spec->catdir($dir, '..')) // last;
+        last if $parent eq $dir;    # reached the filesystem root
+        $dir = $parent;
+    }
+
+    return @links;
+}
+
 sub fit_to_width {
     my ($width, $join, $text) = @_;
 
@@ -315,6 +431,26 @@ only when a symlink (live or dangling) already exists.
 
 This only locates the path; it does not check whether the runner is alive --
 liveness is a socket connect, handled by L<App::Yath2::Discovery>.
+
+=item @paths = find_runner_links($settings, %params)
+
+Enumerate B<every> candidate discovery symlink reachable under the same
+directory/name rules L</find_runner_link> uses, so a command can find B<all>
+persistent runners rather than just the one for the current project. Returns a
+de-duplicated list of absolute symlink paths.
+
+The search directory is C<--persist-dir> / C<$YATH_PERSISTENCE_DIR> / the system
+temp dir, globbed for every C<.*-yath-runner.sock> symlink (all
+users/hosts/projects that published there); when no directory was forced, the
+cwd-walk fallback (a runner that published into a project checkout root) is also
+scanned upward. A C<persist_file> (C<--pfile>) that names a real symlink is folded
+in too -- but it does B<not> collapse the search to a single link, because the
+C<PreCommand> post-process vivifies C<persist_file> for every command, so a set
+value is not a reliable "the user named one link" signal here.
+
+Both live and dangling symlinks are returned; liveness is a socket connect, done by
+L<App::Yath2::Discovery/list>. A directory that cannot be read (another user's
+unreadable temp area) is skipped silently rather than throwing.
 
 =item $path_to_file = find_in_updir($file_name)
 

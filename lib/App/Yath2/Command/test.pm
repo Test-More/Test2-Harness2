@@ -17,7 +17,7 @@ use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
-use Test2::Harness2::Util qw/mod2file open_file/;
+use Test2::Harness2::Util qw/mod2file/;
 use Test2::Util::Table qw/table/;
 
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
@@ -25,12 +25,11 @@ use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 use Time::HiRes qw/sleep time/;
 use List::Util qw/sum max/;
 use Carp qw/croak/;
+use POSIX();
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/
     +renderers
-    +logger
-    +last_log
 
     +tests_seen
     +asserts_seen
@@ -39,6 +38,8 @@ use Test2::Harness2::Util::HashBase qw/
 
     +driver
     +render_loop
+
+    +logger_pids
 
     <cleanup_subs
 
@@ -50,6 +51,7 @@ include_options(
     'App::Yath2::Options::Display',
     'App::Yath2::Options::Finder',
     'App::Yath2::Options::Logging',
+    'App::Yath2::Options::Logger',
     'App::Yath2::Options::PreCommand',
     'App::Yath2::Options::Run',
     'App::Yath2::Options::Runner',
@@ -205,6 +207,11 @@ sub start {
 
     $self->start_runner(jobs_todo => $pop);
 
+    # Spawn the DB logger(s) BEFORE queueing the run (spec §6d/§7c:
+    # harness -> logger -> queue) so each logger subscribes and seeds its initial
+    # state before most transitions occur. Opt-in: a no-op unless -L was given.
+    $self->start_loggers();
+
     # Submit the run + its tasks to the runner over runner.socket, then the queue
     # terminator (the persistent run command's client is in attach mode, so its
     # terminate_queue is a no-op: the long-lived runner is not shut down per run).
@@ -212,6 +219,94 @@ sub start {
     $self->client->terminate_queue();
 
     return 1;
+}
+
+# The DB logger pids this command spawned (one per -L target). Empty unless
+# logging was enabled.
+sub logger_pids { my $self = shift; return $self->{+LOGGER_PIDS} //= [] }
+
+# Fork+exec one App::Yath2::DB::Logger process per -L target (spec §7c). Each is
+# handed a temp-JSON config file ({workdir, run_id, target, version}) it reads and
+# unlinks (the Renderer::DB _start_process plumbing pattern, reused -- NOT its
+# per-event ingestion). Opt-in: returns immediately when no -L was given (R11).
+sub start_loggers {
+    my $self = shift;
+
+    my $settings = $self->settings;
+    return unless $settings->check_group('logger');
+
+    my $targets = $settings->logger->targets;
+    return unless $targets && @$targets;
+
+    require File::Temp;
+    require Test2::Harness2::Util::IPC;
+    require Test2::Harness2::Util::JSON;
+
+    my $workdir = $self->workdir;
+    my $run_id  = $self->run_id;
+    my $version = $VERSION;    # the yath version stamp (spec §2e/§4)
+
+    my @dev_libs = grep { -d $_ } @{($settings->check_group('harness') ? $settings->harness->dev_libs : []) // []};
+
+    my @pids;
+    for my $target (@$targets) {
+        my ($fh, $cfg_file) = File::Temp::tempfile("yath-logger-$$-XXXXXX", TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
+        print $fh Test2::Harness2::Util::JSON::encode_json({
+            workdir => $workdir,
+            run_id  => $run_id,
+            target  => $target,
+            version => $version,
+        });
+        close($fh);
+
+        my %seen;
+        my @cmd = (
+            $^X,
+            (map { "-I$_" } grep { -d $_ && !$seen{$_}++ } @dev_libs, @INC),
+            '-mApp::Yath2::DB::Logger',
+            '-e' => 'exit(App::Yath2::DB::Logger->run_from_config_file($ARGV[0]))',
+            $cfg_file,
+        );
+
+        my $pid = Test2::Harness2::Util::IPC::run_cmd(no_set_pgrp => 1, command => \@cmd);
+        push @pids => $pid if $pid;
+    }
+
+    $self->{+LOGGER_PIDS} = \@pids;
+
+    return;
+}
+
+# Bounded-wait for the spawned DB logger(s) on teardown: each logger stays
+# subscribed (and so keeps the runner's workdir-cleanup deferred, #51) until its
+# imports finish, then exits. We wait up to LOGGER_WAIT_TIMEOUT for a clean exit
+# before giving up so a wedged logger cannot hang the command forever.
+sub LOGGER_WAIT_TIMEOUT() { 120 }
+
+sub wait_for_loggers {
+    my $self = shift;
+
+    my $pids = $self->{+LOGGER_PIDS} or return;
+    return unless @$pids;
+
+    my $deadline = time + LOGGER_WAIT_TIMEOUT;
+    my @left = @$pids;
+    while (@left && time < $deadline) {
+        @left = grep {
+            my $got = waitpid($_, POSIX::WNOHANG());
+            ($got == $_ || $got == -1) ? 0 : 1;
+        } @left;
+        Time::HiRes::sleep(0.05) if @left;
+    }
+
+    # Anything still running after the timeout is signalled so it cannot orphan.
+    for my $pid (@left) {
+        kill('TERM', $pid);
+    }
+
+    $self->{+LOGGER_PIDS} = [];
+
+    return;
 }
 
 # The harness-client bridge (App::Yath2::Client). The transient `yath test`
@@ -322,7 +417,6 @@ sub render_loop {
 
         App::Yath2::RenderLoop->new(
             renderers => $self->renderers,
-            logger    => scalar($self->logger),
             settings  => $self->settings,
             run_id    => $self->run_id,
             plugins   => $self->settings->harness->plugins,
@@ -368,15 +462,11 @@ sub stop {
 
     my $settings  = $self->settings;
     my $renderers = $self->renderers;
-    my $logger    = $self->logger;
 
     # Plugin teardown() runs in the RUNNER (when it shuts down), not here.
-    # finalize()/finish() (client/render-side) still run command-side.
-    if ($logger) {
-        print $logger "null\n";
-        close($logger);
-    }
-
+    # finalize()/finish() (client/render-side) still run command-side. The jsonl
+    # log is now a renderer (App::Yath2::Renderer::Jsonl): its finish() writes the
+    # 'null' terminator, closes the file, and prints "Wrote log file".
     $_->finish() for @$renderers;
 
     my $signal = $self->signal;
@@ -385,6 +475,12 @@ sub stop {
     $self->signal_shutdown() if $signal;
 
     $self->wait_for_runner;
+
+    # Bounded-wait for the DB logger(s) to finish their imports and disconnect
+    # (they keep the runner's workdir-cleanup deferred until then, #51). A no-op
+    # unless -L was given.
+    $self->wait_for_loggers;
+
     $self->remove_signal_handlers;
 
     unless ($settings->display->quiet > 2) {
@@ -392,12 +488,6 @@ sub stop {
 
         printf("\nKeeping work dir: %s\n", $self->workdir)
             if $settings->debug->keep_dirs;
-
-        if ($settings->logging->log) {
-            print "\n";
-            print "Wrote log file: " . $settings->logging->log_file . "\n";
-            print " (Symlinked to: " . $self->{+LAST_LOG} . ")\n";
-        }
 
         $self->finalize_plugins();
     }
@@ -678,52 +768,6 @@ sub stringify_subtest_map {
     return $out;
 }
 
-sub logger {
-    my $self = shift;
-
-    return $self->{+LOGGER} if $self->{+LOGGER};
-
-    my $settings = $self->{+SETTINGS};
-
-    return unless $settings->logging->log;
-
-    my $file = $settings->logging->log_file;
-
-    if ($settings->logging->bzip2) {
-        no warnings 'once';
-        require IO::Compress::Bzip2;
-        $self->{+LOGGER} = IO::Compress::Bzip2->new($file) or die "Could not open log file '$file': $IO::Compress::Bzip2::Bzip2Error";
-    }
-    elsif ($settings->logging->gzip) {
-        no warnings 'once';
-        require IO::Compress::Gzip;
-        $self->{+LOGGER} = IO::Compress::Gzip->new($file) or die "Could not open log file '$file': $IO::Compress::Gzip::GzipError";
-    }
-    else {
-        $self->{+LOGGER} = open_file($file, '>');
-    }
-
-    for my $ext ('jsonl', 'jsonl.bz2', 'jsonl.gz') {
-        my $name = "./lastlog.$ext";
-        next unless -f $name;
-        local ($!, $@) = (0, '');
-        eval { unlink($name) } or warn "Could not unlink '$name': ($!) $@";
-    }
-
-    if ($file =~ m/\.(jsonl(?:\.(?:bz2|gz))?)$/) {
-        my $ext  = $1;
-        my $name = "./lastlog.$ext";
-        if (eval { symlink($file, $name); 1 }) {
-            $self->{+LAST_LOG} = $name;
-        }
-        else {
-            warn "Could not symlink the log file to '$name': $@";
-        }
-    }
-
-    return $self->{+LOGGER};
-}
-
 sub renderers {
     my $self = shift;
 
@@ -737,6 +781,16 @@ sub renderers {
         my $args     = $settings->display->renderers->{$class};
         my $renderer = $class->new(@$args, settings => $settings, command_class => ref($self));
         push @renderers => $renderer;
+    }
+
+    # Default-on terminal-reset renderer: when STDOUT is a TTY, append it LAST so
+    # its finish() (terminal reset) runs after every other renderer has flushed.
+    # No-op render_event; only the finish()/END reset matters. Rely on list order
+    # (no renderer weight sorting). Skipped entirely when not a TTY.
+    if (-t STDOUT) {
+        my $class = 'App::Yath2::Renderer::ResetTerm';
+        require(mod2file($class));
+        push @renderers => $class->new(settings => $settings, command_class => ref($self));
     }
 
     return $self->{+RENDERERS} = \@renderers;

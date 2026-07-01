@@ -375,7 +375,11 @@ must internalise before writing any code (all are documented in
   `DBIx::Class`.
 - **`DBD::SQLite` directly for the default backend.** `DBIx::QuickDB`
   is for ephemeral test setups and non-default flavors; never for
-  the default SQLite path.
+  the default SQLite path. **DuckDB** (`DBD::DuckDB`) is a **sync / read
+  target, NOT a logging target** — it is single-writer and forbids the
+  logger's insert-then-update, so `-L=<.duckdb>` / `-L=dbi:DuckDB:` is
+  rejected. Produce a DuckDB log via `yath db sync` / `import` (insert-only,
+  full FKs), then read it read-only (e.g. a web server).
 - **No `IPC::Manager`.** Earlier iterations relied on it; the new
   architecture does not. Transient bytes between processes go through
   `Atomic::Pipe`; durable cross-process state goes to disk. If a

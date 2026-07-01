@@ -16,7 +16,7 @@ close($fh);
 
 yath(
     command => 'test',
-    args    => ["-I$dir/lib", $dir, '--ext=tx', '-v', '-B', '-F' => $logfile, '--cover-files', '--cover-agg' => 'ByTest'],
+    args    => ["-I$dir/lib", $dir, '--ext=tx', '-v', '--bzip2', '--jsonl-file' => $logfile, '--cover-files', '--cover-agg' => 'ByTest'],
     exit    => 0,
 );
 

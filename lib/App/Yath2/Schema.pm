@@ -1,135 +1,27 @@
 package App::Yath2::Schema;
-use utf8;
-use strict;
-use warnings;
-use Carp qw/confess/;
+use v5.38;
 
 our $VERSION = '2.000000';
 
-use base 'DBIx::Class::Schema';
+# DB layer rewrite (#46 / chunk DB-2). All DB code lives under App::Yath2; the
+# backend Test2::Harness2 layer accesses no DB in either direction (spec §0.1/§2).
+# This is the live ORM: a DBIx::QuickORM `orm` with `autofill` (reflect-from-DB).
+# The schema is NEVER defined in Perl -- the per-flavor DDL under share/schema/ is
+# the source of truth, and autofill introspects whatever that DDL produced.
+use DBIx::QuickORM;
 
-use Test2::Util::UUID qw/uuid2bin bin2uuid/;
-
-confess "You must first load a App::Yath2::Schema::NAME module"
-    unless $App::Yath2::Schema::LOADED;
-
-#FIXME Do we need this?
-#if ($App::Yath2::Schema::LOADED =~ m/(MySQL|Percona|MariaDB)/i && eval { require DBIx::Class::Storage::DBI::mysql::Retryable; 1 }) {
-#    __PACKAGE__->storage_type('::DBI::mysql::Retryable');
-#}
-
-require App::Yath2::Schema::ResultSet;
-__PACKAGE__->load_namespaces(
-    default_resultset_class => 'ResultSet',
-);
-
-sub is_mysql {
-    return 1 if is_mariadb();
-    return 1 if is_percona();
-    return 1 if $App::Yath2::Schema::LOADED =~ m/MySQL/;
-    return 0;
-}
-
-sub is_postgresql {
-    return 1 if $App::Yath2::Schema::LOADED =~ m/PostgreSQL/;
-    return 0;
-}
-
-sub is_sqlite {
-    return 1 if $App::Yath2::Schema::LOADED =~ m/SQLite/;
-    return 0;
-}
-
-sub is_percona {
-    return 1 if $App::Yath2::Schema::LOADED =~ m/Percona/;
-    return 0;
-}
-
-sub is_mariadb {
-    return 1 if $App::Yath2::Schema::LOADED =~ m/MariaDB/;
-    return 0;
-}
-
-sub can_store_null_character {
-    return 0 if is_postgresql();
-    return 1;
-}
-
-sub format_uuid_for_db {
-    my $class = shift;
-    my ($uuid) = @_;
-
-    return $uuid unless is_percona();
-    return uuid2bin($uuid);
-}
-
-sub format_uuid_for_app {
-    my $class = shift;
-    my ($uuid_bin) = @_;
-
-    return $uuid_bin unless is_percona();
-    return bin2uuid($uuid_bin);
-}
-
-sub config {
-    my $self = shift;
-    my ($setting, @val) = @_;
-
-    my $conf = $self->resultset('Config')->find_or_create({setting => $setting, @val ? (value => $val[0]) : (value => 0)});
-
-    $conf->update({value => $val[0]}) if @val;
-
-    return $conf->value;
-}
-
-sub vague_run_search {
-    my $self = shift;
-    my (%params) = @_;
-
-    my ($project, $run, $user);
-
-    my $query = $params{query} // {status => 'complete'};
-    my $attrs = $params{attrs} // {order_by => {'-desc' => 'run_id'}, rows => 1};
-
-    $attrs->{offset} = $params{idx} if $params{idx};
-
-    if (my $username = $params{username}) {
-        $user = $self->resultset('User')->find({username => $username}) || die "Invalid Username ($username)";
-        $query->{user_id} = $user->user_id;
-    }
-
-    if (my $project_name = $params{project_name}) {
-        $project = $self->resultset('Project')->find({name => $project_name}) || die "Invalid Project ($project)";
-        $query->{project_id} = $project->project_id;
-    }
-
-    if (my $source = $params{source}) {
-        my $run = $self->resultset('Run')->find_by_id_or_uuid($source, $query, $attrs);
-        return $run if $run;
-
-        if (my $p = $self->resultset('Project')->find({name => $source})) {
-            die "Project mismatch ($source)"
-                if $project && $project->project_id ne $p->project_id;
-
-            $query->{project_id} = $p->project_id;
-        }
-        elsif (my $u = $self->resultset('User')->find({username => $source})) {
-            die "User mismatch ($source)"
-                if $user && $user->user_id ne $u->user_id;
-
-            $query->{user_id} = $u->user_id;
-        }
-        else {
-            die "No match for source ($source)";
-        }
-    }
-
-    return $self->resultset('Run')->search($query, $attrs)
-        if $params{list};
-
-    $run = $self->resultset('Run')->find($query, $attrs);
-    return $run;
-}
+orm yath => sub {
+    # No db here. A db is attached with a connect callback at runtime (see
+    # SYNOPSIS) so no credentials live in this file. The schema is introspected
+    # from the live database by autofill, which runs lazily when the connection
+    # is first built.
+    autofill sub {
+        autotype 'JSON';                                # JSONB parameters/fields columns
+        autotype 'UUID';                                # native uuid PKs/FKs <-> canonical string
+        autotype 'DateTime';                            # timestamptz columns <-> DateTime
+        autorow 'App::Yath2::Schema::Row';              # dumb autorow under App::Yath2::Schema::Row::
+    };
+};
 
 1;
 
@@ -141,24 +33,84 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Schema - Yath database root schema object.
+App::Yath2::Schema - The yath database schema, as a DBIx::QuickORM ORM.
 
 =head1 DESCRIPTION
 
+Defines the App::Yath2 database's L<DBIx::QuickORM> ORM, named C<yath>. The ORM
+carries no database and no credentials: the schema is built by C<autofill>,
+which introspects the live database the first time a connection is made. JSON
+(JSONB C<parameters>/C<fields>), UUID, and DateTime (C<timestamptz>) columns are
+inflated/deflated automatically, and a row class is generated per table under
+C<App::Yath2::Schema::Row::> (a hand-written
+C<App::Yath2::Schema::Row::E<lt>TableE<gt>> is loaded if one exists).
+
+The tables themselves are created from the per-flavor DDL shipped under
+C<share/schema/> (the source of truth -- there is no Perl schema definition and
+no codegen); C<autofill> only reads what that DDL produced, it never creates
+tables. UUID values the DB layer inserts are generated in Perl with
+L<App::Yath2::Util::UUID> (lowercase v7); the UUID type here only converts
+stored values to and from their canonical form.
+
+Row objects are deliberately B<dumb> (DCI / modules-as-actions, spec §2b): no
+algorithms live in row classes. Complex logic (import, sync, queries) lives in
+dedicated modules/controllers acting on rows.
+
+The DB layer is B<optional> (spec R11): nothing always-loaded C<use>s a DB
+module at compile time. C<use>ing this module pulls in L<DBIx::QuickORM>, so it
+is only loaded from DB-touching entry points (the logger, the C<db>/C<server>
+commands, sync/import), each of which C<require>s its modules lazily with an
+actionable error when absent.
+
+Because the ORM has no database, attach one with a C<connect> callback before
+asking for a connection. The callback must return a fresh L<DBI> handle each
+time it is called.
+
 =head1 SYNOPSIS
 
-TODO
+C<use>ing this module installs a C<qorm()> accessor into the caller (the default
+L<DBIx::QuickORM> export name); C<< qorm(orm => 'yath') >> fetches the ORM.
+Attach a database with a C<connect> callback, then ask for the connection:
+
+    use DBIx::QuickORM only => [qw/db dialect connect db_name/];
+    use App::Yath2::Schema;
+
+    my $orm = qorm(orm => 'yath');
+
+    $orm->db(db(sub {
+        dialect 'PostgreSQL';                   # the dialect is still required
+        db_name $db_name;                       # database/catalog autofill reads
+        connect(sub { $fresh_dbh });            # any sub returning a NEW DBI handle
+    }));
+
+    my $con = $orm->connection;                 # autofill introspects here
+    my $run = $con->handle('runs')->insert({ run_uuid => $uuid, ... });
+
+=head1 SEE ALSO
+
+=over 4
+
+=item L<App::Yath2::DB::Flavor>
+
+The per-dialect flavor registry (dialect name, DDL path, live-handle detection,
+post-connect PRAGMAs).
+
+=item L<App::Yath2::Util::UUID>
+
+Central lowercase C<gen_uuid()> and the v7-preserving C<derive_uuid()>.
+
+=back
 
 =head1 SOURCE
 
-The source code repository for Test2-Harness-UI can be found at
-F<http://github.com/Test-More/Test2-Harness-UI/>.
+The source code repository for Test2-Harness can be found at
+F<http://github.com/Test-More/Test2-Harness/>.
 
 =head1 MAINTAINERS
 
 =over 4
 
-=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+=item Chad Granum E<lt>exodist7@gmail.comE<gt>
 
 =back
 
@@ -166,7 +118,7 @@ F<http://github.com/Test-More/Test2-Harness-UI/>.
 
 =over 4
 
-=item Chad Granum E<lt>exodist@cpan.orgE<gt>
+=item Chad Granum E<lt>exodist7@gmail.comE<gt>
 
 =back
 
@@ -174,14 +126,9 @@ F<http://github.com/Test-More/Test2-Harness-UI/>.
 
 Copyright Chad Granum E<lt>exodist7@gmail.comE<gt>.
 
-This program is free software; you can redistribute it and/or
-modify it under the same terms as Perl itself.
+This program is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
 
 See F<http://dev.perl.org/licenses/>
 
 =cut
-
-=pod
-
-=cut POD NEEDS AUDIT
-

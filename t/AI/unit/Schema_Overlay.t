@@ -1,6 +1,12 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
+
+# Ticket #45: the old DBIx::Class DB/web layer (App::Yath2::Schema::*) moved to
+# reference/old_db and is being rewritten on QuickORM. This BEGIN skip_all runs
+# (and exits) before the moved Schema modules are loaded below.
+BEGIN { plan skip_all => "App::Yath2::Schema moved to reference/old_db (ticket #45); DB layer is being rewritten" }
+
 #
 # Exercise the real logic in the inlined Result-class overlays
 # (App::Yath2::Schema::Overlay::*) against an ephemeral SQLite database:
@@ -39,7 +45,7 @@ use Test2::Util::UUID qw/gen_uuid/;
 my $here = __FILE__;
 my ($vol, $dir) = File::Spec->splitpath($here);
 my $root = File::Spec->rel2abs(File::Spec->catdir($dir, File::Spec->updir, File::Spec->updir, File::Spec->updir));
-my $sqlfile = File::Spec->catfile($root, qw/share schema SQLite.sql/);
+my $sqlfile = File::Spec->catfile($root, qw/share schema SQLite log.sql/);
 
 plan skip_all => "schema sql not found: $sqlfile" unless -f $sqlfile;
 

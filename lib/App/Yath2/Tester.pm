@@ -156,7 +156,7 @@ sub yath {
         my $fh;
         ($fh, $logfile) = tempfile("yathlog-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.jsonl');
         close($fh);
-        @log = ('-F' => $logfile);
+        @log = ('--jsonl-file' => $logfile);
         print "DEBUG: log file = '$logfile'\n" if $debug;
     }
 

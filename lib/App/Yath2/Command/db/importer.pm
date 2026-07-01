@@ -4,31 +4,29 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-sub name        { "db-importer" }
-sub summary     { "Start an importer process that will wait for uploaded logs to import" }
-sub description { "Start an importer process that will wait for uploaded logs to import" }
-sub group       { "database" }
-
-use App::Yath2::Schema::Util qw/schema_config_from_settings/;
-use App::Yath2::Schema::Importer;
-
 use parent 'App::Yath2::Command';
-use Getopt::Yath;
+use Test2::Harness2::Util::HashBase;
 
+use Getopt::Yath;
 include_options(
-    'App::Yath2::Options::DB',
+    'App::Yath2::Options::Yath',
 );
 
+sub name        { "db-importer" }
+sub summary     { "Start an importer process (temporarily unavailable)" }
+sub description { "Start an importer process that will wait for uploaded logs to import. NOTE: the DB/web layer is being rewritten; this command is temporarily unavailable." }
+sub group       { "database" }
+
+# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket #45)
+# and is being rewritten on QuickORM. Keep the command visible in `yath help`
+# but error clearly if anyone tries to run it.
 sub run {
-    my $self = shift;
+    die <<"    EOT";
 
-    my $settings = $self->settings;
-    my $config = schema_config_from_settings($settings);
+The DB/web layer is being rewritten; this command is temporarily unavailable.
+See AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md for details.
 
-    $SIG{INT}  = sub { exit 0 };
-    $SIG{TERM} = sub { exit 0 };
-
-    App::Yath2::Schema::Importer->new(config => $config)->run;
+    EOT
 }
 
 1;

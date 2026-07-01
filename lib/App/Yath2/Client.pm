@@ -646,6 +646,12 @@ Query the runner's live resource status over the socket (used by C<yath
 resources>). Returns an arrayref of C<< {class, lines} >> records, or C<undef> if
 the runner could not be reached.
 
+=item $reply = $client->ping
+
+A no-side-effect liveness round-trip over the socket (used by C<yath ping>).
+Returns the runner's ack hashref (C<< {ok, pid, stamp} >>), or C<undef> if the
+runner could not be reached.
+
 =item $client->halt_run
 
 Ask the runner to halt this client's run over the socket (the caught-signal
@@ -687,6 +693,8 @@ sub status ($self) { return $self->submitter->status }
 sub truncate ($self) { return $self->submitter->truncate }
 
 sub resources ($self) { return $self->submitter->resources }
+
+sub ping ($self) { return $self->submitter->ping }
 
 sub halt_run ($self) { return $self->submitter->halt_run($self->{+RUN_ID}) }
 

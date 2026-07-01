@@ -52,7 +52,7 @@ $rec->record_event($ev->(assert => {pass => 1, number => 1, details => 'a'}));
 # with NO folded harness_final_state -- the exact ordering the bug rode on.
 my $mon  = Test2::Harness2::Runner::Monitor->new;
 my $uuid = 'UUID-PASS';
-$mon->feed({facet_data => {harness_collector => {uuid => $uuid, name => 't/pass.t', events_file => $file, run_uuid => 'RUN-1', try => 0}, harness_state_transition => {state => 'starting'}}});
+$mon->feed({facet_data => {harness_collector => {uuid => $uuid, name => 't/pass.t', events_file => $file, run_uuid => 'RUN-1', try => 1}, harness_state_transition => {state => 'starting'}}});
 $mon->feed({facet_data => {harness_collector => {uuid => $uuid}, harness_state_transition => {state => 'completed'}}});
 
 ok(!$mon->collector($uuid)->{final_state}, "final_state NOT folded yet (completed arrived first)");

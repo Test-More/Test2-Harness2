@@ -492,7 +492,11 @@ sub _collector_retry_if_tries {
     my $task    = $running->{$job_id} or return 0;
 
     my $retries = $self->_job_retry_count($task, $entry->{run_id});
-    return 0 unless defined($try) && $try < $retries;
+    # Try ordinals are 1-based (R10 / #49): the first attempt is $try == 1, and the
+    # job is allowed $retries retries (so 1 + $retries total attempts). Retry while
+    # the current try is within budget: $try <= $retries (equivalently the 0-based
+    # attempt index $try - 1 is still < $retries).
+    return 0 unless defined($try) && $try <= $retries;
 
     my $ok = eval { $self->state->retry_task($job_id); 1 };
     return 0 unless $ok;
@@ -836,6 +840,17 @@ sub request_handler_reload_state {
         unless $self->{'rootpid'} == $$;
 
     return {ok => 1, reload_state => $self->state->reload_state // {}};
+}
+
+# A no-side-effect liveness check (`yath ping`). Answer from ANY process the
+# connection lands on (the root runner on runner.socket, or a stage) -- the point
+# is just to prove the runner accepted a request and replied over the socket, and
+# to report round-trip latency. It touches no state. Two-way: returns the ack,
+# carrying this process's pid (so the caller can show which process answered) and a
+# server-side timestamp.
+sub request_handler_ping {
+    my $self = shift;
+    return {ok => 1, pid => $$, stamp => time};
 }
 
 # The persistent `status`/`ps`/`abort` commands ask the runner for
@@ -1202,7 +1217,7 @@ sub request_handler_subscribe {
 
     my $run_id = $payload->{run_id};
 
-    $self->add_subscriber($conn, $run_id) if defined $conn;
+    $self->add_subscriber($conn, $run_id, $payload->{drain_gate}) if defined $conn;
 
     return {ok => 1, snapshot => $self->monitor->snapshot($run_id)};
 }

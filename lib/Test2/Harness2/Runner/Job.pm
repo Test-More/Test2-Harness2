@@ -159,6 +159,15 @@ sub collector_target {
         $skip = $msg;
         $resource_skip_is_fail = 1 if $self->{+SETTINGS}->runner->fail_on_resource_skip;
     }
+    if (defined $task->{directive_error}) {
+        # A test file whose in-file directives failed to parse (App::Yath2::TestFile,
+        # E1): always run as a synthetic FAILURE (never a skip), independent of
+        # fail_on_resource_skip -- a broken directive must not be silently honored.
+        my $msg = $task->{directive_error};
+        $msg =~ s/\s+/ /g;
+        $skip = "Invalid harness directive: $msg";
+        $resource_skip_is_fail = 1;
+    }
 
     if (!$skip && ($task->{binary} || $task->{non_perl})) {
         my $file = clean_path($self->ch_dir ? $self->file : $self->rel_file);
@@ -417,7 +426,7 @@ sub events_file { $_[0]->{+EVENTS_FILE} //= clean_path(File::Spec->catfile($_[0]
 sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+RUNNER}->dir, $_[0]->{+RUN}->run_id)) }
 
 sub verbose { $_[0]->{+VERBOSE} //= $_[0]->{+TASK}->{verbose} // 0 }
-sub is_try  { $_[0]->{+IS_TRY}  //= $_[0]->{+TASK}->{is_try}  // 0 }
+sub is_try  { $_[0]->{+IS_TRY}  //= $_[0]->{+TASK}->{is_try}  // 1 }
 sub ch_dir  { $_[0]->{+CH_DIR}  //= $_[0]->{+TASK}->{ch_dir}  // '' }
 sub unsafe_inc  { $_[0]->{+UNSAFE_INC}  //= $_[0]->{+RUNNER}->unsafe_inc }
 sub event_uuids { $_[0]->{+EVENT_UUIDS} //= $_[0]->run->event_uuids }
@@ -688,7 +697,7 @@ sub env_vars {
 
         T2_HARNESS_JOB_FILE     => $self->rel_file,
         T2_HARNESS_JOB_NAME     => $self->{+TASK}->{job_name},
-        T2_HARNESS_JOB_IS_TRY   => $self->{+IS_TRY}           // 0,
+        T2_HARNESS_JOB_IS_TRY   => $self->is_try,
         T2_HARNESS_JOB_DURATION => $self->{+TASK}->{duration} // '',
     };
 }
@@ -818,7 +827,8 @@ True if L<Test2::Plugin::IOEvents> should be used.
 
 =item $int = $job->is_try
 
-This starts at 0 and will be incremented for every retry of the job.
+This starts at 1 (the first attempt) and is incremented for every retry of the
+job (so the first retry is 2).
 
 =item $path = $job->job_dir
 

@@ -407,9 +407,9 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         type           => 'List',
         name           => 'resource',
         short          => 'R',
-        long_examples  => [' Port', ' CPU', ' CPU=70', ' Memory=20%', ' +Test2::Harness2::Runner::Resource::Port'],
-        short_examples => [' Port', ' CPU', ' CPU=70', ' Memory=20%'],
-        description    => "Use a resource module to assign resource assignments to individual tests. Some resources accept an inline argument after '=' (e.g. CPU=70, Memory=512mb).",
+        long_examples  => [' Port', ' CPU', ' CPU=70', ' Memory=20%', ' UnixLimits', ' UnixLimits=nproc=128,nofile=10%', ' Disk=/tmp:25%', ' +Test2::Harness2::Runner::Resource::Port'],
+        short_examples => [' Port', ' CPU', ' CPU=70', ' Memory=20%', ' UnixLimits', ' Disk=/tmp:25%'],
+        description    => "Use a resource module to assign resource assignments to individual tests. Some resources accept an inline argument after '=' (e.g. CPU=70, Memory=512mb, UnixLimits=nproc=128,nofile=10%, Disk=/tmp:25%).",
 
         # An inline '=arg' (e.g. CPU=70) is split off the class name and stored in
         # the parallel resource_args map keyed by the fully-qualified class, so the

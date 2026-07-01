@@ -125,18 +125,18 @@ subtest eof_with_fail_retries_then_fails => sub {
     my $runner = mk_runner(running => {J1 => {file => 'a.t', retry => 1}});
     my $conn0  = FakeConn->new;
 
-    # First attempt (try 0) fails -> retry (one try remains).
-    identify($runner, $conn0, job_id => 'J1', job_try => 0, run_id => 'R1');
+    # First attempt (try 1, 1-based per R10/#49) fails -> retry (one try remains).
+    identify($runner, $conn0, job_id => 'J1', job_try => 1, run_id => 'R1');
     feed_transition($runner, $conn0, {harness_collector => {uuid => 'C1'}, harness_final_state => {pass => 0}});
     $runner->collector_conn_eof($conn0);
 
     is($runner->state->{retried}, ['J1'], "fail with a try left -> retried");
     is($runner->{announced}[-1]{state}, 'retry', "announced retry");
 
-    # The re-queued attempt (try 1) fails too -> no tries left -> fail (done).
-    $runner->state->{running}{J1} = {file => 'a.t', retry => 1};    # re-running, try 1
+    # The re-queued attempt (try 2) fails too -> no tries left -> fail (done).
+    $runner->state->{running}{J1} = {file => 'a.t', retry => 1};    # re-running, try 2
     my $conn1 = FakeConn->new;
-    identify($runner, $conn1, job_id => 'J1', job_try => 1, run_id => 'R1');
+    identify($runner, $conn1, job_id => 'J1', job_try => 2, run_id => 'R1');
     feed_transition($runner, $conn1, {harness_collector => {uuid => 'C2'}, harness_final_state => {pass => 0}});
     $runner->collector_conn_eof($conn1);
 

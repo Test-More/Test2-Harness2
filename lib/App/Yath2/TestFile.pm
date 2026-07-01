@@ -15,10 +15,14 @@ use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
 use Test2::Harness2::TestFile();
 
+use Test2::Harness2::Util::Directives();
+use Test2::Harness2::Util::Directives::Legacy();
+
 use File::Spec;
 
 use Test2::Harness2::Util::HashBase qw{
     <file +relative <_scanned <_headers +_shbang <is_binary <non_perl
+    +_directive_error
     input env_vars test_args
     queue_args
     job_class
@@ -26,6 +30,13 @@ use Test2::Harness2::Util::HashBase qw{
     _category _stage _duration _min_slots _max_slots
     _no_preload _require_preload _preload_list
 };
+
+# True (the error message) when this file's in-file directives failed to parse
+# (E1). Reading it forces a scan so callers do not need to scan first.
+sub directive_error ($self) {
+    $self->_scan unless $self->{+_SCANNED};
+    return $self->{+_DIRECTIVE_ERROR};
+}
 
 sub set_duration ($self, $val) { $self->set__duration(lc($val)) }
 sub set_category ($self, $val) { $self->set__category(lc($val)) }
@@ -231,156 +242,254 @@ sub scan ($self) {
     return;
 }
 
+# Safety ceiling: never scan more than this many lines looking for the header
+# block. Matches the historical O(1) header scan: directives live at the top of
+# a test file, so a real code line (outside an open HARNESS2 block) ends the
+# scan well before this -- the ceiling is only a backstop for a pathological
+# file that is all comments / an unterminated block.
+use constant HEADER_LINE_CEILING => 500;
+
 sub _scan ($self) {
     return if $self->{+_SCANNED}++;
     return if $self->{+IS_BINARY};
 
-    my $fh = open_file($self->{+FILE});
+    my $fh      = open_file($self->{+FILE});
     my $comment = $self->{+COMMENT} // '#';
 
+    # Two parsers fed from one O(1) header scan. We do not yet know which to
+    # honor: a file with ANY 'HARNESS2:' directive uses the new grammar and its
+    # legacy 'HARNESS-' lines are ignored (silently, E2); otherwise the legacy
+    # compat parser is used. Both build the SAME nested-hash representation that
+    # _apply_directives consumes.
+    my $new    = Test2::Harness2::Util::Directives->new(comments => [$comment]);
+    my $legacy = Test2::Harness2::Util::Directives::Legacy->new(comment => $comment, file => $self->{+FILE});
+
+    my $saw_harness2;
+
     my %headers;
-    for (my $ln = 1; my $line = <$fh>; $ln++) {
-        chomp($line);
-        next if $line =~ m/^\s*$/;
+    my $err;
+    my $ok = eval {
+        for (my $ln = 1; my $line = <$fh>; $ln++) {
+            last if $ln > HEADER_LINE_CEILING;
 
-        if ($ln == 1 && $line =~ m/^#!/) {
-            my $shbang = $self->_parse_shbang($line);
-            if ($shbang) {
-                $self->{+_SHBANG} = $shbang;
+            chomp($line);
 
-                if ($shbang->{non_perl}) {
-                    $self->{+NON_PERL} = 1;
+            # Always feed the line to the new-grammar parser so it tracks block
+            # state ('key { ... key }') across non-directive lines; non-matching
+            # lines are a no-op for it.
+            $new->parse_line($line);
+            $saw_harness2 = 1 if $line =~ m/^\s*\Q$comment\E\s*HARNESS2:/;
+
+            next if $line =~ m/^\s*$/;
+
+            if ($ln == 1 && $line =~ m/^#!/) {
+                my $shbang = $self->_parse_shbang($line);
+                if ($shbang) {
+                    $self->{+_SHBANG} = $shbang;
+                    $self->{+NON_PERL} = 1 if $shbang->{non_perl};
+                    next;
                 }
+            }
 
+            # Uhg, breaking encapsulation between yath and the harness
+            if ($line =~ m/^\s*#\s*THIS IS A GENERATED YATH RUNNER TEST/) {
+                $headers{features}->{run} = 0;
                 next;
             }
-        }
 
-        # Uhg, breaking encapsulation between yath and the harness
-        if ($line =~ m/^\s*#\s*THIS IS A GENERATED YATH RUNNER TEST/) {
-            $headers{features}->{run} = 0;
-            next;
-        }
-
-        next if $line =~ m/^\s*#/ && $line !~ m/^\s*#\s*HARNESS-.+/;    # Ignore commented lines which aren't HARNESS-?
-        next if $line =~ m/^\s*(use|require|BEGIN|package)\b/;          # Only supports single line BEGINs
-        last unless $line =~ m/^\s*\Q$comment\E\s*HARNESS-(.+)$/;
-
-        my ($dir, $rest) = split /[-\s]+/, $1, 2;
-        $dir = lc($dir);
-        my @args;
-        if ($dir eq 'meta') {
-            @args = split /\s+/, $rest, 2;                              # Check for white space delimited
-            @args = split(/[-]+/, $rest, 2) if scalar @args == 1;       # Check for dash delimited
-            $args[1] =~ s/\s+(?:#.*)?$// if defined $args[1];             # Strip trailing white space and comment if present
-        }
-        elsif ($rest) {
-            $rest =~ s/\s+(?:#.*)?$//;                                  # Strip trailing white space and comment if present
-            @args = split /[-\s]+/, $rest;
-        }
-
-        if ($dir eq 'no') {
-            my $feature = lc(join '_' => @args);
-            if ($feature eq 'retry') {
-                $headers{retry} = 0
-            } else {
-                $headers{features}->{$feature} = 0;
-            }
-        }
-        elsif ($dir eq 'smoke') {
-            $headers{features}->{smoke} = 1;
-        }
-        elsif ($dir eq 'retry') {
-            $headers{retry} = 1 unless @args || defined $headers{retry};
-            for my $arg (@args) {
-                if ($arg =~ m/^\d+$/) {
-                    $headers{retry} = int $arg;
-                }
-                elsif ($arg =~ m/^iso/i) {
-                    $headers{retry} //= 1;
-                    $headers{retry_isolated} = 1;
-                }
-                else {
-                    warn "Unknown 'HARNESS-RETRY' argument '$arg' at $self->{+FILE} line $ln.\n";
-                }
-            }
-        }
-        elsif ($dir eq 'yes' || $dir eq 'use') {
-            my $feature = lc(join '_' => @args);
-            $headers{features}->{$feature} = 1;
-        }
-        elsif ($dir eq 'stage') {
-            my @list = @args;
-
-            # 'REQUIRE' is a reserved leading keyword: it marks the listed
-            # stages as mandatory (no fallback) rather than advisory.
-            # See ARCHITECTURE.md §4.7a "Directive syntax note".
-            if (@list && uc($list[0]) eq 'REQUIRE') {
-                shift @list;
-                $headers{require_preload} = 1;
+            # A HARNESS2: directive line -> feed the new parser (done above).
+            if ($line =~ m/^\s*\Q$comment\E\s*HARNESS2:/) {
+                next;
             }
 
-            $headers{preload_list} = [@list];
-
-            # Keep the legacy single-stage header populated for back-compat.
-            $headers{stage} = $list[0];
-        }
-        elsif ($dir eq 'meta') {
-            my ($key, $val) = @args;
-            $key = lc($key);
-            push @{$headers{meta}->{$key}} => $val;
-        }
-        elsif ($dir eq 'duration' || $dir eq 'dur') {
-            my ($name) = @args;
-            $name = lc($name);
-            $headers{duration} = $name;
-        }
-        elsif ($dir eq 'category' || $dir eq 'cat') {
-            my ($name) = @args;
-            $name = lc($name);
-            if ($name =~ m/^(long|medium|short)$/i) {
-                $headers{duration} = $name;
-            }
-            else {
-                $headers{category} = $name;
-            }
-        }
-        elsif ($dir eq 'conflicts') {
-            my @conflicts_array;
-
-            foreach my $arg (@args) {
-                push @conflicts_array, lc($arg);
+            # A legacy HARNESS- directive line -> feed the legacy parser.
+            if ($line =~ m/^\s*\Q$comment\E\s*HARNESS-.+/) {
+                $legacy->parse_line($line);
+                next;
             }
 
-            # Allow multiple lines with # HARNESS-CONFLICTS FOO
-            $headers{conflicts} ||= [];
-            push @{$headers{conflicts}}, @conflicts_array;
+            # Plain comment lines are skipped (neither HARNESS2 nor HARNESS-).
+            next if $line =~ m/^\s*#/;
 
-            # Make sure no more than 1 conflict is ever present.
-            @{$headers{conflicts}} = uniq @{$headers{conflicts}};
+            # Single-line use/require/BEGIN/package preamble is skipped.
+            next if $line =~ m/^\s*(use|require|BEGIN|package)\b/;
+
+            # The first real code line ends the header scan -- UNLESS a HARNESS2
+            # block is still open (block bodies are arbitrary code spanning to
+            # the matching 'key }' closer).
+            last unless $new->open_block_key;
         }
-        elsif ($dir eq 'timeout') {
-            my ($type, $num, $extra) = @args;
-            $type = lc($type);
-            $num = lc($num);
+        1;
+    };
+    $err = $@ unless $ok;
 
-            ($type, $num) = ('postexit', $extra) if $type eq 'post' && $num eq 'exit';
+    close($fh);
 
-            warn "'" . uc($type) . "' is not a valid timeout type, use 'EVENT' or 'POSTEXIT' at $self->{+FILE} line $ln.\n"
-                unless $type =~ m/^(event|postexit)$/;
+    # E1: a HARNESS2 grammar error (bad quote, unterminated/mismatched block,
+    # key collision, ...) is caught here, the file is marked invalid (the error
+    # stored), and queueing it emits a synthetic harness-visible FAILURE rather
+    # than aborting discovery / the run.
+    if (!$ok) {
+        $self->{+_DIRECTIVE_ERROR} = _clean_err($err);
+        $self->{+_HEADERS} = {};
+        return;
+    }
 
-            $headers{timeout}->{$type} = $num;
+    my $dirs;
+    if ($saw_harness2) {
+        $ok = eval { $dirs = $new->finish; 1 };
+    }
+    else {
+        $ok = eval { $dirs = $legacy->finish; 1 };
+    }
+
+    unless ($ok) {
+        $self->{+_DIRECTIVE_ERROR} = _clean_err($@);
+        $self->{+_HEADERS} = {};
+        return;
+    }
+
+    $self->_apply_directives($dirs, \%headers);
+
+    $self->{+_HEADERS} = \%headers;
+    return;
+}
+
+# Strip Carp's trailing ' at <file> line N.' source location, keeping the
+# parser's own (HARNESS2: "... at line N") message that points at the test file.
+sub _clean_err ($err) {
+    my $msg = "$err";
+    $msg =~ s/ at \S+ line \d+\.?\s*\z//;
+    chomp $msg;
+    return $msg;
+}
+
+# Map the (field-agnostic) nested-hash directive output -- produced by either
+# Test2::Harness2::Util::Directives (HARNESS2 grammar) or its ::Legacy compat
+# (HARNESS- lines) -- onto the %headers shape the rest of this class reads via
+# the check_* / queue_item accessors.
+sub _apply_directives ($self, $dirs, $headers) {
+    # slots: [min, max]
+    if (my $list = $dirs->{slots}) {
+        my ($min, $max) = @$list;
+        $headers->{min_slots} //= $min          if defined $min;
+        $headers->{max_slots} //= defined($max) ? $max : $min;
+    }
+
+    # duration: scheduling label.
+    if (my $list = $dirs->{duration}) {
+        $headers->{duration} = lc($list->[0]) if defined $list->[0];
+    }
+
+    # category: a long|medium|short value is a duration; anything else is a
+    # real category.
+    if (my $list = $dirs->{category}) {
+        my $val = lc($list->[0] // '');
+        if ($val =~ m/^(?:long|medium|short)$/) {
+            $headers->{duration} = $val;
         }
-        elsif ($dir eq 'job' && $rest =~ m/slots\s+(\d+)(?:\s+(\d+))?$/i) {
-            $headers{min_slots} //= $1;
-            $headers{max_slots} //= $2 ? $2 : $1;
-        }
-        else {
-            warn "Unknown harness directive '$dir' at $self->{+FILE} line $ln.\n";
+        elsif (length $val) {
+            $headers->{category} = $val;
         }
     }
 
-    $self->{+_HEADERS} = \%headers;
+    # Preload: the legacy compat hands back the already-resolved
+    # preload_list / require_preload / stage; the HARNESS2 grammar hands back a
+    # 'preload' token list ('default'/0/<stage-names>). Honor whichever shape
+    # arrived.
+    if (defined(my $list = $dirs->{preload_list})) {
+        $headers->{preload_list} = [@$list];
+    }
+    elsif (my $pl = $dirs->{preload}) {
+        my @stages = grep { defined && !ref && $_ ne 'default' && $_ ne '0' } @$pl;
+        $headers->{preload_list} = \@stages;
+        # 'preload @off' / '... 0' -> no preload.
+        $headers->{features}->{preload} = 0
+            if grep { defined && !ref && $_ eq '0' } @$pl and !@stages;
+    }
+
+    if (my $rp = $dirs->{require_preload}) {
+        $headers->{require_preload} = (ref($rp) eq 'ARRAY' ? $rp->[-1] : $rp) ? 1 : 0;
+    }
+
+    if (my $st = $dirs->{stage}) {
+        $headers->{stage} = ref($st) eq 'ARRAY' ? $st->[0] : $st;
+    }
+    elsif ($headers->{preload_list} && @{$headers->{preload_list}}) {
+        # Keep the legacy single-stage header populated for back-compat.
+        $headers->{stage} //= $headers->{preload_list}->[0];
+    }
+
+    # conflicts: flat lowercased unique list.
+    if (my $list = $dirs->{conflicts}) {
+        my @prev = @{$headers->{conflicts} || []};
+        push @prev, map { lc $_ } @$list;
+        $headers->{conflicts} = [uniq @prev];
+    }
+
+    # features: feature.<name> subtree -> features hash (last value wins).
+    if (my $feat = $dirs->{feature}) {
+        if (ref($feat) eq 'HASH') {
+            for my $name (keys %$feat) {
+                my $key = $name;
+                $key =~ tr/-/_/;
+                $headers->{features}->{$key} = $feat->{$name}->[-1] ? 1 : 0;
+            }
+        }
+    }
+
+    # Well-known feature toggles written as bare top-level HARNESS2 keys
+    # (e.g. '# HARNESS2: smoke @on', '# HARNESS2: fork @off') -- the HARNESS2
+    # equivalent of the legacy 'HARNESS-SMOKE' / 'HARNESS-NO-FORK'. The legacy
+    # compat parser routes these through feature.* already; here we pick up the
+    # grammar's bare form.
+    for my $f (qw/timeout fork preload stream run isolation smoke io_events/) {
+        next unless defined(my $list = $dirs->{$f});
+        next unless ref($list) eq 'ARRAY' && @$list;
+        $headers->{features}->{$f} = $list->[-1] ? 1 : 0;
+    }
+
+    # timeout.event / timeout.postexit.
+    if (my $tt = $dirs->{timeout}) {
+        if (ref($tt) eq 'HASH') {
+            $headers->{timeout}->{event}    = $tt->{event}->[-1]    if $tt->{event};
+            $headers->{timeout}->{postexit} = $tt->{postexit}->[-1] if $tt->{postexit};
+        }
+    }
+
+    # retry: nested (retry.count / retry.isolated) or a bare 'retry N' list.
+    if (exists $dirs->{retry}) {
+        my $rt = $dirs->{retry};
+        if (ref($rt) eq 'HASH') {
+            if (defined(my $count = ($rt->{count} // [])->[-1])) {
+                $headers->{retry} = int $count;
+            }
+            if (($rt->{isolated} // [])->[-1]) {
+                $headers->{retry} //= 1;
+                $headers->{retry_isolated} = 1;
+            }
+        }
+        elsif (ref($rt) eq 'ARRAY') {
+            # Bare 'HARNESS2: retry N' -> retry count.
+            if (defined(my $count = $rt->[-1])) {
+                $headers->{retry} = int $count;
+            }
+        }
+        else {
+            $headers->{retry} = int($rt // 0);
+        }
+    }
+
+    # meta.<key> subtree -> meta hash of arrayrefs.
+    if (my $meta = $dirs->{meta}) {
+        if (ref($meta) eq 'HASH') {
+            for my $k (keys %$meta) {
+                push @{$headers->{meta}->{lc $k}}, @{$meta->{$k}};
+            }
+        }
+    }
+
+    return;
 }
 
 sub _parse_shbang ($self, $line) {
@@ -412,6 +521,45 @@ sub _parse_shbang ($self, $line) {
 }
 
 sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
+    # E1: a file whose in-file directives failed to parse is invalid. We still
+    # queue it (discovery / the run continue), but the queued task carries a
+    # directive_error so it runs as a synthetic harness-visible FAILURE (see
+    # Test2::Harness2::Runner::Job::collector_target) rather than running the
+    # real test with mis-parsed directives.
+    $self->_scan unless $self->{+_SCANNED};
+    if (defined $self->{+_DIRECTIVE_ERROR}) {
+        return {
+            binary    => 0,
+            non_perl  => 0,
+            category  => 'general',
+            duration  => 'medium',
+            conflicts => [],
+            switches  => [],
+            file      => $self->file,
+            rel_file  => $self->relative,
+            job_id    => gen_uuid(),
+            job_name  => $job_name,
+            run_id    => $run_id,
+            stamp     => time,
+            rank      => 1,
+            use_fork    => 0,
+            use_preload => 0,
+            use_stream  => 1,
+            use_timeout => 1,
+            io_events   => 1,
+            smoke       => 0,
+            no_preload      => 1,
+            require_preload => 0,
+            preload_list    => [],
+            stage           => undef,
+
+            directive_error => $self->{+_DIRECTIVE_ERROR},
+
+            @{$self->{+QUEUE_ARGS}},
+            %inject,
+        };
+    }
+
     die "The '$self->{+FILE}' test specifies that it should not be run by Test2::Harness2.\n"
         unless $self->check_feature(run => 1);
 

@@ -65,7 +65,7 @@ yath(
         like($out->{output}, qr{^  Display Options  \(display\)$}m,        "Found display category");
         like($out->{output}, qr{^  Finder Options  \(finder\)$}m,          "Found finder category");
         like($out->{output}, qr{^  Formatter Options  \(formatter\)$}m,    "Found formatter category");
-        like($out->{output}, qr{^  Logging Options  \(logging\)$}m,        "Found logging category");
+        like($out->{output}, qr{^  JSONL Renderer Options  \(jsonl\)$}m,   "Found jsonl renderer category");
         like($out->{output}, qr{^  Run Options  \(run\)$}m,                "Found run category");
         like($out->{output}, qr{^  Runner Options  \(runner\)$}m,          "Found runner category");
         like($out->{output}, qr{^  Workspace Options  \(workspace\)$}m,    "Found workspace category");

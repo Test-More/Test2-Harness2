@@ -1117,7 +1117,7 @@ Steps:
 - **PREREQ (R13):** replace ARCHITECTURE §2.4's "schema-as-Perl, **not** hand-written
   DDL" wording with "hand-written per-flavor DDL + QuickORM `autofill` (reflect-from-DB)" —
   prerequisite for this chunk.
-- Hand-write `share/schema/PostgreSQL.sql` (PostgreSQL-first, most capable); build
+- Hand-write `share/schema/PostgreSQL/log.sql` (PostgreSQL-first, most capable); build
   `App::Yath2::Schema` using QuickORM `orm` + `autofill` (autotype JSON/UUID/DateTime),
   `App::Yath2::Schema::Row::*` (DCI **dumb** rows — algorithms live in functions/modules,
   not row classes, §2b), and `App::Yath2::DB::Flavor`. **No `regen_schema.pl`.**
@@ -1366,6 +1366,60 @@ Steps:
   original transition `stamp`** (a late-joining logger must compute the same value —
   **verify first**): overwrite the derived `job_try_uuid`'s high-48-bit timestamp with the
   try's start stamp. Reproducibility holds iff that stamp is stable across loggers.
+
+### #63 — Multi-flavor / multi-version DB test matrix via DBIx::QuickDB
+**Status:** DONE · **Step:** DB-3 · **Depends:** #47
+
+**Landed:** shared helper `t/AI/lib/App/Yath2/Test/DBMatrix.pm` discovers every
+`~/dbs/<engine>-<version>` install (+ a system fallback when `~/dbs` lacks a
+flavor) and drives `Schema_quickorm.t` (DDL+autofill+per-engine UUID/JSON/datetime
+round-trip), `db_sync.t` (cross-flavor: the sqlite log source → each server
+flavor/version), and `db_logger.t` (end-to-end `yath test -L=<server DSN>` per
+version) over it. SQLite is always-on (inline); server cells are gated on
+`AUTHOR_TESTING` and **forked per cell** — DBIx::QuickDB resolves each driver's
+binary paths into file-scoped lexicals at first load per process, so without
+process isolation every version of a flavor would silently reuse whichever loaded
+first. `has_string_mirror`/`json_autotype` are self-calibrated off the live
+autofilled schema (the JSON-autotype claim varies by DBD). A cell skips with a
+clear flavor+version reason when below the flavor minimum (pg 10+ / mariadb 10.7+
+/ mysql+percona 8.0+) or when the server/driver is unavailable; a schema failure
+on a *supported* version is a real failure, not a skip. Required a fix to
+`build_connection` (derive the ORM `db_name` from the DSN — see the `fix(db):
+derive ORM db_name from the DSN` commit) so the DB logger autofills a server whose
+database is not named `yath`.
+
+**Problem:** the DB tests (`Schema_quickorm.t`, `db_logger.t`, `db_sync.t`, etc.)
+currently exercise only SQLite always + PostgreSQL when a connection happens to be
+available. The 6 flavor DDLs (PostgreSQL/SQLite/DuckDB/MySQL/MariaDB/Percona) and the
+autofill ORM + cross-DB sync must be proven against **every flavor AND every installed
+version**, not one ambient server. (DuckDB, like SQLite, is an inline embedded-file
+cell -- always on, self-skipping when `DBD::DuckDB` is absent; it is excluded from
+the `servers_only` logger/sync matrices because a `.duckdb` file is single-writer.) `~/dbs` has multiple versions of all flavors
+installed (plus some under `legacy/` and on other branches); the test suite must spin
+each up, run against it, and skip a specific flavor/version **only** when neither
+`~/dbs` nor a system install provides it.
+
+**Reference (read first):** `~/projects/DBIx-QuickDB` and `~/projects/DBIx-QuickORM`
+have working examples of using **DBIx::QuickDB** to launch every available version of
+each flavor (server discovery, per-version spin-up, teardown). Mirror that pattern —
+do not reinvent discovery.
+
+Steps:
+- Add a shared test helper (e.g. `t/lib` DB-matrix module) that, per flavor, asks
+  QuickDB for **all installed versions** under `~/dbs` (incl. `legacy/`), yields a
+  ready connection per (flavor, version), and tears it down after. Fall back to a
+  system install if `~/dbs` lacks that flavor.
+- Drive every DB test over that matrix: load the flavor's DDL, run the existing
+  assertions per (flavor, version). The cross-DB sync test (#53) should also cover
+  **cross-flavor** pairs (e.g. sqlite-log → each server flavor).
+- **Skip granularity:** skip a single (flavor, version) cell only when QuickDB cannot
+  provide it AND no system binary is found — never skip the whole flavor blanket.
+  Emit a clear `skip` reason naming the missing flavor+version so CI/log shows the gap.
+- Keep SQLite always-on (no server needed). Gate server spin-up on `AUTHOR_TESTING`
+  to keep the default user install fast.
+- Confirm autofill + per-engine UUID storage (BLOB(16)/BINARY(16)/native uuid),
+  datetime, and JSON round-trip on each real server version — the bug class these
+  catch is per-version SQL/typing drift the single-engine run hides.
 
 ---
 

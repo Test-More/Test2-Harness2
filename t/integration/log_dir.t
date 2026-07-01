@@ -13,7 +13,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
 
 yath(
     command => 'test',
-    args    => ["--log-dir=$tmpdir", '-L', '--ext=tx', $dir],
+    args    => ["--jsonl-dir=$tmpdir", '--ext=tx', $dir],
     exit    => 0,
     test    => sub {
         my $out = shift;

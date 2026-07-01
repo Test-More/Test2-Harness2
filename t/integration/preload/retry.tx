@@ -1,6 +1,8 @@
 use Test2::V0;
 #HARNESS-RETRY
 
-ok($ENV{T2_HARNESS_JOB_IS_TRY}, "This is a retry");
+# Try ordinals are 1-based (R10 / #49): the first attempt is is_try == 1, so this
+# only passes on a retry (is_try > 1) -- failing the first run forces the retry.
+ok(($ENV{T2_HARNESS_JOB_IS_TRY} // 0) > 1, "This is a retry");
 
 done_testing;
