@@ -39,8 +39,17 @@ yath(
     },
 );
 
-# A no-preload runner does not self-restart, so reload is a harmless no-op.
-yath(command => 'reload', exit => 0);
+# A no-preload runner does not self-restart, so there is nothing to reload. Rather
+# than falsely report success, `yath reload` detects this and exits 2 with a warning
+# (ticket #114) WITHOUT signalling the runner, so the runner keeps serving unchanged.
+yath(
+    command => 'reload',
+    test    => sub {
+        my $out = shift;
+        is($out->{exit} >> 8, 2, "reload of a no-preload runner exits 2 (nothing to reload)");
+        like($out->{output}, qr/no preload stages/, "warns that the runner has no preload stages");
+    },
+);
 
 # watch STOP must still connect over the socket and stop cleanly (the runner
 # survived the reload no-op). A no-preload runner emits no SIGHUP-reload line.

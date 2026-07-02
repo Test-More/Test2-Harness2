@@ -7,7 +7,7 @@ our $VERSION = '2.000000';
 use File::Spec();
 
 use App::Yath2::Pfile;
-use Test2::Harness2::Util qw/open_file/;
+use Getopt::Yath::Settings();
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase;
@@ -19,18 +19,53 @@ sub cli_args { "" }
 
 sub description {
     return <<"    EOT";
-This will send a SIGHUP to the persistent runner, forcing it to reload. This
-will also clear the blacklist allowing all preloads to load as normal.
+Sends a SIGHUP to the persistent runner and clears the module blacklist. On a
+runner with preload stages the runner routes the signal to its base stage, which
+respawns the whole preload tree ASYNCHRONOUSLY -- the command returns as soon as
+the signal is delivered, it does NOT wait for the stages to come back up (use
+'yath status' to watch them). On a runner with NO preload stages there is nothing
+to reload: SIGHUP is a no-op, so the command warns and exits 2 instead of falsely
+reporting success.
     EOT
 }
 
+# NOTE (deferred fork B, gated on #113 -- see also the #159 premise conflict about
+# _preload_root_stage_identity's pid comparison): the truthful "which stages
+# actually reloaded" fix must route through the runner socket as a two-way
+# request/response instead of the raw kill('HUP') below, tighten exit 0 to ">=1
+# stage confirmed respawned back to 'up'", and poll runner status until the
+# previously-up stages report a newer stamp. That runner-side handler MUST be named
+# `trigger_reload` -- the name `reload` is already taken by the one-way stage->runner
+# monitor notification (request_handler_reload), and a command frame named `reload`
+# would corrupt reload_state. Not implemented here (fork A only).
 sub run {
     my $self = shift;
 
-    my $pfile = App::Yath2::Pfile->find($self->settings, no_fatal => 1)
+    my $pfile = App::Yath2::Pfile->find($self->settings)
         or die "Could not find a persistent yath running.\n";
 
     my $data = $pfile->data;
+
+    # No-preload gate: a runner with no preload stages cannot reload -- its SIGHUP
+    # handler is an explicit no-op -- so telling the user "success" is a lie. Detect
+    # it by reading the runner workdir's settings.json (written by `yath start`, and
+    # the runner's own canonical boot input), which carries runner.preloads. A live
+    # runner always has this file; treat its absence as a fault, not silent success.
+    my $sfile = File::Spec->catfile($data->{dir}, 'settings.json');
+    my $rsettings;
+    my $ok = eval { $rsettings = Getopt::Yath::Settings->FROM_JSON_FILE($sfile); 1 };
+    my $err = $@;
+    unless ($ok) {
+        print STDERR "Could not read the runner's settings file '$sfile': $err";
+        return 1;
+    }
+
+    my $preloads = $rsettings->check_group('runner') ? ($rsettings->runner->preloads // []) : [];
+    unless (@$preloads) {
+        print STDERR "This persistent runner has no preload stages, so there is nothing to reload; SIGHUP is a no-op.\n"
+                   . "Restart the runner ('yath stop' then 'yath start') to pick up code changes.\n";
+        return 2;
+    }
 
     my $blacklist = File::Spec->catfile($data->{dir}, 'BLACKLIST');
     if (-e $blacklist) {
@@ -39,7 +74,13 @@ sub run {
     }
 
     print "\nSending SIGHUP to $data->{pid}\n\n";
-    kill('HUP', $data->{pid}) or die "Could not send signal!\n";
+    unless (kill('HUP', $data->{pid})) {
+        print STDERR "Could not send SIGHUP to $data->{pid}: $!\n";
+        return 1;
+    }
+
+    print "Reload requested (SIGHUP sent to pid $data->{pid}). The preload tree respawns\n"
+        . "asynchronously; use 'yath status' to watch the stages come back up.\n";
     return 0;
 }
 
@@ -57,8 +98,46 @@ App::Yath2::Command::reload - Reload the persistent test runner
 
 =head1 DESCRIPTION
 
-This will send a SIGHUP to the persistent runner, forcing it to reload. This
-will also clear the blacklist allowing all preloads to load as normal.
+This sends a SIGHUP to the persistent runner and clears the module blacklist
+(allowing all preloads to load as normal).
+
+On a runner that has preload stages, the runner routes the signal to its base
+stage, which respawns the whole preload tree B<asynchronously>. The command
+returns as soon as the signal is delivered -- it does B<not> wait for the stages
+to finish respawning. Use C<yath status> to watch the stages come back up.
+
+On a runner that has B<no> preload stages there is nothing to reload: the SIGHUP
+handler is an explicit no-op. Rather than falsely report success, the command
+prints a warning and exits 2; restart the runner (C<yath stop> then
+C<yath start>) to pick up code changes.
+
+=head1 EXIT CODES
+
+=over 4
+
+=item 0
+
+Reload dispatched: the runner has preload stages, the blacklist was cleared, and
+the SIGHUP was delivered. Note this means the reload was B<requested>, not
+completed -- the preload tree respawns asynchronously.
+
+=item 1
+
+Failure: the runner was found but the reload could not be delivered -- the
+C<kill('HUP', ...)> failed, or the runner's C<settings.json> was missing or
+unreadable (a live runner always has one, so its absence is treated as a fault,
+never as silent success).
+
+=item 2
+
+Nothing to reload: the runner has no preload stages. The warning and restart
+instruction are printed.
+
+=item 255
+
+No persistent runner was found (shared with the other C<persist> commands).
+
+=back
 
 
 =head1 USAGE
