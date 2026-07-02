@@ -3505,6 +3505,90 @@ Verify: both canonical runners green (`AUTHOR_TESTING=1 prove -Ilib -j16 -r t/` 
 
 ---
 
+## TIER 10 — Latent findings surfaced during Fable/Opus spec resolution (2026-07-02)
+
+New defects the deep spec-resolution pass over TIER 9 (#106–#156) surfaced that
+were NOT in the original bug audit's 126 findings and are NOT already folded into
+a resolved ticket's RESOLUTION block. Each cites the resolving ticket that found
+it. Parent chunk: **BUG-15** in `TODO_STEPS.md`. Status `Proposed` = found, not
+yet decided (these did not get a Fable spec pass — decide/spec before implementing).
+
+---
+
+### #157 — Blocking socket connect has no timeout: discovery probe and Runner::Client/Subscriber hang on a full accept backlog
+
+**Status:** Proposed (Fable-resolution finding 2026-07-02, severity P2) · **Step:** BUG-15 · **Depends:** — (root cause behind #145 + #121's path-local backstops; surfaced by both)
+
+**Problem.** The unix-socket `connect` used by discovery `probe()`/`find()` and by `Runner::Client`/`Runner::Subscriber::_connect` is blocking with no connect timeout. A runner that has bound its listen socket but is wedged (full accept backlog, uninterruptible sleep) makes every dialer block indefinitely: discovery hangs (#145's boot-window/wedged cases), and `Runner::Client`'s documented ~30s croak is unreachable because the process never returns from `connect()` (#121 added an `alarm` backstop for its own path only; #145 flagged the same for discovery). These are two symptoms of one missing bounded-connect primitive.
+
+**Steps.**
+1. Add a shared bounded non-blocking connect helper (connect → EINPROGRESS → select-for-writable with a deadline → `getsockopt(SO_ERROR)`), used by discovery `probe()` and every Client/Subscriber dialer; keep the fd non-blocking or restore blocking per each caller's post-connect needs.
+2. On timeout, classify NOT-LIVE per #145's probe taxonomy rather than hang; retire #121's per-path `alarm` backstop once this lands.
+3. Regression: dial a socket whose listener never `accept`s (full backlog) → the dialer returns within the deadline (discovery reports not-live; Client croaks) instead of hanging.
+
+Verify: both canonical runners green; new regression test green.
+
+### #158 — Watchdog-aborted run waits the full ~30s DRAIN_TIMEOUT (aborted collector never sends EOF)
+
+**Status:** Proposed (Fable-resolution finding 2026-07-02, severity P2) · **Step:** BUG-15 · **Depends:** — (surfaced by #131; overlaps #130 which fixes the general persistent-runner drain stall — confirm coverage or add an abort-aware short-circuit)
+
+**Problem.** When a job is watchdog-aborted (#131's cases), its collector never sends EOF, so the run's drain waits the full `$SUBSCRIBER_DRAIN_TIMEOUT`/DRAIN_TIMEOUT (~30s) before finalizing even though the outcome is already decided. #130 addresses the general persistent-runner global-collector drain stall; this ticket is to confirm #130's fix also covers the aborted-job path and, if not, short-circuit the drain wait for jobs already in the Monitor `aborted` state that #131 folds into the DB.
+
+**Steps.**
+1. Confirm overlap with #130; if the abort path is not covered, short-circuit the drain for jobs in Monitor `aborted` state (do not wait an EOF that will never arrive).
+2. Regression: a watchdog-aborted run finalizes promptly, not after ~30s.
+
+Verify: both canonical runners green; timing check on an aborted run.
+
+### #159 — #113's reload-identity premise conflicts with a currently-green e2e test — re-audit before #114-B
+
+**Status:** Proposed (Fable-resolution finding 2026-07-02, severity P2, meta/audit) · **Step:** BUG-15 · **Depends:** blocks #114-B (the socket-readback reload)
+
+**Problem.** #114's resolution flagged that #113's stated premise ("the reload identity lookup never matches") contradicts the currently-passing end-to-end test `reload_command_respawn.t`, which exercises a successful reload respawn. Either #113's finding is mis-stated or the test does not exercise the failing path. This must be reconciled before implementing #114-B. Separately, #114-B must use request name `trigger_reload`: the name `reload` is already taken by a one-way stage notification, and a command-sent `reload` would corrupt `reload_state` via an autovivified key at `State.pm:784`.
+
+**Steps.**
+1. Reconcile #113's claim against `reload_command_respawn.t`; correct #113's finding or the test.
+2. Record the `trigger_reload` naming constraint for #114-B (do not reuse `reload`).
+
+Verify: #113's finding and the e2e test agree; #114-B design references the correct request name.
+
+### #160 — `--hide-runner-output` render path never finishes renderers
+
+**Status:** Proposed (Fable-resolution finding 2026-07-02, severity P3) · **Step:** BUG-15 · **Depends:** — (surfaced by #66; out of #66's fan-out-consolidation scope)
+
+**Problem.** #66's resolution flagged that the hidden-runner-output code path constructs renderers but never runs their finish/finalize step, so renderer-side flush/teardown is skipped for a `--hide-runner-output` run.
+
+**Steps.**
+1. Route the hidden-output branch through the same renderer-finish path as the visible one.
+2. Regression: a `--hide-runner-output` run flushes/closes its renderers.
+
+Verify: both canonical runners green; new regression test green.
+
+### #161 — `Command/runner.pm:92` unconditional discovery-link unlink
+
+**Status:** Proposed (Fable-resolution finding 2026-07-02, severity P3) · **Step:** BUG-15 · **Depends:** — (surfaced by #145; route through #145's ownership-checked cleanup)
+
+**Problem.** `runner.pm:92` unconditionally `unlink`s the discovery link on a path where #145 introduces ownership-checked cleanup (`clean_if_owned` + re-readlink-before-unlink) — this unguarded unlink can remove a link it does not own (a concurrently-published fresh link), reintroducing #145's race from a second site.
+
+**Steps.**
+1. Replace the unconditional unlink with #145's ownership-checked cleanup helper.
+2. Regression: covered by extending #145's concurrent-probe test to this site.
+
+Verify: both canonical runners green.
+
+### #162 — Dead `-f`-on-symlink unlink in `stop.pm:75` / `kill.pm:47`
+
+**Status:** Proposed (Fable-resolution finding 2026-07-02, severity P3, cleanup) · **Step:** BUG-15 · **Depends:** — (surfaced by #145; best folded into cleanup #95 Pfile removal, which churns the same files)
+
+**Problem.** `stop.pm:75` and `kill.pm:47` carry a `-f`-guarded unlink of the discovery symlink that is dead code (a leftover from pre-discovery teardown; the guard/path handling makes it never do useful work now that teardown is socket-driven and #145 owns link cleanup).
+
+**Steps.**
+1. Delete the dead unlink (or fold into cleanup #95's Pfile-removal sweep).
+
+Verify: both canonical runners green; `grep` shows the dead unlink gone.
+
+---
+
 ## Explicitly justified — do NOT cut
 
 Load-bearing, all auditors agree: the unified `Role::Service`/`Connection` framing

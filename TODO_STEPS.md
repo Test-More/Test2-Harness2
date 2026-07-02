@@ -105,6 +105,7 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | BUG-12 | Bug audit: P2/P3 plugins + coverage bundles | ⬜ | #150, #151 |
 | BUG-13 | Bug audit: P2/P3 DB layer + web-client commands (web-parked; rework in place) | ⬜ | #152, #153 |
 | BUG-14 | Bug audit: P2/P3 util/tester fixes + dead-seam cross-refs | ⬜ | #154, #155, #156 |
+| BUG-15 | Latent findings surfaced during 2026-07-02 Fable/Opus spec resolution (new, not in the 126-finding audit) — blocking-connect timeout, aborted-run drain, #113 premise conflict, hidden-output renderers, discovery-link unlinks | ⬜ | #157, #158, #159, #160, #161, #162 |
 
 The **Tasks** column points at the well-defined tickets in `TODO_TASKS.md` that
 implement (part of) a step. A step is "broad"; its tickets are "specific."
