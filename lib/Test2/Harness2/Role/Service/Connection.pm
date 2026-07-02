@@ -3,12 +3,12 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
-use Time::HiRes qw/time/;
 use POSIX qw/:errno_h/;
 use IO::Select ();
 
 use Test2::Collector::Util::Zstd qw/compress_blob/;
 use Test2::Collector::Util::Zstd::FrameBuffer();
+use Test2::Harness2::Util qw/mono_time/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
@@ -251,7 +251,9 @@ sub init ($self) {
     # before it checks expiry (see Role::Service::service_io), so a slow-but-present
     # identity is always read before this can fire -- this only catches a genuinely
     # silent / stuck peer, never a busy-loop timing gap.
-    $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 5);
+    # Interval deadline: monotonic so a wall-clock/NTP step cannot spuriously
+    # expire (or freeze) a pending identity. (#134 finding 104)
+    $self->{+DEADLINE} = mono_time + ($self->{+IDENTITY_TIMEOUT} // 5);
 
     # The outbound buffer must exist before send_identity below queues through it.
     $self->{+WBUF}          //= '';
@@ -274,7 +276,7 @@ sub closed   { $_[0]->{+CLOSED} ? 1 : 0 }
 sub expired ($self) {
     return 0 if $self->{+READY};
     return 0 if $self->{+CLOSED};
-    return time > $self->{+DEADLINE} ? 1 : 0;
+    return mono_time > $self->{+DEADLINE} ? 1 : 0;
 }
 
 sub send_identity ($self) {
@@ -287,8 +289,17 @@ sub send_identity ($self) {
 sub send_request ($self, $command, %args) {
     return undef if $self->{+CLOSED};
 
+    # want_reply defaults on. A one-way sender (system_load per tick, run_task per
+    # test, queue_*/stop_*/end_queue/halt_run, stage_ready/stage_restarting/...)
+    # passes want_reply => 0 so we skip the PENDING insert -- otherwise its
+    # request_id would accumulate forever on a daemon-lifetime connection
+    # (unbounded sender-side memory). delete it BEFORE %args is spliced into the
+    # wire frame. A peer that replies anyway is discarded safely by the
+    # unmatched-response branch in _classify. (#134 finding 106)
+    my $want_reply = delete $args{want_reply} // 1;
+
     my $request_id = gen_uuid();
-    $self->{+PENDING}{$request_id} = 1;
+    $self->{+PENDING}{$request_id} = 1 if $want_reply;
     $self->_write({request => {%args, request_id => $request_id, command => $command}});
 
     # _write closes the connection on a failed write (e.g. the peer is gone). Report
@@ -321,7 +332,7 @@ sub wbuf_expired ($self) {
     return 0 if $self->{+CLOSED};
     return 0 unless length($self->{+WBUF} // '');
     my $deadline = $self->{+WBUF_DEADLINE} or return 0;
-    return time > $deadline ? 1 : 0;
+    return mono_time > $deadline ? 1 : 0;
 }
 
 # Queue one already-framed blob and flush. Service-owned conns (owner_flushes)
@@ -365,7 +376,7 @@ sub flush_writes ($self) {
             next if $! == EINTR;
             if ($! == EAGAIN || $! == EWOULDBLOCK) {
                 # Zero progress: arm the stall deadline once (progress clears it).
-                $self->{+WBUF_DEADLINE} //= time + $self->{+STALL_TIMEOUT};
+                $self->{+WBUF_DEADLINE} //= mono_time + $self->{+STALL_TIMEOUT};
                 return 0;
             }
             $self->close;    # EPIPE/ECONNRESET/...: peer is gone
@@ -373,7 +384,7 @@ sub flush_writes ($self) {
         }
 
         unless ($sent) {    # defensive: treat a 0-byte write like EAGAIN
-            $self->{+WBUF_DEADLINE} //= time + $self->{+STALL_TIMEOUT};
+            $self->{+WBUF_DEADLINE} //= mono_time + $self->{+STALL_TIMEOUT};
             return 0;
         }
 
@@ -416,7 +427,23 @@ sub drain ($self) {
     $self->{+FB}->push_bytes($buf);
 
     my @events;
-    for my $rec ($self->{+FB}->drain) {
+    # Pull frames one at a time rather than FB->drain (which returns the whole
+    # list at once): FrameBuffer->next_frame CROAKS on a corrupt/desynced zstd
+    # stream (bad magic, reserved block type, decompress failure) -- garbage
+    # bytes on the socket. An uncaught croak here would kill the whole service,
+    # aborting every connected client's run. A desynced zstd stream can never
+    # resync, so the policy is close-this-connection-immediately (no 3-strike),
+    # while STILL returning the valid frames decoded before the croak. (#134
+    # finding 13)
+    while (1) {
+        my $rec;
+        my $got = eval { $rec = $self->{+FB}->next_frame; 1 };
+        unless ($got) {
+            $self->close;
+            last;
+        }
+        last unless defined $rec;
+
         my $payload;
         my $ok = eval { $payload = decode_json($rec->{payload}); 1 };
 

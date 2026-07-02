@@ -161,8 +161,8 @@ subtest successful_dispatch_announces_dispatched => sub {
     is($state->{requeued}, [], "a healthy dispatch is NOT requeued");
     is(
         $runner->{sent},
-        [['preload-BETA', 'run_task', {task => $task, run => {run_id => 'R1'}}]],
-        "the run_task request was sent down the stage's peer channel",
+        [['preload-BETA', 'run_task', {task => $task, run => {run_id => 'R1'}, want_reply => 0}]],
+        "the run_task request was sent down the stage's peer channel (one-way: want_reply => 0)",
     );
 
     my @states = map { $_->{state} } @{$runner->{announced}};

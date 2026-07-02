@@ -202,6 +202,12 @@ handle).
 sub _send ($self, $message) {
     return 0 if $self->{+CLOSED};
 
+    # A vanished peer turns the syswrite below into SIGPIPE, which the eval cannot
+    # catch -- the signal kills the process before the errno "control write
+    # failed" path runs. Ignore it so a dead peer closes the channel cleanly
+    # instead of taking down the command/supervisor. (#134 finding 43)
+    local $SIG{PIPE} = 'IGNORE';
+
     # Restore blocking before writing: a prior read_message_nb leaves the fh
     # O_NONBLOCK (_fill(0) -> _set_blocking(0)), which would make this syswrite fail
     # EAGAIN on a full send buffer -- treated as fatal below and closing the channel,

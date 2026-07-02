@@ -9,6 +9,8 @@ use Test2::Harness2::Util::JSON qw/encode_json/;
 
 use Test2::Harness2::Role::Service::Connection;
 
+my $PENDING = Test2::Harness2::Role::Service::Connection::PENDING();
+
 # A connected pair of non-blocking unix sockets.
 sub pair {
     socketpair(my $a, my $b, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
@@ -155,6 +157,69 @@ subtest three_bad_frames_after_ready => sub {
     $garbage->();
     $a->drain;
     ok($a->closed, "three consecutive bad frames close the connection");
+};
+
+# #134 finding 13: a zstd framing croak from FrameBuffer (garbage bytes on the
+# socket) must NOT escape drain and kill the whole service. drain closes the
+# desynced connection immediately (no 3-strike -- a corrupt zstd stream can never
+# resync) while STILL returning the valid frames it decoded before the croak.
+subtest garbage_bytes_survive_after_ready => sub {
+    my ($fa, $fb) = pair();
+    my $a = conn($fa, 'alpha', 1);
+    my $b = conn($fb, 'beta', 0);
+    $_->drain for $a, $b, $a, $b;    # identity exchange
+    ok($a->ready, "ready");
+
+    # One valid request frame immediately followed by raw (non-zstd) garbage, in a
+    # single burst -- so both land in one drain pass.
+    my $valid   = compress_blob(encode_json({request => {request_id => 'r1', command => 'echo', msg => 'hi'}}));
+    my $garbage = 'GARBAGE!' x 64;    # not a valid zstd frame -> next_frame croaks
+    syswrite($fb, $valid . $garbage) // die "syswrite: $!";
+
+    my @ev;
+    my $ok = eval { @ev = $a->drain; 1 };
+
+    ok($ok, "drain did not throw despite the corrupt trailing frame");
+    is(scalar(@ev), 1, "the valid frame decoded before the croak was still returned");
+    is($ev[0]{kind}, 'request', "returned event is the request");
+    is($ev[0]{command}, 'echo', "with the right command");
+    ok($a->closed, "the desynced connection was closed immediately (no 3-strike)");
+};
+
+subtest garbage_bytes_as_first_frame => sub {
+    my ($fa, $fb) = pair();
+    my $a = conn($fa, 'alpha', 0);    # accepter, pending identity
+
+    syswrite($fb, 'TOTAL GARBAGE!!!' x 16) // die "syswrite: $!";
+
+    my @ev;
+    my $ok = eval { @ev = $a->drain; 1 };
+
+    ok($ok, "drain did not throw on first-byte garbage");
+    is(\@ev, [], "no events from a corrupt first frame");
+    ok($a->closed, "the connection was dropped as bad");
+};
+
+# #134 finding 106: a one-way request (want_reply => 0) must not leave a PENDING
+# request-id behind, or a daemon-lifetime connection leaks sender-side memory. A
+# default (two-way) request registers exactly one PENDING entry, cleared when its
+# reply is drained.
+subtest one_way_send_does_not_leak_pending => sub {
+    my ($fa, $fb) = pair();
+    my $a = conn($fa, 'alpha', 1);
+    my $b = conn($fb, 'beta', 0);
+    $_->drain for $a, $b, $a, $b;
+
+    $a->send_request("x$_", want_reply => 0) for 1 .. 50;
+    is(scalar keys %{$a->{$PENDING} // {}}, 0, "50 one-way sends leave PENDING empty");
+
+    my $id = $a->send_request('needs_reply');
+    is(scalar keys %{$a->{$PENDING} // {}}, 1, "a default (two-way) request registers exactly one PENDING entry");
+
+    $b->drain;    # beta sees the requests
+    $b->send_response($id, {ok => 1});
+    $a->drain;    # alpha matches + clears
+    is(scalar keys %{$a->{$PENDING} // {}}, 0, "PENDING cleared once the reply is drained");
 };
 
 done_testing;

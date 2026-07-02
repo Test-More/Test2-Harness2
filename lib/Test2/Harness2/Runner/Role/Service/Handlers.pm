@@ -4,6 +4,7 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Time::HiRes qw/time/;
+use Test2::Harness2::Util qw/mono_time/;
 
 use Test2::Collector::Util::Zstd qw/compress_blob/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
@@ -604,7 +605,10 @@ sub terminate_run_collectors {
     # Record (or refresh) the intent. The deadline arms the per-tick hard-kill
     # fallback (_enforce_terminate_grace) for any collector that does not comply.
     my $intent = $self->{'aborting_runs'}{$run_id} //= {reason => $reason};
-    $intent->{deadline} //= time + $self->_terminate_grace;
+    # Interval deadline (compared in _enforce_terminate_grace); monotonic so a
+    # wall/NTP step cannot skip or postpone the hard-kill fallback. Pairs with the
+    # mono_time in _enforce_terminate_grace. (#134 finding 104)
+    $intent->{deadline} //= mono_time + $self->_terminate_grace;
 
     for my $key (keys %{$self->{'collector_conns'} // {}}) {
         my $other = $self->{'collector_conns'}{$key};
@@ -655,7 +659,7 @@ sub _enforce_terminate_grace {
     my $aborting = $self->{'aborting_runs'} or return;
     return unless keys %$aborting;
 
-    my $now   = time;
+    my $now   = mono_time;    # pairs with the deadline armed in terminate_run_collectors (#134 finding 104)
     my $conns = $self->{'collector_conns'} // {};
 
     for my $key (keys %$conns) {
@@ -706,7 +710,7 @@ sub _enforce_collector_connect_timeout {
     my $watch = $self->{'job_connect_watch'} or return;
     return unless keys %$watch;
 
-    my $now     = time;
+    my $now     = mono_time;    # elapsed-since-dispatch interval; pairs with the 'since' writer (#134 finding 104)
     my $running = $self->state->running_tasks // {};
 
     for my $job_id (keys %$watch) {
@@ -1242,7 +1246,10 @@ sub announce_job {
     # within --collector-connect-timeout the per-tick scan fails the job (it would
     # otherwise never EOF and hang the run). A terminal mutation clears the stamp.
     if ($state eq 'dispatched' || $state eq 'running') {
-        $self->{'job_connect_watch'}{$job_id} //= {since => time, run_id => $extra{run_id}};
+        # 'since' is read ONLY by _enforce_collector_connect_timeout's interval
+        # math -- never reported or persisted -- so it is monotonic and pairs with
+        # the mono_time there. (#134 finding 104)
+        $self->{'job_connect_watch'}{$job_id} //= {since => mono_time, run_id => $extra{run_id}};
     }
     elsif ($state eq 'done' || $state eq 'aborted' || $state eq 'requeued') {
         delete $self->{'job_connect_watch'}{$job_id};

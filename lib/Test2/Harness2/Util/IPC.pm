@@ -7,6 +7,7 @@ our $VERSION = '2.000000';
 use Cwd qw/getcwd/;
 use Config qw/%Config/;
 use Fcntl qw/F_SETFD FD_CLOEXEC/;
+use POSIX ();
 use Test2::Util qw/CAN_REALLY_FORK/;
 
 use Importer Importer => 'import';
@@ -113,43 +114,63 @@ sub _run_cmd_fork {
         return $pid;
     }
     else {
-        $_->() for @{$params{run_in_child} // []};
+        # CHILD. From here on this process must NEVER unwind into the parent's
+        # INHERITED stack: a die anywhere below would be caught by the parent's
+        # process()/run_scheduler_only eval and make THIS transient child execute
+        # the real runner's wind-down -- kill the real sampler/aux pids, unlink
+        # runner.socket, write the 'complete' marker, steal collector frames off
+        # inherited conns, etc. So the whole child body is caught and funneled to
+        # $die, which POSIX::_exit's. The ONLY ways out of this block are exec()
+        # or POSIX::_exit(). (#134 finding 14, guard G1 -- the source fix; G2/G3
+        # in Runner.pm/Command/runner.pm are defense-in-depth.)
+        #
+        # $die is defined ABOVE the OLD_STDERR clone because the clone itself can
+        # EMFILE-fail: on that path $OLD_STDERR stays undef and $die must still be
+        # callable, so its OLD_STDERR print is guarded.
+        my $OLD_STDERR;
+        my $die = sub {
+            my $caller1 = $params{caller1};
+            my $caller2 = $params{caller2};
+            my $msg = "$_[0] at $caller1->[1] line $caller1->[2] ($caller2->[1] line $caller2->[2]).\n";
+            print $OLD_STDERR $msg if $OLD_STDERR;
+            print STDERR $msg;
+            POSIX::_exit(127);
+        };
+
+        my $ok = eval {
+            $_->() for @{$params{run_in_child} // []};
+
+            %ENV = (%ENV, %{$params{env}}) if $params{env};
+            setpgrp(0, 0) if USE_P_GROUPS && !$params{no_set_pgrp};
+
+            $cmd = [$cmd->()] if ref($cmd) eq 'CODE';
+
+            if (my $dir = $params{chdir} // $params{ch_dir}) {
+                chdir($dir) or die "Could not chdir: $!";
+            }
+
+            my $stdout = $params{stdout};
+            my $stderr = $params{stderr};
+            my $stdin  = $params{stdin};
+
+            open($OLD_STDERR, '>&', \*STDERR) or die "Could not clone STDERR: $!";
+
+            _swap_in_io(
+                stdout   => $stdout,
+                stderr   => $stderr,
+                stdin    => $stdin,
+                die      => $die,
+                no_stdin => sub { open(STDIN, "<", "/dev/null") },
+            );
+
+            @$cmd = map { ref($_) eq 'CODE' ? $_->() : $_ } @$cmd;
+
+            exec(@$cmd) or $die->("Failed to exec!");
+            1;
+        };
+        my $err = $@;
+        $die->($err || 'child body failed') unless $ok;
     }
-    %ENV = (%ENV, %{$params{env}}) if $params{env};
-    setpgrp(0, 0) if USE_P_GROUPS && !$params{no_set_pgrp};
-
-    $cmd = [$cmd->()] if ref($cmd) eq 'CODE';
-
-    if (my $dir = $params{chdir} // $params{ch_dir}) {
-        chdir($dir) or die "Could not chdir: $!";
-    }
-
-    my $stdout = $params{stdout};
-    my $stderr = $params{stderr};
-    my $stdin  = $params{stdin};
-
-    open(my $OLD_STDERR, '>&', \*STDERR) or die "Could not clone STDERR: $!";
-
-    my $die = sub {
-        my $caller1 = $params{caller1};
-        my $caller2 = $params{caller2};
-        my $msg = "$_[0] at $caller1->[1] line $caller1->[2] ($caller2->[1] line $caller2->[2]).\n";
-        print $OLD_STDERR $msg;
-        print STDERR $msg;
-        POSIX::_exit(127);
-    };
-
-    _swap_in_io(
-        stdout   => $stdout,
-        stderr   => $stderr,
-        stdin    => $stdin,
-        die      => $die,
-        no_stdin => sub { open(STDIN, "<", "/dev/null") },
-    );
-
-    @$cmd = map { ref($_) eq 'CODE' ? $_->() : $_ } @$cmd;
-
-    exec(@$cmd) or $die->("Failed to exec!");
 }
 
 sub _run_cmd_spwn {

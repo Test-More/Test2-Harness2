@@ -21,6 +21,10 @@ use Test2::Harness2::Runner::Monitor;
 use Test2::Harness2::Runner::Role::Service::Handlers;
 use Test2::Harness2::Runner::Watchdog;
 
+# #134 finding 104: the terminate-grace 'deadline' and the connect-watch 'since'
+# are now MONOTONIC (mono_time), so injected values must be on the same clock.
+use Test2::Harness2::Util qw/mono_time/;
+
 {
     package FakeState;
     sub new { my ($c, %a) = @_; bless {running => $a{running} // {}, stopped => [], retried => [], halted => [], truncated => 0}, $c }
@@ -168,7 +172,7 @@ subtest hard_kill_grace_fallback => sub {
     $runner->abort_run_collectors('R1', 'abort now');
 
     # Force the deadline into the past so the grace has elapsed.
-    $runner->{aborting_runs}{R1}{deadline} = time - 1;
+    $runner->{aborting_runs}{R1}{deadline} = mono_time - 1;
 
     $runner->_enforce_terminate_grace;
 
@@ -188,7 +192,7 @@ subtest connect_timeout_fails_unconnected_job => sub {
     # The runner marked the job dispatched but no collector ever connects. (The fake
     # overrides announce_job, so set the watch directly -- the real announce_job
     # stamps it; the connect-clear path is covered by the next subtest.)
-    $runner->{job_connect_watch}{J1} = {since => time - 10, run_id => 'R1'};
+    $runner->{job_connect_watch}{J1} = {since => mono_time - 10, run_id => 'R1'};
 
     $runner->_enforce_collector_connect_timeout;
 
@@ -220,7 +224,7 @@ subtest connect_timeout_terminates_late_collector => sub {
         connect_timeout => 5,
     );
 
-    $runner->{job_connect_watch}{J1} = {since => time - 10, run_id => 'R1'};
+    $runner->{job_connect_watch}{J1} = {since => mono_time - 10, run_id => 'R1'};
     $runner->_enforce_collector_connect_timeout;
     ok($runner->{terminated_jobs}{J1}, "a per-job termination intent was recorded for the timed-out job");
 

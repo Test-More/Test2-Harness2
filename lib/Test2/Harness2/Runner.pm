@@ -10,7 +10,7 @@ use Carp qw/confess croak/;
 use POSIX qw/:sys_wait_h/;
 use Time::HiRes qw/sleep time/;
 
-use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic publish_discovery_link process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter/;
+use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic publish_discovery_link process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter mono_time/;
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 use Test2::Harness2::Util::SubReaper qw/acquire_subreaper subreaper_supported/;
@@ -202,7 +202,9 @@ sub init {
         # reload into the in-run respawn of the whole tree.
         if ($self->{+PRELOAD_ROOT_PID}) {
             my $id = $self->_preload_root_stage_identity or return;
-            $self->service_send($id, 'reload_root');
+            # One-way: reload_root's handler returns undef (no reply), so skip the
+            # PENDING insert to avoid a daemon-lifetime leak. (#134 finding 106)
+            $self->service_send($id, 'reload_root', want_reply => 0);
             return;
         }
 
@@ -490,6 +492,17 @@ sub process {
 
     warn $err unless $ok;
 
+    # G2 (#134 finding 14, defense-in-depth): if a run_cmd fork-child somehow
+    # unwound past its G1 eval and into THIS eval, $$ is the transient child's pid,
+    # not the runner's. It must NOT execute the wind-down below (stop the real
+    # preload-root/sampler, kill the real aux pids, unlink runner.socket, wait on
+    # subscribers, close the service) -- all of which mutate parent-owned OS state.
+    # POSIX::_exit(255) immediately, bypassing every cleanup and END block.
+    unless ($$ == $self->{+ROOTPID}) {
+        print STDERR "$$ $0: fork child escaped into runner wind-down, aborting\n";
+        POSIX::_exit(255);
+    }
+
     # Tear the preload-root down before plugin teardown/stop so it is
     # reaped while the runner is still servicing its socket.
     $self->stop_preload_root;
@@ -546,11 +559,11 @@ sub _drain_transitions {
     # readable (no pending connection on the listener, no data on any conn) the
     # in-flight frames are folded and we stop early rather than spinning out the
     # whole budget.
-    my $deadline = Time::HiRes::time() + 0.5;
+    my $deadline = mono_time + 0.5;    # pure interval -> monotonic (#134 finding 104)
     while (1) {
         $self->service_io;
 
-        last if Time::HiRes::time() >= $deadline;
+        last if mono_time >= $deadline;
 
         my $sel = $self->{service_select} or last;
         last unless $sel->can_read(0);
@@ -606,7 +619,7 @@ sub _wait_for_run_subscribers {
     # immediately).
     return unless $self->_run_scoped_subscriber_count;
 
-    my $deadline = Time::HiRes::time() + $SUBSCRIBER_DRAIN_TIMEOUT;
+    my $deadline = mono_time + $SUBSCRIBER_DRAIN_TIMEOUT;    # pure interval -> monotonic (#134 finding 104)
     while (1) {
         # Service IO so a subscriber that just closed its end is drained + dropped
         # from service_subs this pass, and so any final frames still reach it.
@@ -614,7 +627,7 @@ sub _wait_for_run_subscribers {
 
         last unless $self->_run_scoped_subscriber_count;
 
-        if (Time::HiRes::time() >= $deadline) {
+        if (mono_time >= $deadline) {
             my $left = $self->_run_scoped_subscriber_count;
             warn "$$ $0: timed out after ${SUBSCRIBER_DRAIN_TIMEOUT}s waiting for $left run-scoped subscriber(s) (e.g. a DB logger) to disconnect; cleaning the workdir anyway -- a log import may be incomplete\n";
             last;
@@ -1138,7 +1151,10 @@ sub dispatch_pending {
         for my $task (@tasks) {
             my $stage = $task->{stage};
 
-            my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item);
+            # One-way per-test dispatch: run_task's handler returns undef (no
+            # reply), so skip the PENDING insert -- otherwise a request_id would
+            # leak per test on a daemon-lifetime channel. (#134 finding 106)
+            my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item, want_reply => 0);
 
             # service_send returns false when the stage's channel is gone (no peer, or
             # the write failed because the peer vanished mid-write) -- the stage NEVER

@@ -10,6 +10,7 @@ use Config qw/%Config/;
 use Carp qw/croak confess/;
 use Time::HiRes qw/sleep time/;
 
+use Test2::Harness2::Util qw/mono_time/;
 use Test2::Harness2::Util::IPC qw/run_cmd USE_P_GROUPS/;
 
 use Test2::Harness2::IPC::Process;
@@ -204,7 +205,9 @@ sub wait {
 
     return 0 unless keys(%$procs) || keys(%$waiting);
 
-    my $start = time;
+    # wait() timeout window is a pure interval; monotonic so a wall/NTP step
+    # cannot warp it. Pairs with the compare in _wait_done. (#134 finding 104)
+    my $start = mono_time;
 
     my $count = 0;
     my $found = 0;
@@ -237,7 +240,7 @@ sub _wait_done {
     my $all = keys(%{$self->{+PROCS}});
     return 1 unless $all;
 
-    return 1 if $params->{timeout} && time - $start >= $params->{timeout};
+    return 1 if $params->{timeout} && mono_time - $start >= $params->{timeout};    # pairs with wait()'s mono_time $start (#134 finding 104)
 
     return 0 if $all && $params->{all};
 

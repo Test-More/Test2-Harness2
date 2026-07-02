@@ -99,7 +99,10 @@ sub init ($self) {
 # handlers. One-way (the runner sends no response).
 sub _report ($self, $command, %args) {
     my $runner = $self->{+RUNNER} or return;
-    $runner->service_send('runner', $command, %args);
+    # One-way (the runner sends no response): pass want_reply => 0 so the
+    # request_id is not remembered as PENDING, which would leak per report
+    # (job_pid per test, reload) on this daemon-lifetime channel. (#134 finding 106)
+    $runner->service_send('runner', $command, %args, want_reply => 0);
     return;
 }
 

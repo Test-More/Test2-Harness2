@@ -6,8 +6,10 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 use POSIX();
 use Long::Jump qw/setjump/;
-use Time::HiRes qw/sleep time/;
+use Time::HiRes qw/sleep/;
 use File::Spec();
+
+use Test2::Harness2::Util qw/mono_time/;
 
 use Test2::Harness2::Util::HashBase qw{
     <runner_socket
@@ -209,7 +211,7 @@ sub run_driver ($self) {
         # past that wait, so this is a harmless late note. Hand over our captured
         # warnings so the runner can surface a broken-preload diagnostic.
         warn "$$ $0 preload-root could not report stage_host_exited: $@"
-            unless eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // [])); 1 };
+            unless eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // []), want_reply => 0); 1 };    # one-way (#134 finding 106)
     }
 
     # Idle until the runner sends 'stop'. We reach here after the stage host returns
@@ -346,10 +348,16 @@ sub _request_sync ($self, $identity, $command, %args) {
     # runner is wedged. Best-effort: before settings.json is readable (a bare
     # preload-root with no run), fall back to a 30s floor.
     my $timeout  = eval { $self->settings->runner->preload_map_timeout } || 30;
-    my $deadline = time + $timeout;
+    my $deadline = mono_time + $timeout;    # pure interval -> monotonic (#134 finding 104)
     until (exists $self->{+RESPONSES}{$request_id}) {
+        # If the runner connection dropped mid-wait, $conn is marked closed by
+        # drain on EOF during service_io. Fail fast instead of idling out the full
+        # preload_map_timeout (then stalling until the process is reaped). (#134
+        # finding 94)
+        croak "connection to '$identity' closed while waiting for '$command' response"
+            if $conn->closed;
         croak "timed out waiting for '$command' response from '$identity'"
-            if time > $deadline;
+            if mono_time > $deadline;
         $self->service_io;
         sleep 0.01;
     }

@@ -5,9 +5,10 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
-use Time::HiRes qw/sleep time/;
+use Time::HiRes qw/sleep/;
 
 use Test2::Collector::Util::Socket qw/connect_unix/;
+use Test2::Harness2::Util qw/mono_time/;
 
 use Test2::Harness2::Role::Service::Connection();
 
@@ -209,7 +210,7 @@ sub connection ($self) {
     return $conn if $conn && !$conn->closed;
 
     my $path  = $self->socket_path;
-    my $start = time;
+    my $start = mono_time;    # connect window is a pure interval (#134 finding 104)
 
     my $fh;
     while (1) {
@@ -225,7 +226,7 @@ sub connection ($self) {
         }
 
         croak "Timed out waiting for runner socket '$path' to accept connections"
-            if (time - $start) > $self->CONNECT_TIMEOUT;
+            if (mono_time - $start) > $self->CONNECT_TIMEOUT;
 
         sleep 0.05;
     }
@@ -248,7 +249,11 @@ sub connection ($self) {
 
 sub _send ($self, $command, %args) {
     my $conn = $self->connection or return;
-    $conn->send_request($command, %args);
+    # One-way submissions (queue_run/queue_task/stop_run/end_queue/halt_run, and
+    # stop -- whose reply the client never waits for): want_reply => 0 so no
+    # request_id is remembered as PENDING. The acknowledged two-way queries go
+    # through _request (below), which keeps the default. (#134 finding 106)
+    $conn->send_request($command, %args, want_reply => 0);
     return;
 }
 
@@ -256,7 +261,7 @@ sub _request ($self, $command, %args) {
     my $conn = $self->connection or return undef;
     my $id   = $conn->send_request($command, %args);
 
-    my $start = time;
+    my $start = mono_time;    # reply window is a pure interval (#134 finding 104)
     while (1) {
         for my $event ($conn->drain) {
             next unless $event->{kind} eq 'response';
@@ -265,7 +270,7 @@ sub _request ($self, $command, %args) {
 
         croak "runner closed the connection before sending a reply" if $conn->closed;
         croak "Timed out waiting for the runner's reply"
-            if (time - $start) > $self->CONNECT_TIMEOUT;
+            if (mono_time - $start) > $self->CONNECT_TIMEOUT;
 
         sleep 0.01;
     }

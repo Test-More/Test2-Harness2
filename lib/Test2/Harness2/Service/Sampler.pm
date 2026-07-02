@@ -225,10 +225,12 @@ sub service_tick ($self) {
     $self->_emit_load_event($snap);
 
     # One-way request: the runner's handler stores the snapshot and returns no
-    # response. service_send returns false if the write failed (the runner
-    # vanished mid-write, closing the connection) -- stop in that case.
+    # response. want_reply => 0 keeps the per-tick request_id out of PENDING (it
+    # would otherwise leak forever on this daemon-lifetime channel). service_send
+    # still returns false if the write failed (the runner vanished mid-write,
+    # closing the connection) -- stop in that case. (#134 finding 106)
     $self->stop_service
-        unless $self->service_send('runner', 'system_load', load => $snap);
+        unless $self->service_send('runner', 'system_load', load => $snap, want_reply => 0);
 
     return;
 }

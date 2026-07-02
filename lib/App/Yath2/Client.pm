@@ -702,7 +702,12 @@ sub subscriber ($self) { return $self->{+SUBSCRIBER} }
 
 sub connect_subscriber ($self, %params) {
     my $sub = Test2::Harness2::Runner::Subscriber->new(
-        workdir => $self->{+WORKDIR},
+        workdir        => $self->{+WORKDIR},
+        # Fast-fail the subscribe connect if the runner died after binding the
+        # socket, instead of stalling the full CONNECT_TIMEOUT. The eval below
+        # turns _connect's "Runner is gone" croak into the warn+undef fallback.
+        # (#134 finding 108)
+        liveness_check => $self->liveness_check,
         %params,
     );
 

@@ -5,9 +5,10 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
-use Time::HiRes qw/sleep time/;
+use Time::HiRes qw/sleep/;
 
 use Test2::Collector::Util::Socket qw/connect_unix/;
+use Test2::Harness2::Util qw/mono_time/;
 
 use Test2::Harness2::Role::Service::Connection();
 use Test2::Harness2::Runner::Monitor();
@@ -16,6 +17,7 @@ use Test2::Harness2::Util::HashBase qw{
     <workdir
     <run_id
     <drain_gate
+    <liveness_check
     +identity
     +socket_path
     +connection
@@ -138,7 +140,7 @@ sub subscribe ($self) {
     # then apply the snapshot and replay the parked deltas in order -- dropping a
     # transition that shared the response's batch would lose state.
     my @deltas;
-    my $start = time;
+    my $start = mono_time;    # reply window is a pure interval (#134 finding 104)
     while (1) {
         my $snapshot;
         for my $event ($conn->drain) {
@@ -158,7 +160,7 @@ sub subscribe ($self) {
 
         croak "runner closed the connection before the subscribe reply" if $conn->closed;
         croak "Timed out waiting for the runner's subscribe reply"
-            if (time - $start) > $self->CONNECT_TIMEOUT;
+            if (mono_time - $start) > $self->CONNECT_TIMEOUT;
 
         sleep 0.01;
     }
@@ -197,11 +199,20 @@ snapshot.
 
 sub CONNECT_TIMEOUT { 30 }
 
+# Run the optional liveness_check coderef; true when absent (assume alive). Mirror
+# of Runner::Client::_runner_alive so a subscriber can fast-fail when the runner
+# died after binding the socket, instead of stalling the full CONNECT_TIMEOUT.
+# (#134 finding 108)
+sub _runner_alive ($self) {
+    my $check = $self->{+LIVENESS_CHECK} or return 1;    # no check: assume alive
+    return $self->$check ? 1 : 0;
+}
+
 sub _connect ($self) {
     return $self->{+CONNECTION} if $self->{+CONNECTION} && !$self->{+CONNECTION}->closed;
 
     my $path  = $self->socket_path;
-    my $start = time;
+    my $start = mono_time;    # connect window is a pure interval (#134 finding 104)
 
     my $fh;
     while (1) {
@@ -209,8 +220,14 @@ sub _connect ($self) {
             last if eval { $fh = connect_unix($path); 1 } && $fh;
         }
 
+        # A runner that died after binding the socket (or before it ever bound)
+        # would otherwise cost a flat CONNECT_TIMEOUT stall here. If the caller
+        # supplied a liveness_check, fail fast the moment it reports the runner
+        # gone. (#134 finding 108)
+        croak "Runner is gone; cannot subscribe via '$path'" unless $self->_runner_alive;
+
         croak "Timed out waiting for runner socket '$path' to accept connections"
-            if (time - $start) > $self->CONNECT_TIMEOUT;
+            if (mono_time - $start) > $self->CONNECT_TIMEOUT;
 
         sleep 0.05;
     }

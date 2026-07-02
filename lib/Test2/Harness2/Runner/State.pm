@@ -7,10 +7,9 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 
 use File::Spec;
-use Time::HiRes qw/time/;
 use List::Util qw/first/;
 
-use Test2::Harness2::Util qw/mod2file/;
+use Test2::Harness2::Util qw/mod2file mono_time/;
 
 use Getopt::Yath::Settings;
 use Test2::Harness2::Runner::Constants;
@@ -201,7 +200,10 @@ sub resource_timeout {
     # Must still have pending tasks
     return 0 unless keys %{$self->{+PENDING_TASKS} //= {}};
 
-    my $idle = time - ($self->{+LAST_JOB_ACTIVITY} // time);
+    # Idle interval since the last job activity; monotonic so a wall/NTP step
+    # cannot spuriously satisfy (or reset) the idle timeout. Pairs with the
+    # LAST_JOB_ACTIVITY writers. (#134 finding 104)
+    my $idle = mono_time - ($self->{+LAST_JOB_ACTIVITY} // mono_time);
 
     return 0 unless $idle >= $timeout;
 
@@ -433,7 +435,7 @@ sub _start_task {
 
     push @{$self->{+TASK_LIST}} => $task;
 
-    $self->{+LAST_JOB_ACTIVITY} = time;
+    $self->{+LAST_JOB_ACTIVITY} = mono_time;    # monotonic; pairs with the idle interval read (#134 finding 104)
     $self->{+TOTAL_STARTED}++;
     $self->{+RUNNING}++;
     $self->{+RUNNING_CATEGORIES}->{$cat}++;
@@ -473,7 +475,7 @@ sub _stop_task {
     $_->release($job_id) for @{$self->{+RESOURCES}};
 
     my ($run_id, $smoke, $stage, $cat, $dur) = $self->task_fields($task);
-    $self->{+LAST_JOB_ACTIVITY} = time;
+    $self->{+LAST_JOB_ACTIVITY} = mono_time;    # monotonic; pairs with the idle interval read (#134 finding 104)
     $self->{+RUNNING}--;
     $self->{+RUNNING_CATEGORIES}->{$cat}--;
     $self->{+RUNNING_DURATIONS}->{$dur}--;
@@ -582,7 +584,11 @@ sub _set_stage_lifecycle {
 
     ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} = {
         state => $state,
-        stamp => time,
+        # 'stamp' is MONOTONIC and OPAQUE cross-process: it is consumed only by
+        # stage_state_age's interval math (Resource/Preload.pm), never reported or
+        # compared against a wall clock. StatusReport passes the raw hash through,
+        # but the status/ps readers use only 'state', never 'stamp'. (#134 finding 104)
+        stamp => mono_time,
     };
 
     return;
@@ -627,7 +633,7 @@ sub stage_state_age {
     my ($stage) = @_;
 
     my $life = ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} or return undef;
-    return time - $life->{stamp};
+    return mono_time - $life->{stamp};    # pairs with the monotonic 'stamp' writer (#134 finding 104)
 }
 
 sub stage_ready {

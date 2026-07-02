@@ -48,7 +48,31 @@ our @EXPORT_OK = qw{
     is_same_file
 
     socket_reporter
+
+    mono_time
 };
+
+# Monotonic-clock shim for interval math (deadlines, elapsed-since). Uses
+# CLOCK_MONOTONIC where available so suspend/resume or an NTP step cannot warp a
+# daemon deadline the way wall-clock Time::HiRes::time can (a wall step could
+# mass-abort dispatched jobs as "collector did not connect", or freeze a
+# timeout). Degrades to Time::HiRes::time -- the historical behavior -- when
+# CLOCK_MONOTONIC is unavailable.
+#
+# RULES (#134 finding 104): NEVER compare a mono_time() value against a
+# wall-clock time, and NEVER persist or report a mono_time() value as a
+# timestamp. It is an opaque, process-local, monotonically-non-decreasing count
+# of seconds with an arbitrary epoch -- meaningful only in differences. Event
+# stamps that go on the wire or into stored records stay on wall-clock time.
+BEGIN {
+    my $ok = eval { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()); 1 };
+    if ($ok) {
+        *mono_time = sub () { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) };
+    }
+    else {
+        *mono_time = \&Time::HiRes::time;
+    }
+}
 
 # Build the Test2::Collector::Recorder::Socket that streams a collector's
 # transitions to runner.socket, or undef when the socket cannot be located or the

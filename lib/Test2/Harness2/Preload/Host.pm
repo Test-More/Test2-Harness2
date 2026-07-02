@@ -647,12 +647,12 @@ sub _announce_stage_ready {
         $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data);
 
         if (my $warnings = $self->{+PRELOAD_WARNINGS}) {
-            $self->service_send('runner', 'preload_warnings', warnings => [@$warnings])
+            $self->service_send('runner', 'preload_warnings', warnings => [@$warnings], want_reply => 0)    # one-way (#134 finding 106)
                 if @$warnings;
         }
     }
 
-    $self->service_send('runner', 'stage_ready', stage => $stage);
+    $self->service_send('runner', 'stage_ready', stage => $stage, want_reply => 0);    # one-way (#134 finding 106)
 
     return;
 }
@@ -700,7 +700,7 @@ sub run_stage {
         # §6.8 (§4.7/§4.7a): a stage that exits while it is still in the stage map is
         # "coming back" -- the preload-root respawns it and the fresh incarnation
         # re-readies -- so it reports 'restarting', not 'down'.
-        eval { $self->service_send('runner', 'stage_restarting', stage => $stage); 1 };
+        eval { $self->service_send('runner', 'stage_restarting', stage => $stage, want_reply => 0); 1 };    # one-way (#134 finding 106)
         $self->close_service;
     }
     else {
