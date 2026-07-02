@@ -22,6 +22,7 @@ use POSIX;
 use Time::HiRes qw/sleep/;
 
 use Carp qw/croak/;
+use File::Spec();
 use File::Path qw/remove_tree/;
 
 use parent 'App::Yath2::Command';
@@ -135,12 +136,25 @@ sub run {
     my $link = find_runner_link($settings, vivify => 1)
         or die "Could not determine a discovery path for the current settings.\n";
 
-    # A live runner already publishing this symlink means one is already running.
-    # (A dangling/dead symlink is cleaned by Discovery->find, so a crashed runner's
-    # stale link does not block a fresh start.)
-    if (App::Yath2::Discovery->find($settings)) {
-        remove_tree($dir, {safe => 1, keep_root => 0});
-        die "Persistent harness appears to be running, found $link\n";
+    # A runner already publishing this symlink blocks a fresh start. Probe it in
+    # EVERY state (any_state): a LIVE runner is already running; a NOT-LIVE one
+    # (booting, wedged, full accept backlog, another user's) must NOT be silently
+    # replaced -- it stays discoverable so `yath kill` can reach it (ticket #145). A
+    # truly DEAD stale link is cleaned by find() (via the locked owned protocol) and
+    # we fall through to start fresh.
+    if (my $found = App::Yath2::Discovery->find($settings, any_state => 1)) {
+        my $state = $found->state;
+
+        if ($state ne 'dead') {
+            $self->_maybe_remove_workdir($dir, $found);
+
+            die "Persistent harness appears to be running, found $link\n"
+                if $state eq 'live';
+
+            my $fpid = $found->pid // 'unknown';
+            my $fdir = eval { $found->workdir } // 'unknown';
+            die "Persistent runner found but not responding (pid $fpid, dir $fdir); use `yath kill`\n";
+        }
     }
 
     $self->write_settings_to($dir, 'settings.json');
@@ -154,10 +168,14 @@ sub run {
         jobs_todo => 0,
     );
 
-    # Publish the discovery symlink: link -> $dir/runner.socket. The runner writes
-    # its own pid to $dir/PID as it boots (clients read that for signal fallback),
-    # and binds runner.socket; the symlink resolves to a live socket from then on.
-    my $disco = App::Yath2::Discovery->publish($settings, workdir => $dir);
+    # The RUNNER self-publishes the discovery symlink (link -> $dir/runner.socket)
+    # from inside its own process, immediately after it binds runner.socket -- see
+    # Test2::Harness2::Runner (fork A of ticket #145). start no longer publishes:
+    # publishing here (before the socket is bound) is exactly the race that let a
+    # concurrent discovery command unlink the not-yet-live link. We only build the
+    # read-side object to poll $dir/PID for the banner (pid() reads the workdir PID
+    # file directly; no link needed).
+    my $disco = App::Yath2::Discovery->new(link => $link, workdir => $dir);
 
     # The runner pid for the banner: prefer the runner's own pid (from $dir/PID,
     # which survives an exec across a reload-respawn), falling back to the collector
@@ -194,6 +212,31 @@ sub run {
         my $exit = parse_exit($?);
         return $exit->{err} || $exit->{sig} || 0;
     }
+}
+
+# Guarded cleanup of the workdir on the already-running / not-responding abort path
+# (ticket #145, finding 64). The unguarded remove_tree here used to delete ANY
+# user-pinned workdir -- including the LIVE runner's own when YATH_WORKDIR was reused
+# -- orphaning an unstoppable daemon. Remove $dir ONLY when it was freshly created
+# for THIS invocation (Workspace's created_workdir flag), is NOT the found runner's
+# own workdir (found via any_state, so a NOT-LIVE runner's dir is protected too), and
+# holds neither a runner.socket nor a PID file (cheap paranoia against a lying flag).
+sub _maybe_remove_workdir {
+    my $self = shift;
+    my ($dir, $found) = @_;
+
+    my $workspace = $self->settings->workspace;
+    my $created = $workspace->check_option('created_workdir') ? $workspace->created_workdir : 0;
+    return unless $created;
+
+    my $found_dir = eval { $found->workdir };
+    return if defined($found_dir) && $found_dir eq $dir;
+
+    return if -e File::Spec->catfile($dir, 'runner.socket');
+    return if -e File::Spec->catfile($dir, 'PID');
+
+    remove_tree($dir, {safe => 1, keep_root => 0});
+    return;
 }
 
 # Poll for the runner's own pid, which the runner writes to $dir/PID as it boots

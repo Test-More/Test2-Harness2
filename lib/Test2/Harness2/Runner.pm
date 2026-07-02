@@ -10,7 +10,7 @@ use Carp qw/confess croak/;
 use POSIX qw/:sys_wait_h/;
 use Time::HiRes qw/sleep time/;
 
-use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter/;
+use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic publish_discovery_link process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter/;
 use Test2::Harness2::Util::Queue();
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 use Test2::Harness2::Util::SubReaper qw/acquire_subreaper subreaper_supported/;
@@ -452,6 +452,20 @@ sub process {
     # State. The transient path does not write queue.jsonl/jobs.jsonl; they
     # remain only for the gated persistent path.
     $self->start_service;
+
+    # Publish the discovery symlink LAST, from the runner itself, immediately after
+    # runner.socket is bound (fork A of ticket #145). The ordering invariant is
+    # load-bearing for the race proof: the PID file (438) happens-before the socket
+    # bind (454) happens-before this publish, all in this one process -- so any
+    # racing cleaner's locked deadness re-check sees this runner's live PID and never
+    # unlinks the just-published link, and a daemon stays discoverable even if `start`
+    # died before it could publish. publish_discovery_link takes the shared publisher
+    # lock so it serializes against a concurrent cleaner.
+    if (my $persist = $self->{+PERSIST}) {
+        my $socket = File::Spec->catfile($self->{+DIR}, 'runner.socket');
+        my $ok = eval { publish_discovery_link($socket, $persist); 1 };
+        warn "Could not publish discovery symlink '$persist' -> '$socket': $@" unless $ok;
+    }
 
     # Plugin setup() runs HERE, in the runner, after runner.socket is
     # bound -- so a plugin's aux work (shellcall / run_collected) reports to the

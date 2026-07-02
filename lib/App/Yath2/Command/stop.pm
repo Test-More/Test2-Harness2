@@ -16,6 +16,7 @@ use Test2::Harness2::Runner::Monitor();
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
 use App::Yath2::Client;
+use App::Yath2::Discovery();
 
 use Test2::Harness2::Util qw/open_file/;
 use File::Path qw/remove_tree/;
@@ -71,8 +72,13 @@ sub run {
 
     sleep(0.02) while kill(0, $pid);
 
-    my $pfile_path = $self->pfile->path;
-    unlink($pfile_path) if -f $pfile_path;
+    # Remove the discovery link through the mutator protocol (ticket #145): only if
+    # it still points at THIS runner's socket and no successor has claimed the pinned
+    # workdir. (The old `unlink($path) if -f $path` was dead code: -f follows the
+    # symlink to the SOCKET target and is always false.)
+    my $link       = $self->pfile->path;
+    my $own_socket = File::Spec->catfile($self->workdir, 'runner.socket');
+    App::Yath2::Discovery->new(link => $link)->clean_if_mine($own_socket, $pid);
 
     remove_tree($self->workdir, {safe => 1, keep_root => 0}) if -d $self->workdir;
 

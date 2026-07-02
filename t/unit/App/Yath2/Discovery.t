@@ -50,6 +50,16 @@ sub make_workdir {
     return ($workdir, $listen);
 }
 
+# A pid that is guaranteed dead (fork a child, exit it, reap it) so kill(0) reports
+# ESRCH -- the unambiguous-death signal the taxonomy requires before it will clean.
+sub dead_pid {
+    my $pid = fork();
+    die "fork failed: $!" unless defined $pid;
+    if (!$pid) { exit 0 }
+    waitpid($pid, 0);
+    return $pid;
+}
+
 # A settings object pinned to a fresh persist dir (via persist_dir, so no env
 # juggling) plus the symlink path find_runner_link picks for it.
 sub link_in_persist_dir {
@@ -89,18 +99,24 @@ tests publish_and_find => sub {
 tests dangling_symlink_is_cleaned => sub {
     my ($persist, $link, $settings) = link_in_persist_dir();
 
-    # Point the symlink at a runner.socket that does not exist (a crashed runner).
-    my $gone = File::Spec->catfile(tempdir(CLEANUP => 1), 'runner.socket');
+    # Point the symlink at a runner.socket whose WORKDIR does not exist at all: a
+    # crashed runner whose workdir is gone. With no workdir there is no boot in
+    # progress and no PID-file fallback to lose, so this is unambiguously DEAD.
+    my $gone_workdir = File::Spec->catdir(tempdir(CLEANUP => 1), 'no-such-workdir');
+    my $gone = File::Spec->catfile($gone_workdir, 'runner.socket');
     symlink($gone, $link) or die "symlink failed: $!";
     ok(-l $link, "dangling symlink created");
 
     my $found = App::Yath2::Discovery->find($settings);
     is($found, undef, "find returns nothing for a dangling symlink (runner absent)");
-    ok(!-l $link, "find cleaned up the stale dangling symlink");
+    ok(!-l $link, "find cleaned up the stale dangling symlink (workdir gone => dead)");
 };
 
 tests dead_socket_is_cleaned => sub {
-    my ($workdir, $listen) = make_workdir();
+    # A CONFIRMED-dead runner: the socket no longer accepts AND the PID file names a
+    # process that is gone (kill-0 ESRCH). This is the only socket-down case that is
+    # unambiguously DEAD -- a live PID would be a wedged runner and MUST be kept.
+    my ($workdir, $listen) = make_workdir(pid => dead_pid());
     my ($persist, $link, $settings) = link_in_persist_dir();
 
     symlink(File::Spec->catfile($workdir, 'runner.socket'), $link) or die "symlink failed: $!";
@@ -111,8 +127,8 @@ tests dead_socket_is_cleaned => sub {
     unlink(File::Spec->catfile($workdir, 'runner.socket'));
 
     my $found = App::Yath2::Discovery->find($settings);
-    is($found, undef, "find returns nothing when the socket no longer accepts");
-    ok(!-l $link, "find cleaned up the stale symlink for the dead runner");
+    is($found, undef, "find returns nothing when the socket is gone and the pid is dead");
+    ok(!-l $link, "find cleaned up the stale symlink for the confirmed-dead runner");
 };
 
 tests no_clean_leaves_stale_link => sub {

@@ -2,11 +2,12 @@ package Test2::Harness2::Util;
 use strict;
 use warnings;
 
-use Carp qw/confess/;
+use Carp qw/confess croak/;
 use Cwd qw/realpath/;
 use Test2::Util qw/try_sig_mask do_rename/;
-use Fcntl qw/LOCK_EX LOCK_UN SEEK_SET :mode/;
+use Fcntl qw/LOCK_EX LOCK_UN LOCK_NB SEEK_SET :mode/;
 use File::Spec;
+use Time::HiRes();
 
 our $VERSION = '2.000000';
 
@@ -30,6 +31,8 @@ our @EXPORT_OK = qw{
     read_file
     write_file
     write_file_atomic
+    write_link_atomic
+    publish_discovery_link
     lock_file
     unlock_file
 
@@ -401,6 +404,72 @@ sub write_file_atomic {
     die $err unless $ok;
 
     return @content;
+}
+
+# Publish a symlink atomically: symlink to a per-pid temp name, then rename(2) it
+# onto $link. rename(2) replaces the destination name in a single step, so a
+# concurrent reader ever sees the OLD target or the NEW target -- never a missing
+# or half-written link. The sibling of write_file_atomic for the discovery symlink
+# (App::Yath2::Discovery). Refuses to clobber a NON-symlink at $link the way
+# open_unix_listen refuses a non-socket (a real file the caller pointed us at by
+# mistake); an existing SYMLINK is replaced by the rename.
+sub write_link_atomic {
+    my ($target, $link) = @_;
+
+    if (-e $link || -l $link) {
+        croak "path '$link' exists and is not a symlink" unless -l $link;
+    }
+
+    my $tmp = "$link.$$.tmp";
+    unlink($tmp) if -l $tmp || -e $tmp;
+
+    symlink($target, $tmp)
+        or confess "Could not create discovery symlink '$tmp' -> '$target': $!";
+
+    unless (rename($tmp, $link)) {
+        my $err = $!;
+        unlink($tmp);
+        confess "Could not publish discovery symlink '$tmp' -> '$link': $err";
+    }
+
+    return $link;
+}
+
+# Publish the discovery symlink under the shared publisher/cleaner lock so it
+# serializes against a concurrent cleaner (App::Yath2::Discovery's clean_if_owned /
+# clean_if_mine take the same "$link.lock" with LOCK_NB). Ordering-invariant for the
+# #145 race closure: a cleaner that decides a link is dead re-checks liveness while
+# holding this lock, so a publish landing before that re-check flips it to keep, and
+# a publish landing after a cleaner's unlink simply recreates the link.
+#
+# The lock is best-effort: a squatted lockfile in a sticky shared tempdir must never
+# block a runner from becoming discoverable, so on lock timeout we publish ANYWAY
+# (the fail-safe side is a racing cleaner skipping its clean, never a lost runner).
+sub publish_discovery_link {
+    my ($target, $link) = @_;
+
+    my $lockfile = "$link.lock";
+    my $lfh;
+    if (open($lfh, '>>', $lockfile)) {
+        my $deadline = Time::HiRes::time() + 2;
+        my $got      = 0;
+        while (1) {
+            last if $got = flock($lfh, LOCK_EX | LOCK_NB);
+            last if Time::HiRes::time() >= $deadline;
+            Time::HiRes::sleep(0.05);
+        }
+    }
+
+    my $ok  = eval { write_link_atomic($target, $link); 1 };
+    my $err = $@;
+
+    if ($lfh) {
+        eval { flock($lfh, LOCK_UN); 1 };
+        close($lfh);
+    }
+
+    die $err unless $ok;
+    return $link;
 }
 
 sub lock_file {
@@ -782,6 +851,28 @@ This will open a temporary file, write the content, close the file, then rename
 the file to the desired C<$path>. This is essentially an atomic write in that
 C<$file> will not exist until all content is written, preventing other
 processes from doing a partial read while C<@content> is being written.
+
+=item $link = write_link_atomic($target, $link)
+
+Publish a symlink at C<$link> pointing at C<$target>, atomically. This creates the
+symlink under a per-pid temporary name and then C<rename(2)>s it onto C<$link>, so
+a concurrent reader always observes either the previous target or the new one --
+never a missing or half-published link. The sibling of L</write_file_atomic> for
+the persistent-runner discovery symlink.
+
+Refuses (croaks) to clobber a path that exists and is B<not> a symlink (mirroring
+C<open_unix_listen>'s refusal of a non-socket); an existing symlink at C<$link> is
+replaced by the atomic rename.
+
+=item $link = publish_discovery_link($target, $link)
+
+Publish the persistent-runner discovery symlink (via L</write_link_atomic>) while
+holding the shared C<"$link.lock"> exclusive lock, so the publish serializes against
+a concurrent discovery-side cleaner (which takes the same lock before it unlinks a
+link it probed as dead). The lock is best-effort with a short bounded wait: if it
+cannot be acquired in time the link is published anyway (a squatted lockfile must
+never keep a live runner from becoming discoverable -- the fail-safe side is a
+racing cleaner skipping its clean, never a lost runner).
 
 =back
 

@@ -118,11 +118,15 @@ option_post_process 0 => sub ($options, $state) {
 
     if (my $workdir = $settings->workspace->workdir) {
         if (-d $workdir) {
+            # Reusing a pre-existing (user-pinned) workdir: NOT created this run, so
+            # the already-running abort path must never remove_tree it (ticket #145).
             remove_tree($workdir, {safe => 1, keep_root => 1}) if $settings->workspace->clear;
+            $settings->workspace->create_option(created_workdir => 0);
         }
         else {
             mkdir($workdir) or die "Could not create workdir: $!";
             chmod_tmp($workdir);
+            $settings->workspace->create_option(created_workdir => 1);
         }
 
         return;
@@ -144,6 +148,10 @@ option_post_process 0 => sub ($options, $state) {
     chmod_tmp($tmpdir);
 
     $settings->workspace->create_option(workdir => $tmpdir);
+
+    # A freshly-created throwaway workdir: the already-running abort path MAY
+    # remove_tree it (ticket #145).
+    $settings->workspace->create_option(created_workdir => 1);
 };
 
 1;

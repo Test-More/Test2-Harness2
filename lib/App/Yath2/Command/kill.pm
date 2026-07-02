@@ -5,7 +5,10 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Time::HiRes qw/sleep/;
+use File::Spec();
 use File::Path qw/remove_tree/;
+
+use App::Yath2::Discovery();
 
 use Test2::Harness2::Util::File::JSON();
 
@@ -44,7 +47,14 @@ sub run {
     $self->SUPER::run();
 
     sleep(0.02) while kill(0, $self->pfile_data->{pid});
-    unlink($pfile) if -f $pfile;
+
+    # Remove the discovery link through the mutator protocol (ticket #145): only if
+    # it still points at THIS runner's socket and no successor has claimed the pinned
+    # workdir. (The old `unlink($pfile) if -f $pfile` was dead code: -f follows the
+    # symlink to the SOCKET target and is always false.)
+    my $own_socket = File::Spec->catfile($self->workdir, 'runner.socket');
+    App::Yath2::Discovery->new(link => $pfile)->clean_if_mine($own_socket, $data->{pid});
+
     remove_tree($self->workdir, {safe => 1, keep_root => 0}) if -d $self->workdir;
     print "\n\nRunner stopped\n\n" unless $self->settings->display->quiet;
 

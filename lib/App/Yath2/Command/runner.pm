@@ -13,6 +13,8 @@ use Scope::Guard;
 
 use Getopt::Yath::Settings;
 
+use App::Yath2::Discovery();
+
 use Test2::Harness2::Util qw/write_file_atomic/;
 
 # If FindBin is installed, go ahead and load it. We do not care much about
@@ -89,7 +91,13 @@ sub cleanup {
     return Scope::Guard->new(sub {
         return unless $pid == $$;
 
-        unlink($pfile);
+        # Remove OUR OWN discovery link on clean shutdown, but only through the
+        # mutator protocol (ticket #145): a successor runner that claimed the same
+        # pinned workdir republishes this link and writes its own live PID, so
+        # clean_if_mine's identity + successor-liveness re-check leaves the new link
+        # in place instead of orphaning the successor.
+        my $socket = File::Spec->catfile($dir, 'runner.socket');
+        eval { App::Yath2::Discovery->new(link => $pfile)->clean_if_mine($socket, $pid); 1 };
 
         remove_tree($dir, {safe => 1, keep_root => 0}) unless $settings->debug->keep_dirs;
     });

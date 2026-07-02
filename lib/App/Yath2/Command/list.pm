@@ -40,7 +40,7 @@ sub run {
     }
 
     my @live         = grep { $_->{state} eq 'live' } @records;
-    my @inaccessible = grep { $_->{state} eq 'inaccessible' } @records;
+    my @inaccessible = grep { $_->{state} eq 'not_live' && ($_->{reason} // '') eq 'inaccessible' } @records;
 
     if (@live) {
         print "\nPersistent runners:\n";
