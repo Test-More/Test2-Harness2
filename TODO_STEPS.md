@@ -77,6 +77,34 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 29 | Socket FD-pass primitive `Test2::Harness2::Util::FdPass` (SCM_RIGHTS; optional `IO::FDPass`; command-listens) — shared by spawn (13) + interactive (20) | ✅ (primitive only; consumers 13/20 separate) | #38 |
 | 30 | Harness-client library: grow `App::Yath2::Client` to own runner-lifecycle modes + finders/specs + state queries; thin `test`/`run`/`start` (§4.11) | ✅ | #41 |
 | 31 | Render-loop library: `RenderLoop` (owns dispatch+rollup) + pure-source `Producer`; `LiveProducer` + `JSONLFileProducer` now, `ArchiveProducer` deferred to DB rewrite (§4.12) | ✅ (ArchiveProducer deferred) | #42 |
+| CLEAN-1 | Cleanup audit (2026-07-01): renderer/formatter stack — dead Composer/Formatter/RenderLoop plumbing, Driver & status-bar duplication, fan-out consolidation | ⬜ | #64, #65, #66 |
+| CLEAN-2 | Cleanup audit: Runner core (State/Scheduler/process-mgmt) — dead code, duplication, key & HashBase consistency | ⬜ | #67, #68, #69 |
+| CLEAN-3 | Cleanup audit: Runner service — split oversized Handlers.pm, Client/Subscriber & announce_* duplication, Watchdog/Monitor dead code + stale comments | ⬜ | #70, #71, #72 |
+| CLEAN-4 | Cleanup audit: job execution, event/reader & TestFile — dead exec paths, dead attributes, internal duplication, POD hygiene | ⬜ | #73, #74, #75, #76 |
+| CLEAN-5 | Cleanup audit: preload subsystem — dead stubs/attributes, DEFAULT_STAGE type fix, closure/resolve duplication | ⬜ | #77, #78 |
+| CLEAN-6 | Cleanup audit: resource classes — boilerplate/constructor consolidation, JobCount header fix, v5.38/signature normalization | ⬜ | #79, #80 |
+| CLEAN-7 | Cleanup audit: IPC / Role::Service / Util-core — die-closure & byte-pump duplication, dead teardown/dispatch/spawn forms | ⬜ | #81, #82 |
+| CLEAN-8 | Cleanup audit: Util modules, Directives & UUID — dead modules/members, gen_uuid unification, Directives duplication + oversized _record | ⬜ | #83, #84, #85 |
+| CLEAN-9 | Cleanup audit: Log/CoverageAggregator — duplication, finalize-shape bug, eval-error, POD | ⬜ | #86 |
+| CLEAN-10 | Cleanup audit: command layer — cli_args/doc_args wiring, base+test.pm dead code, render/helper duplication, persist-family fixes, import sweep | ⬜ | #87, #88, #89, #90, #91, #92 |
+| CLEAN-11 | Cleanup audit: DB layer — dead Schema/imports/slots, sync/import & _find_or_create duplication, command-surface stubs & HTTP stack | ⬜ | #93, #94 |
+| CLEAN-12 | Cleanup audit: client-lib/Discovery/Util — Pfile shim removal, walk/probe duplication, Tester/Finder/Script fixes | ⬜ | #95, #96, #97 |
+| CLEAN-13 | Cleanup audit: options & plugins — retire web/DB option modules, duplication helpers, dead options/markers, v5.38 sweep | ⬜ | #98, #99, #100, #101 |
+| CLEAN-14 | Cleanup audit: standalone dead modules, stale docs & doc-status sync | ⬜ | #102, #103, #104, #105 |
+| BUG-1 | Bug audit: P0 fixes — service select-set poisoning wedges the runner; Git plugin infinite merge-base loop | ⬜ | #106, #107 |
+| BUG-2 | Bug audit: P1 service/IPC core — EAGAIN false EOF, silent client submission loss, unguarded handler dispatch | ⬜ | #108, #109, #110 |
+| BUG-3 | Bug audit: P1 runner/preload/reload — reload duplication/wedges, scheduler crash & hangs, retry misreport, directive validation | ⬜ | #111, #112, #113, #114, #115, #116, #117, #118 |
+| BUG-4 | Bug audit: P1 spawn — supervisor pgroup leak kills detached sessions on stage stop/reload | ⬜ | #119 |
+| BUG-5 | Bug audit: P1 command lifecycle — watch/stop/kill/run/start/failed/interactive Ctrl-C | ⬜ | #120, #121, #122, #123, #124, #125 |
+| BUG-6 | Bug audit: P1 options/plugins — dead --notify-email-fail, -f fields truncation | ⬜ | #126, #127 |
+| BUG-7 | Bug audit: P1 DB logger/sync correctness — project attribution, non-transactional sync, drain stall, aborted-job & failure finalization, teardown reporting | ⬜ | #128, #129, #130, #131, #132, #133 |
+| BUG-8 | Bug audit: P2/P3 service + runner-core bundles — IPC hardening, state/scheduler, preload, job env, resources/sampler | ⬜ | #134, #135, #136, #137, #138 |
+| BUG-9 | Bug audit: P2/P3 spawn + interactive bundles | ⬜ | #139, #140 |
+| BUG-10 | Bug audit: P2/P3 renderer/formatter/log-renderer bundles | ⬜ | #141, #142, #143 |
+| BUG-11 | Bug audit: P2/P3 finder + command-surface bundles — selection, discovery/start races, persist-command UX, replay, rc parsing, speedtag/times | ⬜ | #144, #145, #146, #147, #148, #149 |
+| BUG-12 | Bug audit: P2/P3 plugins + coverage bundles | ⬜ | #150, #151 |
+| BUG-13 | Bug audit: P2/P3 DB layer + web-client commands (web-parked; rework in place) | ⬜ | #152, #153 |
+| BUG-14 | Bug audit: P2/P3 util/tester fixes + dead-seam cross-refs | ⬜ | #154, #155, #156 |
 
 The **Tasks** column points at the well-defined tickets in `TODO_TASKS.md` that
 implement (part of) a step. A step is "broad"; its tickets are "specific."
