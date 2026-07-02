@@ -41,6 +41,7 @@ use Test2::Harness2::Util::HashBase(
         <pending_tasks <task_lookup
         <pending_runs  +run <stopped_runs
         <retained_runs
+        <retired_run_ids
 
         <running
         <running_categories
@@ -416,8 +417,24 @@ sub _start_task {
 
     $self->prune_hash($self->{+PENDING_TASKS}, $run_id, $smoke, $stage, $cat, $dur);
 
-    # Set the stage, new task hashref
-    $task = {%$task, stage => $run_stage} unless $task->{stage} && $task->{stage} eq $run_stage;
+    # A fresh, fully-owned task hashref for the running copy (#135 finding 29). The
+    # env_vars hash and test_args array are 1-level-copied too -- that IS the full deep
+    # copy here: env_vars values are plain strings and test_args elements are plain
+    # strings (App/Yath2/TestFile directive/inject merge + the Resource API only ever
+    # write scalars), so nothing nests deeper. This is unconditional: setting
+    # stage => $run_stage is behavior-identical to the old `unless` (when the old branch
+    # skipped the copy, $task->{stage} already eq $run_stage). Copying always means the
+    # per-attempt resource env_vars/test_args stamped below (and resource_skip / the
+    # conflicts autoviv) mutate ONLY this running copy, never the canonical TASK_LOOKUP
+    # task -- so a retry/requeue re-resolves from a pristine original and never
+    # accumulates a duplicate copy of the prior attempt's resource args. conflicts stays
+    # shared deliberately (read-only after queue: _start_task/_stop_task only count it).
+    $task = {
+        %$task,
+        stage     => $run_stage,
+        env_vars  => {%{$task->{env_vars} // {}}},
+        test_args => [@{$task->{test_args} // []}],
+    };
 
     $task->{env_vars}->{$_} = $res->{env_vars}->{$_} for keys %{$res->{env_vars}};
     push @{$task->{test_args}} => @{$res->{args}};
@@ -531,11 +548,13 @@ sub _retry_task {
 # terminal subscriber transition -- the runner forwards a 'requeued' mutation (or
 # none) rather than 'done'/'aborted'.
 #
-# TASK_LOOKUP holds the ORIGINAL task (its preload directives / `stage`
-# preference); the resolved-stage copy lives only in RUNNING_TASKS and is dropped by
-# _stop_task. So re-queuing TASK_LOOKUP's task re-resolves the run stage (from the
-# task's preload directives) against the CURRENT map on the next tick -- a stage
-# that has since come back, or a different available stage, can take it.
+# TASK_LOOKUP holds the ORIGINAL task, genuinely pristine: _start_task ALWAYS makes
+# a fresh copy with its OWN env_vars/test_args (#135 finding 29), so the resolved-stage
+# copy -- which carries the per-attempt resource env_vars/test_args -- lives only in
+# RUNNING_TASKS and is dropped by _stop_task. So re-queuing TASK_LOOKUP's task
+# re-resolves the run stage (from the task's preload directives) against the CURRENT
+# map on the next tick -- a stage that has since come back, or a different available
+# stage, can take it -- and never carries a duplicate of a prior attempt's args.
 sub requeue_task {
     my $self = shift;
     my ($job_id) = @_;
@@ -646,7 +665,17 @@ sub stage_ready {
 sub stage_down {
     my $self = shift;
     my ($stage) = @_;
+
+    # Demote first, THEN rebucket (#135 finding 27): _rebucket_stage_tasks re-resolves
+    # each parked task through task_stage, which must already see this stage as 'down'
+    # (task_stage skips a 'down' stage) so a task never re-parks in the bucket we are
+    # draining. _next only walks 'up' buckets, so a task left in a demoted stage would
+    # otherwise be stranded and hang the run. This covers BOTH demotion paths -- the
+    # stage_down request endpoint and set_stage_map's removed-stage loop (which now
+    # calls here) -- with one rebucket site.
     $self->_set_stage_lifecycle($stage, 'down');
+    $self->_rebucket_stage_tasks($stage);
+
     return;
 }
 
@@ -688,7 +717,6 @@ sub _expire_stale_stages {
 
     my $life = $self->{+STAGE_LIFECYCLE} or return;
 
-    my @expired;
     for my $stage (keys %$life) {
         my $state = $life->{$stage}->{state};
         next unless $state eq 'starting' || $state eq 'restarting';
@@ -696,11 +724,12 @@ sub _expire_stale_stages {
         my $age = $self->stage_state_age($stage);
         next unless defined($age) && $age > $timeout;
 
+        # stage_down now rebuckets the stage's parked tasks itself (#135 finding 27).
+        # Per-stage rebucketing inside this multi-stage pass stays convergent: a task
+        # re-parked into a stage demoted later in the same pass is drained again by
+        # THAT stage's rebucket, and 'down' is monotone within the pass.
         $self->stage_down($stage);
-        push @expired => $stage;
     }
-
-    $self->_rebucket_stage_tasks($_) for @expired;
 
     return;
 }
@@ -759,11 +788,14 @@ sub set_stage_map {
         $self->_set_stage_lifecycle($stage, 'starting');
     }
 
-    # Stages we tracked that are no longer in the map: permanently 'down'.
+    # Stages we tracked that are no longer in the map: permanently 'down'. Route
+    # through stage_down so the demoted stage's parked tasks are rebucketed and
+    # re-resolved (#135 finding 27) -- STAGE_MAP was assigned above, so the
+    # re-resolution sees the new (stage-removed) map.
     for my $stage (keys %$life) {
         next if $map->{$stage};
         next if $life->{$stage}->{state} eq 'down';
-        $self->_set_stage_lifecycle($stage, 'down');
+        $self->stage_down($stage);
     }
 
     return;
@@ -991,7 +1023,27 @@ sub clear_finished_run {
 
     delete $self->{+RUN};
 
+    # Record the retirement as an EVENT, not a slot-diff (#135 finding 28): the
+    # scheduler drains this after its advance loop and announces every retired run.
+    # A run activated AND retired within one advance loop (an empty run, a pre-stopped
+    # run, an abort) never occupies the +RUN slot across two ticks, so a before/after
+    # slot diff would miss it -- its harness_run_end would be lost (hanging a
+    # run-scoped subscriber) and, on the owner-drop leg, it would leak in state. A
+    # run_id enters +RUN at most once per queued instance and this delete transitions
+    # it out exactly once, so it is pushed exactly once.
+    push @{$self->{+RETIRED_RUN_IDS} //= []} => $run->run_id;
+
     return 1;
+}
+
+# Drain the retired-run event queue (#135 finding 28): return the run_ids that left
+# the active slot since the last drain and reset the queue, so the scheduler can
+# announce each one's end exactly once. Destructive: each retirement is returned once.
+sub take_retired_runs {
+    my $self = shift;
+    my $ids = $self->{+RETIRED_RUN_IDS} // [];
+    $self->{+RETIRED_RUN_IDS} = [];
+    return @$ids;
 }
 
 # Purge a run's retained/in-flight state entirely: the retained finished Run, plus

@@ -354,6 +354,14 @@ sub collector_conn_eof {
     my $current = $self->{'collector_current_try'}{$job_id};
     return if defined($current) && defined($job_try) && "$current" ne "$job_try";
 
+    # This EOF is for the CURRENT try (the stale-try guard above already returned
+    # otherwise), so retire its current-try marker on ANY outcome -- including a
+    # suppressed EOF the watchdog already decided, which returns below. Doing this
+    # BEFORE the fire-once return fixes a latent leak (#135 finding 2/15): a
+    # watchdog-decided first-try job's later EOF previously returned early and left the
+    # marker forever on a persistent runner.
+    delete $self->{'collector_current_try'}{$job_id};
+
     # FIRE-ONCE: exactly one completion per (job_id, job_try). The decided set is
     # shared with the watchdog (an abort/owner-disconnect/wind-down abort marks the
     # job decided), so an EOF that arrives after the watchdog already decided this
@@ -361,29 +369,31 @@ sub collector_conn_eof {
     return if $self->job_already_decided($job_id, $job_try);
     $self->mark_job_decided($job_id, $job_try);
 
-    delete $self->{'collector_current_try'}{$job_id};
-
     $self->decide_collector_outcome($entry);
 
     return;
 }
 
-# The shared fire-once ledger keyed by (job_id, job_try): the EOF decision and the
-# watchdog both consult/set it so a job completes exactly once even when its EOF
-# and an abort race. A retry is a NEW (job_id, job_try) pair, so it is never
-# blocked by the prior try's entry.
-sub _decided_key { my ($self, $job_id, $job_try) = @_; return join('+', $job_id // '', $job_try // 0) }
-
+# The shared fire-once ledger, a two-level map decided_jobs{job_id}{job_try} (#135
+# finding 2): the EOF decision and the watchdog both consult/set it so a job completes
+# exactly once even when its EOF and an abort race. A retry is a NEW (job_id, job_try)
+# pair, so it is never blocked by the prior try's entry. The try is normalized `// 1`
+# to match the collector handshake (Job.pm sends is_try //= task->{is_try} // 1): the
+# watchdog and the connect-timeout pass the raw task->{is_try} (undef on a first
+# attempt), the EOF path the wire job_try (1 on a first attempt), so `// 1` collapses
+# both to the SAME key -- the undef-vs-1 mismatch that re-decided aborted first tries.
+# Two levels also make a per-run prune (#135 finding 3) an O(1) delete of decided_jobs{job_id}.
 sub job_already_decided {
     my $self = shift;
     my ($job_id, $job_try) = @_;
-    return $self->{'decided_jobs'}{$self->_decided_key($job_id, $job_try)} ? 1 : 0;
+    my $tries = $self->{'decided_jobs'}{$job_id // ''} or return 0;
+    return $tries->{$job_try // 1} ? 1 : 0;
 }
 
 sub mark_job_decided {
     my $self = shift;
     my ($job_id, $job_try) = @_;
-    $self->{'decided_jobs'}{$self->_decided_key($job_id, $job_try)} = 1;
+    $self->{'decided_jobs'}{$job_id // ''}{$job_try // 1} = 1;
     return;
 }
 
@@ -637,6 +647,12 @@ sub _terminate_collector {
     $entry->{terminated}       //= 1;
     $entry->{terminate_reason} //= $reason;
     $entry->{terminate_sent}   //= time;
+    # Per-ENTRY hard-kill deadline (#135 finding 15), the fallback _terminate_collector's
+    # comment above promises: a collector terminated via a per-job connect-timeout intent
+    # (no run-level aborting_runs record) is still hard-killed if it does not comply.
+    # Monotonic to match _enforce_terminate_grace's clock (#134 finding 104); reuses the
+    # same _terminate_grace as the run-level intent (identical semantics).
+    $entry->{terminate_deadline} //= mono_time + $self->_terminate_grace;
 
     my $conn = $entry->{conn} or return;
     return if $conn->closed;
@@ -656,10 +672,13 @@ sub _terminate_collector {
 sub _enforce_terminate_grace {
     my $self = shift;
 
-    my $aborting = $self->{'aborting_runs'} or return;
-    return unless keys %$aborting;
+    # No early-out on aborting_runs (#135 finding 15): a per-job connect-timeout
+    # terminate has NO run-level intent, so it must still be enforceable via its
+    # per-entry deadline. The per-entry `next unless terminate_sent` below keeps the
+    # idle-tick cost trivial.
+    my $aborting = $self->{'aborting_runs'} // {};
 
-    my $now   = mono_time;    # pairs with the deadline armed in terminate_run_collectors (#134 finding 104)
+    my $now   = mono_time;    # pairs with the deadline armed in terminate_run_collectors + _terminate_collector (#134 finding 104)
     my $conns = $self->{'collector_conns'} // {};
 
     for my $key (keys %$conns) {
@@ -667,8 +686,12 @@ sub _enforce_terminate_grace {
         next unless $entry->{terminate_sent};
         next if $entry->{hard_killed};
 
-        my $intent = $aborting->{$entry->{run_id} // ''} or next;
-        next unless defined($intent->{deadline}) && $now >= $intent->{deadline};
+        # Intent-first fallback: the run-level abort deadline wins when present (so
+        # run-level behavior is byte-identical), otherwise the per-entry deadline
+        # (#135 finding 15) governs the per-job connect-timeout terminate.
+        my $intent = $aborting->{$entry->{run_id} // ''};
+        my $deadline = ($intent && defined $intent->{deadline}) ? $intent->{deadline} : $entry->{terminate_deadline};
+        next unless defined($deadline) && $now >= $deadline;
 
         my $conn = $entry->{conn};
         next if $conn && $conn->closed;    # already gone; its EOF will decide it
@@ -1149,7 +1172,11 @@ sub stage_host_errors { $_[0]->{'stage_host_errors'} // [] }
 # records to its own events file only; the runner is the hub, not its own peer.
 sub monitor {
     my $self = shift;
-    return $self->{'monitor'} //= Test2::Harness2::Runner::Monitor->new;
+    # track_pending => 0 (#135 finding 3): the hub only feeds + snapshots; the
+    # PENDING_* drain-on-call lists are consumed exclusively by subscriber-side mirrors
+    # (Renderer::Driver / Renderer::Base), never here, and snapshot/apply_snapshot never
+    # carry them -- so populating them hub-side is unbounded dead weight.
+    return $self->{'monitor'} //= Test2::Harness2::Runner::Monitor->new(track_pending => 0);
 }
 
 # Role::Service hands every transition frame here (one-way, no reply).
@@ -1347,6 +1374,44 @@ sub announce_run {
     my $frame = compress_blob(encode_json($payload));
     $self->forward_frame($frame, $run_id);
 
+    # (#135 finding 3) The run is retired and its end frame forwarded: prune all
+    # O(tests) hub-monitor state for it. Existing run subscribers already received the
+    # forwarded run_end; a late/reconnecting run-scoped subscriber keys completion on
+    # the retained RUNS marker (kept below) -> run_done fires instead of hanging.
+    # Capture the run's job_ids BEFORE pruning (monitor jobs for the run, unioned with
+    # job_passed keys whose value is the run) so the deferred, live-safe ledger sweep
+    # can retire their fire-once / current-try / pass ledgers once every collector
+    # connection has closed and any post-retirement reap has fired.
+    my %job_ids;
+    for my $job_id ($self->monitor->job_ids) {
+        my $j = $self->monitor->job($job_id) or next;
+        $job_ids{$job_id} = 1 if defined($j->{run_id}) && $j->{run_id} eq $run_id;
+    }
+    if (my $jp = $self->{'job_passed'}) {
+        $job_ids{$_} = 1 for grep { ($jp->{$_} // '') eq $run_id } keys %$jp;
+    }
+
+    $self->monitor->prune_run($run_id);
+
+    # 'since' is interval math read only by _flush_run_ledger_sweeps -- monotonic,
+    # pairs with the mono_time there (#134 finding 104).
+    push @{$self->{'ledger_sweep'}} => {run_id => $run_id, job_ids => [keys %job_ids], since => mono_time};
+
+    # Retain ONLY the O(1)-per-run end marker (the monitor RUNS entry + the
+    # announced_runs key) in a bounded FIFO ring, so a late/reconnecting run-scoped
+    # subscriber of any RECENT run still sees run_done. Older markers age out (their
+    # re-prune also catches any straggler collector/job/health recreated since).
+    push @{$self->{'announced_ring'}} => $run_id;
+    while (@{$self->{'announced_ring'}} > $self->_run_marker_retention) {
+        my $old = shift @{$self->{'announced_ring'}};
+        delete $self->{'announced_runs'}{$old};
+        $self->monitor->drop_run_marker($old);
+    }
+
+    # Opportunistic sweep (also driven once per scheduler_tick): retire any now-eligible
+    # ledger entries whose grace has elapsed and whose collector connections have closed.
+    $self->_flush_run_ledger_sweeps;
+
     # Ticket #12 / ARCHITECTURE.md §4.2: a finished run is retained (queryable) only
     # while its owner connection is live. A run with NO owner record -- e.g. one queued
     # by an internal/non-socket path -- can never be queried, so purge it the moment it
@@ -1354,6 +1419,73 @@ sub announce_run {
     # stays retained until that owner drops (service_conn_closed purges it then).
     $self->state->purge_run($run_id)
         unless $self->{'run_owners'} && $self->{'run_owners'}->{$run_id};
+
+    return;
+}
+
+# The number of retired-run end markers retained for a late/reconnecting run-scoped
+# subscriber of a recent run (#135 finding 3). OWNER-OVERRIDABLE: raising it trades a
+# few hundred bytes/run for a longer late-subscribe window; 0 restores "hang on late
+# subscribe to a finished run".
+sub _run_marker_retention { 100 }
+
+# The grace (seconds) a retired run's job ledgers are held before sweeping, so a
+# post-retirement reap (job_passed -> A3) or a straggler EOF has fired first (#135
+# finding 3). Reuses the terminate-grace family of intervals.
+sub _ledger_sweep_grace { 30 }
+
+# Deferred, live-connection-safe sweep of retired runs' per-job ledgers (#135
+# finding 3). Called from announce_run and once per scheduler_tick. Immediate deletion
+# at retirement is UNSAFE two ways: (i) a watchdog-aborted job's collector connection
+# can still be OPEN at retirement, and its later EOF -- with decided_jobs already gone
+# -- would pass the fire-once check and RE-DECIDE the job (a double 'aborted' announce);
+# (ii) a WATCHED collector's process may be reaped AFTER retirement, when
+# _check_post_pass_health still needs job_passed for the A3 escalation. So a job is
+# swept only once its collector connection has CLOSED and a grace has elapsed since the
+# run retired -- deferring exactly the two hazard windows while keeping the ledgers
+# bounded on a persistent runner.
+sub _flush_run_ledger_sweeps {
+    my $self = shift;
+
+    my $queue = $self->{'ledger_sweep'} or return;
+    return unless @$queue;
+
+    my $now   = mono_time;    # pairs with the 'since' stamp in announce_run (#134 finding 104)
+    my $grace = $self->_ledger_sweep_grace;
+    my $conns = $self->{'collector_conns'} // {};
+
+    # Job ids that still carry a LIVE (non-closed) collector connection: defer them.
+    my %live;
+    for my $key (keys %$conns) {
+        my $entry = $conns->{$key};
+        my $jid   = $entry->{job_id} // next;
+        my $conn  = $entry->{conn};
+        $live{$jid} = 1 unless $conn && $conn->closed;
+    }
+
+    my @keep;
+    for my $item (@$queue) {
+        my $run_id = $item->{run_id};
+        my $aged   = ($now - $item->{since}) >= $grace;
+
+        my @pending;
+        for my $job_id (@{$item->{job_ids} // []}) {
+            if (!$aged || $live{$job_id}) {
+                push @pending => $job_id;    # keep queued: grace not elapsed, or conn still open
+                next;
+            }
+
+            delete $self->{'decided_jobs'}{$job_id}          if $self->{'decided_jobs'};
+            delete $self->{'collector_current_try'}{$job_id} if $self->{'collector_current_try'};
+            delete $self->{'job_passed'}{$job_id}
+                if $self->{'job_passed'} && ($self->{'job_passed'}{$job_id} // '') eq $run_id;
+        }
+
+        $item->{job_ids} = \@pending;
+        push @keep => $item if @pending;    # drop the run's queue entry once empty
+    }
+
+    @$queue = @keep;
 
     return;
 }

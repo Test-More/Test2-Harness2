@@ -77,7 +77,6 @@ use Test2::Harness2::Util::HashBase(
         +watchdog
 
         +announced_runs
-        +active_run
 
         +job_pids
 
@@ -711,16 +710,26 @@ sub stop_aux {
     my $pids = $self->{+AUX_PIDS} or return;
     return unless @$pids;
 
-    kill('TERM', $_) for grep { kill(0, $_) } @$pids;
+    # G2/G3 (#135 finding 16): waitpid-only liveness. Keep only pids whose
+    # waitpid(WNOHANG) returns 0 (still our live child) BEFORE any signal -- a pid that
+    # returns itself (reaped here) or -1 (ECHILD: reaped by the subreaper sweep / never
+    # ours) is dropped, never signaled. kill(0) is REMOVED: it matches recycled pids and
+    # is the pid-reuse hazard, not a guard. An un-reaped child's pid cannot be recycled
+    # (its process-table entry pins it until waitpid), so a pid that waitpid==0 here is
+    # provably still ours when the kill on the next line fires.
+    @$pids = grep { waitpid($_, POSIX::WNOHANG) == 0 } @$pids;
+
+    kill('TERM', $_) for @$pids;
 
     for (1 .. 50) {
-        @$pids = grep { (waitpid($_, POSIX::WNOHANG) != $_) && kill(0, $_) } @$pids;
+        @$pids = grep { waitpid($_, POSIX::WNOHANG) == 0 } @$pids;
         last unless @$pids;
         Time::HiRes::sleep(0.1);
     }
 
     for my $pid (@$pids) {
-        kill('KILL', $pid) if kill(0, $pid);
+        next unless waitpid($pid, POSIX::WNOHANG) == 0;
+        kill('KILL', $pid);
         waitpid($pid, 0);
     }
 
@@ -1092,26 +1101,38 @@ sub stop_sampler {
 
     my $pid = $self->{+SAMPLER_PID} or return;
 
-    eval { $self->service_send('sampler', 'stop'); 1 };
+    my $ok = eval { $self->service_send('sampler', 'stop'); 1 };
 
+    # G2/G3 (#135 finding 16): a pid is signaled ONLY when the immediately-preceding
+    # waitpid(WNOHANG) in this same synchronous flow returned 0 (still our live child).
+    # A waitpid of $pid (reaped here) or -1 (ECHILD: reaped by the subreaper sweep, or
+    # never ours) is TERMINAL -- clean the slot and return without signaling. No kill(0)
+    # liveness test: kill(0) matches a RECYCLED pid and IS the hazard, not the guard
+    # (the kernel cannot recycle an un-reaped child's pid -- its process-table entry
+    # pins it until waitpid; the runner is single-threaded and $SIG{CHLD} is a no-op, so
+    # nothing reaps between a waitpid==0 and the kill that follows it). If G1 already
+    # cleared the slot on a subreaper reap, the `or return` above short-circuits.
+    my $status = 0;
     for (1 .. 250) {
         $self->service_io;
-        last if waitpid($pid, POSIX::WNOHANG) == $pid;
+        $status = waitpid($pid, POSIX::WNOHANG);
+        last unless $status == 0;
         Time::HiRes::sleep(0.02);
     }
 
-    # If it did not stop gracefully, the sampler's collector parent (this $pid) is
-    # still alive holding the inherited std fds. Signal the collector parent so it
-    # tears its child down and finalizes; then block-reap it so those fds are
-    # closed before this runner exits.
-    if (kill(0, $pid)) {
+    # If it did not stop gracefully (still our live child), the sampler's collector
+    # parent (this $pid) is still holding the inherited std fds. Signal it so it tears
+    # its child down and finalizes; then block-reap it so those fds are closed before
+    # this runner exits.
+    if ($status == 0) {
         kill('TERM', $pid);
         for (1 .. 100) {
             $self->service_io;
-            last if waitpid($pid, POSIX::WNOHANG) == $pid;
+            $status = waitpid($pid, POSIX::WNOHANG);
+            last unless $status == 0;
             Time::HiRes::sleep(0.02);
         }
-        if (kill(0, $pid)) {
+        if ($status == 0) {
             kill('KILL', $pid);
             waitpid($pid, 0);
         }
@@ -1523,6 +1544,24 @@ sub _bring_out_yer_dead {
         if ($self->{+PRELOAD_ROOT_PID} && $pid == $self->{+PRELOAD_ROOT_PID}) {
             delete $self->{+PRELOAD_ROOT_PID};
             $self->{+PRELOAD_ROOT_REAPED} = 1;
+            next;
+        }
+
+        # G1 (#135 finding 16): the sampler and aux processes are tracked OUTSIDE
+        # {+PROCS}. If this subreaper sweep reaps one, clear its slot HERE -- before the
+        # $procs branch and the _reaped_unwatched_pid fall-through -- so (a) it is not
+        # misread as a detached-collector reap, and (b) stop_sampler/stop_aux never read
+        # a stale pid and signal a possibly-recycled process. No respawn: spawn_sampler
+        # runs once and nothing consumes sampler death, so clearing the slot is terminal
+        # (unlike the preload-root, which needs a REAPED flag for its death handler).
+        if (defined($self->{+SAMPLER_PID}) && $pid == $self->{+SAMPLER_PID}) {
+            delete $self->{+SAMPLER_PID};
+            print STDERR "system-load sampler (pid $pid) exited unexpectedly\n";
+            next;
+        }
+
+        if ($self->{+AUX_PIDS} && grep { $_ == $pid } @{$self->{+AUX_PIDS}}) {
+            @{$self->{+AUX_PIDS}} = grep { $_ != $pid } @{$self->{+AUX_PIDS}};
             next;
         }
 

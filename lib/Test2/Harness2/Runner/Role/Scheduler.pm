@@ -12,7 +12,6 @@ use Role::Tiny;
 use Test2::Harness2::Util::HashBase qw{
     +rootpid
     +signal
-    +active_run
     +resource_timeout
 };
 
@@ -99,22 +98,19 @@ sub scheduler_tick {
     # real in-process bug and is left to propagate. Resources that need to
     # tolerate transient errors must catch them inside their own tick().
 
-    # Track the active run across the advance so we can announce its end the
-    # moment it leaves the active slot (per-run completion). The
-    # run is recorded once it becomes active and announced once it clears.
-    my $before = $state->run ? $state->run->run_id : undef;
-    $self->{+ACTIVE_RUN} //= $before if defined $before;
-
     while (1) {
         next if $state->advance;
         last;
     }
 
-    my $after = $state->run ? $state->run->run_id : undef;
-    if (defined $self->{+ACTIVE_RUN} && (!defined($after) || $after ne $self->{+ACTIVE_RUN})) {
-        $self->announce_run($self->{+ACTIVE_RUN});
-        $self->{+ACTIVE_RUN} = $after;
-    }
+    # Announce every run that RETIRED during this advance (#135 finding 28). The state
+    # records each retirement as an event (clear_finished_run), so a run activated AND
+    # retired within this one loop -- an empty run, a pre-stopped run, an abort -- is
+    # still announced; a before/after ACTIVE_RUN slot diff would have missed it,
+    # dropping its harness_run_end (hanging a subscriber) and leaking it on the
+    # owner-drop leg. take_retired_runs drains destructively, and announce_run's own
+    # announced_runs ledger suppresses any duplicate, so each run is announced once.
+    $self->announce_run($_) for $state->take_retired_runs;
 
     # Hand any task the scheduler just started, whose run-stage
     # is a socketed preload stage (i.e. not this root process's own stage), out
@@ -131,6 +127,12 @@ sub scheduler_tick {
     # the fire-once ledger still guards, so they never double-decide a job.
     $self->_enforce_collector_connect_timeout;
     $self->_enforce_terminate_grace;
+
+    # Live-connection-safe deferred sweep of retired runs' per-job ledgers
+    # (#135 finding 3): a job is swept only once its collector connection has closed
+    # and a grace has elapsed since the run retired, so a late EOF or a
+    # post-retirement reap never reads a ledger already gone.
+    $self->_flush_run_ledger_sweeps;
 
     if (my $idle = $state->resource_timeout($self->{+RESOURCE_TIMEOUT})) {
         print STDERR "\n\nyath: Resource timeout after ${idle}s with no tests able to start. Aborting.\n";

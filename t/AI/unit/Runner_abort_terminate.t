@@ -1,6 +1,9 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
+use POSIX ();
+use Time::HiRes ();
+
 # Phase 2b of the transition-driven completion model (ARCHITECTURE.md §5.4),
 # exercised against the REAL Runner::Role::Service::Handlers + Watchdog methods via
 # a minimal fake runner. We assert:
@@ -139,20 +142,24 @@ subtest abort_run_collectors_terminates_and_intent => sub {
 };
 
 subtest owner_disconnect_abort_kills_process => sub {
-    my $runner = mk_runner(running => {J1 => {file => 'a.t', run_id => 'R1', is_try => 0}});
+    # #135 finding 2: a REAL first attempt carries NO is_try (undef); the collector's
+    # wire job_try is 1 (Job.pm sends is_try //= 1). The watchdog marks decided with the
+    # raw undef and the EOF checks with the wire 1 -- the `// 1` normalization must
+    # collapse both to the SAME key so the abort's later EOF is a fire-once no-op.
+    my $runner = mk_runner(running => {J1 => {file => 'a.t', run_id => 'R1'}});
 
     my $conn1 = FakeConn->new;
-    identify($runner, $conn1, job_id => 'J1', job_try => 0, run_id => 'R1', pid => 111);
+    identify($runner, $conn1, job_id => 'J1', job_try => 1, run_id => 'R1', pid => 111);
 
     # The owner-drop abort path (B3): run-scoped abort_remaining.
     $runner->watchdog->abort_remaining("owner disconnected", run_id => 'R1');
 
     is($conn1->{controls}[0]{control}, 'terminate', "the running job's collector got a terminate (the PROCESS is torn down)");
     is($runner->{announced}[-1]{state}, 'aborted', "the job is synthesized aborted in canonical state");
-    ok($runner->job_already_decided('J1', 0), "the job is marked decided (fire-once)");
+    ok($runner->job_already_decided('J1', 1), "the job is marked decided (fire-once, 1-based try)");
 
     # The terminated collector's later EOF is a fire-once no-op (it does not
-    # re-announce/re-decide).
+    # re-announce/re-decide) -- same key both sides despite undef-vs-1.
     my $before = scalar @{$runner->{announced}};
     $conn1->close;
     $runner->collector_conn_eof($conn1);
@@ -185,7 +192,7 @@ subtest hard_kill_grace_fallback => sub {
 
 subtest connect_timeout_fails_unconnected_job => sub {
     my $runner = mk_runner(
-        running         => {J1 => {file => 'a.t', run_id => 'R1', is_try => 0}},
+        running         => {J1 => {file => 'a.t', run_id => 'R1'}},
         connect_timeout => 5,
     );
 
@@ -199,7 +206,8 @@ subtest connect_timeout_fails_unconnected_job => sub {
     my ($abort) = grep { $_->{state} eq 'aborted' } @{$runner->{announced}};
     ok($abort, "the never-connecting job was failed (aborted) by the connect timeout");
     like($abort->{details}, qr/did not connect within/i, "reason names the connect timeout");
-    ok($runner->job_already_decided('J1', 0), "the timed-out job is marked decided");
+    # First-attempt task (no is_try): decided under the 1-based normalized key (#135 finding 2).
+    ok($runner->job_already_decided('J1', 1), "the timed-out job is marked decided (1-based)");
 };
 
 subtest connect_timeout_cleared_on_connect => sub {
@@ -318,6 +326,53 @@ subtest post_pass_health_flag => sub {
     is($final->{pass}, 0, "the suite is FAILED by the post-pass health failure");
     ok($final->{health_errors}, "health error reasons surfaced");
     ok(!$final->{failed}, "no test is marked failed (the tests stayed green)");
+};
+
+subtest per_job_terminate_deadline_hard_kills => sub {
+    # #135 finding 15: a collector terminated via a PER-JOB connect-timeout intent (no
+    # run-level aborting_runs record) is still hard-killed if it does not comply within
+    # the grace. _terminate_collector stamps a per-entry terminate_deadline, and
+    # _enforce_terminate_grace falls back to it when there is no run-level intent.
+    my $runner = mk_runner(running => {});
+
+    # Spawn a harmless sleeper we own, so the group KILL lands on a real process. It
+    # setsids so it leads its own process group -- the detached-collector shape the
+    # enforcer's kill(-pid) targets -- and so the group KILL cannot reach the test.
+    my $pid = fork // die "fork failed: $!";
+    unless ($pid) { POSIX::setsid(); $0 = "t135-sleeper"; sleep 30; POSIX::_exit(0); }
+    Time::HiRes::sleep(0.05);    # let the child setsid before we target its group
+
+    my $conn = FakeConn->new;
+    identify($runner, $conn, job_id => 'J1', job_try => 1, run_id => 'R1', pid => $pid);
+
+    # Per-job termination (NOT a run-scoped abort): no aborting_runs intent exists.
+    $runner->_terminate_collector($runner->{collector_conns}{"$conn"}, "connect timeout hard kill");
+    ok(!$runner->{aborting_runs} || !keys %{$runner->{aborting_runs}}, "no run-level abort intent recorded");
+
+    my ($entry) = grep { $_->{job_id} eq 'J1' } values %{$runner->{collector_conns}};
+    ok(defined $entry->{terminate_deadline}, "a per-entry terminate_deadline was stamped");
+
+    # Force the per-entry deadline into the past; the grace fallback must fire.
+    $entry->{terminate_deadline} = mono_time - 1;
+    $runner->_enforce_terminate_grace;
+
+    ok($entry->{hard_killed}, "the non-complying collector was hard-killed via its per-entry deadline");
+
+    # Observe the group signal actually reached the sleeper.
+    my $reaped = 0;
+    for (1 .. 100) { last if ($reaped = waitpid($pid, POSIX::WNOHANG)) == $pid; Time::HiRes::sleep(0.02); }
+    is($reaped, $pid, "the spawned sleeper received the KILL and was reaped");
+};
+
+subtest decided_first_try_undef_matches_wire_one => sub {
+    # #135 finding 2 (direct): mark_job_decided with a raw undef try (a first attempt
+    # that never carried is_try) and job_already_decided with the wire try 1 (what the
+    # collector sends) must resolve to the SAME two-level key.
+    my $runner = mk_runner(running => {});
+    $runner->mark_job_decided('JX', undef);
+    ok($runner->job_already_decided('JX', 1), "undef try and wire-try-1 collapse to the same decided key");
+    ok($runner->job_already_decided('JX', undef), "undef checks against the same normalized key");
+    ok(!$runner->job_already_decided('JX', 2), "a genuine retry (try 2) is a distinct, undecided key");
 };
 
 done_testing;

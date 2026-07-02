@@ -400,4 +400,85 @@ subtest service_forward_routing => sub {
     $svc->close_service;
 };
 
+# --- #135 finding 3: track_pending gate + run-scoped pruning ---
+
+sub feed_run_end ($mon, $rid) { $mon->feed({facet_data => {harness_run_end   => {run_id => $rid, stamp => 1}}}) }
+sub feed_health  ($mon, $rid) { $mon->feed({facet_data => {harness_run_health => {run_id => $rid, reason => 'x'}}}) }
+
+subtest track_pending_off_accumulates_nothing => sub {
+    # The hub monitor is built track_pending => 0 (#135 finding 3): it feeds + snapshots
+    # only, so the drain-on-call PENDING_* lists must stay empty even across a full
+    # lifecycle -- while a default mirror still tracks every delta.
+    my $hub = Test2::Harness2::Runner::Monitor->new(track_pending => 0);
+    feed_start($hub, uuid => 'T1', name => 't/a.t', events_file => '/tmp/a', try => 1, run_uuid => 'RUN-A');
+    feed_trans($hub, 'failing',    'T1');
+    feed_trans($hub, 'diagnosing', 'T1');
+    feed_trans($hub, 'completed',  'T1');
+    feed_fin($hub, 'T1');
+    feed_job($hub, 'JX', 'aborted', run_id => 'RUN-A');
+
+    is([$hub->new_collectors], [], "track_pending=0: no new-collector deltas accumulate");
+    is([$hub->new_failing],    [], "track_pending=0: no failing deltas");
+    is([$hub->new_diagnosing], [], "track_pending=0: no diagnosing deltas");
+    is([$hub->new_completed],  [], "track_pending=0: no completed deltas");
+    is([$hub->new_test_exits], [], "track_pending=0: no test-exit deltas");
+    is([$hub->new_finalized],  [], "track_pending=0: no finalized deltas");
+    is([$hub->new_aborted_jobs], [], "track_pending=0: no aborted-job deltas");
+
+    # Yet the canonical state is fully folded (only the change-lists are suppressed).
+    is($hub->status('T1'), 'finalized', "canonical collector state is still folded");
+    is($hub->job('JX')->{state}, 'aborted', "canonical job state is still folded");
+
+    # A default mirror (track_pending defaults on) drains the deltas correctly.
+    my $mirror = Test2::Harness2::Runner::Monitor->new;
+    feed_start($mirror, uuid => 'T1', name => 't/a.t', events_file => '/tmp/a', try => 1);
+    feed_trans($mirror, 'failing', 'T1');
+    is([$mirror->new_collectors], ['T1'], "default mirror reports the new collector");
+    is([$mirror->new_failing],    ['T1'], "default mirror reports the failing delta");
+};
+
+subtest prune_run_clears_only_that_runs_state => sub {
+    my $mon = Test2::Harness2::Runner::Monitor->new(track_pending => 0);
+    feed_start($mon, uuid => 'A-T1', name => 't/a.t', try => 1, run_uuid => 'RUN-A');
+    feed_start($mon, uuid => 'B-T1', name => 't/b.t', try => 1, run_uuid => 'RUN-B');
+    feed_job($mon, 'JA', 'done', run_id => 'RUN-A', file => 't/a.t');
+    feed_job($mon, 'JB', 'done', run_id => 'RUN-B', file => 't/b.t');
+    feed_health($mon, 'RUN-A');
+    feed_health($mon, 'RUN-B');
+    feed_run_end($mon, 'RUN-A');
+
+    $mon->prune_run('RUN-A');
+
+    ok(!$mon->collector('A-T1'), "RUN-A's collector pruned");
+    ok($mon->collector('B-T1'),  "RUN-B's collector retained");
+    ok(!$mon->job('JA'),         "RUN-A's job pruned");
+    ok($mon->job('JB'),          "RUN-B's job retained");
+    is([map { $_->{run_id} } @{$mon->run_health}], ['RUN-B'], "only RUN-A's run_health row pruned");
+
+    # prune_run keeps the O(1) RUNS end marker (that is drop_run_marker's job) so a late
+    # subscriber still sees run_done.
+    ok($mon->run_done('RUN-A'), "the run-end marker survives prune_run (late-subscribe window)");
+    $mon->drop_run_marker('RUN-A');
+    ok(!$mon->run_done('RUN-A'), "drop_run_marker removes the run-end marker");
+};
+
+subtest prune_run_sweeps_stragglers => sub {
+    my $mon = Test2::Harness2::Runner::Monitor->new(track_pending => 0);
+
+    # A stub collector that only ever saw a non-'starting' transition -> no run_uuid AND
+    # no category (a post-prune straggler flush).
+    feed_trans($mon, 'failing', 'STUB');
+    ok($mon->collector('STUB'), "the stub collector exists before the sweep");
+    ok(!defined($mon->collector('STUB')->{run_uuid}), "stub has no run linkage");
+    ok(!defined($mon->collector('STUB')->{category}), "stub never saw 'starting'");
+
+    # A terminal job never linked to a run (a backfill-failed stray).
+    feed_job($mon, 'JG', 'done');    # no run_id
+
+    $mon->prune_run('RUN-Z');    # some other run; the straggler sweep runs on every call
+
+    ok(!$mon->collector('STUB'), "the run-less category-less stub is swept");
+    ok(!$mon->job('JG'),         "the terminal run-less job stray is swept");
+};
+
 done_testing;

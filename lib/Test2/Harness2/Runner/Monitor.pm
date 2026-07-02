@@ -14,6 +14,7 @@ use Object::HashBase qw{
     +runs
     +run_health
     +system_load
+    <track_pending
     +pending_new
     +pending_failing
     +pending_diagnosing
@@ -104,6 +105,12 @@ sub init ($self) {
     $self->{+JOBS}       = {};
     $self->{+RUNS}       = {};
     $self->{+RUN_HEALTH} = [];
+
+    # The drain-on-call PENDING_* change lists are consumed only by subscriber-side
+    # mirrors; the hub monitor (constructed track_pending => 0 by the runner) never
+    # drains them, so it stops populating them entirely (#135 finding 3). Defaults on so
+    # a plain mirror still tracks them.
+    $self->{+TRACK_PENDING} //= 1;
 
     $self->{+PENDING_NEW}        = [];
     $self->{+PENDING_FAILING}    = [];
@@ -399,6 +406,58 @@ sub apply_snapshot ($self, $snapshot) {
     return;
 }
 
+# Prune all O(tests) hub-monitor state for a retired run (#135 finding 3): its tracked
+# collectors (run_uuid eq run_id), jobs (run_id eq run_id), and run_health rows. The
+# runner calls this from announce_run once the run's end frame has been forwarded, so
+# no live subscriber still needs the folded per-collector/per-job detail; a
+# late/reconnecting subscriber keys completion on the retained RUNS marker instead.
+# Also runs a straggler sweep on EVERY call so a post-prune frame that recreated a
+# stub does not leak: a collector stub with no run_uuid AND no category never saw its
+# 'starting' transition (per-connection frame order guarantees a genuine collector
+# 'starting's first), and a terminal job with no run linkage is a backfill-failed stray.
+sub prune_run ($self, $run_id) {
+    return unless defined $run_id;
+
+    my $collectors = $self->{+COLLECTORS};
+    for my $uuid (keys %$collectors) {
+        my $run = $collectors->{$uuid}{run_uuid};
+        delete $collectors->{$uuid} if defined($run) && $run eq $run_id;
+    }
+
+    my $jobs = $self->{+JOBS};
+    for my $job_id (keys %$jobs) {
+        my $run = $jobs->{$job_id}{run_id};
+        delete $jobs->{$job_id} if defined($run) && $run eq $run_id;
+    }
+
+    @{$self->{+RUN_HEALTH}} = grep { !defined($_->{run_id}) || $_->{run_id} ne $run_id }
+        @{$self->{+RUN_HEALTH} // []};
+
+    for my $uuid (keys %$collectors) {
+        my $c = $collectors->{$uuid};
+        delete $collectors->{$uuid} if !defined($c->{run_uuid}) && !defined($c->{category});
+    }
+
+    for my $job_id (keys %$jobs) {
+        my $j = $jobs->{$job_id};
+        next if defined $j->{run_id};
+        my $state = $j->{state} // '';
+        delete $jobs->{$job_id} if $state eq 'done' || $state eq 'aborted' || $state eq 'requeued';
+    }
+
+    return;
+}
+
+# Drop a run's O(1) end marker (the retained RUNS entry) once it ages out of the
+# runner's late-subscribe ring (#135 finding 3). Re-prune first to collect any
+# collector/job/health a straggler frame recreated since the run retired.
+sub drop_run_marker ($self, $run_id) {
+    return unless defined $run_id;
+    $self->prune_run($run_id);
+    delete $self->{+RUNS}{$run_id};
+    return;
+}
+
 # Suite-level health failures the runner reported (a post-pass collector failure,
 # ARCHITECTURE.md §5.4). Returns the list of {run_id, reason} records.
 sub run_health ($self) { return $self->{+RUN_HEALTH} // [] }
@@ -489,7 +548,7 @@ sub _process ($self, $payload) {
             failing    => 0,
             diagnosing => 0,
         };
-        push @{$self->{+PENDING_NEW}} => $uuid;
+        push @{$self->{+PENDING_NEW}} => $uuid if $self->{+TRACK_PENDING};
     }
 
     if (my $transition = $fd->{harness_state_transition}) {
@@ -504,7 +563,7 @@ sub _process ($self, $payload) {
 
     if ($fd->{harness_collector_finalized}) {
         $c->{status} = 'finalized';
-        push @{$self->{+PENDING_FINALIZED}} => $uuid;
+        push @{$self->{+PENDING_FINALIZED}} => $uuid if $self->{+TRACK_PENDING};
         return;
     }
 
@@ -527,7 +586,7 @@ sub _process_runner_job ($self, $rj) {
     # change list so a subscriber (the command-side driver) can render it as a
     # failed completion exactly once.
     push @{$self->{+PENDING_ABORTED}} => $job_id
-        if defined($rj->{state}) && $rj->{state} eq 'aborted';
+        if $self->{+TRACK_PENDING} && defined($rj->{state}) && $rj->{state} eq 'aborted';
 
     return;
 }
@@ -546,22 +605,24 @@ sub _process_transition ($self, $c, $state, $hc) {
     if ($state eq 'failing') {
         return if $c->{failing};
         $c->{failing} = 1;
-        push @{$self->{+PENDING_FAILING}} => $c->{uuid};
+        push @{$self->{+PENDING_FAILING}} => $c->{uuid} if $self->{+TRACK_PENDING};
         return;
     }
 
     if ($state eq 'diagnosing') {
         return if $c->{diagnosing};
         $c->{diagnosing} = 1;
-        push @{$self->{+PENDING_DIAGNOSING}} => $c->{uuid};
+        push @{$self->{+PENDING_DIAGNOSING}} => $c->{uuid} if $self->{+TRACK_PENDING};
         return;
     }
 
     if ($state eq 'completed') {
         $c->{status} = 'complete';
-        push @{$self->{+PENDING_COMPLETED}} => $c->{uuid};
-        push @{$self->{+PENDING_EXITS}} => $c->{uuid}
-            if ($c->{category} // '') eq 'test';
+        if ($self->{+TRACK_PENDING}) {
+            push @{$self->{+PENDING_COMPLETED}} => $c->{uuid};
+            push @{$self->{+PENDING_EXITS}} => $c->{uuid}
+                if ($c->{category} // '') eq 'test';
+        }
         return;
     }
 
@@ -569,7 +630,7 @@ sub _process_transition ($self, $c, $state, $hc) {
     # 'exited' transition in place of the auditor's 'completed'.
     if ($state eq 'exited') {
         $c->{status} = 'complete';
-        push @{$self->{+PENDING_COMPLETED}} => $c->{uuid};
+        push @{$self->{+PENDING_COMPLETED}} => $c->{uuid} if $self->{+TRACK_PENDING};
         return;
     }
 
