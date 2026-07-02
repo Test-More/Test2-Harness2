@@ -45,7 +45,7 @@ use Test2::Harness2::Util::HashBase(
 
         <cover
 
-        <event_timeout <post_exit_timeout <resource_timeout
+        <event_timeout <resource_timeout
 
         <resources
 
@@ -64,11 +64,7 @@ use Test2::Harness2::Util::HashBase(
         +state
 
         <stage
-        <signal
 
-        +last_timeout_check
-        +timeout_signaled
-        +run_reached_timeout
         <tmp_dir
 
         <rootpid
@@ -290,94 +286,10 @@ sub state {
     return $self->{+STATE};
 }
 
-sub check_timeouts {
-    my $self = shift;
-
-    return unless $self->settings->runner->use_timeout;
-
-    my $now = time;
-
-    # Check only once per second, that is as granular as we get. Also the check is not cheep.
-    return if $self->{+LAST_TIMEOUT_CHECK} && $now < (1 + $self->{+LAST_TIMEOUT_CHECK});
-
-    # The per-test silence and lifetime timeouts are now enforced by the
-    # Test2-Collector collector parent itself (via collect(silence_timeout =>
-    # ..., lifetime_timeout => ...)): it kills the test child's process group,
-    # records the timeout in events.jsonl.zst, and exits. The runner no longer
-    # tracks per-job output activity or writes event_timeout/post_exit_timeout
-    # marker files.
-    #
-    # What remains here is a fallback for a collector PARENT that should have
-    # exited but has not: once a job process has been reaped (it is in WAITING)
-    # we give it a grace window, then escalate TERM -> KILL so a wedged
-    # collector cannot hang the run.
-    my $grace = $self->{+POST_EXIT_TIMEOUT} || 60;
-
-    my $signaled = $self->{+TIMEOUT_SIGNALED} //= {};
-
-    # Drop entries for pids that are no longer live, so a future job that reuses
-    # a pid does not inherit a stale "already TERMed, escalate to KILL" flag.
-    delete $signaled->{$_} for grep { !$self->{+PROCS}->{$_} } keys %$signaled;
-
-    for my $pid (keys %{$self->{+PROCS}}) {
-        my $job = $self->{+PROCS}->{$pid};
-        next unless $job->isa('Test2::Harness2::Runner::Job');
-
-        my $waiting = $self->{+WAITING}->{$pid} or next;
-        my $since   = $waiting->[1] // $now;
-        next unless ($now - $since) > $grace;
-
-        my $kill = $signaled->{$pid}++;
-
-        my $sigmap = $self->SIG_MAP;
-        my $sig    = $kill ? $sigmap->{'KILL'} : $sigmap->{'TERM'};
-        $sig = "-$sig" if $self->USE_P_GROUPS;
-
-        print STDERR "$$ $0 " . $job->file . " collector process-group did not fully exit after the collector was reaped, sending " . ($kill ? 'SIGKILL' : 'SIGTERM') . " to $pid...\n";
-
-        $self->{+RUN_REACHED_TIMEOUT} //= {};
-        $self->{+RUN_REACHED_TIMEOUT}->{$job->task->{job_id}} = $pid;
-
-        kill($sig, $pid);
-    }
-
-    $self->{+LAST_TIMEOUT_CHECK} = time;
-}
-
-sub stop {
-    my $self = shift;
-
-    $self->check_for_fork;
-
-    if (keys %{$self->{+PROCS}}) {
-        print "$$ $0 Sending all child processes the TERM signal...\n";
-        # Send out the TERM signal
-        $self->killall($self->{+SIGNAL} // 'TERM');
-        $self->wait(all => 1, timeout => 5);
-    }
-
-    # Time to get serious
-    if (keys %{$self->{+PROCS}}) {
-        local $?;
-        print STDERR "$$ $0 Some child processes are refusing to exit, sending KILL signal...\n";
-        print("$$ $0 == $_ " . waitpid($_, WNOHANG) . "\n") for keys %{$self->{+PROCS}};
-        $self->killall('KILL');
-    }
-
-    $self->SUPER::stop();
-}
-
-sub handle_sig {
-    my $self = shift;
-    my ($sig) = @_;
-
-    return if $self->{+SIGNAL};
-
-    return $self->{+HANDLERS}->{$sig}->($sig) if $self->{+HANDLERS}->{$sig};
-
-    $self->{+SIGNAL} = $sig;
-    die "Runner caught SIG$sig. Attempting to shut down cleanly...\n";
-}
+# check_timeouts, stop, and handle_sig are the generic process-management machinery
+# hoisted into the shared base Test2::Harness2::IPC (ticket #67). Only the die-message
+# prefix differs per class, so we override just that.
+sub sig_prefix { 'Runner' }
 
 sub all_libs {
     my $self = shift;
@@ -872,27 +784,19 @@ sub _preload_root_dead {
 # fail). This is deliberate: it prevents accidentally recreating respawn-like
 # behavior. HUP reload is the only restart path and the preload-root re-execs
 # itself (same pid), so it is never seen as dead here. Returns:
-#   ''        -- it is not dead, carry on
-#   'fail'    -- it exited (a broken-preload stage_host_exited, or an abrupt crash);
-#                SIGNAL is set so the caller winds the runner down.
+#   0 -- it is not dead, carry on
+#   1 -- it exited (a broken-preload stage_host_exited, or an abrupt crash);
+#        SIGNAL is set so the caller winds the runner down.
 sub _handle_dead_preload_root {
     my $self = shift;
 
-    return '' unless $self->_preload_root_dead;
+    return 0 unless $self->_preload_root_dead;
 
     # A broken preload's stage host *returns* and announces stage_host_exited (with
     # its captured errors); a crash (SIGKILL / an abrupt _exit) dies WITHOUT that
-    # announcement. Either way the runner cannot host preloaded runs, so terminate.
-    if ($self->stage_host_exited) {
-        $self->_emit_preload_failure_output;
-    }
-    else {
-        warn "$$ $0 preload-root died unexpectedly; terminating the runner\n";
-        $self->_emit_preload_failure_output;
-    }
-
-    $self->{+SIGNAL} //= 'TERM';
-    return 'fail';
+    # announcement. Either way the runner cannot host preloaded runs, so terminate --
+    # the crash case additionally warns (the stage host handed no errors over).
+    return $self->_fail_preload($self->stage_host_exited ? undef : "$$ $0 preload-root died unexpectedly; terminating the runner\n");
 }
 
 # Surface the preload-root's (and its stages') captured STDERR when the preloads
@@ -911,6 +815,22 @@ sub _emit_preload_failure_output {
     print STDERR $_ for @$errors;
 
     return;
+}
+
+# The one preload-root wind-down: optionally warn, surface the captured preload
+# failure output, and mark the runner for shutdown (TERM unless a signal was already
+# captured -- //= preserves an in-flight HUP). Collapses the four wind-down sites
+# (ticket #67): the dead-root handler and the three run_scheduler_only bail-outs.
+# Returns 1 so callers can `last if $self->_fail_preload(...)`.
+sub _fail_preload {
+    my $self = shift;
+    my ($warn) = @_;
+
+    warn $warn if defined $warn;
+    $self->_emit_preload_failure_output;
+    $self->{+SIGNAL} //= 'TERM';
+
+    return 1;
 }
 
 # Apply a run/task submission, or buffer it until the scheduler is ready
@@ -1009,6 +929,46 @@ sub spawn_preload_root {
     return $pid;
 }
 
+# Poll for $pid to be reaped, pumping the service socket each try so a graceful
+# 'stop' is delivered and any in-flight frames are folded. Returns the LAST
+# waitpid(WNOHANG) status -- the tri-state the #135 finding-16 guard requires the
+# callers to see (this is that G2-rewritten loop body factored out, ticket #67):
+#   $pid -- reaped HERE this call
+#   0    -- still our live child after $tries polls; the ONLY value that licenses a
+#           signal (kill sits inside a `$status == 0` branch guarded by this waitpid)
+#   -1   -- ECHILD: reaped by the subreaper sweep, or never ours -- TERMINAL, no signal
+# NO kill(0) liveness test anywhere: kill(0) matches a RECYCLED pid and IS the
+# pid-reuse hazard, not a guard (an un-reaped child's pid cannot be recycled -- its
+# process-table entry pins it until waitpid; the runner is single-threaded and
+# $SIG{CHLD} is a no-op, so nothing reaps between a waitpid==0 here and the caller's
+# kill). Callers pass $tries >= 1.
+sub _reap_poll {
+    my $self = shift;
+    my ($pid, $tries) = @_;
+
+    my $status = 0;
+    for (1 .. $tries) {
+        $self->service_io;
+        $status = waitpid($pid, POSIX::WNOHANG);
+        last unless $status == 0;
+        Time::HiRes::sleep(0.02);
+    }
+
+    return $status;
+}
+
+# Graceful stop of a socket-attached helper (preload-root / sampler): send it 'stop'
+# then _reap_poll for it. The send failure is deliberately discarded (the peer may
+# already be gone). Returns _reap_poll's tri-state status.
+sub _graceful_stop {
+    my $self = shift;
+    my ($service, $pid, $tries) = @_;
+
+    my $ok = eval { $self->service_send($service, 'stop'); 1 };
+
+    return $self->_reap_poll($pid, $tries);
+}
+
 # Tear the preload root down at runner wind-down. Ask it to stop over
 # the channel it dialed (pumping the socket so the request is delivered and it is
 # reaped), then TERM->KILL+reap by pid as the fallback -- the aux-process teardown
@@ -1021,14 +981,10 @@ sub stop_preload_root {
     # Graceful: ask the preload-root to stop over the socket and reap it. The
     # preload-root may still be winding down its stage host when this arrives (it
     # only services this 'stop' once it reaches its idle loop), so give it a
-    # generous window.
-    eval { $self->service_send('preload-root', 'stop'); 1 };
-
-    for (1 .. 250) {
-        $self->service_io;
-        last if waitpid($pid, POSIX::WNOHANG) == $pid;
-        Time::HiRes::sleep(0.02);
-    }
+    # generous window. The tri-state return (reaped here / still live / -1
+    # reaped-elsewhere) is IGNORED: this site NEVER signals on ANY value -- see the
+    # must-NOT-kill rationale below.
+    $self->_graceful_stop('preload-root', $pid, 250);
 
     # If it did not stop gracefully we must NOT kill the collector parent ($pid):
     # that collector's ChildMonitor (watch_parent_pid => this runner) is exactly
@@ -1101,24 +1057,13 @@ sub stop_sampler {
 
     my $pid = $self->{+SAMPLER_PID} or return;
 
-    my $ok = eval { $self->service_send('sampler', 'stop'); 1 };
-
-    # G2/G3 (#135 finding 16): a pid is signaled ONLY when the immediately-preceding
-    # waitpid(WNOHANG) in this same synchronous flow returned 0 (still our live child).
-    # A waitpid of $pid (reaped here) or -1 (ECHILD: reaped by the subreaper sweep, or
-    # never ours) is TERMINAL -- clean the slot and return without signaling. No kill(0)
-    # liveness test: kill(0) matches a RECYCLED pid and IS the hazard, not the guard
-    # (the kernel cannot recycle an un-reaped child's pid -- its process-table entry
-    # pins it until waitpid; the runner is single-threaded and $SIG{CHLD} is a no-op, so
-    # nothing reaps between a waitpid==0 and the kill that follows it). If G1 already
-    # cleared the slot on a subreaper reap, the `or return` above short-circuits.
-    my $status = 0;
-    for (1 .. 250) {
-        $self->service_io;
-        $status = waitpid($pid, POSIX::WNOHANG);
-        last unless $status == 0;
-        Time::HiRes::sleep(0.02);
-    }
+    # G2/G3 (#135 finding 16): every kill below sits inside a `$status == 0` branch
+    # guarded by the immediately-preceding waitpid in _reap_poll (still our live
+    # child); a status of $pid (reaped here) or -1 (ECHILD) is terminal and never
+    # signals. No kill(0) liveness test -- the full rationale lives in _reap_poll's
+    # header. If G1 already cleared the slot on a subreaper reap, the `or return`
+    # above short-circuits.
+    my $status = $self->_graceful_stop('sampler', $pid, 250);
 
     # If it did not stop gracefully (still our live child), the sampler's collector
     # parent (this $pid) is still holding the inherited std fds. Signal it so it tears
@@ -1126,12 +1071,7 @@ sub stop_sampler {
     # this runner exits.
     if ($status == 0) {
         kill('TERM', $pid);
-        for (1 .. 100) {
-            $self->service_io;
-            $status = waitpid($pid, POSIX::WNOHANG);
-            last unless $status == 0;
-            Time::HiRes::sleep(0.02);
-        }
+        $status = $self->_reap_poll($pid, 100);
         if ($status == 0) {
             kill('KILL', $pid);
             waitpid($pid, 0);
@@ -1233,8 +1173,7 @@ sub run_scheduler_only {
         # A broken preload's stage host *returns* and announces stage_host_exited
         # (with its captured errors): a real failure, fail fast.
         if ($self->stage_host_exited) {
-            $self->_emit_preload_failure_output;
-            $self->{+SIGNAL} //= 'TERM';
+            $self->_fail_preload;
             last;
         }
 
@@ -1243,9 +1182,7 @@ sub run_scheduler_only {
         last if $self->_handle_dead_preload_root;
 
         if (time > $deadline) {
-            warn "$$ $0 preload-root never became ready (no stage map / stage); aborting run\n";
-            $self->_emit_preload_failure_output;
-            $self->{+SIGNAL} //= 'TERM';
+            $self->_fail_preload("$$ $0 preload-root never became ready (no stage map / stage); aborting run\n");
             last;
         }
         Time::HiRes::sleep(0.01);
@@ -1298,8 +1235,7 @@ sub run_scheduler_only {
         # errors) only happens after we have told the stages to stop at wind-down, so it
         # never lands here.
         if ($self->stage_host_exited && @{$self->stage_host_errors}) {
-            $self->_emit_preload_failure_output;
-            $self->{+SIGNAL} //= 'TERM';
+            $self->_fail_preload;
             last;
         }
 
@@ -1466,14 +1402,12 @@ sub set_proc_exit {
         # transitions + connection EOF on runner.socket (ARCHITECTURE.md §5.4), NOT
         # from this reaped exit code: the exit code cannot express a bail-out, and
         # on the preload path the runner never sees it. The EOF handler
-        # (collector_conn_eof) already cleared job_pids and decided; here we only
-        # clear the timeout marker. job_pids is deleted defensively in case the reap
-        # races ahead of the EOF (the EOF decision is still fire-once guarded).
+        # (collector_conn_eof) already cleared job_pids and decided. job_pids is
+        # deleted defensively here in case the reap races ahead of the EOF (the EOF
+        # decision is still fire-once guarded).
         my $task   = $proc->task;
         my $job_id = $task->{job_id};
         delete $self->{+JOB_PIDS}->{$job_id};
-        delete $self->{+RUN_REACHED_TIMEOUT}->{$job_id}
-            if ref $self->{+RUN_REACHED_TIMEOUT};
 
         # Post-pass collector failure (A3, ARCHITECTURE.md §5.4): this no-preload
         # collector is the runner's own child, so the runner DOES see its health

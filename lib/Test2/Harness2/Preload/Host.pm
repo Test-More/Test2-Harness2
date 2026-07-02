@@ -38,7 +38,7 @@ use Test2::Harness2::Util::HashBase(
 
         <cover
 
-        <event_timeout <post_exit_timeout <resource_timeout
+        <event_timeout <resource_timeout
 
         <resources
 
@@ -56,19 +56,13 @@ use Test2::Harness2::Util::HashBase(
         +preloader
 
         <stage
-        <signal
 
-        +last_timeout_check
-        +timeout_signaled
-        +run_reached_timeout
         +can_stage
         <tmp_dir
 
         <rootpid
 
         +stage_delegate
-
-        +job_pids
 
         +preload_warnings
 
@@ -93,8 +87,9 @@ tests, no scheduler).
 This is the in-process stage host that the preload-root
 (L<Test2::Harness2::Preload>) drives. It is a B<completely independent> class
 from L<Test2::Harness2::Runner>: neither inherits from the other, and they share
-only the L<Test2::Harness2::Role::Service> role (both have a listen socket and
-manage connections).
+only the generic L<Test2::Harness2::IPC> process-management base plus the
+L<Test2::Harness2::Role::Service> role (both have a listen socket and manage
+connections).
 
 Where the runner is the harness B<scheduler> -- it owns the canonical run State,
 serves clients/stages over C<runner.socket>, and launches tests only as
@@ -144,8 +139,6 @@ sub init {
 
     croak "'rootpid' is a required attribute (the real runner pid)"
         unless $self->{+ROOTPID};
-
-    $self->{+JOB_PIDS} = {};
 
     croak "'dir' is a required attribute"      unless $self->{+DIR};
     croak "'settings' is a required attribute" unless $self->{+SETTINGS};
@@ -390,84 +383,10 @@ sub request_handler_reload_root {
     return undef;
 }
 
-sub check_timeouts {
-    my $self = shift;
-
-    return unless $self->settings->runner->use_timeout;
-
-    my $now = time;
-
-    # Check only once per second, that is as granular as we get.
-    return if $self->{+LAST_TIMEOUT_CHECK} && $now < (1 + $self->{+LAST_TIMEOUT_CHECK});
-
-    # The per-test silence and lifetime timeouts are enforced by the
-    # Test2-Collector collector parent itself. What remains is a fallback for a
-    # collector PARENT that should have exited but has not: once a job process has
-    # been reaped (it is in WAITING) we give it a grace window, then escalate
-    # TERM -> KILL so a wedged collector cannot hang the run.
-    my $grace = $self->{+POST_EXIT_TIMEOUT} || 60;
-
-    my $signaled = $self->{+TIMEOUT_SIGNALED} //= {};
-
-    delete $signaled->{$_} for grep { !$self->{+PROCS}->{$_} } keys %$signaled;
-
-    for my $pid (keys %{$self->{+PROCS}}) {
-        my $job = $self->{+PROCS}->{$pid};
-        next unless $job->isa('Test2::Harness2::Runner::Job');
-
-        my $waiting = $self->{+WAITING}->{$pid} or next;
-        my $since   = $waiting->[1] // $now;
-        next unless ($now - $since) > $grace;
-
-        my $kill = $signaled->{$pid}++;
-
-        my $sigmap = $self->SIG_MAP;
-        my $sig    = $kill ? $sigmap->{'KILL'} : $sigmap->{'TERM'};
-        $sig = "-$sig" if $self->USE_P_GROUPS;
-
-        print STDERR "$$ $0 " . $job->file . " collector process-group did not fully exit after the collector was reaped, sending " . ($kill ? 'SIGKILL' : 'SIGTERM') . " to $pid...\n";
-
-        $self->{+RUN_REACHED_TIMEOUT} //= {};
-        $self->{+RUN_REACHED_TIMEOUT}->{$job->task->{job_id}} = $pid;
-
-        kill($sig, $pid);
-    }
-
-    $self->{+LAST_TIMEOUT_CHECK} = time;
-}
-
-sub stop {
-    my $self = shift;
-
-    $self->check_for_fork;
-
-    if (keys %{$self->{+PROCS}}) {
-        print "$$ $0 Sending all child processes the TERM signal...\n";
-        $self->killall($self->{+SIGNAL} // 'TERM');
-        $self->wait(all => 1, timeout => 5);
-    }
-
-    if (keys %{$self->{+PROCS}}) {
-        local $?;
-        print STDERR "$$ $0 Some child processes are refusing to exit, sending KILL signal...\n";
-        print("$$ $0 == $_ " . waitpid($_, WNOHANG) . "\n") for keys %{$self->{+PROCS}};
-        $self->killall('KILL');
-    }
-
-    $self->SUPER::stop();
-}
-
-sub handle_sig {
-    my $self = shift;
-    my ($sig) = @_;
-
-    return if $self->{+SIGNAL};
-
-    return $self->{+HANDLERS}->{$sig}->($sig) if $self->{+HANDLERS}->{$sig};
-
-    $self->{+SIGNAL} = $sig;
-    die "Preload::Host caught SIG$sig. Attempting to shut down cleanly...\n";
-}
+# check_timeouts, stop, and handle_sig are the generic process-management machinery
+# hoisted into the shared base Test2::Harness2::IPC (ticket #67). Only the die-message
+# prefix differs per class, so we override just that.
+sub sig_prefix { 'Preload::Host' }
 
 sub all_libs {
     my $self = shift;
@@ -830,16 +749,13 @@ sub set_proc_exit {
     my ($proc, $exit, $time, @args) = @_;
 
     if ($proc->isa('Test2::Harness2::Runner::Job')) {
-        # Reaping a test-job collector is now pure zombie cleanup: the runner
-        # decides the test's outcome (retry / stop / bail) from the collector's
-        # transitions + connection EOF on runner.socket (ARCHITECTURE.md §5.4), not
-        # from this reaped exit code. The stage therefore reports NO verdict back to
-        # the runner -- doing so would double-decide. We only drop our local job-pid
-        # bookkeeping and clear any timeout marker.
-        my $task = $proc->task;
-        delete $self->{+JOB_PIDS}->{$task->{job_id}};
-        delete $self->{+RUN_REACHED_TIMEOUT}->{$task->{job_id}}
-            if ref $self->{+RUN_REACHED_TIMEOUT};
+        # Reaping a test-job collector is pure zombie cleanup: the runner decides the
+        # test's outcome (retry / stop / bail) from the collector's transitions +
+        # connection EOF on runner.socket (ARCHITECTURE.md §5.4), not from this reaped
+        # exit code. The stage therefore reports NO verdict back to the runner --
+        # doing so would double-decide -- and keeps no job-pid bookkeeping of its own:
+        # the job's pid reaches the runner via the collector handshake (#28). Nothing
+        # to do here beyond the base reap below.
     }
     elsif ($proc->isa('Test2::Harness2::Runner::StageProcess')) {
         my $stage = $proc->name;

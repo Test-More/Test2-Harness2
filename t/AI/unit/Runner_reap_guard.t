@@ -39,6 +39,16 @@ use Test2::Harness2::Runner;
     sub service_send { return 1 }
 }
 
+{
+    # A Runner whose _emit_preload_failure_output is recorded (not routed through the
+    # real stage_host_errors surface), so _fail_preload can be exercised in isolation.
+    package FakeFailRunner;
+    our @ISA = ('Test2::Harness2::Runner');
+
+    sub new { bless {emit_called => 0, @_[1 .. $#_]}, $_[0] }
+    sub _emit_preload_failure_output { $_[0]->{emit_called}++; return }
+}
+
 # Fork a child that exits immediately. Returns ($pid, $barrier_read_fh): reading the
 # barrier to EOF is a deterministic "the child has exited (and is an unreaped zombie)"
 # signal that does NOT reap it -- so _bring_out_yer_dead/stop_* can be the reaper.
@@ -131,6 +141,74 @@ subtest stop_aux_reaps_a_live_child_without_kill0 => sub {
 
     is($runner->{aux_pids}, [], "the live aux child was torn down and cleared");
     is(waitpid($pid, POSIX::WNOHANG), -1, "it was reaped (no lingering zombie)");
+};
+
+# ticket #67: the stop_sampler/stop_preload_root reap loop factored into _reap_poll,
+# which must EXPOSE #135's tri-state so callers only ever signal on a 0 (still-live)
+# status. These assert the three return values directly against the real method.
+subtest reap_poll_already_reaped_returns_minus_one => sub {
+    my $pid    = already_reaped_pid();
+    my $runner = FakeReapRunner->new();
+
+    my $start   = Time::HiRes::time;
+    my $status  = $runner->_reap_poll($pid, 250);
+    my $elapsed = Time::HiRes::time - $start;
+
+    is($status, -1, "_reap_poll returns -1 (ECHILD) for an already-reaped pid -- the terminal, never-signal value");
+    ok($elapsed < 1, "it returns in well under 1s: no spin on ECHILD (${elapsed}s)");
+};
+
+subtest reap_poll_exited_child_returns_pid => sub {
+    my ($pid, $fh) = spawn_exiting_child();
+    wait_exited($fh);    # exited, still an unreaped zombie -- _reap_poll is the reaper
+
+    my $runner = FakeReapRunner->new();
+    my $status = $runner->_reap_poll($pid, 250);
+
+    is($status, $pid, "_reap_poll reaps the exited child and returns its pid (reaped-here, never-signal)");
+    is(waitpid($pid, POSIX::WNOHANG), -1, "no lingering zombie after _reap_poll reaped it");
+};
+
+subtest reap_poll_live_child_returns_zero => sub {
+    my $pid = fork // die "fork: $!";
+    unless ($pid) { POSIX::setsid(); sleep 30; POSIX::_exit(0); }
+    Time::HiRes::sleep(0.05);
+
+    my $runner = FakeReapRunner->new();
+    my $status = $runner->_reap_poll($pid, 3);    # small budget; the child stays alive
+
+    is($status, 0, "_reap_poll returns 0 for a still-live child after exhausting its tries -- the ONLY value that licenses a signal");
+    ok($runner->{service_io_calls} >= 3, "it pumped the service socket each try");
+
+    kill('KILL', $pid);
+    waitpid($pid, 0);
+};
+
+# ticket #67: the four preload-root wind-down sites collapse onto _fail_preload.
+subtest fail_preload_marks_shutdown_and_emits => sub {
+    # Pre-set SIGNAL survives (//=) and no warn without an argument.
+    my $r    = FakeFailRunner->new(signal => 'HUP');
+    my $warn = '';
+    my $ret;
+    {
+        local $SIG{__WARN__} = sub { $warn .= $_[0] };
+        $ret = $r->_fail_preload;
+    }
+    is($ret, 1, "_fail_preload returns 1 (so callers can `last if`)");
+    is($r->{signal}, 'HUP', "a pre-set SIGNAL is preserved by //=");
+    is($r->{emit_called}, 1, "_emit_preload_failure_output was called");
+    is($warn, '', "no warning is emitted without an argument");
+
+    # With no pre-set SIGNAL: defaults to TERM, and the given warning is emitted.
+    my $r2    = FakeFailRunner->new();
+    my $warn2 = '';
+    {
+        local $SIG{__WARN__} = sub { $warn2 .= $_[0] };
+        $r2->_fail_preload("boom\n");
+    }
+    is($r2->{signal}, 'TERM', "SIGNAL defaults to TERM when unset");
+    is($r2->{emit_called}, 1, "_emit_preload_failure_output called on the warn path too");
+    like($warn2, qr/boom/, "the warning argument is emitted");
 };
 
 done_testing;

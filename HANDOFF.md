@@ -45,7 +45,7 @@ These are real, decided, applicable cleanup tickets — verified still present i
   = migrate **no-preload** job completion onto the collector socket report + delete
   `Runner::set_proc_exit`'s job branch. DEFERRED because it's a **rewrite, not a
   cleanup**: the runner makes the retry-vs-stop-vs-bail decision from runner-side proc
-  state (`is_try`/`retry`/`bailed_out`/`RUN_REACHED_TIMEOUT`) the collector doesn't
+  state (`is_try`/`retry`/`bailed_out`) the collector doesn't
   have. Needs the retry/bail decision relocated + a fire-exactly-once transition-vs-reap
   ordering fix. Target is ARCHITECTURE §5.4. (Don't touch `Preload::Host::set_proc_exit`
   — legitimate multi-child reaping.)

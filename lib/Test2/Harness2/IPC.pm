@@ -41,6 +41,12 @@ use Test2::Harness2::Util::HashBase qw{
     <wait_time
     <started
     <sig_count
+
+    <signal
+
+    <post_exit_timeout
+    +last_timeout_check
+    +timeout_signaled
 };
 
 sub init {
@@ -80,6 +86,26 @@ sub start {
 sub stop {
     my $self = shift;
 
+    $self->check_for_fork;
+
+    # Escalating shutdown of tracked children (hoisted from Runner/Preload::Host,
+    # ticket #67): TERM the tracked process group (using SIGNAL if a shutdown signal
+    # was captured), give them a short window, then KILL any holdouts. A consumer's
+    # own SIGNAL field selects the initial signal; the base has none set, so it TERMs.
+    if (keys %{$self->{+PROCS}}) {
+        print "$$ $0 Sending all child processes the TERM signal...\n";
+        $self->killall($self->{+SIGNAL} // 'TERM');
+        $self->wait(all => 1, timeout => 5);
+    }
+
+    # Time to get serious
+    if (keys %{$self->{+PROCS}}) {
+        local $?;
+        print STDERR "$$ $0 Some child processes are refusing to exit, sending KILL signal...\n";
+        print("$$ $0 == $_ " . waitpid($_, WNOHANG) . "\n") for keys %{$self->{+PROCS}};
+        $self->killall('KILL');
+    }
+
     $self->wait(all => 1);
 
     delete $SIG{$_} for qw/INT HUP TERM CHLD/;
@@ -87,16 +113,24 @@ sub stop {
     $self->{+STARTED} = 0;
 }
 
+# The die-message prefix used by handle_sig, so the "<prefix> caught SIG..." text
+# stays byte-identical per consumer. Overridden by Runner ('Runner') and
+# Preload::Host ('Preload::Host'); the base uses the concrete class name.
+sub sig_prefix { ref($_[0]) }
+
 sub handle_sig {
     my $self = shift;
     my ($sig) = @_;
 
-    $self->{+SIG_COUNT}++ unless $sig eq 'CHLD';
+    # Already winding down (a shutdown signal was captured): swallow repeats so a
+    # second signal does not re-die mid-cleanup. Kept FIRST as in both former
+    # consumers.
+    return if $self->{+SIGNAL};
 
     return $self->{+HANDLERS}->{$sig}->($sig) if $self->{+HANDLERS}->{$sig};
 
-    $self->stop();
-    exit(SIG_MAP->{$sig});
+    $self->{+SIGNAL} = $sig;
+    die $self->sig_prefix . " caught SIG$sig. Attempting to shut down cleanly...\n";
 }
 
 sub killall {
@@ -114,7 +148,59 @@ sub killall {
     }
 }
 
-sub check_timeouts {}
+# Fallback escalation for a wedged collector PARENT (hoisted from Runner/Preload::Host,
+# ticket #67). Called every loop of wait(). Requires the consumer to provide a
+# `settings` accessor (Runner and Preload::Host both do; no other consumer exists).
+sub check_timeouts {
+    my $self = shift;
+
+    return unless $self->settings->runner->use_timeout;
+
+    my $now = time;
+
+    # Check only once per second, that is as granular as we get. Also the check is not cheep.
+    return if $self->{+LAST_TIMEOUT_CHECK} && $now < (1 + $self->{+LAST_TIMEOUT_CHECK});
+
+    # The per-test silence and lifetime timeouts are now enforced by the
+    # Test2-Collector collector parent itself (via collect(silence_timeout =>
+    # ..., lifetime_timeout => ...)): it kills the test child's process group,
+    # records the timeout in events.jsonl.zst, and exits. The runner no longer
+    # tracks per-job output activity or writes event_timeout/post_exit_timeout
+    # marker files.
+    #
+    # What remains here is a fallback for a collector PARENT that should have
+    # exited but has not: once a job process has been reaped (it is in WAITING)
+    # we give it a grace window, then escalate TERM -> KILL so a wedged
+    # collector cannot hang the run.
+    my $grace = $self->{+POST_EXIT_TIMEOUT} || 60;
+
+    my $signaled = $self->{+TIMEOUT_SIGNALED} //= {};
+
+    # Drop entries for pids that are no longer live, so a future job that reuses
+    # a pid does not inherit a stale "already TERMed, escalate to KILL" flag.
+    delete $signaled->{$_} for grep { !$self->{+PROCS}->{$_} } keys %$signaled;
+
+    for my $pid (keys %{$self->{+PROCS}}) {
+        my $job = $self->{+PROCS}->{$pid};
+        next unless $job->isa('Test2::Harness2::Runner::Job');
+
+        my $waiting = $self->{+WAITING}->{$pid} or next;
+        my $since   = $waiting->[1] // $now;
+        next unless ($now - $since) > $grace;
+
+        my $kill = $signaled->{$pid}++;
+
+        my $sigmap = $self->SIG_MAP;
+        my $sig    = $kill ? $sigmap->{'KILL'} : $sigmap->{'TERM'};
+        $sig = "-$sig" if $self->USE_P_GROUPS;
+
+        print STDERR "$$ $0 " . $job->file . " collector process-group did not fully exit after the collector was reaped, sending " . ($kill ? 'SIGKILL' : 'SIGTERM') . " to $pid...\n";
+
+        kill($sig, $pid);
+    }
+
+    $self->{+LAST_TIMEOUT_CHECK} = time;
+}
 
 sub check_for_fork {
     my $self = shift;
@@ -367,8 +453,17 @@ Stop the IPC management (Remove signal handlers).
 
 =item $ipc->handle_sig($sig)
 
-Handle the specified signal. Will cause process exit if the signal has no
-handler.
+Handle the specified signal. If a shutdown signal has already been captured
+(C<< $ipc->signal >> is set) it is swallowed. Otherwise a registered handler in
+C<< $ipc->handlers >> is dispatched; failing that the signal is recorded in
+C<< $ipc->signal >> and a C<die> is thrown (prefixed by C<< $ipc->sig_prefix >>)
+so the C<wait> loop unwinds into a clean shutdown.
+
+=item $prefix = $ipc->sig_prefix
+
+The prefix used in C<handle_sig>'s "<prefix> caught SIG..." message. Defaults to
+the object's class name; subclasses may override it to keep the message text
+stable.
 
 =item $ipc->killall()
 
@@ -381,9 +476,12 @@ This will not wait on the processes, you must call C<< $ipc->wait() >>.
 
 =item $ipc->check_timeouts
 
-This is a no-op on the IPC base class. This is called every loop of
-C<< $ipc->wait >>. If you subclass the IPC class you can fill this in to make
-processes timeout if needed.
+Called every loop of C<< $ipc->wait >>. Escalates TERM -> KILL against a wedged
+collector parent that should have exited after its job was reaped (the per-test
+silence/lifetime timeouts are enforced by the collector itself). This requires
+the consuming class to provide a C<settings> accessor exposing
+C<< ->runner->use_timeout >> and C<< ->runner >>; both L<Test2::Harness2::Runner>
+and L<Test2::Harness2::Preload::Host> do.
 
 =item $ipc->check_for_fork
 
