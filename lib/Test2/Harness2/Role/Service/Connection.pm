@@ -5,8 +5,8 @@ our $VERSION = '2.000000';
 
 use Time::HiRes qw/time/;
 use POSIX qw/:errno_h/;
+use IO::Select ();
 
-use Test2::Collector::Util::Socket qw/write_frame/;
 use Test2::Collector::Util::Zstd qw/compress_blob/;
 use Test2::Collector::Util::Zstd::FrameBuffer();
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
@@ -17,6 +17,11 @@ use Test2::Harness2::Util::HashBase qw{
     <outbound
     <my_identity
     <identity_timeout
+    <owner_flushes
+    <stall_timeout
+    <max_wbuf
+    +wbuf
+    +wbuf_deadline
     +fb
     +identity
     +identity_pid
@@ -102,6 +107,28 @@ The identity this side announces.
 How long (seconds) to wait for the peer's identity before declaring the connection
 bad. Defaults to 5.
 
+=item $bool = $conn->owner_flushes
+
+True when an external loop (the service's C<service_io>) owns finishing this
+connection's writes: C<send_raw> only makes one non-blocking flush attempt and
+leaves any leftover bytes queued for a later tick, so one stalled peer never
+blocks the byte-pump. When false (client-side conns, which have no such loop) a
+C<send_raw> finishes with a bounded-blocking flush instead, giving submission
+backpressure. Defaults to false.
+
+=item $secs = $conn->stall_timeout
+
+The zero-progress stall window (seconds) before a wedged peer is dropped. The
+deadline is armed only while the peer accepts B<zero> bytes; any C<< >=1 >>-byte
+write clears it, so a merely-slow (trickling) reader is never dropped. Defaults
+to 10.
+
+=item $bytes = $conn->max_wbuf
+
+The outbound-buffer cap (bytes). A C<send_raw> that would grow the queue past this
+drops the peer instead of buffering unbounded memory for one that cannot keep up.
+Defaults to 16 MiB.
+
 =back
 
 =head1 PUBLIC METHODS
@@ -160,6 +187,37 @@ typed C<control>). Used for the runner's bail/abort B<terminate> message. Return
 false if the connection is (or becomes) closed, true on a successful write. There
 is no reply -- the collector kills its child and exits, EOFing its connection.
 
+=item $bool = $conn->send_raw($bytes)
+
+Queue one already-framed (compressed) blob on the per-connection outbound buffer
+and flush. Every send path (identity, request, response, control, forwarded
+frame) funnels through here, so per-connection frame order is preserved in one
+FIFO. On an C<owner_flushes> connection it makes a single non-blocking flush
+attempt and leaves any remainder queued for C<service_io>; otherwise it finishes
+with a bounded-blocking flush. Returns true when the bytes are queued/sent on a
+live connection, false once the connection is (or becomes) closed -- which happens
+only on a vanished peer (EPIPE/ECONNRESET), a full C<stall_timeout> of zero
+progress, or the queue exceeding C<max_wbuf>. Never croaks.
+
+=item $bool = $conn->flush_writes
+
+Write as much of the outbound buffer as the socket accepts, without blocking.
+Returns true when the buffer is empty, false when bytes remain (EAGAIN, buffer
+still queued) or the connection closed. Bytes leave the buffer only B<after>
+C<syswrite> reports them written and are consumed from the front, so a resumed
+flush always continues at the exact next unwritten byte of a partially-written
+frame -- a partial frame is never re-sent from its start.
+
+=item $bool = $conn->pending_out
+
+True while the outbound buffer still holds unwritten bytes.
+
+=item $bool = $conn->wbuf_expired
+
+True once the connection has queued bytes and has made B<zero> write progress for
+a full C<stall_timeout> window (a wedged, not merely slow, peer). Any successful
+write clears the armed deadline, so a trickling reader never expires.
+
 =item @events = $conn->drain
 
 Read whatever bytes are available (non-blocking), decode complete frames, apply
@@ -194,6 +252,11 @@ sub init ($self) {
     # identity is always read before this can fire -- this only catches a genuinely
     # silent / stuck peer, never a busy-loop timing gap.
     $self->{+DEADLINE} = time + ($self->{+IDENTITY_TIMEOUT} // 5);
+
+    # The outbound buffer must exist before send_identity below queues through it.
+    $self->{+WBUF}          //= '';
+    $self->{+STALL_TIMEOUT} //= 10;
+    $self->{+MAX_WBUF}      //= 16 * 1024 * 1024;
 
     # A dialer announces itself immediately; an accepter waits and replies once it
     # has seen the peer's identity.
@@ -247,10 +310,79 @@ sub send_control ($self, $control, %args) {
     # (the wire form Test2::Collector::Recorder::Socket reads when built with
     # read_control). It is fire-and-forget: the collector kills its child and
     # exits (its connection EOFs); there is no reply.
-    my $sent = eval { write_frame($self->{+FH}, compress_blob(encode_json({control => {control => $control, %args}})), 'control'); 1 };
-    $self->close unless $sent;
+    $self->send_raw(compress_blob(encode_json({control => {control => $control, %args}})));
 
     return $self->{+CLOSED} ? 0 : 1;
+}
+
+sub pending_out ($self) { return length($self->{+WBUF} // '') ? 1 : 0 }
+
+sub wbuf_expired ($self) {
+    return 0 if $self->{+CLOSED};
+    return 0 unless length($self->{+WBUF} // '');
+    my $deadline = $self->{+WBUF_DEADLINE} or return 0;
+    return time > $deadline ? 1 : 0;
+}
+
+# Queue one already-framed blob and flush. Service-owned conns (owner_flushes)
+# flush opportunistically -- service_io finishes leftovers on later ticks;
+# client conns block (bounded) until delivered, giving backpressure.
+# Returns 1 if the bytes are queued/sent on a live conn, 0 if closed.
+sub send_raw ($self, $bytes) {
+    return 0 if $self->{+CLOSED};
+
+    if (length($self->{+WBUF}) + length($bytes) > $self->{+MAX_WBUF}) {
+        $self->close;    # peer too slow to be worth unbounded memory
+        return 0;
+    }
+    $self->{+WBUF} .= $bytes;
+
+    if ($self->{+OWNER_FLUSHES}) { $self->flush_writes }
+    else                         { $self->_flush_blocking }
+
+    return $self->{+CLOSED} ? 0 : 1;
+}
+
+# Non-blocking: write as much of the outbound buffer as the socket accepts.
+# Returns 1 when the buffer is empty, 0 when bytes remain (EAGAIN) or the conn
+# closed. NEVER blocks and NEVER re-sends a byte: written bytes are consumed
+# from the FRONT of the buffer, so a resumed flush always continues at the
+# exact next unwritten byte of a partially-written frame.
+sub flush_writes ($self) {
+    return 0 if $self->{+CLOSED};
+    return 1 unless length($self->{+WBUF} // '');
+
+    my $fh = $self->{+FH};
+    unless (defined fileno($fh)) { $self->close; return 0 }
+
+    # A vanished reader turns the write into SIGPIPE; surface it as EPIPE.
+    local $SIG{PIPE} = 'IGNORE';
+
+    while (length $self->{+WBUF}) {
+        my $sent = syswrite($fh, $self->{+WBUF});
+
+        unless (defined $sent) {
+            next if $! == EINTR;
+            if ($! == EAGAIN || $! == EWOULDBLOCK) {
+                # Zero progress: arm the stall deadline once (progress clears it).
+                $self->{+WBUF_DEADLINE} //= time + $self->{+STALL_TIMEOUT};
+                return 0;
+            }
+            $self->close;    # EPIPE/ECONNRESET/...: peer is gone
+            return 0;
+        }
+
+        unless ($sent) {    # defensive: treat a 0-byte write like EAGAIN
+            $self->{+WBUF_DEADLINE} //= time + $self->{+STALL_TIMEOUT};
+            return 0;
+        }
+
+        # Consume exactly what the kernel took; the offset never rewinds.
+        substr($self->{+WBUF}, 0, $sent, '');
+        delete $self->{+WBUF_DEADLINE};    # progress resets the stall clock
+    }
+
+    return 1;
 }
 
 sub close ($self) {
@@ -307,8 +439,17 @@ sub drain ($self) {
 
 =item $self->_write($message)
 
-Frame, compress, and write one message hashref. Drops the connection on a write
-failure (a vanished peer).
+Frame, compress, and C<send_raw> one message hashref onto the outbound buffer.
+The message is queued (and flushed per the connection's C<owner_flushes> mode);
+the connection is closed only when the peer is gone, wedged past C<stall_timeout>,
+or the queue exceeds C<max_wbuf> -- not on a transient EAGAIN.
+
+=item $bool = $self->_flush_blocking
+
+Client-side finish for a non-C<owner_flushes> connection: block (select-for-
+writable) until the outbound buffer drains, the connection closes, or the peer
+makes zero progress for a full C<stall_timeout> window. Provides submission
+backpressure without an owning loop.
 
 =item $event = $self->_classify($payload, $rec)
 
@@ -328,9 +469,26 @@ close at three. Returns true when it closed the connection.
 
 sub _write ($self, $message) {
     return if $self->{+CLOSED};
-    my $sent = eval { write_frame($self->{+FH}, compress_blob(encode_json($message)), 'h2-conn'); 1 };
-    $self->close unless $sent;
+    $self->send_raw(compress_blob(encode_json($message)));
     return;
+}
+
+# Client-side finish: wait (select-for-writable) until the buffer drains, the
+# conn closes, or the peer makes zero progress for a full stall window.
+sub _flush_blocking ($self) {
+    my $sel;
+    while (1) {
+        return 1 if $self->flush_writes;    # buffer empty
+        return 0 if $self->{+CLOSED};
+
+        if ($self->wbuf_expired) {          # zero progress for stall_timeout secs
+            $self->close;
+            return 0;
+        }
+
+        $sel //= IO::Select->new($self->{+FH});
+        $sel->can_write(0.25);              # wakes early on writability
+    }
 }
 
 sub _classify ($self, $payload, $rec) {

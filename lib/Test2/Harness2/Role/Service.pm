@@ -7,7 +7,7 @@ use IO::Select ();
 use File::Spec ();
 use File::Path qw/make_path/;
 
-use Test2::Collector::Util::Socket qw/open_unix_listen connect_unix write_frame/;
+use Test2::Collector::Util::Socket qw/open_unix_listen connect_unix/;
 use Test2::Harness2::Util::IPC qw/set_cloexec/;
 
 use Test2::Harness2::Role::Service::Connection();
@@ -105,7 +105,10 @@ C<service_on_response>; one-way requests need no reply.
 =item $self->service_io
 
 Accept pending connections, read framed messages off ready connections, and
-dispatch each. Exposed so a consumer with its own loop can poll the socket.
+dispatch each. Also runs a non-blocking write pass that finishes each
+connection's buffered outbound bytes (dropping only a closed, wedged, or over-cap
+peer), so a slow reader never blocks the loop or loses frames. Exposed so a
+consumer with its own loop can poll the socket.
 
 =item $self->stop_service
 
@@ -155,8 +158,11 @@ the subscriber is run-scoped; without one it is global (every frame).
 =item $self->forward_frame($frame, $run_id)
 
 Write one already-compressed frame to subscriber connections, routed by C<$run_id>
-(C<undef> = global / run-less, goes to every subscriber). A subscriber whose write
-fails (it vanished) is dropped.
+(C<undef> = global / run-less, goes to every subscriber). The frame is B<queued>
+on each subscriber's outbound buffer (C<send_raw>), so a merely-slow subscriber is
+never dropped and loses no frame; only a subscriber whose peer is already gone is
+dropped here. A wedged (zero-progress) or over-cap subscriber is dropped later, by
+C<service_io>'s write pass.
 
 =back
 
@@ -227,9 +233,10 @@ sub service_connect_peer ($self, $identity, $path) {
     set_cloexec($fh);
 
     my $conn = Test2::Harness2::Role::Service::Connection->new(
-        fh          => $fh,
-        outbound    => 1,
-        my_identity => $self->service_identity,
+        fh            => $fh,
+        outbound      => 1,
+        owner_flushes => 1,
+        my_identity   => $self->service_identity,
     );
 
     $self->{service_select}->add($fh);
@@ -289,9 +296,12 @@ sub forward_frame ($self, $frame, $run_id = undef) {
             && defined $run_id
             && $sub->{run_id} ne $run_id;
 
-        # Push the already-compressed frame verbatim. A vanished subscriber is
-        # dropped so it does not cause a write storm.
-        next if !$conn->closed && eval { write_frame($conn->fh, $frame, 'subscriber'); 1 };
+        # Queue the already-compressed frame verbatim on the subscriber's outbound
+        # buffer. A merely-slow subscriber keeps its frames queued (no drop, no
+        # loss); service_io's write pass finishes the flush and only there does a
+        # wedged/over-cap peer get dropped. A subscriber already closed (peer gone)
+        # is dropped here.
+        next if !$conn->closed && $conn->send_raw($frame);
 
         delete $self->{service_subs}{$key};
         $self->_drop_conn($conn);
@@ -336,9 +346,10 @@ sub service_io ($self) {
         set_cloexec($fh);
         $sel->add($fh);
         $self->{service_conns}{$fh} = Test2::Harness2::Role::Service::Connection->new(
-            fh          => $fh,
-            outbound    => 0,
-            my_identity => $self->service_identity,
+            fh            => $fh,
+            outbound      => 0,
+            owner_flushes => 1,
+            my_identity   => $self->service_identity,
         );
     }
 
@@ -351,6 +362,18 @@ sub service_io ($self) {
         my @events = $conn->drain;
         $self->_handle_events($conn, @events) if @events;
         $self->_drop_conn($conn) if $conn->closed;
+    }
+
+    # Write pass: finish buffered outbound bytes now that peers may be writable
+    # again. EAGAIN is the poll -- an unwritable peer keeps its bytes queued for
+    # a later tick, so a stalled peer never blocks this loop. Drop any conn that
+    # is closed (never leave a dead fh in the select set) or that accepted zero
+    # bytes for a full stall window (wedged, not merely slow).
+    for my $conn (values %{$self->{service_conns}}) {
+        if ($conn->closed) { $self->_drop_conn($conn); next }
+        next unless $conn->pending_out;
+        $conn->flush_writes;
+        $self->_drop_conn($conn) if $conn->closed || $conn->wbuf_expired;
     }
 
     # Then drop connections that connected but never identified within the timeout
