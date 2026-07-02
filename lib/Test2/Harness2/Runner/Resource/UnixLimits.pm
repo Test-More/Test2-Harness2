@@ -18,7 +18,6 @@ use Object::HashBase qw{
     <state
     <arg
     <name
-    <nproc
     <nofile
     <as
     +supported
@@ -32,25 +31,40 @@ use Object::HashBase qw{
 =head1 NAME
 
 Test2::Harness2::Runner::Resource::UnixLimits - Throttle new test starts against
-per-process Unix resource limits (RLIMIT nproc / nofile / as).
+per-process Unix resource limits (RLIMIT nofile / as).
 
 =head1 DESCRIPTION
 
-Defers new test starts when the runner's own process soft C<ulimit>s (number of
-processes/threads C<nproc>, open files C<nofile>, address space C<as>) approach
-saturation. It reads its metrics B<in-resource, runner-local> -- the static
-RLIMIT ceilings are read once from C</proc/self/limits>, and the volatile/current
-usage (thread count, open fd count, virtual memory size) is read fresh at
-availability-check time from C</proc/self/status> and C</proc/self/fd>. It does
-B<not> use the shared system-load sampler snapshot (that would count the
-sampler's fds and a coarse periodic snapshot races burst spawns).
+Defers new test starts when the runner's own process soft C<ulimit>s (open files
+C<nofile>, address space C<as>) approach saturation. It reads its metrics
+B<in-resource, runner-local> -- the static RLIMIT ceilings are read once from
+C</proc/self/limits>, and the volatile/current usage (open fd count, virtual
+memory size) is read fresh at availability-check time from C</proc/self/fd> and
+C</proc/self/status>. It does B<not> use the shared system-load sampler snapshot
+(that would count the sampler's fds and a coarse periodic snapshot races burst
+spawns).
 
-C<nproc> and C<nofile> default on with 10% headroom; C<as> is off until an
-explicit threshold is supplied. Thresholds accept a count (C<128>), a
-percentage-of-limit (C<10%>), or (for C<as>) an absolute byte size (C<512mb>).
-When C<--utilize PCT> is also set it layers on top: the effective free-headroom
-requirement is the B<more conservative> of the explicit threshold and the
-C<--utilize>-derived floor of C<(100 - PCT)%> of the limit.
+C<nofile> defaults on with 10% headroom; C<as> is off until an explicit threshold
+is supplied. Thresholds accept a count (C<128>), a percentage-of-limit (C<10%>),
+or (for C<as>) an absolute byte size (C<512mb>). When C<--utilize PCT> is also set
+it layers on top: the effective free-headroom requirement is the B<more
+conservative> of the explicit threshold and the C<--utilize>-derived floor of
+C<(100 - PCT)%> of the limit.
+
+=head2 Why there is no nproc dimension
+
+There is deliberately no C<nproc> throttle. C<RLIMIT_NPROC> is enforced by the
+kernel B<per real UID> -- at fork/clone it checks the user's total task count
+(every thread is a task) against the limit, not the runner process's own thread
+count. The runner-local C<Threads:> reading (constant 1) can never approach that
+per-UID total, so a percentage gate could never fire and an absolute threshold
+would silently throttle every run to C<min_concurrent>. A correct measure -- the
+per-UID sum of C<Threads:> across all of C</proc/*/status> -- is accurate to first
+order but costs a full C</proc> scan on every availability check on the scheduler
+hot path (and TTL-caching it reintroduces the burst-spawn race the fresh-read
+design exists to avoid). Until a cheap, correct source exists the dimension is
+dropped rather than shipped as a gate that cannot fire; an explicit
+C<-R UnixLimits=nproc=...> is a hard error.
 
 Throttling never permanently skips a test -- when a dimension is near its limit
 C<available> returns C<0> (a wait), and a starvation floor (C<min_concurrent>,
@@ -66,20 +80,21 @@ module; when it is absent the resource simply stays deactivated.
 
 =head1 SYNOPSIS
 
-    yath test -R UnixLimits                       # nproc + nofile, 10% headroom
-    yath test -R UnixLimits=10%                   # bare pct -> nproc + nofile
-    yath test -R UnixLimits=nproc=128,nofile=10%  # per-dimension
-    yath test -R UnixLimits=as=512mb              # add an address-space gate
+    yath test -R UnixLimits              # nofile, 10% headroom
+    yath test -R UnixLimits=10%          # bare pct -> nofile
+    yath test -R UnixLimits=nofile=128   # per-dimension
+    yath test -R UnixLimits=as=512mb     # add an address-space gate
 
 =head1 ATTRIBUTES
 
 =over 4
 
-=item nproc / nofile / as
+=item nofile / as
 
 Each is a C<< {kind => 'count'|'pct'|'bytes', value => N} >> threshold (or undef
-when not configured). C<nproc>/C<nofile> default to C<< {kind => 'pct', value =>
-10} >>; C<as> defaults off.
+when not configured). C<nofile> defaults to C<< {kind => 'pct', value => 10} >>;
+C<as> defaults off. (There is no C<nproc> dimension -- see L</Why there is no
+nproc dimension>.)
 
 =item min_concurrent
 
@@ -104,11 +119,11 @@ sub init {
 
     $self->_parse_inline_arg;
 
-    # Defaults: nproc + nofile on with 10% headroom; as off until requested.
-    $self->{+NPROC}  //= {kind => 'pct', value => 10};
+    # Default: nofile on with 10% headroom; as off until requested. (There is no
+    # nproc dimension -- see the POD "Why there is no nproc dimension" note.)
     $self->{+NOFILE} //= {kind => 'pct', value => 10};
 
-    for my $dim (qw/nproc nofile/) {
+    for my $dim (qw/nofile/) {
         my $v = $self->{$dim};
         croak "Resource::UnixLimits: $dim must be a {kind, value} hashref"
             unless ref($v) eq 'HASH';
@@ -131,8 +146,10 @@ sub init {
 }
 
 # Parse the inline '-R UnixLimits=ARG' string. ARG is a comma-separated list of
-# 'nproc=SPEC' / 'nofile=SPEC' / 'as=SPEC', or a bare 'N%' which applies to both
-# nproc and nofile (matches old3 semantics).
+# 'nofile=SPEC' / 'as=SPEC', or a bare 'N%' which applies to nofile. An explicit
+# 'nproc=SPEC' is a hard error: the nproc dimension was removed because
+# RLIMIT_NPROC cannot be measured cheaply or correctly from the runner process
+# (see the POD "Why there is no nproc dimension").
 sub _parse_inline_arg {
     my $self = shift;
 
@@ -144,13 +161,21 @@ sub _parse_inline_arg {
         $entry =~ s/\s+$//;
         next unless length $entry;
 
-        if ($entry =~ m/^(nproc|nofile)=(.+)\z/) {
-            my ($dim, $raw) = ($1, $2);
+        if ($entry =~ m/^nproc=/) {
+            # Never silently ignore explicit config -- that is the
+            # gate-that-cannot-fire defect in a new costume.
+            croak "Resource::UnixLimits: the nproc dimension is disabled: "
+                . "RLIMIT_NPROC is enforced per real UID (the user's total task "
+                . "count), which cannot be measured cheaply or correctly from the "
+                . "runner process; remove 'nproc=...' (nofile and as remain supported)";
+        }
+        elsif ($entry =~ m/^nofile=(.+)\z/) {
+            my $raw = $1;
             my $parsed;
-            my $ok  = eval { $parsed = parse_count_or_pct($raw, name => $dim); 1 };
+            my $ok  = eval { $parsed = parse_count_or_pct($raw, name => 'nofile'); 1 };
             my $err = $@;
-            croak "Resource::UnixLimits: bad $dim in '$entry': $err" unless $ok;
-            $self->{$dim} = $parsed;
+            croak "Resource::UnixLimits: bad nofile in '$entry': $err" unless $ok;
+            $self->{+NOFILE} = $parsed;
         }
         elsif ($entry =~ m/^as=(.+)\z/) {
             my $raw = $1;
@@ -164,12 +189,11 @@ sub _parse_inline_arg {
             my $pct = $1;
             croak "Resource::UnixLimits: pct must be > 0 and < 100 (got '$pct')"
                 unless $pct > 0 && $pct < 100;
-            $self->{+NPROC}  = {kind => 'pct', value => $pct + 0};
             $self->{+NOFILE} = {kind => 'pct', value => $pct + 0};
         }
         else {
             croak "Resource::UnixLimits: unrecognised inline entry '$entry' "
-                . "(expected nproc=SPEC, nofile=SPEC, as=SPEC, or N%)";
+                . "(expected nofile=SPEC, as=SPEC, or N%)";
         }
     }
 
@@ -299,7 +323,7 @@ sub status_data {
     my $dims = $self->_dimension_states;
 
     my @rows;
-    for my $dim (qw/nproc nofile as/) {
+    for my $dim (qw/nofile as/) {
         my $d = $dims->{$dim} or next;
         push @rows => [
             $dim,
@@ -335,12 +359,12 @@ Emit C<$msg> to STDERR once (deduped). Used for the unsupported-platform notice.
 =item $limits = $self->_read_self_limits
 
 Static RLIMIT soft caps from C</proc/self/limits>, read once and cached. Returns
-C<< {nproc, nofile, as} >> (each a number or undef for 'unlimited').
+C<< {nofile, as} >> (each a number or undef for 'unlimited').
 
 =item $status = $self->_read_self_status
 
-Volatile C</proc/self/status> fields C<< {Threads, VmSize} >> (VmSize in kB),
-read fresh each call.
+Volatile C</proc/self/status> field C<< {VmSize} >> (VmSize in kB, used for the
+C<as> dimension), read fresh each call.
 
 =item $n = $self->_count_self_fd
 
@@ -381,10 +405,7 @@ sub _read_self_limits {
     my %out;
     open my $fh, '<', '/proc/self/limits' or return $self->{+STATIC_LIMITS} = {};
     while (my $line = <$fh>) {
-        if ($line =~ m/^Max processes\s+(\S+)/) {
-            $out{nproc} = $1 eq 'unlimited' ? undef : $1 + 0;
-        }
-        elsif ($line =~ m/^Max open files\s+(\S+)/) {
+        if ($line =~ m/^Max open files\s+(\S+)/) {
             $out{nofile} = $1 eq 'unlimited' ? undef : $1 + 0;
         }
         elsif ($line =~ m/^Max address space\s+(\S+)/) {
@@ -402,8 +423,7 @@ sub _read_self_status {
     my %out;
     open my $fh, '<', '/proc/self/status' or return \%out;
     while (my $line = <$fh>) {
-        $out{Threads} = $1 + 0 if $line =~ m/^Threads:\s+([0-9]+)/;
-        $out{VmSize}  = $1 + 0 if $line =~ m/^VmSize:\s+([0-9]+)\s*kB/;
+        $out{VmSize} = $1 + 0 if $line =~ m/^VmSize:\s+([0-9]+)\s*kB/;
     }
     close $fh;
     return \%out;
@@ -465,7 +485,6 @@ sub _dimension_states {
     my $fdcount = $self->_count_self_fd;
 
     my %dims;
-    $dims{nproc}  = {$self->_assess_dimension('nproc',  $limits->{nproc},  $status->{Threads} // 0)};
     $dims{nofile} = {$self->_assess_dimension('nofile', $limits->{nofile}, $fdcount)};
 
     if ($self->{+AS}) {

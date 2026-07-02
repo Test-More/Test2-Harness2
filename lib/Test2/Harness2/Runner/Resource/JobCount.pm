@@ -116,7 +116,7 @@ sub status_data {
         {
             tables => [
                 {
-                    headers => [qw/Runtime Slots Name/],
+                    header => [qw/Runtime Slots Name/],
                     format => ['duration'],
                     rows => \@rows,
                 },

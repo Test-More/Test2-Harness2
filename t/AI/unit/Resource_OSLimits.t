@@ -25,22 +25,38 @@ package FakeUnixLimits {
 }
 
 subtest unixlimits_inline_parse => sub {
-    my $r = Test2::Harness2::Runner::Resource::UnixLimits->new(arg => 'nproc=128,nofile=10%');
+    my $r = Test2::Harness2::Runner::Resource::UnixLimits->new(arg => 'nofile=10%');
     is($r->resource_name, 'unixlimits', "default name");
-    is($r->nproc,  {kind => 'count', value => 128}, "nproc=128 parsed as count");
-    is($r->nofile, {kind => 'pct',   value => 10},  "nofile=10% parsed as pct");
+    is($r->nofile, {kind => 'pct', value => 10}, "nofile=10% parsed as pct");
     is($r->as, undef, "as off by default");
+};
+
+# #138: the nproc dimension was DROPPED (RLIMIT_NPROC is per-real-UID and cannot
+# be measured cheaply/correctly from the runner). An explicit nproc= must be a
+# hard error, NEVER silently ignored -- that would be the gate-that-cannot-fire
+# defect in a new costume.
+subtest unixlimits_nproc_is_disabled => sub {
+    my $ok = eval { Test2::Harness2::Runner::Resource::UnixLimits->new(arg => 'nproc=128'); 1 };
+    my $err = $@;
+    ok(!$ok, "explicit nproc= croaks (never silently ignored)");
+    like($err, qr/nproc dimension is disabled/, "croak explains the dimension is disabled");
+    like($err, qr/per real UID/, "croak explains the per-real-UID accounting reason");
+
+    # Also a hard error when combined with a valid dimension in one arg string.
+    my $ok2 = eval { Test2::Harness2::Runner::Resource::UnixLimits->new(arg => 'nofile=10%,nproc=128'); 1 };
+    ok(!$ok2, "nproc= in a multi-dimension arg still croaks");
+
+    # The accessor is gone entirely.
+    ok(!Test2::Harness2::Runner::Resource::UnixLimits->can('nproc'), "no nproc accessor remains");
 };
 
 subtest unixlimits_defaults => sub {
     my $r = Test2::Harness2::Runner::Resource::UnixLimits->new();
-    is($r->nproc,  {kind => 'pct', value => 10}, "nproc defaults to 10%");
     is($r->nofile, {kind => 'pct', value => 10}, "nofile defaults to 10%");
 };
 
 subtest unixlimits_bare_pct => sub {
     my $r = Test2::Harness2::Runner::Resource::UnixLimits->new(arg => '20%');
-    is($r->nproc,  {kind => 'pct', value => 20}, "bare pct -> nproc");
     is($r->nofile, {kind => 'pct', value => 20}, "bare pct -> nofile");
 };
 
@@ -58,8 +74,7 @@ subtest unixlimits_defer_logic => sub {
     # nofile soft cap 100, threshold 10% => need 10 free. fd count 95 => 5 free => low.
     my $r = FakeUnixLimits->new(arg => 'nofile=10%', min_concurrent => 1);
     $r->{+Test2::Harness2::Runner::Resource::UnixLimits::SUPPORTED()} = 1;
-    $r->{fake_limits} = {nproc => 1000, nofile => 100};
-    $r->{fake_status} = {Threads => 1};
+    $r->{fake_limits} = {nofile => 100};
     $r->{fake_fd}     = 95;
 
     # 0 in flight: under the floor, never defers even when saturated.
@@ -80,8 +95,7 @@ subtest unixlimits_defer_logic => sub {
 subtest unixlimits_unlimited_cap_never_defers => sub {
     my $r = FakeUnixLimits->new(arg => 'nofile=10%', min_concurrent => 1);
     $r->{+Test2::Harness2::Runner::Resource::UnixLimits::SUPPORTED()} = 1;
-    $r->{fake_limits} = {nproc => undef, nofile => undef};    # unlimited
-    $r->{fake_status} = {Threads => 9999};
+    $r->{fake_limits} = {nofile => undef};    # unlimited
     $r->{fake_fd}     = 9999;
     $r->record('j1', {});
     is($r->available({job_id => 'j2'}), 1, "unlimited soft caps -> never defers");
@@ -94,6 +108,24 @@ subtest unixlimits_unsupported_is_infinite => sub {
     $r->record('j1', {});
     is($r->is_temporarily_unavailable, 0, "unsupported -> never temporarily unavailable");
     is($r->available({job_id => 'j2'}), 1, "unsupported -> always available (no throttle)");
+};
+
+# #138 verify line: cover REAL semantics, not just mocks. On Linux the real
+# resource must be supported and read a live nofile dimension from /proc, with no
+# nproc dimension present.
+subtest unixlimits_real_proc_smoke => sub {
+    skip_all "not linux with /proc" unless $^O eq 'linux' && -d '/proc/self/fd';
+
+    my $r = Test2::Harness2::Runner::Resource::UnixLimits->new;
+    ok($r->is_supported, "real resource is supported on this Linux host");
+
+    my $dims = $r->_dimension_states;
+    ok(exists $dims->{nofile}, "nofile dimension present from real /proc");
+    ok(!exists $dims->{nproc}, "no nproc dimension");
+
+    my $nofile = $dims->{nofile};
+    ok($nofile->{soft_cap} > 0, "real nofile soft_cap is a positive number ($nofile->{soft_cap})");
+    ok($nofile->{current} > 0,  "real open-fd current is a positive number ($nofile->{current})");
 };
 
 # ---------------------------------------------------------------------------

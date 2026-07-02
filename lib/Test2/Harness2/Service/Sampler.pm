@@ -10,16 +10,19 @@ use Time::HiRes qw/time/;
 use Test2::Collector::Util::EventEmitter;
 
 use Test2::Harness2::SystemLoad;
+use Test2::Harness2::Util qw/mono_time/;
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
     <name
     <interval
     <decrease_delay
+    <heartbeat
     <runner_socket
     <source
     +conn
     +next_at
+    +last_sent_at
     +metrics
     +emitter
 };
@@ -29,6 +32,7 @@ with 'Test2::Harness2::Role::Service';
 
 use constant DEFAULT_INTERVAL       => 0.2;
 use constant DEFAULT_DECREASE_DELAY => 1.0;
+use constant DEFAULT_HEARTBEAT      => 2.0;
 
 =pod
 
@@ -67,6 +71,14 @@ trusted as a real drop.
 
 No change (or a same-valued plateau) sends nothing.
 
+=item *
+
+Change-gating is bounded by a max-staleness B<heartbeat>: a snapshot is sent
+unconditionally when the last send is older than L</heartbeat> seconds, so
+consumers of the raw fields (Resource::Memory's C<mem_available>, Resource::CPU
+under C<--utilize>) never act on data older than the heartbeat even when a rounded
+bucket is pinned (e.g. memory at 100).
+
 =back
 
 A message is sent when B<either> CPU or memory triggers, and it carries the
@@ -99,6 +111,13 @@ Seconds between samples. Defaults to 0.2.
 Seconds a lower rounded metric value (cpu or memory) must persist before a
 decrease is reported. Defaults to 1.0 (five ticks at the default interval).
 
+=item heartbeat
+
+Maximum seconds between reports. When change-gating would otherwise suppress a
+send, a snapshot is sent unconditionally once the last send is older than this,
+bounding the staleness of the raw fields even while a rounded bucket is pinned.
+Defaults to 2.0 (ten ticks at the default interval).
+
 =item runner_socket (required)
 
 Path to the runner's socket to report snapshots to.
@@ -123,6 +142,7 @@ sub init ($self) {
     $self->{+NAME}           //= 'sampler';
     $self->{+INTERVAL}       //= DEFAULT_INTERVAL;
     $self->{+DECREASE_DELAY} //= DEFAULT_DECREASE_DELAY;
+    $self->{+HEARTBEAT}      //= DEFAULT_HEARTBEAT;
     $self->{+SOURCE}         //= Test2::Harness2::SystemLoad->new;
     $self->{+METRICS}        //= {};
 
@@ -162,7 +182,7 @@ sub run ($self) {
     $self->{+CONN} = $self->service_connect_peer('runner', $self->{+RUNNER_SOCKET})
         or croak "sampler could not connect to the runner socket '$self->{+RUNNER_SOCKET}'";
 
-    $self->{+NEXT_AT} = time;    # sample on the first tick
+    $self->{+NEXT_AT} = mono_time();    # sample on the first tick
 
     until ($self->service_stopped) {
         # Drive the connection: the identity handshake reply and a runner 'stop'
@@ -181,7 +201,7 @@ sub run ($self) {
 }
 
 sub service_tick ($self) {
-    my $now = time;
+    my $now = mono_time();
     return if $now < $self->{+NEXT_AT};
 
     # Advance by whole intervals; resync if we fell more than an interval behind
@@ -205,12 +225,24 @@ sub service_tick ($self) {
     # decrease window updated), then send if either says so.
     my $cpu_trig = defined $cpu ? $self->_metric_triggers('cpu', $cpu, $now) : 0;
     my $mem_trig = defined $mem ? $self->_metric_triggers('mem', $mem, $now) : 0;
-    return unless $cpu_trig || $mem_trig;
+
+    # Max-staleness heartbeat: even when neither rounded bucket changes (e.g. a
+    # metric pinned at 100), send unconditionally if the last send is older than
+    # 'heartbeat' seconds, so consumers of the raw fields (Resource::Memory's
+    # mem_available, Resource::CPU under --utilize) never act on data older than
+    # the heartbeat while a bucket is pinned. First tick: LAST_SENT_AT undef =>
+    # stale => an initial send is guaranteed.
+    my $last_sent = $self->{+LAST_SENT_AT};
+    my $stale     = !defined($last_sent) || (($now - $last_sent) >= $self->{+HEARTBEAT});
+    return unless $cpu_trig || $mem_trig || $stale;
 
     # A message reports the current rounded value of every metric, so commit them
-    # all (whichever triggered, both are now "last sent").
+    # all (whichever triggered, both are now "last sent"). A heartbeat send
+    # commits both metrics exactly like a triggered send, keeping last_sent in
+    # step with the runner's actual view so the trigger baseline never desyncs.
     $self->_commit_metric('cpu', $cpu) if defined $cpu;
     $self->_commit_metric('mem', $mem) if defined $mem;
+    $self->{+LAST_SENT_AT} = $now;
 
     $snap->{cpu_pct} = $cpu if defined $cpu;
     $snap->{mem_pct} = $mem if defined $mem;
