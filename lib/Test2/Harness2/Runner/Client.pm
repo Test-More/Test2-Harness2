@@ -195,8 +195,11 @@ could not be reached. Croaks on a closed connection or timeout.
 =cut
 
 # How long to wait for the runner to bind/accept (and to reply) before giving up
-# when we cannot otherwise tell the runner is gone.
-sub CONNECT_TIMEOUT { 30 }
+# when we cannot otherwise tell the runner is gone. Env-overridable (pure superset:
+# unset => 30s) so `yath stop`/`yath kill` regression tests that drive a fake,
+# never-replying runner do not have to sit through the full 30s reply timeout
+# (ticket #121); production behavior is unchanged.
+sub CONNECT_TIMEOUT { $ENV{YATH_RUNNER_CONNECT_TIMEOUT} // 30 }
 
 sub runner_gone ($self) { return $self->{+RUNNER_GONE} ? 1 : 0 }
 

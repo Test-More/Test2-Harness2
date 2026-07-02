@@ -12,10 +12,14 @@ use Test2::Harness2::Util::File::JSON;
 
 use App::Yath2::Pfile;
 use App::Yath2::Client;
+use App::Yath2::Discovery();
 use Test2::Harness2::Util qw/mod2file open_file/;
 use Test2::Util::Table qw/table/;
 
 use File::Spec;
+use File::Path qw/remove_tree/;
+use Time::HiRes qw/time sleep/;
+use Errno qw/ESRCH EPERM/;
 
 use Carp qw/croak/;
 
@@ -219,10 +223,11 @@ sub pfile_data {
     my $pfile = $self->pfile;
     my $data  = $pfile->data;
 
-    # Print the discovery banner exactly once (on first read of the data).
+    # Print the discovery banner exactly once (on first read of the data). The pid
+    # can be unknown here (a not-live runner with no/garbled PID file -- #121).
     unless ($self->{+BANNER_PRINTED}++) {
         print "\nFound: $data->{pfile_path}\n";
-        print "  PID: $data->{pid}\n";
+        print "  PID: " . ($data->{pid} // 'unknown') . "\n";
         print "  Dir: $data->{dir}\n";
     }
 
@@ -242,6 +247,281 @@ sub start_runner {
     my $data = $self->pfile_data;
 
     return $self->client->attach_runner($data->{pid});
+}
+
+# ---------------------------------------------------------------------------
+# Shutdown/termination helpers shared by `stop` and `kill` (ticket #121).
+#
+# These are the ONLY place the persistent-runner termination timing and the
+# KILL-safety corroboration predicate live. Every helper takes an explicit
+# $seconds where a wait is involved (defaulting to the method-constants below)
+# so tests can shrink them. The two timing constants are also env-overridable
+# (pure superset: unset => the documented defaults) so the integration
+# regression tests run in seconds instead of the full 30s+5s windows.
+# ---------------------------------------------------------------------------
+
+# Graceful teardown budget: a TERM to the runner triggers the SAME graceful
+# shutdown the socket 'stop' does, so the TERM window inherits stop's teardown
+# budget.
+sub STOP_DEADLINE { $ENV{YATH_STOP_DEADLINE} // 30 }
+
+# Per-signal grace: post-KILL exit is not up to the process, so a short window
+# suffices; also used as the graceful window after kill's end_queue/truncate.
+sub KILL_GRACE { $ENV{YATH_KILL_GRACE} // 5 }
+
+# Read a bare numeric pid from a flat PID file WITHOUT caching, so every
+# corroboration re-read sees the file as it is right now. Returns the digits, or
+# undef when the file is missing/empty/unreadable/garbled.
+sub _read_pid_file {
+    my ($self, $path) = @_;
+
+    return undef unless defined($path) && -f $path;
+
+    my $pid;
+    my $ok  = eval {
+        open(my $fh, '<', $path) or die "open '$path': $!";
+        $pid = <$fh>;
+        close($fh);
+        1;
+    };
+    return undef unless $ok;
+
+    chomp($pid) if defined $pid;
+    return undef unless defined($pid) && $pid =~ /^\d+$/;
+    return $pid;
+}
+
+# Bounded wait for a pid to leave the process table. Returns 1 once kill(0) is
+# false (ESRCH / no-longer-signalable => the process is GONE), 0 if it was still
+# alive when $seconds elapsed. When handed no pid it re-reads a fresh pid from the
+# workdir PID file each poll (#145 contract (c): a booting runner may not have
+# written it yet); no pid at all means nothing to wait for => gone.
+sub wait_for_runner_exit {
+    my ($self, $disco, $pid, $seconds) = @_;
+
+    my $deadline = time + ($seconds // 0);
+
+    while (1) {
+        ($pid //= $self->_read_pid_file($disco->pid_file)) if $disco;
+
+        return 1 unless defined($pid) && $pid =~ /^\d+$/ && $pid > 1;
+        return 1 unless kill(0, $pid);
+        return 0 if time >= $deadline;
+
+        sleep(0.05);
+    }
+}
+
+# ps-based runner identity (arm of the corroboration predicate). Returns true only
+# when the pid's argv positively identifies it as THIS workdir's runner. Empty or
+# failed `ps` output is treated as NOT corroborated (fail-safe): we never signal a
+# pid we cannot positively identify.
+sub runner_identity_ok {
+    my ($self, $pid, $disco) = @_;
+
+    return 0 unless defined($pid) && $pid =~ /^\d+$/ && $pid > 1;
+
+    my $args;
+    my $ok  = eval { $args = qx{ps -p $pid -o args= 2>/dev/null}; 1 };
+    my $err = $@;
+
+    return 0 unless $ok && defined($args) && length($args);
+
+    # Arm 1: the runner rewrites $0 to '[prefix-]yath-runner' (or 'yath-nested-runner')
+    # BEFORE the PID file is written, so any pid-file-holding runner carries the name.
+    return 1 if $args =~ /\byath-(?:nested-)?runner\b/;
+
+    # Arm 2: platforms whose ps reports the original exec argv ('... runner <workdir> ...').
+    my $workdir = $disco ? $disco->workdir : undef;
+    return 1
+        if defined($workdir)
+        && length($workdir)
+        && $args =~ /\brunner\b/
+        && index($args, $workdir) >= 0;
+
+    return 0;
+}
+
+# The KILL-safety corroboration predicate C(pid), re-evaluated immediately before
+# EVERY signal. Returns 'ok' (safe to signal), 'gone' (already ESRCH -- skip the
+# signal, success), or 'refuse:<why>' (a claim we could NOT turn into an identity --
+# NO signal is ever sent). $ack_pid, when defined, is a ping-ack's self-reported pid
+# (exact identity). See the ticket's KILL-safety proof.
+sub corroborate_runner {
+    my ($self, $disco, $pid, $ack_pid) = @_;
+
+    # (1) FRESH re-read of the workdir PID file must still name exactly $pid, and
+    # $pid > 1 (the >1 guard closes the undef/garbled-pid => kill($sig,0) own-process-
+    # group catastrophe as well as the workdir-tie/freshness check).
+    my $fresh = $self->_read_pid_file($disco->pid_file);
+    return "refuse:workdir PID file no longer names pid " . (defined($pid) ? $pid : 'undef')
+        unless defined($fresh)
+        && $fresh =~ /^\d+$/
+        && defined($pid)
+        && $pid =~ /^\d+$/
+        && $fresh == $pid
+        && $pid > 1;
+
+    # (2) liveness. ESRCH => already gone (success, no signal needed). EPERM => a
+    # process exists but is not ours to signal (refuse). Any other errno: not
+    # signalable => treat as gone.
+    unless (kill(0, $pid)) {
+        my $errno = $! + 0;
+        return 'gone'                                                       if $errno == ESRCH;
+        return "refuse:pid $pid exists but is not ours to signal (EPERM)"   if $errno == EPERM;
+        return 'gone';
+    }
+
+    # (3) identity: an exact ping-ack pid, OR a positive ps identity match.
+    return 'ok' if defined($ack_pid) && "$ack_pid" =~ /^\d+$/ && $ack_pid == $pid;
+    return 'ok' if $self->runner_identity_ok($pid, $disco);
+
+    return "refuse:could not confirm pid $pid is the runner (identity unverified)";
+}
+
+# The kill-only escalation ladder: corroborate -> TERM -> bounded wait -> re-
+# corroborate -> KILL -> bounded wait -> judge. Returns 'killed' (confirmed gone at
+# some point => clean + exit 1), 'refuse:<why>' (corroboration failed => NO signal,
+# NO clean, exit 2), or 'survived' (still alive KILL_GRACE after SIGKILL => exit 2,
+# NO clean). "Unconditional" governs WHEN (signals follow the graceful attempt),
+# corroboration governs WHOM.
+sub escalate_kill_runner {
+    my ($self, $disco, $pid, $ack_pid) = @_;
+
+    my $c = $self->corroborate_runner($disco, $pid, $ack_pid);
+    return 'killed' if $c eq 'gone';
+    return $c       if $c =~ /^refuse:/;
+
+    kill('TERM', $pid);
+    return 'killed' if $self->wait_for_runner_exit($disco, $pid, $self->STOP_DEADLINE);
+
+    # Identity re-proven at signal time, not probe time.
+    $c = $self->corroborate_runner($disco, $pid, $ack_pid);
+    return 'killed' if $c eq 'gone';
+    return $c       if $c =~ /^refuse:/;
+
+    kill('KILL', $pid);
+    return 'killed' if $self->wait_for_runner_exit($disco, $pid, $self->KILL_GRACE);
+
+    return 'survived';
+}
+
+# Remove the remains of a runner that has been CONFIRMED gone (ESRCH) -- reachable
+# only after a deadness observation (see the ticket's cleanup-not-racing-live
+# proof). The discovery link is removed through #145's flock mutator protocol
+# (clean_if_mine: re-readlink + successor-pid guard + euid check + -l-guarded
+# unlink); the workdir remove_tree is then gated on a FRESH re-read of workdir/PID:
+# absent, our (now-dead) pid, or a dead pid => remove; a DIFFERENT LIVE pid means a
+# successor claimed the pinned workdir => skip BOTH (fail-safe: tidiness lost, never
+# a live runner's workdir).
+sub clean_runner_remains {
+    my ($self, $disco) = @_;
+
+    my $link       = $disco->link;
+    my $workdir    = $disco->workdir;
+    my $own_socket = defined($workdir) ? File::Spec->catfile($workdir, 'runner.socket') : undef;
+    my $our_pid    = $disco->pid;
+
+    App::Yath2::Discovery->new(link => $link)->clean_if_mine($own_socket, $our_pid)
+        if defined($link) && defined($own_socket);
+
+    return unless defined($workdir) && length($workdir) && -d $workdir;
+
+    my $wpid = $self->_read_pid_file(File::Spec->catfile($workdir, 'PID'));
+    return
+        if defined($wpid)
+        && $wpid =~ /^\d+$/
+        && (!defined($our_pid) || $wpid != $our_pid)
+        && kill(0, $wpid);
+
+    remove_tree($workdir, {safe => 1, keep_root => 0});
+    return;
+}
+
+# Run a socket step under BOTH the house eval guard AND an alarm backstop: the eval
+# catches the un-eval'd croaks (truncate/connect), and the alarm is the ONLY thing
+# that can unwedge a blocking connect against a full-backlog socket (a blocking
+# connect never returns, so nothing ever dies into the eval alone -- deps (a)).
+# $secs defaults > Runner::Client::CONNECT_TIMEOUT so the normal croak fires first
+# whenever it can and the alarm is purely the backstop. Returns ($ok, $err).
+sub _with_alarm {
+    my ($self, $secs, $code) = @_;
+
+    my $ok  = eval {
+        local $SIG{ALRM} = sub { die "yath stop/kill: socket step timed out after ${secs}s\n" };
+        alarm($secs);
+        $code->();
+        alarm(0);
+        1;
+    };
+    my $err = $@;
+    alarm(0);    # unconditional, even if the eval died before its own alarm(0)
+
+    return ($ok, $err);
+}
+
+# Diagnostic for an AMBIGUOUS not-live runner (foreign/inaccessible/unknown, or no
+# pid): stance A never signals and never cleans on ambiguity. Prints the state and
+# the manual cleanup commands. $cmd is 'stop' or 'kill'.
+sub _diag_ambiguous {
+    my ($self, $disco, $cmd) = @_;
+
+    my $pid     = $disco->pid     // 'unknown';
+    my $state   = $disco->state   // 'unknown';
+    my $reason  = $disco->reason  // 'unknown';
+    my $workdir = $disco->workdir // 'unknown';
+    my $link    = $disco->link;
+
+    print STDERR <<"    EOT";
+
+Could not $cmd the persistent runner: its state is ambiguous, and yath will not
+signal or clean up on ambiguity.
+  state:   $state
+  reason:  $reason
+  pid:     $pid
+  workdir: $workdir
+  link:    $link
+
+If you are certain no runner is using that workdir, remove them by hand:
+  rm -f '$link'
+  rm -rf '$workdir'
+    EOT
+
+    return;
+}
+
+# Diagnostic for a pid that FAILED corroboration (a possibly-recycled pid): NO
+# signal was sent and nothing was cleaned. Prints the pid, its ps line, and the
+# manual commands. $cmd is 'kill' (only kill signals).
+sub _diag_refuse {
+    my ($self, $disco, $pid, $why, $cmd) = @_;
+
+    my $workdir = $disco->workdir // 'unknown';
+    my $link    = $disco->link;
+
+    my $psline = '';
+    eval { $psline = qx{ps -p $pid -o args= 2>/dev/null}; 1 };
+    chomp($psline) if defined $psline;
+    $psline = '(unavailable)' unless defined($psline) && length($psline);
+
+    print STDERR <<"    EOT";
+
+Refusing to $cmd pid $pid: $why
+The pid named by the workdir PID file could not be corroborated as the runner (it
+may be a recycled pid now belonging to an unrelated process), so NO signal was
+sent and nothing was cleaned up.
+  pid:     $pid
+  ps:      $psline
+  workdir: $workdir
+  link:    $link
+
+If you have confirmed this pid is a leftover runner, terminate it by hand:
+  kill -TERM $pid   # then, if it survives: kill -KILL $pid
+  rm -f '$link'
+  rm -rf '$workdir'
+    EOT
+
+    return;
 }
 
 1;

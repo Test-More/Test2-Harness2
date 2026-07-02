@@ -26,39 +26,118 @@ This command will kill the active yath runner and any running or pending tests.
     EOT
 }
 
-sub pfile_params { (no_checks => 1) }
+# any_state: we need the Discovery object in EVERY state so a NOT-LIVE (wedged)
+# runner -- exactly the case `yath kill` exists for -- stays reachable via its
+# workdir PID file for signal-based escalation. Pfile::find passes it through.
+sub pfile_params { (any_state => 1) }
 
+# Kill the persistent runner, driven by #145's discovery taxonomy (ticket #121).
+# "Unconditional" (ticket Step 2) governs WHEN a signal is sent (after the graceful
+# attempt, never gated on socket reachability); the corroboration predicate governs
+# WHOM (the pfile pid is a CLAIM of identity that a recycled pid can satisfy but not
+# prove -- so every signal is gated on re-proven identity, never blind):
+#
+#   LIVE      -> end_queue + truncate over the socket (alarm-backstopped so a wedged
+#                socket can't abort kill), a best-effort ping for exact identity, one
+#                KILL_GRACE graceful wait, then the escalation ladder.
+#   NOT-LIVE  -> boot/wedged/backlog with a live pid: NO socket attempt, straight to
+#                the escalation ladder. foreign/inaccessible/unknown or no pid:
+#                ambiguous => diag + exit 2, touch nothing.
+#   DEAD      -> nothing to signal (ESRCH-confirmed / workdir gone) => clean + exit 0.
+#   (none)    -> pfile() dies "No persistent harness was found ...".
 sub run {
     my $self = shift;
 
-    my $data = $self->pfile_data();
-    my $pfile = $data->{pfile_path};
+    my $disco = $self->pfile->discovery;    # dies (NONE) when there is no link at all
+    my $state = $disco->state;
 
-    # End the global queue over runner.socket to unblock a runner that is mid-run.
-    # kill's client is in attach mode (its terminate_queue is a no-op there, since a
-    # persistent run must not end the shared queue), so send end_queue directly.
-    $self->client->attach_runner($data->{pid});
-    $self->client->submitter->end_queue();
+    $self->pfile_data;    # print the Found/PID/Dir banner once (pid may be unknown)
 
-    # Plugin teardown() runs in the RUNNER as it shuts down, not here
-    # (kill is forceful; the runner's watch_parent_pid fallback reaps aux processes
-    # if it dies before a graceful teardown).
+    $state = 'dead'
+        if $state eq 'not_live' && defined($disco->pid_live) && $disco->pid_live == 0;
 
-    $self->SUPER::run();
+    return $self->_kill_live($disco)     if $state eq 'live';
+    return $self->_kill_dead($disco)     if $state eq 'dead';
+    return $self->_kill_not_live($disco);    # not_live
+}
 
-    sleep(0.02) while kill(0, $self->pfile_data->{pid});
+sub _kill_live {
+    my ($self, $disco) = @_;
+    my $pid = $disco->pid;
 
-    # Remove the discovery link through the mutator protocol (ticket #145): only if
-    # it still points at THIS runner's socket and no successor has claimed the pinned
-    # workdir. (The old `unlink($pfile) if -f $pfile` was dead code: -f follows the
-    # symlink to the SOCKET target and is always false.)
-    my $own_socket = File::Spec->catfile($self->workdir, 'runner.socket');
-    App::Yath2::Discovery->new(link => $pfile)->clean_if_mine($own_socket, $data->{pid});
+    $self->client->attach_runner($pid);
 
-    remove_tree($self->workdir, {safe => 1, keep_root => 0}) if -d $self->workdir;
-    print "\n\nRunner stopped\n\n" unless $self->settings->display->quiet;
+    # End the global queue (unblocks a runner mid-run) and truncate its queue (the
+    # abort superclass' run). Both are socket steps that can hit un-eval'd croaks
+    # (Runner/Client.pm truncate/connect) or a blocking connect, so alarm-backstop
+    # them: a wedged socket must NEVER abort the kill.
+    my ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->end_queue });
+    warn "Could not end runner queue: $err" unless $ok;
 
+    ($ok, $err) = $self->_with_alarm(35, sub { $self->SUPER::run() });
+    warn "Could not truncate runner queue: $err" unless $ok;
+
+    # A ping ack is EXACT identity: ack->{pid} is the self-report of the process
+    # serving THIS workdir's socket. Best-effort; corroborates before any signal.
+    my $ack_pid;
+    my $ack = eval { $self->client->ping };
+    $ack_pid = $ack->{pid} if $ack && ref($ack) eq 'HASH' && defined $ack->{pid};
+
+    # Graceful first: give the runner one KILL_GRACE window to exit from the
+    # end_queue/truncate it just received before we escalate to signals.
+    if ($self->wait_for_runner_exit($disco, $pid, $self->KILL_GRACE)) {
+        $self->clean_runner_remains($disco);
+        print "\n\nRunner stopped\n\n" unless $self->settings->display->quiet;
+        return 0;
+    }
+
+    return $self->_kill_escalate($disco, $pid, $ack_pid);
+}
+
+sub _kill_dead {
+    my ($self, $disco) = @_;
+
+    $self->clean_runner_remains($disco);
+    print "\n\nRunner was already dead; cleaned up remains\n\n" unless $self->settings->display->quiet;
     return 0;
+}
+
+sub _kill_not_live {
+    my ($self, $disco) = @_;
+
+    my $pid    = $disco->pid;
+    my $reason = $disco->reason // 'unknown';
+
+    if (!defined($pid) || $reason eq 'foreign' || $reason eq 'inaccessible' || $reason eq 'unknown') {
+        $self->_diag_ambiguous($disco, 'kill');
+        return 2;
+    }
+
+    # boot/wedged/backlog with a live pid: #145's contract is NOT-LIVE => go straight
+    # to PID-file escalation (no socket attempt -- also avoids the blocking-connect hang).
+    return $self->_kill_escalate($disco, $pid, undef);
+}
+
+sub _kill_escalate {
+    my ($self, $disco, $pid, $ack_pid) = @_;
+
+    my $result = $self->escalate_kill_runner($disco, $pid, $ack_pid);
+
+    if ($result eq 'killed') {
+        $self->clean_runner_remains($disco);
+        print "\n\nRunner killed\n\n" unless $self->settings->display->quiet;
+        return 1;
+    }
+
+    if ($result eq 'survived') {
+        print STDERR "\nRunner (pid $pid) survived SIGKILL (uninterruptible sleep?); leaving workdir and link in place.\n";
+        return 2;
+    }
+
+    my $why = $result;
+    $why =~ s/^refuse://;
+    $self->_diag_refuse($disco, $pid, $why, 'kill');
+    return 2;
 }
 
 1;

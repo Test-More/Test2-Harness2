@@ -35,55 +35,110 @@ This command will stop a persistent instance, and output any log contents.
     EOT
 }
 
-sub pfile_params { (no_fatal => 1) }
+# any_state: we want the Discovery object in EVERY state (live/not_live/dead) so we
+# can route off #145's probe taxonomy and reach the workdir PID file with the socket
+# dead. Pfile::find passes unknown params straight through to Discovery->find.
+sub pfile_params { (any_state => 1) }
 
-# Ask the runner to shut down gracefully over runner.socket (the
-# Role::Service built-in 'stop' request, which the runner translates into its own
-# TERM shutdown). The end_queue + workdir/pfile cleanup below remain as the
-# fallback for a runner that never bound the socket (or already went away).
+# Stop the persistent runner, driven by #145's discovery taxonomy (ticket #121):
+#
+#   LIVE      -> graceful 'stop'+end_queue over the socket, drain teardown, then a
+#                BOUNDED wait for the pid to exit (shared 30s deadline). Gone =>
+#                clean + exit 0. Still alive at the deadline => NO signal (stop never
+#                escalates), diag + exit 1, link/workdir left for `yath kill`.
+#   NOT-LIVE  -> boot/wedged/backlog with a live pid: NO socket, NO signal, diag +
+#                exit 1 (`yath kill`'s job). foreign/inaccessible/unknown or no pid:
+#                ambiguous => diag + exit 2, touch nothing.
+#   DEAD      -> nothing to signal (ESRCH-confirmed / workdir gone) => clean + exit 0.
+#   (none)    -> pfile() dies "No persistent harness was found ...".
 sub run {
     my $self = shift;
 
-    my $pid = $self->pfile_data->{pid};
+    my $disco = $self->pfile->discovery;    # dies (NONE) when there is no link at all
+    my $state = $disco->state;
 
-    # Plugin teardown() runs in the RUNNER as it shuts down. PRIME the
-    # shutdown renderer (open the runner-events tail and skip everything already
-    # recorded) BEFORE we trigger shutdown, so its cursor sits at the current end
-    # and it renders ONLY the teardown output the runner is about to write -- not
-    # the whole persistent runner's prior output (which `yath run` already showed).
+    $self->pfile_data;    # print the Found/PID/Dir banner once (pid may be unknown)
+
+    # Defensive: an ESRCH-confirmed pid on a not-live row routes to DEAD (the taxonomy
+    # already sends ESRCH rows to DEAD, but pid_live==0 is the belt-and-suspenders).
+    $state = 'dead'
+        if $state eq 'not_live' && defined($disco->pid_live) && $disco->pid_live == 0;
+
+    return $self->_stop_live($disco)     if $state eq 'live';
+    return $self->_stop_dead($disco)     if $state eq 'dead';
+    return $self->_stop_not_live($disco);    # not_live
+}
+
+sub _stop_live {
+    my ($self, $disco) = @_;
+    my $pid = $disco->pid;
+
+    # Plugin teardown() runs in the RUNNER as it shuts down. PRIME the shutdown
+    # renderer BEFORE we trigger shutdown (LIVE-only: connect_subscriber must never
+    # run when the socket is not live -- deps (b)), so its cursor sits at the current
+    # end and it renders ONLY the teardown output the runner is about to write.
     my $render = eval { $self->prime_shutdown };
     warn "Could not prime runner shutdown renderer: $@" unless defined $render || !$@;
 
-    # The runner already exists, so attach the client to it (kill(0) liveness, no
-    # reaping) and reuse it for both the graceful stop and the end_queue fallback.
+    # The runner already exists; attach the client to it (kill(0) liveness, no reap).
     $self->client->attach_runner($pid);
 
-    my $ok = eval { $self->client->submitter->stop; 1 };
-    warn "Could not send graceful shutdown to runner over socket: $@" unless $ok;
+    # One shared absolute deadline for the drain AND the exit-wait, so a healthy stop
+    # adds NO latency (the drain already exits shortly after pid death) while a wedged
+    # runner is bounded to the single 30s window rather than stacking two.
+    my $deadline = time + $self->STOP_DEADLINE;
 
-    # Fallback: end the global queue, which also unblocks a runner that is mid-run.
-    # (A persistent run never sends end_queue, so the runner is still listening.)
-    my $ended = eval { $self->client->submitter->end_queue; 1 };
-    warn "Could not end runner queue: $@" unless $ended;
+    # Graceful 'stop' (the runner translates it into its own TERM teardown) + the
+    # end_queue fallback. Both are alarm-backstopped: the eval alone is INSUFFICIENT
+    # because a blocking connect never returns, so nothing dies into it (deps (a)).
+    my ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->stop });
+    warn "Could not send graceful shutdown to runner over socket: $err" unless $ok;
 
-    # Drain the teardown output the runner is now writing.
-    my $rendered = eval { $self->drain_shutdown($render, $pid) if $render; 1 };
+    ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->end_queue });
+    warn "Could not end runner queue: $err" unless $ok;
+
+    my $rendered = eval { $self->drain_shutdown($render, $pid, $deadline) if $render; 1 };
     warn "Could not render runner shutdown output: $@" unless $rendered;
 
-    sleep(0.02) while kill(0, $pid);
+    my $remaining = $deadline - time;
+    $remaining = 0 if $remaining < 0;
 
-    # Remove the discovery link through the mutator protocol (ticket #145): only if
-    # it still points at THIS runner's socket and no successor has claimed the pinned
-    # workdir. (The old `unlink($path) if -f $path` was dead code: -f follows the
-    # symlink to the SOCKET target and is always false.)
-    my $link       = $self->pfile->path;
-    my $own_socket = File::Spec->catfile($self->workdir, 'runner.socket');
-    App::Yath2::Discovery->new(link => $link)->clean_if_mine($own_socket, $pid);
+    unless ($self->wait_for_runner_exit($disco, $pid, $remaining)) {
+        my $secs = $self->STOP_DEADLINE;
+        print STDERR "\nRunner (pid $pid) still running after ${secs}s; it may be wedged, or teardown is still running -- use `yath kill`.\n";
+        return 1;
+    }
 
-    remove_tree($self->workdir, {safe => 1, keep_root => 0}) if -d $self->workdir;
-
+    $self->clean_runner_remains($disco);
     print "\n\nRunner stopped\n\n" unless $self->settings->display->quiet;
     return 0;
+}
+
+sub _stop_dead {
+    my ($self, $disco) = @_;
+
+    $self->clean_runner_remains($disco);
+    print "\n\nRunner was already dead; cleaned up remains\n\n" unless $self->settings->display->quiet;
+    return 0;
+}
+
+sub _stop_not_live {
+    my ($self, $disco) = @_;
+
+    my $pid    = $disco->pid;
+    my $reason = $disco->reason // 'unknown';
+
+    # Ambiguous (foreign/inaccessible/unknown, or no pid): stance A never signals and
+    # never cleans on ambiguity.
+    if (!defined($pid) || $reason eq 'foreign' || $reason eq 'inaccessible' || $reason eq 'unknown') {
+        $self->_diag_ambiguous($disco, 'stop');
+        return 2;
+    }
+
+    # boot/wedged/backlog with a live pid: NO socket attempt (blocking-connect hazard)
+    # and NO signal -- stop is graceful only; terminating a wedged runner is `yath kill`.
+    print STDERR "\nRunner found but not responding (reason=$reason, pid $pid alive); use `yath kill` to terminate it.\n";
+    return 1;
 }
 
 # Build the shutdown renderer in TAIL mode and prime its cursor: one step skips
@@ -128,13 +183,17 @@ sub prime_shutdown {
 # workdir. A grace window past pid-death bounds the crash case.
 sub drain_shutdown {
     my $self = shift;
-    my ($ctx, $pid) = @_;
+    my ($ctx, $pid, $deadline) = @_;
 
     my $renderer = $ctx->{renderer};
     my $sub      = $ctx->{sub};
     my $monitor  = $ctx->{monitor};
 
-    my $deadline = time + 30;
+    # A shared absolute deadline (passed by _stop_live so the drain and the exit-wait
+    # split ONE budget); default to a standalone STOP_DEADLINE window otherwise.
+    $deadline //= time + $self->STOP_DEADLINE;
+    my $grace = $self->KILL_GRACE;
+
     my $dead_at;
     while (time < $deadline) {
         $sub->poll if $sub;
@@ -144,7 +203,7 @@ sub drain_shutdown {
 
         my $alive = $pid && kill(0, $pid);
         $dead_at //= time unless $alive;
-        last if $dead_at && (time - $dead_at) > 5;
+        last if $dead_at && (time - $dead_at) > $grace;
 
         sleep 0.02;
     }
