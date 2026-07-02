@@ -17,6 +17,8 @@ use Test2::V0;
 
 use Test2::Harness2::Runner::Monitor;
 use Test2::Harness2::Runner::Role::Service::Handlers;
+use Test2::Harness2::Runner::Role::Service::Completion;
+use Test2::Harness2::Runner::Role::Service::TransitionHub;
 
 {
     package FakeState;
@@ -63,6 +65,8 @@ use Test2::Harness2::Runner::Role::Service::Handlers;
     package FakeRunner;
     use Role::Tiny::With;
     with 'Test2::Harness2::Runner::Role::Service::Handlers';
+    with 'Test2::Harness2::Runner::Role::Service::Completion';
+    with 'Test2::Harness2::Runner::Role::Service::TransitionHub';
 
     sub new {
         my ($class, %args) = @_;

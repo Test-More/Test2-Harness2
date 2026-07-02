@@ -27,6 +27,8 @@ use Test2::Harness2::Runner::Watchdog();
 use Test2::Harness2::Runner::StatusReport();
 
 use Test2::Harness2::Runner::Role::Service::Handlers();
+use Test2::Harness2::Runner::Role::Service::Completion();
+use Test2::Harness2::Runner::Role::Service::TransitionHub();
 use Test2::Harness2::Runner::Role::Scheduler();
 
 use Test2::Harness2::Plugin();    # $AUX_PIDS registry + run_collected/shellcall
@@ -97,6 +99,8 @@ use Test2::Harness2::Util::HashBase(
 use Role::Tiny::With;
 with 'Test2::Harness2::Role::Service';
 with 'Test2::Harness2::Runner::Role::Service::Handlers';
+with 'Test2::Harness2::Runner::Role::Service::Completion';
+with 'Test2::Harness2::Runner::Role::Service::TransitionHub';
 with 'Test2::Harness2::Runner::Role::Scheduler';
 
 sub job_class { 'Test2::Harness2::Runner::Job' }

@@ -8,6 +8,7 @@ use Test2::V0;
 # bounded FIFO ring of O(1)-per-run end markers for late/reconnecting subscribers.
 
 use Test2::Harness2::Runner::Role::Service::Handlers;
+use Test2::Harness2::Runner::Role::Service::TransitionHub;
 use Test2::Harness2::Util qw/mono_time/;
 
 {
@@ -25,6 +26,7 @@ use Test2::Harness2::Util qw/mono_time/;
     package FakeHubRunner;
     use Role::Tiny::With;
     with 'Test2::Harness2::Runner::Role::Service::Handlers';
+    with 'Test2::Harness2::Runner::Role::Service::TransitionHub';
 
     # Small ring so overflow eviction is cheap to exercise (overrides the role's 100).
     sub _run_marker_retention { 3 }
