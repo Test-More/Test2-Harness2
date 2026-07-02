@@ -11,6 +11,8 @@ use List::Util 1.45 qw/uniq/;
 
 use Test2::Harness2::Util qw/open_file clean_path/;
 
+use Test2::Harness2::Runner::Constants qw/CATEGORIES DURATIONS DURATION_MAX_SHORT DURATION_MAX_MEDIUM/;
+
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
 use Test2::Harness2::TestFile();
@@ -38,8 +40,43 @@ sub directive_error ($self) {
     return $self->{+_DIRECTIVE_ERROR};
 }
 
-sub set_duration ($self, $val) { $self->set__duration(lc($val)) }
-sub set_category ($self, $val) { $self->set__category(lc($val)) }
+# Programmatic duration setter (durations file/URL, plugin duration_data,
+# munge_files). Machine-generated timing data is naturally numeric, so a bare
+# number of seconds is coerced into a scheduling label; a label is accepted
+# as-is; anything else warns (naming the test) and is ignored, leaving the
+# scan-derived duration untouched -- advisory scheduling data must never fail a
+# job. (#118)
+sub set_duration ($self, $val) {
+    my $dur = $self->_coerce_duration($val);
+    return unless defined $dur;
+    $self->set__duration($dur);
+}
+
+sub _coerce_duration ($self, $val) {
+    return undef if !defined($val) || ref($val);
+
+    my $dur = lc($val);
+    return $dur if DURATIONS->{$dur};
+
+    if ($dur =~ m/^\d+(?:\.\d+)?$/) {
+        return 'short'  if $dur < DURATION_MAX_SHORT;
+        return 'medium' if $dur < DURATION_MAX_MEDIUM;
+        return 'long';
+    }
+
+    warn "Invalid duration value '$val' for test '$self->{+FILE}' (expected long|medium|short or a number of seconds); ignoring.\n";
+    return undef;
+}
+
+# Programmatic category setter. A category encodes concurrency-safety intent, so
+# a bad value here is a plugin/code bug, not user data: croak so it attributes
+# the caller rather than silently downgrading an isolation requirement. (#118)
+sub set_category ($self, $val) {
+    my $cat = lc($val);
+    croak "'$cat' is not a valid category, must be one of: general, isolation, immiscible"
+        unless CATEGORIES->{$cat};
+    $self->set__category($cat);
+}
 
 sub set_stage     ($self, $val) { $self->set__stage($val) }
 sub set_min_slots ($self, $val) { $self->set__min_slots($val) }
@@ -354,7 +391,17 @@ sub _scan ($self) {
         return;
     }
 
-    $self->_apply_directives($dirs, \%headers);
+    # E1: value-domain errors (an unknown category, a non-label duration) raised
+    # by _apply_directives route through the SAME synthetic-FAILURE machinery a
+    # grammar error already uses -- one failed job, not an aborted run. Wrapping
+    # the call here (it runs outside the two _scan evals above) also contains any
+    # OTHER die inside the mapper against a malformed directive subtree.
+    $ok = eval { $self->_apply_directives($dirs, \%headers); 1 };
+    unless ($ok) {
+        $self->{+_DIRECTIVE_ERROR} = _clean_err($@);
+        $self->{+_HEADERS} = {};
+        return;
+    }
 
     $self->{+_HEADERS} = \%headers;
     return;
@@ -381,19 +428,31 @@ sub _apply_directives ($self, $dirs, $headers) {
         $headers->{max_slots} //= defined($max) ? $max : $min;
     }
 
-    # duration: scheduling label.
+    # duration: scheduling label. An inline directive is hand-written grammar --
+    # long|medium|short only; a number there is likely a timeout confusion, so
+    # reject it loudly (E1) rather than guess. (#118)
     if (my $list = $dirs->{duration}) {
-        $headers->{duration} = lc($list->[0]) if defined $list->[0];
+        if (defined $list->[0]) {
+            my $val = lc($list->[0]);
+            die "'$val' is not a valid duration, must be one of: long, medium, short\n"
+                unless DURATIONS->{$val};
+            $headers->{duration} = $val;
+        }
     }
 
-    # category: a long|medium|short value is a duration; anything else is a
-    # real category.
+    # category: a long|medium|short value is a duration; anything else must be a
+    # real category. A category encodes concurrency-safety intent, so an unknown
+    # token (e.g. '# HARNESS-CATEGORY-NETWORK') fails the job (E1) rather than
+    # silently downgrading to 'general' and risking a parallel run of a
+    # must-be-serialized test. (#118)
     if (my $list = $dirs->{category}) {
         my $val = lc($list->[0] // '');
         if ($val =~ m/^(?:long|medium|short)$/) {
             $headers->{duration} = $val;
         }
         elsif (length $val) {
+            die "'$val' is not a valid category, must be one of: general, isolation, immiscible (did you mean a HARNESS-CONFLICTS-... directive?)\n"
+                unless CATEGORIES->{$val};
             $headers->{category} = $val;
         }
     }

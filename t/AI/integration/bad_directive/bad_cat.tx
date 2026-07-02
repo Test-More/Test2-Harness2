@@ -1,0 +1,4 @@
+# HARNESS-CATEGORY-NETWORK
+use Test2::V0;
+ok(1, "this body never runs -- the file E1-fails on its bad category directive");
+done_testing;

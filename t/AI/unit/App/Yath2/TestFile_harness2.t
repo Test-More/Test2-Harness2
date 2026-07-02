@@ -15,7 +15,8 @@ use Test2::Tools::GenTemp qw/gen_temp/;
 my $tmp = gen_temp(
     h2_basic => join("\n",
         "#!/usr/bin/perl",
-        "# HARNESS2: category dbtest",
+        # #118: category domain is the fixed three-value set; use a valid one.
+        "# HARNESS2: category immiscible",
         "# HARNESS2: duration long",
         "# HARNESS2: timeout.event 30",
         "# HARNESS2: timeout.postexit 60",
@@ -33,7 +34,7 @@ my $tmp = gen_temp(
 
     # HARNESS2 present -> legacy HARNESS- lines ignored silently (E2).
     h2_wins => join("\n",
-        "# HARNESS2: category alpha",
+        "# HARNESS2: category isolation",
         "# HARNESS-CATEGORY-BETA",
         "# HARNESS-RETRY 9",
         "use strict;",
@@ -59,7 +60,7 @@ my $tmp = gen_temp(
         "",
     ),
 
-    good_legacy => "# HARNESS-CATEGORY-FOO\nuse strict;\n",
+    good_legacy => "# HARNESS-CATEGORY-IMMISCIBLE\nuse strict;\n",
 );
 
 sub tf ($name) { $CLASS->new(file => File::Spec->catfile($tmp, $name)) }
@@ -67,7 +68,7 @@ sub tf ($name) { $CLASS->new(file => File::Spec->catfile($tmp, $name)) }
 subtest harness2_structural_fields => sub {
     my $one = tf('h2_basic');
 
-    is($one->check_category,     'dbtest', "category from HARNESS2");
+    is($one->check_category,     'immiscible', "category from HARNESS2");
     is($one->check_duration,     'long',   "duration from HARNESS2");
     is($one->event_timeout,      30,       "timeout.event");
     is($one->post_exit_timeout,  60,       "timeout.postexit");
@@ -81,7 +82,7 @@ subtest harness2_structural_fields => sub {
     is($one->check_feature('fork'),  0,    "fork feature off");
 
     my $task = $one->queue_item(7);
-    is($task->{category},   'dbtest', "task category");
+    is($task->{category},   'immiscible', "task category");
     is($task->{duration},   'long',   "task duration");
     is($task->{event_timeout}, 30,    "task event_timeout");
     is($task->{retry},      2,        "task retry");
@@ -90,7 +91,7 @@ subtest harness2_structural_fields => sub {
 
 subtest harness2_wins_legacy_ignored => sub {
     my $one = tf('h2_wins');
-    is($one->check_category, 'alpha', "HARNESS2 category wins");
+    is($one->check_category, 'isolation', "HARNESS2 category wins");
     # legacy HARNESS-RETRY 9 must be ignored
     my $task = $one->queue_item(1);
     ok(!exists($task->{retry}) || !$task->{retry}, "legacy HARNESS-RETRY ignored when HARNESS2 present");
@@ -103,7 +104,7 @@ subtest harness2_block_keeps_scan_alive => sub {
 
 subtest legacy_still_works => sub {
     my $one = tf('good_legacy');
-    is($one->check_category, 'foo', "legacy HARNESS-CATEGORY parsed when no HARNESS2");
+    is($one->check_category, 'immiscible', "legacy HARNESS-CATEGORY parsed when no HARNESS2");
 };
 
 subtest parse_error_synthetic_failure => sub {

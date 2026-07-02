@@ -378,6 +378,26 @@ sub _queue_task {
 
     return if $self->{+HALTED_RUNS}->{$run_id};
 
+    # #118 ingress backstop: category/duration reach State from the validated
+    # producer, but ALSO from raw third-party queue_task socket frames and the
+    # QUEUE_ARGS/%inject splice -- neither producer-validatable. task_fields
+    # dies on an out-of-domain value, and _queue_task is the one funnel every
+    # task passes through (queue_task / _retry_task / requeue_task all reach it),
+    # including the un-eval'd flush_submit_buffer replay path. Normalize IN PLACE
+    # here (the same hashref is stored in TASK_LOOKUP, so every later task_fields
+    # sees the fix) so a bad value warns and defaults instead of aborting the run
+    # and reaping sibling runs. The task_fields dies then become true internal
+    # invariants, unreachable from data.
+    my $where = $task->{rel_file} // $task->{file} // 'unknown';
+    for my $norm ([category => CATEGORIES, 'general'], [duration => DURATIONS, 'medium']) {
+        my ($key, $valid, $default) = @$norm;
+        my $val = $task->{$key};
+        next if defined($val) && !ref($val) && $valid->{$val};
+        my $show = !defined($val) ? 'undef' : ref($val) ? ref($val) : $val;
+        warn "Task for '$where' has invalid $key '$show'; using '$default'.\n";
+        $task->{$key} = $default;
+    }
+
     $self->{+TASK_LOOKUP}->{$job_id} = $task;
 
     my $pending = $self->task_pending_lookup($task);

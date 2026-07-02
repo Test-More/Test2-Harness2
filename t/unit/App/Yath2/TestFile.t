@@ -13,7 +13,14 @@ my $tmp = gen_temp(
     notime => "#HARNESS-NO-TIMEOUT\n",
     warn   => "#!/usr/bin/perl -w\n",
     taint  => "#!/usr/bin/env perl -t -w\n",
-    foo    => "#HARNESS-CATEGORY-FOO\n#HARNESS-STAGE-FoO",
+    foo    => "#HARNESS-CATEGORY-IMMISCIBLE\n#HARNESS-STAGE-FoO",
+
+    # #118 value-domain directive errors -> E1 (one failed job, run continues).
+    net_cat   => "# HARNESS-CATEGORY-NETWORK\n",
+    bad_dur   => "# HARNESS-DURATION-42\n",
+    h2_cat    => "# HARNESS2: category network\n",
+    iso_cat   => "# HARNESS-CATEGORY-ISOLATION\n",
+    dur_long  => "# HARNESS-DURATION-LONG\n",
     meta   => "#HARNESS-META-mykey-myval\n# HARNESS-META-otherkey-otherval\n# HARNESS-META mykey my-val2\n# HARNESS-META slack #my-val # comment after harness statement\n",
 
     package => "package Foo::Bar::Baz;\n# HARNESS-NO-PRELOAD\n",
@@ -87,8 +94,73 @@ subtest meta => sub {
 
 subtest foo => sub {
     my $foo = $CLASS->new(file => File::Spec->catfile($tmp, 'foo'));
-    is($foo->check_category, 'foo', "Category is foo");
+    is($foo->check_category, 'immiscible', "Category is immiscible (a valid category)");
     is($foo->check_stage,    'FoO', "Stage is FoO, case-sensitive");
+};
+
+# #118: an out-of-domain category/duration is a value error, not a grammar error,
+# and now routes through the same E1 synthetic-FAILURE path grammar errors use --
+# only that one job fails, the rest of the run is unaffected.
+subtest bad_directives => sub {
+    my $net = $CLASS->new(file => File::Spec->catfile($tmp, 'net_cat'));
+    like($net->directive_error, qr/not a valid category/, "unknown category is a directive error");
+    like($net->directive_error, qr/NETWORK/i, "the offending token is named");
+
+    my $item = $net->queue_item(42);
+    is($item->{category}, 'general', "E1 task carries a hardcoded-valid category");
+    is($item->{duration}, 'medium',  "E1 task carries a hardcoded-valid duration");
+    like($item->{directive_error}, qr/not a valid category/, "directive_error propagates to the task");
+
+    my $bad_dur = $CLASS->new(file => File::Spec->catfile($tmp, 'bad_dur'));
+    like($bad_dur->directive_error, qr/not a valid duration/, "numeric inline duration is a directive error");
+    is($bad_dur->queue_item(42)->{category}, 'general', "E1 shape for a bad duration too");
+
+    # Proves _apply_directives is the shared mapper for BOTH grammars: the same
+    # validation covers the HARNESS2 form.
+    my $h2 = $CLASS->new(file => File::Spec->catfile($tmp, 'h2_cat'));
+    like($h2->directive_error, qr/not a valid category/, "HARNESS2 grammar hits the same validation");
+
+    # Valid values are unchanged.
+    my $iso = $CLASS->new(file => File::Spec->catfile($tmp, 'iso_cat'));
+    is($iso->directive_error, undef, "valid category has no directive error");
+    is($iso->check_category, 'isolation', "valid category preserved");
+
+    my $long = $CLASS->new(file => File::Spec->catfile($tmp, 'dur_long'));
+    is($long->directive_error, undef, "valid duration has no directive error");
+    is($long->check_duration, 'long', "valid duration preserved");
+};
+
+# #118: the programmatic setters (durations file/URL, plugin duration_data,
+# munge_files). Numeric seconds coerce into a scheduling label; a bad string
+# warns and is ignored (advisory scheduling data must never fail a job); a bad
+# category is a code bug and croaks.
+subtest set_duration_coerce => sub {
+    my $mk = sub { $CLASS->new(file => File::Spec->catfile($tmp, 'notime')) };
+
+    my %cases = ('7' => 'short', '15' => 'medium', '29.5' => 'medium', '30' => 'long', 'LONG' => 'long');
+    for my $in (sort keys %cases) {
+        my $tf = $mk->();
+        $tf->set_duration($in);
+        is($tf->check_duration, $cases{$in}, "duration '$in' coerces to '$cases{$in}'");
+    }
+
+    my $tf = $mk->();
+    my $scan_default = $CLASS->new(file => File::Spec->catfile($tmp, 'notime'))->check_duration;
+    my $warnings = warnings { $tf->set_duration('bogus') };
+    is(@$warnings, 1, "one warning for the bad duration");
+    like($warnings->[0], qr/Invalid duration value 'bogus'/, "bad duration warns");
+    like($warnings->[0], qr/\Qnotime\E/, "warning names the test file");
+    is($tf->check_duration, $scan_default, "bad duration ignored -- falls back to the scan value");
+
+    like(
+        dies { $mk->()->set_category('network') },
+        qr/not a valid category/,
+        "set_category croaks on an unknown category (programmatic misuse)",
+    );
+
+    my $ok = $mk->();
+    $ok->set_category('IMMISCIBLE');
+    is($ok->check_category, 'immiscible', "set_category accepts (and lc's) a valid category");
 };
 
 subtest package => sub {

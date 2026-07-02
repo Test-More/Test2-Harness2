@@ -6,10 +6,18 @@ our $VERSION = '2.000000';
 
 use Importer Importer => 'import';
 
-our @EXPORT = qw/CATEGORIES DURATIONS/;
+our @EXPORT    = qw/CATEGORIES DURATIONS/;
+our @EXPORT_OK = qw/DURATION_MAX_SHORT DURATION_MAX_MEDIUM/;
 
 use constant CATEGORIES => {general => 1, isolation => 1, immiscible => 1};
 use constant DURATIONS  => {long    => 1, medium    => 1, short      => 1};
+
+# Second-count thresholds used to coerce a numeric duration (from a durations
+# file / URL / plugin) into a scheduling label: < SHORT => short,
+# < MEDIUM => medium, else long. Mirrors speedtag's tagger (#118). Exported
+# on-request only so existing 'use ...Constants;' importers keep their namespace.
+use constant DURATION_MAX_SHORT  => 15;
+use constant DURATION_MAX_MEDIUM => 30;
 
 1;
 
