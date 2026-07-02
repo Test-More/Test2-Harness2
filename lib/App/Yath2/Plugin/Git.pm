@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use IPC::Cmd qw/can_run/;
-use Test2::Harness2::Util::IPC qw/run_cmd/;
+use Capture::Tiny qw/capture/;
 use parent 'App::Yath2::Plugin';
 
 use Getopt::Yath;
@@ -27,36 +27,19 @@ sub git_output {
 
     my $cmd = $class->git_cmd or return sub {()};
 
-    my ($rh, $wh, $irh, $iwh);
-    pipe($rh, $wh) or die "No pipe: $!";
-    pipe($irh, $iwh) or die "No pipe: $!";
-    my $pid = run_cmd(stderr => $iwh, stdout => $wh, command => [$cmd, @args]);
+    # Capture::Tiny buffers both streams to temp handles, so a git command that
+    # writes more than a pipe's worth of stderr can never deadlock the parent
+    # (the old hand-rolled pipe pair drained stderr only after stdout EOF).
+    my ($stdout, $stderr, $exit) = capture { system($cmd, @args) };
 
-    close($wh);
-    close($iwh);
+    # Lenient, non-dying contract: inject_run_data calls this on every run, even
+    # in non-git dirs, so only surface stderr when the command actually failed.
+    print STDERR $stderr if $exit && defined $stderr && length $stderr;
 
-    $rh->blocking(1);
-    $irh->blocking(0);
-
-    my $waited = 0;
-    return sub {
-        my $line = <$rh>;
-        return $line if defined $line;
-
-        unless ($waited++) {
-            local $?;
-            waitpid($pid, 0);
-            print STDERR <$irh> if $?;
-            close($irh);
-
-            # Try again
-            $line = <$rh>;
-            return $line if defined $line;
-        }
-
-        close($rh);
-        return;
-    };
+    # split /^/m keeps the trailing newline on each line, matching the old
+    # <$rh> readlines that callers chomp downstream.
+    my @lines = length($stdout // '') ? split(/^/m, $stdout) : ();
+    return sub { shift @lines };
 }
 
 sub inject_run_data {
@@ -131,10 +114,13 @@ sub _changed_diff {
         return $class->_diff_from($from);
     }
 
-    my @files = $class->_diff_from($from);
-    return @files if @files;
-
-    return $class->_diff_from("${from}^");
+    # _diff_from always returns a truthy 2-element (line_sub => ...) list, so we
+    # cannot tell "no changes" from the return value. Probe emptiness eagerly:
+    # `git diff --quiet HEAD` exits 0 on a clean tree (unless 0 => rewrite to
+    # HEAD^ so a clean-tree --changed-only tests the last commit) and 1 on a
+    # dirty tree or any error (keep HEAD, the safe default).
+    $from = "${from}^" unless system($cmd => 'diff', '--quiet', $from);
+    return $class->_diff_from($from);
 }
 
 sub _diff_from {

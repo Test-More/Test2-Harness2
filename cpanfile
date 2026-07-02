@@ -55,6 +55,7 @@ requires "constant" => "0";
 requires "goto::file" => "0.005";
 requires "parent" => "0";
 requires "perl" => "5.010000";
+suggests "Capture::Tiny" => "0";
 suggests "Cpanel::JSON::XS" => "0";
 suggests "Email::Stuffer" => "0.016";
 suggests "HTTP::Tiny" => "0.070";

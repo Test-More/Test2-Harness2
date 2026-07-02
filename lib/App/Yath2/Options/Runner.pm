@@ -369,7 +369,10 @@ option_group {group => 'runner', category => "Runner Options"} => sub {
         # fix_job_resources is deferred to jobs_post_process (runs after all args
         # are processed) so that the full settings context is available.
         trigger => sub ($opt, %params) {
-            return unless $params{action} eq 'set';
+            # 'initialize' fires when the value comes from an env var
+            # (YATH_JOB_COUNT=8:2); it delivers val as an arrayref just like
+            # 'set', so the ':' reshape must run for both (mirrors --utilize).
+            return unless $params{action} eq 'set' || $params{action} eq 'initialize';
 
             my ($val) = @{$params{val}};
             return unless $val && $val =~ m/:/;

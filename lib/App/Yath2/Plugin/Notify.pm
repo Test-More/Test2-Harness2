@@ -44,7 +44,11 @@ option_group {group => 'notify', prefix => 'notify', category => "Notification O
     option slack_owner => (
         type => 'Bool',
         description => "Send slack notifications to the slack channels/users listed in test meta-data when tests fail.",
-        default => 0,
+        # maybe => 1 leaves this undef unless the user explicitly passes
+        # --notify-slack-owner (1) or --no-notify-slack-owner (0). post_process
+        # then defaults it from the slack source list only when it is undef, so
+        # an explicit opt-out is never force-flipped back on.
+        maybe => 1,
     );
 
     option no_batch_slack => (
@@ -79,7 +83,9 @@ option_group {group => 'notify', prefix => 'notify', category => "Notification O
     option email_owner => (
         type => 'Bool',
         description => 'Email the owner of broken tests files upon failure. Add `# HARNESS-META-OWNER foo@example.com` to the top of a test file to give it an owner',
-        default => 0,
+        # maybe => 1: undef until the user passes --notify-email-owner (1) or
+        # --no-notify-email-owner (0). See slack_owner above and post_process.
+        maybe => 1,
     );
 
     option no_batch_email => (
@@ -100,42 +106,46 @@ option_group {group => 'notify', prefix => 'notify', category => "Notification O
         description => "Use the specified module to generate messages for emails and/or slack.",
     );
 
-    option_post_process 0 => sub ($options, $state) {
-        my $settings = $state->{settings};
-
-        # Getopt::Yath does not track set-by-cli source. The owner flags both
-        # default to 0 and can only be turned ON via the CLI (Bool), so
-        # "default owner unless the user set it" is equivalent to "default
-        # owner unless it is already truthy".
-
-        # Should we use email?
-        if (@{$settings->notify->email} || $settings->notify->email_owner) {
-            $settings->notify->option(email_owner => 1) unless $settings->notify->email_owner;
-
-            # Do we have Email::Stuffer?
-            my $ok = eval { require Email::Stuffer; 1 };
-            die "Cannot use --email-owner without Email::Stuffer, which is not installed.\n" unless $ok;
-
-            push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
-        }
-
-        my $use_slack = grep { $settings->notify->$_ } qw/slack_url slack_owner/;
-        $use_slack ||= grep { @{$settings->notify->$_} } qw/slack slack_fail/;
-        if ($use_slack) {
-            die "slack url must be provided in order to use slack" unless $settings->notify->slack_url;
-
-            my $ok = eval { require HTTP::Tiny; 1 };
-            die "Cannot use slack without HTTP::Tiny which is not installed.\n" unless $ok;
-
-            die "HTTP::Tiny reports that it does not support SSL, cannot use slack without ssl."
-                unless HTTP::Tiny::can_ssl();
-
-            $settings->notify->option(slack_owner => 1) unless $settings->notify->slack_owner;
-
-            push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
-        }
-    };
+    option_post_process 0 => \&post_process;
 };
+
+sub post_process ($options, $state) {
+    my $settings = $state->{settings};
+    my $notify   = $settings->notify;
+
+    # Owner notifications default ON when a matching notification source is
+    # configured (1.0 semantics), but the maybe=>1 sentinel means an explicit
+    # --no-notify-*-owner (a defined 0) skips the defaulting and always wins.
+
+    # Should we use email?
+    $notify->option(email_owner => (@{$notify->email} ? 1 : 0))
+        unless defined $notify->email_owner;
+
+    if (@{$notify->email} || $notify->email_owner) {
+        # Do we have Email::Stuffer?
+        my $ok = eval { require Email::Stuffer; 1 };
+        die "Cannot use --email-owner without Email::Stuffer, which is not installed.\n" unless $ok;
+
+        push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
+    }
+
+    # Should we use slack?
+    my $slack_src = $notify->slack_url || @{$notify->slack} || @{$notify->slack_fail};
+    $notify->option(slack_owner => ($slack_src ? 1 : 0))
+        unless defined $notify->slack_owner;
+
+    if ($slack_src || $notify->slack_owner) {
+        die "slack url must be provided in order to use slack" unless $notify->slack_url;
+
+        my $ok = eval { require HTTP::Tiny; 1 };
+        die "Cannot use slack without HTTP::Tiny which is not installed.\n" unless $ok;
+
+        die "HTTP::Tiny reports that it does not support SSL, cannot use slack without ssl."
+            unless HTTP::Tiny::can_ssl();
+
+        push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
+    }
+}
 
 sub text_mod {
     my $self = shift;

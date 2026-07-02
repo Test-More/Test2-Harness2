@@ -89,15 +89,14 @@ option_group {group => 'cover', prefix => 'cover', category => "Cover Options"} 
         applicable => \&changes_applicable,
     );
 
-    option from_type => (
-        type => 'Scalar',
-        description => 'File type for coverage source. Usually it can be detected, but when it cannot be you should specify. "json" is old style single-blob coverage data, "jsonl" is the new by-test style, "log" is a logfile from a previous run.',
-        long_examples => [' json', ' jsonl', ' log' ],
-    );
-
+    # NOTE: there is deliberately no --cover-from-type option. The 'from' read
+    # path auto-detects the parser by file extension (see get_coverage_tests /
+    # _deduce_content_type); a from-type hint was never wired into the stream
+    # layer, so the knob was dead. maybe_from_type remains because
+    # get_coverage_tests actually reads it for the 'maybe_from' source.
     option maybe_from_type => (
         type => 'Scalar',
-        'description' => 'Same as "from_type" but for "maybe_from". Defaults to "from_type" if that is specified, otherwise auto-detect',
+        'description' => 'File type for the "maybe_from" coverage source; usually auto-detected, specify when it cannot be. "json" is old style single-blob coverage data, "jsonl" is the new by-test style, "log" is a logfile from a previous run.',
         long_examples => [' json', ' jsonl', ' log' ],
     );
 
@@ -513,17 +512,6 @@ Use Test2::Plugin::Cover to collect coverage data for what files are touched by 
 This can be a test log, a coverage dump (old style json or new jsonl format), or a url to any of the previous. Tests will not be run if the file/url is invalid.
 
 
-=item --cover-from-type log
-
-=item --cover-from-type json
-
-=item --cover-from-type jsonl
-
-=item --no-cover-from-type
-
-File type for coverage source. Usually it can be detected, but when it cannot be you should specify. "json" is old style single-blob coverage data, "jsonl" is the new by-test style, "log" is a logfile from a previous run.
-
-
 =item --cover-manager My::Coverage::Manager
 
 =item --no-cover-manager
@@ -550,7 +538,7 @@ This can be a test log, a coverage dump (old style json or new jsonl format), or
 
 =item --no-cover-maybe-from-type
 
-Same as "from_type" but for "maybe_from". Defaults to "from_type" if that is specified, otherwise auto-detect
+File type for the "maybe_from" coverage source; usually auto-detected, specify when it cannot be. "json" is old style single-blob coverage data, "jsonl" is the new by-test style, "log" is a logfile from a previous run.
 
 
 =item --cover-metrics

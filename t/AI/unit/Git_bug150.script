@@ -1,0 +1,38 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+# Mock git command for t/AI/unit/Git_bug150.t (#150). Behavior is keyed off the
+# joined argument string; FAKE_DIRTY toggles whether the working tree looks dirty.
+
+my $args = "@ARGV";
+
+# (78) A command that floods stderr with far more than a pipe's worth of data
+# while also writing stdout, then exits 0. The old pipe-based git_output drained
+# stderr only after stdout EOF, so this would deadlock; capture() cannot.
+if ($args eq 'bigerr') {
+    print STDERR "x" x (128 * 1024);    # > 64KB, larger than the pipe buffer
+    print "line one\n";
+    print "line two\n";
+    exit 0;
+}
+
+# A failing command with stderr: git_output must surface the stderr (exit != 0).
+if ($args eq 'failerr') {
+    print STDERR "boom\n";
+    exit 3;
+}
+
+# (82) clean-tree probe: `git diff --quiet HEAD` exits 0 clean, 1 dirty.
+if ($args eq 'diff --quiet HEAD') {
+    exit($ENV{FAKE_DIRTY} ? 1 : 0);
+}
+
+# The actual diff fetch echoes which ref it was asked to diff from.
+if ($args =~ /^diff -U1000000 -W --minimal (\S+)/) {
+    print "DIFF-FROM $1\n";
+    exit 0;
+}
+
+print STDERR "unknown args: $args\n";
+exit 1;
