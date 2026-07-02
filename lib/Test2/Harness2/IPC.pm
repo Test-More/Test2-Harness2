@@ -417,7 +417,7 @@ Custom signal handlers specific to the IPC object.
 =item $hashref = $ipc->procs
 
 Hashref of C<< $pid => $proc >> where $proc is an instance of
-L<Test2::Harness2::IPC::Proc>.
+L<Test2::Harness2::IPC::Process>.
 
 =item $hashref = $ipc->waiting
 
@@ -508,8 +508,8 @@ Options:
 
 =item timeout => $float
 
-If a blocking paremeter is provided this can be used to break the wait after a
-timeout. L<Time::HiRes> is used, so timeout is in seconds with decimals.
+When C<< all => $bool >> is set this can be used to break the blocking wait after
+a timeout. L<Time::HiRes> is used, so timeout is in seconds with decimals.
 
 =item all => $bool
 
@@ -525,7 +525,7 @@ Add a process to be monitored.
 
 =item $proc = $ipc->spawn(%params)
 
-In the first form $proc is an instance of L<Test2::Harness2::IPC::Proc> that
+In the first form $proc is an instance of L<Test2::Harness2::IPC::Process> that
 provides C<spawn_params()>.
 
 In the second form the following params are allowed:

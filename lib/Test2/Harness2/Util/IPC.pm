@@ -281,7 +281,7 @@ redirects to the handle specified in C<$to>. It preserves the file descriptor
 in the process, and throws an exception if it fails to do so.
 
     swap_io(\*STDOUT, $fh);
-    # STDOUT now points to wherever $fh did, but maintains the file descriptor number '2'.
+    # STDOUT now points to wherever $fh did, but maintains the file descriptor number '1'.
 
 As long as the file descriptor is greater than 0 it will open for writing. If
 the descriptor is 0 it will open for reading, allowing for a swap of C<STDIN>

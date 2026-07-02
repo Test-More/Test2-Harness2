@@ -151,9 +151,17 @@ Built-in handler: stop the loop. Returns C<< {ok =E<gt> 1, stopping =E<gt> 1} >>
 
 =item $self->add_subscriber($conn, $run_id)
 
+=item $self->add_subscriber($conn, $run_id, $drain_gate)
+
 Register a connection as a subscriber: it stays open and the service pushes
 forwarded frames to it (via C<forward_frame>) as state mutates. With a C<$run_id>
 the subscriber is run-scoped; without one it is global (every frame).
+
+A truthy C<$drain_gate> marks a run-scoped subscriber (a DB logger that
+subscribed with C<< drain_gate => 1 >>) that must gate workdir cleanup: the
+runner defers teardown until every gating subscriber has finished importing and
+disconnected (see C<_run_scoped_subscriber_count> in L<Test2::Harness2::Runner>).
+Global and plain render subscribers do not gate.
 
 =item $self->forward_frame($frame, $run_id)
 
@@ -313,10 +321,6 @@ sub forward_frame ($self, $frame, $run_id = undef) {
 =head1 PRIVATE METHODS
 
 =over 4
-
-=item $self->service_io
-
-The socket-servicing primitive a consumer's own loop calls each iteration.
 
 =item $self->_handle_events($conn, @events)
 

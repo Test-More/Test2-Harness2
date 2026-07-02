@@ -224,7 +224,7 @@ Read whatever bytes are available (non-blocking), decode complete frames, apply
 the lifecycle/bad-frame policy, and return a list of classified events for the
 owner to act on. Each event is a hashref:
 
-    { kind => 'identity', name => $id }
+    { kind => 'identity', name => $id, payload => $hash }
     { kind => 'request',  request_id => $uuid, command => $cmd, payload => $hash }
     { kind => 'response', request_id => $uuid, payload => $hash }
     { kind => 'transition', payload => $hash, frame => $raw }
@@ -317,7 +317,7 @@ sub send_response ($self, $request_id, $payload = {}) {
 sub send_control ($self, $control, %args) {
     return 0 if $self->{+CLOSED};
 
-    # The runner-&gt;collector terminate is a single zstd frame typed 'control'
+    # The runner->collector terminate is a single zstd frame typed 'control'
     # (the wire form Test2::Collector::Recorder::Socket reads when built with
     # read_control). It is fire-and-forget: the collector kills its child and
     # exits (its connection EOFs); there is no reply.

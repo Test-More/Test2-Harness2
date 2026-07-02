@@ -228,8 +228,9 @@ sub logger_pids { my $self = shift; return $self->{+LOGGER_PIDS} //= [] }
 
 # Fork+exec one App::Yath2::DB::Logger process per -L target (spec §7c). Each is
 # handed a temp-JSON config file ({workdir, run_id, target, version}) it reads and
-# unlinks (the Renderer::DB _start_process plumbing pattern, reused -- NOT its
-# per-event ingestion). Opt-in: returns immediately when no -L was given (R11).
+# unlinks. The logger is the standalone detached process App::Yath2::DB::Logger
+# (the DB-4 logger, spec §7) that subscribes to the run for frames -- it is NOT an
+# in-command per-event renderer. Opt-in: returns immediately when no -L was given (R11).
 sub start_loggers {
     my $self = shift;
 

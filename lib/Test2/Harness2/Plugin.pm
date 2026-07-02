@@ -242,7 +242,7 @@ post-processing on what it provides.
 
 This is a callback that lets your plugin add meta-data or custom fields to the
 run event. The meta-data and fields are available in the event log, and are
-particularily useful to L<App::Yath2::UI>.
+particularily useful to a UI layer consuming that log.
 
     sub inject_run_data {
         my $class  = shift;

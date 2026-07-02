@@ -113,7 +113,7 @@ serves as an output stream.
 
 =head1 DESCRIPTION
 
-Subclass of L<Test2::Harness2::File> that streams the contents of a file, even
+Subclass of L<Test2::Harness2::Util::File> that streams the contents of a file, even
 if the file is still being written.
 
 =head1 SYNOPSIS
@@ -132,7 +132,7 @@ if the file is still being written.
 
 =head1 ATTRIBUTES
 
-See L<Test2::Harness2::File> for additional attributes.
+See L<Test2::Harness2::Util::File> for additional attributes.
 
 These can be passed in as construction arguments if desired.
 
@@ -152,7 +152,7 @@ Start near the end of the file and only poll for updates appended to it.
 
 =head1 METHODS
 
-See L<Test2::Harness2::File> for additional methods.
+See L<Test2::Harness2::Util::File> for additional methods.
 
 =over 4
 

@@ -266,11 +266,12 @@ sub stage_events_file {
 #     treated as failure, which is correct).
 #   - otherwise               -> the child's exit status: WEXITSTATUS (err) when
 #     non-zero, or 1 if the child died by signal. Zero only on a clean exit.
-# This is the numeric core shared by Test2::Harness2::Runner::Job (which layers
-# its job-specific bail-file / audited-final_state handling on top before
-# delegating here) and the non-test runner collector wrapper in
-# App::Yath2::Command::test (which has no auditor/final_state). Keeping it in one
-# place guarantees exit-status fidelity does not diverge between the two paths.
+# This is the numeric core shared by the three collector-wrapper _exit paths that
+# reap a child through a collector: the runner's job wrap
+# (Test2::Harness2::Runner), the preload stage wrap
+# (Test2::Harness2::Runner::Preloader), and the plugin-aux wrap
+# (Test2::Harness2::Plugin). Keeping it in one place guarantees exit-status
+# fidelity does not diverge between those paths.
 sub collector_exit_code {
     my ($info) = @_;
 
