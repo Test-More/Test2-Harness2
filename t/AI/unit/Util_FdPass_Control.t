@@ -2,6 +2,7 @@ use Test2::V0;
 use v5.38;
 
 use Socket qw/AF_UNIX SOCK_STREAM PF_UNSPEC/;
+use Fcntl qw/F_GETFL O_NONBLOCK/;
 
 use Test2::Harness2::Util::FdPass::Control;
 
@@ -85,6 +86,94 @@ subtest nonblocking_read => sub {
     $sup->send_hello(99);
     my $msg = $cmd->read_message_nb;
     is($msg->{hello}{pid}, 99, "non-blocking read returns a buffered frame");
+};
+
+# Ticket #139 (finding 6+G2): the fast-exit ORDERING crux. The supervisor can send
+# its exit_status frame and close the socket in one burst, so the frame and EOF
+# arrive together. read_message MUST drain the buffered frame before it ever
+# classifies EOF -- take-before-fill -- or the command would misreport a healthy exit
+# as a "vanish". This replicates the exact bridge_io read loop (spawn.pm) against a
+# Control pair where the writer has ALREADY sent everything and closed.
+subtest fast_exit_ordering_frame_before_eof => sub {
+    my ($a, $b) = pair();
+
+    my $sup = Test2::Harness2::Util::FdPass::Control->new(fh => $a);
+    my $cmd = Test2::Harness2::Util::FdPass::Control->new(fh => $b);
+
+    my $raw = 3 << 8;    # exit code 3, no signal
+    $sup->send_hello($$);
+    $sup->send_exit_status($raw);
+    $sup->close;         # writer gone: EOF is pending behind the two buffered frames
+
+    my $hello = $cmd->read_message;
+    is($hello->{hello}{pid}, $$, "hello read first");
+
+    # The bridge_io loop verbatim: exit_status test BEFORE the closed-break, and the
+    # closed-break requires !$msg.
+    my ($status, $got_exit) = (0, 0);
+    while (1) {
+        my $msg = $cmd->read_message;
+        if ($msg && $msg->{exit_status}) {
+            $status   = $msg->{exit_status}{status} // 0;
+            $got_exit = 1;
+            last;
+        }
+        last if $cmd->closed && !$msg;
+    }
+
+    ok($got_exit, "the exit_status frame was drained before EOF was classified");
+    is($status, $raw, "the real wait status survived the frame+EOF burst (no false vanish)");
+};
+
+subtest vanish_when_no_exit_status => sub {
+    my ($a, $b) = pair();
+
+    my $sup = Test2::Harness2::Util::FdPass::Control->new(fh => $a);
+    my $cmd = Test2::Harness2::Util::FdPass::Control->new(fh => $b);
+
+    # Supervisor announces itself then vanishes (crash/OOM) with no exit_status.
+    $sup->send_hello($$);
+    $sup->close;
+
+    my $hello = $cmd->read_message;
+    ok($hello && $hello->{hello}, "hello read");
+
+    my ($status, $got_exit) = (0, 0);
+    while (1) {
+        my $msg = $cmd->read_message;
+        if ($msg && $msg->{exit_status}) {
+            $status   = $msg->{exit_status}{status} // 0;
+            $got_exit = 1;
+            last;
+        }
+        last if $cmd->closed && !$msg;
+    }
+
+    ok(!$got_exit, "no exit_status frame -> the command classifies this as a vanish");
+};
+
+# Ticket #139 mandatory vanish companion: _send must restore blocking mode. A prior
+# read_message_nb leaves the fh O_NONBLOCK; without the restore a subsequent
+# send_exit_status could fail EAGAIN (treated as fatal), dropping the final frame and
+# turning a healthy exit into a spurious vanish.
+subtest send_restores_blocking_after_nb_read => sub {
+    my ($a, $b) = pair();
+
+    my $sup = Test2::Harness2::Util::FdPass::Control->new(fh => $a);
+    my $cmd = Test2::Harness2::Util::FdPass::Control->new(fh => $b);
+
+    # read_message_nb on the supervisor side leaves $a non-blocking (_fill(0)).
+    $sup->read_message_nb;
+    my $flags_before = fcntl($a, F_GETFL, 0);
+    ok(($flags_before & O_NONBLOCK), "read_message_nb left the fh non-blocking");
+
+    ok($sup->send_exit_status(256), "send_exit_status returned true after a non-blocking read");
+
+    my $flags_after = fcntl($a, F_GETFL, 0);
+    ok(!($flags_after & O_NONBLOCK), "_send restored blocking mode on the fh");
+
+    my $msg = $cmd->read_message;
+    is($msg->{exit_status}{status}, 256, "the peer actually received the frame");
 };
 
 done_testing;

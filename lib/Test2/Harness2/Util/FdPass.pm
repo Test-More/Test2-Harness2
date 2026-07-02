@@ -146,6 +146,11 @@ sub send_fds {
 
         my $ok;
         while (1) {
+            # Clear errno per-iteration so a stale EINTR (inherited across fork from
+            # the stage host's signal-handling IPC, or left by a deferred %SIG handler)
+            # cannot masquerade as this call's result: IO::FDPass::send leaves errno
+            # untouched on a peer-EOF -1, so without this the retry would spin.
+            $! = 0;
             $ok = IO::FDPass::send($sockfd, $fd);
             last if $ok;
             next if $! == EINTR;
@@ -187,6 +192,14 @@ sub recv_fds {
     for my $i (1 .. $count) {
         my $fd;
         while (1) {
+            # Clear errno per-iteration: IO::FDPass::recv returns -1 on peer EOF
+            # WITHOUT setting errno, so a stale EINTR in $! (common across fork from
+            # the stage host's signal-handling IPC) would otherwise make the
+            # `next if $! == EINTR` retry an instantly-returning EOF call forever at
+            # 100% CPU. Clearing here means only THIS call's failure sets EINTR (a real
+            # interrupt -> the retried recv blocks in the kernel, no busy loop); an EOF
+            # leaves errno 0 -> loop exit -> croak.
+            $! = 0;
             $fd = IO::FDPass::recv($sockfd);
             last if defined $fd && $fd >= 0;
             next if $! == EINTR;

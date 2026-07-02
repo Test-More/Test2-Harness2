@@ -122,6 +122,28 @@ sub launch_spawn ($class, $runner, $spawn, $label = undef) {
     my $path = $task->{listen_socket_path}
         or do { warn "spawn supervisor: no listen_socket_path in task"; POSIX::_exit(1) };
 
+    # Sweep BEFORE the handshake. This detached supervisor still holds every inherited
+    # stage-host fd (the host listen socket, runner channel, collector stdout/stderr
+    # pipes) -- keeping them registered defeats the runner's "collector gone" EOF and
+    # leaves it writing into unread buffers (finding 23; makes Host.pm's comment true).
+    # Stop the host loop's bookkeeping (fork-safe: check_for_fork clears PROCS so
+    # killall no-ops in this forked child) and close every peer connection + the host
+    # listen socket, then reopen 0/1/2 onto /dev/null. Reopen-in-place, NEVER a bare
+    # close, so those low fd numbers stay occupied and cannot be handed to the
+    # handshake socket or the received terminal fds. The handshake needs NO inherited
+    # descriptor (the listen path is a STRING; the dial-back socket does not exist
+    # until target_connect), so the swept set and the handshake set are disjoint --
+    # and sweeping AFTER recv_fds could close the freshly received descriptors
+    # (lowest-free-number reuse). The listen_socket_path validation above runs first so
+    # its warn is still readable; post-sweep warns go to /dev/null (accepted: a
+    # detached supervisor's stderr pipes are unread after stage teardown). The
+    # child-side sweep in _run_spawn_child stays as a cheap defense-in-depth pass.
+    $runner->stop();
+    $runner->close_all_connections if $runner->can('close_all_connections');
+    open(\*STDIN,  '<', '/dev/null');
+    open(\*STDOUT, '>', '/dev/null');
+    open(\*STDERR, '>', '/dev/null');
+
     my ($sock, $ctl, @fds);
     my $ok = eval {
         # Dial the command and receive its real 0/1/2.
@@ -173,10 +195,39 @@ sub launch_spawn ($class, $runner, $spawn, $label = undef) {
 
         my @msg = $ctl->read_message_nb;
         if ($ctl->closed) {
-            # The command/terminal died: kill the child's process group and reap.
-            kill('-TERM', $child);
-            local $?;
-            waitpid($child, 0);
+            # The command/terminal died: kill the child's process group and reap,
+            # mirroring Preload::Host::stop's TERM -> 5s grace -> KILL shape.
+            #
+            # TERM the group AND the child pid directly. pgid == $child exists only
+            # after the child's setsid (below); in the fork->setsid gap the group-kill
+            # fails ESRCH harmlessly, and the direct-pid TERM covers the gap. While our
+            # UN-REAPED child pins pid $child, `-$child` addresses either our own spawn
+            # session or nothing (POSIX forbids fork returning a pid equal to a live
+            # group's pgid), never a stranger's reused group.
+            my $g = kill('-TERM', $child);
+            kill('TERM', $child) unless $g;
+
+            # Grace: counted WNOHANG poll (~5s), immune to clock steps.
+            my $reaped = 0;
+            for (1 .. 100) {
+                my $got = waitpid($child, POSIX::WNOHANG());
+                if ($got == $child || $got < 0) { $reaped = 1; last }
+                Time::HiRes::sleep(0.05);
+            }
+
+            # Escalate to KILL ONLY while the leader is still UN-REAPED: a pinned pid
+            # cannot be recycled, so pgid == $child is provably our own session or
+            # ESRCH, never a reused group. If the grace poll already reaped the leader,
+            # no further group signal is permitted (pid freed -> pgid reusable). The
+            # final blocking waitpid is the ONLY reap on this path, strictly AFTER the
+            # last group signal.
+            unless ($reaped) {
+                my $gk = kill('-KILL', $child);
+                kill('KILL', $child) unless $gk;
+                local $?;
+                waitpid($child, 0);
+            }
+
             POSIX::_exit(0);
         }
 

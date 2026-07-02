@@ -111,8 +111,12 @@ yath(
     test    => sub {
         my $out = shift;
         like($out->{output}, qr/SPAWN-ABOUT-TO-DIE/, "signal-death script ran and produced output");
-        like($out->{output}, qr/Terminated with signal: 15/,
-            "the command reported the child's signal death (raw wait status, SIGTERM=15)");
+        # Ticket #139 (finding 67): the message names the signal ($Config{sig_name}),
+        # it is no longer the raw number, and there is no 'No such signal' warning.
+        like($out->{output}, qr/Terminated with signal: TERM\./,
+            "the command reported the child's signal death by NAME (SIGTERM)");
+        unlike($out->{output}, qr/No such signal/,
+            "no 'No such signal: SIG15' warning (the numeric %SIG write was dropped)");
         # The command re-raises the signal, so it dies by signal 15: exit = signal num.
         my $st = $out->{exit};
         ok(($st & 127) == 15, "the command itself died by the re-raised signal (SIGTERM)")

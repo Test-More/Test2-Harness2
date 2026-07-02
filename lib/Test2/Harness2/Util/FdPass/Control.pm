@@ -202,6 +202,13 @@ handle).
 sub _send ($self, $message) {
     return 0 if $self->{+CLOSED};
 
+    # Restore blocking before writing: a prior read_message_nb leaves the fh
+    # O_NONBLOCK (_fill(0) -> _set_blocking(0)), which would make this syswrite fail
+    # EAGAIN on a full send buffer -- treated as fatal below and closing the channel,
+    # so send_hello/send_signal/send_exit_status could silently drop a frame (the
+    # command would then see a frameless EOF and misreport a healthy exit as a vanish).
+    $self->_set_blocking(1);
+
     my $json  = encode_json($message);
     my $frame = length($json) . "\0" . $json;
 

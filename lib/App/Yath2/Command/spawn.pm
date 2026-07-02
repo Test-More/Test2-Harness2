@@ -7,6 +7,7 @@ our $VERSION = '2.000000';
 use Getopt::Yath;
 
 use Carp qw/croak/;
+use Config qw/%Config/;
 use Cwd qw/getcwd/;
 use File::Spec();
 use Time::HiRes qw/sleep time/;
@@ -251,9 +252,20 @@ sub run {
     $self->pre_exit_hook($exit);
 
     if ($exit->{sig}) {
-        print STDERR "Terminated with signal: $exit->{sig}.\n";
-        $SIG{$exit->{sig}} = 'DEFAULT';
+        # Resolve the numeric signal to a name for the message only: a NUMERIC %SIG
+        # key ($SIG{15}) is rejected by Perl (a spurious 'No such signal: SIG15'
+        # warning, and no handler installed), and the only handlers this command ever
+        # sets -- _install_sig_forwarding's -- were already reset to DEFAULT by name in
+        # _clear_sig_forwarding (bridge_io tail), so no %SIG write is needed here.
+        my $name = (split /\s+/, $Config{sig_name})[$exit->{sig}] // "signal $exit->{sig}";
+        print STDERR "Terminated with signal: $name.\n";
         kill($exit->{sig}, $$);
+
+        # If the fatal signal's disposition was inherited-ignored (e.g. PIPE under
+        # some process supervisors -- untrapped, so _clear_sig_forwarding never
+        # touched it), the re-raise above is discarded; exit 128+sig rather than
+        # falling through to exit($exit->{err}) == exit(0).
+        exit(128 + $exit->{sig});
     }
 
     print STDERR "Exited with code: $exit->{err}.\n" if $exit->{err};
@@ -288,19 +300,31 @@ sub bridge_io {
 
     $self->_install_sig_forwarding($ctl);
 
-    my $status = 0;
+    # Track whether an exit_status frame actually arrived. A supervisor that was
+    # OOM-killed/crashed between hello and exit_status (or whose final _send failed)
+    # closes the control channel WITHOUT one -- that must NOT be reported as a clean
+    # exit 0 (the setsid'd script may still be running detached). The exit_status test
+    # runs BEFORE the closed-break, and the closed-break requires !$msg, so a buffered
+    # frame delivered together with EOF (fast exit) is drained and honored first
+    # (Control::read_message takes before it fills).
+    my ($status, $got_exit) = (0, 0);
     while (1) {
         my $msg = $ctl->read_message;
-        last if $ctl->closed && !$msg;
-
         if ($msg && $msg->{exit_status}) {
-            $status = $msg->{exit_status}{status} // 0;
+            $status    = $msg->{exit_status}{status} // 0;
+            $got_exit  = 1;
             last;
         }
+        last if $ctl->closed && !$msg;
     }
 
     $self->_clear_sig_forwarding();
     $ctl->close;
+
+    unless ($got_exit) {
+        print STDERR "yath spawn: the spawn supervisor vanished before reporting an exit status; the spawned script may still be running.\n";
+        return parse_exit(255 << 8);
+    }
 
     return parse_exit($status);
 }

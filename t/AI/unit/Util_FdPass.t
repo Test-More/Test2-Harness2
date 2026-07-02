@@ -3,7 +3,9 @@ use v5.38;
 use Test2::V0;
 
 use POSIX ();
+use Errno qw/EINTR/;
 use Socket qw/AF_UNIX SOCK_STREAM PF_UNSPEC/;
+use Time::HiRes ();
 
 use Test2::Harness2::Util::FdPass qw{
     fdpass_available
@@ -162,6 +164,65 @@ subtest command_listen_target_dial_choreography => sub {
 
     waitpid($pid, 0);
     is($? >> 8, 0, "target child completed cleanly");
+};
+
+# Ticket #139 (finding G3): IO::FDPass::recv returns -1 on peer EOF WITHOUT setting
+# errno. With a STALE EINTR in $! (inherited across fork from the stage host's
+# signal-handling IPC) the old `next if $! == EINTR` retry spun forever at 100% CPU
+# in a detached supervisor. recv_fds now clears errno before each recv, so an EOF
+# with a stale EINTR is classified as a close (fast croak, no spin, no stale text).
+subtest recv_fds_eof_with_stale_eintr_does_not_spin => sub {
+    my ($a, $b) = _make_socketpair();
+    close($b);    # peer closed -> recv returns -1 (EOF) without touching errno
+
+    my $recv_err;
+    my $bounded = eval {
+        local $SIG{ALRM} = sub { die "TIMEOUT: recv_fds spun on a stale EINTR\n" };
+        alarm 10;
+        $! = EINTR;    # stale errno set BEFORE the call, as if inherited
+        my $lived = eval { recv_fds($a, 1); 1 };
+        $recv_err = $@;
+        alarm 0;
+        1;
+    };
+    my $outer = $@;
+    alarm 0;
+
+    ok($bounded, "recv_fds returned within the alarm window (did not spin at 100% CPU)")
+        or diag($outer);
+    like(
+        $recv_err,
+        qr/sender closed before sending all fds/,
+        "recv_fds croaks with the EOF message (not stale errno text) despite a spurious EINTR in \$!",
+    );
+};
+
+subtest send_fds_dead_peer_croaks_no_spin => sub {
+    my ($a, $b) = _make_socketpair();
+    close($b);    # peer gone
+
+    # This ticket does NOT yet add the SIGPIPE guard to send_fds (#134 owns that), so
+    # ignore SIGPIPE here to keep the dead-peer send from killing the test; the send
+    # then surfaces as EPIPE in errno (!= EINTR) -> a clean croak, not a spin.
+    local $SIG{PIPE} = 'IGNORE';
+
+    pipe(my $pr, my $pw) or die "pipe: $!";
+
+    my $send_err;
+    my $bounded = eval {
+        local $SIG{ALRM} = sub { die "TIMEOUT: send_fds spun on a dead peer\n" };
+        alarm 10;
+        $! = EINTR;    # stale errno again
+        my $lived = eval { send_fds($a, [fileno($pr)]); 1 };
+        $send_err = $@;
+        alarm 0;
+        1;
+    };
+    my $outer = $@;
+    alarm 0;
+
+    ok($bounded, "send_fds returned within the alarm window (did not spin)") or diag($outer);
+    like($send_err, qr/failed to send fd/, "send_fds croaks on a dead peer (did not busy-loop on stale EINTR)");
 };
 
 done_testing;
