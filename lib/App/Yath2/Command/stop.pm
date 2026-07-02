@@ -87,8 +87,10 @@ sub _stop_live {
     # must never run when the socket is not live -- deps (b)), so its tail readers
     # sit at the current end and it renders ONLY the teardown output the runner is
     # about to write. Returns undef when runner output is hidden (loop skipped).
-    my $loop = eval { $self->build_shutdown_loop($pid, \$deadline) };
-    warn "Could not prime runner shutdown renderer: $@" unless defined $loop || !$@;
+    my $loop;
+    my $ok = eval { $loop = $self->build_shutdown_loop($pid, \$deadline); 1 };
+    my $err = $@;
+    warn "Could not prime runner shutdown renderer: $err" unless $ok;
 
     # The runner already exists; attach the client to it (kill(0) liveness, no reap).
     $self->client->attach_runner($pid);
@@ -98,7 +100,7 @@ sub _stop_live {
     # Graceful 'stop' (the runner translates it into its own TERM teardown) + the
     # end_queue fallback. Both are alarm-backstopped: the eval alone is INSUFFICIENT
     # because a blocking connect never returns, so nothing dies into it (deps (a)).
-    my ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->stop });
+    ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->stop });
     warn "Could not send graceful shutdown to runner over socket: $err" unless $ok;
 
     ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->end_queue });

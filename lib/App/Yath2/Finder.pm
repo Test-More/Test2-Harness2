@@ -198,7 +198,7 @@ sub _pull_from_file_or_url {
         return $is_json ? decode_json($res->{content}) : $res->{content};
     }
 
-    die "Invalid $name specification: $in";
+    die "Invalid $name specification: $in\n";
 }
 
 sub find_files {
@@ -605,7 +605,7 @@ sub find_multi_project_files {
 
     my $search = $self->search // [];
 
-    die "multi-project search must be a single directory, or the current directory" if @$search > 1;
+    die "multi-project search must be a single directory, or the current directory\n" if @$search > 1;
     my ($pdir) = @$search;
     my $dir = clean_path(getcwd());
 

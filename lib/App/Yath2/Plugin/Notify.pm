@@ -135,12 +135,12 @@ sub post_process ($options, $state) {
         unless defined $notify->slack_owner;
 
     if ($slack_src || $notify->slack_owner) {
-        die "slack url must be provided in order to use slack" unless $notify->slack_url;
+        die "slack url must be provided in order to use slack\n" unless $notify->slack_url;
 
         my $ok = eval { require HTTP::Tiny; 1 };
         die "Cannot use slack without HTTP::Tiny which is not installed.\n" unless $ok;
 
-        die "HTTP::Tiny reports that it does not support SSL, cannot use slack without ssl."
+        die "HTTP::Tiny reports that it does not support SSL, cannot use slack without ssl.\n"
             unless HTTP::Tiny::can_ssl();
 
         push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
