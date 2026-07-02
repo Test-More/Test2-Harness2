@@ -199,6 +199,7 @@ sub start {
     # runner.socket: the runner must be listening before the client can connect.
     my $pop = $self->populate_queue();
 
+    print STDERR "No tests were found to run.\n" unless $pop;
     return unless $pop;
 
     # Plugin setup() runs in the RUNNER (after runner.socket binds), not here --

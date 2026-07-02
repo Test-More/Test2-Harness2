@@ -35,6 +35,8 @@ use Test2::Harness2::Util::HashBase qw{
     <changes_exclude_files <changes_exclude_patterns
     <changes_include_whitespace <changes_exclude_nonsub
     <changes_exclude_loads <changes_exclude_opens
+
+    +exclude_lookup +exclude_lookup_cwd +exclude_matched +have_explicit_durations
 };
 
 sub munge_settings {}
@@ -43,6 +45,15 @@ sub init {
     my $self = shift;
 
     $self->{+EXCLUDE_FILES} = { map {( $_ => 1 )} @{$self->{+EXCLUDE_FILES}} } if ref($self->{+EXCLUDE_FILES}) eq 'ARRAY';
+
+    $self->{+EXCLUDE_MATCHED} //= {};
+
+    # (G15) Capture whether the user provided an explicit duration source NOW, at
+    # construction, before anything runs. pull_durations() DELETES both keys on
+    # first use, so a post-hoc check would break on project 2+ of a multi-project
+    # run. An explicit --durations/--maybe-durations is always honored regardless
+    # of durations-threshold.
+    $self->{+HAVE_EXPLICIT_DURATIONS} //= ($self->{+DURATIONS} || $self->{+MAYBE_DURATIONS}) ? 1 : 0;
 
     if (my $plugins = $self->{+RERUN_PLUGINS}) {
         for (@$plugins) {
@@ -113,10 +124,27 @@ sub add_exclusions_from_lists {
 
         next unless $content;
 
-        for (split(/\r?\n\r?/, $content)) {
-            $self->{+EXCLUDE_FILES}->{$_} = 1 unless /^\s*#/;
-        };
+        for my $line (split(/\r?\n\r?/, $content)) {
+            next if $line =~ m/^\s*#/;
+            next unless $line =~ m/\S/;    # (G13) skip blank / whitespace-only lines
+            $self->{+EXCLUDE_FILES}->{$line} = 1;
+        }
     }
+}
+
+# (G13/G16) Canonical spellings of a path used for exclude/dedup matching. Trims
+# surrounding whitespace (incl. stray \r and tabs), then yields the raw spelling,
+# its rel2abs form (clean_path absolute=0, whose canonpath collapses './'), and
+# its realpath form (clean_path absolute=1, which resolves symlinks and '..').
+# Returns nothing for a blank entry so '' never becomes a lookup key.
+sub _path_forms {
+    my ($p) = @_;
+    return unless defined $p;
+    $p =~ s/^\s+//;
+    $p =~ s/\s+$//;
+    return unless length $p;
+    my %f = ($p => 1, clean_path($p, 0) => 1, clean_path($p) => 1);
+    return keys %f;
 }
 
 sub _pull_from_file_or_url {
@@ -177,9 +205,32 @@ sub find_files {
     my $add_rerun = $self->{+RERUN};
     $self->add_rerun_to_search($plugins, $settings, $add_rerun) if $add_rerun;
 
-    return $self->find_multi_project_files($plugins, $settings) if $self->multi_project;
+    my $out = $self->multi_project
+        ? $self->find_multi_project_files($plugins, $settings)
+        : $self->find_project_files($plugins, $settings, $self->search);
 
-    return $self->find_project_files($plugins, $settings, $self->search);
+    $self->warn_unmatched_exclusions();
+
+    return $out;
+}
+
+# (G13) After a full find (find_project_files, or every project of a
+# multi-project run, funnels through and aggregates into +EXCLUDE_MATCHED), warn
+# about any exclude-list entry that never matched a discovered test file. This is
+# a warn, not an error: an entry may legitimately target a file outside this
+# run's search.
+sub warn_unmatched_exclusions {
+    my $self = shift;
+
+    my $exclude = $self->{+EXCLUDE_FILES} or return;
+    return unless keys %$exclude;
+
+    my $matched = $self->{+EXCLUDE_MATCHED} // {};
+    my @never = grep { !$matched->{$_} } sort keys %$exclude;
+    return unless @never;
+
+    warn scalar(@never) . " exclude entries never matched any discovered test file:\n"
+        . join('', map { "  $_\n" } @never);
 }
 
 sub check_plugins {
@@ -242,18 +293,22 @@ sub find_changes {
     }
 
     my $filter_patterns = @{$self->{+CHANGES_FILTER_PATTERNS}} ? $self->{+CHANGES_FILTER_PATTERNS} : undef;
-    my $filter_files    = @{$self->{+CHANGES_FILTER_FILES}} ? {map { $_ => 1 } @{$self->{+CHANGES_FILTER_FILES}}} : undef;
+    # (G13) Key the filter/exclude maps on every canonical spelling so a './'-,
+    # whitespace-, '..'- or symlink-differing entry still matches.
+    my $filter_files    = @{$self->{+CHANGES_FILTER_FILES}}  ? {map { my $e = $_; map { ($_ => 1) } _path_forms($e) } @{$self->{+CHANGES_FILTER_FILES}}}  : undef;
 
     my $exclude_patterns = @{$self->{+CHANGES_EXCLUDE_PATTERNS}} ? $self->{+CHANGES_EXCLUDE_PATTERNS} : undef;
-    my $exclude_files    = @{$self->{+CHANGES_EXCLUDE_FILES}} ? {map { $_ => 1 } @{$self->{+CHANGES_EXCLUDE_FILES}}} : undef;
+    my $exclude_files    = @{$self->{+CHANGES_EXCLUDE_FILES}} ? {map { my $e = $_; map { ($_ => 1) } _path_forms($e) } @{$self->{+CHANGES_EXCLUDE_FILES}}} : undef;
 
     my %changed_map;
     for my $change (@listed_changes, @found_changes) {
         next unless $change;
         my ($file, @parts) = ref($change) ? @$change : ($change);
 
-        next if $filter_files && !$filter_files->{$file};
-        next if $exclude_files && $exclude_files->{$file};
+        # (G13) Probe each changed file's canonical spellings against the maps.
+        # Do NOT rewrite %changed_map keys: plugins expect repo-relative spellings.
+        next if $filter_files  && !(first { $filter_files->{$_} }  _path_forms($file));
+        next if $exclude_files &&  (first { $exclude_files->{$_} } _path_forms($file));
         next if $filter_patterns && !first { $file =~ m/$_/ } @$filter_patterns;
         next if $exclude_patterns && first { $file =~ m/$_/ } @$exclude_patterns;
 
@@ -540,12 +595,15 @@ sub find_multi_project_files {
 
     my $out = [];
     my $ok = eval {
-        chdir($pdir) if defined $pdir;
+        if (defined $pdir) {
+            die "Multi-project directory '$pdir' does not exist or is not a directory.\n" unless -d $pdir;
+            chdir($pdir) or die "Could not chdir to '$pdir': $!\n";
+        }
         my $ret = clean_path(getcwd());
 
         opendir(my $dh, '.') or die "Could not open project dir: $!";
         for my $subdir (readdir($dh)) {
-            chdir($ret);
+            chdir($ret) or die "Could not chdir back to '$ret': $!\n";
 
             next if $subdir =~ m/^\./;
             my $path = clean_path(File::Spec->catdir($ret, $subdir));
@@ -559,13 +617,15 @@ sub find_multi_project_files {
             }
         }
 
-        chdir($ret);
+        chdir($ret) or die "Could not chdir back to '$ret': $!\n";
         1;
     };
     my $err = $@;
 
-    chdir($dir);
+    # Restore cwd, but never let a restore failure mask the original error.
+    my $back_ok = chdir($dir);
     die $err unless $ok;
+    die "Could not chdir back to '$dir': $!\n" unless $back_ok;
 
     return $out;
 }
@@ -586,9 +646,18 @@ sub find_project_files {
 
     die "No tests to run, search is empty\n" unless @$search;
 
+    # %seen is keyed on the realpath-canonical spelling (clean_path absolute=1);
+    # the value is the traversal spelling used for the TestFile so user-facing
+    # paths / durations keys are unchanged for non-symlinked layouts.
+    #
+    # @candidates holds [$test, $listed] tuples. Discovery (listed loop + scan)
+    # is split from filtering so durations can be applied BETWEEN the static and
+    # long exclude passes (G15).
+    my (%seen, @candidates, @dirs);
 
-    my (%seen, @tests, @dirs);
-
+    # (1) Listed loop: parse each explicit search entry into a TestFile. Listed
+    # entries are NOT deduped against %seen (running the same file twice via
+    # 'file=arg1 file=arg2' is a legitimate idiom); only scanned files dedup.
     for my $item (@$search) {
         my ($path, $test_params);
 
@@ -612,7 +681,9 @@ sub find_project_files {
             }
         }
 
-        push @dirs => $path and next if -d $path;
+        # (G12) realpath-resolve a directory search path so File::Find can
+        # descend it even when it is itself a symlink.
+        push @dirs => clean_path($path) and next if -d $path;
 
         unless(-f $path) {
             my ($actual, $args) = split /=/, $path, 2;
@@ -627,20 +698,12 @@ sub find_project_files {
         }
 
         $path = clean_path($path, 0);
-        $seen{$path}++;
+        # (G16) realpath dedup key, traversal spelling as the value.
+        $seen{clean_path($path)} = $path;
 
         my $test;
         unless (first { $test = $_->claim_file($path, $settings, from => 'listed') } @$plugins) {
             $test = App::Yath2::TestFile->new(file => $path);
-        }
-
-        if (my @exclude = $self->exclude_file($test)) {
-            if (@$input) {
-                print STDERR "File '$path' was listed on the command line, but has been exluded for the following reasons:\n";
-                print STDERR "  $_\n" for @exclude;
-            }
-
-            next;
         }
 
         if ($test_params) {
@@ -649,58 +712,120 @@ sub find_project_files {
             $test->set_env_vars($test_params->{env})   if $test_params->{env};
         }
 
-        push @tests => $test;
+        push @candidates => [$test, 1];
     }
 
+    # (2) Scan: walk each search directory. follow_fast+follow_skip=2 descends
+    # symlinked subdirs (G12) while terminating cleanly on symlink loops; the
+    # realpath dedup key (G16) means a file reachable via two spellings is only
+    # queued once.
     if (@dirs) {
         require File::Find;
-        File::Find::find(
-            {
-                no_chdir => 1,
-                wanted   => sub {
-                    no warnings 'once';
+        for my $dir (@dirs) {
+            my $dir_yield = 0;
+            File::Find::find(
+                {
+                    no_chdir    => 1,
+                    follow_fast => 1,
+                    follow_skip => 2,
+                    wanted      => sub {
+                        no warnings 'once';
 
-                    my $file = clean_path($File::Find::name, 0);
+                        my $file = clean_path($File::Find::name, 0);
+                        return unless -f $file;
 
-                    return if $seen{$file}++;
-                    return unless -f $file;
+                        # In follow mode File::Find provides the resolved
+                        # realpath for free ($File::Find::fullname); it is undef
+                        # for dangling symlinks, which the -f guard above drops.
+                        my $key = $File::Find::fullname ? clean_path($File::Find::fullname, 0) : clean_path($file);
 
-                    my $test;
-                    unless(first { $test = $_->claim_file($file, $settings, from => 'search') } @$plugins) {
-                        for my $ext (@{$self->extensions}) {
-                            next unless m/\.\Q$ext\E$/;
-                            $test = App::Yath2::TestFile->new(file => $file);
-                            last;
+                        if (defined $seen{$key}) {
+                            print "Skipping '$file': already queued as '$seen{$key}'\n" if $seen{$key} ne $file;
+                            return;
                         }
-                    }
+                        $seen{$key} = $file;
 
-                    return unless $test;
-                    return unless $self->include_file($test);
-                    push @tests => $test;
+                        my $test;
+                        unless(first { $test = $_->claim_file($file, $settings, from => 'search') } @$plugins) {
+                            for my $ext (@{$self->extensions}) {
+                                next unless m/\.\Q$ext\E$/;
+                                $test = App::Yath2::TestFile->new(file => $file);
+                                last;
+                            }
+                        }
+
+                        return unless $test;
+                        push @candidates => [$test, 0];
+                        $dir_yield++;
+                    },
                 },
-            },
-            @dirs
-        );
+                $dir
+            );
+            print "No tests found under '$dir'\n" unless $dir_yield;
+        }
     }
 
-    my $test_count = @tests;
-    my $threshold = $settings->finder->durations_threshold // 0;
-    if ($threshold && $test_count >= $threshold) {
+    # (3) Static filter: directive + exclude-list + exclude-pattern reasons.
+    # A listed file excluded here is reported on STDERR.
+    my @filtered;
+    for my $cand (@candidates) {
+        my ($test, $listed) = @$cand;
+        if (my @exclude = $self->exclude_file_static($test)) {
+            $self->_report_listed_exclusion($test, $input, @exclude) if $listed;
+            next;
+        }
+        push @filtered => $cand;
+    }
+
+    # (4) Durations: fetch/apply duration data on the post-static, pre-long set
+    # so long-filtering (below) sees the corrected durations (G15). An explicit
+    # --durations/--maybe-durations is always honored; the threshold only gates
+    # the implicit plugin duration_data path.
+    my $test_count = @filtered;
+    my $threshold  = $settings->finder->durations_threshold // 0;
+    if ($self->{+HAVE_EXPLICIT_DURATIONS} || ($threshold && $test_count >= $threshold)) {
         my $start = time;
-        my $durations = $self->duration_data($plugins, $settings, [map { $_->relative } @tests]);
+        my $durations = $self->duration_data($plugins, $settings, [map { $_->[0]->relative } @filtered]);
         my $end = time;
         if ($durations && keys %$durations) {
             printf("Fetched duration data (Took %0.2f seconds)\n", $end - $start);
-            for my $test (@tests) {
-                my $rel = $test->relative;
+            for my $cand (@filtered) {
+                my $test = $cand->[0];
+                my $rel  = $test->relative;
                 $test->set_duration($durations->{$rel}) if $durations->{$rel};
             }
         }
+    }
+    elsif ($threshold && ($self->no_long || $self->only_long) && (first { $_->can('duration_data') } @$plugins)) {
+        warn "Duration data skipped ($test_count tests < durations-threshold $threshold); --no-long/--only-long used file-header durations only.\n";
+    }
+
+    # (5) Long filter: no_long/only_long reasons, now durations-aware.
+    my @tests;
+    for my $cand (@filtered) {
+        my ($test, $listed) = @$cand;
+        if (my @exclude = $self->exclude_file_duration($test)) {
+            $self->_report_listed_exclusion($test, $input, @exclude) if $listed;
+            next;
+        }
+        push @tests => $test;
     }
 
     $_->munge_files(\@tests, $settings) for @$plugins;
 
     return [ sort { $a->rank <=> $b->rank || $a->file cmp $b->file } @tests ];
+}
+
+sub _report_listed_exclusion {
+    my $self = shift;
+    my ($test, $input, @exclude) = @_;
+
+    return unless $input && @$input;
+
+    print STDERR "File '" . $test->file . "' was listed on the command line, but has been excluded for the following reasons:\n";
+    print STDERR "  $_\n" for @exclude;
+
+    return;
 }
 
 sub include_file {
@@ -712,7 +837,35 @@ sub include_file {
     return !@exclude;
 }
 
+# (G13) Lazy, cwd-keyed exclude lookup: maps every canonical spelling of each
+# exclude-list entry back to the ORIGINAL entry (so we can record which entries
+# matched). Cached keyed on cwd because relative entries must resolve per-project
+# in a multi-project run's per-project chdirs.
+sub _exclude_lookup {
+    my $self = shift;
+
+    my $cwd = getcwd();
+    if (!$self->{+EXCLUDE_LOOKUP} || !defined($self->{+EXCLUDE_LOOKUP_CWD}) || $self->{+EXCLUDE_LOOKUP_CWD} ne $cwd) {
+        my $exclude = $self->{+EXCLUDE_FILES} // {};
+        $self->{+EXCLUDE_LOOKUP} = {
+            map { my $e = $_; map { ($_ => $e) } _path_forms($e) } keys %$exclude
+        };
+        $self->{+EXCLUDE_LOOKUP_CWD} = $cwd;
+    }
+
+    return $self->{+EXCLUDE_LOOKUP};
+}
+
 sub exclude_file {
+    my $self = shift;
+    my ($test) = @_;
+
+    return ($self->exclude_file_static($test), $self->exclude_file_duration($test));
+}
+
+# Directive + exclude-list + exclude-pattern reasons. Durations are irrelevant
+# here so this pass can run before duration data is fetched (G15).
+sub exclude_file_static {
     my $self = shift;
     my ($test) = @_;
 
@@ -723,8 +876,30 @@ sub exclude_file {
     my $full = $test->file;
     my $rel  = $test->relative;
 
-    push @out => 'File is in the exclude list.' if $self->exclude_files->{$full} || $self->exclude_files->{$rel};
+    # (G13) Probe the file's rel2abs, abs2rel, and realpath spellings against the
+    # exclude lookup; record the matched original entry for the never-matched
+    # warning.
+    my $lookup = $self->_exclude_lookup;
+    for my $form ($full, $rel, clean_path($full)) {
+        next unless defined $form;
+        my $entry = $lookup->{$form} // next;
+        $self->{+EXCLUDE_MATCHED}{$entry}++;
+        push @out => 'File is in the exclude list.';
+        last;
+    }
+
     push @out => 'File matches an exclusion pattern.' if first { $rel =~ m/$_/ } @{$self->exclude_patterns};
+
+    return @out;
+}
+
+# no_long/only_long reasons. Split out so it runs AFTER duration data is applied
+# (G15), making durations-file LONG markings authoritative for --no-long/--only-long.
+sub exclude_file_duration {
+    my $self = shift;
+    my ($test) = @_;
+
+    my @out;
 
     push @out => 'File is marked as "long", but the "no long tests" opition was specified.'
         if $self->no_long && $test->check_duration eq 'long';
