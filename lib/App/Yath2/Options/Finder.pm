@@ -5,6 +5,7 @@ our $VERSION = '2.000000';
 
 use List::Util qw/first/;
 use Test2::Harness2::Util qw/fqmod mod2file/;
+use App::Yath2::Util qw/changes_applicable/;
 
 use Getopt::Yath;
 
@@ -741,13 +742,6 @@ option_group {group => 'finder', category => "Finder Options"} => sub {
 
     option_post_process 0 => \&_post_process;
 };
-
-sub changes_applicable ($opt, $options, $settings) {
-    return 1 unless $settings && $settings->check_group('harness') && $settings->harness->check_option('command');
-    my $cmd = $settings->harness->command;
-    return 0 if $cmd && $cmd->isa('App::Yath2::Command::projects');
-    return 1;
-}
 
 sub _post_process ($options, $state) {
     my $settings = $state->{settings};

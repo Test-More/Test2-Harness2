@@ -251,37 +251,71 @@ sub handle_job_end {
 
     my @args = ($e, $f, $self->{+TRIES}->{$job_id}, $settings);
 
-    $self->send_job_notification_slack(@args);
-    $self->send_job_notification_email(@args);
+    $self->_send_job_notification('slack', @args);
+    $self->_send_job_notification('email', @args);
 }
 
-sub send_job_notification_slack {
-    my $self = shift;
+# Per-service knobs that drive the shared slack/email builders. Every
+# difference between the slack and email notification paths lives here so the
+# _send_*/_gen_* helpers below stay service-agnostic.
+sub _service_spec ($self, $service) {
+    return {
+        no_batch   => 'no_batch_slack',
+        list       => 'slack',
+        fail_list  => 'slack_fail',
+        owner_flag => 'slack_owner',
+        meta_key   => 'slack',
+        links_fmt  => sub { map {"> <$_|$_>"} @_ },
+        subject    => undef,
+        send       => sub ($self, $settings, $subject, $text, @to) { $self->_send_slack($text, $settings, @to) },
+    } if $service eq 'slack';
 
-    my ($e, $f, $tries, $settings) = @_;
+    return {
+        no_batch   => 'no_batch_email',
+        list       => 'email',
+        fail_list  => 'email_fail',
+        owner_flag => 'email_owner',
+        meta_key   => 'owner',
+        links_fmt  => sub { @_ },
+        send       => sub ($self, $settings, $subject, $text, @to) { $self->_send_email($subject, $text, $settings, @to) },
+    } if $service eq 'email';
 
-    return unless $settings->notify->no_batch_slack;
+    croak "Unknown notification service '$service'";
+}
+
+sub _send_job_notification ($self, $service, $e, $f, $tries, $settings) {
+    my $spec = $self->_service_spec($service);
+
+    my $no_batch = $spec->{no_batch};
+    return unless $settings->notify->$no_batch;
 
     my $tf = App::Yath2::TestFile->new(file => $f->{harness_job_end}->{abs_file});
 
-    my @slack;
-    push @slack => $tf->meta('slack') if $settings->notify->slack_owner;
-    push @slack => @{$settings->notify->slack_fail};
+    my $owner_flag = $spec->{owner_flag};
+    my $fail_list  = $spec->{fail_list};
 
-    return unless @slack;
+    my @to;
+    push @to => $tf->meta($spec->{meta_key}) if $settings->notify->$owner_flag;
+    push @to => @{$settings->notify->$fail_list};
 
-    my $text = $self->gen_text(scope => 'job', service => 'slack', settings => $settings, file => $tf, tries => $tries);
+    return unless @to;
 
-    $self->_send_slack($text, $settings, @slack);
+    my $text = $self->gen_text(scope => 'job', service => $service, settings => $settings, file => $tf, tries => $tries);
+    my $subject = $service eq 'email' ? "Failed test on " . hostname() . ": '" . $tf->relative . "'." : undef;
+
+    $spec->{send}->($self, $settings, $subject, $text, @to);
 }
 
-sub gen_slack_job_text {
+# Shared body for gen_slack_job_text / gen_email_job_text. The two named
+# delegators below differ only in how run links are formatted (links_fmt).
+sub _gen_job_text {
     my $self = shift;
     my %params = @_;
 
-    my $settings = $params{settings} // croak "'settings' is required";
-    my $tf       = $params{file}     // croak "'file' is required";
-    my $tries    = $params{tries}    // 0;
+    my $settings  = $params{settings}  // croak "'settings' is required";
+    my $tf        = $params{file}      // croak "'file' is required";
+    my $tries     = $params{tries}     // 0;
+    my $links_fmt = $params{links_fmt} // sub { @_ };
 
     my $host = hostname();
     my $file = $tf->relative;
@@ -290,7 +324,17 @@ sub gen_slack_job_text {
         $settings->notify->text,
         "Failed test on $host: '$file'.",
         $tries ? ("Test was run " . (1 + $tries) . " time(s).") : (),
-        join "\n" => map {"> <$_|$_>"} @{$settings->run->links};
+        join "\n" => $links_fmt->(@{$settings->run->links});
+}
+
+sub gen_slack_job_text {
+    my $self = shift;
+    return $self->_gen_job_text(@_, links_fmt => sub { map {"> <$_|$_>"} @_ });
+}
+
+sub gen_email_job_text {
+    my $self = shift;
+    return $self->_gen_job_text(@_, links_fmt => sub { @_ });
 }
 
 sub _send_slack {
@@ -310,44 +354,6 @@ sub _send_slack {
         );
         warn "Failed to send slack message to '$dest'" unless $r->{success};
     }
-}
-
-sub send_job_notification_email {
-    my $self = shift;
-
-    my ($e, $f, $tries, $settings) = @_;
-
-    return unless $settings->notify->no_batch_email;
-
-    my $tf = App::Yath2::TestFile->new(file => $f->{harness_job_end}->{abs_file});
-
-    my @to;
-    push @to => $tf->meta('owner') if $settings->notify->email_owner;
-    push @to => @{$settings->notify->email_fail};
-    return unless @to;
-
-    my $text = $self->gen_text(scope => 'job', service => 'email', settings => $settings, file => $tf, tries => $tries);
-    my $subject = "Failed test on " . hostname() . ": '" . $tf->relative . "'.";
-
-    $self->_send_email($subject, $text, $settings, @to);
-}
-
-sub gen_email_job_text {
-    my $self = shift;
-    my %params = @_;
-
-    my $settings = $params{settings} // croak "'settings' is required";
-    my $tf       = $params{file}     // croak "'file' is required";
-    my $tries    = $params{tries}    // 0;
-
-    my $host = hostname();
-    my $file = $tf->relative;
-
-    return join "\n\n" => grep { $_ }
-        $settings->notify->text,
-        "Failed test on $host: '$file'.",
-        $tries ? ("Test was run " . (1 + $tries) . " time(s).") : (),
-        join "\n" => @{$settings->run->links};
 }
 
 sub _send_email {
@@ -383,18 +389,22 @@ sub finish {
     my $f = $e->facet_data or return;
     my $final = $f->{harness_final} or return;
 
-    $self->send_run_notification_slack($final, $settings);
-    $self->send_run_notification_email($final, $settings);
+    $self->_send_run_notification('slack', $final, $settings);
+    $self->_send_run_notification('email', $final, $settings);
 }
 
-sub send_run_notification_slack {
-    my $self = shift;
-    my ($final, $settings) = @_;
+sub _send_run_notification ($self, $service, $final, $settings) {
+    my $spec = $self->_service_spec($service);
 
-    return if $settings->notify->no_batch_slack;
+    my $no_batch = $spec->{no_batch};
+    return if $settings->notify->$no_batch;
 
-    my @to = @{$settings->notify->slack};
-    push @to => @{$settings->notify->slack_fail} unless $final->{pass};
+    my $list       = $spec->{list};
+    my $fail_list  = $spec->{fail_list};
+    my $owner_flag = $spec->{owner_flag};
+
+    my @to = @{$settings->notify->$list};
+    push @to => @{$settings->notify->$fail_list} unless $final->{pass};
 
     my $files = "";
     if ($final->{failed}) {
@@ -403,85 +413,64 @@ sub send_run_notification_slack {
 
             $files = $files ? "$files\n$file" : $file;
 
-            next unless $settings->notify->slack_owner;
+            next unless $settings->notify->$owner_flag;
             my $tf = App::Yath2::TestFile->new(file => $file);
-            push @to => $tf->meta('slack');
+            push @to => $tf->meta($spec->{meta_key});
         }
     }
 
     return unless @to;
 
+    my $subject = $service eq 'email'
+        ? $self->gen_text(scope => 'run', service => 'email_subject', settings => $settings, final => $final, files => $files)
+        : undef;
+
     my $text = $self->gen_text(
         scope    => 'run',
-        service  => 'slack',
+        service  => $service,
         settings => $settings,
         final    => $final,
         files    => $files,
+        ($subject ? (subject => $subject) : ()),
     );
 
-    $self->_send_slack($text, $settings, @to);
+    $spec->{send}->($self, $settings, $subject, $text, @to);
 }
 
-sub gen_slack_run_text {
+# Shared body for gen_slack_run_text / gen_email_run_text. Differs only in the
+# link formatting (links_fmt) and the second line (email passes a subject;
+# slack falls back to the identical pass/fail string).
+sub _gen_run_text {
     my $self = shift;
     my %params = @_;
 
-    my $settings = $params{settings} // croak "'settings' is required";
-    my $final    = $params{final}    // croak "'final' is required";
-    my $files    = $params{files}    // '';
+    my $settings  = $params{settings}  // croak "'settings' is required";
+    my $final     = $params{final}     // croak "'final' is required";
+    my $files     = $params{files}     // '';
+    my $links_fmt = $params{links_fmt} // sub { @_ };
 
     my $host = hostname();
 
     return join "\n\n" => grep { $_ } (
         $settings->notify->text,
-        ($final->{pass} ? "Tests passed on $host" : "Tests failed on $host"),
+        ($params{subject} // ($final->{pass} ? "Tests passed on $host" : "Tests failed on $host")),
         ($files ? $files : ()),
-        join("\n" => map {"> <$_|$_>"} @{$settings->run->links}),
+        join("\n" => $links_fmt->(@{$settings->run->links})),
     );
 }
 
-sub send_run_notification_email {
+sub gen_slack_run_text {
     my $self = shift;
-    my ($final, $settings) = @_;
+    return $self->_gen_run_text(@_, links_fmt => sub { map {"> <$_|$_>"} @_ });
+}
 
-    return if $settings->notify->no_batch_email;
+sub gen_email_run_text {
+    my $self = shift;
+    my %params = @_;
 
-    my @to = @{$settings->notify->email};
-    push @to => @{$settings->notify->email_fail} unless $final->{pass};
+    my $subject = $params{subject} // $self->gen_text(%params, service => 'email_subject');
 
-    my $files = "";
-    if ($final->{failed}) {
-        for my $set (@{$final->{failed}}) {
-            my $file = $set->[1];
-
-            $files = $files ? "$files\n$file" : $file;
-
-            next unless $settings->notify->email_owner;
-            my $tf = App::Yath2::TestFile->new(file => $file);
-            push @to => $tf->meta('owner');
-        }
-    }
-
-    return unless @to;
-
-    my $subject = $self->gen_text(
-        scope    => 'run',
-        service  => 'email_subject',
-        settings => $settings,
-        final    => $final,
-        files    => $files,
-    );
-
-    my $text = $self->gen_text(
-        scope    => 'run',
-        service  => 'email',
-        settings => $settings,
-        final    => $final,
-        files    => $files,
-        subject  => $subject,
-    );
-
-    $self->_send_email($subject, $text, $settings, @to);
+    return $self->_gen_run_text(%params, subject => $subject, links_fmt => sub { @_ });
 }
 
 sub gen_email_subject_run_text {
@@ -492,23 +481,6 @@ sub gen_email_subject_run_text {
     my $host  = hostname();
 
     return $final->{pass} ? "Tests passed on $host" : "Tests failed on $host";
-}
-
-sub gen_email_run_text {
-    my $self = shift;
-    my %params = @_;
-
-    my $subject  = $params{subject}  // $self->gen_text(%params, service => 'email_subject');
-    my $settings = $params{settings} // croak "'settings' is required";
-    my $final    = $params{final}    // croak "'final' is required";
-    my $files    = $params{files}    // '';
-
-    return join "\n\n" => grep { $_ } (
-        $settings->notify->text,
-        $subject,
-        ($files ? $files : ()),
-        join("\n" => @{$settings->run->links}),
-    );
 }
 
 sub gen_text {

@@ -6,6 +6,7 @@ our $VERSION = '2.000000';
 use Test2::Harness2::Util qw/clean_path mod2file/;
 use Test2::Harness2::Util::JSON qw/encode_json stream_json_l/;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
+use App::Yath2::Util qw/changes_applicable/;
 
 use parent 'App::Yath2::Plugin';
 use Test2::Harness2::Util::HashBase qw/-aggregator -no_aggregate +metrics +outfile/;
@@ -114,13 +115,6 @@ option_group {group => 'cover', prefix => 'cover', category => "Cover Options"} 
 
     option_post_process 0 => \&post_process;
 };
-
-sub changes_applicable ($opt, $options, $settings) {
-    return 1 unless $settings && $settings->check_group('harness') && $settings->harness->check_option('command');
-    my $c = $settings->harness->command;
-    return 0 if $c && $c->isa('App::Yath2::Command::projects');
-    return 1;
-}
 
 sub spawn_args {
     my $self = shift;

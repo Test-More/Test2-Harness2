@@ -25,7 +25,19 @@ our @EXPORT_OK = qw{
     find_yath
     share_dir
     share_file
+    changes_applicable
 };
+
+# Whether changed-files finder/coverage options apply to the current command.
+# They do not apply to the projects command (which orchestrates other commands
+# rather than running tests itself). Shared by Options::Finder and Plugin::Cover.
+sub changes_applicable {
+    my ($opt, $options, $settings) = @_;
+    return 1 unless $settings && $settings->check_group('harness') && $settings->harness->check_option('command');
+    my $cmd = $settings->harness->command;
+    return 0 if $cmd && $cmd->isa('App::Yath2::Command::projects');
+    return 1;
+}
 
 # The fixed suffix every discovery symlink basename ends with (the project /
 # host / user prefixes vary, but this trailer is constant -- see find_runner_link).

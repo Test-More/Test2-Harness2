@@ -79,4 +79,31 @@ subtest rerun_conflicting_logs => sub {
     is($settings->finder->rerun, 'a.jsonl', "rerun set to the shared log path");
 };
 
+# Ticket #99 step 3: changes_applicable is now a single copy exported from
+# App::Yath2::Util and imported by both Options::Finder and Plugin::Cover
+# (the two byte-identical local copies were deleted).
+subtest changes_applicable_deduped => sub {
+    require App::Yath2::Util;
+    require App::Yath2::Options::Finder;
+    require App::Yath2::Plugin::Cover;
+
+    my $canon = \&App::Yath2::Util::changes_applicable;
+
+    # Both consumers resolve the imported sub to the SINGLE Util copy.
+    ok(\&App::Yath2::Options::Finder::changes_applicable == $canon, "Finder imports Util::changes_applicable (same coderef)");
+    ok(\&App::Yath2::Plugin::Cover::changes_applicable   == $canon, "Cover imports Util::changes_applicable (same coderef)");
+
+    # Policy: changed-files options do NOT apply to the projects command.
+    my $projects = bless {}, 'App::Yath2::Command::projects';
+    my $other    = bless {}, 'App::Yath2::Command::test';
+
+    my $with_cmd = sub { Getopt::Yath::Settings->new(harness => {command => $_[0]}) };
+
+    is($canon->(undef, undef, $with_cmd->($projects)), 0, "not applicable for the projects command");
+    is($canon->(undef, undef, $with_cmd->($other)),    1, "applicable for a non-projects command");
+    is($canon->(undef, undef, Getopt::Yath::Settings->new(harness => {})), 1, "applicable when no command is set");
+    is($canon->(undef, undef, Getopt::Yath::Settings->new()), 1, "applicable when there is no harness group");
+    is($canon->(undef, undef, undef), 1, "applicable when there are no settings");
+};
+
 done_testing;
