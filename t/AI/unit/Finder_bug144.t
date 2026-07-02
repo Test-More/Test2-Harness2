@@ -126,6 +126,39 @@ subtest g12_symlinked_subdir_discovered => sub {
     });
 };
 
+subtest g16_symlinked_test_file_kept_distinct => sub {
+    plan skip_all => "symlink not supported" unless $HAVE_SYMLINK;
+
+    # A symlinked test FILE and its target living side by side must BOTH be
+    # discovered, each under its OWN spelling -- the realpath dedup must NOT
+    # collapse them (regression: t/integration/test-symlinks & retry-symlinks;
+    # the $0-preservation idiom depends on both running).
+    in_tmp(sub {
+        mkdir 't' or die $!;
+        write_file('t/base.t');
+        symlink('base.t', 't/alias.t') or die "symlink: $!";
+
+        my $finder = mk_finder(extensions => ['t']);
+        my $res;
+        my ($out, $err) = capture { $res = $finder->find_project_files([], mk_settings(), ['t']) };
+
+        my @names = sort map { basename($_->relative) } @$res;
+        is(\@names, ['alias.t', 'base.t'], "both the symlink and its target are discovered, each under its own name");
+        unlike($out, qr/Skipping/, "neither is deduped away as an alias of the other");
+
+        # And when the symlink target has a NON-matching extension (only the
+        # symlink is a test), the target must not reserve a key that masks it.
+        mkdir 'u' or die $!;
+        write_file('u/real.data');
+        symlink('real.data', 'u/link.t') or die "symlink: $!";
+
+        my $f2 = mk_finder(extensions => ['t']);
+        my $r2;
+        capture { $r2 = $f2->find_project_files([], mk_settings(), ['u']) };
+        is([sort map { basename($_->relative) } @$r2], ['link.t'], "a symlinked test FILE is discovered even when its target has a non-test extension");
+    });
+};
+
 subtest g12_symlink_as_search_path_and_empty_dir => sub {
     plan skip_all => "symlink not supported" unless $HAVE_SYMLINK;
 

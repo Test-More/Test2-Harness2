@@ -11,6 +11,7 @@ use Cwd qw/getcwd/;
 use Carp qw/croak/;
 use Time::HiRes qw/time/;
 use Text::ParseWords qw/quotewords/;
+use File::Basename qw/dirname basename/;
 
 use App::Yath2::TestFile;
 use File::Spec;
@@ -145,6 +146,18 @@ sub _path_forms {
     return unless length $p;
     my %f = ($p => 1, clean_path($p, 0) => 1, clean_path($p) => 1);
     return keys %f;
+}
+
+# (G16) Dedup key: resolve the DIRECTORY portion to its realpath (collapsing
+# symlinked dirs and '..'), but keep the file's OWN name. Two spellings of the
+# same file reached via a symlinked dir or '..' share a key and collapse; a
+# symlinked test FILE stays distinct from its target (a symlink and the file it
+# points at are different test entries that must both run under their own $0 --
+# see t/integration/test-symlinks and retry-symlinks). Never resolves the file's
+# own symlink, so the traversal spelling is preserved.
+sub _dedup_key {
+    my ($path) = @_;
+    return File::Spec->catfile(clean_path(dirname($path)), basename($path));
 }
 
 sub _pull_from_file_or_url {
@@ -646,9 +659,9 @@ sub find_project_files {
 
     die "No tests to run, search is empty\n" unless @$search;
 
-    # %seen is keyed on the realpath-canonical spelling (clean_path absolute=1);
-    # the value is the traversal spelling used for the TestFile so user-facing
-    # paths / durations keys are unchanged for non-symlinked layouts.
+    # %seen is keyed on _dedup_key (realpath of the directory + the file's own
+    # name); the value is the traversal spelling used for the TestFile so
+    # user-facing paths / durations keys are unchanged for non-symlinked layouts.
     #
     # @candidates holds [$test, $listed] tuples. Discovery (listed loop + scan)
     # is split from filtering so durations can be applied BETWEEN the static and
@@ -698,8 +711,8 @@ sub find_project_files {
         }
 
         $path = clean_path($path, 0);
-        # (G16) realpath dedup key, traversal spelling as the value.
-        $seen{clean_path($path)} = $path;
+        # (G16) dir-realpath dedup key, traversal spelling as the value.
+        $seen{_dedup_key($path)} = $path;
 
         my $test;
         unless (first { $test = $_->claim_file($path, $settings, from => 'listed') } @$plugins) {
@@ -717,8 +730,8 @@ sub find_project_files {
 
     # (2) Scan: walk each search directory. follow_fast+follow_skip=2 descends
     # symlinked subdirs (G12) while terminating cleanly on symlink loops; the
-    # realpath dedup key (G16) means a file reachable via two spellings is only
-    # queued once.
+    # _dedup_key (G16) means a file reachable via two directory spellings is only
+    # queued once, while a symlinked test FILE stays distinct from its target.
     if (@dirs) {
         require File::Find;
         for my $dir (@dirs) {
@@ -731,19 +744,17 @@ sub find_project_files {
                     wanted      => sub {
                         no warnings 'once';
 
+                        # $File::Find::name is the path AS TRAVERSED (through any
+                        # symlinked dir), preserving the file's own spelling; the
+                        # -f guard drops dangling symlinks.
                         my $file = clean_path($File::Find::name, 0);
                         return unless -f $file;
 
-                        # In follow mode File::Find provides the resolved
-                        # realpath for free ($File::Find::fullname); it is undef
-                        # for dangling symlinks, which the -f guard above drops.
-                        my $key = $File::Find::fullname ? clean_path($File::Find::fullname, 0) : clean_path($file);
-
+                        my $key = _dedup_key($file);
                         if (defined $seen{$key}) {
                             print "Skipping '$file': already queued as '$seen{$key}'\n" if $seen{$key} ne $file;
                             return;
                         }
-                        $seen{$key} = $file;
 
                         my $test;
                         unless(first { $test = $_->claim_file($file, $settings, from => 'search') } @$plugins) {
@@ -754,7 +765,11 @@ sub find_project_files {
                             }
                         }
 
+                        # Only files that become tests reserve a dedup key, so a
+                        # non-test sibling (e.g. the symlink target under a
+                        # different extension) can never mask a real test file.
                         return unless $test;
+                        $seen{$key} = $file;
                         push @candidates => [$test, 0];
                         $dir_yield++;
                     },
