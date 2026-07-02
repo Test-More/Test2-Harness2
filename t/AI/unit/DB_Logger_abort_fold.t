@@ -80,6 +80,11 @@ sub final_state {
     $mon->feed({facet_data => {harness_collector => {uuid => $uuid}, harness_final_state => $fs}});
 }
 
+sub complete_collector {
+    my ($mon, $uuid) = @_;    # auditor 'completed' -> collector status 'complete'
+    $mon->feed({facet_data => {harness_collector => {uuid => $uuid}, harness_state_transition => {state => 'completed'}}});
+}
+
 # Convenience: all job_tries rows for a lc(job_uuid).
 sub tries_for {
     my ($log, $job_id) = @_;
@@ -87,7 +92,8 @@ sub tries_for {
     return grep { lc($_->field('job_uuid')) eq $juuid } $log->con->handle('job_tries')->all;
 }
 
-my $PASS_FS = {pass => 1, exit => 0, assertion_count => 1, pass_count => 1, fail_count => 0, subtests => []};
+my $PASS_FS = {pass => 1, exit => 0,  assertion_count => 1, pass_count => 1, fail_count => 0, subtests => []};
+my $FAIL_FS = {pass => 0, exit => 15, assertion_count => 0, pass_count => 0, fail_count => 1, subtests => []};
 
 # --------------------------------------------------------------------------- #
 subtest 'no-collector abort synthesizes a broken/0 try (rule 3)' => sub {
@@ -263,6 +269,47 @@ subtest 'finalize with no subscriber slot returns cleanly (no fold attempted)' =
     ok($ok, "_finalize_run_row lived with no subscriber") or diag($err);
     ok(!$log->terminal_error, "no terminal error recorded");
     is(scalar($log->con->handle('job_tries')->all), 0, "no tries fabricated without a subscriber");
+};
+
+# --------------------------------------------------------------------------- #
+subtest 'aborted job whose collector finalized failing: no phantom ord+1 (terminal-try guard)' => sub {
+    # The truncate / `yath abort` reality: the terminated test's collector still
+    # finalizes with a FAILING verdict (SIGTERM + no plan) -- so _upsert_tries
+    # records a terminal try (result=0) -- AND the runner announces the abort. The
+    # fold must NOT synthesize a second broken try at ord+1: the job is already
+    # correctly recorded by its own collector.
+    my $run_id = gen_uuid();
+    my ($mon, $log) = new_logger($run_id);
+
+    my $job_id = uc(gen_uuid());
+    my $cuuid  = gen_uuid();
+
+    dispatch($mon, $job_id, 'terminated.tx', $run_id);
+    start_collector($mon, $cuuid, 'terminated.tx', 1, $run_id);
+    final_state($mon, $cuuid, $FAIL_FS);        # collector's own failing verdict
+    complete_collector($mon, $cuuid);           # status -> 'complete' (terminal)
+    abort($mon, $job_id, $run_id);              # runner also announces the abort
+
+    $log->_sync;
+    $log->_finalize_run_row;
+
+    my @tries = tries_for($log, $job_id);
+    is(scalar(@tries), 1, "exactly one try row -- no phantom ord+1 synthesized");
+    is($tries[0]->field('try_ord'), 1, "the collector's own try (ord 1) stands");
+    is($tries[0]->field('result'),  0, "result 0 (the collector's failing verdict)");
+
+    # Idempotent under re-poll: the guard keeps holding on later passes.
+    $log->_sync for 1 .. 2;
+    is(scalar(tries_for($log, $job_id)), 1, "still one try row after extra _sync passes");
+
+    # The failure is still counted -- exactly once -- via the collector's terminal try.
+    my %by_uuid = map { lc($_->field('job_uuid')) => $_ } $log->con->handle('jobs')->all;
+    is($by_uuid{lc $job_id}->field('failed'), 1, "job folded failed=1");
+    is($by_uuid{lc $job_id}->field('passed'), 0, "job passed=0");
+
+    my ($run) = $log->con->handle('runs')->all;
+    is($run->field('failed'), 1, "runs.failed counts the aborted job exactly once");
+    is($run->field('passed'), 0, "runs.passed == 0");
 };
 
 done_testing;

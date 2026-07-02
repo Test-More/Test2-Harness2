@@ -387,6 +387,17 @@ sub _upsert_tries ($self, $mon) {
 # Runs AFTER _upsert_tries in _sync so broken/0 is the pass's last writer (the
 # runner's fire-once abort decision is authoritative even if a terminated
 # collector flushes a late final_state).
+#
+# TERMINAL-TRY GUARD: the truncate/`yath abort` path SIGTERMs the test, whose
+# collector still finalizes with a FAILING verdict (SIGTERM + no plan), so
+# _upsert_tries has already written a terminal try (result=0). That job is
+# correctly recorded by its own collector -- folding it would synthesize a PHANTOM
+# duplicate broken try at max+1. So for a job we have NOT already folded, skip it
+# when every existing try is terminal (a defined result). We still fold when the
+# job has NO try row (rule 3 synthesize) or an in-flight NULL-result try (rule 2
+# updates it). A job we HAVE folded (in +ABORT_FOLDED) bypasses the guard so the
+# late-passing-collector re-clobber keeps working -- broken/0 stays authoritative
+# only where the fold, not a collector, first owned the verdict.
 sub _fold_aborted_jobs ($self, $mon) {
     my $con = $self->con;
     for my $job_id ($mon->job_ids) {
@@ -395,12 +406,30 @@ sub _fold_aborted_jobs ($self, $mon) {
         next if defined($job->{run_id}) && $job->{run_id} ne $self->{+RUN_ID};    # same scoping as _upsert_jobs
         my $job_uuid = lc($job_id);
         next unless $con->handle('jobs', where => {job_uuid => $job_uuid})->first;    # fileless job never got a jobs row; counting skips it identically
+
+        # Already recorded by its own collector (no in-flight try to fold onto):
+        # leave the real verdict standing -- do NOT mint a phantom ord+1 broken try.
+        next if !$self->{+ABORT_FOLDED}{$job_uuid} && $self->_all_tries_terminal($con, $job_uuid);
+
         my $target = $self->{+ABORT_FOLDED}{$job_uuid} //= $self->_abort_target_try($con, $job_uuid);
         my $existing = $con->handle('job_tries', where => {job_try_uuid => $target->{job_try_uuid}})->first;
         if   ($existing) { $con->handle('job_tries', where => {job_try_uuid => $target->{job_try_uuid}})->update({status => 'broken', result => 0}) }
         else             { $con->handle('job_tries')->insert({job_try_uuid => $target->{job_try_uuid}, job_uuid => $job_uuid, try_ord => $target->{try_ord}, status => 'broken', result => 0}) }
     }
     return;
+}
+
+# True only when the job has >=1 try row AND every try already carries a verdict
+# (a defined result). Such a job is fully recorded by its collector(s): the fold
+# must not add a synthesized broken try. A job with no rows (rule 3 synthesizes)
+# or any in-flight NULL-result try (rule 2 updates it) returns false.
+sub _all_tries_terminal ($self, $con, $job_uuid) {
+    my @tries = $con->handle('job_tries', where => {job_uuid => $job_uuid})->all;
+    return 0 unless @tries;
+    for my $try (@tries) {
+        return 0 unless defined $try->field('result');
+    }
+    return 1;
 }
 
 # Pick the try_ord (and derived job_try_uuid) that an abort folds onto. Stable
