@@ -6,6 +6,13 @@ use Time::HiRes qw/time/;
 
 use Test2::Harness2::Service::Sampler;
 
+# #134/#138: service_tick's cadence (next_at / $now) is MONOTONIC interval math
+# (mono_time), not wall clock. The connection-driven subtests below poke the
+# private next_at field to force a tick, so they must use the SAME clock -- a
+# wall-clock value would never satisfy the monotonic `$now < next_at` gate and
+# the tick body would never run.
+use Test2::Harness2::Util qw/mono_time/;
+
 # The sampler samples every tick but reports only when a metric (cpu or memory),
 # rounded up to the nearest 5%, changes from the last sent: increases
 # immediately, decreases only once they have held for decrease_delay. A message
@@ -136,7 +143,7 @@ subtest either_metric_triggers_a_send_over_a_real_connection => sub {
         while (time < $deadline) {
             $runner->service_io;
             $s->service_io;
-            $s->{next_at} = time - 1;
+            $s->{next_at} = mono_time() - 1;
             $s->service_tick;
             $runner->service_io;
             return if @{$runner->loads} >= $want;
@@ -182,7 +189,7 @@ subtest stops_when_connection_breaks => sub {
     # First tick sends.
     $runner->service_io;
     $s->service_io;
-    $s->{next_at} = time - 1; $s->service_tick;
+    $s->{next_at} = mono_time() - 1; $s->service_tick;
     $runner->service_io;
 
     # Runner goes away.
@@ -191,7 +198,7 @@ subtest stops_when_connection_breaks => sub {
     # Subsequent ticks should detect the broken connection and stop the sampler.
     for (1 .. 20) {
         $s->service_io;
-        $s->{next_at} = time - 1; $s->service_tick;
+        $s->{next_at} = mono_time() - 1; $s->service_tick;
         last if $s->service_stopped;
         Time::HiRes::sleep(0.01);
     }
