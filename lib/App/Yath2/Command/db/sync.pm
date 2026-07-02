@@ -58,12 +58,15 @@ sub description {
     return <<"    EOT";
 Sync whole runs (a run plus all of its jobs/tries/artifacts) from one yath
 database to another. Run-data UUID primary keys copy verbatim, so re-syncing a
-run is an idempotent no-op; host-local natural-key foreign keys (project, host,
+run is idempotent; host-local natural-key foreign keys (project, host,
 machine-user, submitted-by user, test_file) are remapped on the destination via
-find_or_create on their natural key.
+find_or_create on their natural key. Each run copies inside a single destination
+transaction, so an interrupted sync leaves no trace and re-selects cleanly.
 
 With no --run-uuid the command syncs every run present in --from but not in --to
-(a run_delta). Pass one or more --run-uuid to sync a specific set instead.
+(a run_delta). Pass one or more --run-uuid to sync a specific set instead;
+passing --run-uuid for a run already on the destination verifies and repairs it
+(any missing jobs/tries/collectors/artifacts are filled in).
 
 submitted_by attribution defaults to carry-original; --as-user / --override-user
 attributes every synced run to a single importing user.

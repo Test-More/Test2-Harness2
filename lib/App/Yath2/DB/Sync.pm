@@ -43,7 +43,8 @@ C<import> command.
 Run-data tables use B<UUID PKs> that are host-stable by construction
 (C<run_uuid> / C<job_uuid> / C<job_try_uuid> / C<artifact_uuid>), so they
 B<copy verbatim> and the whole sync is an idempotent C<upsert> keyed on the
-UUID: re-syncing a run is a no-op, and distinct runs always have distinct UUIDs
+UUID: re-syncing a run B<verifies and repairs> it (missing children are filled
+in; a complete run copies nothing), and distinct runs always have distinct UUIDs
 so conflicts are impossible (spec §8c).
 
 Run-data B<FK columns that point at natural-key entities> are host-local
@@ -192,8 +193,13 @@ sub run_delta ($self) {
     return grep { !$have{$_} } $self->source_run_uuids;
 }
 
-# Every run_uuid on a connection, regardless of status (so the delta does not
-# re-copy a run the dest already holds even if it is mid-write there).
+# Every run_uuid on a connection, regardless of status. The any-status exclusion
+# is now safe because every sync-created run lands inside a per-run destination
+# transaction (#129): an interrupted sync rolls back to no trace, so a run present
+# on the dest is never a sync-created partial, and the delta will re-select any run
+# it does not yet hold. Legacy partials created BEFORE the #129 fix are not
+# re-selected by the delta (they are already present); repair them via an explicit
+# `--run-uuid`, which now always descends into the child syncs and fills the gaps.
 sub _all_run_uuids ($self, $con) {
     return map { lc($_->field('run_uuid')) } $con->handle('runs')->all;
 }
@@ -227,9 +233,28 @@ sub only_run_uuid ($self) {
 =item $stats = $sync->sync_runs(\@run_uuids)
 
 Sync each listed run (and all of its jobs/tries/artifacts) from source to
-destination. Idempotent: a run already present on the destination is skipped
-(its UUID PK already exists). Returns the C<stats> hashref (counts of rows
-written per table, plus C<skipped_runs>).
+destination. Idempotent: a run already present on the destination B<only skips
+the runs-row insert> (counted in C<skipped_runs>); its children are always
+verified/repaired via their per-UUID exists-checks, so a partially-synced run is
+completed and a fully-present run copies nothing. Returns the C<stats> hashref
+(counts of rows written per table, plus C<skipped_runs>).
+
+=head2 TRANSACTIONALITY (#129)
+
+Each per-run copy runs inside a single B<top-level destination transaction>
+(C<< $dest->txn(sub {...}) >>) wrapping the whole run body -- the runs row, the
+natural-key remaps, and every child sync. If the sync dies mid-run (Ctrl-C,
+network drop, a constraint error on one artifact) the transaction rolls back and
+the run leaves B<no trace> on the destination, so the next C<run_delta> naturally
+re-selects it. The transaction is B<top-level only> and never nested: QuickORM
+uses savepoints for nested transactions, which DuckDB does not support, so
+C<sync_runs> must never be called from inside another QuickORM transaction. The
+DuckDB dialect issues the txn via raw C<BEGIN TRANSACTION>/C<COMMIT>/C<ROLLBACK>
+(working around the C<DBD::DuckDB> C<begin_work> state bug); because the sync body
+is B<insert-only>, DuckDB's referenced-row-update block can never fire and a
+rollback of pure inserts is plain MVCC. On rollback the in-memory C<stats>
+counters are restored and the natural-key PK C<cache> is cleared (its dest PKs no
+longer exist), so a reused Sync object never writes dangling FKs.
 
 =cut
 
@@ -261,26 +286,47 @@ sub _sync_one_run ($self, $run_uuid) {
     my $src_run = $src->handle('runs', where => {run_uuid => $run_uuid})->first
         or croak "run '$run_uuid' was not found on the source database";
 
-    # Idempotency: the run PK already on the dest -> nothing to do (distinct runs
-    # have distinct uuids, so a present uuid is the SAME run; spec §8c).
+    # One top-level destination transaction per run: an interrupted sync leaves NO
+    # trace on the dest (the runs row rolls back too), so run_delta re-selects the
+    # run next time (#129). Top-level only -- nested txns use savepoints, which
+    # DuckDB lacks. Insert-only body: DuckDB's referenced-row-update block cannot fire.
+    my %stats_snap = %{$self->{+STATS}};
+    my $ok  = eval { $dest->txn(sub { $self->_copy_run($src_run, $run_uuid) }); 1 };
+    my $err = $@;
+    return if $ok;
+
+    %{$self->{+STATS}} = %stats_snap;    # rolled-back rows must not be counted
+    %{$self->{+CACHE}} = ();             # rolled-back natural-key PKs are void
+    die $err;
+}
+
+sub _copy_run ($self, $src_run, $run_uuid) {
+    my $src  = $self->{+SOURCE};
+    my $dest = $self->{+DEST};
+
+    # Idempotency/repair (#129): a present runs row only skips the runs-row INSERT
+    # (skipped_runs counts that outcome alone); the child syncs ALWAYS run -- their
+    # per-UUID exists-checks make a complete run a no-op and a partial run a repair.
     if ($dest->handle('runs', where => {run_uuid => $run_uuid})->first) {
         $self->{+STATS}{skipped_runs}++;
-        return;
+    }
+    else {
+        # --- runs row: copy verbatim columns, remap the natural-key FKs (R5). ---
+        my $row = $self->_row_data($src_run);
+
+        $row->{project_id}   = $self->_remap_fk('projects', $src, $row->{project_id});
+        $row->{host_id}      = $self->_remap_fk('hosts',    $src, $row->{host_id});
+        $row->{ran_by}       = $self->_remap_machine_user($src, $row->{ran_by});
+        $row->{submitted_by} = $self->_remap_submitted_by($src, $row->{submitted_by});
+
+        $dest->handle('runs')->insert($row);
+        $self->{+STATS}{runs}++;
     }
 
-    # --- runs row: copy verbatim columns, remap the natural-key FKs (R5). ---
-    my $row = $self->_row_data($src_run);
-
-    $row->{project_id} = $self->_remap_fk('projects', $src, $row->{project_id});
-    $row->{host_id}    = $self->_remap_fk('hosts',    $src, $row->{host_id});
-    $row->{ran_by}     = $self->_remap_machine_user($src, $row->{ran_by});
-    $row->{submitted_by} = $self->_remap_submitted_by($src, $row->{submitted_by});
-
-    $dest->handle('runs')->insert($row);
-    $self->{+STATS}{runs}++;
-
     # --- jobs (+ test_file remap) & their tries, then collectors, then
-    # artifacts (FK order: artifacts -> collectors -> job_tries). ---
+    # artifacts (FK order: artifacts -> collectors -> job_tries). Always descend:
+    # the per-UUID exists-checks make this a no-op for a complete run and a repair
+    # for a partial one (#129). ---
     $self->_sync_jobs($run_uuid);
     $self->_sync_collectors($run_uuid);
     $self->_sync_artifacts($run_uuid);
