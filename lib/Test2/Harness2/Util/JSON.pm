@@ -104,7 +104,10 @@ sub stream_json_l_file {
     }
     else {
         require Test2::Harness2::Util::File::JSONL;
-        my $jsonl = Test2::Harness2::Util::File::JSONL->new(name => $path);
+        # Bounded read of a static, complete-at-open file (croaked unless -f
+        # above): mark done so a final record with no trailing newline is
+        # surfaced instead of silently dropped.
+        my $jsonl = Test2::Harness2::Util::File::JSONL->new(name => $path, done => 1);
         while (my ($item) = $jsonl->poll(max => 1)) {
             $handler->($item);
         }

@@ -247,7 +247,9 @@ sub yath {
     my $out = {
         exit => $exit,
         $capture ? (output => join('', @lines)) : (),
-        $log ? (log => Test2::Harness2::Util::File::JSONL->new(name => $logfile)) : (),
+        # Constructed after waitpid: the log is complete, so done => 1 surfaces a
+        # newline-less final record instead of silently dropping it.
+        $log ? (log => Test2::Harness2::Util::File::JSONL->new(name => $logfile, done => 1)) : (),
     };
 
     my $name = join(' ', map { length($_) < 30 ? $_ : substr($_, 0, 10) . "[...]" . substr($_, -10) } grep { defined($_) } $prefix, 'yath', @$pre, $cmd ? ($cmd) : (), @$cli);

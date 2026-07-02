@@ -376,7 +376,10 @@ sub add_rerun_to_search {
 
         die "'$rerun' is not a valid log file, and no plugin intercepted it.\n" unless -f $rerun;
 
-        my $stream = Test2::Harness2::Util::File::JSONL->new(name => $rerun, skip_bad_decode => 1);
+        # Bounded read of a static log (died unless -f above): done => 1 so a
+        # newline-less final record (e.g. a hand-edited or externally-produced
+        # log) is still counted for --rerun instead of silently lost.
+        my $stream = Test2::Harness2::Util::File::JSONL->new(name => $rerun, skip_bad_decode => 1, done => 1);
 
         my %files;
         while (1) {

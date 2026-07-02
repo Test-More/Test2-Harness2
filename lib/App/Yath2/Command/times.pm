@@ -62,7 +62,9 @@ sub run {
 
     $self->{+FIELDS} = \@fields;
 
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
+    # Bounded read of a static log (died unless -f above): done => 1 so a
+    # newline-less final record is surfaced rather than silently dropped.
+    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
 
     my @jobs;
     while (1) {

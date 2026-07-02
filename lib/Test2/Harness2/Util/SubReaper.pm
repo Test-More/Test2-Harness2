@@ -13,12 +13,14 @@ our @EXPORT_OK = qw/acquire_subreaper release_subreaper subreaper_supported subr
 # (36) across architectures; only the prctl syscall number varies by arch.
 use constant PR_SET_CHILD_SUBREAPER => 36;
 
-# FreeBSD/DragonFly: procctl(P_PID, getpid(), PROC_REAP_ACQUIRE|PROC_REAP_RELEASE,
-# NULL). These constants are stable across the BSD architectures we reach.
+# FreeBSD: procctl(P_PID, getpid(), PROC_REAP_ACQUIRE|PROC_REAP_RELEASE, NULL).
+# These constants come from FreeBSD's sys/procctl.h + syscalls.master and are
+# FreeBSD-specific -- NOT shared with the other BSDs (DragonFly's SYS_procctl and
+# PROC_REAP_* values differ; see the freebsd branch in _resolve_platform).
 use constant P_PID               => 0;
 use constant PROC_REAP_ACQUIRE   => 2;
 use constant PROC_REAP_RELEASE   => 3;
-use constant SYS_procctl_FREEBSD => 548;
+use constant SYS_procctl_FREEBSD => 544;
 
 # Sentinel in a prepared arg list replaced with the live $$ at syscall time. A
 # real pid is never negative, so this can never collide with a genuine value.
@@ -77,7 +79,15 @@ sub _resolve_platform {
         );
     }
 
-    if ($os eq 'freebsd' || $os eq 'dragonfly') {
+    if ($os eq 'freebsd') {
+        # procctl's second arg is id_t == int64. Perl's syscall() marshals each
+        # numeric arg as one native word, which only matches the ABI on LP64; on
+        # 32-bit FreeBSD (i386/armv7/powerpc) the 64-bit id would span two slots
+        # and the cmd would be read from the wrong position, so report
+        # unsupported there instead of issuing a mis-marshaled syscall.
+        require Config;
+        return unless ($Config::Config{ptrsize} // 0) == 8;
+
         # The pid (second arg) is injected live in _do_syscall via the PID_SLOT
         # sentinel so it is always the current process even if the platform was
         # resolved before a fork.
@@ -88,6 +98,12 @@ sub _resolve_platform {
             [P_PID, PID_SLOT, PROC_REAP_RELEASE, 0],
         );
     }
+
+    # DragonFly BSD is deliberately NOT tabled here: its procctl is a DIFFERENT
+    # syscall number (believed 536 -- 548 is wait6 there) with DIFFERENT
+    # PROC_REAP_* command values than FreeBSD. Tabling it without verifying on a
+    # real DragonFly system would trade one false-positive for another, so it
+    # reports unsupported (graceful no-op) until confirmed.
 
     return;
 }
@@ -117,8 +133,10 @@ supported platform) instead of being reaped by the preload tree.
 This is a pure-Perl reimplementation that issues the native primitive through
 C<syscall()> with a per-(OS, arch) number table, so the distribution needs no XS
 and no compiler at install. It supports Linux
-(C<prctl(PR_SET_CHILD_SUBREAPER)>) and FreeBSD/DragonFly
-(C<procctl(..., PROC_REAP_ACQUIRE)>). Every other platform, and any unknown
+(C<prctl(PR_SET_CHILD_SUBREAPER)>) and 64-bit FreeBSD
+(C<procctl(..., PROC_REAP_ACQUIRE)>). DragonFly BSD is deliberately unsupported
+(its C<procctl> syscall number and C<PROC_REAP_*> constants differ from
+FreeBSD's and are unverified). Every other platform, and any unknown
 architecture, is a graceful no-op reported as "unsupported"; the caller falls
 back to C<init> owning the orphans.
 
@@ -139,13 +157,13 @@ Nothing is exported by default; request functions explicitly.
 =item $bool = subreaper_supported()
 
 True when the running (OS, arch) has a subreaper mechanism this module can issue
-via C<syscall()> (Linux or FreeBSD/DragonFly on a tabled architecture). Makes no
+via C<syscall()> (Linux on a tabled architecture, or 64-bit FreeBSD). Makes no
 syscall; safe on any platform.
 
 =item $name = subreaper_mechanism()
 
 A short string naming the mechanism (C<"prctl"> on Linux, C<"procctl"> on
-FreeBSD/DragonFly) or C<undef> when unsupported. Invariant:
+64-bit FreeBSD) or C<undef> when unsupported. Invariant:
 C<< !!subreaper_supported() == defined(subreaper_mechanism()) >>.
 
 =item $bool = acquire_subreaper()

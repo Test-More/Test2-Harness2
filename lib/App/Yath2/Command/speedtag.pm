@@ -100,7 +100,9 @@ sub run {
     die "max short duration must be an integer, got '$self->{+MAX_SHORT}'"  unless $self->{+MAX_SHORT}  && $self->{+MAX_SHORT}  =~ m/^\d+$/;
     die "max short duration must be an integer, got '$self->{+MAX_MEDIUM}'" unless $self->{+MAX_MEDIUM} && $self->{+MAX_MEDIUM} =~ m/^\d+$/;
 
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
+    # Bounded read of a static log (died unless -f above): done => 1 so a
+    # newline-less final record is surfaced rather than silently dropped.
+    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
 
     my $durations_file = $self->settings->speedtag->generate_durations_file;
     my %durations;

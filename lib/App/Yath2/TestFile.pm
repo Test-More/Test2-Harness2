@@ -278,6 +278,11 @@ sub _scan ($self) {
             # state ('key { ... key }') across non-directive lines; non-matching
             # lines are a no-op for it.
             $new->parse_line($line);
+
+            # Feed EVERY line to the legacy parser too (it ignores non-directive
+            # lines) so its internal line_no equals the real file line -- warnings
+            # from bad legacy directives then point at the right line.
+            $legacy->parse_line($line);
             $saw_harness2 = 1 if $line =~ m/^\s*\Q$comment\E\s*HARNESS2:/;
 
             next if $line =~ m/^\s*$/;
@@ -302,9 +307,9 @@ sub _scan ($self) {
                 next;
             }
 
-            # A legacy HARNESS- directive line -> feed the legacy parser.
+            # A legacy HARNESS- directive line (already fed to the legacy parser
+            # above).
             if ($line =~ m/^\s*\Q$comment\E\s*HARNESS-.+/) {
-                $legacy->parse_line($line);
                 next;
             }
 

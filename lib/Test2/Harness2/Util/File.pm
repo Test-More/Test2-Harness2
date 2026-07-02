@@ -11,7 +11,7 @@ use Test2::Harness2::Util();
 use Carp qw/croak confess/;
 use Fcntl qw/SEEK_SET SEEK_CUR/;
 
-use Test2::Harness2::Util::HashBase qw{ -name -_fh -_init_fh done -line_pos <skip_bad_decode };
+use Test2::Harness2::Util::HashBase qw{ -name -_fh -_init_fh done -line_pos <skip_bad_decode +held_partial };
 
 sub exists { -e $_[0]->{+NAME} }
 
@@ -60,7 +60,22 @@ sub reset {
     delete $self->{+_FH};
     delete $self->{+DONE};
     delete $self->{+LINE_POS};
+    delete $self->{+HELD_PARTIAL};
     return;
+}
+
+sub DESTROY {
+    my $self = shift;
+    local ($@, $!);
+
+    # A reader that ended a poll still holding an unterminated final line, and
+    # was never marked done, may have silently dropped the file's last record
+    # (see read_line). Surface it at teardown -- a tail that later completed has
+    # already cleared the flag (on the next full line), and a done reader
+    # surfaces the partial itself, so neither warns here.
+    return unless $self->{+HELD_PARTIAL} && !$self->{+DONE};
+
+    warn "$self->{+NAME}: reader discarded holding a partial (unterminated) final line ($self->{+HELD_PARTIAL} bytes); a truncated or still-writing file may have lost its last record\n";
 }
 
 sub fh {
@@ -97,19 +112,46 @@ sub read_line {
     # No line, nothing to do
     return unless defined $line && length($line);
 
-    # Partial line, hold off unless done
-    return unless $self->{+DONE} || substr($line, -1, 1) eq "\n";
+    # A final line with no trailing newline. A live tailer must hold it back (it
+    # may still be mid-append); a DONE (bounded, complete-at-open) reader
+    # surfaces it so the last record is not silently dropped.
+    my $partial = substr($line, -1, 1) ne "\n";
+
+    if ($partial && !$self->{+DONE}) {
+        # Remember we are sitting on an unterminated final line so DESTROY can
+        # warn if this reader is discarded before the file ever completes.
+        $self->{+HELD_PARTIAL} = length($line);
+        return;
+    }
+
+    # A full line (or a surfaced DONE partial) means we are no longer holding a
+    # partial back.
+    delete $self->{+HELD_PARTIAL};
 
     my $new_pos = tell($fh);
     die "Failed to 'tell': $!" if $new_pos == -1;
 
     my $err = 0;
-    local $@;
-    unless (eval { $line = $self->decode($line); 1 }) {
-        $err = $@ // 'error';
-        confess "$self->{+NAME} ($pos -> $new_pos): $err" unless $self->{+SKIP_BAD_DECODE};
-        warn "Skipping line that failed to decode: $err\n" if $self->{+SKIP_BAD_DECODE} > 1;
-        $line = undef;
+    my $ok   = eval { $line = $self->decode($line); 1 };
+    my $err_ = $@;
+    unless ($ok) {
+        $err = $err_ // 'error';
+
+        if ($self->{+DONE} && $partial) {
+            # The newly-unlocked truncated-tail case: a DONE reader hit a final
+            # line with no trailing newline that will not decode (a record cut
+            # off mid-write). Skip it non-fatally regardless of skip_bad_decode
+            # -- it can fire at most once per file, at EOF -- rather than
+            # confessing, so a bounded consumer surfaces the earlier records and
+            # terminates cleanly instead of dying.
+            warn "$self->{+NAME}: discarding truncated final record (no trailing newline, failed to decode): $err\n";
+            $line = undef;
+        }
+        else {
+            confess "$self->{+NAME} ($pos -> $new_pos): $err" unless $self->{+SKIP_BAD_DECODE};
+            warn "Skipping line that failed to decode: $err\n" if $self->{+SKIP_BAD_DECODE} > 1;
+            $line = undef;
+        }
     }
 
     $self->{+LINE_POS} = $new_pos unless defined $params{peek} || defined $params{from};

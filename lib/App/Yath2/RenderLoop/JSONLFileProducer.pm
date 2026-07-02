@@ -167,7 +167,10 @@ its later events pass the filter (the original replay behavior).
 =cut
 
 sub stream ($self) {
-    return $self->{+STREAM} //= Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
+    # Replay of an archived (previously-written, complete) log: done => 1 so a
+    # newline-less final record is surfaced rather than silently dropped. NB the
+    # stream's own `done` is distinct from this producer's +done key.
+    return $self->{+STREAM} //= Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
 }
 
 sub _match_job ($self, $e, $fd) {

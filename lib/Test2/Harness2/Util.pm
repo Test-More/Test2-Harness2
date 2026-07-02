@@ -274,8 +274,13 @@ sub hub_truth {
 
 sub maybe_read_file {
     my ($file) = @_;
-    return undef unless -f $file;
-    return read_file($file);
+
+    my $fh = maybe_open_file($file) or return undef;
+    local $/;
+    my $out = <$fh>;
+    close_file($fh, $file);
+
+    return $out;
 }
 
 sub read_file {
@@ -333,8 +338,46 @@ sub open_file {
 
 sub maybe_open_file {
     my ($file, $mode) = @_;
-    return undef unless -f $file;
-    return open_file($file, $mode);
+    $mode ||= '<';
+
+    # Non-read modes: a writer is not a teardown-racing poller, so keep the
+    # historical -f-then-open (and never create a file that is missing).
+    if ($mode ne '<') {
+        return undef unless -f $file;
+        return open_file($file, $mode);
+    }
+
+    # Compressed read: IO::Uncompress reports failure as a message string, not a
+    # trustworthy errno, so keep the -f pre-check. Should the file vanish in the
+    # race between that check and the open (ENOENT/ESTALE) return undef; re-throw
+    # anything else.
+    if ($file =~ m/\.(gz|bz2)$/i) {
+        return undef unless -f $file;
+
+        my $fh;
+        my $ok  = eval { $fh = open_file($file, $mode); 1 };
+        my $err = $@;
+        return $fh if $ok;
+        return undef if $!{ENOENT} || $!{ESTALE};
+        die $err;
+    }
+
+    # Plain read: open directly (no stat window) so a file unlinked between a
+    # decision and this open cannot confess -- ENOENT (unlinked) and ESTALE (an
+    # NFS handle that vanished) become undef, killing a teardown-racing poller
+    # gracefully. Any other error (EACCES, EMFILE, EISDIR, ELOOP, ENOTDIR, ...)
+    # still confesses. On success, fstat the open handle so a directory/device
+    # still yields undef (the old -f contract) without a TOCTOU window.
+    if (open(my $fh, $mode, $file)) {
+        unless (-f $fh) {
+            close($fh);
+            return undef;
+        }
+        return $fh;
+    }
+
+    return undef if $!{ENOENT} || $!{ESTALE};
+    confess "Could not open file '$file' ($mode): $!";
 }
 
 sub close_file {
@@ -704,7 +747,11 @@ If no mode is provided C<< '<' >> is assumed.
 
 This will open the file at C<$path> and return a filehandle.
 
-C<undef> is returned if the file cannot be opened.
+C<undef> is returned when the file does not exist, or vanishes in the race
+between the decision to open it and the open itself (C<ENOENT>/C<ESTALE>) -- so a
+teardown-racing poller whose file is unlinked mid-open degrades gracefully rather
+than dying. Opening a directory/device likewise returns C<undef>. Any other
+failure (for example C<EACCES>, C<EMFILE>) throws an exception.
 
 B<NOTE:> This will automatically use L<IO::Uncompress::Bunzip2> or
 L<IO::Uncompress::Gunzip> to uncompress the file if it has a .bz2 or .gz
@@ -714,7 +761,9 @@ extension.
 
 This will open the file at C<$path> and return all its contents.
 
-This will return C<undef> if the file cannot be opened.
+This will return C<undef> when the file does not exist or vanishes in the race
+(C<ENOENT>/C<ESTALE>); any other open failure throws an exception (same contract
+as C<maybe_open_file>, on which it is built).
 
 B<NOTE:> This will automatically use L<IO::Uncompress::Bunzip2> or
 L<IO::Uncompress::Gunzip> to uncompress the file if it has a .bz2 or .gz

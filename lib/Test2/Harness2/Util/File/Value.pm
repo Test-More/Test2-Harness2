@@ -9,7 +9,25 @@ use Test2::Harness2::Util::HashBase;
 
 sub init {
     my $self = shift;
+
+    # Chain to the base initializer so the required-name croak and the
+    # fh-constructor-arg (-> _INIT_FH) handling still run.
+    $self->SUPER::init();
+
+    # DONE=1 is deliberate: a value file is complete at read time, so a final
+    # value with no trailing newline must be surfaced rather than held back.
     $self->{+DONE} = 1;
+}
+
+sub reset {
+    my $self = shift;
+
+    # SUPER::reset() clears DONE (it re-arms the partial-line hold for a
+    # re-read); for a value file DONE must stay set so a newline-less value is
+    # still surfaced after a reset.
+    $self->SUPER::reset();
+    $self->{+DONE} = 1;
+    return;
 }
 
 sub read {

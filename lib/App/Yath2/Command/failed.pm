@@ -54,7 +54,9 @@ sub run {
     die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
     die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
 
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE});
+    # Bounded read of a static log (died unless -f above): done => 1 so a
+    # newline-less final record is surfaced rather than silently dropped.
+    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
 
     my %failed;
 
