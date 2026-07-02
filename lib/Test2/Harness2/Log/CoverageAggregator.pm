@@ -249,7 +249,7 @@ This module takes a stream of events and produces aggregated coverage data.
     #     subs  => {total => 20, tested => 12},
     #     untested => {files => \@file_list, subs => {file => \@sub_list, ...}},
     # }
-    my $metrics = $agg->metrics;
+    my $metrics = $agg->build_metrics;
 
 
 =head1 METHODS
@@ -349,8 +349,12 @@ subroutine".
 
 =item $metrics = $agg->build_metrics(exclude_private => $BOOL)
 
-Will build metrics, and include them in the output from C<< $agg->coverage() >>
-next time it is called.
+Builds the metrics and returns the metrics hashref directly (see the structure
+below).
+
+B<Note:> The C<ByRun> subclass also stores the built metrics so they are
+included in its C<< $agg->coverage() >> output. The base class and the
+C<ByTest> subclass have no C<coverage()> method.
 
 The C<exclude_private> option, when set to true, will exclude any method that
 beings with an underscore from the coverage metrics and untested sub list.

@@ -88,7 +88,7 @@ sub finalize {
     my $ip = $self->{+IN_PROGRESS};
     my $cm = $self->{+COMPLETED} //= [];
 
-    push @{$cm} => {$_ => delete $ip->{$_}} for keys %$ip;
+    push @{$cm} => delete $ip->{$_} for keys %$ip;
 
     $self->SUPER::finalize();
 }
@@ -163,7 +163,7 @@ sub get_coverage_tests {
 
     return @out if $ok;
 
-    warn "Error processing coverage data for '$test' using manager '$manager'. Running entire test to be safe.\nError:\n====\n$@\n====\n";
+    warn "Error processing coverage data for '$test' using manager '$manager'. Running entire test to be safe.\nError:\n====\n$err\n====\n";
     return ($test);
 }
 

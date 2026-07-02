@@ -20,7 +20,6 @@ sub record_coverage {
     my ($test, $data) = @_;
 
     my $coverage    = $self->{+COVERAGE}    // $self->init_coverage;
-    my $files       = $coverage->{files}    //= {};
     my $alltestmeta = $coverage->{testmeta} //= {};
     my $testmeta    = $alltestmeta->{$test} //= {type => 'flat'};
 
@@ -146,7 +145,7 @@ sub get_coverage_tests {
 
         die "Invalid test type: $type" unless $type eq 'split';
 
-        my $froms = $tests{$test} // [];
+        my $froms = $tests{$test};
         my $ok = eval {
             require(mod2file($manager));
             my $specs = $manager->test_parameters($test, $froms, $changes, $coverage_data, $settings);
@@ -162,7 +161,7 @@ sub get_coverage_tests {
 
         next if $ok;
 
-        warn "Error processing coverage data for '$test' using manager '$manager'. Running entire test to be safe.\nError:\n====\n$@\n====\n";
+        warn "Error processing coverage data for '$test' using manager '$manager'. Running entire test to be safe.\nError:\n====\n$err\n====\n";
         push @out => $test;
     }
 
