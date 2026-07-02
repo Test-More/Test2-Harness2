@@ -26,15 +26,6 @@ use Test2::Harness2::Renderer::Driver;
 # then a background writer appends the (passing) terminal a moment later. The
 # fixed driver bounded-waits for the terminal and settles the TRUE verdict.
 
-{
-    package StubSink;
-    sub new          { bless {events => []}, shift }
-    sub render_event { push @{$_[0]{events}} => $_[1]; return }
-    sub step         { }
-    sub finish       { }
-    sub events       { @{$_[0]{events}} }
-}
-
 my $ev = sub { bless({facet_data => {@_}}, 'Test2::Collector::Event') };
 
 my $dir  = tempdir(CLEANUP => 1);
@@ -57,14 +48,16 @@ $mon->feed({facet_data => {harness_collector => {uuid => $uuid}, harness_state_t
 
 ok(!$mon->collector($uuid)->{final_state}, "final_state NOT folded yet (completed arrived first)");
 
-my $sink = StubSink->new;
+my @events;
 my $settings = mock {} => (add => [check_group => sub { 0 }]);
 
+# The engine is a pure source: it dispatches through its cb (the seam the render
+# loop uses to own the fan-out). Capture the dispatched events directly.
 my $driver = Test2::Harness2::Renderer::Driver->new(
-    settings  => $settings,
-    renderers => [$sink],
-    run_id    => 'RUN-1',
-    tasks     => [{job_id => 'JOB-PASS', file => 't/pass.t', rel_file => 't/pass.t'}],
+    settings    => $settings,
+    dispatch_cb => sub { push @events => $_[0] },
+    run_id      => 'RUN-1',
+    tasks       => [{job_id => 'JOB-PASS', file => 't/pass.t', rel_file => 't/pass.t'}],
 );
 
 # Background writer: after a short delay, append the PASSING terminal records and
@@ -89,7 +82,7 @@ waitpid($pid, 0);
 ok((time - $start) >= 0.1, "driver bounded-waited for the events-file terminal");
 
 # The held/dispatched harness_job_end must reflect the TRUE (passing) verdict.
-my ($end) = grep { $_->facet_data->{harness_job_end} } $sink->events;
+my ($end) = grep { $_->facet_data->{harness_job_end} } @events;
 ok($end, "a harness_job_end was rendered");
 is($end->facet_data->{harness_job_end}{fail}, 0, "PASSING job rendered with fail=0 (NOT prematurely FAILED)");
 

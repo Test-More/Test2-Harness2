@@ -17,6 +17,8 @@ use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
 use App::Yath2::Client;
 use App::Yath2::Discovery();
+use App::Yath2::RenderLoop;
+use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util qw/open_file/;
 use File::Path qw/remove_tree/;
@@ -73,20 +75,25 @@ sub _stop_live {
     my ($self, $disco) = @_;
     my $pid = $disco->pid;
 
-    # Plugin teardown() runs in the RUNNER as it shuts down. PRIME the shutdown
-    # renderer BEFORE we trigger shutdown (LIVE-only: connect_subscriber must never
-    # run when the socket is not live -- deps (b)), so its cursor sits at the current
-    # end and it renders ONLY the teardown output the runner is about to write.
-    my $render = eval { $self->prime_shutdown };
-    warn "Could not prime runner shutdown renderer: $@" unless defined $render || !$@;
+    # One shared absolute deadline for the drain AND the exit-wait, so a healthy stop
+    # adds NO latency (the drain already exits shortly after pid death) while a wedged
+    # runner is bounded to the single 30s window rather than stacking two. Declared
+    # here and assigned below (after prime + attach, matching the pre-loop timing);
+    # the render loop's done_check closes over it so drain and exit-wait share it.
+    my $deadline;
+
+    # Plugin teardown() runs in the RUNNER as it shuts down. Build + PRIME the
+    # shutdown render loop BEFORE we trigger shutdown (LIVE-only: connect_subscriber
+    # must never run when the socket is not live -- deps (b)), so its tail readers
+    # sit at the current end and it renders ONLY the teardown output the runner is
+    # about to write. Returns undef when runner output is hidden (loop skipped).
+    my $loop = eval { $self->build_shutdown_loop($pid, \$deadline) };
+    warn "Could not prime runner shutdown renderer: $@" unless defined $loop || !$@;
 
     # The runner already exists; attach the client to it (kill(0) liveness, no reap).
     $self->client->attach_runner($pid);
 
-    # One shared absolute deadline for the drain AND the exit-wait, so a healthy stop
-    # adds NO latency (the drain already exits shortly after pid death) while a wedged
-    # runner is bounded to the single 30s window rather than stacking two.
-    my $deadline = time + $self->STOP_DEADLINE;
+    $deadline = time + $self->STOP_DEADLINE;
 
     # Graceful 'stop' (the runner translates it into its own TERM teardown) + the
     # end_queue fallback. Both are alarm-backstopped: the eval alone is INSUFFICIENT
@@ -97,7 +104,11 @@ sub _stop_live {
     ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->end_queue });
     warn "Could not end runner queue: $err" unless $ok;
 
-    my $rendered = eval { $self->drain_shutdown($render, $pid, $deadline) if $render; 1 };
+    # Drain the runner's teardown output through the render loop (its done_check is
+    # the stop-specific terminal predicate) then finish the renderers. Replaces the
+    # old hand-stepped drain; on the hidden-output path $loop is undef so the
+    # renderers are never stepped/finished (today's behavior preserved).
+    my $rendered = eval { if ($loop) { $loop->start; $loop->finish } 1 };
     warn "Could not render runner shutdown output: $@" unless $rendered;
 
     my $remaining = $deadline - time;
@@ -141,12 +152,32 @@ sub _stop_not_live {
     return 1;
 }
 
-# Build the shutdown renderer in TAIL mode and prime its cursor: one step skips
-# everything already recorded so later steps render only newly-appended output.
-# A best-effort global subscription also surfaces any teardown aux collector.
-# Returns a context hashref (or undef when runner output is hidden).
-sub prime_shutdown {
+# Build + PRIME the shutdown render loop, reusing the same shape `yath watch`
+# runs: the engine is a plain runner-output-only Test2::Harness2::Renderer::Base
+# (no per-job ordering) with NO renderers/plugins of its own; an
+# App::Yath2::RenderLoop::LiveProducer redirects the engine's dispatch into its
+# queue (so the engine is a pure source); and an App::Yath2::RenderLoop owns the
+# REAL renderers + plugins and the actual sink fan-out. In TAIL mode, priming
+# opens the readers positioned at the CURRENT end of the runner stream so later
+# iterations render ONLY the teardown output the runner is about to write. Any
+# events produced at prime time land in the producer queue and are dispatched on
+# the loop's first iterate (order preserved, nothing dropped).
+#
+# Returns the loop, or undef when runner output is hidden (the caller then skips
+# the loop entirely, so the renderers are never stepped or finished -- today's
+# hidden-path behavior).
+#
+# The done() predicate is the irreducible stop-specific bit: the source is
+# exhausted once the WRAPPING COLLECTOR has finalized the runner-events stream
+# AFTER the runner exited and flushed its teardown ($engine->runner_output_done)
+# -- NOT when the inner runner pid dies. The collector outlives that pid by the
+# moment it takes to write the final events, and we must read them before run()
+# removes the workdir. Inner-pid death only starts a KILL_GRACE crash-grace
+# fallback; the shared STOP_DEADLINE (via $deadline_ref) is the hard cap. All
+# three arms are verbatim from the previous hand-stepped drain loop.
+sub build_shutdown_loop {
     my $self = shift;
+    my ($pid, $deadline_ref) = @_;
 
     my $settings = $self->settings;
 
@@ -156,61 +187,56 @@ sub prime_shutdown {
 
     return undef unless $show;
 
-    my $renderer = Test2::Harness2::Renderer::Base->new(
+    my $engine = Test2::Harness2::Renderer::Base->new(
         settings           => $settings,
-        renderers          => $self->renderers,
         workdir            => $self->workdir,
         run_id             => gen_uuid(),
         show_runner_output => $show,
         tail               => 1,
-        plugins            => $settings->harness->plugins,
     );
 
-    my $sub     = eval { $self->client->connect_subscriber };
+    # Best-effort global subscription (LIVE-only): surfaces any teardown aux
+    # collector via the transition mirror. If it fails, the monitor is a standalone
+    # empty mirror -- the engine still tails the runner's OWN events file by the
+    # workdir path, so the runner's teardown output still renders.
+    my $sub;
+    my $ok  = eval { $sub = $self->client->connect_subscriber; 1 };
+    my $err = $@;
+
     my $monitor = $sub ? $sub->monitor : Test2::Harness2::Runner::Monitor->new;
 
-    # Prime: open the readers and skip to the current end of the runner stream.
-    $sub->poll if $sub;
-    $renderer->step_runner_output($monitor);
-
-    return {renderer => $renderer, sub => $sub, monitor => $monitor};
-}
-
-# Drain until the runner's events stream reaches its terminal (the wrapping
-# collector finalized after the runner exited and flushed teardown), NOT until the
-# inner runner pid dies -- the collector outlives that pid by the moment it takes
-# to write the final events, and we must read them before the caller removes the
-# workdir. A grace window past pid-death bounds the crash case.
-sub drain_shutdown {
-    my $self = shift;
-    my ($ctx, $pid, $deadline) = @_;
-
-    my $renderer = $ctx->{renderer};
-    my $sub      = $ctx->{sub};
-    my $monitor  = $ctx->{monitor};
-
-    # A shared absolute deadline (passed by _stop_live so the drain and the exit-wait
-    # split ONE budget); default to a standalone STOP_DEADLINE window otherwise.
-    $deadline //= time + $self->STOP_DEADLINE;
     my $grace = $self->KILL_GRACE;
-
     my $dead_at;
-    while (time < $deadline) {
-        $sub->poll if $sub;
-        $renderer->step_runner_output($monitor);
 
-        last if $renderer->runner_output_done;
+    my $producer = App::Yath2::RenderLoop::LiveProducer->new(
+        engine     => $engine,
+        subscriber => $sub,
+        monitor    => $monitor,
+        done_check => sub {
+            return 1 if $engine->runner_output_done;
 
-        my $alive = $pid && kill(0, $pid);
-        $dead_at //= time unless $alive;
-        last if $dead_at && (time - $dead_at) > $grace;
+            my $alive = $pid && kill(0, $pid);
+            $dead_at //= time unless $alive;
+            return 1 if $dead_at && (time - $dead_at) > $grace;
 
-        sleep 0.02;
-    }
+            return 1 if $$deadline_ref && time > $$deadline_ref;
 
-    $_->finish for @{$self->renderers};
+            return 0;
+        },
+    );
 
-    return;
+    # PRIME: with the producer built (its dispatch_cb installed on the engine), open
+    # the tail readers at the current end of the runner stream.
+    $sub->poll if $sub;
+    $engine->step_runner_output($monitor);
+
+    return App::Yath2::RenderLoop->new(
+        renderers => $self->renderers,
+        settings  => $settings,
+        run_id    => $engine->run_id,
+        plugins   => $settings->harness->plugins,
+        producer  => $producer,
+    );
 }
 
 1;

@@ -29,11 +29,12 @@ ordering contract on top of L<Test2::Harness2::Renderer::Base>.
 
 This is the command-side render path. The reusable mechanics -- locating a
 collector's C<events.jsonl.zst> from transition state, reading it by path, the
-runner/stage output tail, the run-level rollup, and the C<render_event> fan-out
-to the sink renderers + logger -- live in the base class
-L<Test2::Harness2::Renderer::Base>. This subclass adds B<only> the per-job
-ordering policy on top of that base, so the base stays free of any ordering
-policy for other consumers (C<watch>, archived replay).
+runner/stage output tail, and the run-level rollup -- live in the base class
+L<Test2::Harness2::Renderer::Base>. The sink fan-out (the C<render_event>
+renderers + plugins) lives in L<App::Yath2::RenderLoop>, which drives this engine
+as a pure event source via the C<dispatch_cb> seam. This subclass adds B<only>
+the per-job ordering policy on top of that base, so the base stays free of any
+ordering policy for other consumers (C<watch>, archived replay).
 
 Instead of consuming a spawned gatherer's reconstructed event stream, the
 C<test> / C<run> command subscribes to the runner's canonical state
@@ -85,13 +86,13 @@ subscription state plus the events files -- never from a gatherer event.
 
     my $driver = Test2::Harness2::Renderer::Driver->new(
         settings  => $settings,
-        renderers => $renderers,
-        logger    => $logger,
         run       => $run,
         run_id    => $run_id,
         tasks     => \@tasks,
-        plugins   => $plugins,
     );
+
+    # The loop installs a dispatch_cb; the engine is then a pure source.
+    my $producer = App::Yath2::RenderLoop::LiveProducer->new(engine => $driver, ...);
 
     $driver->render_run_start;
     while (...) {

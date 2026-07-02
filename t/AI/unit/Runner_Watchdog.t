@@ -93,24 +93,17 @@ subtest driver_rolls_up_aborted_job_as_failed => sub {
     my $settings = Getopt::Yath::Settings->new;
     $settings->group('display', 1)->create_option(verbose => 0);
 
-    {
-        package CaptureRenderer;
-        sub new      { bless {events => []}, shift }
-        sub events   { $_[0]->{events} }
-        sub render_event { push @{$_[0]->{events}} => $_[1] }
-        sub step     { }
-        sub finish   { }
-    }
-    my $cr = CaptureRenderer->new;
+    # The engine dispatches through its cb (the seam the render loop uses to own the
+    # fan-out); capture the dispatched events directly.
+    my @events;
 
     my $task = {job_id => 'JOB-X', file => 't/x.t', rel_file => 't/x.t'};
 
     my $driver = Test2::Harness2::Renderer::Driver->new(
-        settings  => $settings,
-        renderers => [$cr],
-        run_id    => 'R1',
-        tasks     => [$task],
-        plugins   => [],
+        settings    => $settings,
+        dispatch_cb => sub { push @events => $_[0] },
+        run_id      => 'R1',
+        tasks       => [$task],
     );
 
     # A monitor mirror that has been told (via the runner's announce_job) the job
@@ -129,7 +122,7 @@ subtest driver_rolls_up_aborted_job_as_failed => sub {
     is($final->{unseen}, undef, "aborted job is NOT counted as 'unseen' (it has a verdict)");
 
     # The driver rendered an aborted harness_job_end for it.
-    my @ends = grep { $_->{facet_data}{harness_job_end} } @{$cr->events};
+    my @ends = grep { $_->{facet_data}{harness_job_end} } @events;
     is(scalar(@ends), 1, "one harness_job_end rendered for the aborted job");
     is($ends[0]->{facet_data}{harness_job_end}{fail},    1, "...marked fail");
     is($ends[0]->{facet_data}{harness_job_end}{aborted}, 1, "...marked aborted");

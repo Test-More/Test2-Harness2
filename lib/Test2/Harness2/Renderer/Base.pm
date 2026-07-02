@@ -16,7 +16,6 @@ use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use Test2::Harness2::Util::HashBase qw{
     <settings
-    <renderers
     <run
     <run_id
     <workdir
@@ -25,15 +24,11 @@ use Test2::Harness2::Util::HashBase qw{
     <tasks
     +service_readers
 
-    +annotate_plugins
-    +handle_plugins
-
     +by_uuid
     +jobs
     +run_started
 
     <tests_seen
-    <asserts_seen
     <final_data
     +run_health
 
@@ -47,8 +42,8 @@ use Test2::Harness2::Util::HashBase qw{
 =head1 NAME
 
 Test2::Harness2::Renderer::Base - Reusable base that locates a collector's
-recorded C<.jsonl.zst> events file from transition state and fans recorded
-events out to concrete renderers.
+recorded C<.jsonl.zst> events file from transition state and yields its recorded
+events as a pure source.
 
 =head1 DESCRIPTION
 
@@ -56,14 +51,13 @@ This is the C<§4.5> base renderer: it knows how to locate a collector's
 C<events.jsonl.zst> file from the runner's transition state (a
 L<Test2::Harness2::Runner::Monitor> mirror), open it B<by the absolute path the
 transition carried> via L<Test2::Harness2::JobReader> /
-L<Test2::Harness2::RunnerReader>, and feed the recorded events out to a list of
-concrete renderers (the C<render_event> sinks --
-L<Test2::Harness2::Renderer::Formatter>, plus the DB/web renderers
-C<App::Yath2::Renderer::DB> / C<App::Yath2::Renderer::Server>, which are
-currently being rewritten and live under C<reference/old_db>; the whole-run jsonl
-log is now itself a renderer, L<App::Yath2::Renderer::Jsonl>).
-Concrete renderers therefore
-consume B<recorded> events rather than a live broadcast.
+L<Test2::Harness2::RunnerReader>, and hand every recorded event to its
+C<dispatch_cb>. It is a B<pure event source>: the actual sink fan-out (the
+C<render_event> renderers -- L<Test2::Harness2::Renderer::Formatter>, the jsonl
+log L<App::Yath2::Renderer::Jsonl>, etc. -- plus the plugin
+C<annotate_event> / C<handle_event> hooks and the assertion tally) is owned by
+L<App::Yath2::RenderLoop>, which drives this base via the C<dispatch_cb> seam.
+Consumers therefore see B<recorded> events rather than a live broadcast.
 
 The base owns the reusable mechanics that any events-file consumer needs and that
 were historically buried in the command-only orchestrator:
@@ -89,8 +83,10 @@ verdict bookkeeping.
 
 =item *
 
-The C<render_event> fan-out (C<dispatch>) to the sink renderers (the jsonl log is
-now one of them), including the plugin C<annotate_event> / C<handle_event> hooks.
+The pure-source C<dispatch> seam (C<dispatch_cb>): every recorded event is handed
+to the injected callback, which L<App::Yath2::RenderLoop> uses to collect the
+events and then own the actual sink fan-out (renderers + plugins + the assertion
+tally).
 
 =back
 
@@ -120,17 +116,11 @@ policy.
 
 sub init ($self) {
     croak "settings is required"  unless $self->{+SETTINGS};
-    $self->{+RENDERERS} //= [];
-
-    my $plugins = delete($self->{plugins}) // [];
-    $self->{+ANNOTATE_PLUGINS} = [grep { $_->can('annotate_event') } @$plugins];
-    $self->{+HANDLE_PLUGINS}   = [grep { $_->can('handle_event') } @$plugins];
 
     $self->{+BY_UUID}            = {};
     $self->{+JOBS}               = {};
     $self->{+SERVICE_READERS}    = {};
     $self->{+TESTS_SEEN}   //= 0;
-    $self->{+ASSERTS_SEEN} //= 0;
     $self->{+RUN_STARTED} = 0;
 
     # Seed the per-job-id rollup state from the task list the command already
@@ -165,7 +155,8 @@ progress counters, and the log have the run context. Idempotent.
 =item $renderer->feed_events_file($events_file, %args)
 
 Locate (open by absolute path) and feed every recorded event from one
-collector's C<events.jsonl.zst> through the sink renderers. C<%args> map
+collector's C<events.jsonl.zst> through C<dispatch> (the C<dispatch_cb> seam).
+C<%args> map
 onto the L<Test2::Harness2::JobReader> (C<job_id>, C<job_try>, C<file>). If
 C<hold> is a coderef it is called with each decoded event B<before> dispatch and,
 when it returns true, the event is withheld from dispatch and returned to the
@@ -203,9 +194,8 @@ until the runner-events reader has been created and seen its terminal record.
 
 =item $count = $renderer->tests_seen
 
-=item $count = $renderer->asserts_seen
-
-The number of test files launched and assertions seen so far.
+The number of test files launched so far. (The assertion tally now lives on the
+render loop, which owns the fan-out; see L<App::Yath2::RenderLoop/asserts_seen>.)
 
 =item $data = $renderer->final_data
 
@@ -416,21 +406,13 @@ collector's rel_file name.
 
 =item $self->dispatch($event)
 
-Run one harness event through annotate plugins, the renderers (the jsonl log is
-one of them), and the handle plugins (the same path the gatherer-fed render loop
-used). When a
-C<dispatch_cb> coderef is set the event is handed to it B<instead> of being fanned
-out -- the render-loop library uses this to make a producer a pure source (it
-collects the ordered events the engine would have rendered) so the loop, not the
-engine, owns the sink fan-out (C<dispatch_to_sinks>).
-
-=item $self->dispatch_to_sinks($event)
-
-The sink fan-out itself: annotate plugins, the C<render_event>
-renderers (the jsonl log is one of them), the C<asserts_seen> tally, and the
-handle plugins. C<dispatch> calls
-this directly when no C<dispatch_cb> is set; the render-loop library calls it for
-every event a producer yields.
+Hand one harness event to the C<dispatch_cb> coderef. This is the pure-source
+seam (#42): L<App::Yath2::RenderLoop::LiveProducer> installs a C<dispatch_cb>
+that collects the ordered events into its queue, so the loop -- not this engine --
+owns the actual sink fan-out (renderers + plugins + the assertion tally). The
+callback is B<required>: dispatching before one is installed is a programming
+error and croaks. (watch/test/stop all construct the engine, then the producer
+installs the cb, before any event is dispatched.)
 
 =item $data = $self->compute_final
 
@@ -525,44 +507,10 @@ sub job_for ($self, $c) {
 }
 
 sub dispatch ($self, $e) {
-    if (my $cb = $self->{+DISPATCH_CB}) {
-        $cb->($e);
-        return;
-    }
+    my $cb = $self->{+DISPATCH_CB}
+        or croak "dispatch_cb is not set (the render loop owns the sink fan-out)";
 
-    return $self->dispatch_to_sinks($e);
-}
-
-sub dispatch_to_sinks ($self, $e) {
-    my $settings = $self->{+SETTINGS};
-
-    my $fd = $e->{facet_data} //= {};
-
-    for my $p (@{$self->{+ANNOTATE_PLUGINS}}) {
-        my %inject = $p->annotate_event($e, $settings);
-        next unless keys %inject;
-
-        for my $f (keys %inject) {
-            if (exists $fd->{$f}) {
-                if ('ARRAY' eq ref($fd->{$f})) {
-                    push @{$fd->{$f}} => @{$inject{$f}};
-                }
-                else {
-                    warn "Plugin '$p' tried to add facet '$f' via 'annotate_event()', but it is already present and not a list, ignoring plugin annotation.\n";
-                }
-            }
-            else {
-                $fd->{$f} = $inject{$f};
-            }
-        }
-    }
-
-    $_->render_event($e) for @{$self->{+RENDERERS}};
-
-    $self->{+ASSERTS_SEEN}++ if $fd->{assert};
-
-    $_->handle_event($e, $settings) for @{$self->{+HANDLE_PLUGINS}};
-
+    $cb->($e);
     return;
 }
 

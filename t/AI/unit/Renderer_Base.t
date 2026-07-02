@@ -15,17 +15,9 @@ use Test2::Harness2::Renderer::Base;
 #   * read it BY PATH and fan its recorded events out to a render_event sink
 #   * compute the run-level harness_final rollup from per-job verdicts
 #
-# A minimal stub sink captures every event the base dispatches, standing in for
-# the real Formatter / DB / Server sinks (which are unchanged render_event
-# consumers).
-
-{
-    package StubSink;
-    sub new   { bless {events => []}, shift }
-    sub render_event { push @{$_[0]{events}} => $_[1]; return }
-    sub step  { }
-    sub events { @{$_[0]{events}} }
-}
+# The base is now a pure source: it hands every event to its dispatch_cb (the #42
+# seam the render loop uses to collect events and own the actual fan-out). A
+# minimal capture cb stands in for the loop, collecting every dispatched event.
 
 # Write a complete collector events file the way Test2-Collector would.
 my $ev = sub { bless({facet_data => {@_}}, 'Test2::Collector::Event') };
@@ -65,17 +57,17 @@ for my $uuid (sort keys %starts) {
 }
 
 # Build a Base directly (no Driver subclass): we are testing the base mechanics.
-my $sink = StubSink->new;
+my @events;
 
 my $settings = mock {} => (add => [
     check_group => sub { 0 },
 ]);
 
 my $base = Test2::Harness2::Renderer::Base->new(
-    settings  => $settings,
-    renderers => [$sink],
-    run_id    => 'RUN-1',
-    tasks     => [
+    settings    => $settings,
+    dispatch_cb => sub { push @events => $_[0] },
+    run_id      => 'RUN-1',
+    tasks       => [
         {job_id => 'JOB-PASS', file => 't/pass.t', rel_file => 't/pass.t'},
         {job_id => 'JOB-FAIL', file => 't/fail.t', rel_file => 't/fail.t'},
     ],
@@ -103,12 +95,12 @@ subtest locate_and_read => sub {
     }
 
     my %facets;
-    for my $e ($sink->events) {
+    for my $e (@events) {
         $facets{$_}++ for keys %{$e->facet_data};
     }
 
-    ok($facets{assert},          "assert events fanned out to the sink");
-    ok($facets{harness_job_exit}, "synthesized harness_job_exit fanned out");
+    ok($facets{assert},          "assert events dispatched via the cb seam");
+    ok($facets{harness_job_exit}, "synthesized harness_job_exit dispatched");
     ok(!$facets{harness_job_end}, "harness_job_end was HELD (not dispatched by the base)");
 };
 

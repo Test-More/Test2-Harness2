@@ -154,15 +154,14 @@ exits only on an idle poll once its stop condition holds).
 
 A final drain + the engine's final sweep + the run rollup (per-job mode only),
 returning any trailing events. The loop dispatches them, then reads
-C<final_data> / C<tests_seen> / C<asserts_seen>.
+C<final_data> / C<tests_seen> (the assertion tally is the loop's own fan-out
+count, L<App::Yath2::RenderLoop/asserts_seen>).
 
 =item $data = $producer->final_data
 
 =item $n = $producer->tests_seen
 
-=item $n = $producer->asserts_seen
-
-The engine's computed run rollup and tallies, valid after C<finalize>.
+The engine's computed run rollup and test count, valid after C<finalize>.
 
 =back
 
@@ -172,7 +171,6 @@ sub done ($self) { return $self->done_check_value ? 1 : 0 }
 
 sub final_data   ($self) { return $self->{+ENGINE}->final_data }
 sub tests_seen   ($self) { return $self->{+ENGINE}->tests_seen }
-sub asserts_seen ($self) { return $self->{+ENGINE}->asserts_seen }
 
 sub poll ($self) {
     my $sub    = $self->{+SUBSCRIBER};
