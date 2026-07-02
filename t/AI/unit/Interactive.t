@@ -109,6 +109,63 @@ subtest connect_stdin_installs_passed_fd_on_fd0 => sub {
         "the test read the command's STDIN after connect_stdin dup2'd it onto fd 0");
 };
 
+# (G6, ticket #140) connect_stdin scrubs $ENV{YATH_INTERACTIVE} from the live env
+# immediately after installing STDIN (before any test-body code), so no user code
+# runs with the socket path visible -- every interactive re-dial path is gated on
+# that variable. Drive a child through the handshake for BOTH call forms and have
+# it report whether the var survived.
+sub _run_env_scrub_probe {
+    my ($form) = @_;
+
+    pipe(my $stdin_r, my $stdin_w) or die "pipe failed: $!";
+    $stdin_w->autoflush(1);
+    print $stdin_w "ignored\n";
+    close($stdin_w);
+
+    pipe(my $out_r, my $out_w) or die "pipe failed: $!";
+
+    my ($listen, $path) = command_listen();
+
+    my $pid = fork // die "fork failed: $!";
+    if (!$pid) {
+        close($listen);
+        close($out_r);
+        open(\*STDOUT, '>&=', fileno($out_w)) or die "reopen stdout: $!";
+        STDOUT->autoflush(1);
+
+        my $ok = eval {
+            local $ENV{YATH_INTERACTIVE} = $path;
+            $form eq 'explicit' ? connect_stdin($path) : connect_stdin();
+            print STDOUT "ENV:" . (defined $ENV{YATH_INTERACTIVE} ? "SET" : "UNSET") . "\n";
+            1;
+        };
+        POSIX::_exit($ok ? 0 : 1);
+    }
+
+    close($out_w);
+
+    my $conn = $listen->accept or die "accept failed: $!";
+    send_fds($conn, [fileno($stdin_r)]);
+    close($conn);
+
+    my $line = <$out_r>;
+    waitpid($pid, 0);
+    my $exit = $? >> 8;
+    unlink($path);
+    chomp($line) if defined $line;
+
+    return ($line // 'NO-OUTPUT', $exit);
+}
+
+subtest connect_stdin_scrubs_env_after_handshake => sub {
+    for my $form (qw/env explicit/) {
+        my ($state, $exit) = _run_env_scrub_probe($form);
+        is($exit, 0, "$form-path child completed the handshake cleanly");
+        is($state, "ENV:UNSET",
+            "$form-path: YATH_INTERACTIVE scrubbed from live env after connect_stdin");
+    }
+};
+
 subtest per_test_accept_passes_to_each_test_in_turn => sub {
     # -j1 means N sequential tests; the command keeps its listener open and passes
     # the STDIN fd once per test. Model that: one listener, two sequential dial-ins,

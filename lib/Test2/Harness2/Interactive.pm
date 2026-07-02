@@ -60,6 +60,21 @@ C<SIGWINCH>, and job control are not delivered by the kernel and would need
 explicit forwarding. A test that leaves the terminal in raw mode on an abrupt
 death may require the user to run C<reset>.
 
+The STDIN descriptor is passed to whoever dials the command's listen socket with
+no cryptographic identity check -- the socket's C<0700> directory / C<0600> file
+perms bound access to the same uid, and L</connect_stdin> scrubs
+C<$ENV{YATH_INTERACTIVE}> after the handshake so accidental / structural re-dials
+(a nested C<yath>, a C<-M> injection, a leaked prior-job daemon) find no path.
+This does B<not> stop a same-uid I<active> adversary: a descendant that recovers
+the path from C</proc/E<lt>pidE<gt>/environ> (the exec-time env strings remain
+readable there) or from persisted job metadata can still dial in -- but such an
+adversary can already C<ptrace> the command or open the pts directly, so no
+socket credential scheme would beat it. Each pass is logged to STDERR (with
+best-effort C<SO_PEERCRED> pid/uid on Linux), so a second, unexpected pass during
+one test is at least visible rather than silent. Non-perl tasks never call
+C<connect_stdin>, so their environment is never scrubbed (STDIN forwarding never
+worked for them regardless).
+
 =head1 EXPORTS
 
 Nothing is exported by default; request functions explicitly. The C<import>
@@ -72,6 +87,11 @@ the normal import).
 
 The interactive listen-socket path the command advertised, or C<undef> when not
 running interactively. A thin reader for C<$ENV{YATH_INTERACTIVE}>.
+
+B<Note:> L</connect_stdin> deletes C<$ENV{YATH_INTERACTIVE}> once the handshake
+completes (see its security note), so this returns C<undef> for the remainder of
+the test body -- the path is observable only up to the point STDIN is installed,
+never while test-body code runs.
 
 =cut
 
@@ -99,6 +119,14 @@ Requires L<IO::FDPass>; if it is absent this C<die>s with an actionable message
 obscurely after the connect. This is the single point both interactive launch
 paths route through.
 
+B<Security:> immediately after installing C<STDIN> (and before returning, so
+before any test-body code runs) this C<delete>s C<$ENV{YATH_INTERACTIVE}> from
+the live environment. Every interactive re-dial path is gated on that variable,
+so scrubbing it here -- at the one choke point both launch paths share -- stops
+this job's own descendants (a nested C<yath>, a C<-MTest2::Harness2::Interactive>
+injection) and any leaked daemon from a prior job from quietly dialing the
+command's terminal and stealing keystrokes. See L</LIMITATIONS>.
+
 =cut
 
 sub connect_stdin {
@@ -120,6 +148,18 @@ sub connect_stdin {
     # Re-bless the Perl STDIN handle onto the dup2'd descriptor so reads from
     # STDIN follow the command's real terminal.
     open(\*STDIN, '<&=', 0) or die "Could not reopen STDIN: $!";
+
+    # (G6) SCRUB: connect_stdin is the single choke point BOTH launch paths route
+    # through, and it runs BEFORE any test-body code. Drop the socket path from
+    # the live %ENV here -- unconditionally, whether $path came from the env or
+    # was passed explicitly (the preload filter passes the env value as an arg) --
+    # so no user code ever executes with the path in %ENV. Every interactive
+    # re-dial is gated on $ENV{YATH_INTERACTIVE}, so clearing it closes both the
+    # current job's descendants (a nested yath, a -MTest2::Harness2::Interactive
+    # injection) and a leaked daemon from a PRIOR job dialing during a later
+    # test's prompt. This is accidental-theft hardening, not a defense against
+    # same-uid active malice (see LIMITATIONS).
+    delete $ENV{YATH_INTERACTIVE};
 
     # The dial-back connection has done its job (the fd now lives on fd 0); the
     # socket itself carries no further data for interactive mode.

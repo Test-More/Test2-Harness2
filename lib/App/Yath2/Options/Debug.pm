@@ -182,6 +182,7 @@ option_group {group => 'debug', category => 'Help and Debugging'} => sub {
 
 option_post_process 99999 => \&_post_process_show_opts;
 option_post_process 99998 => \&_post_process_interactive;
+option_post_process 85    => \&_post_process_interactive_display;
 option_post_process 0     => \&_post_process_version;
 option_post_process 0     => \&_post_process_help;
 
@@ -312,11 +313,24 @@ sub _post_process_interactive ($options, $state) {
     return;
 }
 
-# Apply the interactive display/formatter/env defaults and advertise the listen
-# socket path. --live defaults ON (output must stream while a test prompts), -v
-# ON, qvf OFF; the socket path goes into both the run env (reaches the test
-# child) and our own %ENV.
-sub _interactive_apply_settings ($settings, $path) {
+# (77) Interactive's display/formatter overrides. These MUST land before Display
+# resolves renderers (its posts run at weight 90/100) -- Getopt::Yath runs posts
+# in ASCENDING weight (Instance.pm `sort { $a <=> $b }`) -- so this post is
+# registered at weight 85. Previously these mutations lived in
+# _interactive_apply_settings, which runs at 99998 (after Display), so with -q
+# the Formatter renderer was already deleted and with -i verbose=1 arrived too
+# late to set show_job_launch, freezing it off in the resolved args.
+#
+# NO $RAN guard: $RAN protects only the fork in _post_process_interactive. This
+# post is idempotent, so re-running it (e.g. help/version replay) is harmless.
+# --live defaults ON (output must stream while a test prompts), -v ON, quiet
+# OFF, qvf OFF. Weight band 1-89 is otherwise empty codebase-wide, so 85
+# reorders nothing else.
+sub _post_process_interactive_display ($options, $state) {
+    my $settings = $state->{settings};
+
+    return unless $settings->debug->interactive;
+
     if ($settings->check_group('display')) {
         my $display = $settings->display;
         $display->create_option(quiet   => 0) if $display->check_option('quiet');
@@ -333,6 +347,17 @@ sub _interactive_apply_settings ($settings, $path) {
         $formatter->create_option(qvf => 0) if $formatter->check_option('qvf');
     }
 
+    return;
+}
+
+# Advertise the interactive listen-socket path so the test child can dial back:
+# into the run env (the only transport to a PERSISTENT runner's jobs) and our
+# own %ENV. The display/formatter defaults are applied separately at weight 85
+# (_post_process_interactive_display) so they settle before Display resolves
+# renderers. NOTE: connect_stdin scrubs YATH_INTERACTIVE from the test's live
+# %ENV once the handshake completes (see Test2::Harness2::Interactive) -- the
+# path is present only up to that point, never while test-body code runs.
+sub _interactive_apply_settings ($settings, $path) {
     if ($settings->check_group('run')) {
         $settings->run->create_option(env_vars => {}) unless $settings->run->check_option('env_vars');
         $settings->run->env_vars->{YATH_INTERACTIVE} = $path;
@@ -369,8 +394,25 @@ sub _interactive_accept_loop ($listen, $path, $pid) {
 
     while (1) {
         # Reap the command child if it has exited; that ends the run.
+        #
+        # #140 owns this STATUS COMPUTATION -- exactly the two $finish lines
+        # below. #125 owns exit TIMING/sequencing: the INT/TERM handler bodies
+        # and the $cleanup/$finish shape it reworks for deferred-tempdir
+        # cleanup. When #125 restructures this loop it MUST route every exit
+        # through this expression verbatim -- its step 2 ("propagate signal
+        # deaths as 128+sig") is DELIVERED HERE and must not be re-derived.
+        #
+        # WNOHANG waitpid: 0 = still running; $pid = reaped, so $? is valid --
+        # ($? & 127) is the terminating signal (bit 7, the coredump flag, is
+        # correctly excluded) and ($? >> 8) is the exit code, so a signal death
+        # (OOM SIGKILL -> 137, segfault -> 139) is no longer masked as 0/green;
+        # -1 = ECHILD (e.g. an inherited SIG_IGN CHLD auto-reaping the child),
+        # where $? is meaningless -- exit nonzero (1) rather than poll forever.
         my $got = waitpid($pid, POSIX::WNOHANG());
-        $finish->($? >> 8) if $got == $pid;
+        $finish->(($? & 127) ? 128 + ($? & 127) : ($? >> 8)) if $got == $pid;
+
+        # ECHILD: $? is unrecoverable, so exit nonzero (1) instead of polling forever.
+        $finish->(1) if $got < 0;
 
         my $ready = select(my $rout = $rin, undef, undef, 0.2);
         next unless $ready && $ready > 0;
@@ -387,7 +429,32 @@ sub _interactive_accept_loop ($listen, $path, $pid) {
 # and a failure is warned, not fatal.
 sub _interactive_pass_stdin ($conn) {
     my $ok = eval { Test2::Harness2::Util::FdPass::send_fds($conn, [fileno(\*STDIN)]); 1 };
-    warn "Interactive: failed to pass STDIN to a test: $@" unless $ok;
+    unless ($ok) {
+        warn "Interactive: failed to pass STDIN to a test: $@";
+        return;
+    }
+
+    # (G6) Attribution, NOT authorization: log one STDERR line per fd-pass so a
+    # SECOND pass during a single test -- a harness-aware descendant that
+    # recovered the socket path and dialed in to steal the terminal STDIN -- is
+    # visible on the terminal instead of silent. SO_PEERCRED gives best-effort
+    # (Linux-only) peer pid/uid; on any failure we still log, just without them.
+    require Socket;
+    my ($cpid, $cuid);
+    my $ok2 = eval {
+        my $cred = getsockopt($conn, Socket::SOL_SOCKET(), Socket::SO_PEERCRED());
+        ($cpid, $cuid) = unpack('lll', $cred) if defined $cred && length $cred;
+        1;
+    };
+    my $err = $@;
+
+    if (defined $cpid) {
+        warn "Interactive: passed STDIN to a dialer (pid $cpid uid $cuid)\n";
+    }
+    else {
+        warn "Interactive: passed STDIN to a dialer (peer identity unavailable)\n";
+    }
+
     return;
 }
 

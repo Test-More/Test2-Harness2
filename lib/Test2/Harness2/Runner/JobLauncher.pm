@@ -43,7 +43,7 @@ BEGIN {
 *                                                                             *
 * STDIN is the yath command's real STDIN, passed in over a socket.            *
 *                                                                             *
-* The $ENV{YATH_INTERACTIVE} var holds the socket path being used.            *
+* $ENV{YATH_INTERACTIVE} is now cleared (scrubbed after the handoff).         *
 *                                                                             *
 * VERBOSE mode has been turned on for you, and only 1 test runs at a time.    *
 *                                                                             *
