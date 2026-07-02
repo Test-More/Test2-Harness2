@@ -1,0 +1,22 @@
+use Test2::V0;
+use Time::HiRes qw/sleep/;
+
+# A job that never finishes on its own: it records that it is running (a marker
+# the harness test waits on), then blocks. The harness sends a `truncate` (the
+# `yath abort` operational event) over runner.socket, which the runner turns into
+# a watchdog abort of this job -- its collector never reports a final_state, so the
+# DB logger must FOLD the abort into a broken/failed try (#131). This process is
+# terminated by the abort's terminate-then-hard-kill; it should never reach
+# done_testing.
+
+if (my $marker = $ENV{T2H131_STARTED}) {
+    open(my $fh, '>', $marker) or die "open $marker: $!";
+    print $fh "$$\n";
+    close($fh);
+}
+
+# Block until the harness aborts us (bounded so a stuck suite still ends).
+for (1 .. 6000) { sleep 0.1 }
+
+ok(0, "hang.tx should have been aborted, not run to completion");
+done_testing;

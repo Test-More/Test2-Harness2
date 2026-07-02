@@ -27,6 +27,7 @@ use Test2::Harness2::Util::HashBase qw{
     +host_id
     +artifacts_done
     +job_try_seen
+    +abort_folded
     +errors
     +terminal_error
     +finished
@@ -103,6 +104,7 @@ sub init ($self) {
 
     $self->{+ARTIFACTS_DONE} = {};
     $self->{+JOB_TRY_SEEN}   = {};
+    $self->{+ABORT_FOLDED}   = {};
     $self->{+ERRORS}         = [];
 
     return;
@@ -245,6 +247,7 @@ sub _sync ($self) {
     $self->_ensure_run_row($mon);
     $self->_upsert_jobs($mon);
     $self->_upsert_tries($mon);
+    $self->_fold_aborted_jobs($mon);
     $self->_upsert_collectors($mon);
     $self->_import_finalized($mon);
 
@@ -370,6 +373,52 @@ sub _upsert_tries ($self, $mon) {
     }
 
     return;
+}
+
+# Fold watchdog-aborted jobs (Monitor mirror state 'aborted') into try/job rows
+# (#131). An aborted job's collector may never finalize (dispatch to a dead stage,
+# owner-drop, wind-down/truncate, or a pid hard-kill grace fallback), so the
+# collector-driven _upsert_tries never records a verdict; without this fold the
+# job's tries stay NULL and _finalize_run_row skips it, silently hiding the
+# failure. 'aborted == failed': status='broken', result=0. The fold is
+# job-driven (an aborted job may have NO collector), keyed on a per-job target
+# try (_abort_target_try) computed ONCE and cached in +ABORT_FOLDED, so every
+# later pass re-asserts the SAME job_try_uuid via UPDATE -- never a duplicate row.
+# Runs AFTER _upsert_tries in _sync so broken/0 is the pass's last writer (the
+# runner's fire-once abort decision is authoritative even if a terminated
+# collector flushes a late final_state).
+sub _fold_aborted_jobs ($self, $mon) {
+    my $con = $self->con;
+    for my $job_id ($mon->job_ids) {
+        my $job = $mon->job($job_id) or next;
+        next unless ($job->{state} // '') eq 'aborted';
+        next if defined($job->{run_id}) && $job->{run_id} ne $self->{+RUN_ID};    # same scoping as _upsert_jobs
+        my $job_uuid = lc($job_id);
+        next unless $con->handle('jobs', where => {job_uuid => $job_uuid})->first;    # fileless job never got a jobs row; counting skips it identically
+        my $target = $self->{+ABORT_FOLDED}{$job_uuid} //= $self->_abort_target_try($con, $job_uuid);
+        my $existing = $con->handle('job_tries', where => {job_try_uuid => $target->{job_try_uuid}})->first;
+        if   ($existing) { $con->handle('job_tries', where => {job_try_uuid => $target->{job_try_uuid}})->update({status => 'broken', result => 0}) }
+        else             { $con->handle('job_tries')->insert({job_try_uuid => $target->{job_try_uuid}, job_uuid => $job_uuid, try_ord => $target->{try_ord}, status => 'broken', result => 0}) }
+    }
+    return;
+}
+
+# Pick the try_ord (and derived job_try_uuid) that an abort folds onto. Stable
+# across passes AND across a second logger over the same DB (both compute from
+# rows):
+#   1. an existing status='broken' row (highest try_ord)  -> already folded, re-assert it;
+#   2. else the highest-try_ord row with result NULL      -> the in-flight try the abort killed;
+#   3. else max(try_ord)+1 (1 when no rows)               -> the attempt never got a collector; synthesize.
+sub _abort_target_try ($self, $con, $job_uuid) {
+    my @tries = sort { $a->{try_ord} <=> $b->{try_ord} }
+        map { +{try_ord => $_->field('try_ord'), result => $_->field('result'), status => $_->field('status')} }
+        $con->handle('job_tries', where => {job_uuid => $job_uuid})->all;
+    my ($broken) = grep { ($_->{status} // '') eq 'broken' } reverse @tries;
+    my $ord = $broken                                  ? $broken->{try_ord}
+            : (@tries && !defined($tries[-1]{result})) ? $tries[-1]{try_ord}
+            : @tries                                   ? $tries[-1]{try_ord} + 1
+            :                                            1;
+    return {try_ord => $ord, job_try_uuid => derive_uuid($job_uuid, $ord)};
 }
 
 # Populate the collectors table: one row per collector (test + service). The
@@ -577,6 +626,17 @@ sub _read_and_extract ($self, $events_file, $collector_uuid, $run_uuid) {
 # ---------------------------------------------------------------------------
 sub _finalize_run_row ($self) {
     return unless $self->{+RUN_ROW_SEEDED};
+
+    # Last-chance fold of any watchdog-aborted jobs (#131) so their broken tries
+    # exist before the counting loop below folds them into runs.failed. Read the
+    # SUBSCRIBER slot directly -- NEVER $self->monitor, which would CREATE a
+    # subscriber (forbidden on #132's failure-path _finalize_run_row call); a
+    # fold failure is recorded but must never block the run-row write.
+    if (my $sub = $self->{+SUBSCRIBER}) {
+        my $ok  = eval { $self->_fold_aborted_jobs($sub->monitor); 1 };
+        my $err = $@;
+        $self->_record_error("Failed to fold aborted jobs during finalize: $err") unless $ok;
+    }
 
     my $con      = $self->con;
     my $run_uuid = lc($self->{+RUN_ID});

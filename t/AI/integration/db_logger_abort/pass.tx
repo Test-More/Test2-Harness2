@@ -1,0 +1,19 @@
+use Test2::V0;
+
+# A fast passing job. It writes a "done" marker at the very end so the harness
+# test's truncate helper can wait until this job has already FINISHED before it
+# aborts the hanging job -- guaranteeing the abort lands only on hang.tx and this
+# job's pass is recorded (runs.passed == 1).
+
+ok(1, 'a passing assertion');
+subtest inner => sub {
+    ok(1, 'sub passes');
+};
+
+if (my $marker = $ENV{T2H131_PASS_DONE}) {
+    open(my $fh, '>', $marker) or die "open $marker: $!";
+    print $fh "$$\n";
+    close($fh);
+}
+
+done_testing;
