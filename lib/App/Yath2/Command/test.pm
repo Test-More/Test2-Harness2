@@ -389,7 +389,6 @@ sub driver {
 
     return $self->{+DRIVER} //= Test2::Harness2::Renderer::Driver->new(
         settings           => $settings,
-        renderers          => [],
         run                => $self->build_run,
         run_id             => $self->run_id,
         workdir            => $self->workdir,

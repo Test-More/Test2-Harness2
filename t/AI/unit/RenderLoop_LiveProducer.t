@@ -41,7 +41,6 @@ sub build_loop ($mon, $sub, $tasks) {
 
     my $driver = Test2::Harness2::Renderer::Driver->new(
         settings  => $settings,
-        renderers => [],          # collect-only: the loop owns the fan-out
         run_id    => 'RUN-1',
         tasks     => $tasks,
     );

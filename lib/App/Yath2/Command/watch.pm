@@ -104,7 +104,6 @@ sub runner_renderer {
     # Event requires one). Use a synthetic per-session id.
     return Test2::Harness2::Renderer::Base->new(
         settings           => $settings,
-        renderers          => [],
         workdir            => $self->workdir,
         run_id             => gen_uuid(),
         show_runner_output => $show_runner_output,

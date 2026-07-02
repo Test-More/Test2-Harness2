@@ -6,8 +6,6 @@ our $VERSION = '2.000000';
 use Carp qw/croak/;
 use Time::HiRes qw/sleep/;
 
-use Test2::Harness2::Renderer::Base;
-
 use Test2::Harness2::Util::HashBase qw{
     <renderers
     <producer
@@ -15,7 +13,10 @@ use Test2::Harness2::Util::HashBase qw{
     <run_id
     +plugins
 
-    +sink
+    +annotate_plugins
+    +handle_plugins
+    +asserts_seen
+
     +signalled
     +finished_sweep
     +idle
@@ -48,7 +49,8 @@ It owns:
 
 The B<dispatch fan-out>: every event a producer yields is run through the sink
 renderers' C<render_event> (the jsonl log is one of those renderers) and the
-annotate/handle plugins (via a private L<Test2::Harness2::Renderer::Base> sink).
+annotate/handle plugins. The loop owns this fan-out directly (the annotate merge,
+the C<render_event> sinks, the assertion tally, and the handle plugins).
 
 =item *
 
@@ -106,7 +108,7 @@ The injected L<App::Yath2::RenderLoop::Producer>.
 
 =item run_id
 
-The run settings and id, threaded into the dispatch sink.
+The run settings and id, threaded into the dispatch fan-out.
 
 =item plugins
 
@@ -120,6 +122,15 @@ run in the dispatch fan-out.
 sub init ($self) {
     croak "renderers is required" unless $self->{+RENDERERS};
     croak "producer is required"  unless $self->{+PRODUCER};
+    croak "settings is required"  unless $self->{+SETTINGS};
+
+    # The sink fan-out lives here (moved off Test2::Harness2::Renderer::Base): build
+    # the plugin sub-lists once, exactly as the base did, and seed the assertion
+    # tally the loop now owns.
+    my $plugins = $self->{+PLUGINS} // [];
+    $self->{+ANNOTATE_PLUGINS} = [grep { $_->can('annotate_event') } @$plugins];
+    $self->{+HANDLE_PLUGINS}   = [grep { $_->can('handle_event') } @$plugins];
+    $self->{+ASSERTS_SEEN}     = 0;
 
     $self->{+SIGNALLED} = 0;
 
@@ -180,7 +191,7 @@ sub done ($self) { return $self->{+FINISHED_SWEEP} ? 1 : 0 }
 sub final_data ($self) { return $self->{+PRODUCER}->can('final_data') ? $self->{+PRODUCER}->final_data : undef }
 sub tests_seen ($self) { return $self->{+PRODUCER}->can('tests_seen') ? $self->{+PRODUCER}->tests_seen : 0 }
 
-sub asserts_seen ($self) { return $self->sink->asserts_seen }
+sub asserts_seen ($self) { return $self->{+ASSERTS_SEEN} }
 
 sub signal ($self, $sig) {
     $self->{+SIGNALLED} = 1;
@@ -260,15 +271,11 @@ sub _update_system_load ($self, $producer) {
 
 =over 4
 
-=item $self->sink
-
-The private L<Test2::Harness2::Renderer::Base> used for the dispatch fan-out
-(annotate plugins, C<render_event> -- the jsonl log is one of those renderers --
-the assertion tally, handle plugins).
-
 =item $self->_dispatch($event)
 
-Fan one producer event out through the sink.
+Fan one producer event out through the annotate plugins, the C<render_event> sink
+renderers (the jsonl log is one of them), the assertion tally, and the handle
+plugins. This is the sink fan-out the loop owns.
 
 =item @events = $self->_finalize_producer
 
@@ -278,17 +285,36 @@ Call the producer's optional C<finalize> and return its trailing events.
 
 =cut
 
-sub sink ($self) {
-    return $self->{+SINK} //= Test2::Harness2::Renderer::Base->new(
-        settings  => $self->{+SETTINGS},
-        renderers => $self->{+RENDERERS},
-        run_id    => $self->{+RUN_ID},
-        plugins   => $self->{+PLUGINS} // [],
-    );
-}
-
 sub _dispatch ($self, $e) {
-    $self->sink->dispatch_to_sinks($e);
+    my $settings = $self->{+SETTINGS};
+
+    my $fd = $e->{facet_data} //= {};
+
+    for my $p (@{$self->{+ANNOTATE_PLUGINS}}) {
+        my %inject = $p->annotate_event($e, $settings);
+        next unless keys %inject;
+
+        for my $f (keys %inject) {
+            if (exists $fd->{$f}) {
+                if ('ARRAY' eq ref($fd->{$f})) {
+                    push @{$fd->{$f}} => @{$inject{$f}};
+                }
+                else {
+                    warn "Plugin '$p' tried to add facet '$f' via 'annotate_event()', but it is already present and not a list, ignoring plugin annotation.\n";
+                }
+            }
+            else {
+                $fd->{$f} = $inject{$f};
+            }
+        }
+    }
+
+    $_->render_event($e) for @{$self->{+RENDERERS}};
+
+    $self->{+ASSERTS_SEEN}++ if $fd->{assert};
+
+    $_->handle_event($e, $settings) for @{$self->{+HANDLE_PLUGINS}};
+
     return;
 }
 

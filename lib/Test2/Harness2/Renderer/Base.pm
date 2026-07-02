@@ -120,7 +120,7 @@ policy.
 
 sub init ($self) {
     croak "settings is required"  unless $self->{+SETTINGS};
-    croak "renderers is required" unless $self->{+RENDERERS};
+    $self->{+RENDERERS} //= [];
 
     my $plugins = delete($self->{plugins}) // [];
     $self->{+ANNOTATE_PLUGINS} = [grep { $_->can('annotate_event') } @$plugins];
