@@ -90,7 +90,7 @@ package FakeDtrace {
     sub dep_map { $_[0]->{dep_map} }
     sub start   { }
     sub stop    { }
-    sub loaded  { {} }
+    sub loaded  { $_[0]->{loaded} // {} }
 }
 package FakeReloader {
     sub new { my ($c, %a) = @_; bless {%a}, $c }
@@ -108,12 +108,26 @@ subtest transitive_blacklist_propagation => sub {
     my $pl  = Test2::Harness2::Runner::Preloader->new(dir => $dir, monitor => 1);
 
     # dep_map is keyed by the RELATIVE require path; values are loaded_by pairs
-    # [caller_pkg, caller_file]. Leaf was loaded by Mid; Mid was loaded by Top.
-    # The first entry has an EMPTY caller module to exercise the $mod ne '' guard.
+    # [caller_pkg, caller_file]. Leaf was loaded by Mid AND by the harness's own
+    # Preloader (the top-level `preload 'My::Leaf'` machinery); Mid was loaded by
+    # Top. The first entry has an EMPTY caller module to exercise the $mod ne ''
+    # guard. My::Mid/My::Top are part of the traced preload graph (in `loaded`);
+    # the harness Preloader is NOT (loaded before tracing) so it must NOT be
+    # blacklisted even though it is a recorded dependent of the changed leaf.
     $pl->{+Test2::Harness2::Runner::Preloader::DTRACE()} = FakeDtrace->new(
         dep_map => {
-            'My/Leaf.pm' => [['', '/abs/unknown.pl'], ['My::Mid', '/abs/My/Mid.pm']],
+            'My/Leaf.pm' => [
+                ['', '/abs/unknown.pl'],
+                ['Test2::Harness2::Runner::Preloader', '/abs/T2H2/Preloader.pm'],
+                ['My::Mid', '/abs/My/Mid.pm'],
+            ],
             'My/Mid.pm'  => [['My::Top', '/abs/My/Top.pm']],
+        },
+        loaded => {
+            'My/Leaf.pm' => 1,
+            'My/Mid.pm'  => 1,
+            'My/Top.pm'  => 1,
+            # NB: the harness Preloader is deliberately absent from `loaded`.
         },
     );
 
@@ -130,9 +144,10 @@ subtest transitive_blacklist_propagation => sub {
     );
 
     # %CNI (reverse %INC) is how ARRAY caller-files get normalized to relative keys.
-    local $INC{'My/Leaf.pm'} = '/abs/My/Leaf.pm';
-    local $INC{'My/Mid.pm'}  = '/abs/My/Mid.pm';
-    local $INC{'My/Top.pm'}  = '/abs/My/Top.pm';
+    local $INC{'My/Leaf.pm'}                        = '/abs/My/Leaf.pm';
+    local $INC{'My/Mid.pm'}                         = '/abs/My/Mid.pm';
+    local $INC{'My/Top.pm'}                         = '/abs/My/Top.pm';
+    local $INC{'Test2/Harness2/Runner/Preloader.pm'} = '/abs/T2H2/Preloader.pm';
 
     my $ret;
     my $ok = eval { $ret = $pl->check(FakeState->new); 1 };
@@ -147,6 +162,7 @@ subtest transitive_blacklist_propagation => sub {
     ok($listed{'My::Leaf'}, "the changed leaf module is blacklisted");
     ok($listed{'My::Mid'},  "transitive dependent My::Mid is blacklisted (dep_map keyed by RELATIVE path)");
     ok($listed{'My::Top'},  "second-level transitive dependent My::Top is blacklisted");
+    ok(!$listed{'Test2::Harness2::Runner::Preloader'}, "the harness's own loader (a dependent NOT in the traced-loaded set) is NOT blacklisted");
 };
 
 done_testing;

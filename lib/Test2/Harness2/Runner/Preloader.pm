@@ -678,6 +678,7 @@ sub check {
     my $bl = $self->_lock_blacklist();
 
     my $dep_map = $self->dtrace->dep_map;
+    my $loaded  = $self->dtrace->loaded;
 
     my %CNI = reverse pairgrep { $b } %INC;
 
@@ -688,11 +689,22 @@ sub check {
 
         my ($mod, $abs, $rel);
         if ($ref eq 'HASH') {
+            # A directly-changed preloaded module -- always blacklisted.
             ($mod, $abs, $rel) = @{$item}{qw/module file relative/};
         }
         elsif ($ref eq 'ARRAY') {
+            # A transitive dependent discovered via dep_map's loaded_by chain
+            # ([caller_pkg, caller_file]). Normalize the caller file to its
+            # relative require key so the walk can continue.
             ($mod, $abs) = @$item;
             $rel = $CNI{$abs} || $abs;
+
+            # Only blacklist dependents that are themselves part of the traced
+            # preload graph. The loader that required a directly-preloaded module
+            # (the harness's own Test2::Harness2::Runner::Preloader, and anything
+            # loaded before tracing began) appears here as a dependent but is
+            # absent from the traced-loaded set -- it must never be blacklisted.
+            next unless $loaded->{$rel};
         }
         else {
             die "Invalid ref type: $ref";
