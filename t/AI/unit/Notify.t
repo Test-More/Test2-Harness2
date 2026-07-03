@@ -169,6 +169,21 @@ subtest '_send_run_notification routes per service, honors no_batch gate + owner
     });
     is($emf->[0]{to}, ['e@x', 'owner@example.com'], "email run recipients include owner meta");
     is($emf->[0]{subject}, "Tests failed on $HOST", "email run subject on fail");
+
+    # Ticket #126: a failing run with ONLY --notify-email-fail configured (no
+    # --notify-email / --notify-email-owner) must still fire the fail email.
+    my $failonly = capture(sub {
+        $_[0]->_send_run_notification('email', {pass => 0, failed => []}, settings(no_batch_email => 0, email_fail => ['dev@example.com']));
+    });
+    is(scalar(@$failonly), 1, "email_fail-only failing run sends exactly one email");
+    is($failonly->[0]{to}, ['dev@example.com'], "fail email goes to the email_fail address");
+    is($failonly->[0]{subject}, "Tests failed on $HOST", "fail email subject reflects failure");
+
+    # ...and a passing run does NOT dispatch to the fail-only list.
+    my $passonly = capture(sub {
+        $_[0]->_send_run_notification('email', {pass => 1, failed => []}, settings(no_batch_email => 0, email_fail => ['dev@example.com']));
+    });
+    is($passonly, [], "email_fail is not notified on a passing run");
 };
 
 subtest 'all five gen_*_text delegator names survive (gen_text dispatch + text_module overrides)' => sub {

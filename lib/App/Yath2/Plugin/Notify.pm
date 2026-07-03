@@ -118,13 +118,17 @@ sub post_process ($options, $state) {
     # --no-notify-*-owner (a defined 0) skips the defaulting and always wins.
 
     # Should we use email?
+    # email_owner auto-enables from the plain --notify-email list only (1.0
+    # semantics); --notify-email-fail must NOT force owner on, so it is excluded
+    # from this defaulting. It IS an email source though, so it still registers
+    # the plugin and requires Email::Stuffer below (mirrors the slack branch).
     $notify->option(email_owner => (@{$notify->email} ? 1 : 0))
         unless defined $notify->email_owner;
 
-    if (@{$notify->email} || $notify->email_owner) {
+    if (@{$notify->email} || @{$notify->email_fail} || $notify->email_owner) {
         # Do we have Email::Stuffer?
         my $ok = eval { require Email::Stuffer; 1 };
-        die "Cannot use --email-owner without Email::Stuffer, which is not installed.\n" unless $ok;
+        die "Cannot use email notifications without Email::Stuffer, which is not installed.\n" unless $ok;
 
         push @{$settings->harness->plugins} => __PACKAGE__->new() unless grep { $_->isa(__PACKAGE__) } @{$settings->harness->plugins};
     }

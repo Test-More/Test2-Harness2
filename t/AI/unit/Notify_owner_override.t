@@ -73,6 +73,20 @@ subtest 'slack: untouched owner defaults ON from a slack source' => sub {
     is(scalar(@{$s->harness->plugins}), 1, "plugin loaded");
 };
 
+subtest 'email: --notify-email-fail alone registers the plugin without enabling owner (ticket #126)' => sub {
+    my $s = run_post(settings(email_fail => ['dev@example.com']));
+
+    is($s->notify->email_owner, 0, "email_fail does NOT auto-enable email_owner (1.0 semantics preserved)");
+    is(scalar(@{$s->harness->plugins}), 1, "plugin registered so the failure email is actually sent");
+};
+
+subtest 'email: --notify-email-fail with an explicit --notify-email-owner still honors both' => sub {
+    my $s = run_post(settings(email_fail => ['dev@example.com'], email_owner => 1));
+
+    is($s->notify->email_owner, 1, "explicit owner opt-in preserved alongside email_fail");
+    is(scalar(@{$s->harness->plugins}), 1, "plugin registered");
+};
+
 subtest 'slack: enabling owner without a url dies (unchanged contract)' => sub {
     like(
         dies { run_post(settings(slack_owner => 1)) },
