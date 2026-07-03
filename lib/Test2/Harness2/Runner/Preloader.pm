@@ -698,11 +698,14 @@ sub check {
             die "Invalid ref type: $ref";
         }
 
-        next if $seen{$abs}++;
-        next if $mod->can('TEST2_HARNESS_PRELOAD');
+        next if $seen{$rel}++;
+        next if $mod ne '' && $mod->can('TEST2_HARNESS_PRELOAD');
         $self->_notify("Blacklisting $mod...");
         print $bl "$mod\n";
-        my $next = $dep_map->{$abs} or next;
+        # DepTracer keys dep_map by the RELATIVE require path, not the absolute
+        # watched path -- look up dependents by $rel so the transitive blacklist
+        # actually propagates.
+        my $next = $dep_map->{$rel} or next;
         push @todo => @$next;
     }
 

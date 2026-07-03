@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
+use Scalar::Util qw/blessed/;
 
 use Test2::Harness2::Runner::StageConfig();
 
@@ -174,13 +175,20 @@ sub merge {
         $self->add_stage($stage, $caller);
     }
 
-    $self->{+DEFAULT_STAGE} //= $merge->default_stage;
+    # Only an EXPLICIT default() propagates (first-wins). A merged lib with no
+    # default() must not mask a later lib's explicit default -- so use the raw
+    # DEFAULT_STAGE (unset when none was declared), not the STAGE_LIST[0] fallback
+    # that default_stage() returns. Normalize to a name in case a legacy value is
+    # a StageConfig object.
+    if (defined(my $default = $merge->{+DEFAULT_STAGE})) {
+        $self->{+DEFAULT_STAGE} //= blessed($default) ? $default->name : $default;
+    }
 }
 
 sub default_stage {
     my $self = shift;
     return $self->{+DEFAULT_STAGE} if $self->{+DEFAULT_STAGE};
-    return $self->{+STAGE_LIST}->[0];
+    return $self->{+STAGE_LIST}[0] ? $self->{+STAGE_LIST}[0]->name : undef;
 }
 
 sub set_default_stage {

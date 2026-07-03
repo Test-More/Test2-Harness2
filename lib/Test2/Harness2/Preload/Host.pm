@@ -444,27 +444,6 @@ sub process {
     return $self->{+SIGNAL} ? 128 + $self->SIG_MAP->{$self->{+SIGNAL}} : $ok ? 0 : 1;
 }
 
-# Ask each forked stage service to shut down cleanly at run end. Stage
-# children idle waiting for dispatches and never see the run end on their own, so
-# the host must tell them over the SAME registered channel each stage opened to the
-# runner -- these are THIS host's own stage children, stopped via service_send to
-# their peer identity.
-sub stop_stages {
-    my $self = shift;
-
-    my %live_stage;
-    for my $proc (values %{$self->{+PROCS} // {}}) {
-        next unless $proc->isa('Test2::Harness2::Runner::StageProcess');
-        $live_stage{$proc->name} = 1;
-    }
-
-    for my $stage (keys %live_stage) {
-        eval { $self->service_send("preload-$stage", 'stop'); 1 };
-    }
-
-    return;
-}
-
 sub run_tests {
     my $self = shift;
 
@@ -633,11 +612,11 @@ sub run_stage {
         $self->state->stage_restarting($stage);
     }
 
-    # Stage services (this process's own stage children, and a nested stage's
-    # grandchildren) idle waiting for dispatches; tell each live child stage to shut
-    # down cleanly before the wait(all=>1) below.
-    $self->stop_stages;
-
+    # Child stages register their service channel with the RUNNER, not with this
+    # host (they dial runner.socket in run_stage), so the runner's
+    # stop_preload_stages is what delivers the graceful 'stop' at run end. This host
+    # only reaps its own child procs: killall(SIGNAL) below signals them and the
+    # wait(all=>1) blocks until they are reaped.
     $self->killall($self->{+SIGNAL}) if $self->{+SIGNAL};
 
     $self->wait(all => 1);

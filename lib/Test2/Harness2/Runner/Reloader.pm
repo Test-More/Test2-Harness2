@@ -155,7 +155,7 @@ sub _get_changes {
     my $gap = $self->{+STAT_MIN_GAP};
     my $last_checked = $self->{+STAT_LAST_CHECKED};
     return if $last_checked && $gap && $gap > ($check_time - $last_checked);
-    $last_checked = $check_time;
+    $self->{+STAT_LAST_CHECKED} = $check_time;
 
     my $found = 0;
     my $changed = {};
@@ -164,8 +164,13 @@ sub _get_changes {
         my $old_times = $stats->{$file};
         my $new_times = $self->_get_file_times($file);
 
-        # Compare times
-        next if $old_times->[0] == $new_times->[0] && $old_times->[1] == $new_times->[1];
+        # Compare times; a vanished file stats as [undef, undef] -- treat it as
+        # changed rather than warning on the numeric comparison.
+        if (defined($old_times->[0]) && defined($new_times->[0])
+            && defined($old_times->[1]) && defined($new_times->[1]))
+        {
+            next if $old_times->[0] == $new_times->[0] && $old_times->[1] == $new_times->[1];
+        }
 
         # Update in case we choose not to reload
         $stats->{$file} = $new_times;
