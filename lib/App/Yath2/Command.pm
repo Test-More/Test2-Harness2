@@ -6,9 +6,12 @@ our $VERSION = '2.000000';
 use File::Spec;
 use Carp qw/croak/;
 use Scalar::Util qw/blessed/;
+use List::Util qw/max/;
 use Test2::Harness2::Util qw/mod2file/;
+use Test2::Util::Table qw/table/;
+use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 
-use Test2::Harness2::Util::HashBase qw/-settings -args/;
+use Test2::Harness2::Util::HashBase qw/-settings -args +renderers <final_data <tests_seen <asserts_seen/;
 
 use Test2::Harness2::Util::File::JSON();
 
@@ -196,6 +199,193 @@ sub setup_resources {
 sub finalize_plugins {
     my $self = shift;
     $_->finalize($self->settings) for @{$self->settings->harness->plugins};
+}
+
+# Build (and memoize) the renderer instances from the display->renderers option.
+# Shared by the test/run/watch/replay render paths (each is only ever called
+# where a 'display' option group exists). command_class => ref($self) tells a
+# renderer which command it is serving.
+sub renderers {
+    my $self = shift;
+
+    return $self->{+RENDERERS} if $self->{+RENDERERS};
+
+    my $settings = $self->{+SETTINGS};
+
+    my @renderers;
+    for my $class (@{$settings->display->renderers->{'@'}}) {
+        require(mod2file($class));
+        my $args     = $settings->display->renderers->{$class};
+        my $renderer = $class->new(@$args, settings => $settings, command_class => ref($self));
+        push @renderers => $renderer;
+    }
+
+    # Default-on terminal-reset renderer: when STDOUT is a TTY, append it LAST so
+    # its finish() (terminal reset) runs after every other renderer has flushed.
+    # No-op render_event; only the finish()/END reset matters. Rely on list order
+    # (no renderer weight sorting). Skipped entirely when not a TTY.
+    if (-t STDOUT) {
+        my $class = 'App::Yath2::Renderer::ResetTerm';
+        require(mod2file($class));
+        push @renderers => $class->new(settings => $settings, command_class => ref($self));
+    }
+
+    return $self->{+RENDERERS} = \@renderers;
+}
+
+sub render_summary {
+    my $self = shift;
+    my ($pass, $time_data, $cpu_usage) = @_;
+
+    return if $self->settings->display->quiet > 1;
+
+    my $final_data = $self->{+FINAL_DATA};
+    my $failures   = @{$final_data->{failed} // []};
+
+    my @summary = (
+        $failures ? ("     Fail Count: $failures") : (),
+        "     File Count: $self->{+TESTS_SEEN}",
+        "Assertion Count: $self->{+ASSERTS_SEEN}",
+        $time_data
+        ? (
+            sprintf("      Wall Time: %.2f seconds",                                                       $time_data->{wall}),
+            sprintf("       CPU Time: %.2f seconds (usr: %.2fs | sys: %.2fs | cusr: %.2fs | csys: %.2fs)", @{$time_data}{qw/cpu user system cuser csystem/}),
+            sprintf("      CPU Usage: %i%%",                                                               $cpu_usage),
+            )
+        : (),
+    );
+
+    my $res = "    -->  Result: " . ($pass ? 'PASSED' : 'FAILED') . "  <--";
+    if ($self->settings->display->color && USE_ANSI_COLOR) {
+        my $color = $pass ? Term::ANSIColor::color('bold bright_green') : Term::ANSIColor::color('bold bright_red');
+        my $reset = Term::ANSIColor::color('reset');
+        $res = "$color$res$reset";
+    }
+    push @summary => $res;
+
+    my $msg    = "Yath Result Summary";
+    my $length = max map { length($_) } @summary;
+    my $prefix = ($length - length($msg)) / 2;
+
+    print "\n";
+    print " " x $prefix;
+    print "$msg\n";
+    print "-" x $length;
+    print "\n";
+    print join "\n" => @summary;
+    print "\n";
+}
+
+# Section specs shared by the table and plain final-data renderers. Each entry
+# names the final_data key + banner, the table header, and the plain-mode field
+# list ([label => row-index, $skip_falsy] pairs, filename-first). 'failed' also
+# carries a per-row table transform (stringify the subtest map into one cell) +
+# collapse, and a subtest_index so plain mode can emit the map as a nested list.
+my @FINAL_DATA_SECTIONS = (
+    {
+        key    => 'retried',
+        banner => 'The following jobs failed at least once:',
+        header => ['Job ID', 'Times Run', 'Test File', 'Succeeded Eventually?'],
+        plain  => [[filename => 2], [job_id => 0], [times_run => 1], [succeeded_eventually => 3]],
+    },
+    {
+        key           => 'failed',
+        banner        => 'The following jobs failed:',
+        header        => ['Job ID', 'Test File', 'Subtests'],
+        collapse      => 1,
+        table_row     => sub { my $r = [@{$_[0]}]; $r->[2] = stringify_subtest_map($r->[2]) if $r->[2]; $r },
+        plain         => [[filename => 1], [job_id => 0]],
+        subtest_index => 2,
+    },
+    {
+        key    => 'halted',
+        banner => 'The following jobs requested all testing be halted:',
+        header => ['Job ID', 'Test File', 'Reason'],
+        plain  => [[filename => 1], [job_id => 0], [reason => 2, 1]],
+    },
+    {
+        key    => 'unseen',
+        banner => 'The following jobs never ran:',
+        header => ['Job ID', 'Test File'],
+        plain  => [[filename => 1], [job_id => 0]],
+    },
+);
+
+sub render_final_data {
+    my $self = shift;
+    my ($final_data) = @_;
+
+    return if $self->settings->display->quiet > 1;
+
+    my $plain = $self->settings->display->no_final_table;
+
+    for my $sec (@FINAL_DATA_SECTIONS) {
+        my $rows = $final_data->{$sec->{key}} or next;
+        print "\n$sec->{banner}\n";
+
+        if ($plain) {
+            $self->_render_section_plainly($sec, $rows);
+            next;
+        }
+
+        my @trows = $sec->{table_row} ? map { $sec->{table_row}->($_) } @$rows : @$rows;
+        print join "\n" => table(
+            ($sec->{collapse} ? (collapse => 1) : ()),
+            header => $sec->{header},
+            rows   => \@trows,
+        );
+        print "\n";
+    }
+}
+
+sub _render_section_plainly {
+    my $self = shift;
+    my ($sec, $rows) = @_;
+
+    for my $row (@$rows) {
+        my $first = 1;
+        for my $field (@{$sec->{plain}}) {
+            my ($label, $idx, $skip_falsy) = @$field;
+            my $val = $row->[$idx];
+            next if $skip_falsy && !$val;
+            print $first ? "- $label: $val\n" : "  $label: $val\n";
+            $first = 0;
+        }
+
+        next unless defined $sec->{subtest_index};
+        my $map = $row->[$sec->{subtest_index}] or next;
+        print "  subtests:\n";
+        print "  - $_\n" for _subtest_paths($map);
+    }
+}
+
+sub _subtest_paths {
+    my ($map) = @_;
+
+    my @paths;
+    my @todo = @$map;
+    my @state;
+    while (my $st = shift @todo) {
+        if (!ref($st)) {
+            pop @state if $st eq 'pop';
+            next;
+        }
+        push @state, $st->[0];
+        push @paths, join(' -> ', @state);
+        unshift @todo, (@{$st->[1]}, 'pop');
+    }
+
+    return @paths;
+}
+
+sub stringify_subtest_map {
+    my ($map) = @_;
+
+    # An empty map yields "" (no trailing newline); a non-empty one is the paths
+    # joined by newlines plus a trailing newline.
+    my @paths = _subtest_paths($map);
+    return "" unless @paths;
+    return join("\n", @paths) . "\n";
 }
 
 1;

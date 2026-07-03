@@ -17,23 +17,16 @@ use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
-use Test2::Harness2::Util qw/mod2file/;
-use Test2::Util::Table qw/table/;
-
-use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 
 use Time::HiRes qw/sleep time/;
-use List::Util qw/sum max/;
+use List::Util qw/sum/;
 use Carp qw/croak/;
 use POSIX();
 
 use parent 'App::Yath2::Command';
+# renderers/tests_seen/asserts_seen/final_data slots + the render_* methods that
+# use them are inherited from App::Yath2::Command (shared with replay/watch).
 use Test2::Harness2::Util::HashBase qw/
-    +renderers
-
-    +tests_seen
-    +asserts_seen
-
     +client
 
     +driver
@@ -42,8 +35,6 @@ use Test2::Harness2::Util::HashBase qw/
     +logger_pids
     +logger_targets
     +logger_configs
-
-    <final_data
 /;
 
 include_options(
@@ -705,209 +696,6 @@ sub write_summary {
     print "\nWrote summary file: $file\n\n";
 
     return;
-}
-
-sub render_summary {
-    my $self = shift;
-    my ($pass, $time_data, $cpu_usage) = @_;
-
-    return if $self->settings->display->quiet > 1;
-
-    my $final_data = $self->{+FINAL_DATA};
-    my $failures   = @{$final_data->{failed} // []};
-
-    my @summary = (
-        $failures ? ("     Fail Count: $failures") : (),
-        "     File Count: $self->{+TESTS_SEEN}",
-        "Assertion Count: $self->{+ASSERTS_SEEN}",
-        $time_data
-        ? (
-            sprintf("      Wall Time: %.2f seconds",                                                       $time_data->{wall}),
-            sprintf("       CPU Time: %.2f seconds (usr: %.2fs | sys: %.2fs | cusr: %.2fs | csys: %.2fs)", @{$time_data}{qw/cpu user system cuser csystem/}),
-            sprintf("      CPU Usage: %i%%",                                                               $cpu_usage),
-            )
-        : (),
-    );
-
-    my $res = "    -->  Result: " . ($pass ? 'PASSED' : 'FAILED') . "  <--";
-    if ($self->settings->display->color && USE_ANSI_COLOR) {
-        my $color = $pass ? Term::ANSIColor::color('bold bright_green') : Term::ANSIColor::color('bold bright_red');
-        my $reset = Term::ANSIColor::color('reset');
-        $res = "$color$res$reset";
-    }
-    push @summary => $res;
-
-    my $msg    = "Yath Result Summary";
-    my $length = max map { length($_) } @summary;
-    my $prefix = ($length - length($msg)) / 2;
-
-    print "\n";
-    print " " x $prefix;
-    print "$msg\n";
-    print "-" x $length;
-    print "\n";
-    print join "\n" => @summary;
-    print "\n";
-}
-
-sub render_final_data {
-    my $self = shift;
-    my ($final_data) = @_;
-
-    return if $self->settings->display->quiet > 1;
-
-    return $self->_render_final_data_plainly($final_data)
-        if $self->settings->display->no_final_table;
-
-    if (my $rows = $final_data->{retried}) {
-        print "\nThe following jobs failed at least once:\n";
-        print join "\n" => table(
-            header => ['Job ID', 'Times Run', 'Test File', "Succeeded Eventually?"],
-            rows   => $rows,
-        );
-        print "\n";
-    }
-
-    if (my $rows = $final_data->{failed}) {
-        print "\nThe following jobs failed:\n";
-        print join "\n" => table(
-            collapse => 1,
-            header   => ['Job ID', 'Test File', 'Subtests'],
-            rows     => [map { my $r = [@{$_}]; $r->[2] = stringify_subtest_map($r->[2]) if $r->[2]; $r } @$rows],
-        );
-        print "\n";
-    }
-
-    if (my $rows = $final_data->{halted}) {
-        print "\nThe following jobs requested all testing be halted:\n";
-        print join "\n" => table(
-            header => ['Job ID', 'Test File', "Reason"],
-            rows   => $rows,
-        );
-        print "\n";
-    }
-
-    if (my $rows = $final_data->{unseen}) {
-        print "\nThe following jobs never ran:\n";
-        print join "\n" => table(
-            header => ['Job ID', 'Test File'],
-            rows   => $rows,
-        );
-        print "\n";
-    }
-}
-
-sub _render_final_data_plainly {
-    my $self = shift;
-    my ($final_data) = @_;
-
-    return if $self->settings->display->quiet > 1;
-
-    if (my $rows = $final_data->{retried}) {
-        print "\nThe following jobs failed at least once:\n";
-        for my $row (@$rows) {
-            print "- filename: $row->[2]\n";
-            print "  job_id: $row->[0]\n";
-            print "  times_run: $row->[1]\n";
-            print "  succeeded_eventually: $row->[3]\n";
-        }
-    }
-
-    if (my $rows = $final_data->{failed}) {
-        print "\nThe following jobs failed:\n";
-        for my $row (@$rows) {
-            print "- filename: $row->[1]\n";
-            print "  job_id: $row->[0]\n";
-            if ($row->[2]) {
-                print "  subtests:\n";
-                my @paths = _subtest_paths($row->[2]);
-                print "  - $_\n" for @paths;
-            }
-        }
-    }
-
-    if (my $rows = $final_data->{halted}) {
-        print "\nThe following jobs requested all testing be halted:\n";
-        for my $row (@$rows) {
-            print "- filename: $row->[1]\n";
-            print "  job_id: $row->[0]\n";
-            print "  reason: $row->[2]\n" if $row->[2];
-        }
-    }
-
-    if (my $rows = $final_data->{unseen}) {
-        print "\nThe following jobs never ran:\n";
-        for my $row (@$rows) {
-            print "- filename: $row->[1]\n";
-            print "  job_id: $row->[0]\n";
-        }
-    }
-}
-
-sub _subtest_paths {
-    my ($map) = @_;
-
-    my @paths;
-    my @todo = @$map;
-    my @state;
-    while (my $st = shift @todo) {
-        if (!ref($st)) {
-            pop @state if $st eq 'pop';
-            next;
-        }
-        push @state, $st->[0];
-        push @paths, join(' -> ', @state);
-        unshift @todo, (@{$st->[1]}, 'pop');
-    }
-
-    return @paths;
-}
-
-sub stringify_subtest_map {
-    my ($map) = @_;
-
-    my $out  = "";
-    my @todo = @$map;
-    my @state;
-    while (my $st = shift @todo) {
-        if (!ref($st)) {
-            pop @state if $st eq 'pop';
-            next;
-        }
-        push @state => $st->[0];
-        $out .= join(' -> ' => @state) . "\n";
-        unshift @todo => (@{$st->[1]}, 'pop');
-    }
-
-    return $out;
-}
-
-sub renderers {
-    my $self = shift;
-
-    return $self->{+RENDERERS} if $self->{+RENDERERS};
-
-    my $settings = $self->{+SETTINGS};
-
-    my @renderers;
-    for my $class (@{$settings->display->renderers->{'@'}}) {
-        require(mod2file($class));
-        my $args     = $settings->display->renderers->{$class};
-        my $renderer = $class->new(@$args, settings => $settings, command_class => ref($self));
-        push @renderers => $renderer;
-    }
-
-    # Default-on terminal-reset renderer: when STDOUT is a TTY, append it LAST so
-    # its finish() (terminal reset) runs after every other renderer has flushed.
-    # No-op render_event; only the finish()/END reset matters. Rely on list order
-    # (no renderer weight sorting). Skipped entirely when not a TTY.
-    if (-t STDOUT) {
-        my $class = 'App::Yath2::Renderer::ResetTerm';
-        require(mod2file($class));
-        push @renderers => $class->new(settings => $settings, command_class => ref($self));
-    }
-
-    return $self->{+RENDERERS} = \@renderers;
 }
 
 # Spawn the collector-wrapped runner via the client (transient mode). The client

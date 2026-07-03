@@ -5,13 +5,14 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Getopt::Yath;
-require App::Yath2::Command::test;
 
 use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::JSONLFileProducer;
 
 use parent 'App::Yath2::Command';
-use Test2::Harness2::Util::HashBase qw/+renderers <final_data <log_file <tests_seen <asserts_seen/;
+# renderers/final_data/tests_seen/asserts_seen slots + the render_* methods are
+# inherited from App::Yath2::Command (shared with the test command).
+use Test2::Harness2::Util::HashBase qw/<log_file/;
 
 include_options(
     'App::Yath2::Options::Debug',
@@ -50,7 +51,7 @@ sub run {
 
     my $args      = $self->args;
     my $settings  = $self->settings;
-    my $renderers = $self->App::Yath2::Command::test::renderers;
+    my $renderers = $self->renderers;
 
     shift @$args if @$args && $args->[0] eq '--';
 
@@ -101,8 +102,8 @@ sub run {
     my $final_data = $self->{+FINAL_DATA} = $loop->final_data
         or die "Log did not contain final data!\n";
 
-    $self->App::Yath2::Command::test::render_final_data($final_data);
-    $self->App::Yath2::Command::test::render_summary($final_data->{pass});
+    $self->render_final_data($final_data);
+    $self->render_summary($final_data->{pass});
 
     return $final_data->{pass} ? 0 : 1;
 }
