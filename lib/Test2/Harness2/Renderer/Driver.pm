@@ -334,7 +334,12 @@ sub _render_launch ($self, $uuid, $c) {
             rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
             abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
         },
-        harness_job_launch => {stamp => $stamp, retry => $try},
+        # `retry` is a BOOLEAN flag the renderer keys the LAUNCH/RETRY tag on, not
+        # the try ordinal. Try ordinals are 1-based (#49), so a first attempt is
+        # try==1 and only try>1 is a retry -- emitting the raw ordinal tagged every
+        # first launch as RETRY under -v (#141 finding 99). The ordinal itself
+        # still rides in `is_try` above.
+        harness_job_launch => {stamp => $stamp, retry => (($try // 1) > 1 ? 1 : 0)},
     );
 
     $self->dispatch($e);
@@ -353,36 +358,52 @@ sub _render_aborted ($self, $rj) {
     my $job = $self->{+JOBS}{$job_id};
     return if $job && $job->{verdict};    # already settled normally
 
-    my $file   = $rj->{file} // ($job ? $job->{file} : undef);
-    my $try    = 0;
-    my $reason = $rj->{details} // "Runner aborted this job before it completed";
-
-    # If the launch was never rendered (the collector never started), render it
-    # now so the aborted job has a header line.
+    # Render each aborted job exactly once.
     my $entry = $self->{+ABORTED_RENDERED} //= {};
     return if $entry->{$job_id}++;
 
+    my $file   = $rj->{file} // ($job ? $job->{file} : undef);
+    my $reason = $rj->{details} // "Runner aborted this job before it completed";
+
     my $task     = $self->task_for($job_id);
     my $job_name = $task ? $task->{job_name} : $job_id;
-    $self->{+TESTS_SEEN}++;
-    $job->{tries}++ if $job;
+
+    # Was this job's launch lifecycle already rendered (its collector appeared and
+    # _render_launch ran, which bumps $job->{tries} + TESTS_SEEN)? If so, DO NOT
+    # synthesize a second launch and DO NOT re-count it: doing so showed the file
+    # 'started' twice, inflated the File Count, and emitted a phantom
+    # "Times Run: 2 / Succeeded Eventually? NO" retried row (#141 finding 4). Just
+    # emit the aborted exit/end below so the verdict rolls up exactly once.
+    my $launched = ($job && $job->{tries}) ? 1 : 0;
+
+    # Real (1-based) try ordinal rather than the old hardcoded 0, so a first
+    # attempt is not tagged RETRY and a retry of an aborted job IS (#141 finding
+    # 99). The launched case already knows its ordinal from $job->{tries}; an
+    # unlaunched abort falls back to the task's is_try.
+    my $try = $launched ? $job->{tries} : (($task ? $task->{is_try} : undef) // 1);
 
     my $stamp = time;
 
-    my $launch = $self->event(
-        $job_id, $try, $stamp,
-        harness_job       => {job_id => $job_id, job_name => $job_name, file => $file, is_try => $try},
-        harness_job_start => {
-            details  => "Job $job_id started",
-            job_id   => $job_id,
-            stamp    => $stamp,
-            file     => $file,
-            rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
-            abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
-        },
-        harness_job_launch => {stamp => $stamp, retry => $try},
-    );
-    $self->dispatch($launch);
+    # Only synthesize the launch (and count it) when it was NOT already rendered.
+    unless ($launched) {
+        $self->{+TESTS_SEEN}++;
+        $job->{tries}++ if $job;
+
+        my $launch = $self->event(
+            $job_id, $try, $stamp,
+            harness_job       => {job_id => $job_id, job_name => $job_name, file => $file, is_try => $try},
+            harness_job_start => {
+                details  => "Job $job_id started",
+                job_id   => $job_id,
+                stamp    => $stamp,
+                file     => $file,
+                rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
+                abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
+            },
+            harness_job_launch => {stamp => $stamp, retry => ($try > 1 ? 1 : 0)},
+        );
+        $self->dispatch($launch);
+    }
 
     my $end_facet = {
         file     => $file,
@@ -517,6 +538,13 @@ sub _tail_reader ($self, $uuid, $c) {
         $self->dispatch($e);
     }
 
+    # The job's terminal was read: drop its tailing reader so we do not hold an
+    # open zstd fd per finished job for the whole run. Under --live with more test
+    # files than the fd rlimit this leak hit EMFILE mid-run and broke rendering
+    # (#141 finding 96). JobReader also closes its own reader on done, so the fd is
+    # freed either way; dropping the entry keeps TAIL_READERS bounded to live jobs.
+    delete $self->{+TAIL_READERS}{$uuid} if $entry->{ended};
+
     return;
 }
 
@@ -531,6 +559,15 @@ sub _finalize_live ($self, $monitor) {
         my $c     = $monitor->collector($uuid) or next;
         my $entry = $self->{+BY_UUID}{$uuid} //= {ended => 0};
         next if $entry->{ended};
+
+        # A job whose verdict is already settled (the abort path rendered its
+        # aborted end without setting BY_UUID{ended}, or it otherwise decided)
+        # needs no terminal wait: the runner already made the no-retry decision
+        # and there is no events-file terminal coming. Skipping it avoids a full
+        # TAIL_TERMINAL_TIMEOUT dead-wait per aborted collector at end-of-run,
+        # serially -- a bounded but real N*5s stall under --live (#141 finding 52).
+        my $job = $self->job_for($c);
+        next if $job && $job->{verdict};
 
         my $start = time;
         until ($entry->{ended}) {
@@ -548,7 +585,6 @@ sub _finalize_live ($self, $monitor) {
 
         $self->_render_launch($uuid, $c) unless $entry->{launched};
 
-        my $job    = $self->job_for($c);
         my $job_id = $job ? $job->{job_id} : $uuid;
         my $file   = $job ? $job->{file}   : $c->{name};
         my $try    = $c->{try} // 0;

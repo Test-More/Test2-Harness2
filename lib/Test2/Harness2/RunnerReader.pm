@@ -109,8 +109,6 @@ sub poll ($self, $max = undef) {
         # restart -- and the exit it restarted from -- is visible, mirroring the
         # abnormal-exit diagnostic below (the raw facet has no renderer path).
         if (my $rs = $fd->{harness_process_restart}) {
-            $self->{+LAST_STAMP} = $rs->{stamp} if defined $rs->{stamp};
-
             my $err = $rs->{err} // 0;
             my $sig = $rs->{sig} // 0;
             my $msg = "$self->{+LABEL} restarting (exit: " . ($rs->{all} // $err) . ")";
@@ -124,8 +122,6 @@ sub poll ($self, $max = undef) {
         # The runner's synthetic process-exit is the terminal record. Mark done
         # -- there are no records after it.
         if (my $px = $fd->{harness_process_exit}) {
-            $self->{+LAST_STAMP} = $px->{stamp} if defined $px->{stamp};
-
             # The raw harness_process_exit facet has no renderer path (the
             # Default composer only renders job-level exit/end, not a run-level
             # process exit), so a non-zero runner exit would otherwise be
@@ -160,9 +156,24 @@ sub _wrap ($self, $fd) {
         job_id     => 0,
         job_try    => undef,
         run_id     => $self->{+RUN_ID},
-        stamp      => $self->{+LAST_STAMP} // time,
+        stamp      => $self->_stamp_for($fd),
         facet_data => $fd,
     );
+}
+
+# Harvest each record's OWN stamp (mirroring Test2::Harness2::JobReader::_stamp_for),
+# refreshing LAST_STAMP as we go, with LAST_STAMP // time only as the fallback for a
+# genuinely stampless record (a raw STDOUT/STDERR line the IOParser did not stamp).
+# The prior code only read stamps off the terminal process-exit / restart records
+# and used LAST_STAMP for everything else, so a stamp-bearing record's own time was
+# ignored and, after a harness_process_restart set LAST_STAMP, hours of subsequent
+# stage output all froze onto the restart instant in renderers/DB (#141 finding 107).
+sub _stamp_for ($self, $fd) {
+    for my $f (qw/harness_process_exit harness_process_restart harness_final_state harness_state_transition harness_timeout harness_orphan harness_parent_exit/) {
+        return $self->{+LAST_STAMP} = $fd->{$f}{stamp} if $fd->{$f} && defined $fd->{$f}{stamp};
+    }
+    return $self->{+LAST_STAMP} = $fd->{trace}{stamp} if $fd->{trace} && defined $fd->{trace}{stamp};
+    return $self->{+LAST_STAMP} // time;
 }
 
 1;

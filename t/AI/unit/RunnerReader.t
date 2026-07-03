@@ -205,4 +205,50 @@ subtest restart_boundary => sub {
     ok($reader->done, "the later harness_process_exit -- not the restart -- ends the stream");
 };
 
+# Ticket #141 (107): each record's OWN stamp is harvested (refreshing LAST_STAMP),
+# so a stamp-bearing record uses its own time and, crucially, output after a
+# harness_process_restart is no longer frozen at the restart instant -- a later
+# stamp-bearing record advances the clock for the stampless output that follows.
+subtest record_stamps_not_frozen_after_restart => sub {
+    my $rdir  = tempdir(CLEANUP => 1);
+    my $rfile = "$rdir/stage-STAMP-events.jsonl.zst";
+
+    my $r = Test2::Collector::Recorder::Zstd->new(file => $rfile);
+    $r->record_event($ev->(harness_process_restart => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 100}));
+    $r->record_event($ev->(
+        from_stream => {source => 'STDOUT', details => 'right after'},
+        info        => [{tag => 'STDOUT', debug => 0, details => 'right after'}],
+    ));
+    # A later record that carries its OWN stamp (previously ignored by _wrap).
+    $r->record_event($ev->(harness_state_transition => {state => 'starting', stamp => 250}));
+    $r->record_event($ev->(
+        from_stream => {source => 'STDOUT', details => 'much later'},
+        info        => [{tag => 'STDOUT', debug => 0, details => 'much later'}],
+    ));
+    $r->record_event($ev->(harness_process_exit => {err => 0, sig => 0, dmp => 0, all => 0, stamp => 300}));
+    $r->finalize;
+
+    my $reader = Test2::Harness2::RunnerReader->new(run_id => 'RUN-STAMP', events_file => $rfile);
+    my @e;
+    for (1 .. 8) { push @e => $reader->poll(1000); last if $reader->done }
+
+    my $stamp_of = sub {
+        my ($needle) = @_;
+        my ($x) = grep {
+            my $i = $_->facet_data->{info};
+            $i && grep { ($_->{details} // '') eq $needle } @$i;
+        } @e;
+        return $x ? $x->stamp : undef;
+    };
+
+    my ($rs) = grep { $_->facet_data->{harness_process_restart} } @e;
+    is($rs->stamp, 100, "restart record keeps its own stamp");
+
+    my ($st) = grep { $_->facet_data->{harness_state_transition} } @e;
+    is($st->stamp, 250, "a stamp-bearing record uses its OWN stamp (no longer ignored)");
+
+    is($stamp_of->('right after'), 100, "stampless output right after the restart carries the restart stamp");
+    is($stamp_of->('much later'),  250, "stampless output later carries the ADVANCED stamp, not frozen at the restart instant");
+};
+
 done_testing;

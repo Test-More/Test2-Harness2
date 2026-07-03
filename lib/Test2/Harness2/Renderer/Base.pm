@@ -387,6 +387,16 @@ sub step_runner_output ($self, $monitor) {
 # it returns false so the caller falls back to its bounded timeout instead of
 # spinning forever on a missing terminal.
 sub runner_output_done ($self) {
+    # Runner output is hidden (--hide-runner-output): step_runner_output is gated
+    # off (see above), so the runner-events reader is never created and its
+    # terminal can never be read. There is nothing to drain, so report done
+    # immediately -- otherwise the finalize drain
+    # (App::Yath2::RenderLoop::LiveProducer::_drain_runner_output) dead-waits the
+    # full DRAIN_RUNNER_OUTPUT_TIMEOUT on EVERY hidden run (#141 finding 17; also
+    # the observable symptom behind TIER-10 #160, where the hidden-output finalize
+    # never completed promptly / renderer finish was delayed by the dead-wait).
+    return 1 unless $self->{+SHOW_RUNNER_OUTPUT};
+
     my $dir = $self->{+WORKDIR} or return 1;
 
     my $rfile  = runner_events_file($dir);
