@@ -46,6 +46,13 @@ sub run {
 
     my $data = $pfile->data;
 
+    # A live socket with a missing/garbled workdir PID file (external deletion or
+    # corruption only -- the PID is written before the socket binds, so this is not a
+    # boot race) used to crash with "Can't kill a non-numeric process ID" after
+    # printing "Sending SIGHUP to <blank>". Guard it with an actionable message (#146).
+    my $pid = $data->{pid}
+        // die "Runner found at $data->{dir} but its PID file is missing/unreadable; restart the runner.\n";
+
     # No-preload gate: a runner with no preload stages cannot reload -- its SIGHUP
     # handler is an explicit no-op -- so telling the user "success" is a lie. Detect
     # it by reading the runner workdir's settings.json (written by `yath start`, and
@@ -73,13 +80,13 @@ sub run {
         unlink($blacklist) or warn "Could not delete blacklist file!";
     }
 
-    print "\nSending SIGHUP to $data->{pid}\n\n";
-    unless (kill('HUP', $data->{pid})) {
-        print STDERR "Could not send SIGHUP to $data->{pid}: $!\n";
+    print "\nSending SIGHUP to $pid\n\n";
+    unless (kill('HUP', $pid)) {
+        print STDERR "Could not send SIGHUP to $pid: $!\n";
         return 1;
     }
 
-    print "Reload requested (SIGHUP sent to pid $data->{pid}). The preload tree respawns\n"
+    print "Reload requested (SIGHUP sent to pid $pid). The preload tree respawns\n"
         . "asynchronously; use 'yath status' to watch the stages come back up.\n";
     return 0;
 }

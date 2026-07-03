@@ -73,7 +73,13 @@ sub run {
 
 sub _stop_live {
     my ($self, $disco) = @_;
-    my $pid = $disco->pid;
+
+    # A live socket with a missing/garbled workdir PID file (external deletion or
+    # corruption only -- the PID is written before the socket binds) leaves
+    # $disco->pid undef; attaching/kill(0)-ing on an undef pid used to misbehave.
+    # Fail fast with an actionable message instead (#146).
+    my $pid = $disco->pid
+        // die "Runner found at " . $disco->workdir . " but its PID file is missing/unreadable; restart the runner.\n";
 
     # One shared absolute deadline for the drain AND the exit-wait, so a healthy stop
     # adds NO latency (the drain already exits shortly after pid death) while a wedged

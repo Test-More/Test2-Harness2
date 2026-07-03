@@ -56,7 +56,11 @@ sub run {
         unless $resources;
 
     while (1) {
-        $resources = $self->runner_resources // [];
+        # Runner gone away (pfile vanished / pid dead) => runner_resources returns
+        # undef. Stop instead of clearing the screen forever on an empty view (#146,
+        # cleanup #91 step 3); modeled on ping.pm's runner-gone break.
+        $resources = $self->runner_resources;
+        last unless defined $resources;
 
         my @out = (
             "\r\e[2J\r\e[1;1H",
@@ -75,6 +79,7 @@ sub run {
         sleep 0.2;
     }
 
+    print "\nRunner has gone away.\n";
     return 0;
 }
 

@@ -153,6 +153,14 @@ sub run {
         $self->render();
         $self->stop();
 
+        # A caught signal (Ctrl-C / SIGTERM / SIGHUP) interrupts the run: report it
+        # honestly with whatever partial results render() harvested, run the plugin
+        # finish() hooks, then re-raise the signal so we exit with the conventional
+        # 128+signum status -- NOT the internal-looking "Final data never received"
+        # die + exit 255 (#146). _finish_interrupted() does not return.
+        return $self->_finish_interrupted($self->signal, $plugins)
+            if $self->signal;
+
         my $final_data = $self->{+FINAL_DATA} or die "Final data never received from collector!\n";
         my $pass       = $self->{+TESTS_SEEN} && $final_data->{pass};
         $self->render_final_data($final_data);
@@ -175,6 +183,51 @@ sub run {
     $self->stop();
 
     return 1;
+}
+
+# The caught-signal tail of run() (#146). The run was interrupted (Ctrl-C etc.):
+# print an honest interrupted banner, run the plugin finish() hooks with whatever
+# partial results render() harvested (so a signal no longer skips them), then
+# re-raise the signal so the process exits 128+signum. Does not return.
+sub _finish_interrupted {
+    my $self = shift;
+    my ($sig, $plugins) = @_;
+
+    print STDERR "\nRun interrupted by SIG$sig.\n";
+
+    if ($plugins && @$plugins) {
+        my %args = (
+            settings     => $self->settings,
+            final_data   => $self->{+FINAL_DATA},
+            pass         => 0,
+            tests_seen   => $self->{+TESTS_SEEN}   // 0,
+            asserts_seen => $self->{+ASSERTS_SEEN} // 0,
+        );
+        $_->finish(%args) for @$plugins;
+    }
+
+    $self->_reraise_signal($sig);
+
+    return 1;    # not reached (_reraise_signal exits)
+}
+
+# Restore the signal's default disposition and re-raise it so we terminate with the
+# conventional 128+signum wait-status instead of a plain exit code (#146). Falls
+# back to an explicit exit(128+signum) if the signal is blocked/ignored and so does
+# not actually terminate us.
+sub _reraise_signal {
+    my $self = shift;
+    my ($sig) = @_;
+
+    $self->remove_signal_handlers;
+    $SIG{$sig} = 'DEFAULT';
+    kill($sig => $$);
+
+    my %num;
+    require Config;
+    @num{split ' ', $Config::Config{sig_name}} = split ' ', $Config::Config{sig_num};
+
+    exit(128 + ($num{$sig} // 0));
 }
 
 sub DESTROY {
@@ -509,8 +562,12 @@ sub render {
     # (the loop checks its own signalled flag, set via the client's on_signal hook).
     $loop->start(sub { $self->reap_runner });
 
-    return if $self->signal;
-
+    # Harvest whatever the loop gathered BEFORE returning on a signal (#146): an
+    # interrupted run still has a partial tests_seen (and possibly partial
+    # final_data), and recording it here is what keeps a Ctrl-C'd run from printing a
+    # false "No tests were seen!" in stop() and lets the interrupted path report
+    # partial results. final_data may be undef when the run-level rollup never ran;
+    # the interrupted path in run() tolerates that.
     $self->{+FINAL_DATA}   = $loop->final_data;
     $self->{+TESTS_SEEN}   = $loop->tests_seen;
     $self->{+ASSERTS_SEEN} = $loop->asserts_seen;

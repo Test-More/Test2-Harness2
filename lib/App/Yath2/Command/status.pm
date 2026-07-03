@@ -25,6 +25,13 @@ This command will provide health details and a process list for the runner.
 
 sub pfile_params { (no_fatal => 1) }
 
+# Numeric sort key for a pid column that may hold 'N/A' (a down/restarting stage or
+# a not-yet-pid'd running test): a bare integer sorts by value, anything else sorts
+# first as -1. This avoids the "Argument 'N/A' isn't numeric in <=>" warning spray
+# the raw `$a->[0] <=> $b->[0]` produced whenever a stage was restarting (#146).
+# Inherited by ps.pm, which shares the same pid-first row shape.
+sub _pid_key { $_[1] =~ /^\d+$/ ? $_[1] : -1 }
+
 sub run {
     my $self = shift;
 
@@ -82,7 +89,7 @@ sub run {
         push @$rows => [$pid, $stage, $state, $ready, $reload];
     }
 
-    @$rows = sort { $a->[0] <=> $b->[0] } @$rows;
+    @$rows = sort { $self->_pid_key($a->[0]) <=> $self->_pid_key($b->[0]) } @$rows;
 
     my $stage_table = Term::Table->new(
         collapse => 1,
@@ -113,7 +120,7 @@ sub run {
         my $run_table = Term::Table->new(
             collapse => 1,
             header => [qw/pid uuid try test conflicts/],
-            rows => [ sort { $a->[0] <=> $b->[0] } @rows ],
+            rows => [ sort { $self->_pid_key($a->[0]) <=> $self->_pid_key($b->[0]) } @rows ],
         );
         print "$_\n" for $run_table->render;
     }

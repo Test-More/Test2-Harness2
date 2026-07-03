@@ -30,6 +30,12 @@ sub run {
 
     my $data = $self->pfile_data();
 
+    # Attach the client to the live persistent runner (kill(0) liveness, no reap)
+    # before asking for status, matching status.pm/abort.pm. Without this the client
+    # has no connect-retry tolerance, so a transient connect failure silently printed
+    # an empty process list and exited 0 (#146).
+    $self->client->attach_runner($data->{pid});
+
     # Ask the runner for its live process list over runner.socket.
     my $status = $self->client->status // {};
 
@@ -54,7 +60,7 @@ sub run {
     my $process_table = Term::Table->new(
         collapse => 1,
         header => [qw/pid type name/],
-        rows => [sort { $a->[0] <=> $b->[0] } @jobs],
+        rows => [sort { $self->_pid_key($a->[0]) <=> $self->_pid_key($b->[0]) } @jobs],
     );
 
     print "\n**** Running Processes ****\n";
