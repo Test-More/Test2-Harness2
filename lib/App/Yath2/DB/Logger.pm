@@ -229,16 +229,40 @@ sub _run ($self) {
     return;
 }
 
-# Have all collectors the monitor knows about reached 'finalized' AND had their
-# blob imported? Used to end the drain early once everything is captured.
+# Have all of THIS RUN's collectors reached 'finalized' AND had their blob
+# imported? Used to end the drain early once everything is captured. Global/service
+# collectors (run_uuid undef) are excluded -- they belong to the daemon and never
+# finalize (#130), so counting them here would never let the drain end early.
 sub _all_finalized_imported ($self) {
     my $mon = $self->monitor;
     for my $uuid ($mon->collectors) {
+        # Skip global/service collectors owned by the daemon, not this run (#130):
+        # they never finalize, so waiting on them stalls the whole drain the full
+        # DRAIN_TIMEOUT on every persistent-runner '-L' run.
+        next unless $self->_collector_in_run($mon, $uuid);
         my $status = $mon->status($uuid) // '';
         return 0 unless $status eq 'finalized';
         return 0 unless $self->{+ARTIFACTS_DONE}{$uuid};
     }
     return 1;
+}
+
+# A collector belongs to THIS run only when its monitor-tracked run_uuid equals
+# RUN_ID. A collector with an UNDEF run_uuid is a GLOBAL/service collector owned by
+# the persistent daemon -- the runner's own sampler collector (unconditional) and
+# the preload-stage roots (when preloads are configured) -- routed into every
+# run-scoped subscriber's mirror via the monitor's shared global bucket. Those
+# collectors belong to no run and NEVER finalize, so the per-run fold + drain loops
+# must skip them (#130): without this filter _all_finalized_imported could never
+# return true while a global collector sat at 'running', so every persistent '-L'
+# run polled for the full DRAIN_TIMEOUT after it completed. The same filter also
+# stops _upsert_collectors from misattributing a shared service collector's row to
+# this run (and _import_finalized from importing a blob whose collector has no row).
+sub _collector_in_run ($self, $mon, $uuid) {
+    my $c   = $mon->collector($uuid) or return 0;
+    my $run = $c->{run_uuid};
+    return 0 unless defined $run;
+    return $run eq $self->{+RUN_ID} ? 1 : 0;
 }
 
 # ---------------------------------------------------------------------------
@@ -468,6 +492,12 @@ sub _upsert_collectors ($self, $mon) {
     for my $uuid ($mon->collectors) {
         my $c = $mon->collector($uuid) or next;
 
+        # Only this run's collectors (#130). A global/service collector (run_uuid
+        # undef) rides the monitor's shared bucket into every run-scoped mirror;
+        # writing its row under this run_uuid is a misattribution (and it never
+        # finalizes, so it also stalls the drain via _all_finalized_imported).
+        next unless $self->_collector_in_run($mon, $uuid);
+
         my $collector_uuid = lc($uuid);
         next if $con->handle('collectors', where => {collector_uuid => $collector_uuid})->first;
 
@@ -528,6 +558,11 @@ sub _collector_status ($self, $c) {
 sub _import_finalized ($self, $mon) {
     for my $uuid ($mon->collectors) {
         next if $self->{+ARTIFACTS_DONE}{$uuid};
+
+        # Only this run's collectors (#130): a global/service collector gets no
+        # collectors row (skipped by _upsert_collectors), so importing its blob
+        # would violate the artifacts->collectors FK; and it belongs to no run.
+        next unless $self->_collector_in_run($mon, $uuid);
 
         my $status = $mon->status($uuid) // '';
         next unless $status eq 'finalized';
