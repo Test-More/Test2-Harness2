@@ -7,9 +7,9 @@ use Carp qw/croak/;
 use File::Spec();
 use Time::HiRes qw/sleep time/;
 
-use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+use Test2::Harness2::Util::JSON qw/decode_json/;
 
-use App::Yath2::Util::UUID qw/gen_uuid derive_uuid/;
+use App::Yath2::Util::UUID qw/derive_uuid/;
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
@@ -863,15 +863,11 @@ sub _finalize_run_row ($self) {
 # Helpers.
 # ---------------------------------------------------------------------------
 
-# get_or_create on a natural key; returns the integer PK.
+# get_or_create on a natural key; returns the integer PK. Shared implementation
+# (with the sync engine) lives in App::Yath2::DB::Connect and takes the connection
+# explicitly -- here, always this logger's live connection.
 sub _find_or_create ($self, $table, $natural, $pk_col) {
-    my $con = $self->con;
-
-    my $row = $con->handle($table, where => $natural)->first;
-    return $row->field($pk_col) if $row;
-
-    my $new = $con->handle($table)->insert($natural);
-    return $new->field($pk_col);
+    return App::Yath2::DB::Connect::find_or_create($self->con, $table, $natural, $pk_col);
 }
 
 # Map a collector to its job_uuid (= job_id). The collector's name is the

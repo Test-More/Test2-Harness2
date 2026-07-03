@@ -25,11 +25,13 @@ imports L<DBIx::QuickORM>).
 
 =head1 DESCRIPTION
 
-Builds a B<fresh> L<DBIx::QuickORM> ORM with the same C<autofill> block
-L<App::Yath2::Schema> declares (JSON/UUID/DateTime autotypes + the dumb autorow),
-attaches a db, and returns the live connection. A fresh ORM per call is required
-because a C<DBIx::QuickORM::ORM>'s C<db> is write-once, so the shared
-C<App::Yath2::Schema> C<yath> singleton cannot be re-attached.
+Builds a B<fresh> L<DBIx::QuickORM> ORM with the C<autofill> block defined here --
+the single definition (JSON/UUID/DateTime autotypes + the dumb autorow) -- attaches
+a db, and returns the live connection. A fresh ORM per call is required because a
+C<DBIx::QuickORM::ORM>'s C<db> is write-once, so a shared ORM singleton could never
+be re-attached (ticket #93 collapsed the old duplicated definition in
+L<App::Yath2::Schema> onto this one; that module is now a thin stable-name
+delegator to this builder).
 
 This is split out of L<App::Yath2::DB::Connect> so the C<use DBIx::QuickORM> here
 is only paid when a DB process actually loads it (R11) -- C<Connect> verifies the

@@ -16,6 +16,7 @@ our @EXPORT_OK = qw{
     target_to_flavor
     build_connection
     ensure_sqlite_db
+    find_or_create
 };
 
 =pod
@@ -32,8 +33,8 @@ builder for the DB logger / commands.
 The DB layer is B<optional> (spec R11): core C<yath test> without logging needs
 B<zero> DB modules. This module is the single place that C<require>s
 L<DBIx::QuickORM> + the per-engine C<DBD::*> driver lazily, with an actionable
-"install X" error, and builds the live L<App::Yath2::Schema> connection (autofill
-/ reflect-from-DB) for one target.
+"install X" error, and builds the live QuickORM connection (autofill /
+reflect-from-DB, via L<App::Yath2::DB::ORM>) for one target.
 
 A B<target> is the polymorphic C<-L> value (spec R16):
 
@@ -98,6 +99,14 @@ bootstrap never leaves a half-built C<$path> and two processes first-opening a
 shared DB never collide on C<CREATE TABLE>. "Already bootstrapped" is decided for
 sqlite by a schema marker (a C<schema_meta> row), not merely a non-zero size, so a
 partial file left by an older non-atomic run is rebuilt rather than trusted.
+
+=item $pk = find_or_create($con, $table, \%natural, $pk_col)
+
+Get-or-create a natural-key entity on connection C<$con>: return the C<$pk_col>
+value of the row matching C<%natural> if it exists, otherwise C<insert> it and
+return the new C<$pk_col>. The connection is passed explicitly so both the logger
+(writing to its live connection) and the sync engine (writing to its destination)
+share one implementation.
 
 =back
 
@@ -386,15 +395,28 @@ sub build_connection {
     }
 
     # Build a FRESH ORM (a DBIx::QuickORM::ORM's `db` is write-once, so we never
-    # re-attach the App::Yath2::Schema `yath` singleton). The autofill block is kept
-    # in sync with App::Yath2::Schema (JSON/UUID/DateTime autotypes + the dumb
-    # autorow). App::Yath2::DB::ORM carries the compile-time `use DBIx::QuickORM`;
-    # we require it lazily here (require_db_modules already verified the dep, R11).
+    # re-attach a shared singleton). App::Yath2::DB::ORM owns the single autofill
+    # definition (JSON/UUID/DateTime autotypes + the dumb autorow) and carries the
+    # compile-time `use DBIx::QuickORM`; we require it lazily here (require_db_modules
+    # already verified the dep, R11).
     require App::Yath2::DB::ORM;
     my $name = 'yath_logger_' . $flavor->name . '_' . ++$ORM_SEQ . '_' . $$;
     my $con  = App::Yath2::DB::ORM::connection($name, $flavor->dialect, $db_name, $connect_cb);
 
     return ($con, $flavor);
+}
+
+# Get-or-create a natural-key entity on $con, returning its integer PK. Shared by
+# the logger (its live connection) and the sync engine (its destination), which is
+# why the connection is an explicit argument (ticket #93 -- one implementation).
+sub find_or_create {
+    my ($con, $table, $natural, $pk_col) = @_;
+
+    my $row = $con->handle($table, where => $natural)->first;
+    return $row->field($pk_col) if $row;
+
+    my $new = $con->handle($table)->insert($natural);
+    return $new->field($pk_col);
 }
 
 1;

@@ -13,7 +13,6 @@ use Test2::Harness2::Util::HashBase qw{
     <schema_dir
     <dbd_dsn_prefix
     <quickdb_driver
-    <is_default
 };
 
 =pod
@@ -88,11 +87,6 @@ internally for DSN inference.
 The L<DBIx::QuickDB> driver token (e.g. C<SQLite>, C<PostgreSQL>) for ephemeral
 databases.
 
-=item is_default
-
-True only for the C<sqlite> flavor, which is the default backend when no
-explicit flavor is configured (logging is still opt-in -- spec R11).
-
 =back
 
 =cut
@@ -107,7 +101,6 @@ my %REGISTRY = (
         schema_dir     => 'SQLite',
         dbd_dsn_prefix => 'dbi:SQLite:dbname=',
         quickdb_driver => 'SQLite',
-        is_default     => 1,
     },
     duckdb => {
         # DuckDB is an embedded file engine (like sqlite) but with native uuid /
@@ -119,7 +112,6 @@ my %REGISTRY = (
         schema_dir     => 'DuckDB',
         dbd_dsn_prefix => 'dbi:DuckDB:dbname=',
         quickdb_driver => 'DuckDB',
-        is_default     => 0,
     },
     postgresql => {
         name           => 'postgresql',
@@ -127,7 +119,6 @@ my %REGISTRY = (
         schema_dir     => 'PostgreSQL',
         dbd_dsn_prefix => 'dbi:Pg:',
         quickdb_driver => 'PostgreSQL',
-        is_default     => 0,
     },
     mysql => {
         # The harness drives the whole MySQL family (mysql/mariadb/percona) through
@@ -137,7 +128,6 @@ my %REGISTRY = (
         schema_dir     => 'MySQL',
         dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'MySQL',
-        is_default     => 0,
     },
     mariadb => {
         # Native uuid requires MariaDB 10.7+ (R8) -- a hard minimum, no fallback.
@@ -146,7 +136,6 @@ my %REGISTRY = (
         schema_dir     => 'MariaDB',
         dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'MariaDB',
-        is_default     => 0,
     },
     percona => {
         # Driven through DBD::MariaDB like the rest of the MySQL family (dbi:MariaDB:).
@@ -155,7 +144,6 @@ my %REGISTRY = (
         schema_dir     => 'Percona',
         dbd_dsn_prefix => 'dbi:MariaDB:',
         quickdb_driver => 'Percona',
-        is_default     => 0,
     },
 );
 

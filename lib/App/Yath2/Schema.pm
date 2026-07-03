@@ -5,23 +5,16 @@ our $VERSION = '2.000000';
 
 # DB layer rewrite (#46 / chunk DB-2). All DB code lives under App::Yath2; the
 # backend Test2::Harness2 layer accesses no DB in either direction (spec §0.1/§2).
-# This is the live ORM: a DBIx::QuickORM `orm` with `autofill` (reflect-from-DB).
-# The schema is NEVER defined in Perl -- the per-flavor DDL under share/schema/ is
-# the source of truth, and autofill introspects whatever that DDL produced.
-use DBIx::QuickORM;
-
-orm yath => sub {
-    # No db here. A db is attached with a connect callback at runtime (see
-    # SYNOPSIS) so no credentials live in this file. The schema is introspected
-    # from the live database by autofill, which runs lazily when the connection
-    # is first built.
-    autofill sub {
-        autotype 'JSON';                                # JSONB parameters/fields columns
-        autotype 'UUID';                                # native uuid PKs/FKs <-> canonical string
-        autotype 'DateTime';                            # timestamptz columns <-> DateTime
-        autorow 'App::Yath2::Schema::Row';              # dumb autorow under App::Yath2::Schema::Row::
-    };
-};
+#
+# This is a thin stable-name delegator (ticket #93). The live ORM builder -- the
+# single `autofill` definition (JSON/UUID/DateTime autotypes + the dumb autorow)
+# -- lives in L<App::Yath2::DB::ORM>, which every connection is built through
+# (a DBIx::QuickORM ORM's `db` is write-once, so a shared singleton could never be
+# re-attached; Connect.pm builds a FRESH ORM per connection). Loading this module
+# pulls in that builder so the historical `require App::Yath2::Schema` call sites
+# keep resolving; the schema is never defined in Perl (the per-flavor DDL under
+# share/schema/ is the source of truth, introspected by autofill at connect time).
+require App::Yath2::DB::ORM;
 
 1;
 
@@ -33,62 +26,41 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Schema - The yath database schema, as a DBIx::QuickORM ORM.
+App::Yath2::Schema - Stable-name delegator to the yath QuickORM connection builder.
 
 =head1 DESCRIPTION
 
-Defines the App::Yath2 database's L<DBIx::QuickORM> ORM, named C<yath>. The ORM
-carries no database and no credentials: the schema is built by C<autofill>,
-which introspects the live database the first time a connection is made. JSON
-(JSONB C<parameters>/C<fields>), UUID, and DateTime (C<timestamptz>) columns are
-inflated/deflated automatically, and a row class is generated per table under
-C<App::Yath2::Schema::Row::> (a hand-written
-C<App::Yath2::Schema::Row::E<lt>TableE<gt>> is loaded if one exists).
+Historically this module registered the App::Yath2 database's L<DBIx::QuickORM>
+ORM (named C<yath>). That singleton was never fetched -- every live connection is
+built by L<App::Yath2::DB::Connect> through L<App::Yath2::DB::ORM>, which builds a
+B<fresh> ORM per connection (a C<DBIx::QuickORM::ORM>'s C<db> is write-once, so a
+shared singleton cannot be re-attached). Ticket #93 collapsed the duplicated
+C<autofill> block onto that one builder and reduced this module to a thin
+delegator that C<require>s L<App::Yath2::DB::ORM>, retained as a stable public
+name for the DB-touching entry points (the logger, the C<db> commands,
+sync/import) that C<require App::Yath2::Schema>.
 
-The tables themselves are created from the per-flavor DDL shipped under
+The schema itself is created from the per-flavor DDL shipped under
 C<share/schema/> (the source of truth -- there is no Perl schema definition and
-no codegen); C<autofill> only reads what that DDL produced, it never creates
-tables. UUID values the DB layer inserts are generated in Perl with
-L<App::Yath2::Util::UUID> (lowercase v7); the UUID type here only converts
-stored values to and from their canonical form.
+no codegen); C<autofill> only reads what that DDL produced. JSON (JSONB
+C<parameters>/C<fields>), UUID, and DateTime (C<timestamptz>) columns are
+inflated/deflated automatically, and a dumb row class is generated per table
+under C<App::Yath2::Schema::Row::>. UUID values the DB layer inserts are
+generated in Perl with L<App::Yath2::Util::UUID> (lowercase v7).
 
-Row objects are deliberately B<dumb> (DCI / modules-as-actions, spec §2b): no
-algorithms live in row classes. Complex logic (import, sync, queries) lives in
-dedicated modules/controllers acting on rows.
-
-The DB layer is B<optional> (spec R11): nothing always-loaded C<use>s a DB
-module at compile time. C<use>ing this module pulls in L<DBIx::QuickORM>, so it
-is only loaded from DB-touching entry points (the logger, the C<db>/C<server>
-commands, sync/import), each of which C<require>s its modules lazily with an
+The DB layer is B<optional> (spec R11): nothing always-loaded C<use>s a DB module
+at compile time. This module (and the builder it pulls in) is loaded only from
+the DB-touching entry points, each of which C<require>s its modules lazily with an
 actionable error when absent.
-
-Because the ORM has no database, attach one with a C<connect> callback before
-asking for a connection. The callback must return a fresh L<DBI> handle each
-time it is called.
-
-=head1 SYNOPSIS
-
-C<use>ing this module installs a C<qorm()> accessor into the caller (the default
-L<DBIx::QuickORM> export name); C<< qorm(orm => 'yath') >> fetches the ORM.
-Attach a database with a C<connect> callback, then ask for the connection:
-
-    use DBIx::QuickORM only => [qw/db dialect connect db_name/];
-    use App::Yath2::Schema;
-
-    my $orm = qorm(orm => 'yath');
-
-    $orm->db(db(sub {
-        dialect 'PostgreSQL';                   # the dialect is still required
-        db_name $db_name;                       # database/catalog autofill reads
-        connect(sub { $fresh_dbh });            # any sub returning a NEW DBI handle
-    }));
-
-    my $con = $orm->connection;                 # autofill introspects here
-    my $run = $con->handle('runs')->insert({ run_uuid => $uuid, ... });
 
 =head1 SEE ALSO
 
 =over 4
+
+=item L<App::Yath2::DB::ORM>
+
+The actual QuickORM connection builder (the single C<autofill> definition) this
+module delegates to.
 
 =item L<App::Yath2::DB::Flavor>
 

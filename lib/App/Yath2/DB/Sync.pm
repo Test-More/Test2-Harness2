@@ -5,17 +5,12 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
-use App::Yath2::Util::UUID qw/gen_uuid/;
-
 use Test2::Harness2::Util::HashBase qw{
     <source
     <dest
 
     <as_user
     <override_user
-
-    +source_flavor
-    +dest_flavor
 
     +cache
     +stats
@@ -116,20 +111,17 @@ the override user when overriding.
 
 =cut
 
-# The natural-key entity map (R5): table => { key => [columns], pk => col }. The
-# `key` columns are the natural unique key resolved on the destination; the value
-# columns are read straight off the source row.
+# The natural-key entity map (R5) for the single-column remaps _remap_fk drives:
+# table => { key => [columns], pk => col }. The `key` columns are the natural
+# unique key resolved on the destination; the value columns are read straight off
+# the source row. The composite-key entities (test_files by (project_id, filename),
+# machine_users by (host_id, username)) are NOT here: their FK columns are
+# themselves remapped first, so they are resolved specially in _remap_test_file /
+# _remap_machine_user rather than through _remap_fk.
 my %NATURAL = (
-    projects      => {key => ['name'],                pk => 'project_id'},
-    hosts         => {key => ['hostname'],            pk => 'host_id'},
-    # test_files has a composite natural key (project_id, filename); project_id is
-    # itself a remapped FK, so it is resolved specially in _remap_test_file.
-    test_files    => {key => ['project_id', 'filename'], pk => 'test_file_id'},
-    users         => {key => ['username'],            pk => 'user_id'},
-    # machine_users has a composite natural key (host, username); the host FK is
-    # itself remapped (resolve the host on the dest first), so this is handled
-    # specially in _remap_machine_user.
-    machine_users => {key => ['host_id', 'username'], pk => 'machine_user_id'},
+    projects => {key => ['name'],     pk => 'project_id'},
+    hosts    => {key => ['hostname'], pk => 'host_id'},
+    users    => {key => ['username'], pk => 'user_id'},
 );
 
 sub init ($self) {
@@ -143,6 +135,28 @@ sub init ($self) {
     $self->{+STATS} = {runs => 0, jobs => 0, job_tries => 0, collectors => 0, artifacts => 0, skipped_runs => 0};
 
     return;
+}
+
+=item ($source_con, $dest_con) = App::Yath2::DB::Sync->connect_pair($from, $to)
+
+Build the source/destination QuickORM connections both C<yath db sync> and
+C<import> need: C<$from> is opened B<read-only> (Sync never writes the source --
+mandatory for a DuckDB source, whose write lock is process-exclusive, so its
+writer must have already detached) and C<$to> is the writable destination. Loads
+the optional DB modules lazily (spec R11 -- L<App::Yath2::DB::Connect> throws an
+actionable "install ..." error when L<DBIx::QuickORM> or the C<DBD::*> driver is
+missing). Returns the two connections.
+
+=cut
+
+sub connect_pair ($class, $from, $to) {
+    require App::Yath2::DB::Connect;
+    require App::Yath2::Schema;    # stable-name module (pulls in the QuickORM builder)
+
+    my ($source_con) = App::Yath2::DB::Connect::build_connection($from, read_only => 1);
+    my ($dest_con)   = App::Yath2::DB::Connect::build_connection($to);
+
+    return ($source_con, $dest_con);
 }
 
 # ---------------------------------------------------------------------------
@@ -159,16 +173,6 @@ terminal (C<complete>, C<broken>, or C<canceled>) -- in-flight runs
 
 sub source_run_uuids ($self) {
     return $self->_terminal_run_uuids($self->{+SOURCE});
-}
-
-=item @uuids = $sync->dest_run_uuids
-
-The same, on the B<destination>.
-
-=cut
-
-sub dest_run_uuids ($self) {
-    return $self->_terminal_run_uuids($self->{+DEST});
 }
 
 sub _terminal_run_uuids ($self, $con) {
@@ -491,14 +495,10 @@ sub _remap_submitted_by ($self, $src_con, $src_id) {
 }
 
 # find_or_create on a destination natural-key entity; returns the dest integer PK.
+# The shared implementation lives in App::Yath2::DB::Connect (used by the logger
+# too) and takes the connection explicitly -- here, always the destination.
 sub _find_or_create ($self, $table, $natural, $pk_col) {
-    my $dest = $self->{+DEST};
-
-    my $row = $dest->handle($table, where => $natural)->first;
-    return $row->field($pk_col) if $row;
-
-    my $new = $dest->handle($table)->insert($natural);
-    return $new->field($pk_col);
+    return App::Yath2::DB::Connect::find_or_create($self->{+DEST}, $table, $natural, $pk_col);
 }
 
 # ---------------------------------------------------------------------------

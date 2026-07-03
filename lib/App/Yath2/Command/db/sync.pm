@@ -4,8 +4,6 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Carp qw/croak/;
-
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase;
 
@@ -82,14 +80,11 @@ sub run {
     my $from = $sync_set->from or die "--from <target> is required (a sqlite path or a dbi:... DSN)\n";
     my $to   = $sync_set->to   or die "--to <target> is required (a sqlite path or a dbi:... DSN)\n";
 
-    require App::Yath2::DB::Connect;
-    require App::Yath2::Schema;    # installs qorm() + the autorow namespace
     require App::Yath2::DB::Sync;
 
-    # --from is read-only (Sync never writes the source). Mandatory for a DuckDB
-    # source (process-exclusive write lock): the source's writer must have detached.
-    my ($source_con) = App::Yath2::DB::Connect::build_connection($from, read_only => 1);
-    my ($dest_con)   = App::Yath2::DB::Connect::build_connection($to);
+    # Build the read-only source / writable dest connection pair (shared with
+    # `import`; loads the optional DB modules lazily with an actionable error).
+    my ($source_con, $dest_con) = App::Yath2::DB::Sync->connect_pair($from, $to);
 
     my $sync = App::Yath2::DB::Sync->new(
         source  => $source_con,
