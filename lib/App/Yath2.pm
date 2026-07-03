@@ -30,7 +30,7 @@ use App::Yath2::Options::Debug;
 use App::Yath2::Options::PreCommand;
 
 my $APP_PATH = __FILE__;
-$APP_PATH =~ s{App\S+Yath2\.pm$}{}g;
+$APP_PATH =~ s{App[/\\]+Yath2\.pm$}{};
 $APP_PATH = clean_path($APP_PATH);
 sub app_path { $APP_PATH }
 

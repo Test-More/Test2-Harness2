@@ -98,7 +98,7 @@ sub _parse_config_files {
         open(my $fh, '<', $file) or die "Could not open config file '$file' for reading: $!";
         while (my $line = <$fh>) {
             chomp($line);
-            $cmd = $1 and next if $line =~ m/^\[(.*)\]$/;
+            if ($line =~ m/^\[(.*?)\]\s*(?:;.*)?$/) { $cmd = $1; next; }
             $line =~ s/;.*$//g;
             $line =~ s/^\s*//g;
             $line =~ s/\s*$//g;
@@ -146,9 +146,24 @@ sub _parse_config_files {
                     $path =~ s{[^/]*$}{}g;
                 }
 
-                # Avoid loading File::Glob in this process...
-                my $out  = `$^X -e 'print join "\\n" => glob("${path}${val}")'`;
-                my @vals = split /\n/, $out;
+                # Avoid loading File::Glob in this process by shelling out to
+                # a child perl. Use list-form open (no shell) so a pattern with
+                # a quote or space cannot break/kill a subshell, and wrap the
+                # pattern in double quotes so perl's csh-style glob treats an
+                # embedded space as a literal rather than a separator.
+                my $pattern = "${path}${val}";
+                my @vals;
+                if (open(my $p, '-|', $^X, '-e', 'print join "\n", glob($ARGV[0])', qq{"$pattern"})) {
+                    @vals = <$p>;
+                    chomp(@vals);
+                    unless (close($p)) {
+                        my $why = $! ? "$!" : "child exited " . ($? >> 8);
+                        warn "Could not expand glob for '$pattern' in $file line $.: $why\n";
+                    }
+                }
+                else {
+                    warn "Could not fork to expand glob for '$pattern' in $file line $.: $!\n";
+                }
                 @all = map { [$key, $eq, $_, 1] } @vals;
             }
             else {
