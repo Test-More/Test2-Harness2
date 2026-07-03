@@ -5,7 +5,6 @@ our $VERSION = '2.000000';
 
 use Test2::Harness2::Util qw/clean_path mod2file/;
 use Test2::Harness2::Util::JSON qw/encode_json stream_json_l/;
-use Test2::Harness2::Util::UUID qw/gen_uuid/;
 use App::Yath2::Util qw/changes_applicable/;
 
 use parent 'App::Yath2::Plugin';
