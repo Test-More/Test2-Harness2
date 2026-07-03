@@ -82,14 +82,25 @@ sub run {
     while (my ($job_id, $data) = each %failed) {
         my $ends = $data->{ends} // [];
 
+        # A failing job from an interrupted run (Ctrl-C, CI cancellation, OOM
+        # kill) can be recorded here via a failing subtest but never emit a
+        # harness_job_end, leaving @$ends empty. Guard the -1 deref: reaching
+        # into $ends->[-1]->{...} on an empty array autovivifies subscript -1
+        # and dies with "Modification of non-creatable array value attempted,
+        # subscript -1" -- crashing the very command used to inspect the logs
+        # of an aborted run. The brief 'if' condition (line 87) triggered it too.
+        my $end = @$ends ? $ends->[-1] : undef;
+
         my %seen;
         my $subtests = join "\n" => grep { !$seen{$_}++ } sort @{$data->{subtests} // []};
 
         if ($settings->display->brief) {
-            print $ends->[-1]->{rel_file}, "\n" if $ends->[-1]->{fail};
+            print $end->{rel_file}, "\n" if defined($end) && $end->{fail};
         }
         else {
-            push @$rows => [$job_id, scalar(@$ends), $ends->[-1]->{rel_file}, $subtests, $ends->[-1]->{fail} ? "NO" : "YES"];
+            my $rel_file  = defined($end) ? $end->{rel_file} : 'N/A';
+            my $succeeded = defined($end) && !$end->{fail} ? "YES" : "NO";
+            push @$rows => [$job_id, scalar(@$ends), $rel_file, $subtests, $succeeded];
         }
     }
 
