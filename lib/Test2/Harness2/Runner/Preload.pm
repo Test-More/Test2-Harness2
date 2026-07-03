@@ -17,6 +17,13 @@ sub import {
 
     my $instance = $class->new;
 
+    # The active stage the load-order closures below operate on: the top of the
+    # builder stack, or croak if we are outside any stage() coderef.
+    my $current_stage = sub {
+        croak "No current stage" unless @{$instance->stack};
+        return $instance->stack->[-1];
+    };
+
     $exports{TEST2_HARNESS_PRELOAD} = sub { $instance };
 
     $exports{stage} = sub {
@@ -30,17 +37,14 @@ sub import {
     };
 
     $exports{default} = sub {
-        croak "No current stage" unless @{$instance->stack};
-        my $stage = $instance->stack->[-1];
-        my $name = $stage->name;
-        $instance->set_default_stage($name);
+        my $stage = $current_stage->();
+        $instance->set_default_stage($stage->name);
     };
 
     for my $name (qw/pre_fork post_fork pre_launch/) {
         my $meth = "add_${name}_callback";
         $exports{$name} = sub {
-            croak "No current stage" unless @{$instance->stack};
-            my $stage = $instance->stack->[-1];
+            my $stage = $current_stage->();
             $stage->$meth(@_);
         };
     }
@@ -61,20 +65,17 @@ sub import {
     };
 
     $exports{preload} = sub {
-        croak "No current stage" unless @{$instance->stack};
-        my $stage = $instance->stack->[-1];
+        my $stage = $current_stage->();
         $stage->add_to_load_sequence(@_);
     };
 
     $exports{reload_remove_check} = sub {
-        croak "No current stage" unless @{$instance->stack};
-        my $stage = $instance->stack->[-1];
+        my $stage = $current_stage->();
         $stage->set_reload_remove_check(@_);
     };
 
     $exports{reload_inplace_check} = sub {
-        croak "No current stage" unless @{$instance->stack};
-        my $stage = $instance->stack->[-1];
+        my $stage = $current_stage->();
         $stage->set_reload_inplace_check(@_);
     };
 

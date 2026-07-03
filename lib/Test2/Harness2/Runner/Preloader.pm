@@ -5,7 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use B();
-use Carp qw/croak/;
+use Carp qw/croak confess/;
 use Fcntl qw/LOCK_EX LOCK_UN/;
 use POSIX();
 use Long::Jump qw/setjump longjump/;
@@ -177,7 +177,11 @@ sub launch_stage {
     my $self = shift;
     my ($stage) = @_;
 
-    $stage = $self->{+STAGED}->stage_lookup->{$stage} unless ref $stage || $stage eq 'NOPRELOAD';
+    # $stage is already resolved by the sole caller (_preload_stages, which also
+    # serves Host.pm's respawn path that passes a plain name): either a StageConfig
+    # ref or the synthetic 'NOPRELOAD'. Do not re-resolve here.
+    confess "launch_stage requires a resolved StageConfig or 'NOPRELOAD'"
+        unless ref $stage || $stage eq 'NOPRELOAD';
 
     my $name = ref($stage) ? $stage->name : $stage;
 
