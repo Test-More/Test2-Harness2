@@ -859,6 +859,14 @@ sub submit_action {
         return;
     }
 
+    # We are ready. Readiness can regress and recover mid-run (a stage peer drops --
+    # e.g. a monitor-preloads tree reload -- then re-registers), which strands earlier
+    # frames in the buffer after the one-time flush in run_scheduler_only (#116). Drain
+    # the buffer in order BEFORE applying this newly-arriving action, so a frame that
+    # arrives once the window has reclosed can never apply ahead of frames buffered
+    # while it was open (the partial-buffer hazard). A no-op when the buffer is empty.
+    $self->flush_submit_buffer;
+
     $self->state->$method(@args);
 
     return;
@@ -883,6 +891,20 @@ sub flush_submit_buffer {
     }
 
     return;
+}
+
+# Drain the submit buffer once readiness (which can regress and recover mid-run) is
+# back. Called each tick from run_scheduler_only so a submission stranded in a
+# stage-downtime window is applied even when no new action arrives to trigger the
+# per-action flush in submit_action -- a lone buffered end_queue would otherwise hang
+# the runner (State::done requires QUEUE_ENDED). A no-op while the buffer is empty or
+# readiness is still regressed (submissions stay buffered until a stage is live). (#116)
+sub _flush_submit_buffer_if_ready {
+    my $self = shift;
+
+    return unless $self->{submit_buffer} && $self->_ready_to_schedule;
+
+    return $self->flush_submit_buffer;
 }
 
 # Spawn the preload-root process (Test2::Harness2::Preload) -- the
@@ -1237,6 +1259,15 @@ sub run_scheduler_only {
 
     while (1) {
         $self->service_io;
+
+        # Readiness can regress and recover after the one-time flush above (a stage peer
+        # drops during a monitor-preloads tree reload, then re-registers). Submissions
+        # that land in that downtime window are buffered by submit_action; drain them here
+        # every tick once readiness is restored, even if no new action arrives to trigger
+        # the flush -- a buffered end_queue alone would otherwise hang the runner forever,
+        # since State::done requires QUEUE_ENDED (#116).
+        $self->_flush_submit_buffer_if_ready;
+
         $self->service_tick;
 
         # Reap re-parented detached preload collectors each tick (ticket #28 C1: the
