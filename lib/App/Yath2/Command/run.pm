@@ -7,7 +7,6 @@ our $VERSION = '2.000000';
 use Getopt::Yath;
 
 use Test2::Harness2::Run;
-use Test2::Harness2::Util::Queue;
 use Test2::Harness2::Util::File::JSON;
 
 use App::Yath2::Pfile;

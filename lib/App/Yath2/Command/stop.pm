@@ -9,7 +9,6 @@ use Time::HiRes qw/sleep time/;
 use File::Spec();
 
 use Test2::Harness2::Util::File::JSON();
-use Test2::Harness2::Util::Queue();
 
 use Test2::Harness2::Renderer::Base();
 use Test2::Harness2::Runner::Monitor();

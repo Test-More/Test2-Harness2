@@ -77,7 +77,6 @@ sub write {
     }
 
     $fh->autoflush(1);
-    seek($fh,2,0);
     print {$fh} $self->encode($_) for @_;
 
     unlock_file($fh) if $self->{+USE_WRITE_LOCK};

@@ -4,8 +4,6 @@ use Test2::Tools::Spec;
 use File::Temp qw/tempdir/;
 use File::Spec;
 
-use Test2::Harness2::Util::Queue;
-
 use App::Yath2::RunPlan;
 
 # Minimal stand-ins for the settings tree RunPlan touches. RunPlan only ever
