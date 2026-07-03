@@ -105,10 +105,12 @@ C<service_on_response>; one-way requests need no reply.
 =item $self->service_io
 
 Accept pending connections, read framed messages off ready connections, and
-dispatch each. Also runs a non-blocking write pass that finishes each
-connection's buffered outbound bytes (dropping only a closed, wedged, or over-cap
-peer), so a slow reader never blocks the loop or loses frames. Exposed so a
-consumer with its own loop can poll the socket.
+dispatch each. First drops any connection a between-tick consumer write already
+closed, so no dead fd is ever left in the select set to fail C<select()> with
+EBADF (which would starve every live peer). Also runs a non-blocking write pass
+that finishes each connection's buffered outbound bytes (dropping only a closed,
+wedged, or over-cap peer), so a slow reader never blocks the loop or loses frames.
+Exposed so a consumer with its own loop can poll the socket.
 
 =item $self->stop_service
 
@@ -355,6 +357,22 @@ sub service_io ($self) {
             owner_flushes => 1,
             my_identity   => $self->service_identity,
         );
+    }
+
+    # Pre-read sweep: a connection can be closed BETWEEN ticks by a consumer-side
+    # write -- service_send/send_control failing EPIPE to a vanished peer (runner ->
+    # dead preload stage 'run_task', runner -> dead test collector 'terminate',
+    # sampler -> runner 'system_load'), a full-stall wedge, or an over-cap drop.
+    # Such a close marks the conn and shuts its fh, but the close path holds no
+    # handle on the select set and so cannot unregister the fh itself. Drop every
+    # already-closed conn HERE, before can_read, so no dead fd is ever handed to
+    # select(): a single closed fd makes select() fail EBADF and report NOTHING
+    # readable, starving every live peer and wedging the whole service (a persistent
+    # runner goes permanently deaf). The write pass below sweeps closed conns too,
+    # but only AFTER this can_read, so it cannot protect this tick's read from a
+    # between-tick close -- this sweep is what closes that window. (#106)
+    for my $conn (values %{$self->{service_conns}}) {
+        $self->_drop_conn($conn) if $conn->closed;
     }
 
     # Read first: always drain whatever is readable before judging a connection
