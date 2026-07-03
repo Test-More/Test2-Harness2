@@ -5,9 +5,6 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Term::Table();
-use File::Spec();
-
-use Test2::Harness2::Util::File::JSON();
 
 use parent 'App::Yath2::Command::run';
 use Test2::Harness2::Util::HashBase;

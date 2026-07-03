@@ -4,13 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Time::HiRes qw/sleep/;
-use File::Spec();
-use File::Path qw/remove_tree/;
-
 use App::Yath2::Discovery();
-
-use Test2::Harness2::Util::File::JSON();
 
 use parent 'App::Yath2::Command::abort';
 use Test2::Harness2::Util::HashBase;

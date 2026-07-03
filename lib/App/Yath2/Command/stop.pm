@@ -4,11 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Time::HiRes qw/sleep time/;
-
-use File::Spec();
-
-use Test2::Harness2::Util::File::JSON();
+use Time::HiRes qw/time/;
 
 use Test2::Harness2::Renderer::Base();
 use Test2::Harness2::Runner::Monitor();
@@ -18,9 +14,6 @@ use App::Yath2::Client;
 use App::Yath2::Discovery();
 use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::LiveProducer;
-
-use Test2::Harness2::Util qw/open_file/;
-use File::Path qw/remove_tree/;
 
 use parent 'App::Yath2::Command::run';
 use Test2::Harness2::Util::HashBase;

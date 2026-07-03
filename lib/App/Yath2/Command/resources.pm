@@ -4,14 +4,12 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Term::Table();
-use File::Spec();
-use Time::HiRes qw/sleep/;
+use Time::HiRes qw/time/;
 
 use App::Yath2::Pfile();
 
 use parent 'App::Yath2::Command::status';
-use Test2::Harness2::Util::HashBase;
+use Test2::Harness2::Util::HashBase qw/runner_pid/;
 
 sub group { 'state' }
 
@@ -34,29 +32,50 @@ sub pfile_params { (no_fatal => 1) }
 sub runner_resources {
     my $self = shift;
 
-    my $pfile = App::Yath2::Pfile->find($self->settings, $self->pfile_params) or return undef;
-    my $data  = $pfile->data                                                  or return undef;
-    my $pid   = $data->{pid}                                                  or return undef;
+    # Discover the runner + attach the client ONCE, not on every poll (the old loop
+    # re-ran the full find+attach ~5x/second). The first call -- run()'s up-front probe
+    # -- does the non-fatal find + kill(0) liveness + attach and caches the pid; every
+    # later poll reuses that pid, doing only a cheap kill(0) re-check and a resource
+    # read over the already-attached socket (#91 step 3). Keeps the non-fatal find
+    # semantics + the custom "No persistent runner..." message (does NOT use pfile_data,
+    # which dies and prints a banner the screen-clear would wipe).
+    my $pid = $self->{+RUNNER_PID};
+    unless (defined $pid) {
+        my $pfile = App::Yath2::Pfile->find($self->settings, $self->pfile_params) or return undef;
+        my $data  = $pfile->data                                                  or return undef;
+        $pid      = $data->{pid}                                                  or return undef;
+        return undef unless kill(0, $pid);
+
+        # Attach the client to the live persistent runner (kill(0) liveness, no reap).
+        $self->client->attach_runner($pid);
+        $self->{+RUNNER_PID} = $pid;
+    }
+
+    # Runner gone away => stop cleanly: a cheap per-poll liveness re-check on the cached
+    # pid, plus an eval guard so a mid-poll socket death surfaces as undef (#146).
     return undef unless kill(0, $pid);
-
-    # Attach the client to the live persistent runner (kill(0) liveness, no reap).
-    $self->client->attach_runner($pid);
-
-    return $self->client->resources;
+    return eval { $self->client->resources };
 }
 
 sub run {
     my $self = shift;
 
-    # Probe up front so we can report "nothing to show" the same way the old
-    # observe-State path did, rather than spinning forever on an empty screen.
+    # Probe up front (this is the single discovery+attach -- see runner_resources) so we
+    # can report "nothing to show" the same way the old observe-State path did, rather
+    # than spinning forever on an empty screen.
     my $resources = $self->runner_resources;
 
     die "No persistent runner and no running test found\n"
         unless $resources;
 
-    while (1) {
-        # Runner gone away (pfile vanished / pid dead) => runner_resources returns
+    # Exit cleanly on an interrupt: flip a flag the loop checks (mirrors ping.pm) so the
+    # in-flight poll / sleep returns rather than dying mid-request.
+    my $stop = 0;
+    local $SIG{INT}  = sub { $stop = 1 };
+    local $SIG{TERM} = sub { $stop = 1 };
+
+    while (!$stop) {
+        # Runner gone away (pid dead / socket unreachable) => runner_resources returns
         # undef. Stop instead of clearing the screen forever on an empty view (#146,
         # cleanup #91 step 3); modeled on ping.pm's runner-gone break.
         $resources = $self->runner_resources;
@@ -76,10 +95,15 @@ sub run {
         }
         push @out => "\n\n";
         print @out;
-        sleep 0.2;
+
+        # Interruptible sleep: wake early if a signal flips $stop.
+        my $deadline = time + 0.2;
+        while (!$stop && time < $deadline) {
+            Time::HiRes::sleep(0.05);
+        }
     }
 
-    print "\nRunner has gone away.\n";
+    print "\nRunner has gone away.\n" unless $stop;
     return 0;
 }
 
