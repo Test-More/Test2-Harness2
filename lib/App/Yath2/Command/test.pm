@@ -250,14 +250,25 @@ sub start_loggers {
 
     my @dev_libs = grep { -d $_ } @{($settings->check_group('harness') ? $settings->harness->dev_libs : []) // []};
 
+    # Attribute the run to the caller's --project (spec PreCommand); when it is
+    # unset the DB logger falls back to the launch cwd's basename (#128). Resolve
+    # the launch cwd HERE -- the command runs in the launch dir, whereas the forked
+    # logger only inherits it -- and thread both through the config so attribution
+    # never depends on the workdir (a random 'yath-<pid>-XXXXXX' tempdir).
+    my $project = $settings->check_group('harness') ? $settings->harness->project : undef;
+    require Cwd;
+    my $launch_dir = Cwd::getcwd();
+
     my @pids;
     for my $target (@$targets) {
         my ($fh, $cfg_file) = File::Temp::tempfile("yath-logger-$$-XXXXXX", TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
         print $fh Test2::Harness2::Util::JSON::encode_json({
-            workdir => $workdir,
-            run_id  => $run_id,
-            target  => $target,
-            version => $version,
+            workdir    => $workdir,
+            run_id     => $run_id,
+            target     => $target,
+            version    => $version,
+            project    => $project,
+            launch_dir => $launch_dir,
         });
         close($fh);
 

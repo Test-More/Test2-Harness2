@@ -16,6 +16,8 @@ use Test2::Harness2::Util::HashBase qw{
     <run_id
     <target
     <version
+    <project
+    <launch_dir
 
     +con
     +flavor
@@ -117,10 +119,12 @@ sub run_from_config_file ($class, $path) {
     my $config = decode_json($json);
 
     my $self = $class->new(
-        workdir => $config->{workdir},
-        run_id  => $config->{run_id},
-        target  => $config->{target},
-        version => $config->{version},
+        workdir    => $config->{workdir},
+        run_id     => $config->{run_id},
+        target     => $config->{target},
+        version    => $config->{version},
+        project    => $config->{project},
+        launch_dir => $config->{launch_dir},
     );
 
     return $self->run;
@@ -268,8 +272,9 @@ sub _ensure_run_row ($self, $mon) {
     my $host  = $self->_find_or_create('hosts',    {hostname => $hostname}, 'host_id');
     my $muser = $self->_find_or_create('machine_users', {host_id => $host, username => $username}, 'machine_user_id');
 
-    # Project name: best-effort from the workdir basename (the DB-free backend
-    # does not hand us a project; the future webapp spec refines attribution).
+    # Project name: the caller's --project (threaded through the logger config by
+    # Command/test.pm), falling back to the launch cwd's basename (#128) -- never
+    # a workdir-derived path.
     my $project_name = $self->_project_name;
     my $project = $self->_find_or_create('projects', {name => $project_name}, 'project_id');
 
@@ -756,12 +761,28 @@ sub _os_username ($self) {
     return $ENV{USERNAME} // $ENV{USER} // 'unknown';
 }
 
+# The projects natural-key name. Prefer the caller's --project (threaded through
+# the logger config by Command/test.pm start_loggers, spec PreCommand '--project').
+# When unset, fall back to the ORIGINAL launch cwd's BASENAME (#128). The workdir
+# must NOT be consulted: it is a random 'yath-<pid>-XXXXXX' tempdir whose PARENT is
+# just 'tmp', so the old workdir-parent derivation collapsed every run from every
+# project into a single 'tmp' projects row and ignored --project entirely.
 sub _project_name ($self) {
-    my $dir = $self->{+WORKDIR};
-    my $base = (File::Spec->splitpath(File::Spec->rel2abs($dir)))[1] // '';
-    $base =~ s{/+$}{};
-    my @parts = grep { length } File::Spec->splitdir($base);
-    return $parts[-1] // 'unknown';
+    my $project = $self->{+PROJECT};
+    return $project if defined($project) && length($project);
+
+    # Command/test.pm threads the launch cwd; a direct construction (tests) has
+    # none, so read this process's cwd -- the forked logger inherits the launch
+    # dir (run_cmd does not chdir), so getcwd is the launch cwd there too.
+    my $dir = $self->{+LAUNCH_DIR};
+    $dir = eval { require Cwd; Cwd::getcwd() } unless defined($dir) && length($dir);
+
+    if (defined($dir) && length($dir)) {
+        my @parts = grep { length } File::Spec->splitdir(File::Spec->rel2abs($dir));
+        return $parts[-1] if @parts;
+    }
+
+    return 'unknown';
 }
 
 sub _record_error ($self, $msg) {
