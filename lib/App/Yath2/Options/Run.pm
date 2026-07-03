@@ -283,7 +283,7 @@ option_group {group => 'run', category => "Run Options"} => sub {
                 return $field;
             }
 
-            if ($raw =~ m/([^:]+):([^:]+)/) {
+            if ($raw =~ m/^([^:]+):(.+)$/s) {
                 return {name => $1, details => $2};
             }
 
