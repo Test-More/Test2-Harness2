@@ -640,9 +640,15 @@ sub run_stage {
     # interpreter via the 'preload-root' Long::Jump host the preload-root launch
     # frame established, exactly as the post-run idle reload does. Only the
     # base/default stage runs in the preload-root process, so only it owns that jump
-    # frame; named child stages exit and are relaunched by the respawned tree.
-    if (delete $self->{+PENDING_RELOAD}) {
-        longjump 'preload-root' => 'respawn';
+    # frame; named child stages are FORKS -- they inherited a copy of that frame but
+    # must NOT take it. A named stage that took the respawn would exec its own
+    # duplicate preload-root tree (clobbering the peer registry, re-binding the stage
+    # sockets, and hanging the real base in its wait(all=>1) -- #111). Guard the
+    # respawn with the same base/default identity check the exit below already uses:
+    # only the process actually hosting the base/default stage IS the preload-root, so
+    # named stages fall through to exit 0 and are relaunched by the respawned tree.
+    if ($stage eq 'base' || $stage eq 'default') {
+        longjump 'preload-root' => 'respawn' if delete $self->{+PENDING_RELOAD};
     }
 
     exit 0 unless $stage eq 'base' || $stage eq 'default';
