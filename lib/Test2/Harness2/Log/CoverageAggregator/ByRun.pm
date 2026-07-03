@@ -114,7 +114,7 @@ sub get_coverage_tests {
             }
         }
 
-        unless ($changes_exclude_opens) {
+        unless ($changes_exclude_loads) {
             if (my $ltests = $filemap->{$file}->{'*'}) {
                 for my $test (keys %$ltests) {
                     push @{$tests{$test}->{loads}} => @{$ltests->{$test}};
@@ -122,7 +122,7 @@ sub get_coverage_tests {
             }
         }
 
-        unless ($changes_exclude_loads) {
+        unless ($changes_exclude_opens) {
             if (my $otests = $filemap->{$file}->{'<>'}) {
                 for my $test (keys %$otests) {
                     push @{$tests{$test}->{opens}} => @{$otests->{$test}};

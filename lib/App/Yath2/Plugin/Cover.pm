@@ -229,13 +229,17 @@ sub annotate_event {
             ],
         );
 
+        # Only emit run_coverage when we actually have a files map. A truncated
+        # collection (bail/crash before job-end) can leave a finalized record
+        # with undef files/testmeta; emitting it produces a bogus facet that a
+        # later --cover-from reader cannot use.
         push @out => (
             run_coverage => {
                 details  => 'Run Coverage',
                 files    => $final->[0]->{files},
                 testmeta => $final->[0]->{testmeta},
             },
-        ) if $final && @$final;
+        ) if $final && @$final && defined $final->[0]->{files};
     }
 
     return @out;
