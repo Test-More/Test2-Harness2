@@ -229,7 +229,12 @@ sub iterate ($self) {
     $_->step for @{$self->{+RENDERERS}};
 
     my @events = $producer->poll;
-    $self->{+IDLE} = @events ? 0 : 1;
+
+    # A producer that can report idleness (a log source) knows whether the raw
+    # batch was empty; prefer it so filtered-out or harness_final-only batches do
+    # not masquerade as idle polls and pay a backoff sleep (finding 53). Fall
+    # back to "no events dispatched" for producers without the hook.
+    $self->{+IDLE} = $producer->can('idle') ? ($producer->idle ? 1 : 0) : (@events ? 0 : 1);
     $self->_dispatch($_) for @events;
 
     return unless $producer->done;

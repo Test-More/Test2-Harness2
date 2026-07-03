@@ -58,7 +58,8 @@ sub run {
     die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
     die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
 
-    my $jobs = @$args ? {map { $_ => 1 } @$args} : undef;
+    my @filters = @$args;
+    my $jobs = @filters ? {map { $_ => 1 } @filters} : undef;
 
     # Replay through the same render loop the live commands use, fed by a flat
     # .jsonl source (JSONLFileProducer). The producer reads the log in order,
@@ -78,9 +79,25 @@ sub run {
     $loop->start;
     $loop->finish;
 
+    # A filter arg that matched nothing (a mistyped path -- './t/x.t' vs 't/x.t'
+    # -- or a wrong-case uuid) otherwise streams zero events silently while the
+    # summary still renders as if unfiltered. Warn per unmatched arg (G9).
+    if ($jobs) {
+        my $matched = $producer->matched;
+        for my $arg (@filters) {
+            next if $matched->{$arg};
+            warn "Job filter '$arg' did not match any job in the log.\n";
+        }
+    }
+
     $self->{+TESTS_SEEN}   = $producer->tests_seen;
     $self->{+ASSERTS_SEEN} = $producer->asserts_seen;
 
+    # NOTE: the recorded harness_final rollup is whole-run, so the final table and
+    # exit code below always reflect the entire run even under a job filter. That
+    # is preserved legacy behavior (the log stores one run-level rollup, not a
+    # per-job one); scoping it to the selected jobs would require recomputing the
+    # rollup and is intentionally left out of this fix.
     my $final_data = $self->{+FINAL_DATA} = $loop->final_data
         or die "Log did not contain final data!\n";
 

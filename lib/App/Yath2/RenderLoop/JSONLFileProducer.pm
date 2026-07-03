@@ -12,6 +12,8 @@ use Test2::Harness2::Util::HashBase qw{
     <jobs
     +stream
     +done
+    +idle
+    <matched
     <final_data
     <tests_seen
     <asserts_seen
@@ -87,6 +89,8 @@ sub init ($self) {
     $self->{+TESTS_SEEN}   //= 0;
     $self->{+ASSERTS_SEEN} //= 0;
     $self->{+DONE} = 0;
+    $self->{+IDLE} = 0;
+    $self->{+MATCHED} //= {};
 
     return;
 }
@@ -107,6 +111,19 @@ return with C<done> true marks end of file.
 
 True once the log has been fully read.
 
+=item $bool = $producer->idle
+
+True only when the most recent raw stream batch was empty. The render loop
+prefers this over C<< !@events >> so a batch that read events off disk but
+filtered them all out (a job filter, or a C<harness_final>-only tail) is not
+mistaken for an idle poll and charged a backoff sleep.
+
+=item $hashref = $producer->matched
+
+A C<< key => 1 >> set of the filter args (job ids and/or file paths) that
+actually selected a job. The command compares it against the original filter
+args to warn about any that matched nothing.
+
 =back
 
 =cut
@@ -115,6 +132,13 @@ sub poll ($self) {
     return () if $self->{+DONE};
 
     my @events = $self->stream->poll(max => 1000);
+
+    # Idle tracks the RAW stream batch, not the filtered output: a batch that
+    # read events off disk but filtered them all out (a job filter, or a
+    # harness_final-only tail batch) is still forward progress, so the loop must
+    # not treat it as an idle poll and pay a backoff sleep (finding 53).
+    $self->{+IDLE} = @events ? 0 : 1;
+
     unless (@events) {
         $self->{+DONE} = 1;
         return ();
@@ -138,7 +162,12 @@ sub poll ($self) {
             next;
         }
 
-        next if $jobs && !$jobs->{$e->{job_id} // ''};
+        my $job_id = $e->{job_id} // '';
+        next if $jobs && !$jobs->{$job_id};
+
+        # Record that this filter selected a job id directly (a job-id arg): used
+        # after the loop to warn about filter args that matched nothing (G9).
+        $self->{+MATCHED}{$job_id} = 1 if $jobs;
 
         push @out => $e;
     }
@@ -147,6 +176,10 @@ sub poll ($self) {
 }
 
 sub done ($self) { return $self->{+DONE} ? 1 : 0 }
+
+# True only when the last raw stream batch was empty (the loop should idle/back
+# off), regardless of how many events the job filter later dropped (finding 53).
+sub idle ($self) { return $self->{+IDLE} ? 1 : 0 }
 
 =head1 PRIVATE METHODS
 
@@ -170,7 +203,17 @@ sub stream ($self) {
     # Replay of an archived (previously-written, complete) log: done => 1 so a
     # newline-less final record is surfaced rather than silently dropped. NB the
     # stream's own `done` is distinct from this producer's +done key.
-    return $self->{+STREAM} //= Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
+    #
+    # skip_bad_decode => 2 (warn and continue): a single corrupt line must not
+    # abort the whole replay -- the reader confesses without it, discarding the
+    # valid events earlier in the same batch and never finalizing the renderers
+    # (G10). With this, a corrupt line is warned about and skipped, and replay
+    # runs to completion.
+    return $self->{+STREAM} //= Test2::Harness2::Util::File::JSONL->new(
+        name            => $self->{+LOG_FILE},
+        done            => 1,
+        skip_bad_decode => 2,
+    );
 }
 
 sub _match_job ($self, $e, $fd) {
@@ -185,6 +228,9 @@ sub _match_job ($self, $e, $fd) {
         my $file = $f->{$field} or next;
         next unless $jobs->{$file};
         $jobs->{$job_id} = 1;
+        # Record which original (file-path) filter arg this job satisfied so the
+        # command can warn about filter args that matched nothing (G9).
+        $self->{+MATCHED}{$file} = 1;
         return;
     }
 

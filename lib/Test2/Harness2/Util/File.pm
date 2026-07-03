@@ -104,8 +104,18 @@ sub read_line {
     $pos = $self->{+LINE_POS} ||= 0 unless defined $pos;
 
     my $fh = $self->{+_FH}->{$$} || $self->fh or return undef;
-    seek($fh,$pos,SEEK_SET) or die "Could not seek: $!"
-        if eof($fh) || tell($fh) != $pos;
+    if (eof($fh) || tell($fh) != $pos) {
+        # A forward-only decompression handle (IO::Uncompress::Gunzip/Bunzip2)
+        # cannot seek backwards; a truncated compressed log leaves the decoded
+        # stream sitting past $pos (its trailing partial line trips this
+        # tell-mismatch re-seek), and the internal seek dies with
+        # 'cannot seek backwards' -- exit 255, renderers never finalized. Treat
+        # a failed re-seek as end-of-stream so a bounded (DONE) reader surfaces
+        # the records it did read and terminates cleanly, letting the caller hit
+        # its own incomplete-log diagnostic, rather than dying here.
+        my $ok = eval { seek($fh, $pos, SEEK_SET) or die "Could not seek: $!\n"; 1 };
+        return undef unless $ok;
+    }
 
     my $line = <$fh>;
 
