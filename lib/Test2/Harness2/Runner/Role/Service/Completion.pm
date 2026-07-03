@@ -242,7 +242,10 @@ sub _collector_stop {
 # its current try and, when a try remains, re-queue the same job_id with an
 # incremented job_try (State::retry_task) and advance the current-try marker so
 # the superseded connection's late EOF becomes a no-op. Returns true when it
-# retried. A halted run never retries (State::retry_task itself guards this).
+# retried. A halted run DECLINES the re-queue: State::retry_task stops the job but
+# returns false, so this returns false too and decide_collector_outcome falls
+# through to the done/abort completion path -- the job is a failed completion, not
+# a phantom 'retry' left stranded as "never ran" (#117).
 sub _collector_retry_if_tries {
     my $self = shift;
     my ($entry) = @_;
@@ -260,11 +263,18 @@ sub _collector_retry_if_tries {
     # attempt index $try - 1 is still < $retries).
     return 0 unless defined($try) && $try <= $retries;
 
-    my $ok = eval { $self->state->retry_task($job_id); 1 };
-    return 0 unless $ok;
+    # #117: retry_task returns a truthy 'actually re-queued' indicator; a halted run
+    # declines (stops the job but does NOT re-queue it) and returns false. Treat that
+    # decline -- and any die -- as "not retried" so decide_collector_outcome falls
+    # through to _collector_stop + announce_job('done') (a failed completion) rather
+    # than announcing a 'retry' that never runs.
+    my $queued;
+    my $ok = eval { $queued = $self->state->retry_task($job_id); 1 };
+    return 0 unless $ok && $queued;
 
     # The re-queued attempt is try+1; mark it current so this attempt's connection
-    # (which is about to be forgotten) cannot stop/retry the new one.
+    # (which is about to be forgotten) cannot stop/retry the new one. Skipped on a
+    # declined retry (returned above): there is no new attempt to protect (#117 Step 2).
     $self->{'collector_current_try'}{$job_id} = $try + 1;
 
     return 1;

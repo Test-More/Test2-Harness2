@@ -22,7 +22,7 @@ use Test2::Harness2::Runner::Role::Service::TransitionHub;
 
 {
     package FakeState;
-    sub new { my ($c, %a) = @_; bless {running => $a{running} // {}, stopped => [], retried => [], halted => []}, $c }
+    sub new { my ($c, %a) = @_; bless {running => $a{running} // {}, stopped => [], retried => [], halted => [], decline_retry => $a{decline_retry}}, $c }
     sub running_tasks { $_[0]->{running} }
     sub run           { undef }
 
@@ -36,9 +36,12 @@ use Test2::Harness2::Runner::Role::Service::TransitionHub;
     sub retry_task {
         my ($self, $job_id) = @_;
         push @{$self->{retried}} => $job_id;
-        # Mirror State::retry_task: stop the current try, re-queue is implicit here.
+        # Mirror State::retry_task: stop the current try (release the slot), then either
+        # re-queue (implicit here) and report true, or -- on a halted run -- decline the
+        # re-queue and report false (#117).
         delete $self->{running}{$job_id} or die "Could not find task to retry ($job_id)";
-        return;
+        return 0 if $self->{decline_retry};
+        return 1;
     }
 
     sub halt_run {
@@ -94,7 +97,7 @@ use Test2::Harness2::Runner::Role::Service::TransitionHub;
 sub mk_runner {
     my (%args) = @_;
     return FakeRunner->new(
-        state    => FakeState->new(running => $args{running} // {}),
+        state    => FakeState->new(running => $args{running} // {}, decline_retry => $args{decline_retry}),
         settings => FakeRunnerSettings->new($args{abort_on_bail} // 1),
     );
 }
@@ -146,6 +149,33 @@ subtest eof_with_fail_retries_then_fails => sub {
 
     is($runner->state->{stopped}, ['J1'], "second failure stops (no retry left)");
     is($runner->{announced}[-1]{state}, 'done', "announced done on final failure");
+};
+
+subtest declined_retry_falls_through_to_done => sub {
+    # #117: a job fails with a try still left, but its run has HALTED (e.g. a sibling
+    # bailed under --no-abort-on-bail, or a caught-signal halt raced the failing EOF).
+    # State::retry_task stops the job but DECLINES to re-queue it on a halted run
+    # (returns false). The completion decision must see the decline and fall through to
+    # a failed completion ('done'), NOT announce a phantom 'retry' that never runs --
+    # which would strand the job in RUNNING and report it as "never ran".
+    my $runner = mk_runner(
+        running       => {J1 => {file => 'a.t', retry => 1}},
+        decline_retry => 1,
+    );
+    my $conn = FakeConn->new;
+
+    identify($runner, $conn, job_id => 'J1', job_try => 1, run_id => 'R1');
+    feed_transition($runner, $conn, {harness_collector => {uuid => 'C1'}, harness_final_state => {pass => 0}});
+    $runner->collector_conn_eof($conn);
+
+    is($runner->state->{retried}, ['J1'], "a retry WAS attempted (the task had a try left)");
+
+    my $last = $runner->{announced}[-1];
+    is($last->{state}, 'done', "a declined retry falls through to 'done' (a failed completion)");
+    ok(!(grep { $_->{state} eq 'retry' } @{$runner->{announced}}), "no phantom 'retry' was announced");
+
+    ok(!$runner->state->running_tasks->{J1}, "no dangling RUNNING entry after a declined retry");
+    ok(!$runner->{'collector_current_try'}{J1}, "the current-try marker was NOT advanced on decline (#117 Step 2)");
 };
 
 subtest eof_without_final_state_fails => sub {

@@ -563,7 +563,7 @@ sub retry_task {
     my $self = shift;
     my ($job_id) = @_;
 
-    $self->_retry_task($job_id);
+    return $self->_retry_task($job_id);
 }
 
 sub _retry_task {
@@ -574,7 +574,13 @@ sub _retry_task {
 
     $self->_stop_task($job_id);
 
-    return if $self->{+HALTED_RUNS}->{$task->{run_id}};
+    # #117: a halted run DECLINES the retry -- the current try is stopped (slot and
+    # resources released above) but the job is NOT re-queued. Report the decline with
+    # a false return so the caller (Completion::_collector_retry_if_tries) can tell a
+    # real retry from a declined one and fall through to the done/abort completion
+    # path, instead of announcing a 'retry' that never materializes (which strands the
+    # job and reports it under "the following jobs never ran").
+    return 0 if $self->{+HALTED_RUNS}->{$task->{run_id}};
 
     # Try ordinals are 1-based (R10 / #49): the first attempt is is_try == 1, so a
     # task that has never been tried (no is_try yet) seeds at 1 and increments to 2
@@ -586,7 +592,8 @@ sub _retry_task {
 
     $self->_queue_task($task);
 
-    return;
+    # #117: truthy 'actually re-queued' indicator (see the halted-run decline above).
+    return 1;
 }
 
 # bloat #3: put a RUNNING task back into the PENDING queue to be re-resolved and
