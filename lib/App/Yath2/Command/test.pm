@@ -40,6 +40,7 @@ use Test2::Harness2::Util::HashBase qw/
     +render_loop
 
     +logger_pids
+    +logger_targets
 
     <cleanup_subs
 
@@ -260,6 +261,7 @@ sub start_loggers {
     my $launch_dir = Cwd::getcwd();
 
     my @pids;
+    my %target_for;    # pid => -L target, so teardown can name a failed import (#133)
     for my $target (@$targets) {
         my ($fh, $cfg_file) = File::Temp::tempfile("yath-logger-$$-XXXXXX", TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
         print $fh Test2::Harness2::Util::JSON::encode_json({
@@ -282,44 +284,104 @@ sub start_loggers {
         );
 
         my $pid = Test2::Harness2::Util::IPC::run_cmd(no_set_pgrp => 1, command => \@cmd);
-        push @pids => $pid if $pid;
+        next unless $pid;
+        push @pids => $pid;
+        $target_for{$pid} = $target;
     }
 
-    $self->{+LOGGER_PIDS} = \@pids;
+    $self->{+LOGGER_PIDS}    = \@pids;
+    $self->{+LOGGER_TARGETS} = \%target_for;
 
     return;
 }
 
 # Bounded-wait for the spawned DB logger(s) on teardown: each logger stays
 # subscribed (and so keeps the runner's workdir-cleanup deferred, #51) until its
-# imports finish, then exits. We wait up to LOGGER_WAIT_TIMEOUT for a clean exit
+# imports finish, then exits. We wait up to logger_wait_timeout for a clean exit
 # before giving up so a wedged logger cannot hang the command forever.
 sub LOGGER_WAIT_TIMEOUT() { 120 }
 
+# Overridable (subclass/tests) so the teardown window can be shortened without
+# rebuilding a real slow logger; production returns the constant.
+sub logger_wait_timeout { LOGGER_WAIT_TIMEOUT }
+
+# Teardown reporting for the -L DB logger(s) (#133). A DB import that outruns the
+# teardown window used to be SIGTERM'd with no message while yath exited 0, leaving
+# a truncated run silently in the database; a logger that died mid-import (bad DSN,
+# a DB error) exited nonzero and that status was never checked either. We now:
+#   * warn (naming pid + -L target) on any logger that exits nonzero within the
+#     window -- a failed/partial import surfaced instead of swallowed;
+#   * on the timeout, warn that the import may be truncated, TERM the stragglers,
+#     and BLOCKING-waitpid them so they cannot linger as zombies at command tail.
+# The logger-SIDE 'broken' run marking in the database is #132's job; this is the
+# command-side warn/reap/exit-check only. Returns the count of failed loggers.
+#
+# Exit code: we deliberately do NOT fail an otherwise-passing test command here --
+# a legitimately slow remote DB can outrun the window with every test green, and
+# failing the run on that would be a worse regression than the silence. The
+# prominent STDERR warning is the report (that is the P1 defect); the failed count
+# is returned for a caller that later wants to act on it.
 sub wait_for_loggers {
     my $self = shift;
 
-    my $pids = $self->{+LOGGER_PIDS} or return;
-    return unless @$pids;
+    my $pids = $self->{+LOGGER_PIDS} or return 0;
+    return 0 unless @$pids;
 
-    my $deadline = time + LOGGER_WAIT_TIMEOUT;
+    my $targets = $self->{+LOGGER_TARGETS} // {};
+    my $failed  = 0;
+
+    my $deadline = time + $self->logger_wait_timeout;
     my @left = @$pids;
     while (@left && time < $deadline) {
         @left = grep {
-            my $got = waitpid($_, POSIX::WNOHANG());
-            ($got == $_ || $got == -1) ? 0 : 1;
+            my $pid = $_;
+            my $got = waitpid($pid, POSIX::WNOHANG());
+            if ($got == $pid) {
+                # Reaped within the window: check the exit status ($? is set by
+                # waitpid) and surface a nonzero exit (a failed/partial import).
+                if (my $status = $?) {
+                    $failed++;
+                    warn $self->_logger_teardown_msg($pid, $targets->{$pid}, exit => $status);
+                }
+                0;
+            }
+            elsif ($got == -1) {
+                0;    # already reaped elsewhere / not our child
+            }
+            else {
+                1;    # still running
+            }
         } @left;
         Time::HiRes::sleep(0.05) if @left;
     }
 
-    # Anything still running after the timeout is signalled so it cannot orphan.
+    # Anything still running after the timeout is TERM'd so it cannot orphan -- but
+    # that also means its import was cut short. Name it loudly, then BLOCKING-reap
+    # so we do not leave a zombie behind (#133).
     for my $pid (@left) {
+        $failed++;
+        warn $self->_logger_teardown_msg($pid, $targets->{$pid}, timeout => $self->logger_wait_timeout);
         kill('TERM', $pid);
+        waitpid($pid, 0);
     }
 
-    $self->{+LOGGER_PIDS} = [];
+    $self->{+LOGGER_PIDS}    = [];
+    $self->{+LOGGER_TARGETS} = {};
 
-    return;
+    return $failed;
+}
+
+sub _logger_teardown_msg {
+    my $self = shift;
+    my ($pid, $target, $kind, $val) = @_;
+
+    $target = defined($target) ? "-L $target" : 'unknown -L target';
+
+    return "DB logger $pid ($target) did not finish within ${val}s; its import may be incomplete and the run left truncated in the database. Sending TERM.\n"
+        if $kind eq 'timeout';
+
+    my $how = ($val & 127) ? ("signal " . ($val & 127)) : ("exit " . ($val >> 8));
+    return "DB logger $pid ($target) exited abnormally ($how); its DB import may be incomplete or failed.\n";
 }
 
 # The harness-client bridge (App::Yath2::Client). The transient `yath test`
