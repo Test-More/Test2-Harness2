@@ -80,11 +80,10 @@ late-connecting collector is terminated on connect) and send the runner-to-colle
 terminate control to every live test collector of the run. The optional C<skip>
 entry (a collector tearing its own child down) is not messaged.
 
-=item $count = $self->abort_run_collectors($run_id, $reason)
+=item $self->abort_run_collectors($run_id, $reason)
 
 Tear a run down through C<terminate_run_collectors> from the abort path (C<yath
-abort> and owner-disconnect abort), returning the number of live run collectors it
-messaged.
+abort> and owner-disconnect abort).
 
 =back
 
@@ -541,22 +540,16 @@ sub _enforce_collector_connect_timeout {
 # Record an abort INTENT for a run and terminate its collectors (the abort path:
 # `yath abort` and owner-disconnect abort, B3 / B4). Same primitive as a bail; the
 # distinct entry point lets the watchdog and the truncate handler tear a run down
-# without a halt transition. Returns the number of live run collectors it messaged.
+# without a halt transition.
 sub abort_run_collectors {
     my $self = shift;
     my ($run_id, $reason) = @_;
 
-    return 0 unless defined $run_id;
+    return unless defined $run_id;
 
     $self->terminate_run_collectors($run_id, $reason);
 
-    my $count = 0;
-    for my $key (keys %{$self->{'collector_conns'} // {}}) {
-        my $other = $self->{'collector_conns'}{$key};
-        $count++ if defined($other->{run_id}) && $other->{run_id} eq $run_id;
-    }
-
-    return $count;
+    return;
 }
 
 1;

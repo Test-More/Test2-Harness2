@@ -133,8 +133,7 @@ subtest abort_run_collectors_terminates_and_intent => sub {
     my $conn1 = FakeConn->new;
     identify($runner, $conn1, job_id => 'J1', job_try => 0, run_id => 'R1', pid => 111);
 
-    my $count = $runner->abort_run_collectors('R1', 'abort now');
-    is($count, 1, "messaged the one live run collector");
+    $runner->abort_run_collectors('R1', 'abort now');
     is($conn1->{controls}[0]{control}, 'terminate', "live collector got a terminate control");
     ok(exists $runner->{aborting_runs}{R1}, "abort intent recorded for the run");
 

@@ -444,8 +444,8 @@ sub request_handler_status {
 # any that do not comply within the grace. The command no longer snapshots pids or
 # signals the jobs -- the old pid-snapshot raced a job whose pid had not yet been
 # reported (B4); intent + terminate-on-connect closes that. `abort` still leaves the
-# runner itself alive. Two-way: returns the still-running list (diagnostic only) +
-# the count of collectors it terminated.
+# runner itself alive. Two-way: returns {ok => 1, running => $running} -- the
+# still-running list is diagnostic only.
 sub request_handler_truncate {
     my $self = shift;
 

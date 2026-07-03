@@ -211,11 +211,12 @@ sub announce_job {
 
     my $rj = {job_id => $job_id, state => $state, %extra};
 
-    # Route this runner-originated mutation to its run's subscribers.
-    # 'dispatched'/'running'/'retry'/'done' from the scheduler carry run_id in
-    # %extra; a stage-reported 'done'/'retry' (from the stop_task/retry_task
-    # request handlers) does not, so backfill it from the run_id the monitor
-    # already tracked for the job at dispatch.
+    # Route this runner-originated mutation to its run's subscribers. Every caller
+    # passes a run_id, but its VALUE can be undef: an EOF-decided collector whose
+    # identity handshake omitted run_id leaves the conn entry's run_id undef (see
+    # service_identified), so the Completion 'done'/'retry'/'aborted' announces
+    # forward that undef. Backfill it from the run_id the monitor already tracked
+    # for the job at dispatch.
     if (!defined $rj->{run_id}) {
         my $known = $self->monitor->job($job_id);
         $rj->{run_id} = $known->{run_id} if $known && defined $known->{run_id};
