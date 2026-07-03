@@ -48,6 +48,12 @@ sub run {
     my $data = $self->pfile_data;    # prints the discovery banner, dies if none
     $self->client->attach_runner($data->{pid});
 
+    # The pfile path is a SYMLINK to the runner's unix SOCKET; the discovery object
+    # over it re-probes liveness (a non-blocking connect) on demand. Both feed the
+    # done_check below.
+    my $disco = $self->pfile->discovery;
+    my $link  = $self->pfile->path;
+
     # Global subscription: no run_id, so the runner forwards every run's frames
     # plus the global/runner-lifecycle frames. If the runner cannot be reached (it
     # died), the LiveProducer falls back to a standalone monitor so the base
@@ -67,7 +73,14 @@ sub run {
             return 0 unless $producer->idle;
             return 1 if $stop;
             return 1 if $sub && $sub->closed;
-            return 1 unless -f $self->pfile->path;
+            # The pfile path is a symlink to the runner SOCKET, so -f is ALWAYS
+            # false against it (a socket is not a regular file) -- keying the exit
+            # on -f made `yath watch` quit on the first idle tick (#120). The
+            # runner is still here only while the discovery link exists (-l) AND
+            # still resolves to a live socket (Discovery::resolves re-probes fresh
+            # each call). -e alone would stay true for a dangling link until
+            # discovery cleans it, so -l + resolves is the precise condition.
+            return 1 unless -l $link && $disco->resolves;
             return 0;
         },
     );
