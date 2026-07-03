@@ -6,8 +6,12 @@ use ok $CLASS;
 imported_ok(qw{
     JSON
     encode_json decode_json
-    encode_pretty_json encode_canon_json
+    encode_pretty_json
 });
+
+# Not exported by default; available on request.
+Test2::Harness2::Util::JSON->import('encode_canon_json');
+imported_ok('encode_canon_json');
 
 ok(JSON(), "Have JSON constant");
 

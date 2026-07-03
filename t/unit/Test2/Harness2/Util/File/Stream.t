@@ -99,20 +99,5 @@ is(
 $one->set_done(1);
 is([$one->poll], ["line6"], "got unterminated line after 'done' was set");
 
-$one = undef;
-
-$one = $CLASS->new(name => $filename);
-$one->seek(6);
-is(
-    [$one->poll],
-    [
-        "line2\n",
-        "line3\n",
-        "line4\n",
-        "line5\n",
-    ],
-    "Was able to seek past the first item",
-);
-
 unlink($filename);
 done_testing;

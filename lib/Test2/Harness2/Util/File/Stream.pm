@@ -5,29 +5,9 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
-use Test2::Harness2::Util qw/lock_file unlock_file/;
-use Fcntl qw/SEEK_SET/;
 
 use parent 'Test2::Harness2::Util::File';
-use Test2::Harness2::Util::HashBase qw/use_write_lock -tail/;
-
-sub init {
-    my $self = shift;
-
-    $self->SUPER::init();
-
-    my $tail = $self->{+TAIL} or return;
-
-    return unless $self->exists;
-
-    my @lines = $self->poll_with_index;
-    if (@lines < $self->{+TAIL}) {
-        $self->seek(0);
-    }
-    else {
-        $self->seek($lines[0 - $tail]->[0]);
-    }
-}
+use Test2::Harness2::Util::HashBase;
 
 sub poll_with_index {
     my $self = shift;
@@ -68,33 +48,14 @@ sub write {
 
     my $name = $self->{+NAME};
 
-    my $fh;
-    if ($self->{+USE_WRITE_LOCK}) {
-        $fh = lock_file($self->name, '>>');
-    }
-    else {
-        $fh = Test2::Harness2::Util::open_file($self->name, '>>');
-    }
+    my $fh = Test2::Harness2::Util::open_file($self->name, '>>');
 
     $fh->autoflush(1);
     print {$fh} $self->encode($_) for @_;
 
-    unlock_file($fh) if $self->{+USE_WRITE_LOCK};
-
     close($fh) or die "Could not close file '$name': $!";
 
     return @_;
-}
-
-sub seek {
-    my $self = shift;
-    my ($pos) = @_;
-
-    my $fh   = $self->fh;
-    my $name = $self->{+NAME};
-
-    seek($fh, $pos, SEEK_SET) or die "Could not seek to position $pos in file '$name': $!";
-    $self->{+LINE_POS} = $pos;
 }
 
 1;
@@ -132,22 +93,6 @@ if the file is still being written.
 =head1 ATTRIBUTES
 
 See L<Test2::Harness2::Util::File> for additional attributes.
-
-These can be passed in as construction arguments if desired.
-
-=over 4
-
-=item $bool = $stream->use_write_lock
-
-=item $stream->use_write_lock($bool)
-
-Lock the file for every C<write()> operation.
-
-=item $bool = $stream->tail
-
-Start near the end of the file and only poll for updates appended to it.
-
-=back
 
 =head1 METHODS
 

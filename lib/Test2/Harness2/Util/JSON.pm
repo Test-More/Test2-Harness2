@@ -12,41 +12,16 @@ BEGIN {
         require JSON::MaybeXS;
         JSON::MaybeXS->import('JSON');
         1;
-
-        if (JSON() eq 'JSON::PP') {
-            *JSON_IS_PP = sub() { 1 };
-            *JSON_IS_XS = sub() { 0 };
-            *JSON_IS_CPANEL = sub() { 0 };
-            *JSON_IS_CPANEL_OR_XS = sub() { 0 };
-        }
-        elsif (JSON() eq 'JSON::XS') {
-            *JSON_IS_PP = sub() { 0 };
-            *JSON_IS_XS = sub() { 1 };
-            *JSON_IS_CPANEL = sub() { 0 };
-            *JSON_IS_CPANEL_OR_XS = sub() { 1 };
-        }
-        elsif (JSON() eq 'Cpanel::JSON::XS') {
-            *JSON_IS_PP = sub() { 0 };
-            *JSON_IS_XS = sub() { 0 };
-            *JSON_IS_CPANEL = sub() { 1 };
-            *JSON_IS_CPANEL_OR_XS = sub() { 1 };
-        }
     };
 
     unless ($ok) {
         require JSON::PP;
         *JSON = sub() { 'JSON::PP' };
-
-        *JSON_IS_PP = sub() { 1 };
-        *JSON_IS_XS = sub() { 0 };
-        *JSON_IS_CPANEL = sub() { 0 };
-        *JSON_IS_CPANEL_OR_XS = sub() { 0 };
     }
-
 }
 
-our @EXPORT = qw{JSON encode_json decode_json encode_pretty_json encode_canon_json stream_json_l stream_json_l_file stream_json_l_url};
-our @EXPORT_OK = qw{JSON_IS_PP JSON_IS_XS JSON_IS_CPANEL JSON_IS_CPANEL_OR_XS};
+our @EXPORT = qw{JSON encode_json decode_json encode_pretty_json stream_json_l stream_json_l_file stream_json_l_url};
+our @EXPORT_OK = qw{encode_canon_json};
 
 BEGIN { require Exporter; our @ISA = qw(Exporter) }
 
@@ -199,22 +174,6 @@ json tools available.
 
 This returns the JSON package being used by yath.
 
-=item $bool = JSON_IS_PP()
-
-True if yath is using L<JSON::PP>.
-
-=item $bool = JSON_IS_XS()
-
-True if yath is using L<JSON::XS>.
-
-=item $bool = JSON_IS_CPANEL()
-
-True if yath is using L<Cpanel::JSON::XS>.
-
-=item $bool = JSON_IS_CPANEL_OR_XS()
-
-True if either L<JSON::XS> or L<Cpanel::JSON::XS> are being used.
-
 =item $string = encode_json($data)
 
 Encode data into json. String will be 1-line.
@@ -229,7 +188,7 @@ Encode into human-friendly json.
 
 =item $string = encode_canon_json($data)
 
-Encode into canon-json.
+Encode into canon-json. Not exported by default; request it explicitly.
 
 =back
 

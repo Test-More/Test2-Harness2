@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use Carp qw/croak confess/;
+use Carp qw/croak/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json encode_pretty_json/;
 
 use parent 'Test2::Harness2::Util::File';
@@ -19,13 +19,9 @@ sub read_line  { croak "line reading is disabled for json files" }
 sub maybe_read {
     my $self = shift;
 
-    return undef unless -e $self->{+NAME};
-    my $out = Test2::Harness2::Util::read_file($self->{+NAME});
+    return undef unless -e $self->{+NAME} && -s _;
 
-    return undef unless defined($out) && length($out);
-
-    eval { $out = $self->decode($out); 1 } or confess "$self->{+NAME}: $@";
-    return $out;
+    return $self->SUPER::maybe_read();
 }
 
 1;

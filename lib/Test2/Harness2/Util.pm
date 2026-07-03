@@ -443,10 +443,6 @@ sub open_file {
     $mode ||= '<';
 
     unless ($opts{no_decompress}) {
-        if (my $ext = $opts{ext}) {
-            $opts{compression} //= $COMPRESSION{$ext} or die "Unknown compression: $ext";
-        }
-
         if ($file =~ m/\.(gz|bz2)$/i) {
             my $ext = lc($1);
             $opts{compression} //= $COMPRESSION{$ext} or die "Unknown compression: $ext";
