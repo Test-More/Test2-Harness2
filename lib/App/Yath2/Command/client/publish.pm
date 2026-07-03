@@ -65,12 +65,30 @@ sub run {
     );
 
     if ($res->is_success) {
-        my $json = $res->decoded_content;
-        my $data = decode_json($json);
+        my $body = $res->decoded_content;
+
+        # A 200 does not guarantee a JSON body: proxies/maintenance pages return
+        # HTML, and (with allow_nonref) a bare-scalar JSON body decodes to a
+        # non-hashref. Guard both so we surface a clean error instead of a
+        # decode_json longmess or a 'Not a HASH reference' deref (ticket #153).
+        my $data;
+        my $ok = eval { $data = decode_json($body); 1 };
+
+        unless ($ok && ref($data) eq 'HASH') {
+            print STDERR $res->status_line, "\n";
+            print STDERR "Server returned a 200 but the body is not a JSON object:\n";
+            print STDERR $body, "\n";
+            return 1;
+        }
 
         print "$_\n" for @{$data->{messages} // []};
 
-        print "\nView run at: $url/view/$data->{run_uuid}\n\n";
+        if (defined $data->{run_uuid}) {
+            print "\nView run at: $url/view/$data->{run_uuid}\n\n";
+        }
+        else {
+            warn "Upload may have succeeded, but the server did not return a run_uuid.\n";
+        }
 
         return 0;
     }

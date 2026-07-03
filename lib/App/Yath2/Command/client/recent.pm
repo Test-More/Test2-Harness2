@@ -116,7 +116,10 @@ sub get_from_http {
     my $ht  = HTTP::Tiny->new();
     my $url = $settings->webclient->url or return;
     $url =~ s{/$}{}g;
-    $url .= "/recent/$project/$user";
+    # Append the count segment (ticket #153): Controller::Recent routes
+    # /recent/:project/:user/:count and defaults count to 10 when omitted, so
+    # without this the server's default silently overrode --max.
+    $url .= "/recent/$project/$user/$count";
     my $res = $ht->get($url);
 
     die "Could not get recent runs from '$url'\n$res->{status}: $res->{reason}\n$res->{content}\n"
