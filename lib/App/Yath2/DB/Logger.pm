@@ -244,7 +244,7 @@ sub _run ($self) {
             $self->{+RUN_DONE_SEEN} = 1;
             $drain_started //= time;
             $self->_sync;
-            last if $self->_all_finalized_imported;
+            last if $self->_drain_complete;
             last if (time - $drain_started) > $self->DRAIN_TIMEOUT;
         }
 
@@ -303,6 +303,45 @@ sub _all_finalized_imported ($self) {
         return 0 unless $self->{+ARTIFACTS_DONE}{$uuid};
     }
     return 1;
+}
+
+# Should the post-run_done drain STOP now? True when everything that can still
+# arrive has (_all_finalized_imported), OR when every collector we are still
+# waiting on belongs to a watchdog-aborted job (#158). An aborted job's collector
+# never sends its finalize/EOF -- its status is frozen below 'finalized' forever
+# -- so _all_finalized_imported can never go true for it and the drain would burn
+# the full DRAIN_TIMEOUT (~30s) on every aborted '-L' run before giving up. We
+# short-circuit that wait: an aborted collector is treated as settled, so the
+# drain ends as soon as the only laggards are aborted jobs. This changes ONLY the
+# drain TIMING -- _all_finalized_imported stays false for the aborted collector,
+# so _mark_incomplete_if_needed still marks the run broken exactly as a timed-out
+# drain would (#131/#132 semantics unchanged), just promptly. A collector on a
+# still-live (non-aborted) job keeps blocking, so a genuine in-flight finalize is
+# never cut short.
+sub _drain_complete ($self) {
+    my $mon = $self->monitor;
+    for my $uuid ($mon->collectors) {
+        next unless $self->_collector_in_run($mon, $uuid);
+        my $status = $mon->status($uuid) // '';
+        next if $status eq 'finalized' && $self->{+ARTIFACTS_DONE}{$uuid};
+        next if $self->_collector_job_aborted($mon, $uuid);
+        return 0;
+    }
+    return 1;
+}
+
+# Does this collector's owning job carry Monitor mirror state 'aborted'? Such a
+# collector will never finalize (the watchdog/no-verdict paths tear it down --
+# #131), so it must not keep the drain waiting for an EOF that will never come.
+# The owning job is matched by the collector's name (rel_file), exactly as
+# _upsert_tries -> _job_uuid_for_collector does; a collector with no resolvable
+# job (e.g. a per-run service collector) is NOT treated as aborted, so it keeps
+# blocking the drain as before.
+sub _collector_job_aborted ($self, $mon, $uuid) {
+    my $c        = $mon->collector($uuid)              or return 0;
+    my $job_id   = $self->_job_uuid_for_collector($mon, $c) // return 0;
+    my $job      = $mon->job($job_id)                  or return 0;
+    return (($job->{state} // '') eq 'aborted') ? 1 : 0;
 }
 
 # A collector belongs to THIS run only when its monitor-tracked run_uuid equals
