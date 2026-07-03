@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use File::Spec();
 
-use App::Yath2::Pfile;
+use App::Yath2::Discovery();
 use Getopt::Yath::Settings();
 
 use parent 'App::Yath2::Command';
@@ -41,24 +41,24 @@ reporting success.
 sub run {
     my $self = shift;
 
-    my $pfile = App::Yath2::Pfile->find($self->settings)
+    my $disco = App::Yath2::Discovery->find($self->settings)
         or die "Could not find a persistent yath running.\n";
 
-    my $data = $pfile->data;
+    my $workdir = $disco->workdir;
 
     # A live socket with a missing/garbled workdir PID file (external deletion or
     # corruption only -- the PID is written before the socket binds, so this is not a
     # boot race) used to crash with "Can't kill a non-numeric process ID" after
     # printing "Sending SIGHUP to <blank>". Guard it with an actionable message (#146).
-    my $pid = $data->{pid}
-        // die "Runner found at $data->{dir} but its PID file is missing/unreadable; restart the runner.\n";
+    my $pid = $disco->pid
+        // die "Runner found at $workdir but its PID file is missing/unreadable; restart the runner.\n";
 
     # No-preload gate: a runner with no preload stages cannot reload -- its SIGHUP
     # handler is an explicit no-op -- so telling the user "success" is a lie. Detect
     # it by reading the runner workdir's settings.json (written by `yath start`, and
     # the runner's own canonical boot input), which carries runner.preloads. A live
     # runner always has this file; treat its absence as a fault, not silent success.
-    my $sfile = File::Spec->catfile($data->{dir}, 'settings.json');
+    my $sfile = File::Spec->catfile($workdir, 'settings.json');
     my $rsettings;
     my $ok = eval { $rsettings = Getopt::Yath::Settings->FROM_JSON_FILE($sfile); 1 };
     my $err = $@;
@@ -74,7 +74,7 @@ sub run {
         return 2;
     }
 
-    my $blacklist = File::Spec->catfile($data->{dir}, 'BLACKLIST');
+    my $blacklist = File::Spec->catfile($workdir, 'BLACKLIST');
     if (-e $blacklist) {
         print "Deleting module blacklist...\n";
         unlink($blacklist) or warn "Could not delete blacklist file!";

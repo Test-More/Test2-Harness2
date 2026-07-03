@@ -2,8 +2,8 @@ use Test2::V0;
 
 # Unit coverage for ticket #114 (fork A): `yath reload`'s no-preload gate and its
 # exit-code contract, exercised WITHOUT starting a real runner. `run` is driven with
-# a mocked App::Yath2::Pfile::find pointing at a temp workdir whose settings.json we
-# control, so each exit code is reached deterministically:
+# a mocked App::Yath2::Discovery::find pointing at a temp workdir whose settings.json
+# we control, so each exit code is reached deterministically:
 #   0 -> runner has preload stages, blacklist cleared, SIGHUP delivered (requested)
 #   1 -> runner found but settings.json missing/unreadable (a live runner has one)
 #   2 -> runner.preloads is empty: nothing to reload, SIGHUP would be a no-op
@@ -13,14 +13,14 @@ use File::Temp qw/tempdir/;
 use File::Spec;
 
 require App::Yath2::Command::reload;
-require App::Yath2::Pfile;
+require App::Yath2::Discovery;
 
-# A minimal stand-in for a discovered persistent runner: reload.pm only reaches into
-# ->data for {pid, dir}.
+# A minimal Discovery stand-in: reload.pm only reads ->pid and ->workdir.
 {
-    package t::FakePfile;
-    sub new  { bless {data => $_[1]}, $_[0] }
-    sub data { $_[0]->{data} }
+    package t::FakeDisco;
+    sub new     { my ($c, %a) = @_; bless {%a}, $c }
+    sub pid     { $_[0]->{pid} }
+    sub workdir { $_[0]->{workdir} }
 }
 
 # Write a settings.json into a fresh workdir and return the workdir. $preloads is an
@@ -48,7 +48,7 @@ sub workdir_with {
     return $dir;
 }
 
-# Run reload.pm's ->run against a mocked find() returning a FakePfile for $dir/$pid,
+# Run reload.pm's ->run against a mocked find() returning a FakeDisco for $dir/$pid,
 # capturing STDOUT+STDERR. Returns ($exit_code, $stdout, $stderr).
 sub run_reload {
     my ($dir, $pid) = @_;
@@ -59,7 +59,7 @@ sub run_reload {
     my $ret;
 
     no warnings qw/redefine once/;
-    local *App::Yath2::Pfile::find = sub { t::FakePfile->new({pid => $pid, dir => $dir, pfile_path => "$dir/link"}) };
+    local *App::Yath2::Discovery::find = sub { t::FakeDisco->new(pid => $pid, workdir => $dir) };
 
     {
         local *STDOUT;

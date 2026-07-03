@@ -20,8 +20,6 @@ This command will provide health details and a process list for the runner.
     EOT
 }
 
-sub pfile_params { (no_fatal => 1) }
-
 # Numeric sort key for a pid column that may hold 'N/A' (a down/restarting stage or
 # a not-yet-pid'd running test): a bare integer sorts by value, anything else sorts
 # first as -1. This avoids the "Argument 'N/A' isn't numeric in <=>" warning spray

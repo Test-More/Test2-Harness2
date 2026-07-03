@@ -18,8 +18,6 @@ sub group { 'persist' }
 sub summary  { "Monitor the persistent test runner" }
 sub cli_args { "" }
 
-sub pfile_params { (no_fatal => 1) }
-
 sub description {
     return <<"    EOT";
 This command will monitor a persistent instance of yath, rendering the runner's
@@ -48,11 +46,11 @@ sub run {
     my $data = $self->pfile_data;    # prints the discovery banner, dies if none
     $self->client->attach_runner($data->{pid});
 
-    # The pfile path is a SYMLINK to the runner's unix SOCKET; the discovery object
-    # over it re-probes liveness (a non-blocking connect) on demand. Both feed the
-    # done_check below.
-    my $disco = $self->pfile->discovery;
-    my $link  = $self->pfile->path;
+    # The discovery link is a SYMLINK to the runner's unix SOCKET; the discovery
+    # object over it re-probes liveness (a non-blocking connect) on demand. Both feed
+    # the done_check below.
+    my $disco = $self->pfile;
+    my $link  = $self->pfile->link;
 
     # Global subscription: no run_id, so the runner forwards every run's frames
     # plus the global/runner-lifecycle frames. If the runner cannot be reached (it

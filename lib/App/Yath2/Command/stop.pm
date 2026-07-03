@@ -31,7 +31,7 @@ This command will stop a persistent instance, and output any log contents.
 
 # any_state: we want the Discovery object in EVERY state (live/not_live/dead) so we
 # can route off #145's probe taxonomy and reach the workdir PID file with the socket
-# dead. Pfile::find passes unknown params straight through to Discovery->find.
+# dead.
 sub pfile_params { (any_state => 1) }
 
 # Stop the persistent runner, driven by #145's discovery taxonomy (ticket #121):
@@ -48,7 +48,7 @@ sub pfile_params { (any_state => 1) }
 sub run {
     my $self = shift;
 
-    my $disco = $self->pfile->discovery;    # dies (NONE) when there is no link at all
+    my $disco = $self->pfile;    # dies (NONE) when there is no link at all
     my $state = $disco->state;
 
     $self->pfile_data;    # print the Found/PID/Dir banner once (pid may be unknown)

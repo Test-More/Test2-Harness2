@@ -9,7 +9,6 @@ use Getopt::Yath;
 use Test2::Harness2::Run;
 use Test2::Harness2::Util::File::JSON;
 
-use App::Yath2::Pfile;
 use App::Yath2::Client;
 use App::Yath2::Discovery();
 use Test2::Harness2::Util qw/mod2file open_file/;
@@ -206,21 +205,25 @@ sub init {
     return $self->SUPER::init(@_);
 }
 
-# The shared persistent-runner discovery object. App::Yath2::Pfile (over
-# App::Yath2::Discovery) follows the well-known symlink to the runner socket and
-# verifies it accepts a connection (liveness); a missing or dead runner is fatal
-# here (run/spawn require a live runner).
+# The shared persistent-runner discovery object. App::Yath2::Discovery follows the
+# well-known symlink to the runner socket and verifies it accepts a connection
+# (liveness); a missing or dead runner is fatal here (run/spawn require a live
+# runner).
 sub pfile {
     my $self = shift;
-    $self->{+PFILE} //= App::Yath2::Pfile->find($self->settings, $self->pfile_params)
+    $self->{+PFILE} //= App::Yath2::Discovery->find($self->settings, $self->pfile_params)
         or die "No persistent harness was found for the current path.\n";
 }
 
 sub pfile_data {
     my $self = shift;
 
-    my $pfile = $self->pfile;
-    my $data  = $pfile->data;
+    my $disco = $self->pfile;
+    my $data  = {
+        pid        => $disco->pid,
+        dir        => $disco->workdir,
+        pfile_path => $disco->link,
+    };
 
     # Print the discovery banner exactly once (on first read of the data). The pid
     # can be unknown here (a not-live runner with no/garbled PID file -- #121).

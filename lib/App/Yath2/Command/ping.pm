@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use Time::HiRes qw/time/;
 
-use App::Yath2::Pfile();
+use App::Yath2::Discovery();
 use App::Yath2::Client();
 
 use parent 'App::Yath2::Command';
@@ -32,22 +32,22 @@ sub run {
 
     # Discover the persistent runner for the current path (the same single-runner
     # discovery `which`/`run`/`abort` use). No live runner -> nothing to ping.
-    my $pfile = App::Yath2::Pfile->find($settings, no_fatal => 1);
-    unless ($pfile) {
+    my $disco = App::Yath2::Discovery->find($settings);
+    unless ($disco) {
         print "\nNo persistent harness was found for the current path.\n\n";
         return 1;
     }
 
-    print $pfile->describe;
+    print $disco->describe;
 
     # Attach a client to the discovered runner (kill(0) liveness, never reaped) and
     # bind it to the runner's socket for the ping round-trips.
     my $client = App::Yath2::Client->new(
-        workdir  => $pfile->workdir,
+        workdir  => $disco->workdir,
         settings => $settings,
         mode     => 'attach',
     );
-    $client->attach_runner($pfile->pid);
+    $client->attach_runner($disco->pid);
 
     # Exit cleanly on an interrupt: flip a flag the loop checks (so the in-flight
     # ping completes / the sleep returns) rather than dying mid-request.

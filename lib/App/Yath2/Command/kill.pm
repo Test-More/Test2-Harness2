@@ -22,7 +22,7 @@ This command will kill the active yath runner and any running or pending tests.
 
 # any_state: we need the Discovery object in EVERY state so a NOT-LIVE (wedged)
 # runner -- exactly the case `yath kill` exists for -- stays reachable via its
-# workdir PID file for signal-based escalation. Pfile::find passes it through.
+# workdir PID file for signal-based escalation.
 sub pfile_params { (any_state => 1) }
 
 # Kill the persistent runner, driven by #145's discovery taxonomy (ticket #121).
@@ -43,7 +43,7 @@ sub pfile_params { (any_state => 1) }
 sub run {
     my $self = shift;
 
-    my $disco = $self->pfile->discovery;    # dies (NONE) when there is no link at all
+    my $disco = $self->pfile;    # dies (NONE) when there is no link at all
     my $state = $disco->state;
 
     $self->pfile_data;    # print the Found/PID/Dir banner once (pid may be unknown)

@@ -20,8 +20,6 @@ List all running processes and runner stages.
     EOT
 }
 
-sub pfile_params { (no_fatal => 1) }
-
 sub run {
     my $self = shift;
 

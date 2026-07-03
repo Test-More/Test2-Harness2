@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-use App::Yath2::Pfile;
+use App::Yath2::Discovery();
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase;
@@ -23,14 +23,14 @@ This will tell you about any persistent runners it can find.
 sub run {
     my $self = shift;
 
-    my $pfile = App::Yath2::Pfile->find($self->settings, no_fatal => 1);
+    my $disco = App::Yath2::Discovery->find($self->settings);
 
-    unless ($pfile) {
+    unless ($disco) {
         print "\nNo persistent harness was found for the current path.\n\n";
         return 0;
     }
 
-    print $pfile->describe;
+    print $disco->describe;
 
     return 0;
 }

@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use Time::HiRes qw/time/;
 
-use App::Yath2::Pfile();
+use App::Yath2::Discovery();
 
 use parent 'App::Yath2::Command::status';
 use Test2::Harness2::Util::HashBase qw/runner_pid/;
@@ -21,8 +21,6 @@ sub description {
 A look at the state and resources used by a runner.
     EOT
 }
-
-sub pfile_params { (no_fatal => 1) }
 
 # A2: ask the live runner for its resource status over runner.socket (the runner
 # is the resource authority -- it owns the live resource objects in its canonical
@@ -41,9 +39,8 @@ sub runner_resources {
     # which dies and prints a banner the screen-clear would wipe).
     my $pid = $self->{+RUNNER_PID};
     unless (defined $pid) {
-        my $pfile = App::Yath2::Pfile->find($self->settings, $self->pfile_params) or return undef;
-        my $data  = $pfile->data                                                  or return undef;
-        $pid      = $data->{pid}                                                  or return undef;
+        my $disco = App::Yath2::Discovery->find($self->settings) or return undef;
+        $pid      = $disco->pid                                  or return undef;
         return undef unless kill(0, $pid);
 
         # Attach the client to the live persistent runner (kill(0) liveness, no reap).

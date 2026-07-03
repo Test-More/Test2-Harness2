@@ -26,19 +26,12 @@ require App::Yath2::Command::ping;
 require App::Yath2::Command::reload;
 require App::Yath2::Command::stop;
 require App::Yath2::Command::resources;
-require App::Yath2::Pfile;
+require App::Yath2::Discovery;
 require App::Yath2::Client;
 
 # ---- small stand-ins -------------------------------------------------------
 
-# A discovered persistent runner; commands reach into ->data for {pid,dir}.
-{
-    package t::FakePfile;
-    sub new  { bless {data => $_[1]}, $_[0] }
-    sub data { $_[0]->{data} }
-}
-
-# A Discovery-shaped object for _stop_live: only ->pid and ->workdir are read.
+# A Discovery-shaped object; commands read ->pid and ->workdir (and _stop_live).
 {
     package t::FakeDisco;
     sub new     { bless $_[1], $_[0] }
@@ -56,9 +49,9 @@ require App::Yath2::Client;
 
 # A ping client: attach is a no-op, ping returns the canned reply.
 {
-    package t::PingPfile;
+    package t::PingDisco;
     sub new      { bless {}, shift }
-    sub describe { "FAKE PFILE\n" }
+    sub describe { "FAKE DISCO\n" }
     sub workdir  { '/fake/workdir' }
     sub pid      { 4321 }
 
@@ -103,8 +96,8 @@ subtest ping_no_response_exit_1 => sub {
     my $client = t::PingClient->new(reply => undef);
 
     no warnings qw/redefine once/;
-    local *App::Yath2::Pfile::find = sub { t::PingPfile->new };
-    local *App::Yath2::Client::new = sub { $client };
+    local *App::Yath2::Discovery::find = sub { t::PingDisco->new };
+    local *App::Yath2::Client::new     = sub { $client };
 
     my $cmd = bless {settings => {}}, 'App::Yath2::Command::ping';
 
@@ -126,9 +119,9 @@ subtest ping_interrupt_exit_0 => sub {
     no warnings qw/redefine once/;
     # ping interrupts the loop the way Ctrl-C would (run() installs a local INT
     # handler that flips its $stop), then returns a normal reply.
-    local *t::PingClient::ping     = sub { kill('INT', $$); return {pid => 4321} };
-    local *App::Yath2::Pfile::find = sub { t::PingPfile->new };
-    local *App::Yath2::Client::new = sub { $client };
+    local *t::PingClient::ping         = sub { kill('INT', $$); return {pid => 4321} };
+    local *App::Yath2::Discovery::find = sub { t::PingDisco->new };
+    local *App::Yath2::Client::new     = sub { $client };
 
     my $cmd = bless {settings => {}}, 'App::Yath2::Command::ping';
 
@@ -149,8 +142,8 @@ subtest reload_undef_pid_dies => sub {
     my $cmd = bless {settings => {}}, 'App::Yath2::Command::reload';
 
     no warnings qw/redefine once/;
-    local *App::Yath2::Pfile::find = sub {
-        t::FakePfile->new({pid => undef, dir => '/gone/workdir', pfile_path => '/gone/workdir/link'});
+    local *App::Yath2::Discovery::find = sub {
+        t::FakeDisco->new({pid => undef, workdir => '/gone/workdir'});
     };
 
     my $ok = eval { $cmd->run; 1 };

@@ -18,8 +18,6 @@ This command will kill all running tests and clear the queue, but will not close
     EOT
 }
 
-sub pfile_params { (no_fatal => 1) }
-
 sub run {
     my $self = shift;
 
