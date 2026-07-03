@@ -373,7 +373,10 @@ sub _interactive_apply_settings ($settings, $path) {
 # connection and wait for the next test. The loop ends when the yath command
 # child exits; we then unlink the socket and forward the child's exit code. A
 # connect that never arrives is bounded by the child's lifetime (the select wakes
-# periodically to re-check that the child is alive).
+# periodically to re-check that the child is alive). Ctrl-C (INT/TERM) is
+# forwarded to the child rather than exiting immediately, so the workdir tempdir
+# (whose File::Temp END cleanup is keyed to this parent) is torn down only after
+# the child, runner, and collectors have finished with it (#125).
 sub _interactive_accept_loop ($listen, $path, $pid) {
     require POSIX;
 
@@ -385,8 +388,28 @@ sub _interactive_accept_loop ($listen, $path, $pid) {
         exit($exit // 0);
     };
 
-    local $SIG{INT}  = sub { $finish->(1) };
-    local $SIG{TERM} = sub { $finish->(1) };
+    # #125: INT/TERM must NOT exit here. The workdir tempdir was created in this
+    # (pre-fork) process, so File::Temp keys its END cleanup to US (the child's $$
+    # differs, so the child can never clean it -- this parent's exit is the ONLY
+    # workdir cleanup in interactive mode). Exiting the instant Ctrl-C arrives
+    # would remove_tree the workdir out from under the yath child, runner, and
+    # collectors while they are still mid-shutdown and writing into it -- events
+    # files vanish mid-write and the shell prompt returns over live children.
+    #
+    # Instead: forward the signal to the child so it shuts down gracefully and
+    # record it in $signaled; DO NOT exit. The waitpid loop below reaps the child
+    # and exits through the #140-owned status expression, so File::Temp's END
+    # cleanup fires only after every workdir user is gone. Repeated signals
+    # escalate (INT/TERM as asked, then SIGKILL on the third) so a child that
+    # ignores the signal cannot wedge this parent forever -- but even the escalated
+    # kill routes its exit through the single waitpid path, never exiting here.
+    my $signaled = 0;
+    my $forward = sub ($sig) {
+        $signaled++;
+        kill(($signaled >= 3 ? 'KILL' : $sig) => $pid);
+    };
+    local $SIG{INT}  = sub { $forward->('INT') };
+    local $SIG{TERM} = sub { $forward->('TERM') };
     local $SIG{PIPE} = 'IGNORE';
 
     my $rin = '';
