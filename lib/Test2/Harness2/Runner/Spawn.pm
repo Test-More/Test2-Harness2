@@ -22,8 +22,6 @@ sub init {
 sub spawn_fds     { $_[0]->{+SPAWN_FDS} }
 sub set_spawn_fds { $_[0]->{+SPAWN_FDS} = $_[1] }
 
-sub out_file { undef }
-sub err_file { undef }
 sub in_file  { undef }
 
 # The host launch (Test2::Harness2::Preload::launch) goto::file's run_file after

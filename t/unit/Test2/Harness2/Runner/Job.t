@@ -90,8 +90,6 @@ my $mock = mock $CLASS => (
         args         => sub { () },
         ch_dir       => sub { '' },
         env_vars     => sub { {} },
-        out_file     => sub { $devnull },
-        err_file     => sub { $devnull },
         in_file      => sub { $devnull },
     ],
 );

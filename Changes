@@ -1,5 +1,8 @@
 {{$NEXT}}
 
+    - Remove the unused Test2::Harness2::Runner::Job::prof_file method (NYTProf is
+      handled via -d:NYTProf and the NYTPROF env var)
+
 1.000172  2026-04-28 21:15:51-07:00 America/Los_Angeles
 
     - Fix t/integration/help.t to strip the App::Yath::Script::V# detection

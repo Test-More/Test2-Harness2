@@ -5,10 +5,6 @@ our $VERSION = '2.000000';
 
 use Config qw/%Config/;
 
-# For some reason Filter::Util::Class breaks the STDIN filehandle. This works
-# around that.
-my $FIX_STDIN;
-
 # The goto::file filter patch (interactive STDIN handling) lives here with the
 # rest of the job-launch machinery so it travels with the launcher. Whichever
 # process is the goto-file host (the runner command on the no-preload path, or
@@ -29,7 +25,6 @@ BEGIN {
     *goto::file::filter = sub {
         local $.;
         my $out = $orig->(@_);
-        seek(STDIN, 0, 0) if $FIX_STDIN;
 
         unless ($int_done++) {
             if (defined $ENV{YATH_INTERACTIVE} && length $ENV{YATH_INTERACTIVE}) {
@@ -74,20 +69,17 @@ use Scalar::Util qw/openhandle/;
 
 use Time::HiRes qw/sleep/;
 
-use Test2::Util qw/clone_io/;
-
 use Long::Jump qw/longjump/;
 
-use Test2::Harness2::Util qw/mod2file open_file process_includes/;
-use Test2::Harness2::Util::IPC qw/swap_io/;
+use Test2::Harness2::Util qw/mod2file process_includes/;
 
 # The producing-side job-launch machinery (fork a test job under a collector, unwind
 # to the goto-file host with no added stack frame, and finish setting up the test
 # child after the goto::file swap), so they belong in Test2::Harness2 and are
 # shared by both the runner command (no-preload path) and the preload-root (preload
 # path). The Long::Jump host frame (setjump) and the post-jump goto::file swap stay
-# in each host; the host passes its own jump LABEL into launch_via_fork so the
-# unwind lands in the right frame.
+# in each host; the host passes its own jump LABEL into launch_via_double_fork (and
+# launch_spawn) so the unwind lands in the right frame.
 
 sub get_stage ($class, $runner) {
     return unless $runner->can('stage');
@@ -189,11 +181,10 @@ sub launch_spawn ($class, $runner, $spawn, $label = undef) {
 
     if (!$child) {
         # In the script child: close the control socket (the supervisor owns it) and
-        # unwind into the preloaded interpreter. launch_via_fork single-forks again,
-        # but here we ARE already the process that should run the script, so call the
-        # collected-child body directly with no extra fork. The child setsid's so it
-        # leads its own process group; the supervisor kills that group on command
-        # death.
+        # unwind into the preloaded interpreter. We ARE already the process that
+        # should run the script, so run the spawn-child body directly with no extra
+        # fork. The child setsid's so it leads its own process group; the supervisor
+        # kills that group on command death.
         eval { CORE::close($sock); 1 };
         POSIX::setsid();
         $class->_run_spawn_child($runner, $spawn, $label);
@@ -312,26 +303,10 @@ sub _close_fds ($class, @fds) {
     return;
 }
 
-sub launch_via_fork ($class, $runner, $job, $label = 'Test-Runner') {
-    my $stage = $class->get_stage($runner);
-
-    $stage->do_pre_fork($job) if $stage;
-
-    my $pid = fork();
-    die "Failed to fork: $!" unless defined $pid;
-
-    # In parent
-    return $pid if $pid;
-
-    # In Child: this process becomes the Test2-Collector collector PARENT (or, for a
-    # non-collected spawn worker, the worker itself). The shared collector body
-    # unwinds back to the host's setjump frame ($label) and goto::file's in the real
-    # test. This is the SINGLE-fork form: the forked child is the host's DIRECT
-    # child, reaped by the host. It is used for the spawn-worker path
-    # (launch_spawn). The preload TEST-job path uses launch_via_double_fork so the
-    # collector detaches and re-parents to the runner subreaper.
-    $class->_run_collected_child($runner, $job, $stage, $label);
-}
+# NOTE (#73): a single-fork launch_via_fork used to live here (the host's DIRECT
+# child becomes the collector parent, reaped by the host). It had no callers -- the
+# live launchers are launch_via_double_fork (preload test jobs) and launch_spawn
+# (detached spawn workers) -- so it was removed.
 
 # The preload TEST-job launch: double-fork + setsid so the collector detaches from
 # the stage and re-parents to the runner (a child subreaper, ticket #28) on a
@@ -383,22 +358,25 @@ sub launch_via_double_fork ($class, $runner, $job, $label = 'preload-root') {
     $class->_run_collected_child($runner, $job, $stage, $label);
 }
 
-# The collector-parent (or non-collected spawn worker) body shared by the single-
-# fork (launch_via_fork) and double-fork (launch_via_double_fork) launches. Runs in
-# the child: becomes the Test2-Collector collector parent, which forks the real
-# test child internally; that child unwinds back to the host's setjump frame
-# ($label) via Long::Jump and goto::file's in the real test -- so the test runs
-# in-process with everything preloaded, under the collector's stream formatter, its
-# full event stream recorded to events.jsonl.zst. Never returns: it exits.
+# The collector-parent body for the double-fork (launch_via_double_fork) preload
+# test-job launch. Runs in the child: becomes the Test2-Collector collector parent,
+# which forks the real test child internally; that child unwinds back to the host's
+# setjump frame ($label) via Long::Jump and goto::file's in the real test -- so the
+# test runs in-process with everything preloaded, under the collector's stream
+# formatter, its full event stream recorded to events.jsonl.zst. Never returns: it
+# exits.
 sub _run_collected_child ($class, $runner, $job, $stage, $label) {
-    # Spawn jobs are infrastructure processes (the persistent `spawn` command's
-    # workers), not test files; they must not be wrapped in a test collector. Only
-    # real test Jobs become collector parents.
-    my $collected = !$job->isa('Test2::Harness2::Runner::Spawn');
-
     my $ok = eval {
         require POSIX;
-        $0 = $collected ? 'yath-collector' : 'yath-pending-test';
+
+        # Only real test Jobs reach this collector body (via launch_via_double_fork).
+        # Spawn workers are infrastructure processes launched down the launch_spawn
+        # path and are never wrapped in a test collector; a Spawn arriving here means
+        # it escaped its launch path.
+        die "spawn job reached the collector launch path"
+            if $job->isa('Test2::Harness2::Runner::Spawn');
+
+        $0 = 'yath-collector';
         setpgrp(0, 0) if Test2::Harness2::IPC::USE_P_GROUPS();
         $runner->stop();
 
@@ -411,15 +389,7 @@ sub _run_collected_child ($class, $runner, $job, $stage, $label) {
         # (post-fork, in run_under_collector), so this does not touch it.
         $runner->close_all_connections if $runner->can('close_all_connections');
 
-        unless ($collected) {
-            # Non-collected (spawn) path: this child IS the test process, so
-            # post_fork fires here, in the same PID that will run.
-            $stage->do_post_fork($job) if $stage;
-            longjump $label => ('run_test', $job, $stage);
-            return 1;
-        }
-
-        # Collected path: this child is the collector PARENT, not the test
+        # This child is the collector PARENT, not the test
         # process. The collector forks the real test child internally; post_fork
         # (and pre_launch) must fire in THAT grandchild so they share the test's
         # PID (preload contract: POST_FORK and PRE_LAUNCH are in the same PID).
@@ -589,40 +559,13 @@ sub set_env ($class, $job) {
 }
 
 sub update_io ($class, $job) {
+    # Only spawn jobs reach update_io: collected test jobs skip it entirely (the
+    # collector owns their STDOUT/STDERR -- cleanup_process gates on T2_FORMATTER).
     # A `yath spawn` child was handed the command's REAL std descriptors over
-    # SCM_RIGHTS (no files, no /proc proxy): dup2 those onto 0/1/2 here instead of
-    # opening job files, then close the received duplicates so the only holders are
-    # the command and this child.
+    # SCM_RIGHTS (no files, no /proc proxy): dup2 those onto 0/1/2 here, then close
+    # the received duplicates so the only holders are the command and this child.
     return $class->_install_spawn_fds($job)
         if $job->can('spawn_fds') && $job->spawn_fds;
-
-    my $out_fh = open_file($job->out_file, '>');
-    my $err_fh = open_file($job->err_file, '>');
-
-    my $in_file = $job->in_file;
-    my $in_fh;
-    $in_fh = open_file($in_file, '<') if $in_file;
-
-    $out_fh->autoflush(1);
-    $err_fh->autoflush(1);
-
-    # Keep a copy of the old STDERR for a while so we can still report errors
-    my $stderr = clone_io(\*STDERR);
-
-    my $die = sub {
-        my @caller  = caller;
-        my @caller2 = caller(1);
-        my $msg     = "$_[0] at $caller[1] line $caller[2] ($caller2[1] line $caller2[2]).\n";
-        print $stderr $msg;
-        print STDERR $msg;
-        POSIX::_exit(127);
-    };
-
-    swap_io(\*STDIN,  $in_fh,  $die, '<&') if $in_file;
-    swap_io(\*STDOUT, $out_fh, $die, '>&');
-    swap_io(\*STDERR, $err_fh, $die, '>&');
-
-    $FIX_STDIN = 1 if $in_file;
 
     return;
 }
@@ -734,21 +677,13 @@ This used to live in C<App::Yath2::Command::runner>. It is producing-results
 work, so it lives in C<Test2::Harness2> (the dependency rule forbids
 C<Test2::Harness2> loading C<App::Yath2*>, and the B<preload-root>
 (L<Test2::Harness2::Preload>) is a C<Test2::Harness2> process that needs this
-launcher). Both the runner command (the no-preload path) and the preload-root (the
-preload path) reuse it; each keeps its own C<Long::Jump> host frame and passes its
-jump B<label> into C<launch_via_fork> so the unwind lands in the right frame.
+launcher). The preload-root keeps its own C<Long::Jump> host frame and passes its
+jump B<label> into C<launch_via_double_fork> (and C<launch_spawn>) so the unwind
+lands in the right frame.
 
 =head1 PUBLIC METHODS
 
 =over 4
-
-=item $pid = Test2::Harness2::Runner::JobLauncher->launch_via_fork($runner, $job, $label)
-
-Single-fork a test job. In the parent, return the child pid (the host's direct
-child, reaped by the host). In the child (the collector parent), unwind to the
-host's C<setjump $label> frame via L<Long::Jump> so the host can C<goto::file> the
-test in-process. C<$label> defaults to C<'Test-Runner'>. Used by the no-preload
-runner's test-job path.
 
 =item $pid = Test2::Harness2::Runner::JobLauncher->launch_via_double_fork($runner, $job, $label)
 

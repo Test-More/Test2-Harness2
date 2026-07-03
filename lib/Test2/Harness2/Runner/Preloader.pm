@@ -205,7 +205,7 @@ sub launch_stage {
     # collector PARENT (this process) drives the pipeline and
     # POSIX::_exit()s with the stage's verdict; its run_sub child unwinds back
     # to the setjump below -- the same Long::Jump escape preloads/test jobs use
-    # (App::Yath2::Command::runner launch_via_fork) to add no stack frame -- and
+    # (Test2::Harness2::Runner::JobLauncher's launch machinery) to add no stack frame -- and
     # carries on AS the stage (the caller then preloads and runs its dispatch
     # loop in-process, with everything still loaded).
     #

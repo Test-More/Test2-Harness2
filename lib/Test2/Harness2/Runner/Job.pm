@@ -45,7 +45,7 @@ use Test2::Harness2::Util::HashBase(
 
         +args +file +run_file
 
-        +out_file +err_file +in_file +events_file
+        +in_file +events_file
 
         +load +load_import
 
@@ -386,13 +386,11 @@ my %JSON_SKIP = (
     RUN()              => 1,
     CLI_INCLUDES()     => 1,
     CLI_OPTIONS()      => 1,
-    ERR_FILE()         => 1,
     EVENTS_FILE()      => 1,
     EXIT()             => 1,
     EXIT_TIME()        => 1,
     IN_FILE()          => 1,
     JOB_DIR()          => 1,
-    OUT_FILE()         => 1,
     RUN_DIR()          => 1,
     TMP_DIR()          => 1,
 );
@@ -424,8 +422,6 @@ sub run_file  {
 
 sub rel_file  { File::Spec->abs2rel($_[0]->file) }
 sub file      { $_[0]->{+FILE}      //= clean_path($_[0]->{+TASK}->{file}, 0) }
-sub err_file  { $_[0]->{+ERR_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stderr')) }
-sub out_file  { $_[0]->{+OUT_FILE}  //= clean_path(File::Spec->catfile($_[0]->job_dir, 'stdout')) }
 sub events_file { $_[0]->{+EVENTS_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'events.jsonl.zst')) }
 sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+RUNNER}->dir, $_[0]->{+RUN}->run_id)) }
 
@@ -651,16 +647,6 @@ sub switches {
     return @{$self->{+SWITCHES} = \@switches};
 }
 
-sub prof_file {
-    my $self = shift;
-    my $file =$self->rel_file;
-
-    $file =~ s{/}{-}g;
-    $file =~ s{\.[^\.]+$}{.nytprof}g;
-
-    return $file;
-}
-
 sub env_vars {
     my $self = shift;
 
@@ -790,14 +776,6 @@ List of options for a command line launch of this job.
 =item $hashref = $job->env_vars
 
 Get environment variables to set when launching this job.
-
-=item $path = $job->out_file
-
-File to which all STDOUT for the job will be written.
-
-=item $path = $job->err_file
-
-File to which all STDERR for the job will be written.
 
 =item $time = $job->event_timeout
 
