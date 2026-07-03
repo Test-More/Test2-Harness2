@@ -48,6 +48,15 @@ sub write {
 
         my $buffer = delete $self->{+JOB_BUFFERS}->{$job_id};
 
+        # SUPER::write() bumps ECOUNT for every event it emits. The buffered
+        # events (and this forwarded end/no-job event) were each already counted
+        # once at the tail of this method as they passed through, so save and
+        # restore ECOUNT across the replay/forward to keep one count per
+        # processed event -- otherwise the status bar's 'Events: N' inflates
+        # toward 2x on failing (replayed) jobs. local() cannot help here: ECOUNT
+        # is cumulative and must persist beyond this call.
+        my $ecount = $self->{+ECOUNT};
+
         if($f->{harness_job_end}->{fail}) {
             $self->SUPER::write(@{$_}) for @$buffer;
         }
@@ -55,6 +64,8 @@ sub write {
             $f->{info} = [grep { $_->{tag} ne 'TIME' } @{$f->{info}}] if $f->{info};
             $self->SUPER::write($e, $num, $f)
         }
+
+        $self->{+ECOUNT} = $ecount;
     }
 
     $self->{+ECOUNT}++;

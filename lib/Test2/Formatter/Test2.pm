@@ -384,13 +384,21 @@ sub update_active_disp {
         $stats->{started} //= 1;
     }
 
-    if ($f->{harness_job_end}) {
-        my $file = $f->{harness_job_end}->{file};
+    if (my $end = $f->{harness_job_end}) {
+        my $file = $end->{file};
         delete $self->{+ACTIVE_FILES}->{File::Spec->abs2rel($file)};
         $should_show = 1;
         $stats->{running}--;
 
-        if ($f->{harness_job_end}->{fail}) {
+        # A to-be-retried failure is not a terminal outcome: Renderer::Base::note_verdict
+        # flags such an end with {retry} (the collector does not). Count it as neither
+        # passed nor failed and hand its slot back to todo, so the coming retry launch --
+        # which decrements todo again -- balances out. Without this, F is inflated on a
+        # run that ultimately passes and T goes negative ([P:1|F:1|T:-1]).
+        if ($end->{retry}) {
+            $stats->{todo}++;
+        }
+        elsif ($end->{fail}) {
             $stats->{failed}++;
         }
         else {
@@ -768,8 +776,12 @@ sub DESTROY {
     # Local is expensive! Only do it if we really need to.
     local($\, $,) = (undef, '') if $\ || $,;
 
+    # Only emit the reset escape when this formatter is actually rendering in
+    # color (mirrors the init() gate at line ~182 and the reset() helper);
+    # writing \e[0m to a --no-color / non-TTY stream leaves a stray escape byte
+    # in CI logs.
     print $io Term::ANSIColor::color('reset')
-        if USE_ANSI_COLOR;
+        if $self->{+COLOR} && USE_ANSI_COLOR;
 
     print $io "\n";
 }
