@@ -12,19 +12,15 @@ use File::Spec;
 use App::Yath2::Util qw{
     find_runner_link
     is_generated_test_pl
-    fit_to_width
     isolate_stdout
     find_yath
-    find_in_updir
 };
 
 imported_ok qw{
     find_runner_link
     is_generated_test_pl
-    fit_to_width
     isolate_stdout
     find_yath
-    find_in_updir
 };
 
 my $initial_dir = cwd();
@@ -113,47 +109,6 @@ subtest is_generated_test_pl => sub {
     print $fh "use strict;\nuse warnings;\n# THIS IS A GENERATED YATH RUNNER TEST\ndfasdafas\n";
     close($fh);
     ok(is_generated_test_pl($name), "Found a generated file");
-};
-
-subtest find_in_updir => sub {
-    my $tmp = gen_temp(
-        thefile => 'xxx',
-        nest => {
-            nest_a => { thefile => 'xxx' },
-            nest_b => {},
-        },
-    );
-
-    chdir(File::Spec->catdir($tmp, 'nest', 'nest_a')) or die "$!";
-    my $file = File::Spec->catfile($tmp, 'nest', 'nest_a', 'thefile');
-    like(find_in_updir('thefile'), qr{\Q$file\E$}, "Found file in expected spot");
-
-    chdir(File::Spec->catdir($tmp, 'nest', 'nest_b')) or die "$!";
-    $file = File::Spec->catfile($tmp, 'thefile');
-    like(find_in_updir('thefile'), qr{\Q$file\E$}, "Found file in expected spot");
-};
-
-subtest fit_to_width => sub {
-    is(fit_to_width(100, " ", "hello there"), "hello there", "No change for short string");
-    is(fit_to_width(2, " ", "hello there"), "hello\nthere", "Split across multiple lines");
-
-    is(
-        fit_to_width(20, " ", "hello there, this is a longer string that needs splitting."),
-        "hello there, this is\na longer string that\nneeds splitting.",
-        "Split across multiple lines"
-    );
-
-    is(
-        fit_to_width(100, " ", ["hello there", "this is a", "longer string that", "needs no splitting."]),
-        "hello there this is a longer string that needs no splitting.",
-        "Split across multiple lines"
-    );
-
-    is(
-        fit_to_width(50, " ", ["hello there", "this is a", "longer string that", "needs splitting."]),
-        "hello there this is a longer string that\nneeds splitting.",
-        "Split across multiple lines"
-    );
 };
 
 done_testing;

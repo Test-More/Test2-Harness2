@@ -57,7 +57,7 @@ plan skip_all => "fixture not found: $fixture"     unless -f $fixture;
 plan skip_all => "schema sql not found: $sqlfile"  unless -f $sqlfile;
 plan skip_all => "share/ dir not found at $root"   unless -d File::Spec->catdir($root, 'share');
 
-# share_dir()/share_file() prefer the in-repo ./share dir, so run from the root.
+# share_dir() prefers the in-repo ./share dir, so run from the root.
 chdir($root) or plan skip_all => "could not chdir to repo root $root: $!";
 
 # --- Build an ephemeral SQLite DB + deploy the schema ----------------------

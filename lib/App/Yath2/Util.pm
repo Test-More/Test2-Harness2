@@ -18,13 +18,10 @@ use Carp qw/croak/;
 our @EXPORT_OK = qw{
     find_runner_link
     find_runner_links
-    find_in_updir
     is_generated_test_pl
-    fit_to_width
     isolate_stdout
     find_yath
     share_dir
-    share_file
     changes_applicable
 };
 
@@ -43,16 +40,6 @@ sub changes_applicable {
 # host / user prefixes vary, but this trailer is constant -- see find_runner_link).
 # Used by find_runner_links to enumerate ALL candidate symlinks in a directory.
 our $RUNNER_LINK_SUFFIX = 'yath-runner.sock';
-
-sub share_file {
-    my ($file) = @_;
-
-    # Prefer the in-repo share/ dir during development.
-    my $path = "share/$file";
-    return $path if -d 'share' && -f $path;
-
-    return File::ShareDir::dist_file('Test2-Harness2' => $file);
-}
 
 sub share_dir {
     my ($dir) = @_;
@@ -134,22 +121,6 @@ sub is_generated_test_pl {
 }
 
 
-sub find_in_updir {
-    my $path = shift;
-    return clean_path($path) if -f $path;
-
-    my %seen;
-    while(1) {
-        $path = File::Spec->catdir('..', $path);
-        my $check = eval { realpath(File::Spec->rel2abs($path)) };
-        last unless $check;
-        last if $seen{$check}++;
-        return $check if -f $check;
-    }
-
-    return;
-}
-
 # Absolute path of a discovery symlink at $dir/$name. The directory is realpath'd
 # (safe -- it is a real dir), but the basename is appended WITHOUT resolving it:
 # realpath on the symlink itself would follow it to its target (the socket), and
@@ -161,26 +132,21 @@ sub _abs_link_path {
     return File::Spec->catfile($abs_dir, $name);
 }
 
-# Like find_in_updir, but for a symlink (the discovery symlink). realpath in
-# find_in_updir resolves the link to its target, so it cannot match a symlink; we
-# walk the directory tree upward and test -l on $dir/$name at each level, returning
-# the link path itself (not its target).
+# Find the discovery symlink named $name by walking the directory tree upward from
+# the cwd and testing -l on $dir/$name at each level, returning the FIRST link path
+# found (the link itself, not its target -- realpath would resolve the symlink to its
+# socket target and so could never match). Shares the cwd-to-root walk with
+# _glob_runner_links_updir via _walk_updirs.
 sub _find_link_in_updir {
     my ($name) = @_;
 
-    my $dir = eval { realpath(File::Spec->rel2abs('.')) } or return;
-
-    my %seen;
-    while (defined $dir && length $dir && !$seen{$dir}++) {
+    my @links = _walk_updirs(sub {
+        my ($dir) = @_;
         my $link = File::Spec->catfile($dir, $name);
-        return $link if -l $link;
+        return -l $link ? ($link) : ();
+    });
 
-        my $parent = realpath(File::Spec->catdir($dir, '..')) // last;
-        last if $parent eq $dir;    # reached the filesystem root
-        $dir = $parent;
-    }
-
-    return;
+    return $links[0];
 }
 
 sub _runner_link_existsp {
@@ -353,42 +319,34 @@ sub _glob_runner_links {
 # discovery symlink found at each level (the _find_link_in_updir shape, but
 # globbing all matching names at each level instead of stopping at the first).
 sub _glob_runner_links_updir {
+    return _walk_updirs(sub {
+        my ($dir) = @_;
+        return _glob_runner_links($dir);
+    });
+}
+
+# Walk from the cwd up to the filesystem root, invoking $per_dir_cb->($dir) at each
+# level with the realpath'd DIRECTORY (never a realpath'd leaf path -- callers build
+# and test the leaf themselves, because realpath on a discovery symlink would follow
+# it to its socket target; see _abs_link_path). The %seen guard and the parent==dir
+# check terminate the walk at cycles / the root. Each callback's returned list is
+# collected in walk order (cwd first, then parents) and the full list is returned; a
+# find-first caller just takes [0].
+sub _walk_updirs {
+    my ($per_dir_cb) = @_;
+
     my $dir = eval { realpath(File::Spec->rel2abs('.')) } or return;
 
-    my (%seen_dir, @links);
-    while (defined $dir && length $dir && !$seen_dir{$dir}++) {
-        push @links => _glob_runner_links($dir);
+    my (%seen, @out);
+    while (defined $dir && length $dir && !$seen{$dir}++) {
+        push @out => $per_dir_cb->($dir);
 
         my $parent = realpath(File::Spec->catdir($dir, '..')) // last;
         last if $parent eq $dir;    # reached the filesystem root
         $dir = $parent;
     }
 
-    return @links;
-}
-
-sub fit_to_width {
-    my ($width, $join, $text) = @_;
-
-    my @parts = ref($text) ? @$text : split /\s+/, $text;
-
-    my @out;
-
-    my $line = "";
-    for my $part (@parts) {
-        my $new = $line ? "$line$join$part" : $part;
-
-        if ($line && length($new) > $width) {
-            push @out => $line;
-            $line = $part;
-        }
-        else {
-            $line = $new;
-        }
-    }
-    push @out => $line if $line;
-
-    return join "\n" => @out;
+    return @out;
 }
 
 1;
@@ -412,13 +370,10 @@ any other package.
 
     use App::Yath2::Util qw{
         find_runner_link
-        find_in_updir
         is_generated_test_pl
-        fit_to_width
         isolate_stdout
         find_yath
         share_dir
-        share_file
     };
 
 =head1 EXPORTS
@@ -464,20 +419,9 @@ Both live and dangling symlinks are returned; liveness is a socket connect, done
 L<App::Yath2::Discovery/list>. A directory that cannot be read (another user's
 unreadable temp area) is skipped silently rather than throwing.
 
-=item $path_to_file = find_in_updir($file_name)
-
-Look for C<$file_name> in the current directory or any parent directory.
-
 =item $bool = is_generated_test_pl($path_to_test_file)
 
 Check if the specified test file was generated by the C<yath init> command.
-
-=item fit_to_width($width, $join, $text)
-
-This will split the C<$text> on space, and then recombine it using C<$join>
-inserting newlines as necessary in an attempt to fit the text into C<$width>
-horizontal characters. If any words are larger than C<$width> they will not be
-split and text-wrapping may occur if used for terminal display.
 
 =item $stdout = isolate_stdout()
 
@@ -502,12 +446,6 @@ Note: The result is cached so that subsequent calls will return the same path
 even if something installs a new yath script in another location that would
 otherwise be found first. This guarentees that a single process will not switch
 scripts.
-
-=item $path = share_file($relative_file)
-
-Resolve a file inside the distribution's C<share/> directory. In a development
-checkout this prefers the in-repo C<share/> directory; otherwise it falls back
-to L<File::ShareDir/dist_file> for the C<Test2-Harness2> distribution.
 
 =item $path = share_dir($relative_dir)
 
