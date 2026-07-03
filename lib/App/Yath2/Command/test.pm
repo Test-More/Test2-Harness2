@@ -41,6 +41,7 @@ use Test2::Harness2::Util::HashBase qw/
 
     +logger_pids
     +logger_targets
+    +logger_configs
 
     <cleanup_subs
 
@@ -315,6 +316,7 @@ sub start_loggers {
 
     my @pids;
     my %target_for;    # pid => -L target, so teardown can name a failed import (#133)
+    my %config_for;    # pid => temp config path, so teardown can sweep any the logger never removed (finding 8)
     for my $target (@$targets) {
         my ($fh, $cfg_file) = File::Temp::tempfile("yath-logger-$$-XXXXXX", TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
         print $fh Test2::Harness2::Util::JSON::encode_json({
@@ -337,13 +339,20 @@ sub start_loggers {
         );
 
         my $pid = Test2::Harness2::Util::IPC::run_cmd(no_set_pgrp => 1, command => \@cmd);
-        next unless $pid;
+        unless ($pid) {
+            # Spawn failed: the logger will never read (or remove) its config, so
+            # remove it here rather than leak it into TMPDIR (finding 8).
+            unlink($cfg_file);
+            next;
+        }
         push @pids => $pid;
         $target_for{$pid} = $target;
+        $config_for{$pid} = $cfg_file;
     }
 
     $self->{+LOGGER_PIDS}    = \@pids;
     $self->{+LOGGER_TARGETS} = \%target_for;
+    $self->{+LOGGER_CONFIGS} = \%config_for;
 
     return;
 }
@@ -418,8 +427,16 @@ sub wait_for_loggers {
         waitpid($pid, 0);
     }
 
+    # Sweep any temp config files the loggers did not remove themselves (finding
+    # 8). A logger unlinks its own config right after reading it, but one that died
+    # (or was just TERM'd above) before reading leaves it behind; unlink is a no-op
+    # on the already-removed ones, so this cannot fail on the common path.
+    my $configs = $self->{+LOGGER_CONFIGS} // {};
+    unlink(values %$configs) if %$configs;
+
     $self->{+LOGGER_PIDS}    = [];
     $self->{+LOGGER_TARGETS} = {};
+    $self->{+LOGGER_CONFIGS} = {};
 
     return $failed;
 }

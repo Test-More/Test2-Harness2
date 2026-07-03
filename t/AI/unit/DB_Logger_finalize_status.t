@@ -53,6 +53,16 @@ use App::Yath2::DB::Logger;
     sub DRAIN_TIMEOUT { 0 }
 }
 
+# A logger that DIES mid-run AFTER the run row is seeded (ensure_run_row runs first
+# in _sync) but before _run reaches its own _finalize_run_row -- exactly finding
+# 98's fault (a die in _run used to skip finalize, stranding runs.status='running'
+# forever, and per re-verify excluding the run from `db sync` propagation).
+{
+    package t2h2::DieMidRunLogger;
+    our @ISA = ('App::Yath2::DB::Logger');
+    sub _import_finalized { die "injected mid-run failure\n" }
+}
+
 my $tmp_root = tempdir(CLEANUP => 1);
 my $db_seq   = 0;
 
@@ -233,6 +243,28 @@ subtest 'corrupt events blob => broken + non-zero exit, warning names the collec
         "the recorded warning names the offending collector uuid",
     );
     like(join('', @warnings), qr/Failed to import collector/, "warning describes the import failure");
+};
+
+# --------------------------------------------------------------------------- #
+# finding 98 (composes with #132): a die inside _run -- after the run row is
+# seeded 'running' -- must still stamp the row 'broken' via run()'s failure-path
+# _finalize_run_row, NOT leave it stuck 'running' forever (which reads as a live
+# run and is excluded from `db sync`). The exit is non-zero and a terminal error
+# is recorded.
+subtest 'die mid-run after seeding => run row stamped broken, not stuck running (finding 98)' => sub {
+    my $run_id = gen_uuid();
+    my ($mon, $log) = new_logger(class => 't2h2::DieMidRunLogger', run_id => $run_id, run_done => 1);
+
+    dispatch($mon, uc(gen_uuid()), 'boom.tx', $run_id);
+    finalize_test($mon, gen_uuid(), 'boom.tx', $run_id);
+    run_end($mon, $run_id);
+
+    my $exit;
+    { local $SIG{__WARN__} = sub { }; $exit = $log->run; }
+
+    ok($exit, "logger exits non-zero after a mid-run die") or diag("exit=$exit");
+    ok($log->terminal_error, "the abort recorded a terminal error");
+    is(run_row_status($log), 'broken', "the seeded run row was stamped 'broken', not left 'running'");
 };
 
 done_testing;

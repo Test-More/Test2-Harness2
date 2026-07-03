@@ -5,6 +5,7 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
+use File::Spec ();
 
 use App::Yath2::DB::Flavor;
 
@@ -91,6 +92,13 @@ Create the embedded-file DB (sqlite or duckdb, per C<$flavor>) at C<$path> from
 the flavor DDL if it does not already exist (idempotent). Returns the path. (The
 name is historical; it serves both file engines.)
 
+The bootstrap is B<atomic>: the DDL is loaded into a private temp file in
+C<$path>'s directory and published with a single C<rename>, so an interrupted
+bootstrap never leaves a half-built C<$path> and two processes first-opening a
+shared DB never collide on C<CREATE TABLE>. "Already bootstrapped" is decided for
+sqlite by a schema marker (a C<schema_meta> row), not merely a non-zero size, so a
+partial file left by an older non-atomic run is rebuilt rather than trusted.
+
 =back
 
 =cut
@@ -113,17 +121,41 @@ sub require_db_modules {
     my $dbd = $DBD_FOR{$eng} // 'DBD::SQLite';
 
     unless (eval { require DBIx::QuickORM; 1 }) {
+        my $err = $@;
         croak "DBIx::QuickORM is required for yath logging / the DB commands but is not installed.\n"
-            . "Install it (and a DB driver) to enable logging, e.g.: cpanm DBIx::QuickORM $dbd\n";
+            . "Install it (and a DB driver) to enable logging, e.g.: cpanm DBIx::QuickORM $dbd\n"
+            . _load_failure_detail('DBIx/QuickORM.pm', $err);
     }
 
     (my $dbd_file = "$dbd.pm") =~ s{::}{/}g;
     unless (eval { require $dbd_file; 1 }) {
+        my $err = $@;
         croak "$dbd is required to log to a '$eng' database but is not installed.\n"
-            . "Install it to enable this logging target, e.g.: cpanm $dbd\n";
+            . "Install it to enable this logging target, e.g.: cpanm $dbd\n"
+            . _load_failure_detail($dbd_file, $err);
     }
 
     return;
+}
+
+# A failed `require` has two very different causes and finding 90 was that we
+# reported BOTH as "not installed": (a) the module is genuinely absent -- a
+# top-level `Can't locate <that module>.pm in @INC` -- which the "install X" hint
+# above already covers, so we stay quiet; or (b) the module IS installed but
+# BROKEN -- a compile/syntax error, or a `Can't locate` of one of ITS OWN
+# dependencies -- which is a real failure the user must see to fix. Surface the
+# captured error for (b); return '' for (a) so the clean hint is not cluttered.
+sub _load_failure_detail {
+    my ($mod_file, $err) = @_;
+    return '' unless defined $err && length $err;
+
+    # Case (a): the very module we asked for is not on disk. Only this exact
+    # top-level not-found is the "not installed" case -- a `Can't locate` naming a
+    # DIFFERENT (dependency) module is a broken install and falls through to (b).
+    return '' if $err =~ /^Can't locate \Q$mod_file\E in \@INC/;
+
+    chomp(my $detail = $err);
+    return "The actual load error was:\n  $detail\n";
 }
 
 sub target_to_flavor {
@@ -195,19 +227,109 @@ sub ensure_sqlite_db {
 
     $flavor //= App::Yath2::DB::Flavor->by_name('sqlite');
 
-    return $path if -e $path && -s _;
+    # "Already bootstrapped" is decided by a schema MARKER (a schema_meta row),
+    # NOT by non-zero size (finding 89): the old bootstrap wrote CREATE TABLE
+    # statements straight into $path under autocommit, so an interrupt after the
+    # first committed statement left a partial, non-empty file that `-s` happily
+    # accepted -- and then every later open died 'no such table: runs' forever
+    # (a zero-byte file self-healed, a partial one did not). The marker probe is
+    # sqlite-only: a DuckDB file is process-locked to its single writer, so an
+    # extra probe-open could collide with an active logger -- it keeps the size
+    # check (and still gains the atomic publish below).
+    if (-e $path && -s _) {
+        return $path if $flavor->name ne 'sqlite';
+        return $path if _sqlite_schema_present($path, $flavor);
+        # A partial / foreign file: fall through and rebuild it atomically.
+    }
 
     require DBI;
-    my $dbh = DBI->connect(
-        $flavor->dbd_dsn_prefix . $path, '', '',
-        $flavor->connect_attrs,
-    ) or croak "Could not create " . $flavor->name . " DB '$path': $DBI::errstr";
+    require File::Temp;
 
-    $flavor->post_connect($dbh);
-    _load_ddl($dbh, $flavor);
-    $dbh->disconnect;
+    # Bootstrap into a PRIVATE temp file in $path's own directory, then publish it
+    # with a single atomic rename (finding 89). This closes both races at once:
+    #   * an interrupt during the DDL only ever discards a throwaway temp -- $path
+    #     is never a half-built file, because rename(2) is the single all-or-nothing
+    #     publish (and a clean sqlite close checkpoints WAL back into the temp);
+    #   * two processes first-opening a SHARED results DB each build their OWN temp,
+    #     so neither runs CREATE TABLE against the other's file -- the old duplicate-
+    #     table collision on the shared handle is gone.
+    # rename within one directory is atomic on POSIX filesystems; a racer that
+    # published a valid DB first is simply replaced by our identical fresh schema
+    # (harmless -- neither has written any run data at bootstrap time).
+    my ($vol, $dir, $file) = File::Spec->splitpath($path);
+    my $dstdir = File::Spec->catpath($vol, $dir, '');
+    $dstdir = File::Spec->curdir() unless defined($dstdir) && length($dstdir);
+
+    my ($fh, $tmp) = File::Temp::tempfile(".$file-XXXXXX", DIR => $dstdir, UNLINK => 0);
+    close($fh);
+
+    # sqlite treats a 0-byte file as a valid EMPTY database, so we keep the
+    # File::Temp file as-is -- its O_EXCL name reservation stays intact, so
+    # concurrent bootstrappers that share a PRNG state (e.g. forks) cannot
+    # regenerate and collide on the same temp name. DuckDB instead REJECTS a
+    # pre-existing non-DuckDB file, so its temp must not exist when the driver
+    # opens it: drop the empty reservation and let DuckDB create the file (it is
+    # single-writer and its loggers are separate processes, so the momentarily
+    # freed name cannot be raced in practice).
+    unlink($tmp) if $flavor->name ne 'sqlite';
+
+    my $ok = eval {
+        my $dbh = DBI->connect(
+            $flavor->dbd_dsn_prefix . $tmp, '', '',
+            $flavor->connect_attrs,
+        ) or croak "Could not create " . $flavor->name . " DB '$tmp': $DBI::errstr";
+
+        $flavor->post_connect($dbh);
+        _load_ddl($dbh, $flavor);
+        $dbh->disconnect;
+        1;
+    };
+    my $err = $@;
+
+    unless ($ok) {
+        _unlink_db_tempfiles($tmp);
+        die $err;
+    }
+
+    unless (rename($tmp, $path)) {
+        my $rerr = $!;
+        _unlink_db_tempfiles($tmp);
+        croak "Could not publish bootstrapped " . $flavor->name . " DB into place ('$tmp' -> '$path'): $rerr";
+    }
 
     return $path;
+}
+
+# Is this sqlite file a COMPLETE bootstrap, verified by the schema_meta marker row
+# (finding 89)? A junk / partial / unreadable file throws on open or on the marker
+# query -- caught here and reported as "not bootstrapped" so the caller rebuilds it
+# (self-heal). Read-only so the probe never itself mutates the file.
+sub _sqlite_schema_present {
+    my ($path, $flavor) = @_;
+
+    require DBI;
+    my $present = 0;
+    my $ok = eval {
+        my $dbh = DBI->connect(
+            $flavor->dbd_dsn_prefix . $path, '', '',
+            $flavor->connect_attrs(read_only => 1),
+        ) or die "connect returned undef\n";
+        my ($n) = $dbh->selectrow_array("SELECT COUNT(*) FROM schema_meta");
+        $dbh->disconnect;
+        $present = $n ? 1 : 0;
+        1;
+    };
+
+    return $ok && $present ? 1 : 0;
+}
+
+# Remove a bootstrap temp DB plus any WAL / journal sidecars it may have left. A
+# clean close checkpoints and removes them, but a die MID-DDL (before that close)
+# can leave sqlite's -wal / -shm / -journal or duckdb's .wal next to the temp.
+sub _unlink_db_tempfiles {
+    my ($tmp) = @_;
+    unlink($tmp, "$tmp-wal", "$tmp-shm", "$tmp-journal", "$tmp.wal");
+    return;
 }
 
 my $ORM_SEQ = 0;

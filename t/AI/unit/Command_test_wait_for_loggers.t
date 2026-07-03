@@ -31,6 +31,7 @@ BEGIN { require App::Yath2::Command::test }
 
 use constant PIDS    => App::Yath2::Command::test::LOGGER_PIDS();
 use constant TARGETS => App::Yath2::Command::test::LOGGER_TARGETS();
+use constant CONFIGS => App::Yath2::Command::test::LOGGER_CONFIGS();
 
 # Fork a child that runs $code then _exit(0); _exit bypasses END blocks so a forked
 # child never re-enters the Test2 test framework.
@@ -144,11 +145,73 @@ subtest 'start_loggers records a pid->target map for teardown' => sub {
     no warnings 'redefine', 'once';
     local *Test2::Harness2::Util::IPC::run_cmd = sub { my %a = @_; push @cfg_files, $a{command}[-1]; return $next++ };
     $cmd->start_loggers;
-    unlink($_) for @cfg_files;    # tempfiles written UNLINK => 0
 
     is($cmd->{PIDS()}, [100, 101], "both logger pids recorded in order");
     is($cmd->{TARGETS()}, {100 => 'a.sqlite', 101 => 'b.sqlite'}, "pid->target map recorded");
+    is($cmd->{CONFIGS()}, {100 => $cfg_files[0], 101 => $cfg_files[1]}, "pid->config map recorded (the teardown-sweep input, finding 8)");
+    ok(-e $cfg_files[0] && -e $cfg_files[1], "the config tempfiles were written");
+
+    unlink($_) for @cfg_files;    # a real logger unlinks its own; here we mocked the spawn
 }
     if eval { require Test2::Harness2::Util::IPC; require Cwd; 1 };
+
+# #152 finding 8: the -L config tempfiles (written UNLINK => 0) were never removed.
+# The logger now unlinks its own after reading it, and wait_for_loggers sweeps any
+# a logger died/was-TERM'd before reading -- so TMPDIR no longer accumulates one
+# ~200-byte yath-logger-*.json per -L target per run.
+subtest 'wait_for_loggers sweeps leftover config tempfiles (finding 8)' => sub {
+    my $pid = spawn_child(sub { POSIX::_exit(0) });
+
+    # A leftover config (a logger that died before reading it) plus one already
+    # removed (the common case: the child unlinked its own) -- the sweep must
+    # remove the leftover and no-op harmlessly on the missing one.
+    my ($lfh, $left)    = File::Temp::tempfile("yath-logger-leftover-XXXXXX", TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
+    close($lfh);
+    my ($gfh, $gone)    = File::Temp::tempfile("yath-logger-gone-XXXXXX",     TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
+    close($gfh);
+    unlink($gone);    # simulate the child already having removed its own config
+
+    ok(-e $left,  "leftover config exists before teardown");
+    ok(!-e $gone, "the already-removed config is absent (child unlinked it)");
+
+    my $cmd = t2h2::WaitCmd->new(
+        wait_timeout => 30,
+        PIDS()       => [$pid],
+        TARGETS()    => {$pid => 'db.sqlite'},
+        CONFIGS()    => {$pid => $left, 999 => $gone},
+    );
+
+    my ($warns, $ret) = warns_from(sub { $cmd->wait_for_loggers });
+    is($ret, 0, "clean logger, no failures");
+    is($warns, [], "sweeping a missing config file emits no warning");
+    ok(!-e $left, "the leftover config tempfile was swept");
+    is($cmd->{CONFIGS()}, {}, "the config map was cleared");
+}
+    if eval { require File::Temp; 1 };
+
+subtest 'start_loggers unlinks the config when the spawn fails (finding 8)' => sub {
+    package t2h2::FL3 { sub new { my ($c, %a) = @_; bless {%a}, $c } sub targets { $_[0]->{targets} } }
+    package t2h2::FH3 { sub new { my ($c, %a) = @_; bless {%a}, $c } sub project { $_[0]->{project} } sub dev_libs { $_[0]->{dev_libs} } }
+    package t2h2::FS3 { sub new { my ($c, %a) = @_; bless {%a}, $c } sub check_group { $_[0]->{groups}{$_[1]} ? 1 : 0 } sub logger { $_[0]->{logger} } sub harness { $_[0]->{harness} } }
+
+    my $settings = t2h2::FS3->new(
+        groups  => {logger => 1, harness => 1},
+        logger  => t2h2::FL3->new(targets => ['fail.sqlite']),
+        harness => t2h2::FH3->new(project => undef, dev_libs => []),
+    );
+
+    my $cmd = t2h2::WaitCmd->new(settings => $settings, workdir => '/tmp/yath-x', run_id => 'r-1');
+
+    my $cfg_file;
+    no warnings 'redefine', 'once';
+    local *Test2::Harness2::Util::IPC::run_cmd = sub { my %a = @_; $cfg_file = $a{command}[-1]; return 0 };    # spawn failed
+    $cmd->start_loggers;
+
+    ok(defined $cfg_file, "a config tempfile was written for the target");
+    ok(!-e $cfg_file, "the config was unlinked when run_cmd returned no pid (no leak)");
+    is($cmd->{PIDS()}, [], "no pid recorded for the failed spawn");
+    is($cmd->{CONFIGS()}, {}, "no config recorded for the failed spawn");
+}
+    if eval { require Test2::Harness2::Util::IPC; require Cwd; require File::Temp; 1 };
 
 done_testing;

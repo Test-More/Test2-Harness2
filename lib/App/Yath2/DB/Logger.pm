@@ -120,6 +120,13 @@ sub run_from_config_file ($class, $path) {
     close($fh);
     my $config = decode_json($json);
 
+    # Remove the temp config now that it is read (finding 8): the parent writes it
+    # File::Temp UNLINK => 0 and delegates removal to us, so without this the
+    # ~200-byte file accumulated in TMPDIR, one per -L target per run, forever. The
+    # parent keeps a fallback sweep in wait_for_loggers for the case where we die
+    # (or the spawn fails) before reaching this line.
+    unlink($path);
+
     my $self = $class->new(
         workdir    => $config->{workdir},
         run_id     => $config->{run_id},
