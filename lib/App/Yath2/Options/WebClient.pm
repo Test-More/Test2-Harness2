@@ -45,7 +45,7 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Options::WebClient - FIXME
+App::Yath2::Options::WebClient - options for connecting to a Yath web server (url and api key).
 
 =head1 DESCRIPTION
 

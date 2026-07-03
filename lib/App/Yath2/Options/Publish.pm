@@ -62,7 +62,7 @@ __END__
 
 =head1 NAME
 
-App::Yath2::Options::Publish - FIXME
+App::Yath2::Options::Publish - options controlling how a completed run is published/uploaded to a Yath server.
 
 =head1 DESCRIPTION
 

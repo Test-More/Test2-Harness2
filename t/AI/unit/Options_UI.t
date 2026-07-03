@@ -10,7 +10,10 @@ BEGIN { plan skip_all => "App::Yath2::Options::DB moved to reference/old_db (tic
 
 #
 # Coverage for the inlined UI option modules:
-#   App::Yath2::Options::{DB,WebServer,Server,WebClient,Publish,Yath}
+#   App::Yath2::Options::{DB,WebClient,Publish,Yath}
+# (Options::WebServer and Options::Server were parked to reference/old_db by
+#  ticket #98 for the deferred web/DB rework; their coverage will be re-authored
+#  alongside the rewrite.)
 #
 # For each module we assert the expected option group/fields exist with the
 # expected defaults, and that a representative flag parses into the right place.
@@ -22,8 +25,6 @@ use strict;
 use warnings;
 
 use App::Yath2::Options::DB;
-use App::Yath2::Options::WebServer;
-use App::Yath2::Options::Server;
 use App::Yath2::Options::WebClient;
 use App::Yath2::Options::Publish;
 use App::Yath2::Options::Yath;
@@ -48,45 +49,6 @@ subtest DB => sub {
 
     my $dsn = parse('App::Yath2::Options::DB', '--db-dsn', 'dbi:SQLite:dbname=/tmp/x.db');
     is($dsn->db->dsn, 'dbi:SQLite:dbname=/tmp/x.db', "--db-dsn captured");
-};
-
-subtest WebServer => sub {
-    my $s = parse('App::Yath2::Options::WebServer', '--port', '9191');
-    ok($s->check_group('webserver'), "webserver group exists");
-    is($s->webserver->port, 9191, "--port lands in webserver.port");
-
-    # WebServer include_options() DB, so the db group must be present too.
-    ok($s->check_group('db'), "WebServer pulls in the db group via include_options");
-
-    my $d = parse('App::Yath2::Options::WebServer');
-    is($d->webserver->host,      'localhost', "host defaults to localhost");
-    is($d->webserver->port,      8080,        "port defaults to 8080 (no port_command)");
-    is($d->webserver->importers, 2,           "importers defaults to 2");
-    is($d->webserver->launcher_args, [],      "launcher_args initializes to empty list");
-
-    my $h = parse('App::Yath2::Options::WebServer', '--host', '0.0.0.0');
-    is($h->webserver->host, '0.0.0.0', "--host overrides default");
-};
-
-subtest Server => sub {
-    my $s = parse('App::Yath2::Options::Server', '--ephemeral=SQLite');
-    ok($s->check_group('server'), "server group exists");
-    is($s->server->ephemeral, 'SQLite', "--ephemeral=SQLite allowed value lands in server.ephemeral");
-
-    my $d = parse('App::Yath2::Options::Server');
-    is($d->server->shell,       0, "shell defaults to 0");
-    is($d->server->daemon,      0, "daemon defaults to 0");
-    is($d->server->single_user, 0, "single_user defaults to 0");
-
-    my $b = parse('App::Yath2::Options::Server', '--daemon');
-    is($b->server->daemon, 1, "--daemon sets the bool");
-
-    # A disallowed ephemeral value must be rejected.
-    my $ok = eval {
-        App::Yath2::Options::Server->options->process_args(['--ephemeral=Bogus'], skip_posts => 1);
-        1;
-    };
-    ok(!$ok, "--ephemeral=Bogus (not in allowed_values) is rejected");
 };
 
 subtest WebClient => sub {
