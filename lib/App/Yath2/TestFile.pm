@@ -15,8 +15,6 @@ use Test2::Harness2::Runner::Constants qw/CATEGORIES DURATIONS DURATION_MAX_SHOR
 
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
 
-use Test2::Harness2::TestFile();
-
 use Test2::Harness2::Util::Directives();
 use Test2::Harness2::Util::Directives::Legacy();
 
@@ -282,7 +280,7 @@ sub scan ($self) {
 # Safety ceiling: never scan more than this many lines looking for the header
 # block. Matches the historical O(1) header scan: directives live at the top of
 # a test file, so a real code line (outside an open HARNESS2 block) ends the
-# scan well before this -- the ceiling is only a backstop for a pathological
+# scan well before this -- the ceiling is only a safeguard for a pathological
 # file that is all comments / an unterminated block.
 use constant HEADER_LINE_CEILING => 500;
 
@@ -325,12 +323,11 @@ sub _scan ($self) {
             next if $line =~ m/^\s*$/;
 
             if ($ln == 1 && $line =~ m/^#!/) {
+                # _parse_shbang always returns a hashref for a '#!' line.
                 my $shbang = $self->_parse_shbang($line);
-                if ($shbang) {
-                    $self->{+_SHBANG} = $shbang;
-                    $self->{+NON_PERL} = 1 if $shbang->{non_perl};
-                    next;
-                }
+                $self->{+_SHBANG} = $shbang;
+                $self->{+NON_PERL} = 1 if $shbang->{non_perl};
+                next;
             }
 
             # Uhg, breaking encapsulation between yath and the harness
@@ -561,7 +558,6 @@ sub _parse_shbang ($self, $line) {
 
     my %shbang;
 
-    # NOTE: Test this, the dashes should be included with the switches
     my $shbang_re = qr{
         ^
           \#!.*perl.*?        # the perl path
@@ -584,6 +580,41 @@ sub _parse_shbang ($self, $line) {
     return \%shbang;
 }
 
+# The always-present base task fields, shared by both queue_item() return
+# paths. Centralizing the shape here means a new task field is added in one
+# place, not remembered in two: an omission would otherwise ship error-queued
+# tasks an incomplete shape (a missing key the runner reads as undef). The
+# defaults below are the minimal/safe values used verbatim by the
+# directive-error branch; the normal branch spreads these and overrides each
+# field with its scanned/computed value.
+sub _task_base ($self, $job_name, $run_id) {
+    return (
+        binary          => 0,
+        non_perl        => 0,
+        category        => 'general',
+        duration        => 'medium',
+        conflicts       => [],
+        switches        => [],
+        file            => $self->file,
+        rel_file        => $self->relative,
+        job_id          => gen_uuid(),
+        job_name        => $job_name,
+        run_id          => $run_id,
+        stamp           => time,
+        rank            => 1,
+        use_fork        => 0,
+        use_preload     => 0,
+        use_stream      => 1,
+        use_timeout     => 1,
+        io_events       => 1,
+        smoke           => 0,
+        no_preload      => 1,
+        require_preload => 0,
+        preload_list    => [],
+        stage           => undef,
+    );
+}
+
 sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     # E1: a file whose in-file directives failed to parse is invalid. We still
     # queue it (discovery / the run continue), but the queued task carries a
@@ -593,29 +624,7 @@ sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     $self->_scan unless $self->{+_SCANNED};
     if (defined $self->{+_DIRECTIVE_ERROR}) {
         return {
-            binary    => 0,
-            non_perl  => 0,
-            category  => 'general',
-            duration  => 'medium',
-            conflicts => [],
-            switches  => [],
-            file      => $self->file,
-            rel_file  => $self->relative,
-            job_id    => gen_uuid(),
-            job_name  => $job_name,
-            run_id    => $run_id,
-            stamp     => time,
-            rank      => 1,
-            use_fork    => 0,
-            use_preload => 0,
-            use_stream  => 1,
-            use_timeout => 1,
-            io_events   => 1,
-            smoke       => 0,
-            no_preload      => 1,
-            require_preload => 0,
-            preload_list    => [],
-            stage           => undef,
+            $self->_task_base($job_name, $run_id),
 
             directive_error => $self->{+_DIRECTIVE_ERROR},
 
@@ -657,22 +666,18 @@ sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     my %optional = $self->_optional_task_fields($env_mix, $min_slots, $max_slots);
 
     return {
+        $self->_task_base($job_name, $run_id),
+
         binary          => $binary,
-        category        => $category,
-        conflicts       => $self->conflicts_list,
-        duration        => $duration,
-        file            => $self->file,
-        rel_file        => $self->relative,
-        job_id          => gen_uuid(),
-        job_name        => $job_name,
-        run_id          => $run_id,
         non_perl        => $non_perl,
+        category        => $category,
+        duration        => $duration,
+        conflicts       => $self->conflicts_list,
+        switches        => $self->switches,
         stage           => $stage,
         no_preload      => $no_preload,
         require_preload => $require_preload,
         preload_list    => $preload_list,
-        stamp           => time,
-        switches        => $self->switches,
         use_fork        => $fork,
         use_preload     => $preload,
         use_stream      => $stream,
@@ -749,9 +754,10 @@ represent it. This class will scan test files to find important meta data
 can find helps yath decide when and how to run the test.
 
 Reading and scanning test files is an input/user-interface concern, so this
-reader lives in C<App::Yath2>. The runner-side, file-free state representation
-of a queued test is L<Test2::Harness2::TestFile>, built from the task payload
-this class produces via C<queue_item()>.
+reader lives in C<App::Yath2>. The runner consumes the raw task hash produced by
+C<queue_item()> directly. L<Test2::Harness2::TestFile> is the runner-side,
+file-free, state-only counterpart that can wrap that same payload, but
+production code does not currently instantiate it.
 
 If you write a custom L<App::Yath2::Finder> or use some
 L<App::Yath2::Plugin> callbacks you may have to use, or even construct
@@ -856,6 +862,32 @@ The ordered list of preferred preload stages (C<# HARNESS-STAGE A B C>). A
 single C<# HARNESS-STAGE Foo> yields a one-element list. Empty means the
 default stage.
 
+=item $n = $tf->check_min_slots()
+
+=item $tf->set_min_slots($n)
+
+=item $n = $tf->check_max_slots()
+
+=item $tf->set_max_slots($n)
+
+The minimum and maximum number of job slots this test occupies
+(C<# HARNESS-JOB-SLOTS min max>, or the HARNESS2 C<slots> directive). Like
+C<set_stage()>, the setters are a plugin-facing override seam: a plugin may
+assign them during C<munge_files>, and C<queue_item()> reads them back through
+the C<check_*> accessors when building the task payload.
+
+=item $n = $tf->retry()
+
+=item $tf->set_retry($n)
+
+=item $bool = $tf->retry_isolated()
+
+=item $tf->set_retry_isolated($bool)
+
+How many times a failing run of this test is retried, and whether the retry runs
+in isolation (C<# HARNESS-RETRY N> / C<# HARNESS-RETRY-ISO>). These setters are a
+plugin-facing override seam; the values ride along in the queued task payload.
+
 =item ($no_preload, $require_preload, $preload_list) = $tf->validate_preload()
 
 Resolve the three preload fields (directives, with plugin overrides applied)
@@ -865,10 +897,19 @@ C<queue_item()>.
 
 =item $bool = $tf->check_feature($name)
 
-This checks for the C<# HARNESS-NO-NAME> or C<# HARNESS-USE-NAME> or
-C<# HARNESS-YES-NAME> directives. C<NO> will result in a false boolean. C<YES>
-and C<USE> will result in a ture boolean. If no directive is found then
-C<undef> will be returned.
+=item $bool = $tf->check_feature($name, $default)
+
+Return the boolean state (C<1> or C<0>) of a named feature toggle: C<timeout>,
+C<fork>, C<preload>, C<stream>, C<run>, C<isolation>, C<smoke>, or C<io_events>.
+The feature is read from the file's directives -- either the legacy
+C<# HARNESS-NO-NAME> / C<# HARNESS-USE-NAME> / C<# HARNESS-YES-NAME> form or the
+newer HARNESS2 grammar (e.g. C<# HARNESS2: fork @off>); C<NO> / C<@off> yields
+C<0>, and C<YES> / C<USE> / C<@on> yields C<1> (see #58 for the two grammars).
+
+When the file declares no directive for the feature the returned value is a
+default rather than undef: the optional C<$default> argument if given, otherwise
+a per-feature built-in default (C<0> for C<isolation> and C<smoke>, C<1> for the
+rest). For a known feature it never returns undef.
 
 =item $arrayref = $tf->conflicts_list()
 
@@ -896,9 +937,11 @@ If the test file has a custom post-exit timeout, this will return it.
 
 =item $hashref = $tf->queue_item($job_name, $run_id)
 
-This returns the data used to add the test file to the runner queue. This is the
-serialized, file-free state carried in the task payload; the runner rebuilds it
-as a L<Test2::Harness2::TestFile> via C<from_task()> without re-reading the file.
+This returns the data used to add the test file to the runner queue: the
+serialized, file-free state carried in the task payload. The runner consumes
+this raw hash directly, without re-reading the file. L<Test2::Harness2::TestFile>
+can wrap the same payload (via C<from_task()>) as a state-only accessor object,
+but production code does not currently do so.
 
 =item $int = $tf->rank()
 
