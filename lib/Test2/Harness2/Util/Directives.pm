@@ -5,6 +5,8 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
+use parent 'Test2::Harness2::Util::Directives::Base';
+
 =pod
 
 =encoding UTF-8
@@ -64,12 +66,15 @@ missing / empty / non-string comment entry.
 
 Class or instance methods. Feed a file / filehandle / string through the parser
 and return the C<finish> result. When called as a class method, a fresh parser
-is constructed from C<%ctor_args> first.
+is constructed from C<%ctor_args> first. Inherited from
+L<Test2::Harness2::Util::Directives::Base>.
 
 =item $p->parse_line($line)
 
 Feed one line into the parser. Tracks line numbers for error messages. Croaks
-on an embedded newline.
+on an embedded newline. Inherited from
+L<Test2::Harness2::Util::Directives::Base>, which dispatches to the private
+C<_parse_line> interpreter below.
 
 =item $result = $p->finish
 
@@ -104,38 +109,7 @@ sub new ($class, %args) {
     }, $class;
 }
 
-sub parse_file ($invocant, $path, %args) {
-    open my $fh, '<', $path or croak "open '$path': $!";
-    my $h = $invocant->parse_fh($fh, %args);
-    close $fh;
-    return $h;
-}
-
-sub parse_fh ($invocant, $fh, %args) {
-    my $self = ref($invocant) ? $invocant : $invocant->new(%args);
-    while (defined(my $line = <$fh>)) {
-        $line =~ s/\r?\n\z//;
-        $self->parse_line($line);
-    }
-    return $self->finish;
-}
-
-sub parse_string ($invocant, $text, %args) {
-    my $self = ref($invocant) ? $invocant : $invocant->new(%args);
-    for my $line (split /\r?\n/, $text, -1) {
-        $self->parse_line($line);
-    }
-    return $self->finish;
-}
-
-sub parse_line ($self, $line) {
-    $self->{line_no}++;
-
-    croak "parse_line: embedded newline at line $self->{line_no}"
-        if defined($line) && $line =~ /\n/;
-
-    return unless defined $line;
-
+sub _parse_line ($self, $line) {
     return $self->_parse_inside_block($line) if $self->{open_block};
     return $self->_parse_top_level($line);
 }
@@ -167,6 +141,12 @@ sub open_block_key ($self) {
 =cut
 
 =over 4
+
+=item $self->_parse_line($line)
+
+Interpret one already-guarded line (the C<_parse_line> hook the base driver
+calls): dispatch to the in-block or top-level handler depending on whether a
+block directive is currently open.
 
 =item $self->_parse_inside_block($line)
 
@@ -201,10 +181,6 @@ Croak on an empty or malformed key.
 
 Push C<$value> onto the leaf arrayref at the (possibly dotted) C<$key>, creating
 intermediate subtrees and croaking on path/leaf collisions.
-
-=item $self->_prune($node)
-
-Recursively drop empty subtrees and empty leaf arrays from the result.
 
 =back
 
@@ -388,21 +364,6 @@ sub _append_value ($self, $key, $val) {
         $node->{$last} = [];
     }
     push @{$node->{$last}}, $val;
-
-    return;
-}
-
-sub _prune ($self, $node) {
-    for my $k (keys %$node) {
-        my $v = $node->{$k};
-        if (ref($v) eq 'HASH') {
-            $self->_prune($v);
-            delete $node->{$k} unless keys %$v;
-        }
-        elsif (ref($v) eq 'ARRAY') {
-            delete $node->{$k} unless @$v;
-        }
-    }
 
     return;
 }
