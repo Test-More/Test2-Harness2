@@ -233,12 +233,23 @@ sub _expand_escape ($letter, $settings) {
     return "%!$letter";
 }
 
-# Point lastlog.sqlite at the default sqlite file (when asked).
+# Point lastlog.sqlite at the default sqlite file (when asked). The user asked
+# for this pointer explicitly (--logger-lastlog), so a failed unlink/symlink is
+# warned rather than silently swallowed (else the pointer is lost with no clue).
 sub _maybe_lastlog ($logger, $path) {
     my ($vol, $dir, undef) = File::Spec->splitpath($path);
     my $link = File::Spec->catpath($vol, $dir, 'lastlog.sqlite');
-    unlink($link) if -l $link || -e $link;
-    eval { symlink($path, $link); 1 };
+
+    if (-l $link || -e $link) {
+        unlink($link) or warn "Could not unlink '$link': $!";
+    }
+
+    # eval covers symlink-less platforms (symlink dies -> $@); a plain failure
+    # (e.g. EEXIST) returns false with no die, so report $! in that case.
+    unless (eval { symlink($path, $link) }) {
+        warn "Could not symlink '$link' to '$path': " . ($@ || $!);
+    }
+
     return;
 }
 

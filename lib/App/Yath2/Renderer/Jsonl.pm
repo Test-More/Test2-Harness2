@@ -72,21 +72,24 @@ sub _open ($self) {
     }
 
     # Refresh the lastlog symlink: drop any stale one, then point it at this file.
+    # Test with -l (or -e) NOT -f: a dangling symlink (its target was deleted)
+    # fails -f but must still be swept, else the symlink() below fails EEXIST.
     for my $ext ('jsonl', 'jsonl.bz2', 'jsonl.gz') {
         my $name = "./lastlog.$ext";
-        next unless -f $name;
-        local ($!, $@) = (0, '');
-        eval { unlink($name) } or warn "Could not unlink '$name': ($!) $@";
+        next unless -l $name || -e $name;
+        unlink($name) or warn "Could not unlink '$name': $!";
     }
 
     if ($file =~ m/\.(jsonl(?:\.(?:bz2|gz))?)$/) {
         my $ext  = $1;
         my $name = "./lastlog.$ext";
-        if (eval { symlink($file, $name); 1 }) {
+        # eval covers symlink-less platforms (symlink dies -> $@); a plain failure
+        # (e.g. EEXIST) returns false with no die, so report $! in that case.
+        if (eval { symlink($file, $name) }) {
             $self->{+LAST_LOG} = $name;
         }
         else {
-            warn "Could not symlink the log file to '$name': $@";
+            warn "Could not symlink the log file to '$name': " . ($@ || $!);
         }
     }
 
@@ -116,7 +119,15 @@ sub finish ($self) {
     my $fh = $self->{+FH} or return;
 
     print $fh "null\n";
-    close($fh);
+    # close() is the primary write check for BOTH paths: on the plain path stdio
+    # buffering defers per-event write errors (e.g. disk full) to the flush at
+    # close, and IO::Compress surfaces flush/trailer errors via close too. A
+    # failed close means the archive is corrupt/truncated -- warn and DO NOT print
+    # the "Wrote log file" success message that would falsely bless it.
+    close($fh) or do {
+        warn "Failed writing log file '$self->{+FILE}': $!";
+        return;
+    };
 
     my $settings = $self->{+SETTINGS};
     my $quiet    = ($settings && $settings->check_group('display')) ? $settings->display->quiet : 0;
