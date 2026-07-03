@@ -15,6 +15,7 @@ use Cwd qw/getcwd/;
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/-log_file -max_short -max_medium/;
 use Test2::Harness2::Util qw/clean_path/;
+use Test2::Harness2::Runner::Constants qw/DURATION_MAX_SHORT DURATION_MAX_MEDIUM/;
 
 include_options(
     'App::Yath2::Options::Debug',
@@ -65,8 +66,10 @@ from the log based on the max durations for each type.
 sub init {
     my $self = shift;
 
-    $self->{+MAX_SHORT}  //= 15;
-    $self->{+MAX_MEDIUM} //= 30;
+    # Share the runner's SHORT/MEDIUM thresholds so the tagger and the scheduler
+    # (TestFile.pm, #118) agree on the same second-count cutoffs.
+    $self->{+MAX_SHORT}  //= DURATION_MAX_SHORT;
+    $self->{+MAX_MEDIUM} //= DURATION_MAX_MEDIUM;
 }
 
 sub normalize_duration {
@@ -98,7 +101,7 @@ sub run {
     $self->{+MAX_MEDIUM} = shift @$args if @$args;
 
     die "max short duration must be an integer, got '$self->{+MAX_SHORT}'"  unless $self->{+MAX_SHORT}  && $self->{+MAX_SHORT}  =~ m/^\d+$/;
-    die "max short duration must be an integer, got '$self->{+MAX_MEDIUM}'" unless $self->{+MAX_MEDIUM} && $self->{+MAX_MEDIUM} =~ m/^\d+$/;
+    die "max medium duration must be an integer, got '$self->{+MAX_MEDIUM}'" unless $self->{+MAX_MEDIUM} && $self->{+MAX_MEDIUM} =~ m/^\d+$/;
 
     # Bounded read of a static log (died unless -f above): done => 1 so a
     # newline-less final record is surfaced rather than silently dropped.
@@ -142,34 +145,16 @@ sub run {
                 warn "Could not open file $job->{file} for reading\n";
                 next;
             }
-
-            my @lines;
-            my $injected;
-            for my $line (<$fh>) {
-                if ($line =~ m/^(\s*)#(\s*)HARNESS-(CAT(EGORY)?|DUR(ATION))-(LONG|MEDIUM|SHORT)$/i) {
-                    next if $injected++;
-                    $line = "${1}#${2}HARNESS-DURATION-" . uc($dur) . "\n";
-                }
-                push @lines => $line;
-            }
-            unless ($injected) {
-                my $new_line = "# HARNESS-DURATION-" . uc($dur) . "\n";
-                my @header;
-                while (@lines && $lines[0] =~ m/^(#|use\s|package\s)/) {
-                    push @header => shift @lines;
-                }
-
-                unshift @lines => (@header, $new_line);
-            }
-
+            my @lines = <$fh>;
             close($fh);
-            unless (open($fh, '>', $job->{file})) {
-                warn "Could not open file $job->{file} for writing\n";
-                next;
-            }
 
-            print $fh @lines;
-            close($fh);
+            my $tagged = $self->retag_lines(\@lines, $dur);
+
+            # Non-atomic in-place rewrites truncate the (possibly uncommitted)
+            # source file if the write is interrupted or the disk fills. Write a
+            # sibling tempfile and rename() it over the original; on any failure
+            # warn, leave the original untouched, and skip the 'Tagged' line.
+            next unless $self->write_file_atomic($job->{file}, $tagged);
 
             if ($durations_file) {
                 my $tfile = $job->{file};
@@ -187,6 +172,69 @@ sub run {
     }
 
     return 0;
+}
+
+sub retag_lines {
+    my $self = shift;
+    my ($lines, $dur) = @_;
+
+    my @out;
+    my $injected;
+    for my $line (@$lines) {
+        # DUR(ATION)? (not DUR(ATION)) so we also match the 'HARNESS-DUR-*' alias
+        # that Legacy.pm's directive parser accepts. Missing it left the stale
+        # 'HARNESS-DUR-LONG' in place while a fresh 'HARNESS-DURATION-SHORT' was
+        # appended -- two conflicting tags, with the stale one winning at parse.
+        if ($line =~ m/^(\s*)#(\s*)HARNESS-(CAT(EGORY)?|DUR(ATION)?)-(LONG|MEDIUM|SHORT)$/i) {
+            next if $injected++;
+            $line = "${1}#${2}HARNESS-DURATION-" . uc($dur) . "\n";
+        }
+        push @out => $line;
+    }
+
+    unless ($injected) {
+        my $new_line = "# HARNESS-DURATION-" . uc($dur) . "\n";
+        my @header;
+        while (@out && $out[0] =~ m/^(#|use\s|package\s)/) {
+            push @header => shift @out;
+        }
+
+        unshift @out => (@header, $new_line);
+    }
+
+    return \@out;
+}
+
+sub write_file_atomic {
+    my $self = shift;
+    my ($file, $lines) = @_;
+
+    my $tmp = "$file.tmp$$";
+
+    my $fh;
+    unless (open($fh, '>', $tmp)) {
+        warn "Could not open temp file '$tmp' for writing: $!\n";
+        return 0;
+    }
+
+    # stdio buffering can defer a write error (e.g. ENOSPC) to close(), so both
+    # print AND close must be checked before we trust the tempfile.
+    my $ok = print {$fh} @$lines;
+    $ok &&= close($fh);
+
+    unless ($ok) {
+        warn "Could not write temp file '$tmp': $!\n";
+        unlink($tmp);
+        return 0;
+    }
+
+    unless (rename($tmp, $file)) {
+        warn "Could not rename '$tmp' over '$file': $!\n";
+        unlink($tmp);
+        return 0;
+    }
+
+    return 1;
 }
 
 1;

@@ -131,8 +131,11 @@ sub sort_compare {
     my $tb = $jb->{time};
 
     for my $field (@$order) {
-        my $fa = $ta->{$field};
-        my $fb = $tb->{$field};
+        # 'file' lives on the job, not in its per-phase 'time' hash; without this
+        # special-case a 'file' primary sort silently looks up an absent key and
+        # does nothing (rows stay in 'total' order).
+        my $fa = $field eq 'file' ? $ja->{file} : $ta->{$field};
+        my $fb = $field eq 'file' ? $jb->{file} : $tb->{$field};
 
         my $da = defined $fa;
         my $db = defined $fb;
