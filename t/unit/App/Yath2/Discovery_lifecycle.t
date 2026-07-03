@@ -4,6 +4,7 @@ use Test2::Tools::Spec;
 use File::Temp qw/tempdir/;
 use File::Spec;
 use Time::HiRes qw/time/;
+use POSIX ();
 
 use Socket qw/PF_UNIX SOCK_STREAM sockaddr_un/;
 use Fcntl qw/F_GETFL F_SETFL O_NONBLOCK/;
@@ -36,6 +37,17 @@ use App::Yath2::Discovery;
     package MockSettings;
     sub new { my ($c, %p) = @_; return bless {harness => MockHarness->new(%p)}, $c }
     sub harness { $_[0]->{harness} }
+
+    # For driving App::Yath2::Command::runner->cleanup, whose exit guard only touches
+    # $settings->debug->keep_dirs (keep_dirs => 1 keeps the workdir so a surviving
+    # successor link can still be probed LIVE afterward).
+    package MockDebug;
+    sub new { my ($c, %p) = @_; return bless {%p}, $c }
+    sub keep_dirs { $_[0]->{keep_dirs} }
+
+    package MockDebugSettings;
+    sub new { my ($c, %p) = @_; return bless {debug => MockDebug->new(%p)}, $c }
+    sub debug { $_[0]->{debug} }
 }
 
 my $PROJECT_SEQ = 0;
@@ -341,6 +353,61 @@ tests clean_if_mine_owner_protocol => sub {
         my $mine = File::Spec->catfile(tempdir(CLEANUP => 1), 'runner.socket');
         App::Yath2::Discovery->new(link => $link)->clean_if_mine($mine, $$);
         ok(-l $link, "clean_if_mine left a link that points at someone else's socket");
+    }
+};
+
+tests runner_exit_guard_routes_through_clean_if_mine => sub {
+    # #161: App::Yath2::Command::runner->cleanup builds the runner's exit guard, which
+    # removes the runner's OWN discovery link on clean shutdown. That removal MUST go
+    # through clean_if_mine (ticket #145) rather than an unconditional unlink, so a
+    # successor runner that reclaimed the SAME pinned workdir -- republishing the link
+    # and writing its own live PID -- never has its fresh link orphaned by the
+    # departing runner's guard. This exercises the guard at the runner.pm call site.
+    require App::Yath2::Command::runner;
+
+    # A live successor claimed the pinned workdir: it re-bound runner.socket, wrote its
+    # own (real, alive) PID -- a pid that is NOT the departing runner's $$ -- and
+    # republished the link.
+    {
+        my ($wd, $listen) = make_workdir(no_pid => 1);
+        my ($p, $link) = link_in_persist_dir();
+        my $socket = File::Spec->catfile($wd, 'runner.socket');
+        publish_discovery_link($socket, $link);
+
+        my $succ = fork();
+        die "fork: $!" unless defined $succ;
+        if (!$succ) { sleep 30; POSIX::_exit(0) }    # a genuinely-alive successor pid
+
+        my $pidfile = File::Spec->catfile($wd, 'PID');
+        open(my $fh, '>', $pidfile) or die "write PID: $!"; print $fh $succ; close($fh);
+
+        # The departing runner fires its exit guard (keep_dirs => 1 so the workdir and
+        # the successor's bound socket survive for the LIVE re-check below).
+        my $settings = MockDebugSettings->new(keep_dirs => 1);
+        my $guard = App::Yath2::Command::runner->cleanup($settings, {persist => $link}, $wd);
+        $guard = undef;    # run the Scope::Guard
+
+        ok(-l $link, "runner exit guard left the successor's fresh link (routed through clean_if_mine, not an unconditional unlink)");
+        ok(App::Yath2::Discovery->new(link => $link)->resolves, "  ... and the successor's link still resolves LIVE");
+
+        kill('TERM', $succ);
+        waitpid($succ, 0);
+    }
+
+    # Positive control at the SAME site: with no live successor (the workdir PID is the
+    # departing runner's own $$), the guard removes its own link -- proving the routing
+    # actually cleans and is not a silent no-op.
+    {
+        my ($wd, undef) = make_workdir(no_socket => 1, pid => $$);
+        my ($p, $link) = link_in_persist_dir();
+        my $socket = File::Spec->catfile($wd, 'runner.socket');
+        symlink($socket, $link) or die "symlink: $!";
+
+        my $settings = MockDebugSettings->new(keep_dirs => 1);
+        my $guard = App::Yath2::Command::runner->cleanup($settings, {persist => $link}, $wd);
+        $guard = undef;
+
+        ok(!-l $link, "runner exit guard removed its OWN link when no live successor claimed the workdir");
     }
 };
 
