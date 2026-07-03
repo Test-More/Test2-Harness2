@@ -193,17 +193,6 @@ sub setup_resources {
     }
 }
 
-sub setup_plugins {
-    my $self = shift;
-    $_->setup($self->settings) for @{$self->settings->harness->plugins};
-}
-
-sub teardown_plugins {
-    my $self = shift;
-    my ($renderers, $logger) = @_;
-    $_->teardown($self->settings, $renderers, $logger) for @{$self->settings->harness->plugins};
-}
-
 sub finalize_plugins {
     my $self = shift;
     $_->finalize($self->settings) for @{$self->settings->harness->plugins};

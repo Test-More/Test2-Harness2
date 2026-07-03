@@ -83,8 +83,6 @@ option_group {group => 'runner', category => "Persistent Runner Options"} => sub
     );
 };
 
-sub MAX_ATTACH() { 1_048_576 }
-
 sub group { 'persist' }
 
 sub always_keep_dir { 1 }

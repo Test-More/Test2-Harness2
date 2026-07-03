@@ -35,14 +35,11 @@ sub name          { 'runner' }
 sub init { confess(ref($_[0]) . " is not intended to be instantiated") }
 sub run  { confess(ref($_[0]) . " does not implement run()") }
 
-our $RUNNER_PID;
-
 sub generate_run_sub {
     my $class = shift;
     my ($symbol, $argv, $spawn_settings) = @_;
     my ($dir, %args) = @$argv;
 
-    $RUNNER_PID = $$;
     my $runner_pid = $$;
     my $settings   = Getopt::Yath::Settings->FROM_JSON_FILE(File::Spec->catfile($dir, 'settings.json'));
 

@@ -249,8 +249,6 @@ sub run {
 
     my $exit = $self->bridge_io($listen);
 
-    $self->pre_exit_hook($exit);
-
     if ($exit->{sig}) {
         # Resolve the numeric signal to a name for the message only: a NUMERIC %SIG
         # key ($SIG{15}) is rejected by Perl (a spurious 'No such signal: SIG15'
@@ -368,8 +366,6 @@ sub _clear_sig_forwarding {
 
     return;
 }
-
-sub pre_exit_hook { }
 
 1;
 

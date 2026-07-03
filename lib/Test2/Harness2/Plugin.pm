@@ -8,7 +8,8 @@ our $VERSION = '2.000000';
 
 # Plugin setup/teardown run in the RUNNER. A run_collected aux
 # process pushes its pid here so the runner can stop it at teardown; the runner
-# localizes this to its own list around setup_plugins/teardown_plugins.
+# localizes this to its own list around
+# Test2::Harness2::Runner's setup_plugins/teardown_plugins.
 our $AUX_PIDS;
 
 # Document, but do not implement

@@ -43,8 +43,6 @@ use Test2::Harness2::Util::HashBase qw/
     +logger_targets
     +logger_configs
 
-    <cleanup_subs
-
     <final_data
 /;
 
@@ -60,8 +58,6 @@ include_options(
     'App::Yath2::Options::Workspace',
     'App::Yath2::Options::Collector',
 );
-
-sub MAX_ATTACH() { 1_048_576 }
 
 sub group { ' test' }
 
@@ -116,8 +112,6 @@ sub init {
 
     $self->{+TESTS_SEEN}   //= 0;
     $self->{+ASSERTS_SEEN} //= 0;
-
-    $self->{+CLEANUP_SUBS} = [];
 }
 
 sub workdir {
@@ -229,17 +223,6 @@ sub _reraise_signal {
     @num{split ' ', $Config::Config{sig_name}} = split ' ', $Config::Config{sig_num};
 
     exit(128 + ($num{$sig} // 0));
-}
-
-sub DESTROY {
-    my $self = shift;
-
-    local ($?, $!, $@, $_);
-
-    my $cleanup = delete $self->{+CLEANUP_SUBS} or return;
-    for my $sub (@$cleanup) {
-        eval { $sub->(); 1 } or warn $@;
-    }
 }
 
 sub start {
@@ -490,14 +473,6 @@ sub client {
 # to 'attach'.
 sub client_mode { 'transient' }
 
-# The run/task/end-queue submission target: the client's submitter, which sends
-# one-way request frames over runner.socket. Both the transient `yath test` and
-# persistent `yath run`/`spawn` paths submit through it.
-sub submitter {
-    my $self = shift;
-    return $self->client->submitter;
-}
-
 # Attempt the subscription once. Returns the subscriber or undef on failure; the
 # render loop calls this exactly once and tolerates undef. The transient command
 # is a single run, so it subscribes scoped to its own run_id (per-run routing):
@@ -658,12 +633,6 @@ sub signal_shutdown {
 # These thin delegations keep the rest of the command reading naturally.
 sub run_id   { my $self = shift; return $self->client->run_id }
 sub build_run { my $self = shift; return $self->client->build_run }
-
-sub job_count {
-    my $self = shift;
-
-    return $self->settings->runner->job_count;
-}
 
 sub finder_args { () }
 

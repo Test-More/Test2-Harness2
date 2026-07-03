@@ -82,14 +82,11 @@ sub subscription_complete {
 }
 
 sub write_settings_to { }
-sub setup_plugins     { }
 sub setup_resources   { }
-sub teardown_plugins  { }
 sub finalize_plugins  { }
 sub pfile_params      { () }
 
 sub monitor_preloads { 1 }
-sub job_count        { 1 }
 
 sub run {
     my $self = shift;
