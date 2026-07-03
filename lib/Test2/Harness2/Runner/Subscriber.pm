@@ -4,12 +4,10 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
-use File::Spec();
 use Time::HiRes qw/sleep/;
 
-use Test2::Harness2::Util qw/mono_time connect_unix_nb/;
+use Test2::Harness2::Util qw/mono_time/;
 
-use Test2::Harness2::Role::Service::Connection();
 use Test2::Harness2::Runner::Monitor();
 
 use Test2::Harness2::Util::HashBase qw{
@@ -23,6 +21,11 @@ use Test2::Harness2::Util::HashBase qw{
     +monitor
     +subscribed
 };
+
+# The unix-socket connect layer (socket_path, identity, _runner_alive, _connect,
+# CONNECT_ATTEMPT_TIMEOUT) is shared with Runner::Client.
+use Role::Tiny::With;
+with 'Test2::Harness2::Runner::Role::SocketClient';
 
 =pod
 
@@ -95,14 +98,6 @@ mirror. Returns the number folded. A no-op until C<subscribe>.
 =back
 
 =cut
-
-sub socket_path ($self) {
-    return $self->{+SOCKET_PATH} //= File::Spec->catfile($self->{+WORKDIR}, 'runner.socket');
-}
-
-sub identity ($self) {
-    return $self->{+IDENTITY} //= "subscriber-$$";
-}
 
 sub monitor ($self) {
     return $self->{+MONITOR} //= Test2::Harness2::Runner::Monitor->new;
@@ -183,77 +178,26 @@ sub poll ($self) {
 
 =head1 PRIVATE METHODS
 
-=over 4
-
-=item $conn = $self->_connect
-
-Open the connection to the runner -- retrying a bounded non-blocking connect
-(C<connect_unix_nb>, #157) until it accepts or the C<CONNECT_TIMEOUT> deadline (or
-C<liveness_check>) gives up, so a bound-but-wedged runner can never hang the dial --
-wrap it in a L<Test2::Harness2::Role::Service::Connection>, and announce our
-identity. We do not block for the runner's identity; C<subscribe> drains it while
-waiting for the snapshot.
-
-=back
+The unix-socket connect layer (C<_connect>, C<socket_path>, C<identity>,
+C<_runner_alive>) is provided by L<Test2::Harness2::Runner::Role::SocketClient>.
+C<subscribe> calls C<_connect> to open (and lazily cache) the connection.
 
 =cut
 
+# The subscriber's outer connect/reply deadline is a flat 30s -- unlike Runner::Client
+# it is NOT env-overridable (#121 only wired the knob into the transient stop/kill
+# path); bounded_connect.t subclasses this to shrink it for the wedged-listener test.
 sub CONNECT_TIMEOUT { 30 }
 
-# Per-attempt bound for the non-blocking connect_unix_nb dial (ticket #157). A
-# runner that is accepting completes the connect near-instantly; this bound only
-# fires when the connect stays pending -- a bound-but-wedged runner with a full
-# accept backlog -- so each attempt returns promptly and _connect re-checks
-# liveness and the outer CONNECT_TIMEOUT deadline instead of blocking forever in
-# the kernel's unix_wait_for_peer (the old blocking connect could not time out).
-sub CONNECT_ATTEMPT_TIMEOUT { 0.5 }
+# Identity prefix for the shared connect layer: this dialer announces "subscriber-$$".
+sub _identity_kind { 'subscriber' }
 
-# Run the optional liveness_check coderef; true when absent (assume alive). Mirror
-# of Runner::Client::_runner_alive so a subscriber can fast-fail when the runner
-# died after binding the socket, instead of stalling the full CONNECT_TIMEOUT.
-# (#134 finding 108)
-sub _runner_alive ($self) {
-    my $check = $self->{+LIVENESS_CHECK} or return 1;    # no check: assume alive
-    return $self->$check ? 1 : 0;
-}
-
-sub _connect ($self) {
-    return $self->{+CONNECTION} if $self->{+CONNECTION} && !$self->{+CONNECTION}->closed;
-
-    my $path  = $self->socket_path;
-    my $start = mono_time;    # connect window is a pure interval (#134 finding 104)
-
-    my $fh;
-    while (1) {
-        if (-S $path) {
-            # Bounded NON-BLOCKING connect (#157): a blocking connect to a
-            # bound-but-wedged runner (full accept backlog) blocks forever in the
-            # kernel, so the CONNECT_TIMEOUT deadline below could never fire. Each
-            # attempt returns promptly; connect_unix_nb yields a connected,
-            # already-non-blocking socket on success.
-            my ($sock) = connect_unix_nb($path, $self->CONNECT_ATTEMPT_TIMEOUT);
-            if ($sock) { $fh = $sock; last }
-        }
-
-        # A runner that died after binding the socket (or before it ever bound)
-        # would otherwise cost a flat CONNECT_TIMEOUT stall here. If the caller
-        # supplied a liveness_check, fail fast the moment it reports the runner
-        # gone. (#134 finding 108)
-        croak "Runner is gone; cannot subscribe via '$path'" unless $self->_runner_alive;
-
-        croak "Timed out waiting for runner socket '$path' to accept connections"
-            if (mono_time - $start) > $self->CONNECT_TIMEOUT;
-
-        sleep 0.05;
-    }
-
-    my $conn = Test2::Harness2::Role::Service::Connection->new(
-        fh          => $fh,
-        outbound    => 1,
-        my_identity => $self->identity,
-    );
-
-    return $self->{+CONNECTION} = $conn;
+# Runner-gone escape for the shared connect layer (SocketClient::_connect). A runner
+# that died after binding the socket (or before it ever bound) would otherwise cost a
+# flat CONNECT_TIMEOUT stall; when the caller supplied a liveness_check, croak the
+# moment it reports the runner gone so subscribe fails fast. (#134 finding 108)
+sub _on_runner_gone ($self, $path) {
+    croak "Runner is gone; cannot subscribe via '$path'";
 }
 
 1;

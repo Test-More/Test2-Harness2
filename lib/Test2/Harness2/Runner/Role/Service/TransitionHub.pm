@@ -151,6 +151,25 @@ sub service_transition {
     return;
 }
 
+# Shared fold+encode+forward tail of the announce_* family: wrap the facets in the
+# collector wire form, fold it into our own monitor (so a later snapshot carries it),
+# then encode a fresh self-contained frame and forward it. $run_id routes it to that
+# run's subscribers; undef broadcasts globally (announce_system_load). service_transition
+# stays OUT of this helper: it forwards the ALREADY-received frame verbatim, without
+# re-encoding.
+sub _announce {
+    my ($self, $facets, $run_id) = @_;
+
+    my $payload = {facet_data => $facets};
+
+    $self->monitor->feed($payload);
+
+    my $frame = compress_blob(encode_json($payload));
+    $self->forward_frame($frame, $run_id);
+
+    return;
+}
+
 # The runner ORIGINATES some state mutations itself -- it dispatches a
 # job to a stage, forks a job (running), and reaps a job (done). ARCH 4.2 is
 # explicit these must reach subscribers too, not only the folded collector
@@ -192,12 +211,7 @@ sub announce_job {
         $rj->{run_id} = $known->{run_id} if $known && defined $known->{run_id};
     }
 
-    my $payload = {facet_data => {harness_runner_job => $rj}};
-
-    $self->monitor->feed($payload);
-
-    my $frame = compress_blob(encode_json($payload));
-    $self->forward_frame($frame, $rj->{run_id});
+    $self->_announce({harness_runner_job => $rj}, $rj->{run_id});
 
     return;
 }
@@ -221,13 +235,9 @@ sub announce_run_health {
     # Harness output (distinct from job output) so the collector bug is visible.
     print STDERR "yath: $reason\n";
 
-    my $rh      = {run_id     => $run_id, reason => $reason, stamp => time};
-    my $payload = {facet_data => {harness_run_health => $rh}};
+    my $rh = {run_id => $run_id, reason => $reason, stamp => time};
 
-    $self->monitor->feed($payload);
-
-    my $frame = compress_blob(encode_json($payload));
-    $self->forward_frame($frame, $run_id);
+    $self->_announce({harness_run_health => $rh}, $run_id);
 
     return;
 }
@@ -265,12 +275,7 @@ sub announce_run {
         delete $cr->{$_} for grep { ($cr->{$_}{run_id} // '') eq $run_id } keys %$cr;
     }
 
-    my $payload = {facet_data => {harness_run_end => {run_id => $run_id, stamp => time}}};
-
-    $self->monitor->feed($payload);
-
-    my $frame = compress_blob(encode_json($payload));
-    $self->forward_frame($frame, $run_id);
+    $self->_announce({harness_run_end => {run_id => $run_id, stamp => time}}, $run_id);
 
     # (#135 finding 3) The run is retired and its end frame forwarded: prune all
     # O(tests) hub-monitor state for it. Existing run subscribers already received the
@@ -401,12 +406,8 @@ sub announce_system_load {
     return unless $self->{'rootpid'} == $$;
     return unless $load;
 
-    my $payload = {facet_data => {harness_system => $load}};
-
-    $self->monitor->feed($payload);
-
-    my $frame = compress_blob(encode_json($payload));
-    $self->forward_frame($frame, undef);
+    # System load is a global singleton (run-less), so broadcast to every subscriber.
+    $self->_announce({harness_system => $load}, undef);
 
     return;
 }

@@ -4,12 +4,9 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
-use File::Spec();
 use Time::HiRes qw/sleep/;
 
-use Test2::Harness2::Util qw/mono_time connect_unix_nb/;
-
-use Test2::Harness2::Role::Service::Connection();
+use Test2::Harness2::Util qw/mono_time/;
 
 use Test2::Harness2::Util::HashBase qw{
     <workdir
@@ -19,6 +16,11 @@ use Test2::Harness2::Util::HashBase qw{
     +connection
     +runner_gone
 };
+
+# The unix-socket connect layer (socket_path, identity, _runner_alive, _connect,
+# CONNECT_ATTEMPT_TIMEOUT) is shared with Runner::Subscriber.
+use Role::Tiny::With;
+with 'Test2::Harness2::Runner::Role::SocketClient';
 
 =pod
 
@@ -126,14 +128,6 @@ or C<undef> if the runner could not be reached.
 
 =cut
 
-sub socket_path ($self) {
-    return $self->{+SOCKET_PATH} //= File::Spec->catfile($self->{+WORKDIR}, 'runner.socket');
-}
-
-sub identity ($self) {
-    return $self->{+IDENTITY} //= "command-$$";
-}
-
 sub queue_run    ($self, $run)     { $self->_send('queue_run', run => $run);     return }
 sub queue_task   ($self, $task)    { $self->_send('queue_task', task => $task);  return }
 sub stop_run     ($self, $run_id)  { $self->_send('stop_run', run_id => $run_id); return }
@@ -172,12 +166,10 @@ sub ping ($self) {
 =item $conn = $client->connection
 
 The (lazily opened) L<Test2::Harness2::Role::Service::Connection> to the runner,
-or C<undef> if the runner was observed to have exited before it accepted. Retries
-the connect with a short backoff, then exchanges identity before returning.
-
-=item $bool = $client->_runner_alive
-
-Run the C<liveness_check> coderef (true when absent).
+or C<undef> if the runner was observed to have exited before it accepted. Delegates
+to the shared L<Test2::Harness2::Runner::Role::SocketClient/_connect>, whose
+runner-gone escape (C<_on_runner_gone>) sets C<runner_gone> and returns C<undef> so
+submission becomes a no-op.
 
 =item $client->_send($command, %args)
 
@@ -206,67 +198,22 @@ could not be reached. Croaks on a closed connection or timeout.
 # (ticket #121); production behavior is unchanged.
 sub CONNECT_TIMEOUT { $ENV{YATH_RUNNER_CONNECT_TIMEOUT} // 30 }
 
-# Per-attempt bound for the non-blocking connect_unix_nb dial (ticket #157). A
-# runner that is accepting completes the connect near-instantly; this bound only
-# fires when the connect stays pending -- a bound-but-wedged runner with a full
-# accept backlog -- so each attempt returns promptly and the loop below re-checks
-# liveness and the outer CONNECT_TIMEOUT deadline instead of blocking forever in
-# the kernel's unix_wait_for_peer (the old blocking connect could not time out).
-sub CONNECT_ATTEMPT_TIMEOUT { 0.5 }
-
 sub runner_gone ($self) { return $self->{+RUNNER_GONE} ? 1 : 0 }
 
-sub _runner_alive ($self) {
-    my $check = $self->{+LIVENESS_CHECK} or return 1;    # no check: assume alive
-    return $self->$check ? 1 : 0;
+# Identity prefix for the shared connect layer: this dialer announces "command-$$".
+sub _identity_kind { 'command' }
+
+# Runner-gone escape for the shared connect layer (SocketClient::_connect): the
+# runner died before it ever started accepting, so stop trying. connection returns
+# this undef and _send/_request short-circuit, making submission a no-op.
+sub _on_runner_gone ($self, $path) {
+    $self->{+RUNNER_GONE} = 1;
+    return undef;
 }
 
-sub connection ($self) {
-    my $conn = $self->{+CONNECTION};
-    return $conn if $conn && !$conn->closed;
-
-    my $path  = $self->socket_path;
-    my $start = mono_time;    # connect window is a pure interval (#134 finding 104)
-
-    my $fh;
-    while (1) {
-        if (-S $path) {
-            # Bounded NON-BLOCKING connect (#157): a blocking connect to a
-            # bound-but-wedged runner (full accept backlog) blocks forever in the
-            # kernel, so the CONNECT_TIMEOUT deadline below could never fire. Each
-            # attempt returns promptly; connect_unix_nb yields a connected,
-            # already-non-blocking socket on success.
-            my ($sock) = connect_unix_nb($path, $self->CONNECT_ATTEMPT_TIMEOUT);
-            if ($sock) { $fh = $sock; last }
-        }
-
-        # If the runner died before it ever started accepting there is nothing to
-        # connect to; stop trying so submission becomes a no-op.
-        unless ($self->_runner_alive) {
-            $self->{+RUNNER_GONE} = 1;
-            return undef;
-        }
-
-        croak "Timed out waiting for runner socket '$path' to accept connections"
-            if (mono_time - $start) > $self->CONNECT_TIMEOUT;
-
-        sleep 0.05;
-    }
-
-    $conn = Test2::Harness2::Role::Service::Connection->new(
-        fh          => $fh,
-        outbound    => 1,
-        my_identity => $self->identity,
-    );
-
-    # The Connection has already sent our identity (the runner needs it before any
-    # request). We do NOT block waiting for the runner's identity in return: the
-    # client matches responses by request_id, never by peer identity, so it needs
-    # nothing back to proceed. (Blocking here would also deadlock a single-threaded
-    # caller that pumps the runner only after this returns.) Two-way _request drains
-    # the reply -- and the runner's identity -- when it waits for its response.
-    return $self->{+CONNECTION} = $conn;
-}
+# The connect loop lives in Test2::Harness2::Runner::Role::SocketClient; expose it
+# under the client's documented name.
+sub connection ($self) { return $self->_connect }
 
 sub _send ($self, $command, %args) {
     my $conn = $self->connection or return;
