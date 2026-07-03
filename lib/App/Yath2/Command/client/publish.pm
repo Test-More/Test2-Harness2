@@ -7,10 +7,10 @@ our $VERSION = '2.000000';
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase;
 
+use File::Spec;
+use Test2::Harness2::Util qw/read_file/;
 use Test2::Harness2::Util::JSON qw/decode_json/;
 
-use LWP;
-use LWP::UserAgent;
 use Getopt::Yath;
 
 include_options(
@@ -50,22 +50,35 @@ sub run {
 
     $url =~ s{/+$}{}g;
 
-    my $ua  = LWP::UserAgent->new;
-    my $res = $ua->post(
-        "$url/upload",
-        'Content-Type' => 'multipart/form-data',
-        'Content'      => [
+    # Lazily require the HTTP stack (mirrors Plugin/YathUI.pm's upload path):
+    # every other HTTP consumer in the dist requires HTTP::Tiny on demand, and
+    # HTTP::Tiny::Multipart is an optional (RuntimeSuggests) dep, so error
+    # clearly if it is missing rather than failing at compile time (ticket #94).
+    require HTTP::Tiny;
+    eval { require HTTP::Tiny::Multipart; 1 } or die "To use `client-publish` you must install HTTP::Tiny::Multipart.\n";
+
+    my ($filename) = reverse File::Spec->splitpath($log);
+
+    my $http = HTTP::Tiny->new;
+    my $res  = $http->post_multipart(
+        "$url/upload" => {
             mode     => $mode,
             api_key  => $api_key,
             project  => $project,
             action   => 'upload log',
             json     => 1,
-            log_file => [$log],
-        ],
+            log_file => {
+                filename => $filename,
+                # Upload the raw bytes on disk (no_decompress): a .jsonl.gz/.bz2
+                # log must reach the server compressed, exactly as the old
+                # `log_file => [$log]` file-part sent it.
+                content  => read_file($log, no_decompress => 1),
+            },
+        },
     );
 
-    if ($res->is_success) {
-        my $body = $res->decoded_content;
+    if ($res->{success}) {
+        my $body = $res->{content};
 
         # A 200 does not guarantee a JSON body: proxies/maintenance pages return
         # HTML, and (with allow_nonref) a bare-scalar JSON body decodes to a
@@ -75,7 +88,7 @@ sub run {
         my $ok = eval { $data = decode_json($body); 1 };
 
         unless ($ok && ref($data) eq 'HASH') {
-            print STDERR $res->status_line, "\n";
+            print STDERR "$res->{status} $res->{reason}\n";
             print STDERR "Server returned a 200 but the body is not a JSON object:\n";
             print STDERR $body, "\n";
             return 1;
@@ -93,7 +106,7 @@ sub run {
         return 0;
     }
     else {
-        print STDERR $res->status_line, "\n";
+        print STDERR "$res->{status} $res->{reason}\n";
         return 1;
     }
 }

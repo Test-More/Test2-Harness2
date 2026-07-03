@@ -16,7 +16,9 @@ use Getopt::Yath::Settings;
 use File::Temp qw/tempdir/;
 
 require HTTP::Tiny;
-require HTTP::Response;
+# HTTP::Tiny::Multipart injects post_multipart() into the HTTP::Tiny namespace;
+# load it up front so the client-publish transport can be mocked there.
+require HTTP::Tiny::Multipart;
 
 # Local STDOUT/STDERR capture (warn included) -- same idiom as Finder_bug144.t.
 sub capture(&) {
@@ -93,9 +95,13 @@ subtest recent_run_honors_max => sub {
 };
 
 # ---------------------------------------------------------------------------
-# publish helpers: build a command wired to a canned LWP response.
+# publish helpers: build a command wired to a canned HTTP::Tiny response
+# (ticket #94 ported client-publish off LWP::UserAgent onto HTTP::Tiny +
+# HTTP::Tiny::Multipart, so the transport is now mocked at post_multipart and
+# responses are HTTP::Tiny-style {success,status,reason,content} hashrefs). An
+# optional \%capture receives the request url + multipart form for parity checks.
 sub mk_publish {
-    my ($res) = @_;
+    my ($res, $capture) = @_;
 
     my $dir = tempdir(CLEANUP => 1);
     my $log = "$dir/run.jsonl";
@@ -110,14 +116,50 @@ sub mk_publish {
     );
 
     my $cmd = App::Yath2::Command::client::publish->new(settings => $settings, args => [$log]);
-    my $mock = mock 'LWP::UserAgent' => (override => [post => sub { return $res }]);
+    my $mock = mock 'HTTP::Tiny' => (
+        override => [
+            post_multipart => sub {
+                my (undef, $url, $form) = @_;
+                if ($capture) {
+                    $capture->{url}  = $url;
+                    $capture->{form} = $form;
+                }
+                return $res;
+            },
+        ],
+    );
 
-    return ($cmd, $mock);
+    return ($cmd, $mock, $log);
 }
+
+# (94) The multipart form carries the same fields the old LWP request did, and
+# the log is attached as a file part (basename filename + raw bytes).
+subtest publish_multipart_field_parity => sub {
+    my %cap;
+    my $res = {success => 1, status => 200, reason => 'OK', content => '{"run_uuid":"x","messages":[]}'};
+    my ($cmd, $mock, $log) = mk_publish($res, \%cap);
+
+    my ($out, $err, $ret);
+    ($out, $err) = capture { $ret = $cmd->run };
+    is($ret, 0, "run succeeded");
+
+    is($cap{url}, 'http://server/upload', "POST target is <url>/upload");
+
+    my $form = $cap{form};
+    is($form->{mode},    'summary',    "mode field preserved");
+    is($form->{api_key}, 'KEY',        "api_key field preserved");
+    is($form->{project}, 'proj',       "project field preserved");
+    is($form->{action},  'upload log', "action field preserved");
+    is($form->{json},    1,            "json field preserved");
+
+    is(ref($form->{log_file}), 'HASH', "log_file is a multipart file part, not a scalar");
+    is($form->{log_file}{filename}, 'run.jsonl', "file part uses the log basename");
+    is($form->{log_file}{content},  "{}\n",      "file part carries the raw file bytes");
+};
 
 # (92) A 200 with a text/HTML body exits 1 and shows the body -- no stack trace.
 subtest publish_html_200_clean_error => sub {
-    my $res = HTTP::Response->new(200, 'OK', ['Content-Type' => 'text/html'], "<html>maintenance</html>");
+    my $res = {success => 1, status => 200, reason => 'OK', content => "<html>maintenance</html>"};
     my ($cmd, $mock) = mk_publish($res);
 
     my ($out, $err, $ret);
@@ -132,7 +174,7 @@ subtest publish_html_200_clean_error => sub {
 
 # (92) A 200 with a bare-scalar JSON body (allow_nonref) exits 1, not a deref die.
 subtest publish_bare_scalar_200_clean_error => sub {
-    my $res = HTTP::Response->new(200, 'OK', ['Content-Type' => 'application/json'], '"oops"');
+    my $res = {success => 1, status => 200, reason => 'OK', content => '"oops"'};
     my ($cmd, $mock) = mk_publish($res);
 
     my ($out, $err, $ret);
@@ -143,7 +185,7 @@ subtest publish_bare_scalar_200_clean_error => sub {
 
 # (92) A 200 JSON object without run_uuid warns, does not print a broken URL.
 subtest publish_missing_run_uuid_warns => sub {
-    my $res = HTTP::Response->new(200, 'OK', ['Content-Type' => 'application/json'], '{"messages":["done"]}');
+    my $res = {success => 1, status => 200, reason => 'OK', content => '{"messages":["done"]}'};
     my ($cmd, $mock) = mk_publish($res);
 
     my ($out, $err, $ret);
@@ -157,7 +199,7 @@ subtest publish_missing_run_uuid_warns => sub {
 
 # (92) A well-formed 200 with run_uuid prints the view URL.
 subtest publish_success_prints_view_url => sub {
-    my $res = HTTP::Response->new(200, 'OK', ['Content-Type' => 'application/json'], '{"run_uuid":"abc-123","messages":[]}');
+    my $res = {success => 1, status => 200, reason => 'OK', content => '{"run_uuid":"abc-123","messages":[]}'};
     my ($cmd, $mock) = mk_publish($res);
 
     my ($out, $err, $ret);

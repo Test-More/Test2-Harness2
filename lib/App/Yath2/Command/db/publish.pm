@@ -25,7 +25,6 @@ sub run {
     die <<"    EOT";
 
 The DB/web layer is being rewritten; this command is temporarily unavailable.
-See AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md for details.
 
     EOT
 }

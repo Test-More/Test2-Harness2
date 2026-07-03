@@ -47,7 +47,6 @@ sub run {
 
 The `db` server command is being rewritten and is temporarily unavailable.
 Available now: `yath db sync` (DB->DB sync) and `import` (sqlite-log -> DB).
-See AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md for details.
 
     EOT
 }
