@@ -100,38 +100,49 @@ sub run {
     return $self->SUPER::run(@_);
 }
 
+# Walk a reload-state hash ($stage => $file => {error, warnings}) into a flat,
+# per-source-file report. Returns (\@lines, $errors, $warnings): the lines are
+# the "==== SOURCE FILE ====" banner + error + warning text (dedup'd by file,
+# stages in sorted order); the counts tally errors/warnings seen. Shared by
+# check_reload_state (which consumes all three) and status.pm (which prints the
+# lines but keeps its own issue tally).
+sub reload_issue_report {
+    my $self = shift;
+    my ($reload_status) = @_;
+
+    my (@lines, $errors, $warnings, %seen);
+    for my $stage (sort keys %$reload_status) {
+        for my $file (keys %{$reload_status->{$stage}}) {
+            next if $seen{$file}++;
+            my $data = $reload_status->{$stage}->{$file} or next;
+
+            push @lines => "\n==== SOURCE FILE: $file ====\n";
+            if ($data->{error}) {
+                $errors++;
+                push @lines => $data->{error};
+            }
+
+            for (@{$data->{warnings} // []}) {
+                push @lines => $_;
+                $warnings++;
+            }
+        }
+    }
+
+    return (\@lines, $errors // 0, $warnings // 0);
+}
+
 sub check_reload_state {
     my $self = shift;
 
     # Ask the persistent runner for its canonical reload state over
     # runner.socket (App::Yath2::Client). The runner is the reload-state
     # authority.
-    my $reload_status = $self->client->reload_state // {};
+    my ($out, $errors, $warnings) = $self->reload_issue_report($self->client->reload_state // {});
 
-    my (@out, $errors, $warnings, %seen);
-    for my $stage (sort keys %$reload_status) {
-        for my $file (keys %{$reload_status->{$stage}}) {
-            next if $seen{$file}++;
-            my $data = $reload_status->{$stage}->{$file} or next;
+    return 1 unless @$out || $errors || $warnings;
 
-            push @out => "\n==== SOURCE FILE: $file ====\n";
-            if ($data->{error}) {
-                $errors++;
-                push @out => $data->{error};
-            }
-
-            for (@{$data->{warnings} // []}) {
-                push @out => $_;
-                $warnings++;
-            }
-        }
-    }
-    $errors   //= 0;
-    $warnings //= 0;
-
-    return 1 unless @out || $errors || $warnings;
-
-    print <<"    EOT", @out;
+    print <<"    EOT", @$out;
 *******************************************************************************
 * Some source files were reloaded with errors or warnings
 * Errors: $errors

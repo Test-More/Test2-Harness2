@@ -5,7 +5,6 @@ use warnings;
 our $VERSION = '2.000000';
 
 use Test2::Util::Table qw/table/;
-use Test2::Harness2::Util::File::JSONL;
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw{<log_file};
@@ -46,37 +45,21 @@ sub run {
     my $self = shift;
 
     my $settings = $self->settings;
-    my $args     = $self->args;
 
-    shift @$args if @$args && $args->[0] eq '--';
-
-    $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
-    die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
-
-    # Bounded read of a static log (died unless -f above): done => 1 so a
-    # newline-less final record is surfaced rather than silently dropped.
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
+    $self->{+LOG_FILE} = $self->shift_log_file_arg;
 
     my %failed;
+    $self->each_log_event(sub {
+        my ($job_id, $f) = @_;
 
-    while (1) {
-        my @events = $stream->poll(max => 1000) or last;
+        push @{$failed{$job_id}->{subtests}} => $self->subtests($f)
+            if $f->{parent} && !$f->{trace}->{nested} && $self->include_subtest($f);
 
-        for my $event (@events) {
-            my $stamp  = $event->{stamp}      or next;
-            my $job_id = $event->{job_id}     or next;
-            my $f      = $event->{facet_data} or next;
+        return unless $f->{harness_job_end};
+        return unless $f->{harness_job_end}->{fail} || $failed{$job_id};
 
-            push @{$failed{$job_id}->{subtests}} => $self->subtests($f)
-                if $f->{parent} && !$f->{trace}->{nested} && $self->include_subtest($f);
-
-            next unless $f->{harness_job_end};
-            next unless $f->{harness_job_end}->{fail} || $failed{$job_id};
-
-            push @{$failed{$job_id}->{ends}} => $f->{harness_job_end};
-        }
-    }
+        push @{$failed{$job_id}->{ends}} => $f->{harness_job_end};
+    });
 
     my $rows = [];
     while (my ($job_id, $data) = each %failed) {

@@ -6,8 +6,6 @@ no warnings 'experimental::signatures';
 
 our $VERSION = '2.000000';
 
-use Test2::Harness2::Util::File::JSONL;
-
 use Getopt::Yath;
 
 use Cwd qw/getcwd/;
@@ -89,13 +87,9 @@ sub run {
     my $settings = $self->settings;
     my $args     = $self->args;
 
-    shift @$args if @$args && $args->[0] eq '--';
-
     my $initial_dir = clean_path(getcwd());
 
-    $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
-    die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
+    $self->{+LOG_FILE} = $self->shift_log_file_arg;
 
     $self->{+MAX_SHORT}  = shift @$args if @$args;
     $self->{+MAX_MEDIUM} = shift @$args if @$args;
@@ -103,68 +97,35 @@ sub run {
     die "max short duration must be an integer, got '$self->{+MAX_SHORT}'"  unless $self->{+MAX_SHORT}  && $self->{+MAX_SHORT}  =~ m/^\d+$/;
     die "max medium duration must be an integer, got '$self->{+MAX_MEDIUM}'" unless $self->{+MAX_MEDIUM} && $self->{+MAX_MEDIUM} =~ m/^\d+$/;
 
-    # Bounded read of a static log (died unless -f above): done => 1 so a
-    # newline-less final record is surfaced rather than silently dropped.
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
-
     my $durations_file = $self->settings->speedtag->generate_durations_file;
     my %durations;
 
-    while (1) {
-        my @events = $stream->poll(max => 1000) or last;
+    $self->each_job_end(sub {
+        my ($job_id, $end) = @_;
 
-        for my $event (@events) {
-            my $stamp  = $event->{stamp}      or next;
-            my $job_id = $event->{job_id}     or next;
-            my $f      = $event->{facet_data} or next;
+        # Test2-Collector's TimeTracker records the phase totals directly as the
+        # harness_job_end `times` hash; `total` is the wall duration. (The
+        # pre-swap shape nested this under times->{totals}->{total}.)
+        my $file = $end->{file}  ? clean_path($end->{file}) : undef;
+        my $time = $end->{times} ? $end->{times}->{total}   : undef;
 
-            next unless $f->{harness_job_end};
+        return unless $file && $time;
 
-            # Test2-Collector's TimeTracker records the phase totals directly as
-            # the harness_job_end `times` hash; `total` is the wall duration.
-            # (The pre-swap shape nested this under times->{totals}->{total}.)
-            my $job = {};
-            $job->{file} = clean_path($f->{harness_job_end}->{file}) if $f->{harness_job_end} && $f->{harness_job_end}->{file};
-            $job->{time} = $f->{harness_job_end}->{times}->{total}   if $f->{harness_job_end} && $f->{harness_job_end}->{times};
+        my $dur = $self->classify_duration($time);
 
-            next unless $job->{file} && $job->{time};
+        # tag_file does a non-atomic-safe rewrite (sibling tempfile + rename);
+        # on any read/write failure it warns, leaves the original untouched, and
+        # returns false so we skip the 'Tagged' line + durations entry.
+        return unless $self->tag_file($file, $dur);
 
-            my $dur;
-            if ($job->{time} < $self->{+MAX_SHORT}) {
-                $dur = 'short';
-            }
-            elsif ($job->{time} < $self->{+MAX_MEDIUM}) {
-                $dur = 'medium';
-            }
-            else {
-                $dur = 'long';
-            }
-
-            my $fh;
-            unless (open($fh, '<', $job->{file})) {
-                warn "Could not open file $job->{file} for reading\n";
-                next;
-            }
-            my @lines = <$fh>;
-            close($fh);
-
-            my $tagged = $self->retag_lines(\@lines, $dur);
-
-            # Non-atomic in-place rewrites truncate the (possibly uncommitted)
-            # source file if the write is interrupted or the disk fills. Write a
-            # sibling tempfile and rename() it over the original; on any failure
-            # warn, leave the original untouched, and skip the 'Tagged' line.
-            next unless $self->write_file_atomic($job->{file}, $tagged);
-
-            if ($durations_file) {
-                my $tfile = $job->{file};
-                $tfile =~ s{^\Q$initial_dir\E/+}{};
-                $durations{$tfile} = uc($dur);
-            }
-
-            print "Tagged '$dur': $job->{file}\n";
+        if ($durations_file) {
+            my $tfile = $file;
+            $tfile =~ s{^\Q$initial_dir\E/+}{};
+            $durations{$tfile} = uc($dur);
         }
-    }
+
+        print "Tagged '$dur': $file\n";
+    });
 
     if ($durations_file) {
         my $jfile = Test2::Harness2::Util::File::JSON->new(name => $durations_file, pretty => $self->settings->speedtag->pretty);
@@ -172,6 +133,37 @@ sub run {
     }
 
     return 0;
+}
+
+# Bucket a wall-duration (seconds) into short/medium/long using the runner's
+# shared SHORT/MEDIUM cutoffs.
+sub classify_duration {
+    my $self = shift;
+    my ($seconds) = @_;
+
+    return 'short'  if $seconds < $self->{+MAX_SHORT};
+    return 'medium' if $seconds < $self->{+MAX_MEDIUM};
+    return 'long';
+}
+
+# Read $file, inject/replace its HARNESS-DURATION header for class $dur, and
+# atomically rewrite it. Returns true on a successful rewrite; false (with a
+# warning) if the file could not be read or written.
+sub tag_file {
+    my $self = shift;
+    my ($file, $dur) = @_;
+
+    my $fh;
+    unless (open($fh, '<', $file)) {
+        warn "Could not open file $file for reading\n";
+        return 0;
+    }
+    my @lines = <$fh>;
+    close($fh);
+
+    my $tagged = $self->retag_lines(\@lines, $dur);
+
+    return $self->write_file_atomic($file, $tagged);
 }
 
 sub retag_lines {

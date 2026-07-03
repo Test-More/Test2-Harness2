@@ -53,11 +53,7 @@ sub run {
     my $settings  = $self->settings;
     my $renderers = $self->renderers;
 
-    shift @$args if @$args && $args->[0] eq '--';
-
-    $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
-    die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
+    $self->{+LOG_FILE} = $self->shift_log_file_arg;
 
     my @filters = @$args;
     my $jobs = @filters ? {map { $_ => 1 } @filters} : undef;

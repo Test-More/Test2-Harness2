@@ -6,8 +6,6 @@ our $VERSION = '2.000000';
 
 use Test2::Util::Times qw/render_duration/;
 
-use Test2::Harness2::Util::File::JSONL;
-
 use Getopt::Yath;
 
 use parent 'App::Yath2::Command';
@@ -45,11 +43,7 @@ sub run {
 
     my $args = $self->args;
 
-    shift @$args if @$args && $args->[0] eq '--';
-
-    $self->{+LOG_FILE} = shift @$args or die "You must specify a log file";
-    die "'$self->{+LOG_FILE}' is not a valid log file"       unless -f $self->{+LOG_FILE};
-    die "'$self->{+LOG_FILE}' does not look like a log file" unless $self->{+LOG_FILE} =~ m/\.jsonl(\.(gz|bz2))?$/;
+    $self->{+LOG_FILE} = $self->shift_log_file_arg;
 
     my %seen;
     my @fields;
@@ -62,32 +56,20 @@ sub run {
 
     $self->{+FIELDS} = \@fields;
 
-    # Bounded read of a static log (died unless -f above): done => 1 so a
-    # newline-less final record is surfaced rather than silently dropped.
-    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->{+LOG_FILE}, done => 1);
-
     my @jobs;
-    while (1) {
-        my @events = $stream->poll(max => 1000) or last;
+    $self->each_job_end(sub {
+        my ($job_id, $end) = @_;
 
-        for my $event (@events) {
-            my $stamp  = $event->{stamp}      or next;
-            my $job_id = $event->{job_id}     or next;
-            my $f      = $event->{facet_data} or next;
+        # Test2-Collector's TimeTracker records the phase totals
+        # (startup/events/cleanup/total) directly as the harness_job_end
+        # `times` hash. The pre-swap shape nested them under a `totals` key
+        # (alongside `source`); the new shape IS the totals hash.
+        my $job = {};
+        $job->{file} = $end->{rel_file} if $end->{rel_file};
+        $job->{time} = $end->{times}    if $end->{times};
 
-            next unless $f->{harness_job_end};
-
-            # Test2-Collector's TimeTracker records the phase totals
-            # (startup/events/cleanup/total) directly as the harness_job_end
-            # `times` hash. The pre-swap shape nested them under a `totals` key
-            # (alongside `source`); the new shape IS the totals hash.
-            my $job = {};
-            $job->{file} = $f->{harness_job_end}->{rel_file} if $f->{harness_job_end} && $f->{harness_job_end}->{rel_file};
-            $job->{time} = $f->{harness_job_end}->{times}     if $f->{harness_job_end} && $f->{harness_job_end}->{times};
-
-            push @jobs => $job;
-        }
-    }
+        push @jobs => $job;
+    });
 
     my @rows;
     my $totals = {file => 'TOTAL'};

@@ -94,17 +94,9 @@ sub run {
     print "$_\n" for $stage_table->render;
 
     if ($reload_issues) {
-        my %seen;
         print "\n**** Reload issues: ****\n";
-        for my $stage (sort keys %$reload_status) {
-            for my $file (keys %{$reload_status->{$stage}}) {
-                next if $seen{$file}++;
-                my $data = $reload_status->{$stage}->{$file} or next;
-                print "\n==== SOURCE FILE: $file ====\n";
-                print $data->{error} if $data->{error};
-                print $_ for @{$data->{warnings} // []};
-            }
-        }
+        my ($lines) = $self->reload_issue_report($reload_status);
+        print @$lines;
         print "\n";
     }
 

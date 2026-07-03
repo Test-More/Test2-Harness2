@@ -14,6 +14,7 @@ use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 use Test2::Harness2::Util::HashBase qw/-settings -args +renderers <final_data <tests_seen <asserts_seen/;
 
 use Test2::Harness2::Util::File::JSON();
+use Test2::Harness2::Util::File::JSONL();
 
 sub internal_only   { 0 }
 sub always_keep_dir { 0 }
@@ -386,6 +387,64 @@ sub stringify_subtest_map {
     my @paths = _subtest_paths($map);
     return "" unless @paths;
     return join("\n", @paths) . "\n";
+}
+
+# Consume the leading '[--] event_log.jsonl' portion of the command's args:
+# strip an optional '--', shift the log-file path, and validate it exists and
+# looks like a .jsonl(.gz|.bz2) log. Returns the validated path (the caller
+# stores it in its own LOG_FILE slot). Shared by failed/times/replay/speedtag.
+sub shift_log_file_arg {
+    my $self = shift;
+    my $args = $self->args;
+
+    shift @$args if @$args && $args->[0] eq '--';
+
+    my $log_file = shift @$args or die "You must specify a log file";
+    die "'$log_file' is not a valid log file"       unless -f $log_file;
+    die "'$log_file' does not look like a log file" unless $log_file =~ m/\.jsonl(\.(gz|bz2))?$/;
+
+    return $log_file;
+}
+
+# Iterate the command's log file (LOG_FILE slot, via the log_file accessor),
+# invoking $cb->($job_id, $facet_data, $event) for every event carrying a stamp
+# + job_id + facet_data. Bounded read (done => 1) so a newline-less final record
+# is surfaced rather than silently dropped.
+sub each_log_event {
+    my $self = shift;
+    my ($cb) = @_;
+
+    my $stream = Test2::Harness2::Util::File::JSONL->new(name => $self->log_file, done => 1);
+
+    while (1) {
+        my @events = $stream->poll(max => 1000) or last;
+
+        for my $event (@events) {
+            my $stamp  = $event->{stamp}      or next;
+            my $job_id = $event->{job_id}     or next;
+            my $f      = $event->{facet_data} or next;
+
+            $cb->($job_id, $f, $event);
+        }
+    }
+
+    return;
+}
+
+# each_log_event filtered to events carrying a harness_job_end facet; invokes
+# $cb->($job_id, $harness_job_end_facet, $event). The raw facet is handed back
+# un-massaged -- each command extracts the keys it needs.
+sub each_job_end {
+    my $self = shift;
+    my ($cb) = @_;
+
+    $self->each_log_event(sub {
+        my ($job_id, $f, $event) = @_;
+        my $end = $f->{harness_job_end} or return;
+        $cb->($job_id, $end, $event);
+    });
+
+    return;
 }
 
 1;
