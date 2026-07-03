@@ -9,9 +9,12 @@ use Test2::Require::AuthorTesting;
 # disk, `yath reload` is issued, and a subsequent run sees the NEW value -- only
 # possible if the preload tree actually re-exec'd and re-required the changed file.
 #
-# This is the during/after-run reload routed through the base stage's live socket,
-# NOT the file-monitor (`-r`) path: monitoring is off here, so the only thing that
-# can refresh the preloaded value is the explicit `yath reload`.
+# This exercises the during/after-run reload routed through the base stage's live
+# socket. NOTE: `yath start` turns preload monitoring ON by default
+# (App::Yath2::Command::start sets monitor_preloads => 1), so the changed module
+# below can be picked up by EITHER the explicit `yath reload` (the #113-fixed routing
+# path) OR the file monitor. For an isolated proof of the reload-routing path with the
+# monitor NOT firing (no file touched), see reload_command_routing.t.
 
 use File::Temp qw/tempdir/;
 use File::Spec;

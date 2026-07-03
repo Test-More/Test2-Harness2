@@ -1,0 +1,9 @@
+use Test2::V0;
+
+# Runs under the persistent preload tree. Its only job is to dispatch successfully so
+# the harness test can confirm the runner is alive and the stage is up (before and
+# after the reload). The reload assertion itself is made by the parent harness test
+# from the counter file the preload writes.
+ok(1, "ran under the persistent preload stage");
+
+done_testing;

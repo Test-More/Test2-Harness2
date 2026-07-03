@@ -703,16 +703,26 @@ sub _has_live_stage_peer {
 }
 
 # The peer identity of the base/default stage -- the stage hosted IN the
-# preload-root process (so its announced peer_pid equals PRELOAD_ROOT_PID). It is the
-# only stage that owns the preload-root respawn jump frame and the only one whose
+# preload-root process. spawn_collector double-forks, so PRELOAD_ROOT_PID is the
+# collector PARENT while the preload tree (launch() -> run_driver) runs in the exec'd
+# GRANDCHILD; the base stage's socket therefore announces the GRANDCHILD's pid, NOT
+# PRELOAD_ROOT_PID. The 'preload-root' handshake peer dials the runner from that same
+# grandchild, so its peer_pid is the pid to match against (#113 -- matching against
+# PRELOAD_ROOT_PID never hit and silently dropped every HUP reload). The base stage is
+# the only stage that owns the preload-root respawn jump frame and the only one whose
 # channel the runner services for the whole run, so it is the reload target. Returns
 # undef if no such peer is connected yet (no preload-root, or the base stage has not
 # registered), in which case a reload is dropped rather than misrouted.
 sub _preload_root_stage_identity {
     my $self = shift;
 
-    my $root_pid = $self->{+PRELOAD_ROOT_PID} or return undef;
-    my $peers    = $self->{service_peers}     or return undef;
+    return undef unless $self->{+PRELOAD_ROOT_PID};
+    my $peers = $self->{service_peers} or return undef;
+
+    # The grandchild pid the preload tree actually runs in -- announced by its
+    # 'preload-root' handshake connection, not PRELOAD_ROOT_PID.
+    my $root_conn = $peers->{'preload-root'} or return undef;
+    my $root_pid  = $root_conn->peer_pid // return undef;
 
     for my $id (sort keys %$peers) {
         next if $id eq 'preload-root';

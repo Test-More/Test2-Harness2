@@ -6,9 +6,15 @@ use Test2::V0;
 # services for the whole run -- NOT to the preload-root's handshake channel, which is
 # dormant mid-run (a reload sent there sits unread, or fires late during shutdown).
 #
-# The base/default stage is the one hosted IN the preload-root process, so its
-# announced peer_pid equals PRELOAD_ROOT_PID; it is the only stage that owns the
-# preload-root respawn jump frame. This drives:
+# The base/default stage is the one hosted IN the preload-root process. But the
+# preload-root is spawned under a double-forking collector, so PRELOAD_ROOT_PID is the
+# collector PARENT while the preload tree runs in the exec'd GRANDCHILD. The base
+# stage's socket therefore announces the GRANDCHILD pid, NOT PRELOAD_ROOT_PID -- the
+# SAME pid the 'preload-root' handshake connection (which dials from that grandchild)
+# announces. The selector must match the base stage against the 'preload-root' peer's
+# pid, never against PRELOAD_ROOT_PID (#113: matching PRELOAD_ROOT_PID never hit and
+# silently dropped every HUP reload). These fakes model that two-process pid split so
+# they fail against the old comparison. This drives:
 #   * the REAL Runner::_preload_root_stage_identity selector against fake peers, and
 #   * the REAL Preload::Host::request_handler_reload_root handler,
 # asserting the reload routes to the base/default stage, is dropped if no such peer
@@ -28,36 +34,40 @@ use Test2::Harness2::Preload::Host;
 }
 
 subtest base_stage_identity_selection => sub {
-    my $root_pid = 4242;
+    # The double-fork split: PRELOAD_ROOT_PID is the collector PARENT; the preload tree
+    # (and the base stage it hosts) runs in the exec'd GRANDCHILD, which is the pid the
+    # 'preload-root' handshake peer and the base stage's own socket both announce.
+    my $parent_pid = 4242;    # collector parent == PRELOAD_ROOT_PID (NOT the stage's pid)
+    my $child_pid  = 5555;    # exec'd grandchild -- where the base stage actually runs
 
-    # The base/default stage's connection announces the preload-root's own pid (it is
-    # hosted in that process); a named child stage announces its own distinct pid.
     my $fake = bless {
-        preload_root_pid => $root_pid,
+        preload_root_pid => $parent_pid,
         service_peers    => {
-            'preload-root'    => FakeConn->new(pid => $root_pid),
-            'preload-base'    => FakeConn->new(pid => $root_pid),
+            'preload-root'    => FakeConn->new(pid => $child_pid),
+            'preload-base'    => FakeConn->new(pid => $child_pid),
             'preload-ALPHA'   => FakeConn->new(pid => 9001),
         },
     }, 'Test2::Harness2::Runner';
 
     my $id = Test2::Harness2::Runner::_preload_root_stage_identity($fake);
-    is($id, 'preload-base', "selected the base stage (peer_pid == preload-root pid), not the named stage or the handshake peer");
+    is($id, 'preload-base', "selected the base stage (peer_pid == preload-root peer's grandchild pid), not the named stage or PRELOAD_ROOT_PID (the collector parent)");
 };
 
 subtest non_default_named_base => sub {
-    my $root_pid = 555;
+    my $parent_pid = 555;
+    my $child_pid  = 666;
 
-    # Non-staged preload: the base stage registers as 'preload-default'.
+    # Non-staged preload: the base stage registers as 'preload-default', in the exec'd
+    # grandchild -- the same pid the 'preload-root' handshake announces.
     my $fake = bless {
-        preload_root_pid => $root_pid,
+        preload_root_pid => $parent_pid,
         service_peers    => {
-            'preload-root'    => FakeConn->new(pid => $root_pid),
-            'preload-default' => FakeConn->new(pid => $root_pid),
+            'preload-root'    => FakeConn->new(pid => $child_pid),
+            'preload-default' => FakeConn->new(pid => $child_pid),
         },
     }, 'Test2::Harness2::Runner';
 
-    is(Test2::Harness2::Runner::_preload_root_stage_identity($fake), 'preload-default', "finds the 'default' base stage by pid match");
+    is(Test2::Harness2::Runner::_preload_root_stage_identity($fake), 'preload-default', "finds the 'default' base stage by grandchild-pid match");
 };
 
 subtest no_base_peer_drops_reload => sub {
@@ -67,20 +77,24 @@ subtest no_base_peer_drops_reload => sub {
     is(Test2::Harness2::Runner::_preload_root_stage_identity($no_root), undef, "no preload-root -> undef");
 
     # A preload-root is up but no stage has registered in-process yet (only a named
-    # stage with a different pid, plus the handshake peer) -> undef.
+    # stage with a DIFFERENT pid, plus the handshake peer) -> undef.
     my $not_ready = bless {
-        preload_root_pid => 700,
+        preload_root_pid => 700,          # collector parent
         service_peers    => {
-            'preload-root'  => FakeConn->new(pid => 700),
+            'preload-root'  => FakeConn->new(pid => 701),    # exec'd grandchild
             'preload-ALPHA' => FakeConn->new(pid => 8000),
         },
     }, 'Test2::Harness2::Runner';
     is(Test2::Harness2::Runner::_preload_root_stage_identity($not_ready), undef, "no base/default stage peer yet -> undef");
 
-    # A closed base-stage connection is ignored.
+    # A closed base-stage connection is ignored (its grandchild pid matches, but it is
+    # closed) -- the handshake peer is present so the selector reaches the skip.
     my $closed = bless {
         preload_root_pid => 700,
-        service_peers    => {'preload-base' => FakeConn->new(pid => 700, closed => 1)},
+        service_peers    => {
+            'preload-root' => FakeConn->new(pid => 701),
+            'preload-base' => FakeConn->new(pid => 701, closed => 1),
+        },
     }, 'Test2::Harness2::Runner';
     is(Test2::Harness2::Runner::_preload_root_stage_identity($closed), undef, "a closed base-stage connection is not selected");
 };
@@ -90,10 +104,10 @@ subtest hup_handler_routes_reload_root => sub {
     # sends 'reload_root' to the base/default stage, never 'reload' to preload-root.
     my @sent;
     my $fake = bless {
-        preload_root_pid => 4242,
+        preload_root_pid => 4242,                            # collector parent
         service_peers    => {
-            'preload-root' => FakeConn->new(pid => 4242),
-            'preload-base' => FakeConn->new(pid => 4242),
+            'preload-root' => FakeConn->new(pid => 5555),    # exec'd grandchild
+            'preload-base' => FakeConn->new(pid => 5555),    # base stage, same grandchild
         },
     }, 'Test2::Harness2::Runner';
 
