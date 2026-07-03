@@ -367,6 +367,17 @@ sub queue_task {
     $self->_queue_task($task);
 }
 
+# #110: is a job already queued (pending in TASK_LOOKUP)? request_handler_queue_task
+# uses this to reject a duplicate submission with a per-request error reply instead of
+# letting the duplicate reach (and be silently dropped by) the _queue_task funnel. A
+# read-only predicate; it touches no scheduling state.
+sub task_queued {
+    my $self = shift;
+    my ($job_id) = @_;
+    return 0 unless defined $job_id;
+    return $self->{+TASK_LOOKUP}->{$job_id} ? 1 : 0;
+}
+
 sub _queue_task {
     my $self = shift;
     my ($task) = @_;
@@ -374,7 +385,20 @@ sub _queue_task {
     my $job_id = $task->{job_id} or die "Task missing job_id";
     my $run_id = $task->{run_id} or die "Task missing run_id";
 
-    die "Task already in queue" if $self->{+TASK_LOOKUP}->{$job_id};
+    # #110: a duplicate queue_task (a client retry after a timed-out ack is a plausible,
+    # non-buggy event) must NOT die. On the direct dispatch path request_handler_queue_task
+    # rejects it with an error reply before it reaches here; but _queue_task is the one
+    # funnel every task passes through, INCLUDING the un-eval'd flush_submit_buffer replay
+    # (two copies buffered before the scheduler was ready) that #110's dispatch eval cannot
+    # see -- a die there would unwind the scheduler loop and reap every sibling run. The job
+    # is already queued and re-queuing would double-dispatch it, so warn and skip: a duplicate
+    # is a survivable no-op on every path. (retry/requeue reach _queue_task only after
+    # _stop_task drops TASK_LOOKUP, so they never trip this guard.) Mirrors #118's funnel
+    # backstop philosophy.
+    if ($self->{+TASK_LOOKUP}->{$job_id}) {
+        warn "Task for job '$job_id' is already queued; ignoring the duplicate queue request.\n";
+        return;
+    }
 
     return if $self->{+HALTED_RUNS}->{$run_id};
 

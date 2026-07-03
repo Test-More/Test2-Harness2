@@ -424,8 +424,18 @@ sub _handle_events ($self, $conn, @events) {
         }
 
         if ($kind eq 'request') {
-            my $resp = $self->handle_request($event->{payload}, $conn);
-            # A handler returns undef for a one-way request (no reply expected).
+            # #110: guard the handler dispatch. A malformed, duplicate, or misdirected
+            # request frame must NOT unwind the service loop -- on a persistent runner
+            # that outer unwind tears down every stage and aborts every in-flight run
+            # from every terminal. Catch a handler die HERE and reply {ok=>0, error=>...}
+            # to the offending connection instead; the daemon and all other runs survive.
+            my $resp;
+            my $ok  = eval { $resp = $self->handle_request($event->{payload}, $conn); 1 };
+            my $err = $@;
+            $resp = {ok => 0, error => $err} unless $ok;
+            # A handler returns undef for a one-way request (no reply expected). An error
+            # reply is always sent: its request_id lets a two-way caller see the failure,
+            # and a one-way caller safely discards the unmatched response (_classify).
             $conn->send_response($event->{request_id}, $resp) if defined $resp;
             next;
         }

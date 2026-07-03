@@ -861,7 +861,15 @@ sub flush_submit_buffer {
     my $buf = delete $self->{submit_buffer} or return;
     for my $item (@$buf) {
         my ($method, @args) = @$item;
-        $self->state->$method(@args);
+        # #110: a buffered submission replays OUTSIDE the service-loop dispatch eval; a
+        # die here (e.g. a duplicate queue_task whose two copies were both buffered before
+        # the scheduler was ready) would unwind the scheduler and reap every in-flight run.
+        # Guard each replay: on failure warn and drop that one action, keeping the daemon
+        # and its other runs alive.
+        my $ok = eval { $self->state->$method(@args); 1 };
+        next if $ok;
+        my $err = $@;
+        warn "Failed to apply a buffered '$method' submission: $err";
     }
 
     return;

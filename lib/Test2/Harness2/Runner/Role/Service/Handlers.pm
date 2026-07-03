@@ -110,6 +110,13 @@ sub request_handler_queue_run {
 
     my $run = $payload->{run};
 
+    # #110: reject a malformed frame with a per-request error BEFORE touching State
+    # (run_owners / submit_action / the submit buffer, whose later flush_submit_buffer
+    # replay the dispatch eval cannot guard). Shape only -- hashref presence -- per
+    # #118's division of labor (#118 owns the category/duration domain checks).
+    return {ok => 0, error => "queue_run request is missing its 'run' payload (expected a hashref)"}
+        unless ref($run) eq 'HASH';
+
     # Ticket #12 / ARCHITECTURE.md §4.2: record the connection that queued this run as
     # its owner, plus that peer's pid (the §5.2 identity handshake) and the run's
     # abort_on_disconnect flag (default true). Retention and teardown are gated on this
@@ -284,7 +291,30 @@ sub request_handler_preload_warnings {
 sub request_handler_queue_task {
     my $self = shift;
     my ($payload) = @_;
-    $self->submit_action('queue_task', $payload->{task});
+
+    # #110: shape-validate BEFORE touching State / the submit buffer. Hashref presence
+    # plus the job_id/run_id keys _queue_task funnels on; the category/duration domain
+    # is #118's job (normalized in _queue_task, not rejected here).
+    my $task = $payload->{task};
+    return {ok => 0, error => "queue_task request is missing its 'task' payload (expected a hashref)"}
+        unless ref($task) eq 'HASH';
+
+    my $job_id = $task->{job_id};
+    return {ok => 0, error => "queue_task request task is missing its 'job_id'"}
+        unless defined($job_id) && !ref($job_id);
+    return {ok => 0, error => "queue_task request task is missing its 'run_id'"}
+        unless defined($task->{run_id}) && !ref($task->{run_id});
+
+    # A duplicate queue_task (e.g. a client retry after a timed-out ack -- plausible in
+    # normal operation) is a per-request error, NOT a fatal die: the job is already
+    # queued and re-queuing would double-dispatch it. Reject it here with a reply; the
+    # _queue_task funnel additionally drops any duplicate that slips past on the buffered
+    # replay path (both copies buffered before the scheduler was ready) as a survivable
+    # no-op the dispatch eval never sees.
+    return {ok => 0, error => "queue_task request for job '$job_id' is a duplicate; that job is already queued"}
+        if $self->state->task_queued($job_id);
+
+    $self->submit_action('queue_task', $task);
     return undef;
 }
 
@@ -320,7 +350,23 @@ sub request_handler_halt_run {
 sub request_handler_run_task {
     my $self = shift;
     my ($payload) = @_;
-    $self->state->enqueue_task($payload->{task}, $payload->{run});
+
+    # #110: a run_task frame belongs on a stage's preload-<stage>.socket, not on
+    # runner.socket. Misdirected here, the runner's state hub (Runner::State) has no
+    # enqueue_task and would die, unwinding the whole service loop. Shape-validate and
+    # reject the misdirection with a per-request error instead of dying.
+    my $task = $payload->{task};
+    my $run  = $payload->{run};
+    return {ok => 0, error => "run_task request is missing its 'task' payload (expected a hashref)"}
+        unless ref($task) eq 'HASH';
+    return {ok => 0, error => "run_task request is missing its 'run' payload (expected a hashref)"}
+        unless ref($run) eq 'HASH';
+
+    my $state = $self->state;
+    return {ok => 0, error => "run_task was misdirected to the runner state hub; a run_task belongs on a stage socket"}
+        unless $state->can('enqueue_task');
+
+    $state->enqueue_task($task, $run);
     return undef;
 }
 
