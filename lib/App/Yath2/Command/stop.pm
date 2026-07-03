@@ -104,12 +104,17 @@ sub _stop_live {
     $deadline = time + $self->STOP_DEADLINE;
 
     # Graceful 'stop' (the runner translates it into its own TERM teardown) + the
-    # end_queue fallback. Both are alarm-backstopped: the eval alone is INSUFFICIENT
-    # because a blocking connect never returns, so nothing dies into it (deps (a)).
-    ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->stop });
+    # end_queue fallback. The eval guard alone now suffices: since #157 gave the
+    # client dialer a bounded non-blocking connect, a wedged / full-backlog socket
+    # makes the client croak at its CONNECT_TIMEOUT instead of blocking forever, so
+    # the croak always dies into the eval here -- retiring #121's alarm backstop
+    # (whose sole purpose was to unwedge that never-returning blocking connect).
+    $ok  = eval { $self->client->submitter->stop; 1 };
+    $err = $@;
     warn "Could not send graceful shutdown to runner over socket: $err" unless $ok;
 
-    ($ok, $err) = $self->_with_alarm(35, sub { $self->client->submitter->end_queue });
+    $ok  = eval { $self->client->submitter->end_queue; 1 };
+    $err = $@;
     warn "Could not end runner queue: $err" unless $ok;
 
     # Drain the runner's teardown output through the render loop (its done_check is

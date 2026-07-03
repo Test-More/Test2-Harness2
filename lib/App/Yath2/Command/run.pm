@@ -438,28 +438,6 @@ sub clean_runner_remains {
     return;
 }
 
-# Run a socket step under BOTH the house eval guard AND an alarm backstop: the eval
-# catches the un-eval'd croaks (truncate/connect), and the alarm is the ONLY thing
-# that can unwedge a blocking connect against a full-backlog socket (a blocking
-# connect never returns, so nothing ever dies into the eval alone -- deps (a)).
-# $secs defaults > Runner::Client::CONNECT_TIMEOUT so the normal croak fires first
-# whenever it can and the alarm is purely the backstop. Returns ($ok, $err).
-sub _with_alarm {
-    my ($self, $secs, $code) = @_;
-
-    my $ok  = eval {
-        local $SIG{ALRM} = sub { die "yath stop/kill: socket step timed out after ${secs}s\n" };
-        alarm($secs);
-        $code->();
-        alarm(0);
-        1;
-    };
-    my $err = $@;
-    alarm(0);    # unconditional, even if the eval died before its own alarm(0)
-
-    return ($ok, $err);
-}
-
 # Diagnostic for an AMBIGUOUS not-live runner (foreign/inaccessible/unknown, or no
 # pid): stance A never signals and never cleans on ambiguity. Prints the state and
 # the manual cleanup commands. $cmd is 'stop' or 'kill'.

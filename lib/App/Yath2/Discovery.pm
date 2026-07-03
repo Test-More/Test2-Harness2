@@ -5,16 +5,14 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use File::Spec();
-use Time::HiRes();
-use Fcntl qw/F_GETFL F_SETFL O_NONBLOCK LOCK_EX LOCK_UN LOCK_NB/;
-use Socket qw/PF_UNIX SOCK_STREAM SOL_SOCKET SO_ERROR sockaddr_un/;
+use Fcntl qw/LOCK_EX LOCK_UN LOCK_NB/;
 use Errno qw{
     EACCES EPERM ECONNREFUSED EAGAIN EWOULDBLOCK EINPROGRESS EINTR
     EMFILE ENFILE ENOMEM ENOBUFS ESRCH ENOENT
 };
 
 use App::Yath2::Util qw/find_runner_link find_runner_links/;
-use Test2::Harness2::Util qw/clean_path open_file publish_discovery_link/;
+use Test2::Harness2::Util qw/clean_path open_file publish_discovery_link connect_unix_nb/;
 
 use Test2::Harness2::Util::HashBase qw{
     <link
@@ -513,66 +511,32 @@ sub _pid_status ($self) {
 }
 
 # A bounded, NON-BLOCKING unix connect used ONLY as a liveness probe (never for
-# real I/O). Returns ($verdict, $errno) where $verdict is one of: 'live', 'refused'
-# (ECONNREFUSED), 'backlog' (EAGAIN/EWOULDBLOCK or an EINPROGRESS that never
-# completes within the bounded window -- a live listen fd with a full/stalled accept
-# loop), 'inaccessible' (EACCES/EPERM), 'gone' (ENOENT: the target vanished after
-# the -S check), or 'unknown' (client-side resource exhaustion / any other errno).
-# The errno is captured with `$! + 0` immediately at each failing syscall, never
-# after a croak/close (which clobber $!).
+# real I/O). The connect mechanism is the shared connect_unix_nb primitive
+# (Test2::Harness2::Util) reused by the Runner::Client / Runner::Subscriber dialers
+# (ticket #157) -- here we only want liveness, so a connected socket is closed at
+# once and its outcome mapped to the not-live taxonomy. Returns ($verdict, $errno)
+# where $verdict is one of: 'live', 'refused' (ECONNREFUSED), 'backlog'
+# (EAGAIN/EWOULDBLOCK, an EINPROGRESS that never completes within the bounded
+# window, or an interrupted retry we gave up on -- a live listen fd with a
+# full/stalled accept loop), 'inaccessible' (EACCES/EPERM), 'gone' (ENOENT: the
+# target vanished after the -S check), or 'unknown' (client-side resource
+# exhaustion / an unpackable path / any other errno).
 sub _probe_connect ($self, $target) {
-    my $addr = eval { sockaddr_un($target) };
-    return ('unknown', undef) unless defined $addr;
+    my ($sock, $errno) = connect_unix_nb($target, PROBE_CONNECT_TIMEOUT);
 
-    # CORE::socket -- this package defines a socket() accessor, so the bareword is
-    # ambiguous.
-    CORE::socket(my $sock, PF_UNIX, SOCK_STREAM, 0) or return ('unknown', $! + 0);
-
-    my $flags = fcntl($sock, F_GETFL, 0);
-    fcntl($sock, F_SETFL, ($flags // 0) | O_NONBLOCK);
-
-    my $deadline = Time::HiRes::time() + PROBE_CONNECT_TIMEOUT;
-
-    my $tries = 0;
-    while (1) {
-        if (connect($sock, $addr)) {
-            close($sock);
-            return ('live', undef);
-        }
-
-        my $errno = $! + 0;
-
-        if ($errno == EINPROGRESS) {
-            my $remaining = $deadline - Time::HiRes::time();
-            $remaining = 0 if $remaining < 0;
-
-            my $wbits = '';
-            vec($wbits, fileno($sock), 1) = 1;
-            my $n = select(undef, my $wout = $wbits, undef, $remaining);
-
-            if ($n && vec($wout, fileno($sock), 1)) {
-                my $packed = getsockopt($sock, SOL_SOCKET, SO_ERROR);
-                my $soerr  = defined($packed) ? unpack('i', $packed) : 0;
-                close($sock);
-                return ('live', undef) if !$soerr;
-                return $self->_classify_connect_errno($soerr);
-            }
-
-            # Timed out with the connect still pending: a live listen fd whose accept
-            # loop is wedged / its backlog is full.
-            close($sock);
-            return ('backlog', $errno);
-        }
-
-        if ($errno == EINTR) {
-            next if $tries++ < 5;
-            close($sock);
-            return ('backlog', $errno);
-        }
-
+    if ($sock) {
         close($sock);
-        return $self->_classify_connect_errno($errno);
+        return ('live', undef);
     }
+
+    # A still-pending connect at the deadline or an interrupted retry we gave up on:
+    # a live listen fd whose accept loop is wedged / its backlog is full.
+    return ('backlog', $errno) if $errno == EINPROGRESS || $errno == EINTR;
+
+    # An unpackable path / no captured errno says nothing about the runner.
+    return ('unknown', $errno) unless $errno;
+
+    return $self->_classify_connect_errno($errno);
 }
 
 sub _classify_connect_errno ($self, $errno) {

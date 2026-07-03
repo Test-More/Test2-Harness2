@@ -7,8 +7,7 @@ use Carp qw/croak/;
 use File::Spec();
 use Time::HiRes qw/sleep/;
 
-use Test2::Collector::Util::Socket qw/connect_unix/;
-use Test2::Harness2::Util qw/mono_time/;
+use Test2::Harness2::Util qw/mono_time connect_unix_nb/;
 
 use Test2::Harness2::Role::Service::Connection();
 use Test2::Harness2::Runner::Monitor();
@@ -188,16 +187,26 @@ sub poll ($self) {
 
 =item $conn = $self->_connect
 
-Open the connection to the runner (blocking until it accepts), wrap it in a
-L<Test2::Harness2::Role::Service::Connection>, and announce our identity. We do not
-block for the runner's identity; C<subscribe> drains it while waiting for the
-snapshot.
+Open the connection to the runner -- retrying a bounded non-blocking connect
+(C<connect_unix_nb>, #157) until it accepts or the C<CONNECT_TIMEOUT> deadline (or
+C<liveness_check>) gives up, so a bound-but-wedged runner can never hang the dial --
+wrap it in a L<Test2::Harness2::Role::Service::Connection>, and announce our
+identity. We do not block for the runner's identity; C<subscribe> drains it while
+waiting for the snapshot.
 
 =back
 
 =cut
 
 sub CONNECT_TIMEOUT { 30 }
+
+# Per-attempt bound for the non-blocking connect_unix_nb dial (ticket #157). A
+# runner that is accepting completes the connect near-instantly; this bound only
+# fires when the connect stays pending -- a bound-but-wedged runner with a full
+# accept backlog -- so each attempt returns promptly and _connect re-checks
+# liveness and the outer CONNECT_TIMEOUT deadline instead of blocking forever in
+# the kernel's unix_wait_for_peer (the old blocking connect could not time out).
+sub CONNECT_ATTEMPT_TIMEOUT { 0.5 }
 
 # Run the optional liveness_check coderef; true when absent (assume alive). Mirror
 # of Runner::Client::_runner_alive so a subscriber can fast-fail when the runner
@@ -217,7 +226,13 @@ sub _connect ($self) {
     my $fh;
     while (1) {
         if (-S $path) {
-            last if eval { $fh = connect_unix($path); 1 } && $fh;
+            # Bounded NON-BLOCKING connect (#157): a blocking connect to a
+            # bound-but-wedged runner (full accept backlog) blocks forever in the
+            # kernel, so the CONNECT_TIMEOUT deadline below could never fire. Each
+            # attempt returns promptly; connect_unix_nb yields a connected,
+            # already-non-blocking socket on success.
+            my ($sock) = connect_unix_nb($path, $self->CONNECT_ATTEMPT_TIMEOUT);
+            if ($sock) { $fh = $sock; last }
         }
 
         # A runner that died after binding the socket (or before it ever bound)
@@ -232,7 +247,6 @@ sub _connect ($self) {
         sleep 0.05;
     }
 
-    $fh->blocking(0);
     my $conn = Test2::Harness2::Role::Service::Connection->new(
         fh          => $fh,
         outbound    => 1,

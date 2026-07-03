@@ -7,8 +7,7 @@ use Carp qw/croak/;
 use File::Spec();
 use Time::HiRes qw/sleep/;
 
-use Test2::Collector::Util::Socket qw/connect_unix/;
-use Test2::Harness2::Util qw/mono_time/;
+use Test2::Harness2::Util qw/mono_time connect_unix_nb/;
 
 use Test2::Harness2::Role::Service::Connection();
 
@@ -207,6 +206,14 @@ could not be reached. Croaks on a closed connection or timeout.
 # (ticket #121); production behavior is unchanged.
 sub CONNECT_TIMEOUT { $ENV{YATH_RUNNER_CONNECT_TIMEOUT} // 30 }
 
+# Per-attempt bound for the non-blocking connect_unix_nb dial (ticket #157). A
+# runner that is accepting completes the connect near-instantly; this bound only
+# fires when the connect stays pending -- a bound-but-wedged runner with a full
+# accept backlog -- so each attempt returns promptly and the loop below re-checks
+# liveness and the outer CONNECT_TIMEOUT deadline instead of blocking forever in
+# the kernel's unix_wait_for_peer (the old blocking connect could not time out).
+sub CONNECT_ATTEMPT_TIMEOUT { 0.5 }
+
 sub runner_gone ($self) { return $self->{+RUNNER_GONE} ? 1 : 0 }
 
 sub _runner_alive ($self) {
@@ -224,7 +231,13 @@ sub connection ($self) {
     my $fh;
     while (1) {
         if (-S $path) {
-            last if eval { $fh = connect_unix($path); 1 } && $fh;
+            # Bounded NON-BLOCKING connect (#157): a blocking connect to a
+            # bound-but-wedged runner (full accept backlog) blocks forever in the
+            # kernel, so the CONNECT_TIMEOUT deadline below could never fire. Each
+            # attempt returns promptly; connect_unix_nb yields a connected,
+            # already-non-blocking socket on success.
+            my ($sock) = connect_unix_nb($path, $self->CONNECT_ATTEMPT_TIMEOUT);
+            if ($sock) { $fh = $sock; last }
         }
 
         # If the runner died before it ever started accepting there is nothing to
@@ -240,7 +253,6 @@ sub connection ($self) {
         sleep 0.05;
     }
 
-    $fh->blocking(0);
     $conn = Test2::Harness2::Role::Service::Connection->new(
         fh          => $fh,
         outbound    => 1,

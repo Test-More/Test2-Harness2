@@ -5,8 +5,10 @@ use warnings;
 use Carp qw/confess croak/;
 use Cwd qw/realpath/;
 use Test2::Util qw/try_sig_mask do_rename/;
-use Fcntl qw/LOCK_EX LOCK_UN LOCK_NB SEEK_SET :mode/;
+use Fcntl qw/LOCK_EX LOCK_UN LOCK_NB SEEK_SET F_GETFL F_SETFL O_NONBLOCK :mode/;
 use File::Spec;
+use Socket qw/PF_UNIX SOCK_STREAM SOL_SOCKET SO_ERROR sockaddr_un/;
+use Errno qw/EINPROGRESS EINTR/;
 use Time::HiRes();
 
 our $VERSION = '2.000000';
@@ -48,6 +50,7 @@ our @EXPORT_OK = qw{
     is_same_file
 
     socket_reporter
+    connect_unix_nb
 
     mono_time
 };
@@ -71,6 +74,79 @@ BEGIN {
     }
     else {
         *mono_time = \&Time::HiRes::time;
+    }
+}
+
+# Shared bounded, NON-BLOCKING unix-domain connect: the single connect primitive
+# behind discovery liveness probing (App::Yath2::Discovery::_probe_connect) and
+# every runner dialer (Runner::Client / Runner::Subscriber). A plain BLOCKING
+# connect() to a unix SOCK_STREAM socket blocks in the kernel's unix_wait_for_peer
+# once the listener's accept backlog is full (a wedged / uninterruptibly-asleep
+# runner that has bound but stopped accept()ing), so no wall-clock connect timeout
+# could ever fire and the dialer hangs forever (ticket #157). This does the
+# non-blocking dance instead: connect -> EINPROGRESS -> select-for-writable with a
+# bounded deadline -> getsockopt(SO_ERROR).
+#
+# Returns a two-element list:
+#   ($sock, 0)       success -- a connected socket, left NON-BLOCKING (the caller
+#                    sets its own blocking mode / wraps it).
+#   (undef, $errno)  failure -- the numeric errno ($! + 0) captured at the failing
+#                    syscall, or EINPROGRESS when the connect was still pending at
+#                    the deadline (a live listen fd whose accept loop is wedged /
+#                    backlog is full), or EINTR when interrupted past its retries,
+#                    or 0 when the path could not be packed into a sockaddr.
+# The errno is captured with `$! + 0` immediately at the failing syscall, never
+# after a close (which clobbers $!). The caller classifies the errno for its own
+# needs (discovery's not-live taxonomy vs a dialer's retry/deadline loop).
+sub connect_unix_nb {
+    my ($path, $timeout) = @_;
+
+    my $addr = eval { sockaddr_un($path) };
+    return (undef, 0) unless defined $addr;
+
+    socket(my $sock, PF_UNIX, SOCK_STREAM, 0) or return (undef, $! + 0);
+
+    my $flags = fcntl($sock, F_GETFL, 0);
+    fcntl($sock, F_SETFL, ($flags // 0) | O_NONBLOCK);
+
+    my $deadline = mono_time() + $timeout;
+
+    my $tries = 0;
+    while (1) {
+        return ($sock, 0) if connect($sock, $addr);
+
+        my $errno = $! + 0;
+
+        if ($errno == EINPROGRESS) {
+            my $remaining = $deadline - mono_time();
+            $remaining = 0 if $remaining < 0;
+
+            my $wbits = '';
+            vec($wbits, fileno($sock), 1) = 1;
+            my $n = select(undef, my $wout = $wbits, undef, $remaining);
+
+            if ($n && vec($wout, fileno($sock), 1)) {
+                my $packed = getsockopt($sock, SOL_SOCKET, SO_ERROR);
+                my $soerr  = defined($packed) ? unpack('i', $packed) : 0;
+                return ($sock, 0) unless $soerr;
+                close($sock);
+                return (undef, $soerr);
+            }
+
+            # Timed out with the connect still pending: a live listen fd whose
+            # accept loop is wedged / its backlog is full.
+            close($sock);
+            return (undef, EINPROGRESS);
+        }
+
+        if ($errno == EINTR) {
+            next if $tries++ < 5;
+            close($sock);
+            return (undef, EINTR);
+        }
+
+        close($sock);
+        return (undef, $errno);
     }
 }
 
@@ -669,6 +745,23 @@ This is a reusable implementation of this:
 
 Take a file path and clean it up to a minimal absolute path if possible. Always
 returns a path, but if it cannot be cleaned up it is unchanged.
+
+=item ($sock, $errno) = connect_unix_nb($path, $timeout)
+
+Bounded, non-blocking connect to the unix-domain socket at C<$path>. The shared
+connect primitive behind discovery liveness probing and the runner dialers
+(C<Runner::Client> / C<Runner::Subscriber>): a plain blocking connect to a
+C<SOCK_STREAM> unix socket blocks in the kernel once the listener's accept backlog
+is full (a bound-but-wedged runner), so it can never honor a connect timeout --
+this does C<connect> E<rarr> C<EINPROGRESS> E<rarr> select-for-writable with a
+deadline E<rarr> C<getsockopt(SO_ERROR)> instead.
+
+On success returns C<($sock, 0)> with a connected socket left B<non-blocking> (the
+caller wraps it / sets blocking mode). On failure returns C<(undef, $errno)> with
+the numeric errno at the failing syscall -- C<EINPROGRESS> when the connect was
+still pending at the C<$timeout> deadline (a live listen fd whose accept loop is
+wedged / backlog full), C<EINTR> when interrupted past its internal retries, or
+C<0> when C<$path> could not be packed into a C<sockaddr_un>.
 
 =item $hashref = find_libraries($search)
 
