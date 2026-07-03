@@ -10,7 +10,7 @@ use Test2::Harness2::Runner::State;
 # runner-level owner-drop sweep (abort / detach / purge).
 
 # Bypass the heavy init (settings/resources): we drive scheduling state directly. We
-# still need a workdir because _queue_run builds a real Runner::Run, which requires it.
+# still need a workdir because queue_run builds a real Runner::Run, which requires it.
 {
     package FakeState;
     our @ISA = ('Test2::Harness2::Runner::State');

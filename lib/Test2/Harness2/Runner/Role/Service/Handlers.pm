@@ -293,8 +293,8 @@ sub request_handler_queue_task {
     my ($payload) = @_;
 
     # #110: shape-validate BEFORE touching State / the submit buffer. Hashref presence
-    # plus the job_id/run_id keys _queue_task funnels on; the category/duration domain
-    # is #118's job (normalized in _queue_task, not rejected here).
+    # plus the job_id/run_id keys queue_task funnels on; the category/duration domain
+    # is #118's job (normalized in queue_task, not rejected here).
     my $task = $payload->{task};
     return {ok => 0, error => "queue_task request is missing its 'task' payload (expected a hashref)"}
         unless ref($task) eq 'HASH';
@@ -308,7 +308,7 @@ sub request_handler_queue_task {
     # A duplicate queue_task (e.g. a client retry after a timed-out ack -- plausible in
     # normal operation) is a per-request error, NOT a fatal die: the job is already
     # queued and re-queuing would double-dispatch it. Reject it here with a reply; the
-    # _queue_task funnel additionally drops any duplicate that slips past on the buffered
+    # queue_task funnel additionally drops any duplicate that slips past on the buffered
     # replay path (both copies buffered before the scheduler was ready) as a survivable
     # no-op the dispatch eval never sees.
     return {ok => 0, error => "queue_task request for job '$job_id' is a duplicate; that job is already queued"}

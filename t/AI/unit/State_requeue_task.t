@@ -39,10 +39,10 @@ subtest requeue_releases_slot_and_keeps_try => sub {
     my $state = FakeState->new(preloader => undef, stage_map => undef);
 
     my $task = mk_task();
-    $state->_queue_task($task);
+    $state->queue_task($task);
 
-    # Start it: mark RUNNING with the resolved stage (as _start_task does).
-    $state->_start_task({job_id => 'JOB-1', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
+    # Start it: mark RUNNING with the resolved stage (as start_task does).
+    $state->start_task({job_id => 'JOB-1', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
 
     is($state->{running}, 1, "one task running after start");
     ok($state->running_tasks->{'JOB-1'}, "the task is tracked as running");
@@ -63,8 +63,8 @@ subtest requeue_does_not_requeue_a_halted_run => sub {
     my $state = FakeState->new(preloader => undef, stage_map => undef);
 
     my $task = mk_task(job_id => 'JOB-2');
-    $state->_queue_task($task);
-    $state->_start_task({job_id => 'JOB-2', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
+    $state->queue_task($task);
+    $state->start_task({job_id => 'JOB-2', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
 
     $state->{halted_runs}{'R1'} = 1;
     $state->requeue_task('JOB-2');

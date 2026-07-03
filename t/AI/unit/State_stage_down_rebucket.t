@@ -61,7 +61,7 @@ sub mk_state_with_S_up {
 subtest stage_down_endpoint_drains_bucket => sub {
     my $state = mk_state_with_S_up();
 
-    $state->_queue_task(mk_task());
+    $state->queue_task(mk_task());
     is([bucket_stages($state, 'R1')], ['S'], "task is parked in the 'S' bucket while S is up");
 
     # The stage_down request endpoint (Handlers stage_down) demotes S.
@@ -79,7 +79,7 @@ subtest stage_down_endpoint_drains_bucket => sub {
 subtest set_stage_map_removed_stage_drains_bucket => sub {
     my $state = mk_state_with_S_up();
 
-    $state->_queue_task(mk_task());
+    $state->queue_task(mk_task());
     is([bucket_stages($state, 'R1')], ['S'], "task is parked in the 'S' bucket");
 
     # A reload drops S from the map entirely (the removed-stage demotion path).

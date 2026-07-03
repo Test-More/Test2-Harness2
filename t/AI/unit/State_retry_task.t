@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #117: State::retry_task/_retry_task must report whether it ACTUALLY re-queued the
+# #117: State::retry_task must report whether it ACTUALLY re-queued the
 # job, so the completion decision (Completion::_collector_retry_if_tries) can tell a
 # real retry from a declined one. A halted run stops the current try (releases the
 # slot and resources) but MUST NOT re-queue it and MUST report the decline (return
@@ -46,8 +46,8 @@ sub mk_task {
 subtest retry_requeues_and_reports_true => sub {
     my $state = FakeState->new(preloader => undef, stage_map => undef);
 
-    $state->_queue_task(mk_task());
-    $state->_start_task({job_id => 'JOB-1', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
+    $state->queue_task(mk_task());
+    $state->start_task({job_id => 'JOB-1', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
 
     ok($state->running_tasks->{'JOB-1'}, "task is running before retry");
 
@@ -65,8 +65,8 @@ subtest retry_requeues_and_reports_true => sub {
 subtest halted_run_declines_and_reports_false => sub {
     my $state = FakeState->new(preloader => undef, stage_map => undef);
 
-    $state->_queue_task(mk_task(job_id => 'JOB-2'));
-    $state->_start_task({job_id => 'JOB-2', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
+    $state->queue_task(mk_task(job_id => 'JOB-2'));
+    $state->start_task({job_id => 'JOB-2', stage => 'default', res => {record => {}, env_vars => {}, args => []}});
 
     $state->{halted_runs}{'R1'} = 1;
 

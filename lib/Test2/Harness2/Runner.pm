@@ -1142,10 +1142,10 @@ sub dispatch_pending {
     my $state = $self->state;
 
     # Take EVERY started task off the list (slot + resources already accounted by
-    # _start_task, so they stay tracked as RUNNING). A preload run sends each out to
+    # start_task, so they stay tracked as RUNNING). A preload run sends each out to
     # its stage's registered channel; a no-preload run forks each test's collector in
     # this runner (there is no stage to dispatch to).
-    my @tasks = $state->take_dispatch_tasks(undef) or return;
+    my @tasks = $state->take_dispatch_tasks() or return;
 
     # Preload run: dispatch down the registered channel each stage opened to us
     # (service_send by peer identity).

@@ -18,7 +18,7 @@ use Test2::Harness2::Runner::State();
 #   2. request_handler_queue_run/queue_task/run_task shape-validate the frame (run/task
 #      hashref present; job_id/run_id present; run_task not misdirected to the hub) and
 #      reject a duplicate queue_task, all as per-request errors.
-#   3. Runner::State::_queue_task drops a duplicate as a survivable no-op (the funnel
+#   3. Runner::State::queue_task drops a duplicate as a survivable no-op (the funnel
 #      backstop the dispatch eval cannot see -- the buffered flush_submit_buffer replay).
 
 # --- Layer 1: a dying handler no longer kills the daemon (over the real socket) -------
@@ -174,7 +174,7 @@ subtest run_task_misdirection => sub {
     is($stage_state->enqueued, [[{job_id => 'J1'}, {run_id => 'R1'}]], "the stage enqueued the task+run");
 };
 
-# --- Layer 3: _queue_task's duplicate is a survivable no-op (the funnel backstop) -----
+# --- Layer 3: queue_task's duplicate is a survivable no-op (the funnel backstop) -----
 {
     package FakeState;
     our @ISA = ('Test2::Harness2::Runner::State');
@@ -185,17 +185,17 @@ subtest state_duplicate_is_nonfatal => sub {
     my $state = FakeState->new(preloader => undef, stage_map => undef);
 
     my $task = {job_id => 'J1', run_id => 'R1', file => 't/x.t', rel_file => 't/x.t', category => 'general', duration => 'medium', use_preload => 1, is_try => 1};
-    $state->_queue_task($task);
+    $state->queue_task($task);
     ok($state->task_queued('J1'), "task_queued reports the queued job");
     ok(!$state->task_queued('nope'), "task_queued is false for an unknown job");
 
     # A sibling run's task, to prove a duplicate never reaps it.
     my $sib = {%$task, job_id => 'J2', run_id => 'R2'};
-    $state->_queue_task($sib);
+    $state->queue_task($sib);
 
     my $lived = 0;
-    my $warnings = warnings { $lived = lives { $state->_queue_task({%$task}) } };
-    ok($lived, "a duplicate _queue_task never dies") or diag($@);
+    my $warnings = warnings { $lived = lives { $state->queue_task({%$task}) } };
+    ok($lived, "a duplicate queue_task never dies") or diag($@);
     is(@$warnings, 1, "exactly one warning for the duplicate");
     like($warnings->[0], qr/already queued/, "the warning names the duplicate");
 

@@ -112,13 +112,12 @@ sub scheduler_tick {
     # announced_runs ledger suppresses any duplicate, so each run is announced once.
     $self->announce_run($_) for $state->take_retired_runs;
 
-    # Hand any task the scheduler just started, whose run-stage
-    # is a socketed preload stage (i.e. not this root process's own stage), out
-    # over the registered channel that stage opened to us (service_send by peer
-    # identity, not a fresh dial to preload-<stage>.socket). Tasks for the root's
-    # own stage stay in the task list for the root's own run_job (the no-preload
-    # path, where the root forks tests itself). This runs on the persistent path
-    # too (its forked stages are dispatch services).
+    # Hand every task the scheduler just started out to where it runs. A preload run
+    # sends each down the registered channel that its stage opened to us (service_send
+    # by peer identity, not a fresh dial to preload-<stage>.socket); a no-preload run
+    # forks each test's collector in this root process itself. dispatch_pending drains
+    # the whole started-task list -- nothing is left partitioned by stage. This runs on
+    # the persistent path too (its forked stages are dispatch services).
     $self->dispatch_pending;
 
     # Enforce the collector-connect timeout (a dispatched/running job whose

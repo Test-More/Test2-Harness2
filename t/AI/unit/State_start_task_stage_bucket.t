@@ -5,12 +5,12 @@ use Test2::V0;
 # bucket. A task whose preload_list is [alpha, beta] buckets under 'beta' while
 # 'alpha' is still 'starting' ('first up wins' -> beta). If 'alpha' readies before
 # the task is dispatched, _next still pulls the task from the 'beta' bucket (it was
-# never rebucketed) and dispatches it with run_stage => 'beta'. The old _start_task
+# never rebucketed) and dispatches it with run_stage => 'beta'. The old start_task
 # re-resolved task_stage to 'alpha' and looked in the (empty) 'alpha' bucket, so the
 # PENDING_TASKS removal missed: the runner died with "Task <id> was not pending"
 # (or an undef-array-deref on the absent bucket), killing every running job.
 #
-# The fix: _start_task must remove from the bucket _next dequeued the task from --
+# The fix: start_task must remove from the bucket _next dequeued the task from --
 # $spec->{stage} (run_stage) -- not from a fresh task_stage re-resolution.
 #
 # Bypass the heavy init; drive the stage lifecycle + task queue directly with no
@@ -69,7 +69,7 @@ sub mk_state_beta_up_alpha_starting {
 subtest preferred_stage_readies_late => sub {
     my $state = mk_state_beta_up_alpha_starting();
 
-    $state->_queue_task(mk_task());
+    $state->queue_task(mk_task());
     is([bucket_stages($state, 'R1')], ['beta'],
         "task with preload_list [alpha, beta] buckets under 'beta' while 'alpha' is still starting");
 
@@ -83,7 +83,7 @@ subtest preferred_stage_readies_late => sub {
         "the task is still parked in the 'beta' bucket it was queued into");
 
     # advance_tasks -> _next dequeues from the 'beta' bucket and dispatches with
-    # run_stage => 'beta'. This is the exact crash surface: the old _start_task
+    # run_stage => 'beta'. This is the exact crash surface: the old start_task
     # re-resolved to 'alpha' and died "was not pending".
     my $out;
     my $ok = eval { $out = $state->advance_tasks; 1 };
@@ -122,7 +122,7 @@ subtest restarting_stage_returns_up_mid_run => sub {
     $state->stage_restarting('alpha');  # alpha temporarily down again
 
     # [alpha, beta]: alpha is 'restarting' (not up), beta up -> buckets under beta.
-    $state->_queue_task(mk_task());
+    $state->queue_task(mk_task());
     is([bucket_stages($state, 'R1')], ['beta'], "task buckets under 'beta' while 'alpha' restarts");
 
     # alpha's fresh incarnation re-readies before dispatch.

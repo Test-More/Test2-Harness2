@@ -211,50 +211,19 @@ sub resource_timeout {
     return $idle;
 }
 
-sub next_task {
-    my $self = shift;
-    my ($stage) = @_;
-
-    $self->clear_finished_run();
-
-    while(1) {
-        my $task = shift @{$self->{+TASK_LIST}} or return undef;
-
-        # If we are replaying a state then the task may have already completed,
-        # so skip it if it is not in the running lookup.
-        next unless $self->{+RUNNING_TASKS}->{$task->{job_id}};
-        next unless $task->{stage} eq $stage;
-
-        return $task;
-    }
-}
-
-# Pull tasks the scheduler has started whose run-stage is NOT the
-# given (root) stage off the task list, so the runner can dispatch them to the
-# matching stage service. Tasks for the root's own stage are left in place for the
-# root's own run_job (the no-preload path). Returns the removed tasks; their
-# accounting (running counts, resources) was already applied by _start_task, so
-# they are still tracked as running -- the stage reports completion back later.
+# Drain and return every task the scheduler has STARTED. Their run counts and
+# resources were already applied by start_task, so they stay tracked as running --
+# the assigned stage service (or this runner itself on the no-preload path) reports
+# each task's completion back later. start_task always stamps a run-stage on the
+# task, so there is nothing to partition here: the whole list goes out and the caller
+# routes each task by its own stage.
 sub take_dispatch_tasks {
     my $self = shift;
-    my ($root_stage) = @_;
 
     my $list = $self->{+TASK_LIST} //= [];
-    my (@dispatch, @keep);
-    for my $task (@$list) {
-        # An undef root_stage means the runner hosts no stage of its
-        # own (the preload-root hosts every stage), so dispatch every staged task
-        # out. Otherwise dispatch only tasks NOT bound for the root's own stage.
-        if (defined($task->{stage}) && (!defined($root_stage) || $task->{stage} ne $root_stage)) {
-            push @dispatch => $task;
-        }
-        else {
-            push @keep => $task;
-        }
-    }
-
-    @$list = @keep;
-    return @dispatch;
+    my @out = @$list;
+    @$list = ();
+    return @out;
 }
 
 sub advance {
@@ -292,12 +261,6 @@ sub halt_run {
 sub queue_run {
     my $self = shift;
     my ($run) = @_;
-    $self->_queue_run($run);
-}
-
-sub _queue_run {
-    my $self = shift;
-    my ($run) = @_;
 
     # Keep the raw queued run item ON the Run object so the runner can forward it
     # verbatim when it dispatches a task to a stage service: the stage
@@ -325,12 +288,6 @@ sub run_item {
 sub start_run {
     my $self = shift;
     my ($run_id) = @_;
-    $self->_start_run($run_id);
-}
-
-sub _start_run {
-    my $self = shift;
-    my ($run_id) = @_;
 
     my $run = shift @{$self->{+PENDING_RUNS}};
     die "$0 - Run stack mismatch, run start requested, but no pending runs to start" unless $run;
@@ -344,12 +301,6 @@ sub _start_run {
 sub stop_run {
     my $self = shift;
     my ($run_id) = @_;
-    $self->_stop_run($run_id);
-}
-
-sub _stop_run {
-    my $self = shift;
-    my ($run_id) = @_;
 
     $self->{+STOPPED_RUNS}->{$run_id} = 1;
 
@@ -361,15 +312,9 @@ sub _stop_run {
     return;
 }
 
-sub queue_task {
-    my $self = shift;
-    my ($task) = @_;
-    $self->_queue_task($task);
-}
-
 # #110: is a job already queued (pending in TASK_LOOKUP)? request_handler_queue_task
 # uses this to reject a duplicate submission with a per-request error reply instead of
-# letting the duplicate reach (and be silently dropped by) the _queue_task funnel. A
+# letting the duplicate reach (and be silently dropped by) the queue_task funnel. A
 # read-only predicate; it touches no scheduling state.
 sub task_queued {
     my $self = shift;
@@ -378,7 +323,7 @@ sub task_queued {
     return $self->{+TASK_LOOKUP}->{$job_id} ? 1 : 0;
 }
 
-sub _queue_task {
+sub queue_task {
     my $self = shift;
     my ($task) = @_;
 
@@ -387,13 +332,13 @@ sub _queue_task {
 
     # #110: a duplicate queue_task (a client retry after a timed-out ack is a plausible,
     # non-buggy event) must NOT die. On the direct dispatch path request_handler_queue_task
-    # rejects it with an error reply before it reaches here; but _queue_task is the one
+    # rejects it with an error reply before it reaches here; but queue_task is the one
     # funnel every task passes through, INCLUDING the un-eval'd flush_submit_buffer replay
     # (two copies buffered before the scheduler was ready) that #110's dispatch eval cannot
     # see -- a die there would unwind the scheduler loop and reap every sibling run. The job
     # is already queued and re-queuing would double-dispatch it, so warn and skip: a duplicate
-    # is a survivable no-op on every path. (retry/requeue reach _queue_task only after
-    # _stop_task drops TASK_LOOKUP, so they never trip this guard.) Mirrors #118's funnel
+    # is a survivable no-op on every path. (retry/requeue reach queue_task only after
+    # stop_task drops TASK_LOOKUP, so they never trip this guard.) Mirrors #118's funnel
     # backstop philosophy.
     if ($self->{+TASK_LOOKUP}->{$job_id}) {
         warn "Task for job '$job_id' is already queued; ignoring the duplicate queue request.\n";
@@ -405,8 +350,8 @@ sub _queue_task {
     # #118 ingress backstop: category/duration reach State from the validated
     # producer, but ALSO from raw third-party queue_task socket frames and the
     # QUEUE_ARGS/%inject splice -- neither producer-validatable. task_fields
-    # dies on an out-of-domain value, and _queue_task is the one funnel every
-    # task passes through (queue_task / _retry_task / requeue_task all reach it),
+    # dies on an out-of-domain value, and queue_task is the one funnel every
+    # task passes through (queue_task / retry_task / requeue_task all reach it),
     # including the un-eval'd flush_submit_buffer replay path. Normalize IN PLACE
     # here (the same hashref is stored in TASK_LOOKUP, so every later task_fields
     # sees the fix) so a bad value warns and defaults instead of aborting the run
@@ -436,12 +381,6 @@ sub _queue_task {
 }
 
 sub start_task {
-    my $self = shift;
-    my ($spec) = @_;
-    $self->_start_task($spec);
-}
-
-sub _start_task {
     my $self = shift;
     my ($spec) = @_;
 
@@ -484,7 +423,7 @@ sub _start_task {
     # conflicts autoviv) mutate ONLY this running copy, never the canonical TASK_LOOKUP
     # task -- so a retry/requeue re-resolves from a pristine original and never
     # accumulates a duplicate copy of the prior attempt's resource args. conflicts stays
-    # shared deliberately (read-only after queue: _start_task/_stop_task only count it).
+    # shared deliberately (read-only after queue: start_task/stop_task only count it).
     $task = {
         %$task,
         stage     => $run_stage,
@@ -526,12 +465,6 @@ sub _start_task {
 sub stop_task {
     my $self = shift;
     my ($job_id) = @_;
-    $self->_stop_task($job_id);
-}
-
-sub _stop_task {
-    my $self = shift;
-    my ($job_id) = @_;
 
     # TASK_LOOKUP may already be gone: a concurrent halt_run/purge_run can drop a
     # bailing/aborting run's lookups while this job is still running, and the slot
@@ -563,16 +496,9 @@ sub retry_task {
     my $self = shift;
     my ($job_id) = @_;
 
-    return $self->_retry_task($job_id);
-}
-
-sub _retry_task {
-    my $self = shift;
-    my ($job_id) = @_;
-
     my $task = $self->{+TASK_LOOKUP}->{$job_id} or die "Could not find task to retry";
 
-    $self->_stop_task($job_id);
+    $self->stop_task($job_id);
 
     # #117: a halted run DECLINES the retry -- the current try is stopped (slot and
     # resources released above) but the job is NOT re-queued. Report the decline with
@@ -590,7 +516,7 @@ sub _retry_task {
     $task->{is_try}++;
     $task->{category} = 'isolation' if $self->{+RUN}->retry_isolated;
 
-    $self->_queue_task($task);
+    $self->queue_task($task);
 
     # #117: truthy 'actually re-queued' indicator (see the halted-run decline above).
     return 1;
@@ -606,15 +532,15 @@ sub _retry_task {
 #
 # Distinct from retry_task (which consumes a try after a genuine failure) and from
 # abort_job (which fails the job). The job_id / try number are preserved, the
-# running slot + resources are released (_stop_task -> a fresh assign/record happens
-# on re-dispatch), and the %SORTED bucket memo is cleared (_queue_task). Emits no
+# running slot + resources are released (stop_task -> a fresh assign/record happens
+# on re-dispatch), and the %SORTED bucket memo is cleared (queue_task). Emits no
 # terminal subscriber transition -- the runner forwards a 'requeued' mutation (or
 # none) rather than 'done'/'aborted'.
 #
-# TASK_LOOKUP holds the ORIGINAL task, genuinely pristine: _start_task ALWAYS makes
+# TASK_LOOKUP holds the ORIGINAL task, genuinely pristine: start_task ALWAYS makes
 # a fresh copy with its OWN env_vars/test_args (#135 finding 29), so the resolved-stage
 # copy -- which carries the per-attempt resource env_vars/test_args -- lives only in
-# RUNNING_TASKS and is dropped by _stop_task. So re-queuing TASK_LOOKUP's task
+# RUNNING_TASKS and is dropped by stop_task. So re-queuing TASK_LOOKUP's task
 # re-resolves the run stage (from the task's preload directives) against the CURRENT
 # map on the next tick -- a stage that has since come back, or a different available
 # stage, can take it -- and never carries a duplicate of a prior attempt's args.
@@ -624,13 +550,13 @@ sub requeue_task {
 
     my $task = $self->{+TASK_LOOKUP}->{$job_id} or die "Could not find task to requeue ($job_id)";
 
-    $self->_stop_task($job_id);
+    $self->stop_task($job_id);
 
     return if $self->{+HALTED_RUNS}->{$task->{run_id}};
 
-    # A fresh copy (TASK_LOOKUP's was deleted by _stop_task); the try number and the
+    # A fresh copy (TASK_LOOKUP's was deleted by stop_task); the try number and the
     # directive stage preference are preserved -- a requeue does not consume a retry.
-    $self->_queue_task({%$task});
+    $self->queue_task({%$task});
 
     return;
 }
@@ -755,9 +681,11 @@ sub stage_restarting {
 
 # The configured per-stage startup safeguard in seconds, or 0 (off) when no
 # settings / no runner group is available (a unit harness builds the State with no
-# settings). Mirrors Resource::Preload::_stage_startup_timeout so the per-tick scan
-# and the resource agree on the limit.
-sub _stage_startup_timeout {
+# settings). This is the single source of the limit: the per-tick scan below and the
+# preload Resource (which delegates here via its State backref) both read it, so they
+# always agree. Reads the SETTINGS slot directly rather than the lazy settings()
+# accessor -- a unit harness with no settings must resolve to 0, not try to load one.
+sub stage_startup_timeout {
     my $self = shift;
 
     my $settings = $self->{+SETTINGS} or return 0;
@@ -776,7 +704,7 @@ sub _stage_startup_timeout {
 sub _expire_stale_stages {
     my $self = shift;
 
-    my $timeout = $self->_stage_startup_timeout or return;
+    my $timeout = $self->stage_startup_timeout or return;
 
     my $life = $self->{+STAGE_LIFECYCLE} or return;
 
@@ -868,15 +796,7 @@ sub reload {
     my $self = shift;
     my ($stage, $data) = @_;
     $stage //= 'default';
-    $self->_reload({%$data, stage => $stage});
-    return;
-}
 
-sub _reload {
-    my $self = shift;
-    my ($data) = @_;
-
-    my $stage    = $data->{stage};
     my $file     = $data->{file};
     my $success  = $data->{reloaded};
     my $error    = $data->{error};
@@ -1130,7 +1050,7 @@ sub purge_run {
 }
 
 # Drop every TASK_LOOKUP entry belonging to a run. halt_run/purge_run otherwise
-# leave them: _queue_task's duplicate guard checks TASK_LOOKUP before HALTED_RUNS,
+# leave them: queue_task's duplicate guard checks TASK_LOOKUP before HALTED_RUNS,
 # so a stale entry stays addressable (can block a same-job_id task) and a
 # persistent runner retains the task hashes indefinitely after an abort/truncate.
 sub _drop_run_task_lookup {
@@ -1143,7 +1063,7 @@ sub _drop_run_task_lookup {
     for my $job_id (keys %$lookup) {
         # A RUNNING task's lookup must survive until its own stop_task (driven by its
         # collector's EOF) removes it -- this only drops the run's not-yet-running
-        # (pending/halted) tasks. _stop_task tolerates a missing lookup as a second
+        # (pending/halted) tasks. stop_task tolerates a missing lookup as a second
         # line of defense, but keeping a running task addressable here is the correct
         # invariant.
         next if $running->{$job_id};
@@ -1166,7 +1086,7 @@ sub abort_run {
     return unless defined $run_id;
 
     $self->halt_run($run_id);
-    $self->_stop_run($run_id);
+    $self->stop_run($run_id);
 
     return;
 }
@@ -1293,7 +1213,7 @@ sub _next {
 
                     # Make sure anything with conflicts runs early. Memo keyed by the
                     # stable path tuple (address-reuse-safe), cleared when a task is
-                    # added to the bucket (_queue_task) or the run stops (_stop_run).
+                    # added to the bucket (queue_task) or the run stops (stop_run).
                     my $sort_key = join("\0", $run_id, $smoke, $lstage, $lcat, $ldur);
                     unless ($sorted->{$sort_key}++) {
                         @$search = sort { scalar(@{$b->{conflicts}}) <=> scalar(@{$a->{conflicts}}) } @$search;

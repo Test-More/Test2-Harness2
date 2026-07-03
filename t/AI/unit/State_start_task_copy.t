@@ -1,10 +1,10 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #135 finding 29: _start_task mutated the env_vars/test_args refs SHARED with the
+# #135 finding 29: start_task mutated the env_vars/test_args refs SHARED with the
 # canonical TASK_LOOKUP task (and the finder's TestFile), so per-attempt resource args
 # accumulated across retries -- a retry re-copied a contaminated task and stamped the
-# resource args on top of the prior attempt's. _start_task must make a fully-owned copy
+# resource args on top of the prior attempt's. start_task must make a fully-owned copy
 # (its own env_vars hash + test_args array) so the running copy carries EXACTLY ONE
 # instance of each per-attempt resource arg and the canonical task stays pristine.
 
@@ -52,9 +52,9 @@ subtest canonical_task_stays_pristine => sub {
     my $orig = mk_task();
     my $orig_env  = $orig->{env_vars};
     my $orig_args = $orig->{test_args};
-    $state->_queue_task($orig);
+    $state->queue_task($orig);
 
-    $state->_start_task({job_id => 'JOB-1', stage => 'default', res => res_alloc()});
+    $state->start_task({job_id => 'JOB-1', stage => 'default', res => res_alloc()});
 
     my $running = $state->running_tasks->{'JOB-1'};
     my $lookup  = $state->{task_lookup}{'JOB-1'};
@@ -78,10 +78,10 @@ subtest canonical_task_stays_pristine => sub {
 subtest retry_carries_exactly_one_copy_of_per_attempt_args => sub {
     my $state = FakeState->new(preloader => undef, stage_map => undef);
 
-    $state->_queue_task(mk_task());
+    $state->queue_task(mk_task());
 
     # First attempt: start with the per-attempt resource arg.
-    $state->_start_task({job_id => 'JOB-1', stage => 'default', res => res_alloc()});
+    $state->start_task({job_id => 'JOB-1', stage => 'default', res => res_alloc()});
 
     # Genuine failure -> retry (consumes a try, re-queues from the pristine lookup).
     $state->retry_task('JOB-1');
@@ -89,7 +89,7 @@ subtest retry_carries_exactly_one_copy_of_per_attempt_args => sub {
     is($state->{task_lookup}{'JOB-1'}{test_args}, ['--base'], "the re-queued task has NO leftover resource arg");
 
     # Second attempt: start again with the SAME per-attempt resource arg.
-    $state->_start_task({job_id => 'JOB-1', stage => 'default', res => res_alloc()});
+    $state->start_task({job_id => 'JOB-1', stage => 'default', res => res_alloc()});
 
     my $running = $state->running_tasks->{'JOB-1'};
     my $count = grep { $_ eq '--res=1' } @{$running->{test_args}};

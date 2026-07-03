@@ -37,7 +37,7 @@ use Test2::Harness2::Runner::Monitor;
     sub run_item          { return {run_id => 'R1'} }
     sub running_tasks     { $_[0]->{running} }
     sub take_dispatch_tasks {
-        my ($self, $root_stage) = @_;
+        my ($self) = @_;
         my @out = @{$self->{dispatch}};
         @{$self->{dispatch}} = ();
         return @out;

@@ -31,17 +31,6 @@ sub init {
     die "A 'state' backref is required" unless $self->{+STATE};
 }
 
-# The configured per-stage startup safeguard in seconds, or 0 (off) when no settings
-# / no runner group is available (e.g. a unit harness builds the resource with
-# settings => undef).
-sub _stage_startup_timeout {
-    my $self = shift;
-
-    my $settings = $self->{+SETTINGS} or return 0;
-    return 0 unless $settings->check_group('runner');
-    return $settings->runner->preload_stage_startup_timeout // 0;
-}
-
 # The ordered preload-stage preference for a task, via the State's resolver so the
 # resource and task_stage agree on the list.
 sub _preload_list {
@@ -75,8 +64,10 @@ sub available {
 
     # Optional per-stage startup safeguard (--preload-stage-startup-timeout, off by
     # default): a stage stuck in starting/restarting past this many seconds is treated
-    # as permanently gone rather than waited on forever. 0 disables it.
-    my $startup_timeout = $self->_stage_startup_timeout;
+    # as permanently gone rather than waited on forever. 0 disables it. The State owns
+    # the single copy of this limit (State::stage_startup_timeout), reached via the
+    # State backref so the resource and the per-tick scan always agree.
+    my $startup_timeout = $self->{+STATE}->stage_startup_timeout;
 
     my $waitable = 0;
     for my $stage (@$list) {

@@ -97,14 +97,17 @@ subtest startup_timeout_safeguard => sub {
     my $LC = Test2::Harness2::Runner::State->STAGE_LIFECYCLE;
 
     my $build = sub {
-        my $state = FakeState->new(preloader => undef, stage_map => $MAP);
+        # The startup-timeout limit now lives on the State (State::stage_startup_timeout,
+        # which the resource delegates to), so inject the settings on the State, not the
+        # resource.
+        my $settings = Getopt::Yath::Settings->new(runner => {preload_stage_startup_timeout => 5});
+        my $state = FakeState->new(preloader => undef, stage_map => $MAP, settings => $settings);
         $state->set_stage_map($MAP);
         $state->stage_ready('default');
         $state->stage_restarting('ALPHA');    # present but not up
         $state->{$LC}{ALPHA}{stamp} -= 100;    # make it look stuck
 
-        my $settings = Getopt::Yath::Settings->new(runner => {preload_stage_startup_timeout => 5});
-        return Test2::Harness2::Runner::Resource::Preload->new(settings => $settings, state => $state);
+        return Test2::Harness2::Runner::Resource::Preload->new(settings => undef, state => $state);
     };
 
     my $res = $build->();
