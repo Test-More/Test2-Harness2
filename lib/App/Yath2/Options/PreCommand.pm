@@ -162,7 +162,6 @@ option_group {group => 'harness', category => 'Yath Options'} => sub {
 
                 next unless $class->can('options');
                 my $plugin_opts = $class->options;
-                # TODO(Task 9): drop this guard once all plugins are on Getopt::Yath
                 next unless ref($plugin_opts) && $plugin_opts->isa('Getopt::Yath::Instance');
                 $params{options}->include($plugin_opts);
             }
