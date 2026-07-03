@@ -25,14 +25,12 @@ BEGIN {
 
 use Test2::Harness2::Util::HashBase qw{
     <facet_data
-    <stream_id
     <event_id
     <run_id
     <job_id
     <job_try
     <stamp
     +json
-    processed
 };
 
 sub trace     { $_[0]->{+FACET_DATA}->{trace} }
@@ -75,10 +73,8 @@ sub TO_JSON {
     my $out = {%{$_[0]}};
 
     $out->{+FACET_DATA} = { %{$out->{+FACET_DATA}} };
-    delete $out->{+FACET_DATA}->{harness_job_watcher};
-    delete $out->{+FACET_DATA}->{harness}->{closed_by};
     delete $out->{+JSON};
-    delete $out->{+PROCESSED};
+    delete $out->{processed};
 
     return $out;
 }
@@ -156,11 +152,6 @@ Usually a UUID, but not always!
 Integer, 0 or greater. Some jobs are run additional times if they fail, this
 says which attempt the event is for. The counter starts at 0.
 
-=item $bool = $event->processed
-
-This will be true if the event has been process by the harness. Note that this
-attibute is not serialized by C<TO_JSON> or C<as_json>.
-
 =item $string = $event->run_id
 
 The run id. This is usually a UUID, but not always!
@@ -168,13 +159,6 @@ The run id. This is usually a UUID, but not always!
 =item $ts = $event->stamp
 
 A unix timestamp for when the event was created.
-
-=item $id = $event->stream_id
-
-This is an implementation detail of the streamed-event capture, do not rely on
-it. This is used to prevent parsing errors when stream output is nested in
-other stream output, which can happen if you are writing tests for the
-formatter itself.
 
 =item $trace = $event->trace
 

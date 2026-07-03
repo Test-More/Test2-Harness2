@@ -20,7 +20,7 @@ my @FIELDS = qw{
     category duration rank
     conflicts switches test_args env_vars input
     min_slots max_slots
-    use_fork use_preload use_stream use_timeout
+    use_fork use_preload use_timeout
     smoke io_events binary non_perl
     retry retry_isolated
     event_timeout post_exit_timeout
@@ -159,8 +159,6 @@ Serialize back to the task payload (a copy of C<task_data>).
 =item $val = $tf->use_fork
 
 =item $val = $tf->use_preload
-
-=item $val = $tf->use_stream
 
 =item $val = $tf->use_timeout
 

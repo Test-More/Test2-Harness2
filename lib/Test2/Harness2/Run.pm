@@ -16,7 +16,6 @@ use Test2::Harness2::Util::HashBase qw{
     <links
 
     <event_uuids
-    <use_stream
     <mem_usage
     <io_events
 
@@ -120,8 +119,6 @@ See L<App::Yath2::Options::Run> for more documentation on these.
 =item $arrayref = $run->test_args
 
 =item $bool = $run->unsafe_inc
-
-=item $bool = $run->use_stream
 
 =back
 

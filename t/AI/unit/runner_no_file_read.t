@@ -33,7 +33,6 @@ my $task = {
     rank        => 50,
     use_fork    => 1,
     use_preload => 1,
-    use_stream  => 1,
     use_timeout => 1,
     smoke       => 0,
     io_events   => 1,

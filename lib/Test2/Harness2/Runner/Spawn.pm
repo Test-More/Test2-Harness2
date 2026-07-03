@@ -57,7 +57,6 @@ sub env_vars {
     return $env;
 }
 
-sub use_stream   { 0 }
 sub event_uuids  { 0 }
 sub mem_usage    { 0 }
 sub io_events    { 0 }

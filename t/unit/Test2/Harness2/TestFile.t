@@ -25,7 +25,6 @@ my $task = {
     max_slots   => 2,
     use_fork    => 1,
     use_preload => 0,
-    use_stream  => 1,
     use_timeout => 1,
     smoke       => 0,
     io_events   => 1,
@@ -63,7 +62,6 @@ subtest accessors => sub {
     is($tf->max_slots,   2,                    "max_slots");
     is($tf->use_fork,    1,                    "use_fork");
     is($tf->use_preload, 0,                    "use_preload");
-    is($tf->use_stream,  1,                    "use_stream");
     is($tf->use_timeout, 1,                    "use_timeout");
     is($tf->smoke,       0,                    "smoke");
     is($tf->io_events,   1,                    "io_events");

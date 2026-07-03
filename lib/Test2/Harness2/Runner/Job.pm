@@ -8,7 +8,7 @@ use Carp qw/confess croak/;
 use Config qw/%Config/;
 use List::Util qw/min/;
 use POSIX();
-use Scalar::Util qw/weaken blessed/;
+use Scalar::Util qw/blessed/;
 use Test2::Util qw/CAN_REALLY_FORK/;
 use Time::HiRes qw/time/;
 
@@ -75,9 +75,6 @@ sub init {
 
     delete $self->{+JOB_DIR};
 
-    # Avoid a ref cycle
-    #weaken($self->{+RUNNER});
-
     my $task = $self->{+TASK} or croak "'task' is a required attribute";
 
     confess "Task does not have a job ID" unless $task->{job_id};
@@ -109,6 +106,11 @@ sub via {
     return $self->{+VIA} = undef;
 }
 
+# A job's raw exit is recorded via the inherited IPC::Process::set_exit for
+# runner health/bookkeeping only -- it is never the test verdict. The verdict
+# rides the collector transitions (harness_final_state), and the collector also
+# records the exit as a harness_process_exit event in events.jsonl.zst; the
+# harness no longer writes a separate 'exit' file.
 sub spawn_params {
     my $self = shift;
 
@@ -716,16 +718,6 @@ sub use_w_switch {
     return $self->{+USE_W_SWITCH} if defined $self->{+USE_W_SWITCH};
     $self->switches;
     return $self->{+USE_W_SWITCH};
-}
-
-sub set_exit {
-    my $self = shift;
-    my ($runner, $exit, $time, @args) = @_;
-
-    # Runner bookkeeping only. The job's exit status is recorded by the
-    # collector as a harness_process_exit event in events.jsonl.zst; the
-    # harness no longer writes a separate 'exit' file.
-    $self->SUPER::set_exit(@_);
 }
 
 1;

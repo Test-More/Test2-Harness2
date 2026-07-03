@@ -332,6 +332,11 @@ option_group {group => 'run', category => "Run Options"} => sub {
     # Accepted forms: --stream / --use-stream (enable) and
     # --no-stream / --no-use-stream / --TAP (disable).
     # Note: --TAP is a disable-form only; there is no --no-TAP.
+    #
+    # INERT: the streaming/TAP choice is no longer consumed by the harness or
+    # runner (the 1.0 stream-formatter selection is gone). The option is kept for
+    # CLI compatibility pending a decision on whether to forward it to
+    # Test2-Collector or retire it (see cleanup #74 follow-up).
     option use_stream => (
         name        => 'stream',
         type        => 'Bool',

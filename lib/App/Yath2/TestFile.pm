@@ -604,7 +604,6 @@ sub _task_base ($self, $job_name, $run_id) {
         rank            => 1,
         use_fork        => 0,
         use_preload     => 0,
-        use_stream      => 1,
         use_timeout     => 1,
         io_events       => 1,
         smoke           => 0,
@@ -653,7 +652,6 @@ sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
     my $fork      = $self->check_feature(fork      => 1);
     my $preload   = $self->check_feature(preload   => 1);
     my $timeout   = $self->check_feature(timeout   => 1);
-    my $stream    = $self->check_feature(stream    => 1);
     my $io_events = $self->check_feature(io_events => 1);
 
     my $binary   = $self->{+IS_BINARY} ? 1 : 0;
@@ -680,7 +678,6 @@ sub queue_item ($self, $job_name = undef, $run_id = undef, %inject) {
         preload_list    => $preload_list,
         use_fork        => $fork,
         use_preload     => $preload,
-        use_stream      => $stream,
         use_timeout     => $timeout,
         smoke           => $smoke,
         io_events       => $io_events,

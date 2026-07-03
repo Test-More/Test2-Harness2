@@ -12,7 +12,7 @@ use Test2::Harness2::Event;
 
 use Test2::Harness2::Util::HashBase qw{
     <job_id <job_try <run_id <file <events_file
-    +reader +done +last_stamp +final_state
+    +reader +done +last_stamp
 };
 
 sub init ($self) {
@@ -77,7 +77,6 @@ sub poll ($self, $max = undef) {
         # final_state is the true terminal record. Synthesize the
         # harness_job_end facet the renderer/rollup expect and mark done.
         if (my $fs = $fd->{harness_final_state}) {
-            $self->{+FINAL_STATE} = $fs;
             push @out => $self->_wrap({harness_job_end => $self->_job_end_facet($fs)});
             $self->{+DONE} = {retry => 0};
             last;
