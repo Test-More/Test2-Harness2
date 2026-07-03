@@ -1,6 +1,5 @@
 package App::Yath2::Plugin::Git;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -21,10 +20,7 @@ option_group {group => 'git', prefix => 'git', category => "Git Options"} => sub
 my $GIT_CMD = can_run('git');
 sub git_cmd { $ENV{GIT_COMMAND} || $GIT_CMD }
 
-sub git_output {
-    my $class = shift;
-    my (@args) = @_;
-
+sub git_output ($class, @args) {
     my $cmd = $class->git_cmd or return sub {()};
 
     # Capture::Tiny buffers both streams to temp handles, so a git command that
@@ -42,10 +38,7 @@ sub git_output {
     return sub { shift @lines };
 }
 
-sub inject_run_data {
-    my $class  = shift;
-    my %params = @_;
-
+sub inject_run_data ($class, %params) {
     my $meta   = $params{meta};
     my $fields = $params{fields};
 
@@ -94,17 +87,11 @@ sub inject_run_data {
     return;
 }
 
-sub changed_diff {
-    my $class = shift;
-    my ($settings) = @_;
-
+sub changed_diff ($class, $settings) {
     $class->_changed_diff($settings->git->change_base);
 }
 
-sub _changed_diff {
-    my $class = shift;
-    my ($base) = @_;
-
+sub _changed_diff ($class, $base) {
     my $cmd = $class->git_cmd or return;
 
     my $from = 'HEAD';
@@ -172,9 +159,7 @@ sub _changed_diff {
     return $class->_diff_from($from);
 }
 
-sub _diff_from {
-    my $class = shift;
-    my ($from) = @_;
+sub _diff_from ($class, $from) {
     my $cmd = $class->git_cmd or return;
 
     return (line_sub => $class->git_output('diff', '-U1000000', '-W', '--minimal', $from));
@@ -182,8 +167,7 @@ sub _diff_from {
 
 # Number of commits reachable from HEAD, or undef if git can't answer. Used to
 # bound the #107 merge-base walk; bounded even in a shallow clone.
-sub _commit_count {
-    my $class = shift;
+sub _commit_count ($class) {
     my $cmd = $class->git_cmd or return undef;
 
     my ($stdout, undef, $status) = capture {

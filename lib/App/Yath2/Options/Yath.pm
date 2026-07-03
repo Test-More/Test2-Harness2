@@ -1,6 +1,5 @@
 package App::Yath2::Options::Yath;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -27,8 +26,7 @@ option_group {group => 'yath', category => 'Yath Options'} => sub {
 
 option_post_process 0 => \&_mirror_project;
 
-sub _mirror_project {
-    my ($options, $state) = @_;
+sub _mirror_project ($options, $state) {
     my $settings = $state->{settings};
 
     return unless $settings->check_group('yath');

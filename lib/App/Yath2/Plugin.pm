@@ -1,6 +1,5 @@
 package App::Yath2::Plugin;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 

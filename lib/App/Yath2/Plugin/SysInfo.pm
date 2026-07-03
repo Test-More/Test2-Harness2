@@ -1,6 +1,5 @@
 package App::Yath2::Plugin::SysInfo;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 
@@ -11,10 +10,7 @@ use Config qw/%Config/;
 use parent 'App::Yath2::Plugin';
 use Test2::Harness2::Util::HashBase qw/-host_short_pattern/;
 
-sub inject_run_data {
-    my $self  = shift;
-    my %params = @_;
-
+sub inject_run_data ($self, %params) {
     my $meta   = $params{meta};
     my $fields = $params{fields};
 
@@ -63,7 +59,7 @@ sub inject_run_data {
     };
 }
 
-sub TO_JSON { ref($_[0]) }
+sub TO_JSON ($self) { ref($self) }
 
 1;
 
