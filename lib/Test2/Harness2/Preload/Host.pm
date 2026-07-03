@@ -323,6 +323,13 @@ sub request_handler_spawn {
     # ONLY the short-lived intermediate; the supervisor runs JobLauncher::launch_spawn,
     # which dials the command, receives its fds, forks the script child, and reports
     # the child's raw wait status over the control channel.
+    #
+    # NOTE (#119): the intermediate's setsid makes its pgid == its own pid, and the
+    # host watch_pid's that pid, so the wind-down killall on stage stop/`yath reload`
+    # targets `-<intermediate-pid>` -- the intermediate's whole group. launch_spawn's
+    # FIRST act is therefore setpgrp(0,0) into the supervisor's OWN group, so it leaves
+    # that group and outlives teardown (and the intermediate's group empties the moment
+    # it exits, so this host's _check_if_dead_yet finalizes the reap cleanly).
     my $intermediate = fork() // do {
         warn "$$ $0 spawn handler fork failed: $!";
         return {ok => 0, error => "spawn fork failed: $!"};

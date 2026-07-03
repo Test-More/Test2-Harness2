@@ -118,6 +118,29 @@ sub launch_spawn ($class, $runner, $spawn, $label = undef) {
     require Test2::Harness2::Util::FdPass;
     require Test2::Harness2::Util::FdPass::Control;
 
+    # #119: leave the intermediate's process group BEFORE anything else (before the
+    # possibly-blocking dial-back below). The stage host double-forked + setsid'd the
+    # intermediate (so pgid == the intermediate's pid), watch_pid's THAT pid, and its
+    # wind-down killall TERM/-KILLs `-<intermediate-pid>` -- the whole intermediate
+    # group -- on stage stop OR `yath reload`. This supervisor was forked from the
+    # intermediate and inherited that group, so it was being killed WITH the stage:
+    # exactly the detached session ARCHITECTURE.md §4.8 says must OUTLIVE teardown
+    # (exit_status never sent, the command-EOF kill duty lost, the script child
+    # orphaned). setpgrp into our OWN group (staying in the intermediate's SESSION --
+    # NOT a second setsid: re-leading a session risks reacquiring a controlling
+    # terminal) so the host's -pgroup signals can no longer reach us, and so the
+    # intermediate's group empties the instant it exits -- which also lets the host's
+    # _check_if_dead_yet pgroup-liveness gate finalize the intermediate's reap instead
+    # of hanging its stop() on the 5s timeout. Mirrors the script child's own-group
+    # detach below; guarded by USE_P_GROUPS like the other launch paths (on platforms
+    # with no process groups killall signals bare pids, which never name us anyway).
+    #
+    # Consistency with #139's command-EOF escalation (which signals both `-$child` and
+    # `$child`): that targets the SCRIPT CHILD's group (pgid == the child's pid, from
+    # the child's own setsid), never this supervisor's -- our pgid is now our own pid,
+    # a third, distinct value -- so nothing here is ever double-signaled.
+    setpgrp(0, 0) if Test2::Harness2::IPC::USE_P_GROUPS();
+
     my $task = $spawn->task;
     my $path = $task->{listen_socket_path}
         or do { warn "spawn supervisor: no listen_socket_path in task"; POSIX::_exit(1) };
