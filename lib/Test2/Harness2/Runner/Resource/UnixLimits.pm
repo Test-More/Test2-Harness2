@@ -100,9 +100,7 @@ Defaults to 1.
 
 =cut
 
-sub init {
-    my $self = shift;
-
+sub init ($self) {
     $self->{+NAME} //= 'unixlimits';
 
     $self->_parse_inline_arg;
@@ -138,9 +136,7 @@ sub init {
 # 'nproc=SPEC' is a hard error: the nproc dimension was removed because
 # RLIMIT_NPROC cannot be measured cheaply or correctly from the runner process
 # (see the POD "Why there is no nproc dimension").
-sub _parse_inline_arg {
-    my $self = shift;
-
+sub _parse_inline_arg ($self) {
     my $arg = $self->{+ARG};
     return unless defined $arg && length $arg;
 
@@ -213,9 +209,7 @@ limit. Always false on an unsupported platform.
 
 =cut
 
-sub is_supported {
-    my $self = shift;
-
+sub is_supported ($self) {
     return $self->{+SUPPORTED} if defined $self->{+SUPPORTED};
 
     if ($^O eq 'linux' && -r '/proc/self/limits' && -r '/proc/self/status' && -d '/proc/self/fd') {
@@ -240,9 +234,7 @@ sub is_supported {
     return $self->{+SUPPORTED} = 0;
 }
 
-sub is_temporarily_unavailable {
-    my $self = shift;
-
+sub is_temporarily_unavailable ($self) {
     return 0 unless $self->is_supported;
 
     my $dims = $self->_dimension_states;
@@ -252,9 +244,7 @@ sub is_temporarily_unavailable {
     return 0;
 }
 
-sub status_data {
-    my $self = shift;
-
+sub status_data ($self) {
     unless ($self->is_supported) {
         return [
             {
@@ -333,17 +323,13 @@ C<as> threshold is configured.
 =cut
 
 my %WARNED;
-sub _verbose_log {
-    my $self = shift;
-    my ($msg) = @_;
+sub _verbose_log ($self, $msg) {
     return if $WARNED{$msg}++;
     warn "$msg\n";
     return;
 }
 
-sub _read_self_limits {
-    my $self = shift;
-
+sub _read_self_limits ($self) {
     return $self->{+STATIC_LIMITS} if $self->{+STATIC_LIMITS};
 
     my %out;
@@ -361,9 +347,7 @@ sub _read_self_limits {
     return $self->{+STATIC_LIMITS} = \%out;
 }
 
-sub _read_self_status {
-    my $self = shift;
-
+sub _read_self_status ($self) {
     my %out;
     open my $fh, '<', '/proc/self/status' or return \%out;
     while (my $line = <$fh>) {
@@ -373,9 +357,7 @@ sub _read_self_status {
     return \%out;
 }
 
-sub _count_self_fd {
-    my $self = shift;
-
+sub _count_self_fd ($self) {
     opendir my $dh, '/proc/self/fd' or return 0;
     my $n = 0;
     while (my $e = readdir $dh) {
@@ -386,10 +368,7 @@ sub _count_self_fd {
     return $n;
 }
 
-sub _assess_dimension {
-    my $self = shift;
-    my ($dim, $soft_cap, $current) = @_;
-
+sub _assess_dimension ($self, $dim, $soft_cap, $current) {
     my $headroom = $self->{$dim};
 
     # No threshold configured for this dimension, or the soft cap is unlimited:
@@ -421,9 +400,7 @@ sub _assess_dimension {
     );
 }
 
-sub _dimension_states {
-    my $self = shift;
-
+sub _dimension_states ($self) {
     my $limits  = $self->_read_self_limits;
     my $status  = $self->_read_self_status;
     my $fdcount = $self->_count_self_fd;

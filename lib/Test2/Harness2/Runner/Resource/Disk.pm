@@ -75,9 +75,7 @@ L<Test2::Harness2::Util::Units/parse_size_or_pct>.
 
 =cut
 
-sub init {
-    my $self = shift;
-
+sub init ($self) {
     $self->{+NAME}    //= 'disk';
     $self->{+MOUNTS}  //= {};
     $self->{+SAMPLES} //= {};
@@ -103,9 +101,7 @@ sub init {
 # Parse the inline '-R Disk=ARG' string. ARG is a comma-separated list of
 # '/path:THRESHOLD' entries. THRESHOLD defaults to a percentage when no unit is
 # given.
-sub _parse_inline_arg {
-    my $self = shift;
-
+sub _parse_inline_arg ($self) {
     my $arg = $self->{+ARG};
     return unless defined $arg && length $arg;
 
@@ -132,9 +128,7 @@ sub _parse_inline_arg {
 
 # Lazy-require Filesys::Df with an actionable error. Returns nothing; croaks on
 # missing dep.
-sub _require_filesys_df {
-    my $self = shift;
-
+sub _require_filesys_df ($self) {
     my $loaded = eval { require Filesys::Df; 1 };
     my $err    = $@;
     return if $loaded;
@@ -170,14 +164,11 @@ Satisfies the contract; reserves nothing.
 
 =cut
 
-sub is_supported {
-    my $self = shift;
+sub is_supported ($self) {
     return $self->{+SUPPORTED} //= 1;
 }
 
-sub available {
-    my $self = shift;
-    my ($task) = @_;
+sub available ($self, $task = undef) {
     croak "a task is required" unless defined $task;
 
     # Sample every mount so status() reflects fresh readings for all of them.
@@ -198,9 +189,7 @@ sub available {
     return $result;
 }
 
-sub assign {
-    my $self = shift;
-    my ($task, $state) = @_;
+sub assign ($self, $task, $state) {
     # Gate only: nothing to reserve. Still record so a status view could track it.
     $state->{record} = {job_id => $task->{job_id}, stamp => time};
     return;
@@ -209,9 +198,7 @@ sub assign {
 # record() / release() are the base role's no-op defaults
 # (Test2::Harness2::Runner::Resource): this gate reserves nothing per job.
 
-sub status_data {
-    my $self = shift;
-
+sub status_data ($self) {
     my $now = time;
     my @rows;
     for my $mp (sort keys %{$self->{+MOUNTS}}) {
@@ -262,10 +249,7 @@ Human-readable form of a parsed threshold for status output.
 
 =cut
 
-sub _take_sample {
-    my $self = shift;
-    my ($mp) = @_;
-
+sub _take_sample ($self, $mp) {
     my $now   = time;
     my $cache = $self->{+SAMPLES}->{$mp};
 
@@ -304,10 +288,7 @@ sub _take_sample {
     };
 }
 
-sub _evaluate_threshold {
-    my $self = shift;
-    my ($threshold, $free_bytes, $total_bytes) = @_;
-
+sub _evaluate_threshold ($self, $threshold, $free_bytes, $total_bytes) {
     croak "Resource::Disk: evaluate_threshold requires a parsed threshold hashref"
         unless ref($threshold) eq 'HASH' && defined $threshold->{kind} && defined $threshold->{value};
 
@@ -326,9 +307,7 @@ sub _evaluate_threshold {
     croak "Resource::Disk: unknown threshold kind '$threshold->{kind}'";
 }
 
-sub _threshold_str {
-    my $self = shift;
-    my ($t) = @_;
+sub _threshold_str ($self, $t) {
     return '--' unless ref($t) eq 'HASH';
     return $t->{kind} eq 'pct' ? "$t->{value}%" : "$t->{value}b";
 }

@@ -1,6 +1,5 @@
 package Test2::Harness2::Runner::Resource::Preload;
-use strict;
-use warnings;
+use v5.38;
 
 our $VERSION = '2.000000';
 

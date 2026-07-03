@@ -67,9 +67,7 @@ Defaults to 1.
 
 =cut
 
-sub init {
-    my $self = shift;
-
+sub init ($self) {
     $self->{+NAME} //= 'memory';
 
     # Precedence: inline -R Memory=SPEC, then --utilize floor, then the default 5%.
@@ -116,9 +114,7 @@ conservative of C<min_free> and the C<--utilize> floor).
 
 =cut
 
-sub is_temporarily_unavailable {
-    my $self = shift;
-
+sub is_temporarily_unavailable ($self) {
     my ($total, $available) = $self->_current_mem;
     return 0 unless defined $total && defined $available;
 
@@ -126,9 +122,7 @@ sub is_temporarily_unavailable {
     return $available < $threshold ? 1 : 0;
 }
 
-sub status_data {
-    my $self = shift;
-
+sub status_data ($self) {
     my ($total, $available) = $self->_current_mem;
     my $threshold = defined($total) ? $self->_effective_min_free_bytes($total) : undef;
 
@@ -179,8 +173,7 @@ A human-readable form of the configured C<min_free> for status output.
 
 =cut
 
-sub _current_mem {
-    my $self  = shift;
+sub _current_mem ($self) {
     my $state = $self->{+STATE}     or return ();
     my $load  = $state->system_load or return ();
     my $total = $load->{mem_total};
@@ -189,10 +182,7 @@ sub _current_mem {
     return ($total, $avail);
 }
 
-sub _effective_min_free_bytes {
-    my $self = shift;
-    my ($total) = @_;
-
+sub _effective_min_free_bytes ($self, $total) {
     my $mf = $self->{+MIN_FREE};
     my $explicit_bytes =
           $mf->{kind} eq 'bytes'
@@ -206,16 +196,14 @@ sub _effective_min_free_bytes {
     return $explicit_bytes > $utilize_bytes ? $explicit_bytes : $utilize_bytes;
 }
 
-sub _min_free_from_settings {
-    my $self    = shift;
+sub _min_free_from_settings ($self) {
     my $utilize = $self->_utilize_from_settings;
     return undef unless defined $utilize;
     return {kind => 'pct', value => 100 - $utilize};
 }
 
-sub _min_free_str {
-    my $self = shift;
-    my $mf   = $self->{+MIN_FREE};
+sub _min_free_str ($self) {
+    my $mf = $self->{+MIN_FREE};
     return $mf->{kind} eq 'pct' ? "$mf->{value}%" : "$mf->{value}b";
 }
 

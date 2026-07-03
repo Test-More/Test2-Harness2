@@ -1,6 +1,5 @@
 package Test2::Harness2::Runner::Resource;
-use strict;
-use warnings;
+use v5.38;
 
 use Role::Tiny;
 use Object::HashBase;

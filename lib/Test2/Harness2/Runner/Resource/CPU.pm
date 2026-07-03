@@ -57,9 +57,7 @@ Defaults to 1.
 
 =cut
 
-sub init {
-    my $self = shift;
-
+sub init ($self) {
     $self->{+NAME} //= 'cpu';
 
     # Precedence: inline -R CPU=N, then --utilize, then the default 80.
@@ -92,15 +90,13 @@ C<utilize_percent>.
 
 =cut
 
-sub is_temporarily_unavailable {
-    my $self = shift;
-    my $cpu  = $self->_current_cpu_pct;
+sub is_temporarily_unavailable ($self) {
+    my $cpu = $self->_current_cpu_pct;
     return 0 unless defined $cpu;
     return $cpu >= $self->{+UTILIZE_PERCENT} ? 1 : 0;
 }
 
-sub status_data {
-    my $self = shift;
+sub status_data ($self) {
     return [
         {
             tables => [
@@ -134,8 +130,7 @@ percentage).
 
 =cut
 
-sub _current_cpu_pct {
-    my $self  = shift;
+sub _current_cpu_pct ($self) {
     my $state = $self->{+STATE}     or return undef;
     my $load  = $state->system_load or return undef;
     return $load->{cpu_pct};
