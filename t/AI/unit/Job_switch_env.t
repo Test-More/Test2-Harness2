@@ -171,4 +171,23 @@ subtest 'finding 33 contrast: a normal test job keeps the harness markers' => su
     ok(exists $env->{TEST2_JOB_DIR}, "a real test job still sets TEST2_JOB_DIR");
 };
 
+subtest 'switches: intra-source dups kept, cross-source deduped (task > runner > env)' => sub {
+    local $ENV{HARNESS_PERL_SWITCHES} = '-Ic  -Id  -Id';
+
+    my $job = make_job(
+        task   => {switches => ['-Ia', '-Ia', '-Ib']},
+        runner => {switches => ['-Ib', '-Ic', '-Ic']},
+    );
+
+    # task keeps its own duplicate (-Ia x2); runner drops -Ib (already in task)
+    # but keeps its own duplicate (-Ic x2); env drops -Ic (already in runner)
+    # but keeps its own duplicate (-Id x2). Each source dedups only against
+    # PRIOR sources, never against itself.
+    is(
+        [$job->switches],
+        ['-Ia', '-Ia', '-Ib', '-Ic', '-Ic', '-Id', '-Id'],
+        "intra-source dups preserved, cross-source dups dropped in task>runner>env order",
+    );
+};
+
 done_testing;

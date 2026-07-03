@@ -425,7 +425,7 @@ sub run_file  {
 sub rel_file  { File::Spec->abs2rel($_[0]->file) }
 sub file      { $_[0]->{+FILE}      //= clean_path($_[0]->{+TASK}->{file}, 0) }
 sub events_file { $_[0]->{+EVENTS_FILE} //= clean_path(File::Spec->catfile($_[0]->job_dir, 'events.jsonl.zst')) }
-sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path(File::Spec->catdir($_[0]->{+RUNNER}->dir, $_[0]->{+RUN}->run_id)) }
+sub run_dir   { $_[0]->{+RUN_DIR}   //= clean_path($_[0]->{+RUN}->run_dir) }
 
 sub verbose { $_[0]->{+VERBOSE} //= $_[0]->{+TASK}->{verbose} // 0 }
 sub is_try  { $_[0]->{+IS_TRY}  //= $_[0]->{+TASK}->{is_try}  // 1 }
@@ -565,12 +565,9 @@ sub use_fork {
     return $self->{+USE_FORK} = 0 if defined($task->{use_fork}) && !$task->{use_fork};
     return $self->{+USE_FORK} = 0 if defined($task->{use_preload}) && !$task->{use_preload};
 
-    # -w switch is ok, otherwise it is a no-go. Anchor the match so ONLY a bare
-    # '-w' counts: an unanchored m/-w/ treats any switch containing "-w" (e.g.
-    # -I/home/bob/my-website/lib) as the -w switch, so a real -I would be allowed
-    # onto the fork path and silently dropped (wrong libs). A clustered -wT does
-    # not match either, so it correctly forces the exec path.
-    return $self->{+USE_FORK} = 0 if grep { !m/^\s*-w\s*$/ } $self->switches;
+    # -w switch is ok, otherwise it is a no-go. _is_w_switch matches ONLY a bare
+    # '-w' (see its definition for why anchoring matters here).
+    return $self->{+USE_FORK} = 0 if grep { !$self->_is_w_switch($_) } $self->switches;
 
     my $runner = $self->{+RUNNER};
     return $self->{+USE_FORK} = 0 unless $runner->use_fork;
@@ -617,6 +614,13 @@ sub cli_options {
     );
 }
 
+# True only for a bare '-w' switch. Anchor the match so ONLY '-w' counts: an
+# unanchored m/-w/ treats any switch containing "-w" (e.g.
+# -I/home/bob/my-website/lib) as the -w switch, so a real -I would be allowed
+# onto the fork path and silently dropped (wrong libs). A clustered -wT does not
+# match either, so it correctly forces the exec path.
+sub _is_w_switch { $_[1] =~ m/^\s*-w\s*$/ }
+
 sub switches {
     my $self = shift;
 
@@ -624,26 +628,24 @@ sub switches {
 
     my @switches;
 
+    # Each source dedups only against PRIOR sources (task, then runner, then
+    # env); intra-source duplicates are kept. %seen accumulates a source's
+    # contributions only after that source is fully processed, so a switch
+    # repeated within one source is not self-deduped.
     my %seen;
-    for my $s (@{$self->{+TASK}->{switches} // []}) {
-        $seen{$s}++;
-        $self->{+USE_W_SWITCH} = 1 if $s =~ m/^\s*-w\s*$/;
-        push @switches => $s;
-    }
-
-    my %seen2;
-    for my $s (@{$self->{+RUNNER}->switches // []}) {
-        next if $seen{$s};
-        $seen2{$s}++;
-        $self->{+USE_W_SWITCH} = 1 if $s =~ m/^\s*-w\s*$/;
-        push @switches => $s;
-    }
-
-    for my $s ($self->switches_from_env) {
-        next if $seen{$s};
-        next if $seen2{$s};
-        $self->{+USE_W_SWITCH} = 1 if $s =~ m/^\s*-w\s*$/;
-        push @switches => $s;
+    for my $source (
+        $self->{+TASK}->{switches} // [],
+        $self->{+RUNNER}->switches // [],
+        [$self->switches_from_env],
+    ) {
+        my %this;
+        for my $s (@$source) {
+            next if $seen{$s};
+            $this{$s}++;
+            $self->{+USE_W_SWITCH} = 1 if $self->_is_w_switch($s);
+            push @switches => $s;
+        }
+        $seen{$_}++ for keys %this;
     }
 
     return @{$self->{+SWITCHES} = \@switches};
