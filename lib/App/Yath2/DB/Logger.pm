@@ -32,6 +32,8 @@ use Test2::Harness2::Util::HashBase qw{
     +abort_folded
     +errors
     +terminal_error
+    +run_done_seen
+    +run_broken
     +finished
 };
 
@@ -175,9 +177,21 @@ sub run ($self) {
 
     unless ($ok) {
         $self->_terminal_error("DB logger aborted: $err");
+
+        # _run died before reaching its own _finalize_run_row (finding 98): stamp
+        # the run row 'broken' instead of leaving it status='running' forever. Guard
+        # the write (the same fault -- e.g. a dead DB connection -- may also break
+        # finalize) and NEVER build a subscriber from this path: read the SUBSCRIBER
+        # slot directly (the failure may have happened before one was ever built),
+        # exactly as the #131 last-chance fold inside _finalize_run_row does.
+        my $fin_ok = eval { $self->_finalize_run_row; 1 };
+        $self->_record_error("Failed to finalize run row after abort: $@") unless $fin_ok;
     }
 
-    return $self->{+TERMINAL_ERROR} ? 1 : 0;
+    # Non-zero exit whenever the run did NOT finish cleanly (a terminal error, a
+    # recorded import/fold error, or a mid-run death / drain timeout that marked the
+    # run 'broken'), not only on a hard terminal error (#132).
+    return $self->_run_failed ? 1 : 0;
 }
 
 sub _run ($self) {
@@ -207,26 +221,63 @@ sub _run ($self) {
         $self->_sync;
 
         if ($sub->closed) {
-            # Socket EOF: the (transient) runner shut down. Do a final drain pass.
+            # Socket EOF: the (transient) runner shut down. Do a final drain pass; a
+            # run_done frame may have arrived in the same batch as the EOF, in which
+            # case this is a clean transient-runner completion rather than a mid-run
+            # death, so re-check run_done AFTER the final fold (#132).
             $self->_sync;
+            $self->{+RUN_DONE_SEEN} = 1
+                if $sub->run_done || $self->monitor->run_done($self->{+RUN_ID});
             last;
         }
 
         if ($sub->run_done || $self->monitor->run_done($self->{+RUN_ID})) {
             # The run is announced complete. Keep draining briefly for trailing
             # finalize transitions + their blobs, then stop.
+            $self->{+RUN_DONE_SEEN} = 1;
             $drain_started //= time;
             $self->_sync;
             last if $self->_all_finalized_imported;
-            last if (time - $drain_started) > DRAIN_TIMEOUT;
+            last if (time - $drain_started) > $self->DRAIN_TIMEOUT;
         }
 
         sleep POLL_DELAY;
     }
 
+    # Decide whether the run finished cleanly BEFORE finalizing (needs the live
+    # subscriber to check the drain state); _finalize_run_row itself only reads flags.
+    $self->_mark_incomplete_if_needed;
+
     $self->_finalize_run_row;
 
     return;
+}
+
+# Classify how the poll loop ended (#132). The run is 'complete' only when the
+# runner ANNOUNCED the run end (run_done) AND every one of this run's collectors
+# finalized + imported its blob. Otherwise the runner died / was force-killed
+# before run_done (EOF-before-run_done), or the drain timed out with collectors
+# still unimported -- in both cases the log is incomplete, so mark it broken. A
+# terminal error (workdir vanished) is already broken; a recorded import/fold error
+# is folded into _run_failed directly. Must be called from _run (live subscriber
+# present); NEVER creates a subscriber.
+sub _mark_incomplete_if_needed ($self) {
+    return if $self->{+TERMINAL_ERROR};
+    return if $self->{+RUN_DONE_SEEN} && $self->_all_finalized_imported;
+    $self->{+RUN_BROKEN} = 1;
+    return;
+}
+
+# Did the run fail to finish cleanly? Drives both runs.status ('broken' vs
+# 'complete') and the logger exit code (non-zero vs 0). Reads only flags, so it is
+# safe on run()'s failure path (no subscriber required): a terminal error, a
+# mid-run death / drain timeout (RUN_BROKEN), or any recorded error (a failed
+# collector-blob import, or a #131 abort-fold failure) all mark the run failed.
+sub _run_failed ($self) {
+    return 1 if $self->{+TERMINAL_ERROR};
+    return 1 if $self->{+RUN_BROKEN};
+    return 1 if @{$self->{+ERRORS} // []};
+    return 0;
 }
 
 # Have all of THIS RUN's collectors reached 'finalized' AND had their blob
@@ -745,7 +796,12 @@ sub _finalize_run_row ($self) {
         $retried++ if $try_count > 1;
     }
 
-    my $status = $self->{+TERMINAL_ERROR} ? 'broken' : 'complete';
+    # 'broken' on any failure-finalize path (mid-run death, drain timeout with
+    # unimported blobs, import/fold error, or a terminal error), so CI gating /
+    # dashboards keyed on runs.status are never told a run "completed" when it did
+    # not (#132). The failure classification lives in _run_failed (flag-only, so a
+    # run()-failure-path call with no live subscriber is safe).
+    my $status = $self->_run_failed ? 'broken' : 'complete';
 
     $con->handle('runs', where => {run_uuid => $run_uuid})->update({
         passed  => $passed,
