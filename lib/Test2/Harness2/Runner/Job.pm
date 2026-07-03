@@ -372,7 +372,11 @@ sub switches_from_env {
 
     return @{$self->{+SWITCHES_FROM_ENV} = []} unless $ENV{HARNESS_PERL_SWITCHES};
 
-    return @{$self->{+SWITCHES_FROM_ENV} = [split /\s+/, $ENV{HARNESS_PERL_SWITCHES}]};
+    # grep { length } drops the empty field a leading space produces (e.g.
+    # HARNESS_PERL_SWITCHES=" -w", common when composing from an unset var):
+    # a bare '' switch is passed to perl as its program, so the test body never
+    # runs and no -M injections happen -- the test silently does nothing.
+    return @{$self->{+SWITCHES_FROM_ENV} = [grep { length } split /\s+/, $ENV{HARNESS_PERL_SWITCHES}]};
 }
 
 my %JSON_SKIP = (
@@ -563,8 +567,12 @@ sub use_fork {
     return $self->{+USE_FORK} = 0 if defined($task->{use_fork}) && !$task->{use_fork};
     return $self->{+USE_FORK} = 0 if defined($task->{use_preload}) && !$task->{use_preload};
 
-    # -w switch is ok, otherwise it is a no-go
-    return $self->{+USE_FORK} = 0 if grep { !m/\s*-w\s*/ } $self->switches;
+    # -w switch is ok, otherwise it is a no-go. Anchor the match so ONLY a bare
+    # '-w' counts: an unanchored m/-w/ treats any switch containing "-w" (e.g.
+    # -I/home/bob/my-website/lib) as the -w switch, so a real -I would be allowed
+    # onto the fork path and silently dropped (wrong libs). A clustered -wT does
+    # not match either, so it correctly forces the exec path.
+    return $self->{+USE_FORK} = 0 if grep { !m/^\s*-w\s*$/ } $self->switches;
 
     my $runner = $self->{+RUNNER};
     return $self->{+USE_FORK} = 0 unless $runner->use_fork;
@@ -621,7 +629,7 @@ sub switches {
     my %seen;
     for my $s (@{$self->{+TASK}->{switches} // []}) {
         $seen{$s}++;
-        $self->{+USE_W_SWITCH} = 1 if $s =~ m/\s*-w\s*/;
+        $self->{+USE_W_SWITCH} = 1 if $s =~ m/^\s*-w\s*$/;
         push @switches => $s;
     }
 
@@ -629,14 +637,14 @@ sub switches {
     for my $s (@{$self->{+RUNNER}->switches // []}) {
         next if $seen{$s};
         $seen2{$s}++;
-        $self->{+USE_W_SWITCH} = 1 if $s =~ m/\s*-w\s*/;
+        $self->{+USE_W_SWITCH} = 1 if $s =~ m/^\s*-w\s*$/;
         push @switches => $s;
     }
 
     for my $s ($self->switches_from_env) {
         next if $seen{$s};
         next if $seen2{$s};
-        $self->{+USE_W_SWITCH} = 1 if $s =~ m/\s*-w\s*/;
+        $self->{+USE_W_SWITCH} = 1 if $s =~ m/^\s*-w\s*$/;
         push @switches => $s;
     }
 

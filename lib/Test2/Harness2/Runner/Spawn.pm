@@ -36,6 +36,29 @@ sub args { @{$_[0]->{+TASK}->{args} //= []} }
 sub job_dir { "" }
 sub run_dir { "" }
 
+# A spawned script OUTLIVES the harness (it is detached -- ARCHITECTURE.md §4.8),
+# but `yath stop` / `yath kill` deletes the workdir, which is where a normal job's
+# tmp_dir lives. If the spawn inherited a workdir-scoped TMPDIR/TEMPDIR, a later
+# File::Temp call in the still-running script would fail ENOENT with no visible
+# link back to yath. Point it at the SYSTEM tmpdir instead (the same path
+# SYSTEM_TMPDIR already computes), which yath never removes.
+sub tmp_dir { $_[0]->{+SETTINGS}->harness->orig_tmp }
+
+# A spawned script is NOT a test running under the harness, so it must not carry
+# the harness-active markers or a test job dir (a spawn has no job_dir anyway).
+# Otherwise harness-aware code in the spawned program would wrongly believe it is
+# running under yath.
+sub env_vars {
+    my $self = shift;
+
+    return $self->{+ENV_VARS} if $self->{+ENV_VARS};
+
+    my $env = $self->SUPER::env_vars;
+    delete @{$env}{qw/HARNESS_ACTIVE TEST2_HARNESS_ACTIVE TEST2_JOB_DIR/};
+
+    return $env;
+}
+
 sub use_stream   { 0 }
 sub event_uuids  { 0 }
 sub mem_usage    { 0 }
