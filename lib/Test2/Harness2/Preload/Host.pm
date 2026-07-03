@@ -740,6 +740,21 @@ sub end_test_loop {
     no warnings 'uninitialized';
     if ($self->preloader->check($state)) {
         $self->{+SIGNAL} //= 'HUP';
+
+        # A monitored preload file changed: the base/default stage must RESPAWN the
+        # whole preload tree (it owns the 'preload-root' jump frame), so flag a pending
+        # reload for run_stage to take -- the same signal request_handler_reload_root
+        # sets for `yath reload`. Without it the base stage merely ends its loop and
+        # winds down WITHOUT respawning: it has already killed its child stages, so the
+        # preload tree is gone while the preload-root parent stays alive, the runner
+        # never sees the root die, and every stage stays 'restarting' forever (#112).
+        # Named stages must NOT set it -- they do not own the jump frame and already
+        # relaunch via their exit-0 path, and taking the respawn would duplicate the
+        # tree (#111).
+        my $stage = $self->{+STAGE};
+        $self->{+PENDING_RELOAD} //= 1
+            if defined($stage) && ($stage eq 'base' || $stage eq 'default');
+
         return 1;
     }
 
