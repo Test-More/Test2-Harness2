@@ -3,7 +3,6 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
-use Carp qw/croak/;
 use Role::Tiny;
 
 requires qw/poll done/;

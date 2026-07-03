@@ -20,9 +20,7 @@ sub render_one_line {
     return [$f->{render}->[0]->{facet}, uc($f->{render}->[0]->{tag}), $f->{render}->[0]->{details}]
         if $f->{render} && @{$f->{render}};
 
-    return (($class->halt($f))[0]) if $class->{control} && defined $class->{control}->{halt};
-
-    for my $type (qw/assert errors plan info times about/) {
+    for my $type (qw/assert errors plan info about/) {
         next unless $f->{$type};
         my $m = "render_$type";
         my ($out) = $class->$m($f);
@@ -34,7 +32,7 @@ sub render_one_line {
 
 sub render_verbose {
     my $class = shift;
-    my ($in, %params) = @_;
+    my ($in) = @_;
 
     my $f = blessed($in) ? $in->facet_data : $in;
 
@@ -43,7 +41,7 @@ sub render_verbose {
 
     my @out;
 
-    push @out => $class->render_control($f, %params) if $f->{control};
+    push @out => $class->render_control($f) if $f->{control};
     push @out => $class->render_plan($f) if $f->{plan};
 
     if ($f->{assert}) {
@@ -61,90 +59,16 @@ sub render_verbose {
     return \@out;
 }
 
-sub render_super_verbose {
-    my $class = shift;
-    my ($in) = @_;
-
-    my $out = $class->render_verbose($in, super_verbose => 1);
-
-    my $f = blessed($in) ? $in->facet_data : $in;
-
-    push @$out => $class->render_launch($f)  if $f->{harness_job_launch};
-    push @$out => $class->render_start($f)   if $f->{harness_job_start};
-    push @$out => $class->render_exit($f)    if $f->{harness_job_exit};
-    push @$out => $class->render_end($f)     if $f->{harness_job_end};
-
-    unless (@$out) {
-        my ($name, $fallback);
-        for my $k (sort keys %$f) {
-            my $v = $f->{$k};
-
-            # Fallback should be longest harness* facet name
-            $fallback = $k if $k =~ m/harness/ && (!$fallback || length($fallback) < length($k));
-
-            my $list = ref($v) eq 'ARRAY' ? $v : [$v];
-            for my $i (@$list) {
-                next unless ref($i);
-                last if $name = $i->{details};
-            }
-        }
-
-        $name //= $fallback // join ', ' => sort keys %$f;
-
-        push @$out => ['harness', 'HARNESS', $name];
-    }
-
-    return $out;
-}
-
-sub render_launch {
-    my $class = shift;
-    my ($f) = @_;
-
-    return ['harness', 'HARNESS', 'Job Launched at ' . $f->{harness_job_launch}->{stamp}];
-}
-
-sub render_start {
-    my $class = shift;
-    my ($f) = @_;
-
-    return ['harness', 'HARNESS', $f->{harness_job_start}->{details}];
-}
-
-sub render_exit {
-    my $class = shift;
-    my ($f) = @_;
-
-    return ['harness', 'HARNESS', $f->{harness_job_exit}->{details}];
-}
-
-sub render_end {
-    my $class = shift;
-    my ($f) = @_;
-
-    return ['harness', 'HARNESS', "Job completed at " . $f->{harness_job_end}->{stamp}];
-}
-
 sub render_control {
     my $class = shift;
-    my ($f, %params) = @_;
+    my ($f) = @_;
 
     my @out;
 
     push @out => ['control', 'HALT', $f->{control}->{details}]
         if defined $f->{control}->{halt};
 
-    return @out unless $params{super_verbose};
-
-    push @out => ['control', 'ENCODING', $f->{control}->{encoding}]
-        if $f->{control}->{encoding};
-
-    return @out if @out;
-
-    return ['control', 'CONTROL', $f->{control}->{details}]
-        if defined $f->{control}->{details};
-
-    return;
+    return @out;
 }
 
 my %SHOW_BRIEF_TAGS = (
@@ -192,7 +116,7 @@ sub render_brief {
     }
 
     if ($f->{info}) {
-        my $if = {%$f, info => [grep { $_->{debug} || $_->{important} } @{$f->{info}}]};
+        my $if = {%$f, info => [grep { $_->{debug} || $_->{important} || $_->{peek} } @{$f->{info}}]};
         push @out => $class->render_info($if) if @{$if->{info}};
     }
 
@@ -239,7 +163,7 @@ sub render_amnesty {
 
     my %seen;
     return map {
-        $seen{join '' => @{$_}{qw/tag details/}}++
+        $seen{join '' => map { $_ // '' } @{$_}{qw/tag details/}}++
             ? ()
             : ['amnesty', $_->{tag}, $_->{details}]
     } @{$f->{amnesty}};
@@ -268,23 +192,26 @@ sub render_debug {
     return ['trace', 'DEBUG', $debug];
 }
 
+# Turn a details value into a string for human display: refs are rendered via
+# Data::Dumper (trailing newline chomped), everything else is returned as-is.
+sub _render_details {
+    my $class = shift;
+    my ($details) = @_;
+
+    return $details unless ref($details);
+
+    require Data::Dumper;
+    my $dumper = Data::Dumper->new([$details])->Indent(2)->Terse(1)->Useqq(1)->Sortkeys(1);
+    chomp(my $msg = $dumper->Dump);
+    return $msg;
+}
+
 sub render_info {
     my $class = shift;
     my ($f) = @_;
 
     return map {
-        my $details = $_->{details} // '';
-
-        my $msg;
-        if (ref($details)) {
-            require Data::Dumper;
-            my $dumper = Data::Dumper->new([$details])->Indent(2)->Terse(1)->Useqq(1)->Sortkeys(1);
-            chomp($msg = $dumper->Dump);
-        }
-        else {
-            chomp($msg = $details);
-        }
-
+        my $details = $class->_render_details($_->{details} // '');
         ['info', $_->{tag}, $details, $_->{table} || ()]
     } @{$f->{info}};
 }
@@ -298,7 +225,7 @@ sub render_about {
 
     my $type;
     if ($f->{about}->{package}) {
-        my $type = $f->{about}->{package};
+        $type = $f->{about}->{package};
         $type =~ s/^.*:://;
     }
     $type //= 'ABOUT';
@@ -311,20 +238,8 @@ sub render_errors {
     my ($f) = @_;
 
     return map {
-        my $details = $_->{details};
-
-        my $msg;
-        if (ref($details)) {
-            require Data::Dumper;
-            my $dumper = Data::Dumper->new([$details])->Indent(2)->Terse(1)->Useqq(1)->Sortkeys(1);
-            chomp($msg = $dumper->Dump);
-        }
-        else {
-            chomp($msg = $details);
-        }
-
+        my $details = $class->_render_details($_->{details});
         my $tag = $_->{tag} || ($_->{fail} ? 'FATAL' : 'ERROR');
-
         ['error', $tag, $details]
     } @{$f->{errors}};
 }
@@ -393,8 +308,6 @@ In order of priority:
 
 =item Custom 'render' facet
 
-=item Control 'halt' facet (bail-out)
-
 =item Assertion (pass/fail)
 
 =item Error message
@@ -403,33 +316,20 @@ In order of priority:
 
 =item Info (note/diag)
 
-=item Timing data
-
 =item About
 
 =back
 
-=item @lines = $class->render_verbose($event, %control_params)
+=item @lines = $class->render_verbose($event)
 
-=item @lines = $class->render_verbose(\%facet_data, %control_params)
+=item @lines = $class->render_verbose(\%facet_data)
 
-This will verbosely render any event. The C<%control_params> are passed
-directly to C<render_control()> and are not used for anything else.
+This will verbosely render any event.
 
     for my $line ($comp->render_verbose($event)) {
         my ($facet_name, $tag_string, $text_for_humans) = @$line;
         ...,
     }
-
-=item @lines = $class->render_super_verbose($event)
-
-=item @lines = $class->render_super_verbose(\%facet_data)
-
-This is even more verbose than C<render_verbose()> because it produces output
-lines even for facets that should normally not be seen, things that would
-usually be considered noise.
-
-This is mainly useful for tools that allow deep inspection of log files.
 
 =back
 
@@ -441,20 +341,9 @@ C<[$facet, $tag, $text_for_humans]>.
 
 =over 4
 
-=item @lines = $class->render_control(\%facet_data, super_verbose => $bool)
+=item @lines = $class->render_control(\%facet_data)
 
-This specific one is special in that it can take an extra argument. This
-argument is used to toggle between super_verbose and regular verbosity. No
-other facet renderer needs this toggle. If omitted it defaults to not being
-super verbose.
-
-=item @lines = $class->render_launch(\%facet_data)
-
-=item @lines = $class->render_start(\%facet_data)
-
-=item @lines = $class->render_exit(\%facet_data)
-
-=item @lines = $class->render_end(\%facet_data)
+This renders control facets (currently the C<halt>/bail-out line).
 
 =item @lines = $class->render_brief(\%facet_data)
 

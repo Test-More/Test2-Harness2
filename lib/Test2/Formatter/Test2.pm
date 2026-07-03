@@ -24,10 +24,10 @@ sub import {
 
 use Test2::Util::HashBase qw{
     -composer
-    -last_depth
     -_buffered
     <job_io
     +io
+    +last_rendered
     <enc_io
     -_encoding
     -show_buffer
@@ -182,16 +182,14 @@ sub init {
     if ($use_color && USE_ANSI_COLOR) {
         $self->{+SHOW_BUFFER} = 1 unless defined $self->{+SHOW_BUFFER};
 
-        if ($use_color) {
-            $self->{+COLOR} = {
-                DEFAULT_COLOR(),
-                TAGS   => {DEFAULT_TAG_COLOR()},
-                FACETS => {DEFAULT_FACET_COLOR()},
-                JOBS   => [DEFAULT_JOB_COLOR()],
-            } unless defined $self->{+COLOR};
+        $self->{+COLOR} = {
+            DEFAULT_COLOR(),
+            TAGS   => {DEFAULT_TAG_COLOR()},
+            FACETS => {DEFAULT_FACET_COLOR()},
+            JOBS   => [DEFAULT_JOB_COLOR()],
+        } unless defined $self->{+COLOR};
 
-            $self->{+JOB_COLORS} = {free => [@{$self->{+COLOR}->{JOBS}}]};
-        }
+        $self->{+JOB_COLORS} = {free => [@{$self->{+COLOR}->{JOBS}}]};
     }
     else {
         $self->{+SHOW_BUFFER} = 0 unless defined $self->{+SHOW_BUFFER};
@@ -292,12 +290,12 @@ sub write {
 
     $should_show ||= $lines && @$lines;
     unless ($should_show || $self->{+VERBOSE}) {
-        if (my $last = $self->{last_rendered}) {
+        if (my $last = $self->{+LAST_RENDERED}) {
             return if time - $last < 0.2;
-            $self->{last_rendered} = time;
+            $self->{+LAST_RENDERED} = time;
         }
         else {
-            $self->{last_rendered} = time;
+            $self->{+LAST_RENDERED} = time;
         }
     }
 
@@ -569,15 +567,10 @@ sub render_event {
 
     my $comps = $self->{+COMPOSER}->render_verbose($f);
 
-    my (@parent, @times);
+    my @parent;
 
     if ($f->{parent}) {
         @parent = $self->render_parent($f, $tree);
-
-        if (@$comps && $comps->[-1]->[0] eq 'times') {
-            my $times = pop(@$comps);
-            @times = $self->build_line($tree, @$times);
-        }
     }
 
     my @out;
@@ -588,7 +581,7 @@ sub render_event {
         push @out => $self->build_line($ctree, @$comp);
     }
 
-    push @out => (@parent, @times);
+    push @out => @parent;
 
     return \@out;
 }
