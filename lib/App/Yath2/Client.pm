@@ -121,7 +121,7 @@ mirror).
     );
 
     # Lifecycle:
-    $client->install_signal_handlers;       # transient only
+    $client->install_signal_handlers;       # transient + attach (no-op in start)
     my $job_count = $client->populate;      # find + build tasks
     $client->start_runner(jobs_todo => $job_count);
     $client->submit_queue;
@@ -197,8 +197,12 @@ sub init ($self) {
 
 =item $client->install_signal_handlers
 
-Install C<INT>/C<HUP>/C<TERM> handlers that forward to L</handle_signal>
-(transient mode). Idempotent and a no-op outside transient mode.
+Install C<INT>/C<HUP>/C<TERM> handlers that forward to L</handle_signal>. Both the
+foreground modes install them: C<transient> (C<yath test>) forwards the signal to
+the owned runner's process group, C<attach> (C<yath run>) halts just this run over
+the socket and lets the command's C<stop()> run its graceful teardown (flush
+renderers/logs, reset the terminal, drain the DB loggers). Idempotent and a no-op
+in C<start> mode (the daemon detaches and installs nothing here).
 
 =item $client->remove_signal_handlers
 
@@ -207,7 +211,10 @@ Remove the handlers L</install_signal_handlers> set. Idempotent.
 =cut
 
 sub install_signal_handlers ($self) {
-    return unless $self->{+MODE} eq MODE_TRANSIENT;
+    # Both foreground modes trap: transient forwards to the owned runner's pgroup,
+    # attach halts just this run over the socket and lets stop() flush/reset/drain.
+    # start mode daemonizes and installs nothing.
+    return if $self->{+MODE} eq MODE_START;
     return if $self->{+SIGS_INSTALLED};
     $self->{+SIGS_INSTALLED} = 1;
 
@@ -231,11 +238,15 @@ sub remove_signal_handlers ($self) {
 
 =item $client->handle_signal($sig)
 
-Handle a caught signal in transient mode: forward it to the caller's signal hook
-(so the renderers can flush), print the "forwarding" notice, forward the signal
-to the runner's process group, and record it (a second signal exits immediately).
-The caller checks L</signal> after the render loop returns to do its
-caught-signal shutdown.
+Handle a caught signal: forward it to the caller's signal hook (so the render loop
+stops and the renderers flush), then act by mode. In C<transient> mode forward the
+signal to the owned runner's process group (tearing down its job children). In
+C<attach> mode NEVER signal the shared persistent runner -- ask it to halt just
+this run over the socket for promptness (the owner-disconnect sweep aborts it
+regardless); the graceful teardown (renderer/log flush, terminal reset, DB-logger
+drain) then runs in the command's C<stop()>. In both modes the signal is recorded
+so a second signal exits immediately. The caller checks L</signal> after the render
+loop returns to do its caught-signal shutdown.
 
 =cut
 
@@ -243,8 +254,19 @@ sub handle_signal ($self, $sig) {
     my $on_signal = $self->{+ON_SIGNAL};
     $on_signal->($sig) if $on_signal;
 
-    print STDERR "\nCaught SIG$sig, forwarding signal to child processes...\n";
-    $self->signal_runner($sig);
+    if ($self->{+MODE} eq MODE_ATTACH) {
+        # The persistent runner is shared and NOT ours to signal. Ask it to halt just
+        # THIS run over the socket for promptness (the owner-disconnect sweep aborts
+        # it regardless); the graceful teardown runs in the command's stop().
+        print STDERR "\nCaught SIG$sig, halting this run and cleaning up...\n";
+        eval { $self->halt_run; 1 };
+    }
+    else {
+        # Transient: forward to the owned runner's process group so it tears down its
+        # job children.
+        print STDERR "\nCaught SIG$sig, forwarding signal to child processes...\n";
+        $self->signal_runner($sig);
+    }
 
     if ($self->{+SIGNAL}) {
         print STDERR "\nSecond signal ($self->{+SIGNAL} followed by $sig), exiting now without waiting\n";

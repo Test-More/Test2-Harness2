@@ -66,7 +66,7 @@ tests transient_no_pid_is_gone => sub {
 };
 
 tests signal_handler_install_scope => sub {
-    # install/remove are idempotent and transient-only.
+    # install/remove are idempotent; both foreground modes trap, start mode does not.
     my $transient = App::Yath2::Client->new(workdir => '/tmp/wd', mode => 'transient');
 
     local %SIG = %SIG;
@@ -76,10 +76,20 @@ tests signal_handler_install_scope => sub {
     $transient->remove_signal_handlers;
     ok(!ref($SIG{INT}), "remove cleared the INT handler");
 
+    # #122: attach mode (yath run) MUST also install handlers so Ctrl-C is graceful
+    # (flush renderers/logs, reset the terminal) instead of an instant fatal death.
     my $attach = App::Yath2::Client->new(workdir => '/tmp/wd', mode => 'attach');
     delete $SIG{INT};
     $attach->install_signal_handlers;
-    ok(!ref($SIG{INT}), "attach mode installs no signal handlers");
+    ok(ref($SIG{INT}) eq 'CODE', "attach mode installs signal handlers (#122)");
+    $attach->remove_signal_handlers;
+    ok(!ref($SIG{INT}), "attach remove cleared the INT handler");
+
+    # start mode daemonizes and installs nothing here.
+    my $start = App::Yath2::Client->new(workdir => '/tmp/wd', mode => 'start');
+    delete $SIG{INT};
+    $start->install_signal_handlers;
+    ok(!ref($SIG{INT}), "start mode installs no signal handlers");
 };
 
 tests terminate_queue_per_mode => sub {
