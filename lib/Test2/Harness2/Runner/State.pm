@@ -452,14 +452,26 @@ sub _start_task {
 
     my $task = $self->{+TASK_LOOKUP}->{$job_id} or die "Could not find task to start";
 
-    my ($run_id, $smoke, $stage, $cat, $dur) = $self->task_fields($task);
+    # #115: bucket the PENDING_TASKS removal by $run_stage ($spec->{stage}) -- the
+    # stage _next/_stage_order actually DEQUEUED this task from -- NOT by re-resolving
+    # the stage via task_fields here. task_stage is volatile across queue->start: a
+    # task whose preload_list is [A, B] buckets under B while A is still
+    # 'starting'/'restarting'; if A readies before dispatch, a re-resolution flips the
+    # start-time stage to A while the task really sits parked in the B bucket _next
+    # pulled it from. Re-resolving would look in the (empty/absent) A bucket, so the
+    # removal misses and the "was not pending" die (or an undef-array-deref on an
+    # absent bucket) fires on a legitimately-dispatched task and reaps the whole run.
+    # Only the stage dimension is volatile -- run_id/smoke/cat/dur are stable
+    # (normalized at queue time) -- so keep those from task_fields and override the
+    # stage with the bucket key.
+    my ($run_id, $smoke, undef, $cat, $dur) = $self->task_fields($task);
 
-    my $set = $self->{+PENDING_TASKS}->{$run_id}->{$smoke}->{$stage}->{$cat}->{$dur};
+    my $set = $self->{+PENDING_TASKS}->{$run_id}->{$smoke}->{$run_stage}->{$cat}->{$dur};
     my $count = @$set;
     @$set = grep { $_->{job_id} ne $job_id } @$set;
     die "Task $job_id was not pending ($count -> " . scalar(@$set) . ")" unless $count > @$set;
 
-    $self->prune_hash($self->{+PENDING_TASKS}, $run_id, $smoke, $stage, $cat, $dur);
+    $self->prune_hash($self->{+PENDING_TASKS}, $run_id, $smoke, $run_stage, $cat, $dur);
 
     # A fresh, fully-owned task hashref for the running copy (#135 finding 29). The
     # env_vars hash and test_args array are 1-level-copied too -- that IS the full deep

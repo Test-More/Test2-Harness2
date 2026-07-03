@@ -139,8 +139,10 @@ subtest halt_does_not_strand_running_tasks => sub {
     $state->queue_task({%task, job_id => 'J1'});
     $state->queue_task({%task, job_id => 'J2'});
 
-    # J1 is RUNNING; J2 stays pending.
-    $state->start_task({job_id => 'J1', stage => 'default', res => {env_vars => {}, args => [], record => {}}});
+    # J1 is RUNNING; J2 stays pending. A use_preload=0 task buckets under the
+    # synthetic 'NOPRELOAD' stage (task_stage), so the dispatch stage _next would pass
+    # is 'NOPRELOAD' -- start_task removes from the bucket it was dequeued from (#115).
+    $state->start_task({job_id => 'J1', stage => 'NOPRELOAD', res => {env_vars => {}, args => [], record => {}}});
     is($state->running, 1, "J1 is running");
 
     $state->halt_run('R1');
@@ -165,7 +167,8 @@ subtest stop_task_tolerates_missing_lookup => sub {
     $state->queue_run({run_id => 'R1'});
     $state->start_run('R1');
     $state->queue_task({job_id => 'J1', run_id => 'R1', category => 'general', duration => 'short', stage => 'default', use_preload => 0});
-    $state->start_task({job_id => 'J1', stage => 'default', res => {env_vars => {}, args => [], record => {}}});
+    # use_preload=0 buckets under 'NOPRELOAD'; dispatch from that bucket (#115).
+    $state->start_task({job_id => 'J1', stage => 'NOPRELOAD', res => {env_vars => {}, args => [], record => {}}});
     is($state->running, 1, "running");
 
     delete $state->task_lookup->{'J1'};    # simulate a lookup dropped by a concurrent halt/purge
