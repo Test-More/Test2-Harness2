@@ -73,12 +73,6 @@ from the dispatched run item), or C<undef> before any dispatch.
 Report the pid of a job this stage forked so the runner's job-pid map (used by the
 status / ps / abort report) is complete.
 
-=item $stage->stage_ready / $stage->stage_down
-
-No-ops: stage readiness is signalled to the runner by the socket accepting a
-connection, not by a state action. Present so the shared C<run_stage> code can
-call them uniformly.
-
 =back
 
 =cut
@@ -135,9 +129,6 @@ sub job_pid ($self, $job_id, $pid) {
     $self->_report('job_pid', job_id => $job_id, pid => $pid);
     return;
 }
-
-sub stage_ready ($self, @) { return }
-sub stage_down  ($self, @) { return }
 
 # The stage never decides it is "done" on its own: it serves dispatches until the
 # runner stops it (a stop request or SIGTERM at run shutdown). Returning false

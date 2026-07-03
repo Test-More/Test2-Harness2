@@ -22,7 +22,6 @@ use List::Util qw/pairgrep/;
 use Test2::Harness2::Util::HashBase(
     qw{
         <dir
-        <persist
         <preloads
         <done
         <below_threshold
@@ -653,7 +652,7 @@ sub check {
 
     $dtrace->stop if $self->{+RELOAD};
 
-    my (@todo, @fails);
+    my @todo;
     for my $item (values %$results) {
         my $stage = $self->{+STAGE} ? $self->{+STAGE}->name : 'default';
         $state->reload($stage => $item);

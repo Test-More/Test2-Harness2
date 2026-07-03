@@ -190,7 +190,6 @@ sub preloader {
 
     $self->{+PRELOADER} //= Test2::Harness2::Runner::Preloader->new(
         dir             => $self->{+DIR},
-        persist         => $self->{+PERSIST},
         preloads        => $self->preloads,
         monitor         => $self->{+MONITOR_PRELOADS},
         restrict_reload => $self->{+RESTRICT_RELOAD},
@@ -568,28 +567,27 @@ sub run_stage {
 
     $self->{+STAGE} = $stage;
 
-    my $stage_service = $self->is_stage_service;
-    if ($stage_service) {
-        $self->_announce_stage_ready($stage);
-    }
-    else {
-        $self->state->stage_ready($stage);
-    }
+    # STAGE is always set to a non-empty stage name above, so every Preload::Host
+    # run_stage runs as a socket-dispatch service (is_stage_service is always true).
+    # Assert the invariant -- it documents the STAGE-always-set contract and protects
+    # #8's future in-runner Host collapse.
+    croak "run_stage requires a stage service (STAGE must be set)"
+        unless $self->is_stage_service;
+
+    $self->_announce_stage_ready($stage);
 
     while (1) {
-        # Stage service: accept dispatched jobs on the registered channel. No
-        # scheduler here -- the runner schedules and dispatches; this process only
-        # forks/reaps the jobs it is handed and reports outcomes back.
-        if ($stage_service) {
-            $self->service_io;
+        # Accept dispatched jobs on the registered channel. No scheduler here -- the
+        # runner schedules and dispatches; this process only forks/reaps the jobs it
+        # is handed and reports outcomes back.
+        $self->service_io;
 
-            # A queued `stop` wins over a pending `yath reload`: drop the pending
-            # reload and force a TERM shutdown so a stale reload cannot re-exec the
-            # preload tree while the runner is winding down.
-            if ($self->service_stopped) {
-                delete $self->{+PENDING_RELOAD};
-                $self->{+SIGNAL} = 'TERM';
-            }
+        # A queued `stop` wins over a pending `yath reload`: drop the pending
+        # reload and force a TERM shutdown so a stale reload cannot re-exec the
+        # preload tree while the runner is winding down.
+        if ($self->service_stopped) {
+            delete $self->{+PENDING_RELOAD};
+            $self->{+SIGNAL} = 'TERM';
         }
 
         next if $self->run_job();
@@ -601,16 +599,11 @@ sub run_stage {
         sleep($self->{+WAIT_TIME}) if $self->{+WAIT_TIME};
     }
 
-    if ($stage_service) {
-        # §6.8 (§4.7/§4.7a): a stage that exits while it is still in the stage map is
-        # "coming back" -- the preload-root respawns it and the fresh incarnation
-        # re-readies -- so it reports 'restarting', not 'down'.
-        eval { $self->service_send('runner', 'stage_restarting', stage => $stage, want_reply => 0); 1 };    # one-way (#134 finding 106)
-        $self->close_service;
-    }
-    else {
-        $self->state->stage_restarting($stage);
-    }
+    # §6.8 (§4.7/§4.7a): a stage that exits while it is still in the stage map is
+    # "coming back" -- the preload-root respawns it and the fresh incarnation
+    # re-readies -- so it reports 'restarting', not 'down'.
+    eval { $self->service_send('runner', 'stage_restarting', stage => $stage, want_reply => 0); 1 };    # one-way (#134 finding 106)
+    $self->close_service;
 
     # Child stages register their service channel with the RUNNER, not with this
     # host (they dial runner.socket in run_stage), so the runner's
