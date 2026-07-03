@@ -2,14 +2,12 @@ package App::Yath2::Command::help;
 use strict;
 use warnings;
 
-use Test2::Util qw/pkg_to_file/;
-
 our $VERSION = '2.000000';
 
 use parent 'App::Yath2::Command';
 use Test2::Harness2::Util::HashBase qw/<_command_info_hash/;
 
-use Test2::Harness2::Util qw/open_file find_libraries/;
+use Test2::Harness2::Util qw/find_libraries/;
 use List::Util ();
 
 sub group   { '' }

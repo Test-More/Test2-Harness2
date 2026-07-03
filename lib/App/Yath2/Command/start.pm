@@ -9,19 +9,15 @@ our $VERSION = '2.000000';
 use App::Yath2::Util qw/find_runner_link/;
 use Getopt::Yath;
 
-use Test2::Harness2::Run;
-
 use App::Yath2::Client;
 use App::Yath2::Discovery;
 
 use Test2::Harness2::Util qw/parse_exit clean_path/;
-use Test2::Util::Table qw/table/;
 
 use POSIX;
 
 use Time::HiRes qw/sleep/;
 
-use Carp qw/croak/;
 use File::Spec();
 use File::Path qw/remove_tree/;
 

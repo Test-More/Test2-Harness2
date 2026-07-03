@@ -6,8 +6,6 @@ our $VERSION = '2.000000';
 
 use Getopt::Yath;
 
-use Test2::Harness2::Run;
-use Test2::Harness2::Event;
 use Test2::Harness2::Util::File::JSON;
 
 use Test2::Harness2::Renderer::Driver;
@@ -18,9 +16,8 @@ use App::Yath2::RenderLoop::LiveProducer;
 
 use Test2::Harness2::Util::JSON qw/JSON/;
 
-use Time::HiRes qw/sleep time/;
+use Time::HiRes qw/time/;
 use List::Util qw/sum/;
-use Carp qw/croak/;
 use POSIX();
 
 use parent 'App::Yath2::Command';
@@ -689,7 +686,6 @@ sub write_summary {
         times => $time_data,
     );
 
-    require Test2::Harness2::Util::File::JSON;
     my $jfile = Test2::Harness2::Util::File::JSON->new(name => $file);
     $jfile->write(\%data);
 

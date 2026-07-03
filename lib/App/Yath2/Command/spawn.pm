@@ -6,7 +6,6 @@ our $VERSION = '2.000000';
 
 use Getopt::Yath;
 
-use Carp qw/croak/;
 use Config qw/%Config/;
 use Cwd qw/getcwd/;
 use File::Spec();

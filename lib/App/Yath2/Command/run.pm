@@ -6,20 +6,15 @@ our $VERSION = '2.000000';
 
 use Getopt::Yath;
 
-use Test2::Harness2::Run;
 use Test2::Harness2::Util::File::JSON;
 
 use App::Yath2::Client;
 use App::Yath2::Discovery();
-use Test2::Harness2::Util qw/mod2file open_file/;
-use Test2::Util::Table qw/table/;
 
 use File::Spec;
 use File::Path qw/remove_tree/;
 use Time::HiRes qw/time sleep/;
 use Errno qw/ESRCH EPERM/;
-
-use Carp qw/croak/;
 
 use parent 'App::Yath2::Command::test';
 use Test2::Harness2::Util::HashBase qw/+pfile +banner_printed/;
