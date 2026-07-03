@@ -194,9 +194,7 @@ sub build_shutdown_loop {
 
     my $settings = $self->settings;
 
-    my $show = 1;
-    $show = $settings->display->hide_runner_output ? 0 : 1
-        if $settings->check_group('display');
+    my $show = $self->show_runner_output;
 
     return undef unless $show;
 

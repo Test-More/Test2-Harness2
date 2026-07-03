@@ -524,12 +524,9 @@ sub driver {
 
     my $settings = $self->settings;
 
-    my $show_runner_output = 1;
+    my $show_runner_output = $self->show_runner_output;
     my $live               = 0;
-    if ($settings->check_group('display')) {
-        $show_runner_output = $settings->display->hide_runner_output ? 0 : 1;
-        $live               = $settings->display->live               ? 1 : 0;
-    }
+    $live = $settings->display->live ? 1 : 0 if $settings->check_group('display');
 
     return $self->{+DRIVER} //= Test2::Harness2::Renderer::Driver->new(
         settings           => $settings,

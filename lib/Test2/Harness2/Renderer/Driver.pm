@@ -12,6 +12,7 @@ use Test2::Harness2::JobReader;
 
 use Test2::Harness2::Util::HashBase qw{
     +aborted_rendered
+    +launch_rendered
     <live
     +tail_readers
 };
@@ -107,6 +108,7 @@ subscription state plus the events files -- never from a gatherer event.
 sub init ($self) {
     $self->SUPER::init();
     $self->{+ABORTED_RENDERED} = {};
+    $self->{+LAUNCH_RENDERED}  = {};
     $self->{+TAIL_READERS}     = {};
     $self->{+LIVE} //= 0;
     return;
@@ -143,22 +145,7 @@ rollup and the pass/fail decision into C<final_data>.
 =cut
 
 sub step ($self, $monitor) {
-    $self->render_run_start;
-
-    $self->step_runner_output($monitor);
-
-    # Phase 1: a freshly-seen test collector -> render its launch lifecycle.
-    for my $uuid ($monitor->new_collectors) {
-        my $c = $monitor->collector($uuid) or next;
-        next unless ($c->{category} // '') eq 'test';
-        $self->_render_launch($uuid, $c);
-    }
-
-    # Drain the other realtime change-lists so the mirror does not retain them;
-    # failing/diagnosing are realtime signals folded into per-event rendering at
-    # completion, so we do not double-render them here.
-    $monitor->new_failing;
-    $monitor->new_diagnosing;
+    $self->_sweep_prologue($monitor);
 
     # Phases 2 + 3: a completed test collector whose final-state has arrived ->
     # feed its events file, then render its final completion.
@@ -168,37 +155,13 @@ sub step ($self, $monitor) {
         $self->_render_completion($uuid, $c);
     }
 
-    # A job the runner watchdog aborted (its collector will never report
-    # completion) -- render a synthetic failed completion. The runner is the
-    # completion authority on the transient path; the driver renders + rolls up
-    # its verdict.
-    for my $job_id ($monitor->new_aborted_jobs) {
-        $self->_render_aborted($monitor->job($job_id));
-    }
-
-    $monitor->new_finalized;
-    $monitor->new_test_exits;
+    $self->_drain_terminal_lists($monitor);
 
     return;
 }
 
 sub tail ($self, $monitor) {
-    $self->render_run_start;
-
-    $self->step_runner_output($monitor);
-
-    # A freshly-seen test collector -> render its launch lifecycle (same as the
-    # default mode), then start tailing its events file below.
-    for my $uuid ($monitor->new_collectors) {
-        my $c = $monitor->collector($uuid) or next;
-        next unless ($c->{category} // '') eq 'test';
-        $self->_render_launch($uuid, $c);
-    }
-
-    # failing/diagnosing are realtime signals folded into the tailed per-event
-    # stream, so just drain them off the mirror without double-rendering.
-    $monitor->new_failing;
-    $monitor->new_diagnosing;
+    $self->_sweep_prologue($monitor);
 
     # Tail every test collector whose events file has appeared, streaming each
     # job's events as they are written. Readers across jobs interleave; each
@@ -210,6 +173,41 @@ sub tail ($self, $monitor) {
     # ends. Aborted jobs (no events file) still need the synthetic completion.
     $monitor->new_completed;
 
+    $self->_drain_terminal_lists($monitor);
+
+    return;
+}
+
+# The shared realtime prologue for both step (default) and tail (live): kick the
+# run-start header, slurp the runner/stage output, render every freshly-seen test
+# collector's launch lifecycle, and drain the failing/diagnosing change-lists off
+# the mirror. failing/diagnosing are realtime signals folded into per-event
+# rendering at completion (default) or into the tailed stream (live), so they are
+# drained here without double-rendering; only the mode-specific body delivery
+# differs, and that stays inline in step/tail.
+sub _sweep_prologue ($self, $monitor) {
+    $self->render_run_start;
+
+    $self->step_runner_output($monitor);
+
+    for my $uuid ($monitor->new_collectors) {
+        my $c = $monitor->collector($uuid) or next;
+        next unless ($c->{category} // '') eq 'test';
+        $self->_render_launch($uuid, $c);
+    }
+
+    $monitor->new_failing;
+    $monitor->new_diagnosing;
+
+    return;
+}
+
+# The shared terminal-list drain for both step and tail: render any job the
+# runner watchdog aborted (its collector will never report completion -- the
+# runner is the completion authority on the transient path; the driver renders +
+# rolls up its verdict), then drain the finalized / test-exit change-lists so the
+# mirror does not retain them.
+sub _drain_terminal_lists ($self, $monitor) {
     for my $job_id ($monitor->new_aborted_jobs) {
         $self->_render_aborted($monitor->job($job_id));
     }
@@ -245,9 +243,7 @@ sub finalize ($self, $monitor) {
     for my $uuid ($monitor->tests) {
         my $c = $monitor->collector($uuid) or next;
         next if $self->{+BY_UUID}{$uuid}{ended};
-
-        my $status = $c->{status} // '';
-        next unless $c->{final_state} || $status eq 'complete' || $status eq 'finalized';
+        next unless $self->_collector_terminal($c);
 
         $self->_render_completion($uuid, $c);
     }
@@ -261,11 +257,30 @@ sub finalize ($self, $monitor) {
 
 =over 4
 
+=item $self->_sweep_prologue($monitor)
+
+The realtime prologue shared by C<step> and C<tail>: run-start header, runner
+output slurp, launch lifecycle for freshly-seen test collectors, and the
+failing/diagnosing drain. Only the mode-specific body delivery differs and stays
+inline in the two callers.
+
+=item $self->_drain_terminal_lists($monitor)
+
+The terminal-list drain shared by C<step> and C<tail>: render aborted jobs then
+drain the finalized / test-exit change-lists off the mirror.
+
 =item $self->_render_launch($uuid, $collector)
 
 Phase 1: synthesize and dispatch the C<harness_job_queued> /
 C<harness_job_launch> / C<harness_job_start> lifecycle for a newly-seen test
-collector.
+collector (via C<_dispatch_launch>).
+
+=item $self->_dispatch_launch($job_id, $file, $try)
+
+Build + dispatch the harness_job / harness_job_start / harness_job_launch launch
+event, doing the C<tests_seen> + per-job C<tries> bookkeeping exactly once and
+marking the job C<LAUNCH_RENDERED> (keyed by job_id). Shared by C<_render_launch>
+and the never-launched leg of C<_render_aborted>; the try ordinal is a parameter.
 
 =item $self->_render_aborted($runner_job)
 
@@ -276,8 +291,21 @@ failure -- the gatherer's C<_abort_stalled_jobs> shape, command-side.
 =item $self->_render_completion($uuid, $collector)
 
 Default mode: read the collector's events file by path (via the base's
-C<feed_events_file>, holding the final C<harness_job_end>), then dispatch the
-synthesized final C<harness_job_end>.
+C<feed_events_file>, holding the final C<harness_job_end>), then settle + dispatch
+the final C<harness_job_end> via C<_settle_synth_end>.
+
+=item $bool = $self->_collector_terminal($collector)
+
+True when a test collector has reached a terminal status (its C<final_state> was
+folded, or its status is C<complete> / C<finalized>) and is eligible for the
+end-of-run completion sweep. Shared by C<finalize> and C<_finalize_live>.
+
+=item $self->_settle_synth_end($entry, $job, $job_id, $try, $file, $final_state, $job_end = undef)
+
+Settle a job's terminal: use the C<harness_job_end> already read from the events
+file if one is passed, else synthesize it from C<final_state>; note the verdict,
+mark the collector ended, and dispatch the end LAST. Shared by
+C<_render_completion> and C<_finalize_live>.
 
 =item $self->_tail_test_collectors($monitor)
 
@@ -307,18 +335,40 @@ failures, C<compute_final>, and dispatch the run-level C<harness_final> event.
 =cut
 
 sub _render_launch ($self, $uuid, $c) {
-    my $job   = $self->job_for($c);
     my $entry = $self->{+BY_UUID}{$uuid} //= {ended => 0};
 
     return if $entry->{launched}++;
 
+    my $job    = $self->job_for($c);
     my $job_id = $job ? $job->{job_id} : $uuid;
     my $file   = $job ? $job->{file}   : $c->{name};
     my $try    = $c->{try} // 0;
-    my $stamp  = time;
 
+    $self->_dispatch_launch($job_id, $file, $try);
+    return;
+}
+
+sub _collector_terminal ($self, $c) {
+    my $status = $c->{status} // '';
+    return $c->{final_state} || $status eq 'complete' || $status eq 'finalized';
+}
+
+# Build and dispatch the harness_job / harness_job_start / harness_job_launch
+# lifecycle for one job, doing the TESTS_SEEN + per-job tries bookkeeping exactly
+# once and marking the job LAUNCH_RENDERED (keyed by job_id, so the abort path can
+# tell a launched job from an unlaunched one even when it has no JOBS record).
+# Shared by _render_launch (default/live realtime launch) and _render_aborted (the
+# never-launched abort synthesizes its launch here). The caller passes the try
+# ordinal -- default mode uses the collector's try, the abort path uses the task's
+# is_try -- so it is a parameter, not recomputed here.
+sub _dispatch_launch ($self, $job_id, $file, $try) {
+    $self->{+LAUNCH_RENDERED}{$job_id} = 1;
+
+    my $job = $self->{+JOBS}{$job_id};
     $job->{tries}++ if $job;
     $self->{+TESTS_SEEN}++;
+
+    my $stamp = time;
 
     my $task     = $self->task_for($job_id);
     my $job_name = $task ? $task->{job_name} : $job_id;
@@ -339,7 +389,7 @@ sub _render_launch ($self, $uuid, $c) {
         # try==1 and only try>1 is a retry -- emitting the raw ordinal tagged every
         # first launch as RETRY under -v (#141 finding 99). The ordinal itself
         # still rides in `is_try` above.
-        harness_job_launch => {stamp => $stamp, retry => (($try // 1) > 1 ? 1 : 0)},
+        harness_job_launch => {stamp => $stamp, retry => ($try > 1 ? 1 : 0)},
     );
 
     $self->dispatch($e);
@@ -369,41 +419,24 @@ sub _render_aborted ($self, $rj) {
     my $job_name = $task ? $task->{job_name} : $job_id;
 
     # Was this job's launch lifecycle already rendered (its collector appeared and
-    # _render_launch ran, which bumps $job->{tries} + TESTS_SEEN)? If so, DO NOT
-    # synthesize a second launch and DO NOT re-count it: doing so showed the file
-    # 'started' twice, inflated the File Count, and emitted a phantom
-    # "Times Run: 2 / Succeeded Eventually? NO" retried row (#141 finding 4). Just
+    # _dispatch_launch ran)? If so, DO NOT synthesize a second launch and DO NOT
+    # re-count it: doing so showed the file 'started' twice, inflated the File
+    # Count, and emitted a phantom "Times Run: 2 / Succeeded Eventually? NO"
+    # retried row (#141 finding 4). LAUNCH_RENDERED is keyed by job_id and set by
+    # _dispatch_launch, so it is robust even for a job with no JOBS record. Just
     # emit the aborted exit/end below so the verdict rolls up exactly once.
-    my $launched = ($job && $job->{tries}) ? 1 : 0;
+    my $launched = $self->{+LAUNCH_RENDERED}{$job_id} ? 1 : 0;
 
     # Real (1-based) try ordinal rather than the old hardcoded 0, so a first
     # attempt is not tagged RETRY and a retry of an aborted job IS (#141 finding
-    # 99). The launched case already knows its ordinal from $job->{tries}; an
+    # 99). A launched job already knows its ordinal from $job->{tries}; an
     # unlaunched abort falls back to the task's is_try.
-    my $try = $launched ? $job->{tries} : (($task ? $task->{is_try} : undef) // 1);
+    my $try = ($job && $job->{tries}) ? $job->{tries} : (($task ? $task->{is_try} : undef) // 1);
 
     my $stamp = time;
 
     # Only synthesize the launch (and count it) when it was NOT already rendered.
-    unless ($launched) {
-        $self->{+TESTS_SEEN}++;
-        $job->{tries}++ if $job;
-
-        my $launch = $self->event(
-            $job_id, $try, $stamp,
-            harness_job       => {job_id => $job_id, job_name => $job_name, file => $file, is_try => $try},
-            harness_job_start => {
-                details  => "Job $job_id started",
-                job_id   => $job_id,
-                stamp    => $stamp,
-                file     => $file,
-                rel_file => defined($file) ? File::Spec->abs2rel($file) : undef,
-                abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
-            },
-            harness_job_launch => {stamp => $stamp, retry => ($try > 1 ? 1 : 0)},
-        );
-        $self->dispatch($launch);
-    }
+    $self->_dispatch_launch($job_id, $file, $try) unless $launched;
 
     my $end_facet = {
         file     => $file,
@@ -474,11 +507,16 @@ sub _render_completion ($self, $uuid, $c) {
         hold          => sub ($e) { $e->{facet_data}{harness_job_end} ? 1 : 0 },
     );
 
-    $job_end //= $self->synth_job_end($job_id, $try, $file, $c->{final_state});
+    # Phase 3: settle the verdict (synthesizing the terminal from final_state if
+    # the events file yielded no readable harness_job_end) and dispatch it LAST.
+    $self->_settle_synth_end($entry, $job, $job_id, $try, $file, $c->{final_state}, $job_end);
+    return;
+}
 
+sub _settle_synth_end ($self, $entry, $job, $job_id, $try, $file, $final_state, $job_end = undef) {
+    $job_end //= $self->synth_job_end($job_id, $try, $file, $final_state);
     $self->note_verdict($job, $try, $job_end->{facet_data}{harness_job_end});
-
-    # Phase 3: the job's final completion renders last.
+    $entry->{ended} = 1;
     $self->dispatch($job_end);
     return;
 }
@@ -579,9 +617,7 @@ sub _finalize_live ($self, $monitor) {
         }
 
         next if $entry->{ended};
-
-        my $status = $c->{status} // '';
-        next unless $c->{final_state} || $status eq 'complete' || $status eq 'finalized';
+        next unless $self->_collector_terminal($c);
 
         $self->_render_launch($uuid, $c) unless $entry->{launched};
 
@@ -589,10 +625,7 @@ sub _finalize_live ($self, $monitor) {
         my $file   = $job ? $job->{file}   : $c->{name};
         my $try    = $c->{try} // 0;
 
-        my $job_end = $self->synth_job_end($job_id, $try, $file, $c->{final_state});
-        $self->note_verdict($job, $try, $job_end->{facet_data}{harness_job_end});
-        $entry->{ended} = 1;
-        $self->dispatch($job_end);
+        $self->_settle_synth_end($entry, $job, $job_id, $try, $file, $c->{final_state});
     }
 
     $self->_emit_run_rollup($monitor);

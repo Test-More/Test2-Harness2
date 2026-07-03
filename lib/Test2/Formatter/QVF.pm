@@ -80,13 +80,8 @@ sub write {
         local($\, $,) = (undef, '') if $\ || $,;
 
         my $io = $self->{+IO};
-        if ($self->{+_BUFFERED}) {
-            print $io "\r\e[K";
-            $self->{+_BUFFERED} = 0;
-        }
-
-        print $io $self->render_status($f);
-        $self->{+_BUFFERED} = 1;
+        $self->_clear_status($io);
+        $self->_render_status($io);
     }
 
     return;

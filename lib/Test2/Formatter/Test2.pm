@@ -306,17 +306,11 @@ sub write {
     local($\, $,) = (undef, '') if $\ || $,;
 
     my $io = $self->io($job_id);
-    if ($self->{+_BUFFERED}) {
-        print $io "\r\e[K";
-        $self->{+_BUFFERED} = 0;
-    }
+    $self->_clear_status($io);
 
     if (!$self->{+VERBOSE}) {
         print $io $_, "\n" for @$lines;
-        if ($self->{+TTY} && $self->{+PROGRESS}) {
-            print $io $self->render_status($f);
-            $self->{+_BUFFERED} = 1;
-        }
+        $self->_render_status($io);
     }
     elsif ($depth && $lines && @$lines && !$self->{+INTERACTIVE}) {
         print $io $lines->[0];
@@ -344,15 +338,8 @@ sub step {
     return unless $self->update_active_disp;
 
     my $io = $self->io(0);
-    if ($self->{+_BUFFERED}) {
-        print $io "\r\e[K";
-        $self->{+_BUFFERED} = 0;
-    }
-
-    if ($self->{+TTY} && $self->{+PROGRESS}) {
-        print $io $self->render_status();
-        $self->{+_BUFFERED} = 1;
-    }
+    $self->_clear_status($io);
+    $self->_render_status($io);
 }
 
 sub update_active_disp {
@@ -418,8 +405,6 @@ sub update_active_disp {
     my $active = $self->{+ACTIVE_FILES};
 
     return $self->{+_ACTIVE_DISP} = [$statline, ''] unless $active && keys %$active;
-
-    my $reset = $self->reset;
 
     my $str .= "(";
     {
@@ -529,6 +514,35 @@ sub _sysload_str {
     my $blue  = $self->{+COLOR} ? Term::ANSIColor::color('blue') : '';
 
     return " ${blue}[" . join(' ', @parts) . "]${reset}";
+}
+
+# Erase the in-place status bar (if one is currently buffered on the line) so the
+# next real output starts clean. write() calls this up front; step()/QVF call it
+# right before re-rendering.
+sub _clear_status {
+    my $self = shift;
+    my ($io) = @_;
+
+    return unless $self->{+_BUFFERED};
+
+    print $io "\r\e[K";
+    $self->{+_BUFFERED} = 0;
+
+    return;
+}
+
+# Re-render the in-place status bar (only on a TTY with progress enabled) and mark
+# the line as buffered so the next _clear_status knows to erase it.
+sub _render_status {
+    my $self = shift;
+    my ($io) = @_;
+
+    return unless $self->{+TTY} && $self->{+PROGRESS};
+
+    print $io $self->render_status;
+    $self->{+_BUFFERED} = 1;
+
+    return;
 }
 
 sub render_status {

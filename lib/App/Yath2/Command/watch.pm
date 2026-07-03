@@ -108,9 +108,7 @@ sub runner_renderer {
 
     my $settings = $self->settings;
 
-    my $show_runner_output = 1;
-    $show_runner_output = $settings->display->hide_runner_output ? 0 : 1
-        if $settings->check_group('display');
+    my $show_runner_output = $self->show_runner_output;
 
     # The watch session is a GLOBAL subscriber with no run scope; runner/stage
     # output is run-level, but the events it emits still need a run_id (the harness

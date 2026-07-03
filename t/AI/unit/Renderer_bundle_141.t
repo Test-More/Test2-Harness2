@@ -64,6 +64,43 @@ subtest aborted_after_launch_not_double_counted => sub {
     is($final->{pass}, 0, "run rollup is a failure");
 };
 
+# (#65) Same guard, but the watchdog abort lands a TICK LATER than the launch:
+# the LAUNCH_RENDERED flag (keyed by job_id, set by _dispatch_launch) must persist
+# across step() calls so the second tick's _render_aborted still skips the launch +
+# bookkeeping. Exercises the shared _dispatch_launch choke point across ticks.
+subtest aborted_after_launch_next_tick_not_double_counted => sub {
+    my ($driver, $events) = new_driver(
+        tasks => [{job_id => 'JOB-W', file => 't/w.t', rel_file => 't/w.t', is_try => 1}],
+    );
+
+    my $mon = Test2::Harness2::Runner::Monitor->new;
+
+    # Tick 1: the collector appears and its launch lifecycle renders.
+    $mon->feed({facet_data => {harness_collector => {uuid => 'UUID-W', name => 't/w.t', run_uuid => 'RUN-1', try => 1}, harness_state_transition => {state => 'starting'}}});
+    $driver->step($mon);
+
+    is($driver->tests_seen, 1, "launched once on tick 1");
+    ok($driver->{launch_rendered}{'JOB-W'}, "LAUNCH_RENDERED flag set for the job");
+
+    # Tick 2: the runner watchdog aborts the already-launched job.
+    $mon->feed({facet_data => {harness_runner_job => {job_id => 'JOB-W', file => 't/w.t', state => 'aborted', details => 'watchdog aborted'}}});
+    $driver->step($mon);
+
+    is($driver->tests_seen, 1, "still counted exactly once across ticks (no re-count)");
+
+    my @launches = grep { $_->facet_data->{harness_job_launch} } @$events;
+    is(scalar(@launches), 1, "exactly one launch rendered across both ticks");
+
+    my @ends = grep { $_->facet_data->{harness_job_end} } @$events;
+    is(scalar(@ends), 1, "one aborted harness_job_end rendered");
+    is($ends[0]->facet_data->{harness_job_end}{aborted}, 1, "the end is flagged aborted");
+
+    $driver->finalize($mon);
+    my $final = $driver->final_data;
+    ok(!$final->{retried}, "no phantom retried row");
+    is($final->{failed}, [['JOB-W', 't/w.t']], "aborted job listed as failed once");
+};
+
 # ---------------------------------------------------------------------------
 # (99) harness_job_launch.retry is a BOOLEAN keyed off the 1-based try ordinal:
 # a first attempt (try==1) is LAUNCH (retry 0), a retry (try==2) is RETRY

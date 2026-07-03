@@ -410,7 +410,6 @@ option_post_process 100 => sub ($options, $state) {
     push @args => map { $_ => $settings->display->$_ } qw{
             progress
             color
-            quiet
             verbose
             show_times
         };

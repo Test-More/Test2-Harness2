@@ -157,6 +157,19 @@ sub write_settings_to {
     return $settings_file->name;
 }
 
+# Whether runner/stage output should be shown (the inverse of --hide-runner-output),
+# defaulting to shown when the display option group is absent. Shared by the
+# test/watch/stop render setup. NOTE: this is deliberately NOT defaulted in
+# Renderer::Base::init -- stop uses the value to decide whether to build a renderer
+# at all, so the derivation stays command-side.
+sub show_runner_output {
+    my $self     = shift;
+    my $settings = $self->settings;
+
+    return 1 unless $settings->check_group('display');
+    return $settings->display->hide_runner_output ? 0 : 1;
+}
+
 sub setup_resources {
     my $self     = shift;
     my $settings = $self->settings;

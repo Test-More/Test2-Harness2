@@ -35,13 +35,13 @@ sub init {
     my $f_file    = mod2file($f_class);
     require $f_file;
 
-    my $io = $self->{+IO} || $self->{output} || \*STDOUT;
+    my $io = $self->{+IO} || \*STDOUT;
     unless (ref $io) {
         open(my $fh, '>', $io) or die "Could not open file '$io' for writing: $!";
         $self->{+IO} = $fh;
     }
 
-    my $io_err = $self->{+IO_ERR} || $self->{output} || \*STDERR;
+    my $io_err = $self->{+IO_ERR} || \*STDERR;
     unless (ref $io_err) {
         open(my $fh, '>', $io_err) or die "Could not open file '$io_err' for writing: $!";
         $self->{+IO_ERR} = $fh;

@@ -6,7 +6,7 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 
-use Test2::Harness2::Util::HashBase qw/-settings -verbose -progress -color -command_class/;
+use Test2::Harness2::Util::HashBase qw/-settings -progress -command_class/;
 
 sub render_event { croak "$_[0] forgot to override 'render_event()'" }
 
@@ -40,17 +40,9 @@ These are set at construction time and cannot be changed.
 
 Get the L<Getopt::Yath::Settings> reference.
 
-=item $int = $renderer->verbose
-
-Get the verbosity level.
-
 =item $bool = $renderer->progress
 
 True if progress indicators should be shown.
-
-=item $bool = $renderer->color
-
-True if color should be used.
 
 =back
 
