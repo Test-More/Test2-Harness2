@@ -8,6 +8,7 @@ use POSIX;
 
 use Config qw/%Config/;
 use Carp qw/croak confess/;
+use Scalar::Util qw/blessed/;
 use Time::HiRes qw/sleep time/;
 
 use Test2::Harness2::Util qw/mono_time/;
@@ -356,16 +357,12 @@ sub watch {
 
 sub spawn {
     my $self = shift;
-    my ($proc, $params);
-    if (@_ == 1) {
-        $proc = shift(@_);
-        $params = $proc->spawn_params;
-    }
-    else {
-        $params = {@_};
-        my $class = $params->{process_class} // 'Test2::Harness2::IPC::Process';
-        $proc = $class->new();
-    }
+    my ($proc) = @_;
+
+    croak "spawn() takes a single process object that provides spawn_params()"
+        unless @_ == 1 && blessed($proc) && $proc->can('spawn_params');
+
+    my $params = $proc->spawn_params;
 
     croak "No 'command' specified" unless $params->{command};
 
@@ -521,30 +518,10 @@ Add a process to be monitored.
 
 =item $proc = $ipc->spawn($proc)
 
-=item $proc = $ipc->spawn(%params)
-
-In the first form $proc is an instance of L<Test2::Harness2::IPC::Process> that
-provides C<spawn_params()>.
-
-In the second form the following params are allowed:
-
-Anything supported by C<run_cmd()> in L<Test2::Harness2::Util::IPC>.
-
-=over 4
-
-=item process_class => $CLASS
-
-Default is L<Test2::Harness2::IPC::Process>.
-
-=item command => $command
-
-Program command to call. This is required.
-
-=item env_vars => { ... }
-
-Specify custom environment variables for the new process.
-
-=back
+C<$proc> is a process object (an instance of L<Test2::Harness2::IPC::Process> or a
+subclass) that provides C<spawn_params()>. Its C<spawn_params> hashref must include
+a C<command> and may include an C<env_vars> hashref plus anything else supported by
+C<run_cmd()> in L<Test2::Harness2::Util::IPC>.
 
 =back
 

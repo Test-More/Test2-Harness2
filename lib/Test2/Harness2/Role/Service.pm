@@ -284,8 +284,8 @@ sub handle_request ($self, $payload, $conn) {
     my $command = $payload->{command};
     return {ok => 0, error => 'missing command'} unless defined $command;
 
-    return $self->request_handler_stop($payload, $conn) if $command eq 'stop';
-
+    # 'stop' needs no special case: the generic dispatch below resolves it to
+    # request_handler_stop with the same args, honoring subclass overrides (#82).
     my $handler = "request_handler_$command";
     return {ok => 0, error => "invalid command: $command"} unless $self->can($handler);
 
@@ -346,9 +346,16 @@ transition to the consumer.
 Remove a connection from the select set, the connection map, the peer registry,
 and the subscriber set, then close it.
 
-=item $self->close_service / $self->reset_service
+=item $self->_teardown_service(%opts)
 
-Teardown primitives; see the public descriptions above.
+The shared teardown primitive behind C<close_service>, C<close_all_connections>,
+and C<reset_service> (see their public descriptions above). Options select the
+per-method semantics: C<conn_objects> closes the L<...::Connection> objects (so a
+still-referenced conn reports C<closed>) and raw-closes only the listen socket --
+omit it (C<reset_service>) to raw-close every inherited fd while leaving the
+Connection objects unmarked for the reset->reuse flow; C<unlink_path> unlinks the
+listen socket path (C<close_service> only); C<reset_stopped> clears
+C<service_stopped> (C<reset_service> only).
 
 =back
 
@@ -488,64 +495,56 @@ sub _drop_conn ($self, $conn) {
     return;
 }
 
-sub close_all_connections ($self) {
-    if (my $conns = $self->{service_conns}) {
-        $_->close for values %$conns;
+sub _teardown_service ($self, %opts) {
+    my $sel    = delete $self->{+SERVICE_SELECT};
+    my $listen = delete $self->{service_listen};
+    my $conns  = $self->{service_conns};
+
+    if ($opts{conn_objects}) {
+        # close_service / close_all_connections: mark the Connection objects closed
+        # (a still-referenced conn then reports ->closed). Connection->close shuts
+        # each conn fd, so only the listen socket remains to close -- raw-closing the
+        # conn fds again via the select sweep would just be a harmless double close,
+        # which this branch deliberately avoids (#82).
+        $_->close for $conns ? values %$conns : ();
+        eval { CORE::close($listen); 1 } if $listen;
+        $sel->remove($_) for $sel ? $sel->handles : ();
     }
-
-    if (my $listen = $self->{service_listen}) {
-        eval { CORE::close($listen); 1 };
-    }
-
-    if (my $sel = $self->{+SERVICE_SELECT}) {
-        $sel->remove($_) for $sel->handles;
-    }
-
-    delete $self->{service_listen};
-    delete $self->{+SERVICE_SELECT};
-    $self->{service_conns}  = {};
-    $self->{+SERVICE_PEERS} = {};
-    $self->{+SERVICE_SUBS}  = {};
-
-    return;
-}
-
-sub reset_service ($self) {
-    if (my $sel = $self->{+SERVICE_SELECT}) {
+    elsif ($sel) {
+        # reset_service: raw-close every inherited fd (listen + conns) and
+        # deliberately DO NOT call Connection->close, leaving the Connection objects
+        # unmarked. Preload::Host's reset->reuse flow relies on this -- see #82 and
+        # t/AI/unit/Role_Service_fd_hygiene.t. Do not "unify" this onto ->close.
         for my $fh ($sel->handles) {
             $sel->remove($fh);
             close($fh);
         }
     }
-    delete $self->{service_listen};
-    delete $self->{+SERVICE_SELECT};
-    $self->{service_conns}   = {};
-    $self->{+SERVICE_PEERS}  = {};
-    $self->{+SERVICE_SUBS}   = {};
-    $self->{service_stopped} = 0;
-    return;
-}
 
-sub close_service ($self) {
-    if (my $conns = $self->{service_conns}) {
-        $_->close for values %$conns;
-    }
-    if (my $sel = $self->{+SERVICE_SELECT}) {
-        for my $fh ($sel->handles) {
-            $sel->remove($fh);
-            close($fh);
-        }
-    }
     $self->{service_conns}  = {};
     $self->{+SERVICE_PEERS} = {};
     $self->{+SERVICE_SUBS}  = {};
 
-    if (delete $self->{service_listen}) {
+    if ($opts{unlink_path} && $listen) {
         my $path = $self->service_socket_path;
         unlink $path if -e $path;
     }
 
+    $self->{service_stopped} = 0 if $opts{reset_stopped};
+
     return;
+}
+
+sub close_all_connections ($self) {
+    return $self->_teardown_service(conn_objects => 1);
+}
+
+sub reset_service ($self) {
+    return $self->_teardown_service(reset_stopped => 1);
+}
+
+sub close_service ($self) {
+    return $self->_teardown_service(conn_objects => 1, unlink_path => 1);
 }
 
 1;
