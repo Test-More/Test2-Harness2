@@ -182,7 +182,13 @@ Run the C<liveness_check> coderef (true when absent).
 
 =item $client->_send($command, %args)
 
-Send one one-way request (a no-op once the runner is gone).
+Send one one-way request. A no-op once the runner is observed gone before it ever
+accepted (C<connection> returns C<undef>). Once connected the client conn back-
+pressures a slow runner via the bounded-blocking flush (#108); if C<send_request>
+still reports the connection closed mid-send (runner gone/wedged), this B<croaks>
+rather than silently dropping the submission -- a dropped one-way frame carries no
+ack, so a lost C<queue_task> would otherwise never run those tests yet report the
+run green (#109).
 
 =item $reply = $client->_request($command, %args)
 
@@ -256,7 +262,24 @@ sub _send ($self, $command, %args) {
     # stop -- whose reply the client never waits for): want_reply => 0 so no
     # request_id is remembered as PENDING. The acknowledged two-way queries go
     # through _request (below), which keeps the default. (#134 finding 106)
-    $conn->send_request($command, %args, want_reply => 0);
+    #
+    # send_request returns the request_id on a delivered write and undef when the
+    # connection closed during the send. The client connection is NOT owner_flushes,
+    # so send_request already finished with the #108 bounded-blocking flush: a
+    # merely-slow runner back-pressures here (the send waits) rather than dropping
+    # the frame, so an undef means the runner is genuinely gone or wedged past its
+    # stall window (or the queue blew past max_wbuf) -- never a transient EAGAIN. A
+    # one-way submission carries no ack, so a silently-dropped frame would vanish:
+    # a lost queue_task means those test files are never run yet the run still
+    # reports green (a lost queue_run/stop_run/end_queue hangs the client waiting on
+    # run_done). Croak instead so submission failure is loud, not a green run with
+    # missing tests. submit_queue (App::Yath2::Client) runs these without an eval so
+    # the croak aborts the run; the eval/alarm-wrapped callers (stop/kill/halt_run)
+    # absorb it. (#109 finding 30)
+    my $sent = $conn->send_request($command, %args, want_reply => 0);
+    croak "runner connection closed while submitting '$command'; submission not delivered"
+        unless defined $sent;
+
     return;
 }
 
