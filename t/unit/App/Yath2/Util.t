@@ -1,7 +1,6 @@
 use Test2::V0 -target => 'App::Yath2::Util';
 use Test2::Tools::Spec;
 
-use Test2::Util qw/CAN_REALLY_FORK/;
 use Test2::Tools::GenTemp qw/gen_temp/;
 use Test2::Harness2::Util qw/clean_path/;
 use File::Temp qw/tempfile/;
@@ -12,14 +11,12 @@ use File::Spec;
 use App::Yath2::Util qw{
     find_runner_link
     is_generated_test_pl
-    isolate_stdout
     find_yath
 };
 
 imported_ok qw{
     find_runner_link
     is_generated_test_pl
-    isolate_stdout
     find_yath
 };
 
@@ -57,50 +54,6 @@ tests find_yath => sub {
     };
     like(find_yath, qr{\Q$yath\E$}, "Found it in a config path");
 };
-
-tests isolate_stdout => sub {
-    my ($stdout_r, $stdout_w, $stderr_r, $stderr_w);
-    pipe($stdout_r, $stdout_w) or die "Could not open pipe: $!";
-    pipe($stderr_r, $stderr_w) or die "Could not open pipe: $!";
-
-    my $pid = fork;
-    die "Could not fork" unless defined $pid;
-
-    unless ($pid) { # child
-        close($stdout_r);
-        close($stderr_r);
-        open(STDOUT, '>&', $stdout_w) or die "Could not redirect STDOUT";
-        open(STDERR, '>&', $stderr_w) or die "Could not redirect STDOUT";
-        my $fh = isolate_stdout();
-
-        print $fh "Should go to STDOUT\n";
-        print "Should go to STDERR 1\n";
-        print STDOUT "Should go to STDERR 2\n";
-        print STDERR "Should go to STDERR 3\n";
-
-        exit 0;
-    }
-
-    close($stdout_w);
-    close($stderr_w);
-    waitpid($pid, 0);
-    is($?, 0, "Clean exit");
-
-    is(
-        [<$stdout_r>],
-        ["Should go to STDOUT\n"],
-        "Got expected STDOUT"
-    );
-    is(
-        [<$stderr_r>],
-        [
-            "Should go to STDERR 1\n",
-            "Should go to STDERR 2\n",
-            "Should go to STDERR 3\n",
-        ],
-        "Got expected STDERR"
-    );
-} if CAN_REALLY_FORK;
 
 subtest is_generated_test_pl => sub {
     ok(!is_generated_test_pl(__FILE__), "This is not a generated test file");

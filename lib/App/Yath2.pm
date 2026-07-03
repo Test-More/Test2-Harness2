@@ -1054,6 +1054,18 @@ Get the include directory App::Yath2 was loaded from.
 
 =back
 
+=head1 SEE ALSO
+
+=over 4
+
+=item L<App::Yath2::Converting>
+
+Changes you may need to make to your tests before they run cleanly under yath,
+covering the non-TAP formatter (C<HARNESS-NO-STREAM> / C<--no-stream>) and
+fork-by-default (C<HARNESS-NO-PRELOAD> / C<--no-preload> / C<--no-fork>) caveats.
+
+=back
+
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at

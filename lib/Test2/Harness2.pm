@@ -27,6 +27,9 @@ looking at L<App::Yath2> which is the UI layer built around Test2::Harness2.
 
 The primary documentation can be found in L<App::Yath2>.
 
+L<App::Yath2::Converting> describes changes you may need to make to tests before
+they run cleanly under yath (the non-TAP formatter and fork-by-default caveats).
+
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
