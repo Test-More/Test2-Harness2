@@ -13,6 +13,7 @@ use File::Find ();
 use File::Temp qw/tempfile tempdir/;
 use POSIX;
 use Fcntl qw/SEEK_CUR/;
+use Time::HiRes ();
 
 use App::Yath2::Util qw/find_yath/;
 use Test2::Harness2::Util qw/clean_path apply_encoding/;
@@ -207,13 +208,14 @@ sub yath {
 
             waitpid($pid, WNOHANG) or do {
                 if ($timeout && time() - $start > $timeout) {
-                    kill('TERM', $pid);
-                    waitpid($pid, 0);
-                    $exit = $?;
+                    $exit = _terminate_timed_out_child($pid);
                     push @lines => "yath tester timeout after ${timeout}s\n";
                     last;
                 }
-                sleep 0.02;
+                # Sub-second poll interval. Bare `sleep 0.02` is core integer
+                # sleep(0) -- a 100% CPU busy-spin for the child's whole lifetime,
+                # multiplied by every concurrent yath() under `prove -j`.
+                Time::HiRes::sleep(0.02);
                 next;
             };
             $exit = $?;
@@ -282,6 +284,33 @@ sub yath {
     $ctx->release;
 
     return $out;
+}
+
+# Reap a timed-out yath child. A blocking waitpid() after a lone TERM turns a
+# wedged runner that forwards/absorbs SIGTERM into an infinite hang of the
+# calling test file. So: send TERM, poll waitpid(WNOHANG) for a short grace
+# window, and if the child is still alive escalate to an unconditional KILL
+# followed by a (now guaranteed to return) blocking waitpid. Returns the
+# child's $? status. `grace` (seconds) is overridable for tests.
+sub _terminate_timed_out_child {
+    my ($pid, %params) = @_;
+    my $grace = $params{grace} // 5;
+
+    kill('TERM', $pid);
+
+    my $deadline = Time::HiRes::time() + $grace;
+    while (1) {
+        my $got = waitpid($pid, WNOHANG);
+        return $? if $got == $pid;    # reaped within the grace window (TERM took)
+        return $? if $got < 0;        # already gone / no such child
+        last if Time::HiRes::time() >= $deadline;
+        Time::HiRes::sleep(0.05);
+    }
+
+    # TERM did not take within the grace window -- escalate.
+    kill('KILL', $pid);
+    waitpid($pid, 0);
+    return $?;
 }
 
 sub _gen_passing_test {
