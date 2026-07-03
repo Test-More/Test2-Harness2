@@ -28,10 +28,12 @@ use Getopt::Yath::Settings;
     sub new {
         my ($class, %args) = @_;
         return bless {
-            rootpid => $$,
-            monitor => Test2::Harness2::Runner::Monitor->new,
-            running => $args{running} // {},
-            stopped => [],
+            rootpid      => $$,
+            monitor      => Test2::Harness2::Runner::Monitor->new,
+            running      => $args{running} // {},
+            stopped      => [],
+            aborted_runs => [],
+            decided      => [],
         }, $class;
     }
 
@@ -54,6 +56,22 @@ use Getopt::Yath::Settings;
     sub announce_job {
         my ($self, $job_id, $state, %extra) = @_;
         $self->{monitor}->feed({facet_data => {harness_runner_job => {job_id => $job_id, state => $state, %extra}}});
+        return;
+    }
+
+    # The watchdog now calls these unconditionally (the ->can() guards are gone), so
+    # the real runner (which composes Role::Service::Completion) and this fake must
+    # both provide them; record calls so the wiring is asserted and a regression
+    # fails loudly. Repeatably callable for the idempotency check.
+    sub abort_run_collectors {
+        my ($self, $run_id, $reason) = @_;
+        push @{$self->{aborted_runs}} => [$run_id, $reason];
+        return;
+    }
+
+    sub mark_job_decided {
+        my ($self, $job_id, $job_try) = @_;
+        push @{$self->{decided}} => [$job_id, $job_try];
         return;
     }
 }
@@ -80,6 +98,12 @@ subtest abort_remaining_synthesizes_aborted_mutations => sub {
     is($j->{state}, 'aborted', "job state is aborted");
     is($j->{file},  't/a.t',   "job carries its file");
     like($j->{details}, qr/Runner shut down/, "job carries the abort reason");
+
+    # The watchdog drove the runner->collector terminate once for the (single) run
+    # and marked each aborted (job, try) decided in the fire-once ledger.
+    is(scalar(@{$runner->{aborted_runs}}), 1,    "abort_run_collectors driven once (one run)");
+    is($runner->{aborted_runs}[0][0],      'R1', "...for run R1");
+    is([sort map { $_->[0] } @{$runner->{decided}}], ['JOB-A', 'JOB-B'], "each aborted job marked decided");
 
     # Drained once: a second call returns nothing (drain-on-call).
     is([$runner->monitor->new_aborted_jobs], [], "new_aborted_jobs drains");

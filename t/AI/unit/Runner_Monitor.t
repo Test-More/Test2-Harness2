@@ -95,7 +95,7 @@ subtest final_state_and_exits => sub {
     feed_final($mon, 'T1', 1);
     feed_trans($mon, 'completed', 'T1');
 
-    is($mon->final_state('T1')->{pass}, 1,          "final state stored");
+    is($mon->collector('T1')->{final_state}{pass}, 1, "final state stored");
     is($mon->collector('T1')->{status}, 'complete', "completed collector is complete");
     is([$mon->new_test_exits],          ['T1'],     "test exit delta reports the completed test");
     is([$mon->new_test_exits],          [],         "test exit delta drains");
@@ -129,23 +129,8 @@ subtest tracks_run_uuid => sub {
     is($mon->collector('G1')->{run_uuid}, undef,   "a collector with no run_uuid has none");
 };
 
-# --- wire drive: frames over a real unix socket, decoded and fed via feed_frame
-# (the same path the runner takes off Role::Service, minus the role plumbing) ---
-
-subtest feed_frame_decodes_and_folds => sub {
-    my $mon = new_monitor();
-
-    my $payload = $mon->feed_frame(frame_for(
-        {harness_state_transition => {state => 'starting', stamp => 1}},
-        uuid => 'T1', name => 't/a.t', events_file => '/tmp/a', try => 1,
-    ));
-
-    is($payload->{facet_data}{harness_collector}{uuid}, 'T1', "feed_frame returns the decoded payload");
-    is([$mon->tests], ['T1'], "feed_frame folded the transition into state");
-
-    is($mon->feed_frame(compress_blob(encode_json({facet_data => {}}))), undef,
-        "a frame with no collector identity is ignored");
-};
+# --- wire drive: frames over a real unix socket, decoded and fed via feed (the
+# same path the runner takes off Role::Service, minus the role plumbing) ---
 
 subtest full_lifecycle_over_socket => sub {
     my $dir  = File::Temp::tempdir(CLEANUP => 1);
@@ -206,7 +191,7 @@ subtest full_lifecycle_over_socket => sub {
 
     ok($mon->collector('C1')->{failing},    "failing folded over the socket");
     ok($mon->collector('C1')->{diagnosing}, "diagnosing folded over the socket");
-    is($mon->final_state('C1')->{pass}, 0, "final_state folded over the socket");
+    is($mon->collector('C1')->{final_state}{pass}, 0, "final_state folded over the socket");
     is($mon->collector('C1')->{status}, 'finalized', "finalized status folded over the socket");
     is([$mon->new_failing],    ['C1'], "failing change-list captured the socket-driven transition");
     is([$mon->new_test_exits], ['C1'], "test-exit change-list captured the socket-driven completion");

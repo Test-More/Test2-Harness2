@@ -92,9 +92,7 @@ on a persistent runner).
 This also drives the runner-to-collector terminate primitive so the test
 B<processes> actually die: a run-scoped call records that run's abort intent and
 messages its live + late-connecting collectors; an all-runs (wind-down) call does
-the same for every active run. A C<terminate =E<gt> 0> override suppresses the
-terminate (the resource-timeout wind-down path, which has already truncated the
-queue and only needs the synthetic state so the run rolls up).
+the same for every active run.
 
 =item $wd->abort_job($job_id, $task, $reason)
 
@@ -133,20 +131,15 @@ sub abort_remaining ($self, $reason = undef, %params) {
     # only that run's collectors; an all-runs wind-down terminates every active run's
     # collectors (records each run's intent so a late-connecting collector is torn
     # down too). The fire-once ledger keeps the resulting EOFs from re-deciding the
-    # jobs this synthesizes below. `terminate => 0` suppresses it (the wind-down has
-    # already truncated and just needs the synthetic state).
-    if (!defined($params{terminate}) || $params{terminate}) {
-        if ($runner->can('abort_run_collectors')) {
-            my %runs;
-            if (defined $only_run) {
-                $runs{$only_run} = 1;
-            }
-            else {
-                $runs{$_->{run_id}} = 1 for grep { defined $_->{run_id} } values %$running;
-            }
-            $runner->abort_run_collectors($_, $reason_msg) for keys %runs;
-        }
+    # jobs this synthesizes below.
+    my %runs;
+    if (defined $only_run) {
+        $runs{$only_run} = 1;
     }
+    else {
+        $runs{$_->{run_id}} = 1 for grep { defined $_->{run_id} } values %$running;
+    }
+    $runner->abort_run_collectors($_, $reason_msg) for keys %runs;
 
     for my $job_id (keys %$running) {
         next if $self->{+ABORTED}{$job_id};
@@ -182,8 +175,7 @@ sub _abort_job ($self, $job_id, $task, $reason) {
     # (job_id, job_try) decided in the runner's shared fire-once ledger so the
     # collector's later connection EOF is a no-op (it must not re-decide / double
     # announce). The runner keeps the ledger; the watchdog is the other writer.
-    $runner->mark_job_decided($job_id, $task->{is_try})
-        if $runner->can('mark_job_decided');
+    $runner->mark_job_decided($job_id, $task->{is_try});
 
     # Best-effort slot / resource release; a task a racing reap already stopped
     # leaves stop_task croaking "not running", which is not an error here.

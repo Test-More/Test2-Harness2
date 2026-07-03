@@ -3,11 +3,6 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
-use Carp qw/croak/;
-
-use Test2::Collector::Util::Zstd qw/decompress_blob/;
-use Test2::Harness2::Util::JSON qw/decode_json/;
-
 use Object::HashBase qw{
     +collectors
     +jobs
@@ -87,9 +82,6 @@ snapshot-plus-transitions contract, ARCH 4.2-4.3).
     # Fold an already-decoded transition payload (one harness_collector message).
     $mon->feed($decoded_transition_payload);
 
-    # Or fold a raw zstd frame read off the socket.
-    $mon->feed_frame($zstd_frame);
-
     $_ and free_slot($_) for $mon->new_test_exits;
 
     # Serialize the whole canonical state for a new subscriber, and rebuild it
@@ -133,12 +125,6 @@ Fold one already-decoded transition message C<$payload> (a
 C<< {facet_data =E<gt> ...} >> hashref carrying a C<harness_collector> facet)
 into state.
 
-=item $payload = $mon->feed_frame($frame)
-
-Decode one raw zstd frame and fold the transition message it carries into state.
-Returns the decoded payload, or C<undef> for a frame that carries no collector
-identity.
-
 =item @uuids = $mon->collectors
 
 =item @uuids = $mon->tests
@@ -160,8 +146,6 @@ flags, and C<final_state> once seen.
 =item $status = $mon->status($uuid)
 
 =item $path = $mon->events_file($uuid)
-
-=item $state = $mon->final_state($uuid)
 
 Conveniences for individual fields of L</collector>.
 
@@ -274,24 +258,6 @@ sub feed ($self, $payload) {
     return;
 }
 
-sub feed_frame ($self, $frame) {
-    my $payload;
-    croak "monitor: feed_frame given an undecodable frame"
-        unless eval { $payload = decompress_blob($frame); 1 } && defined $payload;
-
-    my $decoded;
-    unless (eval { $decoded = decode_json($payload); 1 }) {
-        warn "monitor: could not decode a transition frame: $@\n";
-        return undef;
-    }
-
-    my $uuid = ref($decoded) eq 'HASH' ? $decoded->{facet_data}{harness_collector}{uuid} : undef;
-    return undef unless defined $uuid;
-
-    $self->_process($decoded);
-    return $decoded;
-}
-
 sub collectors ($self) { return keys %{$self->{+COLLECTORS}} }
 
 sub tests ($self) {
@@ -314,11 +280,6 @@ sub status ($self, $uuid) {
 sub events_file ($self, $uuid) {
     my $c = $self->{+COLLECTORS}{$uuid} or return undef;
     return $c->{events_file};
-}
-
-sub final_state ($self, $uuid) {
-    my $c = $self->{+COLLECTORS}{$uuid} or return undef;
-    return $c->{final_state};
 }
 
 sub new_collectors ($self) { return $self->_drain(PENDING_NEW) }
