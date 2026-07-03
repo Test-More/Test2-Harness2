@@ -50,13 +50,21 @@ sub set_cloexec {
     return;
 }
 
+# Shared error-line formatter for the swap_io / run_cmd die closures: report the
+# failure at the two captured caller frames, optionally suffixed with the IPC
+# call site ($extra, built at the call with __FILE__/__LINE__). Callers pass
+# arrayrefs shaped like caller() ([1] = filename, [2] = line).
+sub _die_message {
+    my ($msg, $caller1, $caller2, $extra) = @_;
+    $extra = length($extra // '') ? ", $extra" : "";
+    return "$msg at $caller1->[1] line $caller1->[2] ($caller2->[1] line $caller2->[2]$extra).\n";
+}
+
 sub swap_io {
     my ($fh, $to, $die, $mode) = @_;
 
     $die ||= sub {
-        my @caller = caller;
-        my @caller2 = caller(1);
-        die("$_[0] at $caller[1] line $caller[2] ($caller2[1] line $caller2[2], ${ \__FILE__ } line ${ \__LINE__ }).\n");
+        die(_die_message($_[0], [caller], [caller(1)], __FILE__ . " line " . __LINE__));
     };
 
     my $orig_fd;
@@ -105,6 +113,12 @@ sub _swap_in_io {
 sub _run_cmd_fork {
     my %params = @_;
 
+    # The die closure below formats these; only IPC::spawn forwards them, so the
+    # direct callers (Client/Tester/test.pm) get a sensible default here rather
+    # than deref'ing undef.
+    $params{caller1} //= [caller];
+    $params{caller2} //= [caller(1)];
+
     my $cmd = $params{command} or die "No 'command' specified";
 
     my $pid = fork;
@@ -129,9 +143,7 @@ sub _run_cmd_fork {
         # callable, so its OLD_STDERR print is guarded.
         my $OLD_STDERR;
         my $die = sub {
-            my $caller1 = $params{caller1};
-            my $caller2 = $params{caller2};
-            my $msg = "$_[0] at $caller1->[1] line $caller1->[2] ($caller2->[1] line $caller2->[2]).\n";
+            my $msg = _die_message($_[0], $params{caller1}, $params{caller2});
             print $OLD_STDERR $msg if $OLD_STDERR;
             print STDERR $msg;
             POSIX::_exit(127);
@@ -176,6 +188,11 @@ sub _run_cmd_fork {
 sub _run_cmd_spwn {
     my %params = @_;
 
+    # See _run_cmd_fork: default the die-closure caller frames so direct callers
+    # (which do not forward them) never deref undef.
+    $params{caller1} //= [caller];
+    $params{caller2} //= [caller(1)];
+
     local %ENV = (%ENV, %{$params{env}}) if $params{env};
 
     my $cmd = $params{command} or die "No 'command' specified";
@@ -196,9 +213,7 @@ sub _run_cmd_spwn {
     open(my $OLD_STDERR, '>&', \*STDERR) or die "Could not clone STDERR: $!";
 
     my $die = sub {
-        my $caller1 = $params{caller1};
-        my $caller2 = $params{caller2};
-        my $msg = "$_[0] at $caller1->[1] line $caller1->[2] ($caller2->[1] line $caller2->[2], ${ \__FILE__ } line ${ \__LINE__ }).\n";
+        my $msg = _die_message($_[0], $params{caller1}, $params{caller2}, __FILE__ . " line " . __LINE__);
         print $OLD_STDERR $msg;
         print STDERR $msg;
         POSIX::_exit(127);

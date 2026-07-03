@@ -5,9 +5,10 @@ our $VERSION = '2.000000';
 
 use Carp qw/croak/;
 use Errno qw/EINTR/;
-use Fcntl qw/FD_CLOEXEC F_GETFD F_SETFD/;
 use File::Temp qw/tempdir/;
 use IO::Socket::UNIX ();
+
+use Test2::Harness2::Util::IPC qw/set_cloexec/;
 
 use Importer Importer => 'import';
 
@@ -260,7 +261,7 @@ sub command_listen {
 
     chmod(0600, $path) or die "Failed to chmod listen socket '$path': $!";
 
-    __PACKAGE__->_set_cloexec($listen);
+    set_cloexec($listen);
 
     return ($listen, $path);
 }
@@ -322,29 +323,6 @@ sub _load_io_fdpass {
     }
 
     return $IO_FDPASS_LOADED;
-}
-
-=pod
-
-=head2 _set_cloexec
-
-    $class->_set_cloexec($fh);
-
-Set the close-on-exec flag on C<$fh> so a later C<exec> in a forked child does
-not leak the descriptor. C<die>s if the flag cannot be read or set.
-
-=cut
-
-sub _set_cloexec {
-    my ($class, $fh) = @_;
-
-    my $flags = fcntl($fh, F_GETFD, 0);
-    die "Failed to read fd flags: $!" unless defined $flags;
-
-    fcntl($fh, F_SETFD, $flags | FD_CLOEXEC)
-        or die "Failed to set close-on-exec: $!";
-
-    return 1;
 }
 
 1;

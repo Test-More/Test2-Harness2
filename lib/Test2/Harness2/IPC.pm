@@ -67,8 +67,6 @@ sub init {
 sub start {
     my $self = shift;
 
-    my @caller = caller(1);
-
     return if $self->{+STARTED};
     $self->{+STARTED} = 1;
 

@@ -8,7 +8,7 @@ use Test2::Util qw/try_sig_mask do_rename/;
 use Fcntl qw/LOCK_EX LOCK_UN LOCK_NB SEEK_SET F_GETFL F_SETFL O_NONBLOCK :mode/;
 use File::Spec;
 use Socket qw/PF_UNIX SOCK_STREAM SOL_SOCKET SO_ERROR sockaddr_un/;
-use Errno qw/EINPROGRESS EINTR/;
+use Errno qw/EAGAIN EINPROGRESS EINTR EWOULDBLOCK/;
 use Time::HiRes();
 
 our $VERSION = '2.000000';
@@ -51,6 +51,8 @@ our @EXPORT_OK = qw{
 
     socket_reporter
     connect_unix_nb
+
+    read_available
 
     mono_time
 };
@@ -148,6 +150,30 @@ sub connect_unix_nb {
         close($sock);
         return (undef, $errno);
     }
+}
+
+# One sysread with errno classification, shared by the framed Connection
+# transport and the FdPass control channel (the wire-format buffering lives on
+# top of it, per protocol). Returns the bytes read plus a status:
+#   'ok'    -- bytes were read (never empty).
+#   'again' -- retryable (EAGAIN/EWOULDBLOCK/EINTR): nothing available right now.
+#   'eof'   -- the peer closed the connection.
+#   'fatal' -- a hard read error (e.g. ECONNRESET).
+# The caller owns the close decision; this never touches the handle's state.
+sub read_available {
+    my ($fh) = @_;
+
+    my $buf = '';
+    my $n   = sysread($fh, $buf, 65536);
+
+    unless (defined $n) {
+        return ('', 'again') if $! == EAGAIN || $! == EWOULDBLOCK || $! == EINTR;
+        return ('', 'fatal');
+    }
+
+    return ('', 'eof') if $n == 0;
+
+    return ($buf, 'ok');
 }
 
 # Build the Test2::Collector::Recorder::Socket that streams a collector's

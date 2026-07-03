@@ -4,10 +4,14 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
-use Errno qw/EINTR EAGAIN EWOULDBLOCK/;
+use Errno qw/EINTR/;
 use Fcntl qw/F_GETFL F_SETFL O_NONBLOCK/;
 
+use Test2::Harness2::Util qw/read_available/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
+
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::CloseFH';
 
 use Test2::Harness2::Util::HashBase qw{
     <fh
@@ -136,13 +140,6 @@ sub send_hello       ($self, $pid)    { return $self->_send({hello       => {pid
 sub send_signal      ($self, $name)   { return $self->_send({signal      => {signal => $name}}) }
 sub send_exit_status ($self, $status) { return $self->_send({exit_status => {status => $status}}) }
 
-sub close ($self) {
-    return if $self->{+CLOSED};
-    $self->{+CLOSED} = 1;
-    eval { CORE::close($self->{+FH}); 1 };
-    return;
-}
-
 sub read_message ($self) {
     while (1) {
         my $msg = $self->_take_message;
@@ -237,26 +234,19 @@ sub _send ($self, $message) {
 }
 
 sub _fill ($self, $blocking) {
-    my $fh = $self->{+FH};
-
     $self->_set_blocking($blocking);
 
-    my $buf = '';
-    my $n   = sysread($fh, $buf, 65536);
+    my ($buf, $status) = read_available($self->{+FH});
 
-    unless (defined $n) {
-        return 0 if $! == EAGAIN || $! == EWOULDBLOCK || $! == EINTR;
-        $self->close;
-        return 0;
-    }
+    return 0 if $status eq 'again';
 
-    if ($n == 0) {    # EOF
+    if ($status ne 'ok') {    # EOF or a fatal read error
         $self->close;
         return 0;
     }
 
     $self->{+BUFFER} .= $buf;
-    return $n;
+    return length($buf);
 }
 
 sub _set_blocking ($self, $blocking) {

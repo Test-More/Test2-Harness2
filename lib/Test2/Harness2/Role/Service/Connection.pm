@@ -8,9 +8,12 @@ use IO::Select ();
 
 use Test2::Collector::Util::Zstd qw/compress_blob/;
 use Test2::Collector::Util::Zstd::FrameBuffer();
-use Test2::Harness2::Util qw/mono_time/;
+use Test2::Harness2::Util qw/mono_time read_available/;
 use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 use Test2::Harness2::Util::UUID qw/gen_uuid/;
+
+use Role::Tiny::With;
+with 'Test2::Harness2::Role::CloseFH';
 
 use Test2::Harness2::Util::HashBase qw{
     <fh
@@ -396,30 +399,17 @@ sub flush_writes ($self) {
     return 1;
 }
 
-sub close ($self) {
-    return if $self->{+CLOSED};
-    $self->{+CLOSED} = 1;
-    eval { CORE::close($self->{+FH}); 1 };
-    return;
-}
-
 sub drain ($self) {
     return () if $self->{+CLOSED};
 
-    my $fh  = $self->{+FH};
-    my $buf = '';
-    my $n   = sysread($fh, $buf, 65536);
+    my ($buf, $status) = read_available($self->{+FH});
 
-    unless (defined $n) {
-        # A retryable would-block: nothing to read right now.
-        return () if $! == EAGAIN || $! == EWOULDBLOCK || $! == EINTR;
-        # A fatal read error (e.g. ECONNRESET): the connection is dead, drop it so
-        # the owner stops waiting on it.
-        $self->close;
-        return ();
-    }
+    # A retryable would-block: nothing to read right now.
+    return () if $status eq 'again';
 
-    if ($n == 0) {    # EOF
+    # EOF or a fatal read error (e.g. ECONNRESET): the connection is dead, drop it
+    # so the owner stops waiting on it.
+    if ($status ne 'ok') {
         $self->close;
         return ();
     }
