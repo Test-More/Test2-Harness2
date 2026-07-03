@@ -13,6 +13,16 @@ use Test2::Harness2::Runner::Monitor();
 
 use Role::Tiny;
 
+# Constant-only slots (#17 pattern): grep/typo safety on the runner-hash keys this
+# role touches. monitor is the lazily-built Monitor mirror declared here; job_passed
+# and collector_reap are shared with Completion. Role::Tiny does not share HashBase
+# constants across a composition, so each role declares its own copy.
+use Test2::Harness2::Util::HashBase qw{
+    +monitor
+    +job_passed
+    +collector_reap
+};
+
 requires qw/state settings/;
 
 =pod
@@ -100,7 +110,7 @@ sub monitor {
     # PENDING_* drain-on-call lists are consumed exclusively by subscriber-side mirrors
     # (Renderer::Driver / Renderer::Base), never here, and snapshot/apply_snapshot never
     # carry them -- so populating them hub-side is unbounded dead weight.
-    return $self->{'monitor'} //= Test2::Harness2::Runner::Monitor->new(track_pending => 0);
+    return $self->{+MONITOR} //= Test2::Harness2::Runner::Monitor->new(track_pending => 0);
 }
 
 # Role::Service hands every transition frame here (one-way, no reply).
@@ -271,7 +281,7 @@ sub announce_run {
     # reaped (e.g. on a platform without subreaper support, an accepted loss) would
     # otherwise leak its entry on a persistent runner. Drop this run's entries at run
     # end; a still-pending reap on a supported platform has already fired by now.
-    if (my $cr = $self->{'collector_reap'}) {
+    if (my $cr = $self->{+COLLECTOR_REAP}) {
         delete $cr->{$_} for grep { ($cr->{$_}{run_id} // '') eq $run_id } keys %$cr;
     }
 
@@ -290,7 +300,7 @@ sub announce_run {
         my $j = $self->monitor->job($job_id) or next;
         $job_ids{$job_id} = 1 if defined($j->{run_id}) && $j->{run_id} eq $run_id;
     }
-    if (my $jp = $self->{'job_passed'}) {
+    if (my $jp = $self->{+JOB_PASSED}) {
         $job_ids{$_} = 1 for grep { ($jp->{$_} // '') eq $run_id } keys %$jp;
     }
 
@@ -380,8 +390,8 @@ sub _flush_run_ledger_sweeps {
 
             delete $self->{'decided_jobs'}{$job_id}          if $self->{'decided_jobs'};
             delete $self->{'collector_current_try'}{$job_id} if $self->{'collector_current_try'};
-            delete $self->{'job_passed'}{$job_id}
-                if $self->{'job_passed'} && ($self->{'job_passed'}{$job_id} // '') eq $run_id;
+            delete $self->{+JOB_PASSED}{$job_id}
+                if $self->{+JOB_PASSED} && ($self->{+JOB_PASSED}{$job_id} // '') eq $run_id;
         }
 
         $item->{job_ids} = \@pending;

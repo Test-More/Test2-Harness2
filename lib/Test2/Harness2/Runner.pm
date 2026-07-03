@@ -10,16 +10,12 @@ use Carp qw/confess croak/;
 use POSIX qw/:sys_wait_h/;
 use Time::HiRes qw/sleep time/;
 
-use Test2::Harness2::Util qw/clean_path file2mod mod2file parse_exit write_file_atomic publish_discovery_link process_includes chmod_tmp write_file collector_exit_code runner_events_file socket_reporter mono_time/;
-use Test2::Harness2::Util::Queue();
+use Test2::Harness2::Util qw/clean_path mod2file write_file_atomic publish_discovery_link process_includes chmod_tmp write_file collector_exit_code socket_reporter mono_time/;
 use Test2::Harness2::Util::JSON(qw/encode_json/);
 use Test2::Harness2::Util::SubReaper qw/acquire_subreaper subreaper_supported/;
 
-use Test2::Harness2::Runner::Constants;
-
 use Test2::Harness2::Runner::Run();
 use Test2::Harness2::Runner::Job();
-use Test2::Harness2::Runner::Spawn();
 use Test2::Harness2::Runner::State();
 use Test2::Harness2::Runner::Preloader();
 use Test2::Harness2::Runner::Monitor();
@@ -37,21 +33,15 @@ use parent 'Test2::Harness2::IPC';
 use Test2::Harness2::Util::HashBase(
     # Fields from settings
     qw{
-        <job_count <slots_per_job
-
         <includes <tlib <lib <blib
         <unsafe_inc
 
         <use_fork <preloads <preload_threshold <switches
         <restrict_reload
 
-        <cover
-
         <event_timeout <resource_timeout
 
         <resources
-
-        <nytprof
 
         <reload
     },
@@ -87,6 +77,20 @@ use Test2::Harness2::Util::HashBase(
         +preload_root_hosts
 
         +sampler_pid
+    },
+    # Role-shared slots: hashref keys owned/first-written by composed roles
+    # (Role::Service: service_*; Completion: job_passed/collector_reap) or by
+    # this runner (submit_buffer). Declaring the constants here (grep-safe,
+    # typo-proof #17 pattern) lets Runner read them as {+CONST}; each owning
+    # role declares its own copy because Role::Tiny does not share HashBase
+    # constants across a composition.
+    qw{
+        +submit_buffer
+        +job_passed
+        +collector_reap
+        +service_select
+        +service_peers
+        +service_subs
     },
 );
 
@@ -479,7 +483,7 @@ sub _drain_transitions {
 
         last if mono_time >= $deadline;
 
-        my $sel = $self->{service_select} or last;
+        my $sel = $self->{+SERVICE_SELECT} or last;
         last unless $sel->can_read(0);
 
         Time::HiRes::sleep(0.01);
@@ -505,7 +509,7 @@ our $SUBSCRIBER_DRAIN_TIMEOUT = 60;
 sub _run_scoped_subscriber_count {
     my $self = shift;
 
-    my $subs = $self->{service_subs} or return 0;
+    my $subs = $self->{+SERVICE_SUBS} or return 0;
 
     my $count = 0;
     for my $sub (values %$subs) {
@@ -689,7 +693,7 @@ sub _preload_root_hosts_stages {
 sub _has_live_stage_peer {
     my $self = shift;
 
-    my $peers = $self->{service_peers} or return 0;
+    my $peers = $self->{+SERVICE_PEERS} or return 0;
     for my $id (sort keys %$peers) {
         next if $id eq 'preload-root';
         next unless $id =~ m/^preload-/;
@@ -716,7 +720,7 @@ sub _preload_root_stage_identity {
     my $self = shift;
 
     return undef unless $self->{+PRELOAD_ROOT_PID};
-    my $peers = $self->{service_peers} or return undef;
+    my $peers = $self->{+SERVICE_PEERS} or return undef;
 
     # The grandchild pid the preload tree actually runs in -- announced by its
     # 'preload-root' handshake connection, not PRELOAD_ROOT_PID.
@@ -743,7 +747,7 @@ sub _preload_root_stage_identity {
 sub stage_peer_pids {
     my $self = shift;
 
-    my $peers = $self->{service_peers} or return {};
+    my $peers = $self->{+SERVICE_PEERS} or return {};
 
     my %pids;
     for my $id (sort keys %$peers) {
@@ -854,7 +858,7 @@ sub submit_action {
     my ($method, @args) = @_;
 
     if ($self->_preload_root_hosts_stages && !$self->_ready_to_schedule) {
-        push @{$self->{submit_buffer} //= []} => [$method, @args];
+        push @{$self->{+SUBMIT_BUFFER} //= []} => [$method, @args];
         return;
     }
 
@@ -875,7 +879,7 @@ sub submit_action {
 sub flush_submit_buffer {
     my $self = shift;
 
-    my $buf = delete $self->{submit_buffer} or return;
+    my $buf = delete $self->{+SUBMIT_BUFFER} or return;
     for my $item (@$buf) {
         my ($method, @args) = @$item;
         # #110: a buffered submission replays OUTSIDE the service-loop dispatch eval; a
@@ -901,7 +905,7 @@ sub flush_submit_buffer {
 sub _flush_submit_buffer_if_ready {
     my $self = shift;
 
-    return unless $self->{submit_buffer} && $self->_ready_to_schedule;
+    return unless $self->{+SUBMIT_BUFFER} && $self->_ready_to_schedule;
 
     return $self->flush_submit_buffer;
 }
@@ -1357,7 +1361,7 @@ sub run_scheduler_only {
 sub stop_preload_stages {
     my $self = shift;
 
-    my $peers = $self->{service_peers} or return;
+    my $peers = $self->{+SERVICE_PEERS} or return;
     for my $identity (keys %$peers) {
         next unless $identity =~ m/^preload-/;
         next if $identity eq 'preload-root';
@@ -1491,7 +1495,7 @@ sub _check_post_pass_health {
 
     return unless defined $job_id;
 
-    my $passed_run = delete $self->{'job_passed'}{$job_id};
+    my $passed_run = delete $self->{+JOB_PASSED}{$job_id};
     return unless defined $passed_run;
     return unless $exit;
     return unless $self->can('announce_run_health');
@@ -1577,7 +1581,7 @@ sub _reaped_unwatched_pid {
     my $self = shift;
     my ($pid, $exit) = @_;
 
-    my $map = $self->{'collector_reap'} or return;
+    my $map = $self->{+COLLECTOR_REAP} or return;
     my $rec = delete $map->{$pid} or return;
 
     $self->_check_post_pass_health($rec->{job_id}, $exit);
@@ -1633,8 +1637,6 @@ these.
 =item $runner->preload_threshold
 
 =item $runner->switches
-
-=item $runner->cover
 
 =item $runner->event_timeout
 

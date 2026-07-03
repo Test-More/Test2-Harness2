@@ -14,6 +14,17 @@ use Test2::Harness2::Role::Service::Connection();
 
 use Role::Tiny;
 
+# Constant-only slots (#17 pattern): this role owns the service socket bookkeeping
+# on the consumer's shared hashref. Declaring the keys as HashBase constants gives
+# grep/typo safety on the bare-string accesses; the value is the lowercased name,
+# and every consumer (Runner, Preload::Host, Sampler) reads them through the same
+# methods here.
+use Test2::Harness2::Util::HashBase qw{
+    +service_select
+    +service_peers
+    +service_subs
+};
+
 requires qw/workdir name/;
 
 =pod
@@ -211,10 +222,10 @@ sub start_service ($self) {
     set_cloexec($listen);
 
     $self->{service_listen}  = $listen;
-    $self->{service_select}  = IO::Select->new($listen);
+    $self->{+SERVICE_SELECT} = IO::Select->new($listen);
     $self->{service_conns}   = {};
-    $self->{service_peers}   = {};
-    $self->{service_subs}    = {};
+    $self->{+SERVICE_PEERS}  = {};
+    $self->{+SERVICE_SUBS}   = {};
     $self->{service_stopped} = 0;
 
     return;
@@ -232,7 +243,7 @@ sub service_stopped ($self) {
 sub service_connect_peer ($self, $identity, $path) {
     # Reuse, never duplicate: if a connection to this peer already exists -- whether
     # we dialed it or it dialed us -- hand it back rather than opening a second one.
-    if (my $existing = $self->{service_peers}{$identity}) {
+    if (my $existing = $self->{+SERVICE_PEERS}{$identity}) {
         return $existing unless $existing->closed;
         $self->_drop_conn($existing);
     }
@@ -249,17 +260,17 @@ sub service_connect_peer ($self, $identity, $path) {
         my_identity   => $self->service_identity,
     );
 
-    $self->{service_select}->add($fh);
+    $self->{+SERVICE_SELECT}->add($fh);
     $self->{service_conns}{$fh} = $conn;
 
     # We know who we dialed, so register the peer now; its identity frame confirms.
-    $self->{service_peers}{$identity} = $conn;
+    $self->{+SERVICE_PEERS}{$identity} = $conn;
 
     return $conn;
 }
 
 sub service_peer_conn ($self, $identity) {
-    my $conn = $self->{service_peers}{$identity} or return undef;
+    my $conn = $self->{+SERVICE_PEERS}{$identity} or return undef;
     return undef if $conn->closed;
     return $conn;
 }
@@ -287,12 +298,12 @@ sub request_handler_stop ($self, $payload = undef, $conn = undef) {
 }
 
 sub add_subscriber ($self, $conn, $run_id = undef, $drain_gate = undef) {
-    $self->{service_subs}{$conn} = {conn => $conn, run_id => $run_id, drain_gate => $drain_gate};
+    $self->{+SERVICE_SUBS}{$conn} = {conn => $conn, run_id => $run_id, drain_gate => $drain_gate};
     return;
 }
 
 sub forward_frame ($self, $frame, $run_id = undef) {
-    my $subs = $self->{service_subs} or return;
+    my $subs = $self->{+SERVICE_SUBS} or return;
     return unless %$subs;
 
     for my $key (keys %$subs) {
@@ -313,7 +324,7 @@ sub forward_frame ($self, $frame, $run_id = undef) {
         # is dropped here.
         next if !$conn->closed && $conn->send_raw($frame);
 
-        delete $self->{service_subs}{$key};
+        delete $self->{+SERVICE_SUBS}{$key};
         $self->_drop_conn($conn);
     }
 
@@ -344,7 +355,7 @@ Teardown primitives; see the public descriptions above.
 =cut
 
 sub service_io ($self) {
-    my $sel    = $self->{service_select} or return;
+    my $sel    = $self->{+SERVICE_SELECT} or return;
     my $listen = $self->{service_listen};
 
     while (my $fh = $listen->accept) {
@@ -413,7 +424,7 @@ sub _handle_events ($self, $conn, @events) {
         my $kind = $event->{kind};
 
         if ($kind eq 'identity') {
-            $self->{service_peers}{$event->{name}} = $conn;
+            $self->{+SERVICE_PEERS}{$event->{name}} = $conn;
             # Optional consumer hook: a peer just announced its full identity. The
             # runner uses it to register a test-collector connection (its full
             # identity payload -- job_id / job_try / run_id) so the connection's
@@ -461,11 +472,11 @@ sub _drop_conn ($self, $conn) {
     delete $self->{service_conns}{$fh};
 
     my $id = $conn->identity;
-    delete $self->{service_peers}{$id}
-        if defined $id && ($self->{service_peers}{$id} // 0) == $conn;
+    delete $self->{+SERVICE_PEERS}{$id}
+        if defined $id && ($self->{+SERVICE_PEERS}{$id} // 0) == $conn;
 
-    delete $self->{service_subs}{$conn};
-    $self->{service_select}->remove($fh) if $self->{service_select};
+    delete $self->{+SERVICE_SUBS}{$conn};
+    $self->{+SERVICE_SELECT}->remove($fh) if $self->{+SERVICE_SELECT};
     $conn->close;
 
     # Optional consumer hook (ticket #12 / ARCHITECTURE.md §4.2): a closing peer may
@@ -486,31 +497,31 @@ sub close_all_connections ($self) {
         eval { CORE::close($listen); 1 };
     }
 
-    if (my $sel = $self->{service_select}) {
+    if (my $sel = $self->{+SERVICE_SELECT}) {
         $sel->remove($_) for $sel->handles;
     }
 
     delete $self->{service_listen};
-    delete $self->{service_select};
-    $self->{service_conns} = {};
-    $self->{service_peers} = {};
-    $self->{service_subs}  = {};
+    delete $self->{+SERVICE_SELECT};
+    $self->{service_conns}  = {};
+    $self->{+SERVICE_PEERS} = {};
+    $self->{+SERVICE_SUBS}  = {};
 
     return;
 }
 
 sub reset_service ($self) {
-    if (my $sel = $self->{service_select}) {
+    if (my $sel = $self->{+SERVICE_SELECT}) {
         for my $fh ($sel->handles) {
             $sel->remove($fh);
             close($fh);
         }
     }
     delete $self->{service_listen};
-    delete $self->{service_select};
+    delete $self->{+SERVICE_SELECT};
     $self->{service_conns}   = {};
-    $self->{service_peers}   = {};
-    $self->{service_subs}    = {};
+    $self->{+SERVICE_PEERS}  = {};
+    $self->{+SERVICE_SUBS}   = {};
     $self->{service_stopped} = 0;
     return;
 }
@@ -519,15 +530,15 @@ sub close_service ($self) {
     if (my $conns = $self->{service_conns}) {
         $_->close for values %$conns;
     }
-    if (my $sel = $self->{service_select}) {
+    if (my $sel = $self->{+SERVICE_SELECT}) {
         for my $fh ($sel->handles) {
             $sel->remove($fh);
             close($fh);
         }
     }
-    $self->{service_conns} = {};
-    $self->{service_peers} = {};
-    $self->{service_subs}  = {};
+    $self->{service_conns}  = {};
+    $self->{+SERVICE_PEERS} = {};
+    $self->{+SERVICE_SUBS}  = {};
 
     if (delete $self->{service_listen}) {
         my $path = $self->service_socket_path;

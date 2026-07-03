@@ -9,6 +9,14 @@ use Test2::Harness2::Runner::StatusReport();
 
 use Role::Tiny;
 
+# Constant-only slots (#17 pattern): grep/typo safety on the runner-hash keys this
+# role touches. job_pids is owned by the runner; service_peers by Role::Service.
+# Role::Tiny does not share HashBase constants, so each role declares its own.
+use Test2::Harness2::Util::HashBase qw{
+    +job_pids
+    +service_peers
+};
+
 requires qw/state settings/;
 
 =pod
@@ -421,7 +429,7 @@ sub request_handler_status {
 
     my $report = Test2::Harness2::Runner::StatusReport->new(
         state      => $self->state,
-        job_pids   => $self->{'job_pids'},
+        job_pids   => $self->{+JOB_PIDS},
         stage_pids => $self->stage_peer_pids,
     );
 
@@ -446,7 +454,7 @@ sub request_handler_truncate {
 
     my $report = Test2::Harness2::Runner::StatusReport->new(
         state    => $self->state,
-        job_pids => $self->{'job_pids'},
+        job_pids => $self->{+JOB_PIDS},
     );
 
     my $running = $report->build->{running};
@@ -528,7 +536,7 @@ sub record_job_pid {
     return unless $self->{'rootpid'} == $$;
     return unless defined $job_id && defined $pid;
 
-    $self->{'job_pids'}->{$job_id} = $pid;
+    $self->{+JOB_PIDS}->{$job_id} = $pid;
 
     return;
 }
@@ -550,7 +558,7 @@ sub requeue_task {
     my $ok = eval { $self->state->requeue_task($job_id); 1 };
     return unless $ok;
 
-    delete $self->{'job_pids'}->{$job_id};
+    delete $self->{+JOB_PIDS}->{$job_id};
 
     $self->announce_job($job_id, 'requeued', file => $task->{file}, run_id => $task->{run_id});
 
@@ -577,7 +585,7 @@ sub _stale_stage_report {
     # No source connection means we cannot attribute the report; ignore it.
     return 1 unless $conn;
 
-    my $current = $self->{service_peers}{"preload-$stage"};
+    my $current = $self->{+SERVICE_PEERS}{"preload-$stage"};
 
     # Before the stage's identity frame lands the peer may not be registered yet;
     # accept the report from the connection it arrived on (the registration and the

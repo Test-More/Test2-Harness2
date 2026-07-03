@@ -8,6 +8,16 @@ use Test2::Harness2::Util qw/mono_time/;
 
 use Role::Tiny;
 
+# Constant-only slots (#17 pattern): grep/typo safety on the runner-hash keys this
+# role touches. job_passed/collector_reap are first-written here; job_pids is owned
+# by the runner. Role::Tiny does not share HashBase constants across a composition,
+# so each role declares its own copy.
+use Test2::Harness2::Util::HashBase qw{
+    +job_passed
+    +collector_reap
+    +job_pids
+};
+
 requires qw/state settings/;
 
 =pod
@@ -98,7 +108,7 @@ sub collector_conn_eof {
     my $job_id  = $entry->{job_id};
     my $job_try = $entry->{job_try};
 
-    delete $self->{'job_pids'}->{$job_id} if defined $job_id;
+    delete $self->{+JOB_PIDS}->{$job_id} if defined $job_id;
 
     # Stale try: a superseded attempt's connection was retired on retry; its late
     # EOF must not stop/retry the live try (the current incarnation owns it).
@@ -195,7 +205,7 @@ sub decide_collector_outcome {
         # Record that THIS job reported a pass, so a later non-zero health exit on
         # reap (a post-pass collector failure, A3) flags the suite -- the test
         # itself stays green and is never reopened (ARCHITECTURE.md §5.4).
-        $self->{'job_passed'}{$job_id} = $entry->{run_id} // '';
+        $self->{+JOB_PASSED}{$job_id} = $entry->{run_id} // '';
 
         # A DETACHED preload collector (ticket #28) is reaped by the runner as an
         # UNWATCHED pid: at reap the runner has only the pid, not the job_id, and
@@ -206,7 +216,7 @@ sub decide_collector_outcome {
         # incarnation has a distinct pid, so it is try-safe; the reap (or the run-end
         # sweep) consumes it. The WATCHED no-preload path does not use this -- its
         # set_proc_exit knows the job_id from the proc's task.
-        $self->{'collector_reap'}{$entry->{pid}} = {job_id => $job_id, run_id => $entry->{run_id} // ''}
+        $self->{+COLLECTOR_REAP}{$entry->{pid}} = {job_id => $job_id, run_id => $entry->{run_id} // ''}
             if defined $entry->{pid};
 
         $self->_collector_stop($job_id);

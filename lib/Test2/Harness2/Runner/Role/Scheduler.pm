@@ -74,8 +74,8 @@ sub service_tick {
 
     # A 'stop' request over runner.socket asks the run loop to wind down. The
     # role's request_handler_stop sets service_stopped; translate that into the
-    # runner's own shutdown signal so the run loop (run_stage) terminates through
-    # end_test_loop.
+    # runner's own shutdown signal (SIGNAL='TERM') so run_scheduler_only winds
+    # down.
     $self->{+SIGNAL} //= 'TERM' if $self->service_stopped;
 
     # The scheduler is an in-runner object: advance it here, on the
