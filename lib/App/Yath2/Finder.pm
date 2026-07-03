@@ -379,6 +379,7 @@ sub add_rerun_to_search {
         # Bounded read of a static log (died unless -f above): done => 1 so a
         # newline-less final record (e.g. a hand-edited or externally-produced
         # log) is still counted for --rerun instead of silently lost.
+        require Test2::Harness2::Util::File::JSONL;
         my $stream = Test2::Harness2::Util::File::JSONL->new(name => $rerun, skip_bad_decode => 1, done => 1);
 
         my %files;

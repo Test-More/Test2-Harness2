@@ -92,87 +92,24 @@ sub cover {
 sub yath {
     my %params = @_;
 
+    # Localized so the waitpid/system machinery below cannot clobber the
+    # caller's $?.
     local $?;
 
     my $ctx = context();
 
-    my $cmd = delete $params{cmd} // delete $params{command};
-    my $cli = delete $params{cli} // delete $params{args} // [];
-    my $pre = delete $params{pre} // delete $params{pre_command} // [];
-    my $env = delete $params{env} // {};
-    my $enc = delete $params{encoding};
-    my $prefix = delete $params{prefix};
+    my $p = _parse_params(\%params);
 
-    my $subtest  = delete $params{test} // delete $params{tests} // delete $params{subtest};
-    my $exittest = delete $params{exit};
+    my $stdin_fh = _setup_stdin($p->{stdin});
 
-    my $debug   = delete $params{debug}   // 0;
-    my $inc     = delete $params{inc}     // 1;
-    my $capture = delete $params{capture} // 1;
-    my $log     = delete $params{log}     // 0;
-    my $stdin   = delete $params{stdin};
+    # Capture the caller's file here (not in a helper) so inc-detection finds
+    # the test file that called yath(), not this module's frame.
+    my (undef, $caller_file) = caller();
 
-    my $no_app_path = delete $params{no_app_path};
-    my $lib = delete $params{lib} // [];
+    my $run = _setup_capture_and_log($p, $caller_file);
 
-    if (keys %params) {
-        croak "Unexpected parameters: " . join (', ', sort keys %params);
-    }
-
-    # Optional STDIN for the yath process (e.g. interactive mode feeds the
-    # command's STDIN through to the one running test). A string is written to a
-    # temp file and rewound; an open handle is used as-is.
-    my $stdin_fh;
-    if (defined $stdin) {
-        if (ref $stdin) {
-            $stdin_fh = $stdin;
-        }
-        else {
-            my $sfile;
-            ($stdin_fh, $sfile) = tempfile("yathin-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.in');
-            print $stdin_fh $stdin;
-            $stdin_fh->flush;
-            seek($stdin_fh, 0, 0);
-        }
-    }
-
-    my (@inc, @dev);
-    if ($inc) {
-        my ($pkg, $file) = caller();
-        my $dir = $file;
-        $dir =~ s/\.t2?$//g;
-
-        my $inc = File::Spec->catdir($dir, 'lib');
-        push @dev => "-D$inc" if -d $inc;
-    }
-
-    my ($wh, $cfile);
-    if ($capture) {
-        ($wh, $cfile) = tempfile("yath-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.out');
-        $wh->autoflush(1);
-    }
-
-    my (@log, $logfile);
-    if ($log) {
-        my $fh;
-        ($fh, $logfile) = tempfile("yathlog-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.jsonl');
-        close($fh);
-        @log = ('--jsonl-file' => $logfile);
-        print "DEBUG: log file = '$logfile'\n" if $debug;
-    }
-
-    unless ($no_app_path) {
-        push @inc => "-I$apppath" if $cmd =~ m/^(test|start|projects)$/;
-        push @dev => "-D$apppath";
-    }
-
-    my @cover = cover();
-
-    my $yath = find_yath;
-    my @cmd = ($^X, @$lib, @cover, $yath, @$pre, @dev, $cmd ? ($cmd) : (), @inc, @log, @$cli);
-
-    print "DEBUG: Command = " . join(' ' => @cmd) . "\n" if $debug;
-
+    # Localized for the whole run *and* the result subtest below, so the
+    # caller's test block observes the same environment the command ran under.
     local %ENV = %ENV;
 
     # App::Yath::Script (2.0) prints a message and sets PERL_HASH_SEED when
@@ -180,15 +117,142 @@ sub yath {
     $ENV{PERL_HASH_SEED} //= POSIX::strftime('%Y%m%d', localtime);
 
     $ENV{YATH_PERSISTENCE_DIR} = $pdir;
-    $ENV{YATH_CMD} = $cmd;
-    $ENV{NESTED_YATH} = 1;
-    $ENV{'YATH_SELF_TEST'} = 1;
-    $ENV{$_} = $env->{$_} for keys %$env;
+    $ENV{YATH_CMD}             = $p->{cmd};
+    $ENV{NESTED_YATH}          = 1;
+    $ENV{'YATH_SELF_TEST'}     = 1;
+    $ENV{$_} = $p->{env}->{$_} for keys %{$p->{env}};
+
+    my ($exit, $lines) = _run_and_capture($p, $run, $stdin_fh);
+
+    my $out = {
+        exit => $exit,
+        $p->{capture} ? (output => join('', @$lines)) : (),
+        # Constructed after waitpid: the log is complete, so done => 1 surfaces a
+        # newline-less final record instead of silently dropping it.
+        $p->{log} ? (log => Test2::Harness2::Util::File::JSONL->new(name => $run->{logfile}, done => 1)) : (),
+    };
+
+    _report_result($p, $out, $run->{cmd});
+
+    $ctx->release;
+
+    return $out;
+}
+
+# Pull the recognized yath() arguments (with their aliases) out of the arg hash,
+# apply defaults, and croak on anything left over. Returns a hashref.
+sub _parse_params {
+    my ($params) = @_;
+
+    my %p;
+    $p{cmd}    = delete $params->{cmd} // delete $params->{command};
+    $p{cli}    = delete $params->{cli} // delete $params->{args} // [];
+    $p{pre}    = delete $params->{pre} // delete $params->{pre_command} // [];
+    $p{env}    = delete $params->{env} // {};
+    $p{enc}    = delete $params->{encoding};
+    $p{prefix} = delete $params->{prefix};
+
+    $p{subtest}  = delete $params->{test} // delete $params->{tests} // delete $params->{subtest};
+    $p{exittest} = delete $params->{exit};
+
+    $p{debug}   = delete $params->{debug}   // 0;
+    $p{inc}     = delete $params->{inc}     // 1;
+    $p{capture} = delete $params->{capture} // 1;
+    $p{log}     = delete $params->{log}     // 0;
+    $p{stdin}   = delete $params->{stdin};
+
+    $p{no_app_path} = delete $params->{no_app_path};
+    $p{lib}         = delete $params->{lib} // [];
+
+    if (keys %$params) {
+        croak "Unexpected parameters: " . join(', ', sort keys %$params);
+    }
+
+    return \%p;
+}
+
+# Optional STDIN for the yath process (e.g. interactive mode feeds the
+# command's STDIN through to the one running test). A string is written to a
+# temp file and rewound; an open handle is used as-is. Returns undef for none.
+sub _setup_stdin {
+    my ($stdin) = @_;
+
+    return undef unless defined $stdin;
+    return $stdin if ref $stdin;
+
+    my ($stdin_fh, $sfile) = tempfile("yathin-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.in');
+    print $stdin_fh $stdin;
+    $stdin_fh->flush;
+    seek($stdin_fh, 0, 0);
+
+    return $stdin_fh;
+}
+
+# Build the yath command line (dev-libs from the caller's test dir, app-path
+# includes, coverage, log args) plus the capture and log temp files. Returns a
+# hashref: cmd (arrayref), wh/cfile (capture handle+path), logfile.
+sub _setup_capture_and_log {
+    my ($p, $caller_file) = @_;
+
+    my $cmd   = $p->{cmd};
+    my $debug = $p->{debug};
+
+    my (@inc, @dev);
+    if ($p->{inc}) {
+        my $dir = $caller_file;
+        $dir =~ s/\.t2?$//g;
+
+        my $incdir = File::Spec->catdir($dir, 'lib');
+        push @dev => "-D$incdir" if -d $incdir;
+    }
+
+    my ($wh, $cfile);
+    if ($p->{capture}) {
+        ($wh, $cfile) = tempfile("yath-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.out');
+        $wh->autoflush(1);
+    }
+
+    my (@log, $logfile);
+    if ($p->{log}) {
+        my $fh;
+        ($fh, $logfile) = tempfile("yathlog-$$-XXXXXXXX", TMPDIR => 1, UNLINK => 1, SUFFIX => '.jsonl');
+        close($fh);
+        @log = ('--jsonl-file' => $logfile);
+        print "DEBUG: log file = '$logfile'\n" if $debug;
+    }
+
+    unless ($p->{no_app_path}) {
+        push @inc => "-I$apppath" if $cmd =~ m/^(test|start|projects)$/;
+        push @dev => "-D$apppath";
+    }
+
+    my @cover = cover();
+
+    my $yath = find_yath;
+    my @cmd = ($^X, @{$p->{lib}}, @cover, $yath, @{$p->{pre}}, @dev, $cmd ? ($cmd) : (), @inc, @log, @{$p->{cli}});
+
+    print "DEBUG: Command = " . join(' ' => @cmd) . "\n" if $debug;
+
+    return {cmd => \@cmd, wh => $wh, cfile => $cfile, logfile => $logfile};
+}
+
+# Spawn the yath command and, when capturing, poll its output file until the
+# child is reaped -- escalating to a kill on timeout. Returns ($exit, \@lines).
+sub _run_and_capture {
+    my ($p, $run, $stdin_fh) = @_;
+
+    my $enc     = $p->{enc};
+    my $debug   = $p->{debug};
+    my $capture = $p->{capture};
+
+    my $wh    = $run->{wh};
+    my $cfile = $run->{cfile};
+
     my $pid = run_cmd(
         no_set_pgrp => 1,
         $capture ? (stderr => $wh, stdout => $wh) : (),
         $stdin_fh ? (stdin => $stdin_fh) : (),
-        command => \@cmd,
+        command => $run->{cmd},
         run_in_parent => [sub { close($wh) }],
     );
 
@@ -246,15 +310,22 @@ sub yath {
 
     print "DEBUG: Exit: $exit\n" if $debug;
 
-    my $out = {
-        exit => $exit,
-        $capture ? (output => join('', @lines)) : (),
-        # Constructed after waitpid: the log is complete, so done => 1 surfaces a
-        # newline-less final record instead of silently dropping it.
-        $log ? (log => Test2::Harness2::Util::File::JSONL->new(name => $logfile, done => 1)) : (),
-    };
+    return ($exit, \@lines);
+}
 
-    my $name = join(' ', map { length($_) < 30 ? $_ : substr($_, 0, 10) . "[...]" . substr($_, -10) } grep { defined($_) } $prefix, 'yath', @$pre, $cmd ? ($cmd) : (), @$cli);
+# Run the caller-supplied subtest and/or exit check inside a buffered subtest,
+# adding a command/output diagnostic when the subtest is not passing.
+sub _report_result {
+    my ($p, $out, $cmd) = @_;
+
+    my $subtest  = $p->{subtest};
+    my $exittest = $p->{exittest};
+
+    return unless $subtest || defined $exittest;
+
+    my $exit = $out->{exit};
+
+    my $name = join(' ', map { length($_) < 30 ? $_ : substr($_, 0, 10) . "[...]" . substr($_, -10) } grep { defined($_) } $p->{prefix}, 'yath', @{$p->{pre}}, $p->{cmd} ? ($p->{cmd}) : (), @{$p->{cli}});
     run_subtest(
         $name,
         sub {
@@ -272,18 +343,14 @@ sub yath {
 
             my $ictx = context(level => 3);
 
-            $ictx->diag("Command = " . join(' ' => grep { defined $_ } @cmd) . "\nExit = $exit\n==== Output ====\n$out->{output}\n========")
+            $ictx->diag("Command = " . join(' ' => grep { defined $_ } @$cmd) . "\nExit = $exit\n==== Output ====\n$out->{output}\n========")
                 unless $ictx->hub->is_passing;
 
             $ictx->release;
         },
         {buffered => 1},
         $out,
-    ) if $subtest || defined $exittest;
-
-    $ctx->release;
-
-    return $out;
+    );
 }
 
 # Reap a timed-out yath child. A blocking waitpid() after a lone TERM turns a

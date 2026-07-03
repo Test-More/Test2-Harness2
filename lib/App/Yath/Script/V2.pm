@@ -319,13 +319,18 @@ __END__
 
 =head1 NAME
 
-App::Yath::Script::V2 - V1 (Legacy) yath script handler for Test2::Harness2
+App::Yath::Script::V2 - V2 (2.0) yath script handler for Test2::Harness2
 
 =head1 DESCRIPTION
 
-This is the V1 script handler for L<Test2::Harness2>. It is used by
-L<App::Yath::Script> when a C<.yath.rc> file with no version marker (or an
-explicit C<# V1> marker) is found, or when V1 is the highest installed version.
+This is the V2 script handler for the 2.0 L<Test2::Harness2>. The external
+L<App::Yath::Script> dispatcher loads it as C<App::Yath::Script::V2> and
+delegates to it. It is selected when the resolved version is 2, in priority
+order: an explicit C<V2> / C<v2> as the first command-line argument; a versioned
+C<.yath.V2.rc> / C<.yath.v2.rc> file (or a plain C<.yath.rc> symlink pointing at
+one) found while walking up the parent directories; a local
+C<./lib/App/Yath/Script/V2.pm> checkout; or, when no version is otherwise
+specified, V2 being the highest installed C<App::Yath::Script::V#> module.
 
 This module contains the logic that was previously embedded directly in the
 C<scripts/yath> script of L<Test2::Harness2>.
