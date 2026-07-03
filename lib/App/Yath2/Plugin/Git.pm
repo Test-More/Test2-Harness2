@@ -110,7 +110,56 @@ sub _changed_diff {
     my $from = 'HEAD';
 
     if ($base) {
-        $from .= "^" while system($cmd => 'merge-base', '--is-ancestor', $from, $base);
+        # #107: validate the change base and bound the merge-base walk so a
+        # typo'd/nonexistent ref, an orphan/unrelated branch, or a shallow clone
+        # (HEAD^..^ past the shallow boundary is a bad revision -> exit 128) can
+        # never fork `git merge-base` in an unbounded loop. The old
+        #   $from .= "^" while system(... merge-base --is-ancestor $from $base);
+        # never inspected $? -- any non-1 exit loops forever spamming git errors.
+
+        # Fail fast (before the loop) if the base does not resolve to a commit.
+        {
+            my (undef, $stderr, $status) = capture {
+                system($cmd => 'rev-parse', '--verify', "${base}^{commit}");
+            };
+            if ($status) {
+                chomp(my $err = $stderr // '');
+                die "Invalid --git-change-base '$base': not a resolvable git commit"
+                    . ($err ? " ($err)" : '') . "\n";
+            }
+        }
+
+        # Upper bound on how far HEAD^...^ can walk: the number of commits
+        # reachable from HEAD (bounded even in a shallow clone). A belt-and-
+        # suspenders guard on top of the per-iteration exit check below.
+        my $max   = $class->_commit_count // 0;
+        my $steps = 0;
+
+        while (1) {
+            my (undef, $stderr, $status) = capture {
+                system($cmd => 'merge-base', '--is-ancestor', $from, $base);
+            };
+
+            last unless $status;    # exit 0: $from is an ancestor of $base -> done
+
+            # exit 1 == "not an ancestor": keep walking back toward the base.
+            # A signal, or any other exit (128 bad revision past a shallow
+            # boundary, git missing, ...) is fatal -- looping would just spin
+            # 'fatal: bad revision' forever and never start the tests.
+            if ((($status & 127) != 0) || (($status >> 8) != 1)) {
+                chomp(my $err = $stderr // '');
+                die "git merge-base --is-ancestor $from $base failed"
+                    . ($err ? ": $err" : sprintf(" (status %d)", $status)) . "\n";
+            }
+
+            if ($max && ++$steps > $max) {
+                die "Could not find a common ancestor of HEAD and --git-change-base "
+                    . "'$base' within $max commit(s); is it on an unrelated branch?\n";
+            }
+
+            $from .= "^";
+        }
+
         return $class->_diff_from($from);
     }
 
@@ -129,6 +178,22 @@ sub _diff_from {
     my $cmd = $class->git_cmd or return;
 
     return (line_sub => $class->git_output('diff', '-U1000000', '-W', '--minimal', $from));
+}
+
+# Number of commits reachable from HEAD, or undef if git can't answer. Used to
+# bound the #107 merge-base walk; bounded even in a shallow clone.
+sub _commit_count {
+    my $class = shift;
+    my $cmd = $class->git_cmd or return undef;
+
+    my ($stdout, undef, $status) = capture {
+        system($cmd => 'rev-list', '--count', 'HEAD');
+    };
+    return undef if $status;
+
+    chomp(my $n = $stdout // '');
+    return undef unless $n =~ /^\d+$/;
+    return $n;
 }
 
 1;

@@ -1,0 +1,36 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+# Mock git command for t/AI/unit/Git_bug107.t (#107). The change base always
+# resolves (rev-parse --verify succeeds) so we exercise the merge-base loop
+# itself. BUG107_MODE selects the failure the loop must survive:
+#   badrev  -> merge-base exits 128 (bad revision, e.g. a shallow boundary)
+#   orphan  -> merge-base always exits 1 (never an ancestor / unrelated branch)
+
+my $args = "@ARGV";
+my $mode = $ENV{BUG107_MODE} // '';
+
+# Base validation: pretend the base is a real commit.
+if ($args =~ /^rev-parse --verify /) {
+    print "0000000000000000000000000000000000000000\n";
+    exit 0;
+}
+
+# Iteration bound source.
+if ($args eq 'rev-list --count HEAD') {
+    print "3\n";
+    exit 0;
+}
+
+if ($args =~ /^merge-base --is-ancestor /) {
+    if ($mode eq 'badrev') {
+        print STDERR "fatal: bad revision '$args'\n";
+        exit 128;
+    }
+    # orphan / default: HEAD^... is never an ancestor of the base.
+    exit 1;
+}
+
+print STDERR "unknown args: $args\n";
+exit 1;
