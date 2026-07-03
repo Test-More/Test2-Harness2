@@ -17,7 +17,15 @@ sub always_keep_dir { 0 }
 sub summary         { "No Summary" }
 sub description     { "No Description" }
 sub group           { "Z-UNFINISHED" }
-sub doc_args        { () }
+sub cli_args        { '' }
+
+# Bridge cli_args (a single usage string) into the doc-generator interface.
+# Commands that need structured [name => text] argument docs may override
+# doc_args directly; cli_help/generate_pod render either form.
+sub doc_args {
+    my $args = $_[0]->cli_args;
+    return length($args) ? ($args) : ();
+}
 
 # Commands that provide options override this to return a
 # Getopt::Yath::Instance.
@@ -285,9 +293,19 @@ method is usually capable of filling in the details when this is omitted.
 
 Long-form description of the command. Used in C<cli_help()>.
 
+=item $string = $cmd_class->cli_args()
+
+A single usage string describing the command's positional arguments (for
+example C<"[--] event_log.jsonl [job1, job2, ...]">). Defaults to an empty
+string (no arguments). Rendered in the C<[COMMAND ARGUMENTS]> section of
+C<cli_help()> and C<generate_pod()>.
+
 =item @list = $cmd_class->doc_args()
 
-A list of argument names to the command, used to generate documentation.
+A list of argument entries used to generate documentation. By default this
+bridges C<cli_args()>: it returns the single C<cli_args> string when non-empty,
+or an empty list otherwise. Override directly to supply structured
+C<[$name =E<gt> $text]> entries.
 
 =item $string = $cmd_class->generate_pod()
 
