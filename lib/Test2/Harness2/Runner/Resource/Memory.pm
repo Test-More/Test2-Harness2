@@ -4,15 +4,10 @@ use v5.38;
 our $VERSION = '2.000000';
 
 use Carp qw/croak/;
-use Time::HiRes qw/time/;
 
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 
-# Predeclare new() so HashBase does not generate one (we define our own below).
-sub new;
-
 use Object::HashBase qw{
-    &Test2::Harness2::Runner::Resource
     &Test2::Harness2::Role::Resource::Utilizer
     <settings
     <state
@@ -72,13 +67,6 @@ Defaults to 1.
 
 =cut
 
-sub new {
-    my $class = shift;
-    my $self  = bless {@_}, $class;
-    $self->init();
-    return $self;
-}
-
 sub init {
     my $self = shift;
 
@@ -112,20 +100,12 @@ sub init {
 
 =head1 PUBLIC METHODS
 
+The instance's configured name is available via the generated C<name> reader
+(defaults to C<memory>). The scheduler-facing contract (C<available> / C<assign> /
+C<record> / C<release>) is provided by
+L<Test2::Harness2::Role::Resource::Utilizer>.
+
 =over 4
-
-=item $name = $self->resource_name
-
-The instance's configured name (defaults to C<memory>).
-
-=item $val = $self->available(\%task)
-
-C<0> to defer (free memory below the threshold and the starvation floor is met),
-otherwise C<1>.
-
-=item $self->assign(\%task, \%state)
-
-Records the job so the in-flight count tracks it; assigns no env/args.
 
 =item $bool = $self->is_temporarily_unavailable
 
@@ -135,36 +115,6 @@ conservative of C<min_free> and the C<--utilize> floor).
 =back
 
 =cut
-
-sub resource_name { my $self = shift; return $self->{+NAME} }
-
-sub available {
-    my $self = shift;
-    my ($task) = @_;
-    croak "'job' is required" unless defined $task;
-    return $self->should_defer_for_utilization ? 0 : 1;
-}
-
-sub assign {
-    my $self = shift;
-    my ($task, $state) = @_;
-    $state->{record} = {job_id => $task->{job_id}, stamp => time};
-    return;
-}
-
-sub record {
-    my $self = shift;
-    my ($job_id, $info) = @_;
-    $self->track_started($job_id);
-    return;
-}
-
-sub release {
-    my $self = shift;
-    my ($job_id) = @_;
-    $self->track_released($job_id);
-    return;
-}
 
 sub is_temporarily_unavailable {
     my $self = shift;
@@ -261,15 +211,6 @@ sub _min_free_from_settings {
     my $utilize = $self->_utilize_from_settings;
     return undef unless defined $utilize;
     return {kind => 'pct', value => 100 - $utilize};
-}
-
-sub _utilize_from_settings {
-    my $self     = shift;
-    my $settings = $self->{+SETTINGS} or return undef;
-    return undef unless $settings->check_group('runner');
-    my $runner = $settings->runner;
-    return undef unless $runner->check_option('utilize');
-    return $runner->utilize;
 }
 
 sub _min_free_str {

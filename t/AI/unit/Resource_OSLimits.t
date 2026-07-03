@@ -26,7 +26,7 @@ package FakeUnixLimits {
 
 subtest unixlimits_inline_parse => sub {
     my $r = Test2::Harness2::Runner::Resource::UnixLimits->new(arg => 'nofile=10%');
-    is($r->resource_name, 'unixlimits', "default name");
+    is($r->name, 'unixlimits', "default name");
     is($r->nofile, {kind => 'pct', value => 10}, "nofile=10% parsed as pct");
     is($r->as, undef, "as off by default");
 };
@@ -146,7 +146,7 @@ BEGIN {
 subtest disk_inline_parse => sub {
     local $Filesys::Df::RESULT = {bavail => 1000, blocks => 2000};
     my $r = Test2::Harness2::Runner::Resource::Disk->new(arg => '/tmp:25%');
-    is($r->resource_name, 'disk', "default name");
+    is($r->name, 'disk', "default name");
     is($r->mounts->{'/tmp'}{min_free}, {kind => 'pct', value => 25}, "threshold parsed (default unit %)");
 };
 

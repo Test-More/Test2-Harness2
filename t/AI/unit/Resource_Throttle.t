@@ -22,7 +22,7 @@ subtest cpu_defers_at_threshold => sub {
     my $cpu   = Test2::Harness2::Runner::Resource::CPU->new(state => $state, arg => 80);
 
     is($cpu->utilize_percent, 80, "inline arg sets the threshold");
-    is($cpu->resource_name, 'cpu', "default name");
+    is($cpu->name, 'cpu', "default name");
 
     # 0 in flight: below the min_concurrent floor, never defers.
     is($cpu->available({job_id => 'j1'}), 1, "cpu 70 < 80, available");

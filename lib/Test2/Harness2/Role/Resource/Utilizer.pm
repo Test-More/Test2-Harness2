@@ -3,15 +3,25 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
+use Carp qw/croak/;
+use Time::HiRes qw/time/;
+
 # Role::Tiny must mark this as a role before HashBase loads.
 use Role::Tiny;
+
+# Compose the base resource contract. A throttle resource (CPU/Memory/UnixLimits)
+# composes ONLY this role and still IS-A Test2::Harness2::Runner::Resource; the
+# shared available/assign/record/release below satisfy and override the base
+# contract in one place.
+with 'Test2::Harness2::Runner::Resource';
+
 use Test2::Harness2::Util::HashBase qw{
     <utilize_percent
     <min_concurrent
     +in_flight_jobs
 };
 
-requires 'is_temporarily_unavailable';
+requires 'is_temporarily_unavailable', 'settings';
 
 =pod
 
@@ -76,6 +86,27 @@ hook and C<track_released> from its C<release> hook.
 True when C<in_flight E<gt>= min_concurrent> B<and> C<is_temporarily_unavailable>
 is true. Below the floor, saturation never defers.
 
+=item $bool = $self->is_supported
+
+Whether the monitored subsystem can be read on this host. Defaults to true; a
+consumer that can deactivate (e.g. UnixLimits with no C</proc>) overrides it, and
+C<available> then short-circuits to "available" (no throttling).
+
+=item $val = $self->available(\%task)
+
+C<0> to defer (saturated and the starvation floor is met), otherwise C<1>. Returns
+C<1> unconditionally on an unsupported host. Croaks if C<$task> is undef.
+
+=item $self->assign(\%task, \%state)
+
+Stamps C<< $state->{record} >> so the job is tracked; assigns no env/args.
+
+=item $self->record($job_id, $info)
+
+=item $self->release($job_id)
+
+Maintain the in-flight set via C<track_started> / C<track_released>.
+
 =back
 
 =cut
@@ -99,6 +130,44 @@ sub should_defer_for_utilization ($self) {
     my $min = $self->{+MIN_CONCURRENT} // 1;
     return 0 if $self->in_flight < $min;
     return $self->is_temporarily_unavailable ? 1 : 0;
+}
+
+# --- Shared resource contract for the throttle resources --------------------
+# CPU/Memory/UnixLimits differ only in is_temporarily_unavailable / is_supported;
+# the scheduler-facing contract is identical, so it lives here once.
+
+# Overridable gate: a resource that can deactivate (UnixLimits without /proc)
+# overrides this; the default is "always supported".
+sub is_supported { 1 }
+
+sub available ($self, $task = undef) {
+    croak "a task is required" unless defined $task;
+    return 1 unless $self->is_supported;
+    return $self->should_defer_for_utilization ? 0 : 1;
+}
+
+sub assign ($self, $task, $state) {
+    $state->{record} = {job_id => $task->{job_id}, stamp => time};
+    return;
+}
+
+sub record ($self, $job_id, $info = undef) {
+    $self->track_started($job_id);
+    return;
+}
+
+sub release ($self, $job_id) {
+    $self->track_released($job_id);
+    return;
+}
+
+# The --utilize percentage from settings, or undef when none was given.
+sub _utilize_from_settings ($self) {
+    my $settings = $self->settings or return undef;
+    return undef unless $settings->check_group('runner');
+    my $runner = $settings->runner;
+    return undef unless $runner->check_option('utilize');
+    return $runner->utilize;
 }
 
 1;

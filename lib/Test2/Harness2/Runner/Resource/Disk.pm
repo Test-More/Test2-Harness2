@@ -8,9 +8,6 @@ use Time::HiRes qw/time/;
 
 use Test2::Harness2::Util::Units qw/parse_size_or_pct/;
 
-# Predeclare new() so HashBase does not generate one (we define our own below).
-sub new;
-
 use Object::HashBase qw{
     &Test2::Harness2::Runner::Resource
     <settings
@@ -77,13 +74,6 @@ L<Test2::Harness2::Util::Units/parse_size_or_pct>.
 =back
 
 =cut
-
-sub new {
-    my $class = shift;
-    my $self  = bless {@_}, $class;
-    $self->init();
-    return $self;
-}
 
 sub init {
     my $self = shift;
@@ -157,11 +147,10 @@ sub _require_filesys_df {
 
 =head1 PUBLIC METHODS
 
+The instance's configured name is available via the generated C<name> reader
+(defaults to C<disk>).
+
 =over 4
-
-=item $name = $self->resource_name
-
-The instance's configured name (defaults to C<disk>).
 
 =item $bool = $self->is_supported
 
@@ -181,8 +170,6 @@ Satisfies the contract; reserves nothing.
 
 =cut
 
-sub resource_name { my $self = shift; return $self->{+NAME} }
-
 sub is_supported {
     my $self = shift;
     return $self->{+SUPPORTED} //= 1;
@@ -191,7 +178,7 @@ sub is_supported {
 sub available {
     my $self = shift;
     my ($task) = @_;
-    croak "'job' is required" unless defined $task;
+    croak "a task is required" unless defined $task;
 
     # Sample every mount so status() reflects fresh readings for all of them.
     $self->_take_sample($_) for sort keys %{$self->{+MOUNTS}};
@@ -219,15 +206,8 @@ sub assign {
     return;
 }
 
-sub record {
-    my $self = shift;
-    return;
-}
-
-sub release {
-    my $self = shift;
-    return;
-}
+# record() / release() are the base role's no-op defaults
+# (Test2::Harness2::Runner::Resource): this gate reserves nothing per job.
 
 sub status_data {
     my $self = shift;

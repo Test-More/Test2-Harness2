@@ -4,9 +4,6 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-# Predeclare new() so HashBase does not generate one (we define our own below).
-sub new;
-
 use Object::HashBase qw/&Test2::Harness2::Runner::Resource <settings <state/;
 
 # §4.7a: model preload-stage availability as a scheduler resource. Unlike a
@@ -16,13 +13,6 @@ use Object::HashBase qw/&Test2::Harness2::Runner::Resource <settings <state/;
 # normally get only `settings`) and the resource reads stage_is_up / stage_state /
 # stage_map straight off it. assign() records nothing bounded; release() is a
 # no-op.
-
-sub new {
-    my $class = shift;
-    my $self = bless {@_}, $class;
-    $self->init();
-    return $self;
-}
 
 sub init {
     my $self = shift;
