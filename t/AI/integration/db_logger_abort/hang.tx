@@ -5,7 +5,7 @@ use Time::HiRes qw/sleep/;
 # the harness test waits on), then blocks. The harness sends a `truncate` (the
 # `yath abort` operational event) over runner.socket, which the runner turns into
 # a watchdog abort of this job -- its collector never reports a final_state, so the
-# DB logger must FOLD the abort into a broken/failed try (#131). This process is
+# DB logger must FOLD the abort into a broken/failed try (TODO-131). This process is
 # terminated by the abort's terminate-then-hard-kill; it should never reach
 # done_testing.
 

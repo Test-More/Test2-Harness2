@@ -22,7 +22,7 @@ subtest 'fields option is defined' => sub {
     is($opt->field, 'fields', "Field name is fields");
 };
 
-# Ticket #127: the name:details pattern used to be unanchored with a non-greedy
+# Ticket TODO-127: the name:details pattern used to be unanchored with a non-greedy
 # details capture (m/([^:]+):([^:]+)/), so any value with a second colon -- a
 # URL, a host:port -- had its details silently truncated at the first colon of
 # the tail. The fix anchors and makes details greedy: m/^([^:]+):(.+)$/s.

@@ -260,7 +260,7 @@ sub service_tick ($self) {
     # response. want_reply => 0 keeps the per-tick request_id out of PENDING (it
     # would otherwise leak forever on this daemon-lifetime channel). service_send
     # still returns false if the write failed (the runner vanished mid-write,
-    # closing the connection) -- stop in that case. (#134 finding 106)
+    # closing the connection) -- stop in that case. (TODO-134 finding 106)
     $self->stop_service
         unless $self->service_send('runner', 'system_load', load => $snap, want_reply => 0);
 

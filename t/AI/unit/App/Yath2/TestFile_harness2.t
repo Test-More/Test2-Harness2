@@ -5,7 +5,7 @@ use ok $CLASS;
 
 use Test2::Tools::GenTemp qw/gen_temp/;
 
-# Ticket #58: App::Yath2::TestFile drives the new HARNESS2: grammar parser
+# Ticket TODO-58: App::Yath2::TestFile drives the new HARNESS2: grammar parser
 # (Test2::Harness2::Util::Directives) and the legacy compat parser
 # (Test2::Harness2::Util::Directives::Legacy), mapping either onto the harness
 # fields. Covers: HARNESS2 structural directives, HARNESS2-wins precedence
@@ -15,7 +15,7 @@ use Test2::Tools::GenTemp qw/gen_temp/;
 my $tmp = gen_temp(
     h2_basic => join("\n",
         "#!/usr/bin/perl",
-        # #118: category domain is the fixed three-value set; use a valid one.
+        # TODO-118: category domain is the fixed three-value set; use a valid one.
         "# HARNESS2: category immiscible",
         "# HARNESS2: duration long",
         "# HARNESS2: timeout.event 30",

@@ -121,7 +121,7 @@ App::Yath2::Command::import - Import the single run from a sqlite log file into 
 
 =head1 DESCRIPTION
 
-Implements the top-level C<import> command (spec §8, ticket #54). A thin
+Implements the top-level C<import> command (spec §8, ticket TODO-54). A thin
 convenience wrapper over the L<App::Yath2::DB::Sync> engine that auto-selects the
 single run a sqlite log file contains (no C<run_uuid> needed) and supports the
 same C<submitted_by> attribution flag as C<yath db sync>.

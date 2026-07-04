@@ -728,7 +728,7 @@ sub connect_subscriber ($self, %params) {
         # Fast-fail the subscribe connect if the runner died after binding the
         # socket, instead of stalling the full CONNECT_TIMEOUT. The eval below
         # turns _connect's "Runner is gone" croak into the warn+undef fallback.
-        # (#134 finding 108)
+        # (TODO-134 finding 108)
         liveness_check => $self->liveness_check,
         %params,
     );

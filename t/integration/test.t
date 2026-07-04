@@ -133,7 +133,7 @@ yath(
 }
 
 {
-    note q[Testsuite checking broken symlinks #103];
+    note q[Testsuite checking broken symlinks TODO-103];
 
     my $sdir = $dir . '-broken-symlinks';
     my $symlink = "$sdir/broken-symlink.tx";

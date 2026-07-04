@@ -88,7 +88,7 @@ sub stop {
     $self->check_for_fork;
 
     # Escalating shutdown of tracked children (hoisted from Runner/Preload::Host,
-    # ticket #67): TERM the tracked process group (using SIGNAL if a shutdown signal
+    # ticket TODO-67): TERM the tracked process group (using SIGNAL if a shutdown signal
     # was captured), give them a short window, then KILL any holdouts. A consumer's
     # own SIGNAL field selects the initial signal; the base has none set, so it TERMs.
     if (keys %{$self->{+PROCS}}) {
@@ -148,7 +148,7 @@ sub killall {
 }
 
 # Fallback escalation for a wedged collector PARENT (hoisted from Runner/Preload::Host,
-# ticket #67). Called every loop of wait(). Requires the consumer to provide a
+# ticket TODO-67). Called every loop of wait(). Requires the consumer to provide a
 # `settings` accessor (Runner and Preload::Host both do; no other consumer exists).
 sub check_timeouts {
     my $self = shift;
@@ -291,7 +291,7 @@ sub wait {
     return 0 unless keys(%$procs) || keys(%$waiting);
 
     # wait() timeout window is a pure interval; monotonic so a wall/NTP step
-    # cannot warp it. Pairs with the compare in _wait_done. (#134 finding 104)
+    # cannot warp it. Pairs with the compare in _wait_done. (TODO-134 finding 104)
     my $start = mono_time;
 
     my $count = 0;
@@ -325,7 +325,7 @@ sub _wait_done {
     my $all = keys(%{$self->{+PROCS}});
     return 1 unless $all;
 
-    return 1 if $params->{timeout} && mono_time - $start >= $params->{timeout};    # pairs with wait()'s mono_time $start (#134 finding 104)
+    return 1 if $params->{timeout} && mono_time - $start >= $params->{timeout};    # pairs with wait()'s mono_time $start (TODO-134 finding 104)
 
     return 0 if $all && $params->{all};
 

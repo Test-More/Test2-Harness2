@@ -2,7 +2,7 @@ use Test2::V0;
 use v5.38;
 # HARNESS-DURATION-LONG
 
-# Ticket #139: the `yath spawn` robustness bundle, end to end against a real
+# Ticket TODO-139: the `yath spawn` robustness bundle, end to end against a real
 # `yath start -P<Preload>` persistent runner. Covers:
 #
 #   * finding 6+G2  -- the command exits NON-ZERO with a vanish message when the

@@ -11,7 +11,7 @@ use Test2::Harness2::Runner::State;
     sub init {}
 }
 
-# §6.8 (chunk 19.5, bloat #2): named stage lifecycle states are the SINGLE source of
+# §6.8 (chunk 19.5, bloat TODO-2): named stage lifecycle states are the SINGLE source of
 # stage scheduling state -- the old parallel STAGE_READINESS map is gone. The
 # converged dispatch gate is `state eq 'up'` (stage_is_up). The four states are
 # starting / up / restarting / down; only 'up' is dispatchable.
@@ -54,7 +54,7 @@ subtest stage_map_drives_starting_and_down => sub {
     is($state->stage_lifecycle->{beta}{state},  'down', "a stage absent from the refreshed map is 'down'");
 };
 
-# bloat #3: the lifecycle record is {state, stamp} only -- stale-incarnation
+# bloat TODO-3: the lifecycle record is {state, stamp} only -- stale-incarnation
 # rejection moved to connection-currency in the runner's stage-report handlers, so
 # there is no wire-generation field anywhere in the lifecycle.
 subtest lifecycle_has_no_generation => sub {

@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 #
-# Ticket #86: CoverageAggregator::ByTest::finalize() must push the BARE
+# Ticket TODO-86: CoverageAggregator::ByTest::finalize() must push the BARE
 # in-progress record onto COMPLETED (matching stop_test and every consumer),
 # not a wrapper-shaped {testname => record}. The wrapper shape only ever
 # surfaced for tests still IN_PROGRESS at harness_final (a bail-out or crash

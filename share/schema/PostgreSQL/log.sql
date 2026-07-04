@@ -1,12 +1,12 @@
--- App::Yath2 PostgreSQL schema (DB layer rewrite, #46 / chunk DB-2).
+-- App::Yath2 PostgreSQL schema (DB layer rewrite, TODO-46 / chunk DB-2).
 --
 -- SOURCE OF TRUTH: this hand-written DDL is the canonical schema. DBIx::QuickORM
 -- reflects it via autofill (reflect-from-DB); there are no Perl table/result
 -- classes and no codegen. When this DDL changes, every flavor file under
 -- share/schema/ moves together.
 --
--- PostgreSQL is the most-capable flavor and is authored first (#46); the other
--- engines port from this in #47 (per-engine UUID storage: native uuid on
+-- PostgreSQL is the most-capable flavor and is authored first (TODO-46); the other
+-- engines port from this in TODO-47 (per-engine UUID storage: native uuid on
 -- PostgreSQL + MariaDB 10.7+, BINARY(16) on MySQL/Percona, BLOB(16) on SQLite).
 --
 -- DESIGN (spec AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md):
@@ -162,7 +162,7 @@ CREATE INDEX job_file_idx ON jobs(test_file_id);
 -- a single DERIVED uuid = derive(job_uuid, try_ord) (v7-preserving, spec §3.1) --
 -- deterministic across loggers, preserves the existing try-uuid URLs.
 --
--- VERDICT columns (spec §4/§4.1/R17, survey #5):
+-- VERDICT columns (spec §4/§4.1/R17, survey TODO-5):
 --   result          tri-state verdict: NULL = in-flight / TRUE = pass / FALSE =
 --                   fail (the top-line "did this try pass", distinct from counts).
 --   assertion_count, pass_count, fail_count -- assertion counts (NOT a pass/fail

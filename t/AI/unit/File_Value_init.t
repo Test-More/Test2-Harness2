@@ -3,7 +3,7 @@ use File::Temp qw/tempfile/;
 
 use Test2::Harness2::Util::File::Value;
 
-# Regression coverage for #154 finding 48: Value::init now chains SUPER::init, so
+# Regression coverage for TODO-154 finding 48: Value::init now chains SUPER::init, so
 # the required-name croak and the fh-constructor-arg handling are restored; DONE=1
 # stays deliberate (a value file is complete at read time), and reset() re-asserts
 # DONE so a newline-less value survives a re-read.

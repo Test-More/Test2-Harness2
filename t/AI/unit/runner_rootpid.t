@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# Ticket #22: the runner and the preload-root stage host are now two fully
+# Ticket TODO-22: the runner and the preload-root stage host are now two fully
 # independent classes. The runner is ALWAYS the root scheduler (it never becomes a
 # stage host), so it no longer carries the rootpid-gated is_stage_service /
 # service_name stage behavior. That stage-service identity now lives in

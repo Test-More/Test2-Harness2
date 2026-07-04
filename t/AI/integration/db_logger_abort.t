@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-LONG
 
-# Ticket #131 (step 3): an END-TO-END `-L` run where one job is watchdog-aborted
+# Ticket TODO-131 (step 3): an END-TO-END `-L` run where one job is watchdog-aborted
 # must show up in the DB as a broken/failed job whose failure is counted in the
 # run's totals -- not silently dropped (run logged 'complete' with NULL verdicts).
 #
@@ -17,7 +17,7 @@ use Test2::V0;
 #   * runs.passed == 1 (pass.tx) and runs.failed == 1 (the aborted hang.tx),
 #   * the hang.tx job row folded failed=1 / passed=0,
 #   * hang.tx has exactly ONE job_tries row, status 'broken', result 0.
-# We do NOT assert runs.status (owned by #132: 'complete' before it lands, 'broken'
+# We do NOT assert runs.status (owned by TODO-132: 'complete' before it lands, 'broken'
 # after).
 #
 # NOTE: an aborted job's collector never reaches 'finalized', so the logger drains
@@ -33,7 +33,7 @@ eval { require DBD::SQLite;    1 } or skip_all "DBD::SQLite not available";
 eval { require DBIx::QuickORM; 1 } or skip_all "DBIx::QuickORM not available";
 
 # DISABLED (revivable): this end-to-end truncate/abort run surfaced a real,
-# design-level #131 interaction that is NOT a quick fixture/timing bug: a
+# design-level TODO-131 interaction that is NOT a quick fixture/timing bug: a
 # truncate-terminated test's collector DOES finalize with a FAILING verdict
 # (SIGTERM + no plan), so _upsert_tries records a 'complete'/result=0 try, and
 # THEN _fold_aborted_jobs (rule 3, since the existing try's result is no longer
@@ -47,7 +47,7 @@ eval { require DBIx::QuickORM; 1 } or skip_all "DBIx::QuickORM not available";
 # whole scaffolding below (go-file hang fixture + forked socket truncate + DB
 # asserts) is kept intact under this skip so it can be revived once the fold
 # handles a collector-finalized abort.
-skip_all "aborted-run e2e disabled: exposes a #131 fold/collector-finalize "
+skip_all "aborted-run e2e disabled: exposes a TODO-131 fold/collector-finalize "
     . "double-try interaction (see header); fold logic covered by "
     . "t/AI/unit/DB_Logger_abort_fold.t";
 

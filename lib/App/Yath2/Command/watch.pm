@@ -73,7 +73,7 @@ sub run {
             return 1 if $sub && $sub->closed;
             # The pfile path is a symlink to the runner SOCKET, so -f is ALWAYS
             # false against it (a socket is not a regular file) -- keying the exit
-            # on -f made `yath watch` quit on the first idle tick (#120). The
+            # on -f made `yath watch` quit on the first idle tick (TODO-120). The
             # runner is still here only while the discovery link exists (-l) AND
             # still resolves to a live socket (Discovery::resolves re-probes fresh
             # each call). -e alone would stay true for a dangling link until

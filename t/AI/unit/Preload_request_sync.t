@@ -9,7 +9,7 @@ use Time::HiRes qw/time/;
 use Test2::Harness2::Role::Service::Connection;
 use Test2::Harness2::Preload;
 
-# #134 finding 94: the preload-root handshake wait (_request_sync) must notice a
+# TODO-134 finding 94: the preload-root handshake wait (_request_sync) must notice a
 # dropped runner connection and fail fast, instead of idling out the full
 # preload_map_timeout. drain marks the held $conn closed on EOF, so the loop
 # croaks "closed while waiting".

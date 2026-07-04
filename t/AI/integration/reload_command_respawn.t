@@ -12,7 +12,7 @@ use Test2::Require::AuthorTesting;
 # This exercises the during/after-run reload routed through the base stage's live
 # socket. NOTE: `yath start` turns preload monitoring ON by default
 # (App::Yath2::Command::start sets monitor_preloads => 1), so the changed module
-# below can be picked up by EITHER the explicit `yath reload` (the #113-fixed routing
+# below can be picked up by EITHER the explicit `yath reload` (the TODO-113-fixed routing
 # path) OR the file monitor. For an isolated proof of the reload-routing path with the
 # monitor NOT firing (no file touched), see reload_command_routing.t.
 

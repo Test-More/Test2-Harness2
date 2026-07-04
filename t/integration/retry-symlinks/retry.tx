@@ -16,7 +16,7 @@ sub {
 }->();
 
 
-# Try ordinals are 1-based (R10 / #49): the first attempt is is_try == 1.
+# Try ordinals are 1-based (R10 / TODO-49): the first attempt is is_try == 1.
 $ENV{T2_HARNESS_JOB_IS_TRY} //= 1;
 $ENV{FAIL_ONCE}             //= 0;
 $ENV{FAIL_ALWAYS}           //= 0;

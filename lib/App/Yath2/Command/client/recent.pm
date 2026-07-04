@@ -4,7 +4,7 @@ use warnings;
 
 our $VERSION = '2.000000';
 
-# NOTE (ticket #45): this command used to inherit from App::Yath2::Command::recent,
+# NOTE (ticket TODO-45): this command used to inherit from App::Yath2::Command::recent,
 # which has moved to reference/old_db as part of retiring the old DBIx::Class
 # DB/web layer. It is HTTP-only (it never touched the DB), so rather than stub it
 # we make it self-contained: the small amount of display + HTTP-fetch logic it
@@ -116,7 +116,7 @@ sub get_from_http {
     my $ht  = HTTP::Tiny->new();
     my $url = $settings->webclient->url or return;
     $url =~ s{/$}{}g;
-    # Append the count segment (ticket #153): Controller::Recent routes
+    # Append the count segment (ticket TODO-153): Controller::Recent routes
     # /recent/:project/:user/:count and defaults count to 10 when omitted, so
     # without this the server's default silently overrode --max.
     $url .= "/recent/$project/$user/$count";

@@ -1,4 +1,4 @@
-# Ticket #22 — Untangle the runner from the preload-root (two independent classes)
+# Ticket TODO-22 — Untangle the runner from the preload-root (two independent classes)
 
 ## Task
 
@@ -10,7 +10,7 @@ it did so by having that process build an *ordinary*
 scheduler — selected throughout `Runner.pm` by ~16 `ROOTPID == $$` guards. One
 class served two opposite roles.
 
-Ticket #22 (owner directive, 2026-06-20) ends that entanglement: the **runner**
+Ticket TODO-22 (owner directive, 2026-06-20) ends that entanglement: the **runner**
 (scheduler + primary server) and the **preload-root stage host** (preload +
 launch tests, no scheduler) become **two fully independent classes**. Neither
 inherits from the other; there is **no shared base class or role designed just for

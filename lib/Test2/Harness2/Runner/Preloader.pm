@@ -254,7 +254,7 @@ sub launch_stage {
                 # pid and self-terminates (killing the stage) if the runner dies
                 # without signaling, so no stage outlives a dead runner. A crashed
                 # preload-root is covered transitively: it terminates the runner
-                # (ARCHITECTURE.md §4.2 / bloat #3 part 4), which this watch then
+                # (ARCHITECTURE.md §4.2 / bloat TODO-3 part 4), which this watch then
                 # sees. (The collector now ALSO accepts a list of ancestor pids --
                 # Test2::Collector::ChildMonitor watch_parent_pid -- but adding the
                 # preload-root here directly races the in-process base stage's clean

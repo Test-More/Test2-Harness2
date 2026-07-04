@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #150 (79): an explicit --no-notify-email-owner /
+# Regression coverage for ticket TODO-150 (79): an explicit --no-notify-email-owner /
 # --no-notify-slack-owner must NOT be force-flipped back on when a matching
 # notification source (address / url) is also configured. The owner flags now use
 # a maybe=>1 undef sentinel resolved in post_process: undef (untouched) defaults
@@ -73,7 +73,7 @@ subtest 'slack: untouched owner defaults ON from a slack source' => sub {
     is(scalar(@{$s->harness->plugins}), 1, "plugin loaded");
 };
 
-subtest 'email: --notify-email-fail alone registers the plugin without enabling owner (ticket #126)' => sub {
+subtest 'email: --notify-email-fail alone registers the plugin without enabling owner (ticket TODO-126)' => sub {
     my $s = run_post(settings(email_fail => ['dev@example.com']));
 
     is($s->notify->email_owner, 0, "email_fail does NOT auto-enable email_owner (1.0 semantics preserved)");

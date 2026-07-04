@@ -1,4 +1,4 @@
 use Test2::V0;
 ok(1, "aaa no-preload job ran");
-is($ENV{T2_HARNESS_JOB_IS_TRY} // 1, 1, "first try (1-based, R10/#49)");
+is($ENV{T2_HARNESS_JOB_IS_TRY} // 1, 1, "first try (1-based, R10/TODO-49)");
 done_testing;

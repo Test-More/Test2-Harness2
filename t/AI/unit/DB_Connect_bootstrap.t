@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Ticket #152:
+# Ticket TODO-152:
 #   finding 89 -- ensure_sqlite_db's bootstrap was non-atomic. Statements were
 #     written straight into $path under autocommit, so (a) an interrupt after the
 #     first committed DDL left a partial, non-empty file that the `-s` "already

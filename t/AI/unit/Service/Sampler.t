@@ -6,7 +6,7 @@ use Time::HiRes qw/time/;
 
 use Test2::Harness2::Service::Sampler;
 
-# #134/#138: service_tick's cadence (next_at / $now) is MONOTONIC interval math
+# TODO-134/TODO-138: service_tick's cadence (next_at / $now) is MONOTONIC interval math
 # (mono_time), not wall clock. The connection-driven subtests below poke the
 # private next_at field to force a tick, so they must use the SAME clock -- a
 # wall-clock value would never satisfy the monotonic `$now < next_at` gate and

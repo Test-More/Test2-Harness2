@@ -4,7 +4,7 @@ use File::Temp qw/tempfile/;
 use Test2::Harness2::Util::File::JSONL;
 use Test2::Harness2::Util::JSON ();
 
-# Regression coverage for #154 (finding 44): a final line without a trailing
+# Regression coverage for TODO-154 (finding 44): a final line without a trailing
 # newline was silently dropped by every Stream/JSONL reader because `done` was
 # never set. Bounded consumers now pass `done => 1` and surface (or, if the tail
 # is undecodable, warn+skip) that final record instead of losing it.

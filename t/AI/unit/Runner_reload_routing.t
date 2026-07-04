@@ -12,7 +12,7 @@ use Test2::V0;
 # stage's socket therefore announces the GRANDCHILD pid, NOT PRELOAD_ROOT_PID -- the
 # SAME pid the 'preload-root' handshake connection (which dials from that grandchild)
 # announces. The selector must match the base stage against the 'preload-root' peer's
-# pid, never against PRELOAD_ROOT_PID (#113: matching PRELOAD_ROOT_PID never hit and
+# pid, never against PRELOAD_ROOT_PID (TODO-113: matching PRELOAD_ROOT_PID never hit and
 # silently dropped every HUP reload). These fakes model that two-process pid split so
 # they fail against the old comparison. This drives:
 #   * the REAL Runner::_preload_root_stage_identity selector against fake peers, and

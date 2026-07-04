@@ -15,7 +15,7 @@ my $tmp = gen_temp(
     taint  => "#!/usr/bin/env perl -t -w\n",
     foo    => "#HARNESS-CATEGORY-IMMISCIBLE\n#HARNESS-STAGE-FoO",
 
-    # #118 value-domain directive errors -> E1 (one failed job, run continues).
+    # TODO-118 value-domain directive errors -> E1 (one failed job, run continues).
     net_cat   => "# HARNESS-CATEGORY-NETWORK\n",
     bad_dur   => "# HARNESS-DURATION-42\n",
     h2_cat    => "# HARNESS2: category network\n",
@@ -98,7 +98,7 @@ subtest foo => sub {
     is($foo->check_stage,    'FoO', "Stage is FoO, case-sensitive");
 };
 
-# #118: an out-of-domain category/duration is a value error, not a grammar error,
+# TODO-118: an out-of-domain category/duration is a value error, not a grammar error,
 # and now routes through the same E1 synthetic-FAILURE path grammar errors use --
 # only that one job fails, the rest of the run is unaffected.
 subtest bad_directives => sub {
@@ -130,7 +130,7 @@ subtest bad_directives => sub {
     is($long->check_duration, 'long', "valid duration preserved");
 };
 
-# #118: the programmatic setters (durations file/URL, plugin duration_data,
+# TODO-118: the programmatic setters (durations file/URL, plugin duration_data,
 # munge_files). Numeric seconds coerce into a scheduling label; a bad string
 # warns and is ignored (advisory scheduling data must never fail a job); a bad
 # category is a code bug and croaks.

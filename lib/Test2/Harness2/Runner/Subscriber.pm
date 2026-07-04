@@ -134,7 +134,7 @@ sub subscribe ($self) {
     # then apply the snapshot and replay the parked deltas in order -- dropping a
     # transition that shared the response's batch would lose state.
     my @deltas;
-    my $start = mono_time;    # reply window is a pure interval (#134 finding 104)
+    my $start = mono_time;    # reply window is a pure interval (TODO-134 finding 104)
     while (1) {
         my $snapshot;
         for my $event ($conn->drain) {
@@ -185,7 +185,7 @@ C<subscribe> calls C<_connect> to open (and lazily cache) the connection.
 =cut
 
 # The subscriber's outer connect/reply deadline is a flat 30s -- unlike Runner::Client
-# it is NOT env-overridable (#121 only wired the knob into the transient stop/kill
+# it is NOT env-overridable (TODO-121 only wired the knob into the transient stop/kill
 # path); bounded_connect.t subclasses this to shrink it for the wedged-listener test.
 sub CONNECT_TIMEOUT { 30 }
 
@@ -195,7 +195,7 @@ sub _identity_kind { 'subscriber' }
 # Runner-gone escape for the shared connect layer (SocketClient::_connect). A runner
 # that died after binding the socket (or before it ever bound) would otherwise cost a
 # flat CONNECT_TIMEOUT stall; when the caller supplied a liveness_check, croak the
-# moment it reports the runner gone so subscribe fails fast. (#134 finding 108)
+# moment it reports the runner gone so subscribe fails fast. (TODO-134 finding 108)
 sub _on_runner_gone ($self, $path) {
     croak "Runner is gone; cannot subscribe via '$path'";
 }

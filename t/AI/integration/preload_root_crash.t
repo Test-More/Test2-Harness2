@@ -7,7 +7,7 @@ use File::Spec;
 
 use Test2::Util qw/CAN_REALLY_FORK/;
 
-# bloat #3 (ARCHITECTURE.md §4.2): a preload-root crash is FATAL. The preload-root
+# bloat TODO-3 (ARCHITECTURE.md §4.2): a preload-root crash is FATAL. The preload-root
 # process hosts the stages; if it dies mid-startup the runner does NOT respawn it --
 # the run fails (and a persistent runner terminates) rather than papering over the
 # crash with a respawn. This is deliberate: it prevents accidentally recreating

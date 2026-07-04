@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-# Mock git command for t/AI/unit/Git_bug150.t (#150). Behavior is keyed off the
+# Mock git command for t/AI/unit/Git_bug150.t (TODO-150). Behavior is keyed off the
 # joined argument string; FAKE_DIRTY toggles whether the working tree looks dirty.
 
 my $args = "@ARGV";

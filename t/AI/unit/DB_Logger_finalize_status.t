@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Ticket #132: the DB logger must NOT finalize a run as 'complete' (exit 0) when
+# Ticket TODO-132: the DB logger must NOT finalize a run as 'complete' (exit 0) when
 # the runner died mid-run or the drain timed out with blobs still unimported.
 #
 # runs.status is what CI gating / dashboards key on, so a killed-mid-run or
@@ -246,7 +246,7 @@ subtest 'corrupt events blob => broken + non-zero exit, warning names the collec
 };
 
 # --------------------------------------------------------------------------- #
-# finding 98 (composes with #132): a die inside _run -- after the run row is
+# finding 98 (composes with TODO-132): a die inside _run -- after the run row is
 # seeded 'running' -- must still stamp the row 'broken' via run()'s failure-path
 # _finalize_run_row, NOT leave it stuck 'running' forever (which reads as a live
 # run and is excluded from `db sync`). The exit is non-zero and a terminal error

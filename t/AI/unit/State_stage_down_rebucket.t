@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #135 finding 27: demoting a stage to 'down' strands its PENDING_TASKS bucket --
+# TODO-135 finding 27: demoting a stage to 'down' strands its PENDING_TASKS bucket --
 # _next only walks 'up' stage buckets, so a task left parked in the demoted stage is
 # unreachable and the run hangs forever. stage_down (and set_stage_map's removed-stage
 # loop, which now routes through it) must REBUCKET the demoted stage's parked tasks so

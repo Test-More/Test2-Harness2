@@ -9,7 +9,7 @@ use Test2::Harness2::Runner::StatusReport();
 
 use Role::Tiny;
 
-# Constant-only slots (#17 pattern): grep/typo safety on the runner-hash keys this
+# Constant-only slots (TODO-17 pattern): grep/typo safety on the runner-hash keys this
 # role touches. job_pids is owned by the runner; service_peers by Role::Service.
 # Role::Tiny does not share HashBase constants, so each role declares its own.
 use Test2::Harness2::Util::HashBase qw{
@@ -118,14 +118,14 @@ sub request_handler_queue_run {
 
     my $run = $payload->{run};
 
-    # #110: reject a malformed frame with a per-request error BEFORE touching State
+    # TODO-110: reject a malformed frame with a per-request error BEFORE touching State
     # (run_owners / submit_action / the submit buffer, whose later flush_submit_buffer
     # replay the dispatch eval cannot guard). Shape only -- hashref presence -- per
-    # #118's division of labor (#118 owns the category/duration domain checks).
+    # TODO-118's division of labor (TODO-118 owns the category/duration domain checks).
     return {ok => 0, error => "queue_run request is missing its 'run' payload (expected a hashref)"}
         unless ref($run) eq 'HASH';
 
-    # Ticket #12 / ARCHITECTURE.md §4.2: record the connection that queued this run as
+    # Ticket TODO-12 / ARCHITECTURE.md §4.2: record the connection that queued this run as
     # its owner, plus that peer's pid (the §5.2 identity handshake) and the run's
     # abort_on_disconnect flag (default true). Retention and teardown are gated on this
     # owner connection -- when it drops, the runner's owner-drop sweep
@@ -145,7 +145,7 @@ sub request_handler_queue_run {
     return undef;
 }
 
-# Ticket #12 / ARCHITECTURE.md §4.2: Role::Service calls this when any peer
+# Ticket TODO-12 / ARCHITECTURE.md §4.2: Role::Service calls this when any peer
 # connection closes (its _drop_conn hook). Sweep the runs this connection owns (it
 # queued them) and act on the owner drop: a still-running run is aborted (if its
 # abort_on_disconnect is true) or detached (if false); a finished, retained run is
@@ -206,7 +206,7 @@ sub service_identified {
     # Record the collector's pid for the status report (and the kill(-pid) abort
     # fallback). The runner learns it HERE, from the collector's own handshake, for
     # BOTH paths: no-preload collectors are the runner's direct children (also
-    # recorded at run_job), and preload collectors double-fork + detach (ticket #28)
+    # recorded at run_job), and preload collectors double-fork + detach (ticket TODO-28)
     # so the stage no longer reports their pid -- this handshake is the only source.
     $self->record_job_pid($job_id, $payload->{pid}) if defined $payload->{pid};
 
@@ -239,7 +239,7 @@ sub service_identified {
     return;
 }
 
-# Ticket #12 / ARCHITECTURE.md §4.2: act on a single run whose owner connection
+# Ticket TODO-12 / ARCHITECTURE.md §4.2: act on a single run whose owner connection
 # dropped. Retention is gated on the owner, NOT on completion:
 #   finished -> purge the retained run (Run object + job states + raw item);
 #   running + abort_on_disconnect true  -> abort: halt pending tasks, kill the run's
@@ -300,9 +300,9 @@ sub request_handler_queue_task {
     my $self = shift;
     my ($payload) = @_;
 
-    # #110: shape-validate BEFORE touching State / the submit buffer. Hashref presence
+    # TODO-110: shape-validate BEFORE touching State / the submit buffer. Hashref presence
     # plus the job_id/run_id keys queue_task funnels on; the category/duration domain
-    # is #118's job (normalized in queue_task, not rejected here).
+    # is TODO-118's job (normalized in queue_task, not rejected here).
     my $task = $payload->{task};
     return {ok => 0, error => "queue_task request is missing its 'task' payload (expected a hashref)"}
         unless ref($task) eq 'HASH';
@@ -359,7 +359,7 @@ sub request_handler_run_task {
     my $self = shift;
     my ($payload) = @_;
 
-    # #110: a run_task frame belongs on a stage's preload-<stage>.socket, not on
+    # TODO-110: a run_task frame belongs on a stage's preload-<stage>.socket, not on
     # runner.socket. Misdirected here, the runner's state hub (Runner::State) has no
     # enqueue_task and would die, unwinding the whole service loop. Shape-validate and
     # reject the misdirection with a per-request error instead of dying.
@@ -541,7 +541,7 @@ sub record_job_pid {
     return;
 }
 
-# bloat #3: put a started-but-never-accepted job back in the queue (the dispatch
+# bloat TODO-3: put a started-but-never-accepted job back in the queue (the dispatch
 # found its assigned stage gone, BEFORE the stage forked the job and took ownership
 # of completion). This is the safe requeue: the stage never received the task, so no
 # duplicate run can result. Releases the slot / resources and re-queues for
@@ -569,7 +569,7 @@ sub requeue_task {
 # scheduled (or is going down at shutdown). The runner folds this into the same
 # stage-readiness state its scheduler's _stage_order already gates on. One-way.
 #
-# Connection-currency (bloat #3): a stale stage report (from a prior preload-root
+# Connection-currency (bloat TODO-3): a stale stage report (from a prior preload-root
 # incarnation, or a stage that has since been superseded) is rejected by checking
 # the report's source connection against the connection currently registered as
 # that stage's `preload-<stage>` peer. A report is honored only when it arrives on

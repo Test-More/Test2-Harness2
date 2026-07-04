@@ -14,7 +14,7 @@ use constant DURATIONS  => {long    => 1, medium    => 1, short      => 1};
 
 # Second-count thresholds used to coerce a numeric duration (from a durations
 # file / URL / plugin) into a scheduling label: < SHORT => short,
-# < MEDIUM => medium, else long. Mirrors speedtag's tagger (#118). Exported
+# < MEDIUM => medium, else long. Mirrors speedtag's tagger (TODO-118). Exported
 # on-request only so existing 'use ...Constants;' importers keep their namespace.
 use constant DURATION_MAX_SHORT  => 15;
 use constant DURATION_MAX_MEDIUM => 30;

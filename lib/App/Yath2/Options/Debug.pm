@@ -376,7 +376,7 @@ sub _interactive_apply_settings ($settings, $path) {
 # periodically to re-check that the child is alive). Ctrl-C (INT/TERM) is
 # forwarded to the child rather than exiting immediately, so the workdir tempdir
 # (whose File::Temp END cleanup is keyed to this parent) is torn down only after
-# the child, runner, and collectors have finished with it (#125).
+# the child, runner, and collectors have finished with it (TODO-125).
 sub _interactive_accept_loop ($listen, $path, $pid) {
     require POSIX;
 
@@ -388,7 +388,7 @@ sub _interactive_accept_loop ($listen, $path, $pid) {
         exit($exit // 0);
     };
 
-    # #125: INT/TERM must NOT exit here. The workdir tempdir was created in this
+    # TODO-125: INT/TERM must NOT exit here. The workdir tempdir was created in this
     # (pre-fork) process, so File::Temp keys its END cleanup to US (the child's $$
     # differs, so the child can never clean it -- this parent's exit is the ONLY
     # workdir cleanup in interactive mode). Exiting the instant Ctrl-C arrives
@@ -398,7 +398,7 @@ sub _interactive_accept_loop ($listen, $path, $pid) {
     #
     # Instead: forward the signal to the child so it shuts down gracefully and
     # record it in $signaled; DO NOT exit. The waitpid loop below reaps the child
-    # and exits through the #140-owned status expression, so File::Temp's END
+    # and exits through the TODO-140-owned status expression, so File::Temp's END
     # cleanup fires only after every workdir user is gone. Repeated signals
     # escalate (INT/TERM as asked, then SIGKILL on the third) so a child that
     # ignores the signal cannot wedge this parent forever -- but even the escalated
@@ -418,10 +418,10 @@ sub _interactive_accept_loop ($listen, $path, $pid) {
     while (1) {
         # Reap the command child if it has exited; that ends the run.
         #
-        # #140 owns this STATUS COMPUTATION -- exactly the two $finish lines
-        # below. #125 owns exit TIMING/sequencing: the INT/TERM handler bodies
+        # TODO-140 owns this STATUS COMPUTATION -- exactly the two $finish lines
+        # below. TODO-125 owns exit TIMING/sequencing: the INT/TERM handler bodies
         # and the $cleanup/$finish shape it reworks for deferred-tempdir
-        # cleanup. When #125 restructures this loop it MUST route every exit
+        # cleanup. When TODO-125 restructures this loop it MUST route every exit
         # through this expression verbatim -- its step 2 ("propagate signal
         # deaths as 128+sig") is DELIVERED HERE and must not be re-derived.
         #

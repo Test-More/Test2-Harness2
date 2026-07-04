@@ -135,7 +135,7 @@ sub _run_cmd_fork {
         # runner.socket, write the 'complete' marker, steal collector frames off
         # inherited conns, etc. So the whole child body is caught and funneled to
         # $die, which POSIX::_exit's. The ONLY ways out of this block are exec()
-        # or POSIX::_exit(). (#134 finding 14, guard G1 -- the source fix; G2/G3
+        # or POSIX::_exit(). (TODO-134 finding 14, guard G1 -- the source fix; G2/G3
         # in Runner.pm/Command/runner.pm are defense-in-depth.)
         #
         # $die is defined ABOVE the OLD_STDERR clone because the clone itself can

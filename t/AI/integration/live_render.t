@@ -3,7 +3,7 @@ use feature 'signatures';
 no warnings 'experimental::signatures';
 # HARNESS-DURATION-MEDIUM
 
-# Chunk 15 / #44: the --live flag makes `yath test` tail EVERY job's events file
+# Chunk 15 / TODO-44: the --live flag makes `yath test` tail EVERY job's events file
 # as it is written, streaming each event to the renderers in arrival order. Under
 # concurrency this interleaves output across jobs (the 1.0 tail-the-files shape),
 # while each job's own events stay in order, and every event still carries its

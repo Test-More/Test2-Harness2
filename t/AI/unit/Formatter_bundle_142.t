@@ -5,8 +5,8 @@ use Test2::Formatter::Test2;
 use Test2::Formatter::QVF;
 use Test2::Harness2::Util::Term qw/USE_ANSI_COLOR/;
 
-# Ticket #142 (P3) display-defect bundle. The Composer sub-items (54/55/56) are
-# owned by cleanup #64; the items exercised here are the ones #142 itself keeps:
+# Ticket TODO-142 (P3) display-defect bundle. The Composer sub-items (54/55/56) are
+# owned by cleanup TODO-64; the items exercised here are the ones TODO-142 itself keeps:
 #   * (51)  QVF event count double-counts buffered/forwarded events -> the status
 #           bar 'Events: N' inflates toward 2x.
 #   * (101) A to-be-retried failure is counted in F permanently and todo goes
@@ -43,7 +43,7 @@ sub new_formatter {
 
 # Pre-register the job name the way harness_job_queued would, without routing a
 # run-level (no-job_id) event through write() -- keeps the count deterministic
-# and the output free of pre-existing render_tree/no-job noise unrelated to #142.
+# and the output free of pre-existing render_tree/no-job noise unrelated to TODO-142.
 sub register_job {
     my ($fmt, $id) = @_;
     $fmt->{Test2::Formatter::Test2::JOB_NAMES()}{$id} = $id;

@@ -47,7 +47,7 @@ role carries that shared layer so the two dialers keep only what genuinely diffe
 
 Two things DO differ, so they stay with the composing class (the role C<requires>
 them): C<CONNECT_TIMEOUT> (the Client's is env-overridable via
-C<YATH_RUNNER_CONNECT_TIMEOUT> per ticket #121; the Subscriber's is flat) and the
+C<YATH_RUNNER_CONNECT_TIMEOUT> per ticket TODO-121; the Subscriber's is flat) and the
 runner-gone escape (C<_on_runner_gone>: the Client stops trying so submission
 becomes a no-op; the Subscriber croaks).
 
@@ -81,7 +81,7 @@ Run the optional C<liveness_check> coderef (true when absent).
 =item $conn = $self->_connect
 
 The (lazily opened) L<Test2::Harness2::Role::Service::Connection> to the runner.
-Retries a bounded non-blocking connect (C<connect_unix_nb>, #157) with a short
+Retries a bounded non-blocking connect (C<connect_unix_nb>, TODO-157) with a short
 backoff until it accepts, then exchanges identity before returning. If the optional
 C<liveness_check> reports the runner gone before it ever accepted, defers to the
 composing class's C<_on_runner_gone>.
@@ -108,7 +108,7 @@ What to do when the runner was observed to have exited before it ever accepted.
 
 =cut
 
-# Per-attempt bound for the non-blocking connect_unix_nb dial (ticket #157). A
+# Per-attempt bound for the non-blocking connect_unix_nb dial (ticket TODO-157). A
 # runner that is accepting completes the connect near-instantly; this bound only
 # fires when the connect stays pending -- a bound-but-wedged runner with a full
 # accept backlog -- so each attempt returns promptly and the loop re-checks
@@ -134,12 +134,12 @@ sub _connect ($self) {
     return $conn if $conn && !$conn->closed;
 
     my $path  = $self->socket_path;
-    my $start = mono_time;    # connect window is a pure interval (#134 finding 104)
+    my $start = mono_time;    # connect window is a pure interval (TODO-134 finding 104)
 
     my $fh;
     while (1) {
         if (-S $path) {
-            # Bounded NON-BLOCKING connect (#157): a blocking connect to a
+            # Bounded NON-BLOCKING connect (TODO-157): a blocking connect to a
             # bound-but-wedged runner (full accept backlog) blocks forever in the
             # kernel, so the CONNECT_TIMEOUT deadline below could never fire. Each
             # attempt returns promptly; connect_unix_nb yields a connected,

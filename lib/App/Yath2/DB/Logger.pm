@@ -43,7 +43,7 @@ use Test2::Harness2::Util::HashBase qw{
 
 =head1 NAME
 
-App::Yath2::DB::Logger - The standalone DB logger process (spec §7, ticket #50).
+App::Yath2::DB::Logger - The standalone DB logger process (spec §7, ticket TODO-50).
 
 =head1 DESCRIPTION
 
@@ -69,7 +69,7 @@ The logger subscribes (its run-scoped snapshot seeds initial state), then loops
 C<poll()> upserting rows + importing finalized blobs, and exits on the run's
 announced end (C<run_done>) or a socket close. While subscribed it is one of the
 run's subscribers, so the runner defers its workdir cleanup until the logger
-disconnects (#51). If the workdir vanishes before the import completes (runner
+disconnects (TODO-51). If the workdir vanishes before the import completes (runner
 crash / force-kill) the logger reports a B<terminal error> and marks the log
 B<incomplete and possibly corrupt> (spec §7e).
 
@@ -190,14 +190,14 @@ sub run ($self) {
         # the write (the same fault -- e.g. a dead DB connection -- may also break
         # finalize) and NEVER build a subscriber from this path: read the SUBSCRIBER
         # slot directly (the failure may have happened before one was ever built),
-        # exactly as the #131 last-chance fold inside _finalize_run_row does.
+        # exactly as the TODO-131 last-chance fold inside _finalize_run_row does.
         my $fin_ok = eval { $self->_finalize_run_row; 1 };
         $self->_record_error("Failed to finalize run row after abort: $@") unless $fin_ok;
     }
 
     # Non-zero exit whenever the run did NOT finish cleanly (a terminal error, a
     # recorded import/fold error, or a mid-run death / drain timeout that marked the
-    # run 'broken'), not only on a hard terminal error (#132).
+    # run 'broken'), not only on a hard terminal error (TODO-132).
     return $self->_run_failed ? 1 : 0;
 }
 
@@ -231,7 +231,7 @@ sub _run ($self) {
             # Socket EOF: the (transient) runner shut down. Do a final drain pass; a
             # run_done frame may have arrived in the same batch as the EOF, in which
             # case this is a clean transient-runner completion rather than a mid-run
-            # death, so re-check run_done AFTER the final fold (#132).
+            # death, so re-check run_done AFTER the final fold (TODO-132).
             $self->_sync;
             $self->{+RUN_DONE_SEEN} = 1
                 if $sub->run_done || $self->monitor->run_done($self->{+RUN_ID});
@@ -260,7 +260,7 @@ sub _run ($self) {
     return;
 }
 
-# Classify how the poll loop ended (#132). The run is 'complete' only when the
+# Classify how the poll loop ended (TODO-132). The run is 'complete' only when the
 # runner ANNOUNCED the run end (run_done) AND every one of this run's collectors
 # finalized + imported its blob. Otherwise the runner died / was force-killed
 # before run_done (EOF-before-run_done), or the drain timed out with collectors
@@ -279,7 +279,7 @@ sub _mark_incomplete_if_needed ($self) {
 # 'complete') and the logger exit code (non-zero vs 0). Reads only flags, so it is
 # safe on run()'s failure path (no subscriber required): a terminal error, a
 # mid-run death / drain timeout (RUN_BROKEN), or any recorded error (a failed
-# collector-blob import, or a #131 abort-fold failure) all mark the run failed.
+# collector-blob import, or a TODO-131 abort-fold failure) all mark the run failed.
 sub _run_failed ($self) {
     return 1 if $self->{+TERMINAL_ERROR};
     return 1 if $self->{+RUN_BROKEN};
@@ -290,11 +290,11 @@ sub _run_failed ($self) {
 # Have all of THIS RUN's collectors reached 'finalized' AND had their blob
 # imported? Used to end the drain early once everything is captured. Global/service
 # collectors (run_uuid undef) are excluded -- they belong to the daemon and never
-# finalize (#130), so counting them here would never let the drain end early.
+# finalize (TODO-130), so counting them here would never let the drain end early.
 sub _all_finalized_imported ($self) {
     my $mon = $self->monitor;
     for my $uuid ($mon->collectors) {
-        # Skip global/service collectors owned by the daemon, not this run (#130):
+        # Skip global/service collectors owned by the daemon, not this run (TODO-130):
         # they never finalize, so waiting on them stalls the whole drain the full
         # DRAIN_TIMEOUT on every persistent-runner '-L' run.
         next unless $self->_collector_in_run($mon, $uuid);
@@ -307,7 +307,7 @@ sub _all_finalized_imported ($self) {
 
 # Should the post-run_done drain STOP now? True when everything that can still
 # arrive has (_all_finalized_imported), OR when every collector we are still
-# waiting on belongs to a watchdog-aborted job (#158). An aborted job's collector
+# waiting on belongs to a watchdog-aborted job (TODO-158). An aborted job's collector
 # never sends its finalize/EOF -- its status is frozen below 'finalized' forever
 # -- so _all_finalized_imported can never go true for it and the drain would burn
 # the full DRAIN_TIMEOUT (~30s) on every aborted '-L' run before giving up. We
@@ -315,7 +315,7 @@ sub _all_finalized_imported ($self) {
 # drain ends as soon as the only laggards are aborted jobs. This changes ONLY the
 # drain TIMING -- _all_finalized_imported stays false for the aborted collector,
 # so _mark_incomplete_if_needed still marks the run broken exactly as a timed-out
-# drain would (#131/#132 semantics unchanged), just promptly. A collector on a
+# drain would (TODO-131/TODO-132 semantics unchanged), just promptly. A collector on a
 # still-live (non-aborted) job keeps blocking, so a genuine in-flight finalize is
 # never cut short.
 sub _drain_complete ($self) {
@@ -332,7 +332,7 @@ sub _drain_complete ($self) {
 
 # Does this collector's owning job carry Monitor mirror state 'aborted'? Such a
 # collector will never finalize (the watchdog/no-verdict paths tear it down --
-# #131), so it must not keep the drain waiting for an EOF that will never come.
+# TODO-131), so it must not keep the drain waiting for an EOF that will never come.
 # The owning job is matched by the collector's name (rel_file), exactly as
 # _upsert_tries -> _job_uuid_for_collector does; a collector with no resolvable
 # job (e.g. a per-run service collector) is NOT treated as aborted, so it keeps
@@ -350,7 +350,7 @@ sub _collector_job_aborted ($self, $mon, $uuid) {
 # the preload-stage roots (when preloads are configured) -- routed into every
 # run-scoped subscriber's mirror via the monitor's shared global bucket. Those
 # collectors belong to no run and NEVER finalize, so the per-run fold + drain loops
-# must skip them (#130): without this filter _all_finalized_imported could never
+# must skip them (TODO-130): without this filter _all_finalized_imported could never
 # return true while a global collector sat at 'running', so every persistent '-L'
 # run polled for the full DRAIN_TIMEOUT after it completed. The same filter also
 # stops _upsert_collectors from misattributing a shared service collector's row to
@@ -394,7 +394,7 @@ sub _ensure_run_row ($self, $mon) {
     my $muser = $self->_find_or_create('machine_users', {host_id => $host, username => $username}, 'machine_user_id');
 
     # Project name: the caller's --project (threaded through the logger config by
-    # Command/test.pm), falling back to the launch cwd's basename (#128) -- never
+    # Command/test.pm), falling back to the launch cwd's basename (TODO-128) -- never
     # a workdir-derived path.
     my $project_name = $self->_project_name;
     my $project = $self->_find_or_create('projects', {name => $project_name}, 'project_id');
@@ -502,7 +502,7 @@ sub _upsert_tries ($self, $mon) {
 }
 
 # Fold watchdog-aborted jobs (Monitor mirror state 'aborted') into try/job rows
-# (#131). An aborted job's collector may never finalize (dispatch to a dead stage,
+# (TODO-131). An aborted job's collector may never finalize (dispatch to a dead stage,
 # owner-drop, wind-down/truncate, or a pid hard-kill grace fallback), so the
 # collector-driven _upsert_tries never records a verdict; without this fold the
 # job's tries stay NULL and _finalize_run_row skips it, silently hiding the
@@ -589,7 +589,7 @@ sub _upsert_collectors ($self, $mon) {
     for my $uuid ($mon->collectors) {
         my $c = $mon->collector($uuid) or next;
 
-        # Only this run's collectors (#130). A global/service collector (run_uuid
+        # Only this run's collectors (TODO-130). A global/service collector (run_uuid
         # undef) rides the monitor's shared bucket into every run-scoped mirror;
         # writing its row under this run_uuid is a misattribution (and it never
         # finalizes, so it also stalls the drain via _all_finalized_imported).
@@ -656,7 +656,7 @@ sub _import_finalized ($self, $mon) {
     for my $uuid ($mon->collectors) {
         next if $self->{+ARTIFACTS_DONE}{$uuid};
 
-        # Only this run's collectors (#130): a global/service collector gets no
+        # Only this run's collectors (TODO-130): a global/service collector gets no
         # collectors row (skipped by _upsert_collectors), so importing its blob
         # would violate the artifacts->collectors FK; and it belongs to no run.
         next unless $self->_collector_in_run($mon, $uuid);
@@ -793,10 +793,10 @@ sub _read_and_extract ($self, $events_file, $collector_uuid, $run_uuid) {
 sub _finalize_run_row ($self) {
     return unless $self->{+RUN_ROW_SEEDED};
 
-    # Last-chance fold of any watchdog-aborted jobs (#131) so their broken tries
+    # Last-chance fold of any watchdog-aborted jobs (TODO-131) so their broken tries
     # exist before the counting loop below folds them into runs.failed. Read the
     # SUBSCRIBER slot directly -- NEVER $self->monitor, which would CREATE a
-    # subscriber (forbidden on #132's failure-path _finalize_run_row call); a
+    # subscriber (forbidden on TODO-132's failure-path _finalize_run_row call); a
     # fold failure is recorded but must never block the run-row write.
     if (my $sub = $self->{+SUBSCRIBER}) {
         my $ok  = eval { $self->_fold_aborted_jobs($sub->monitor); 1 };
@@ -845,7 +845,7 @@ sub _finalize_run_row ($self) {
     # 'broken' on any failure-finalize path (mid-run death, drain timeout with
     # unimported blobs, import/fold error, or a terminal error), so CI gating /
     # dashboards keyed on runs.status are never told a run "completed" when it did
-    # not (#132). The failure classification lives in _run_failed (flag-only, so a
+    # not (TODO-132). The failure classification lives in _run_failed (flag-only, so a
     # run()-failure-path call with no live subscriber is safe).
     my $status = $self->_run_failed ? 'broken' : 'complete';
 
@@ -896,7 +896,7 @@ sub _os_username ($self) {
 
 # The projects natural-key name. Prefer the caller's --project (threaded through
 # the logger config by Command/test.pm start_loggers, spec PreCommand '--project').
-# When unset, fall back to the ORIGINAL launch cwd's BASENAME (#128). The workdir
+# When unset, fall back to the ORIGINAL launch cwd's BASENAME (TODO-128). The workdir
 # must NOT be consulted: it is a random 'yath-<pid>-XXXXXX' tempdir whose PARENT is
 # just 'tmp', so the old workdir-parent derivation collapsed every run from every
 # project into a single 'tmp' projects row and ignored --project entirely.

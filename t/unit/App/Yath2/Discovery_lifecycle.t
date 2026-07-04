@@ -14,10 +14,10 @@ use Test2::Harness2::Util qw/clean_path publish_discovery_link/;
 
 use App::Yath2::Discovery;
 
-# Regression coverage for ticket #145 (Discovery/start lifecycle bundle):
+# Regression coverage for ticket TODO-145 (Discovery/start lifecycle bundle):
 #   * probe() taxonomy: only an UNAMBIGUOUSLY-dead link is ever cleaned; every
 #     not-live outcome (boot window, wedged, another user's runner, ...) keeps it.
-#   * the not-live discovery object #121's escalation consumes.
+#   * the not-live discovery object TODO-121's escalation consumes.
 #   * the concurrent-probe race closure: a cleaner must never unlink a link that a
 #     live (or freshly-republished) runner owns.
 #   * write_link_atomic / publish: a reader never sees a torn or missing link.
@@ -202,7 +202,7 @@ tests find_keeps_not_live_and_exposes_the_object => sub {
     ok(-l $link, "  ... but leaves the link (a wedged runner stays discoverable)");
 
     # any_state find() returns the object in the not-live state -- exactly the fields
-    # #121's signal-based escalation consumes, all available with the socket dead.
+    # TODO-121's signal-based escalation consumes, all available with the socket dead.
     my $found = App::Yath2::Discovery->find($settings, any_state => 1);
     isa_ok($found, [$CLASS], "any_state returns the wedged runner object");
     is($found->state,    'not_live', "state is not_live");
@@ -357,9 +357,9 @@ tests clean_if_mine_owner_protocol => sub {
 };
 
 tests runner_exit_guard_routes_through_clean_if_mine => sub {
-    # #161: App::Yath2::Command::runner->cleanup builds the runner's exit guard, which
+    # TODO-161: App::Yath2::Command::runner->cleanup builds the runner's exit guard, which
     # removes the runner's OWN discovery link on clean shutdown. That removal MUST go
-    # through clean_if_mine (ticket #145) rather than an unconditional unlink, so a
+    # through clean_if_mine (ticket TODO-145) rather than an unconditional unlink, so a
     # successor runner that reclaimed the SAME pinned workdir -- republishing the link
     # and writing its own live PID -- never has its fresh link orphaned by the
     # departing runner's guard. This exercises the guard at the runner.pm call site.

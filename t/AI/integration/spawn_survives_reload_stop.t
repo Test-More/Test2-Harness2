@@ -2,7 +2,7 @@ use Test2::V0;
 use v5.38;
 # HARNESS-DURATION-LONG
 
-# Ticket #119: the detached `yath spawn` supervisor must OUTLIVE stage teardown.
+# Ticket TODO-119: the detached `yath spawn` supervisor must OUTLIVE stage teardown.
 #
 # The stage host double-forks + setsid's the spawn INTERMEDIATE (so pgid == the
 # intermediate's pid) and watch_pid's that pid; its wind-down killall on `yath
@@ -159,7 +159,7 @@ ok(kill(0, $child), "script child survived the reload");
 
 # --- `yath stop`: full runner + stage teardown. Same killall path. The detached
 # supervisor + script child must STILL be alive afterwards. This is the crux: before
-# #119 the stage teardown killed the supervisor here. ---
+# TODO-119 the stage teardown killed the supervisor here. ---
 yath(command => 'stop', exit => 0);
 
 ok(kill(0, $sup),   "supervisor survived `yath stop` (the detached session outlived teardown)");

@@ -1,10 +1,10 @@
 use Test2::V0;
 
-# Ticket #45: the old DBIx::Class DB/web layer (App::Yath2::Schema::Importer ->
+# Ticket TODO-45: the old DBIx::Class DB/web layer (App::Yath2::Schema::Importer ->
 # RunProcessor, etc.) moved to reference/old_db and is being rewritten on
 # QuickORM. This BEGIN skip_all runs (and exits) before the moved Schema modules
 # are loaded below.
-BEGIN { plan skip_all => "App::Yath2::Schema::Importer/RunProcessor moved to reference/old_db (ticket #45); DB layer is being rewritten" }
+BEGIN { plan skip_all => "App::Yath2::Schema::Importer/RunProcessor moved to reference/old_db (ticket TODO-45); DB layer is being rewritten" }
 
 # Phase 2 UI inlining: drive a REAL captured event log through the inlined
 # importer (App::Yath2::Schema::Importer -> RunProcessor) against an ephemeral

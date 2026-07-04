@@ -23,7 +23,7 @@ This command will provide health details and a process list for the runner.
 # Numeric sort key for a pid column that may hold 'N/A' (a down/restarting stage or
 # a not-yet-pid'd running test): a bare integer sorts by value, anything else sorts
 # first as -1. This avoids the "Argument 'N/A' isn't numeric in <=>" warning spray
-# the raw `$a->[0] <=> $b->[0]` produced whenever a stage was restarting (#146).
+# the raw `$a->[0] <=> $b->[0]` produced whenever a stage was restarting (TODO-146).
 # Inherited by ps.pm, which shares the same pid-first row shape.
 sub _pid_key { $_[1] =~ /^\d+$/ ? $_[1] : -1 }
 

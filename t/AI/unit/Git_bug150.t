@@ -2,7 +2,7 @@ use Test2::V0 -target => 'App::Yath2::Plugin::Git';
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #150:
+# Regression coverage for ticket TODO-150:
 #   (78) git_output must not deadlock when git writes more than a pipe's worth of
 #        stderr; it now uses Capture::Tiny instead of a hand-rolled pipe pair.
 #   (82) the clean-tree --changed-only fallback (_changed_diff with no base) must

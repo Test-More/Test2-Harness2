@@ -26,7 +26,7 @@ use Test2::Harness2::Runner::Role::Service::Completion;
 use Test2::Harness2::Runner::Role::Service::TransitionHub;
 use Test2::Harness2::Runner::Watchdog;
 
-# #134 finding 104: the terminate-grace 'deadline' and the connect-watch 'since'
+# TODO-134 finding 104: the terminate-grace 'deadline' and the connect-watch 'since'
 # are now MONOTONIC (mono_time), so injected values must be on the same clock.
 use Test2::Harness2::Util qw/mono_time/;
 
@@ -145,7 +145,7 @@ subtest abort_run_collectors_terminates_and_intent => sub {
 };
 
 subtest owner_disconnect_abort_kills_process => sub {
-    # #135 finding 2: a REAL first attempt carries NO is_try (undef); the collector's
+    # TODO-135 finding 2: a REAL first attempt carries NO is_try (undef); the collector's
     # wire job_try is 1 (Job.pm sends is_try //= 1). The watchdog marks decided with the
     # raw undef and the EOF checks with the wire 1 -- the `// 1` normalization must
     # collapse both to the SAME key so the abort's later EOF is a fire-once no-op.
@@ -209,7 +209,7 @@ subtest connect_timeout_fails_unconnected_job => sub {
     my ($abort) = grep { $_->{state} eq 'aborted' } @{$runner->{announced}};
     ok($abort, "the never-connecting job was failed (aborted) by the connect timeout");
     like($abort->{details}, qr/did not connect within/i, "reason names the connect timeout");
-    # First-attempt task (no is_try): decided under the 1-based normalized key (#135 finding 2).
+    # First-attempt task (no is_try): decided under the 1-based normalized key (TODO-135 finding 2).
     ok($runner->job_already_decided('J1', 1), "the timed-out job is marked decided (1-based)");
 };
 
@@ -251,7 +251,7 @@ subtest connect_timeout_terminates_late_collector => sub {
     ok(!@{$other->{controls}}, "a collector for a job with no termination intent is left alone");
 
     # A retry of J1 (new try) must NOT be terminated by a stale intent for the old try.
-    # Try ordinals are 1-based (R10/#49): the first try is 1, the retry is 2.
+    # Try ordinals are 1-based (R10/TODO-49): the first try is 1, the retry is 2.
     $runner->{terminated_jobs}{J1} = {job_try => 1, run_id => 'R1', reason => 'old try'};
     my $retry = FakeConn->new;
     identify($runner, $retry, job_id => 'J1', job_try => 2, run_id => 'R1', pid => 777);
@@ -275,7 +275,7 @@ subtest announce_run_sweeps_terminated_jobs => sub {
 };
 
 subtest c2_collector_reap_survives_eof => sub {
-    # Ticket #28 C2: a passing job's pid->job reap entry (collector_reap) is recorded
+    # Ticket TODO-28 C2: a passing job's pid->job reap entry (collector_reap) is recorded
     # at the pass decision and must SURVIVE the collector's EOF -- which clears job_pids
     # (the status map) -- so the later reap of the detached collector can still run A3.
     my $runner = mk_runner(running => {J1 => {file => 'a.t', run_id => 'R1', is_try => 0}});
@@ -298,7 +298,7 @@ subtest c2_collector_reap_survives_eof => sub {
 };
 
 subtest handshake_records_job_pid => sub {
-    # Ticket #28: a test collector reports its OWN pid on its identity handshake, and
+    # Ticket TODO-28: a test collector reports its OWN pid on its identity handshake, and
     # the runner records it into job_pids for both run paths (the preload path no
     # longer reports a stage-side pid because the collector double-forks + detaches).
     my $runner = mk_runner(running => {});
@@ -332,7 +332,7 @@ subtest post_pass_health_flag => sub {
 };
 
 subtest per_job_terminate_deadline_hard_kills => sub {
-    # #135 finding 15: a collector terminated via a PER-JOB connect-timeout intent (no
+    # TODO-135 finding 15: a collector terminated via a PER-JOB connect-timeout intent (no
     # run-level aborting_runs record) is still hard-killed if it does not comply within
     # the grace. _terminate_collector stamps a per-entry terminate_deadline, and
     # _enforce_terminate_grace falls back to it when there is no run-level intent.
@@ -368,7 +368,7 @@ subtest per_job_terminate_deadline_hard_kills => sub {
 };
 
 subtest decided_first_try_undef_matches_wire_one => sub {
-    # #135 finding 2 (direct): mark_job_decided with a raw undef try (a first attempt
+    # TODO-135 finding 2 (direct): mark_job_decided with a raw undef try (a first attempt
     # that never carried is_try) and job_already_decided with the wire try 1 (what the
     # collector sends) must resolve to the SAME two-level key.
     my $runner = mk_runner(running => {});

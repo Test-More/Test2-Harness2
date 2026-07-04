@@ -3,7 +3,7 @@ use POSIX ();
 use Time::HiRes ();
 # HARNESS-DURATION-SHORT
 
-# Ticket #28 C1+C2, end-to-end through the REAL run_scheduler_only loop:
+# Ticket TODO-28 C1+C2, end-to-end through the REAL run_scheduler_only loop:
 #   C1 -- the scheduler-only runner reaps an UNWATCHED detached collector each tick
 #         (it calls _bring_out_yer_dead; the loop never goes through IPC::wait).
 #   C2 -- a non-zero HEALTH exit AFTER the job reported a pass is mapped back to the

@@ -100,7 +100,7 @@ sub init ($self) {
 
     # The drain-on-call PENDING_* change lists are consumed only by subscriber-side
     # mirrors; the hub monitor (constructed track_pending => 0 by the runner) never
-    # drains them, so it stops populating them entirely (#135 finding 3). Defaults on so
+    # drains them, so it stops populating them entirely (TODO-135 finding 3). Defaults on so
     # a plain mirror still tracks them.
     $self->{+TRACK_PENDING} //= 1;
 
@@ -367,7 +367,7 @@ sub apply_snapshot ($self, $snapshot) {
     return;
 }
 
-# Prune all O(tests) hub-monitor state for a retired run (#135 finding 3): its tracked
+# Prune all O(tests) hub-monitor state for a retired run (TODO-135 finding 3): its tracked
 # collectors (run_uuid eq run_id), jobs (run_id eq run_id), and run_health rows. The
 # runner calls this from announce_run once the run's end frame has been forwarded, so
 # no live subscriber still needs the folded per-collector/per-job detail; a
@@ -410,7 +410,7 @@ sub prune_run ($self, $run_id) {
 }
 
 # Drop a run's O(1) end marker (the retained RUNS entry) once it ages out of the
-# runner's late-subscribe ring (#135 finding 3). Re-prune first to collect any
+# runner's late-subscribe ring (TODO-135 finding 3). Re-prune first to collect any
 # collector/job/health a straggler frame recreated since the run retired.
 sub drop_run_marker ($self, $run_id) {
     return unless defined $run_id;

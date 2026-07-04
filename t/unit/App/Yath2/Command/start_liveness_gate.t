@@ -7,7 +7,7 @@ use IO::Socket::UNIX;
 use App::Yath2::Command::start;
 use App::Yath2::Discovery;
 
-# Ticket #123: `yath start [-d]` must not print 'Persistent runner started!' and
+# Ticket TODO-123: `yath start [-d]` must not print 'Persistent runner started!' and
 # exit 0 until it has confirmed the runner is actually SERVING. The runner writes
 # its PID file BEFORE it binds runner.socket and BEFORE it spawns the preload tree,
 # so a PID file proves only that it forked -- a broken -P module still exits on the
@@ -81,7 +81,7 @@ sub start_cmd {
     my $disco = App::Yath2::Discovery->new(link => $link, workdir => $dir);
     my $start = start_cmd(gone => [0]);
 
-    is($start->wait_for_runner_live($disco), 'live', "resolves a REAL live runner.socket as live via #145 probe()");
+    is($start->wait_for_runner_live($disco), 'live', "resolves a REAL live runner.socket as live via TODO-145 probe()");
 
     close($listen);
 }

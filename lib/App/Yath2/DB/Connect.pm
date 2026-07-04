@@ -408,7 +408,7 @@ sub build_connection {
 
 # Get-or-create a natural-key entity on $con, returning its integer PK. Shared by
 # the logger (its live connection) and the sync engine (its destination), which is
-# why the connection is an explicit argument (ticket #93 -- one implementation).
+# why the connection is an explicit argument (ticket TODO-93 -- one implementation).
 sub find_or_create {
     my ($con, $table, $natural, $pk_col) = @_;
 

@@ -58,7 +58,7 @@ runner (scheduler-only)
   changed (preload-root, not runner).
 - **`rootpid` injection** lets one Runner class be both the scheduler-only
   orchestrator and the stage host, avoiding a parallel implementation.
-  **SUPERSEDED by ticket #22** (`AI_DOCS/2026-06-20-ticket22-runner-preload-host-split.md`):
+  **SUPERSEDED by ticket TODO-22** (`AI_DOCS/2026-06-20-ticket22-runner-preload-host-split.md`):
   the dual-role Runner is split into two independent classes — the runner
   (scheduler) and `Test2::Harness2::Preload::Host` (stage host). The preload-root
   now builds a `Preload::Host`, and the `rootpid != $$` stage-host branches +

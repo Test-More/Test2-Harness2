@@ -3,7 +3,7 @@ use Test2::V0;
 
 use Test2::Harness2::Runner::State;
 
-# Ticket #12 / ARCHITECTURE.md §4.2: the raw queued run item lives ON the Run object
+# Ticket TODO-12 / ARCHITECTURE.md §4.2: the raw queued run item lives ON the Run object
 # (no parallel run_items hash), and the run is retained/purged per the queuing
 # client. These tests exercise the State-level pieces (raw_item folding, run_status
 # classification, finished-run retention, purge, and run-scoped abort) plus the
@@ -87,7 +87,7 @@ subtest abort_run_halts_and_stops => sub {
     ok($state->halted_runs->{'R1'}, "the run is halted (no new tasks accepted)");
     ok($state->stopped_runs->{'R1'}, "the run is stopped (loop will advance off it)");
 
-    # Ticket #35: halting the run must also drop its TASK_LOOKUP entries so a stale
+    # Ticket TODO-35: halting the run must also drop its TASK_LOOKUP entries so a stale
     # task can no longer block a same-job_id resubmission and so a persistent runner
     # does not retain the task hashes forever.
     ok(!$state->task_lookup->{'J1'}, "the halted run's task is gone from task_lookup");
@@ -101,7 +101,7 @@ subtest abort_run_halts_and_stops => sub {
     ok(!$state->task_lookup->{'J2'}, "a halted run rejects further task submissions");
 };
 
-# Ticket #35: purge_run (owner-drop sweep) must also clear the run's TASK_LOOKUP
+# Ticket TODO-35: purge_run (owner-drop sweep) must also clear the run's TASK_LOOKUP
 # entries, not just the pending buckets and bookkeeping.
 subtest purge_run_clears_task_lookup => sub {
     my $state = new_state();
@@ -123,7 +123,7 @@ subtest purge_run_clears_task_lookup => sub {
     ok(!$state->task_lookup->{'J1'}, "the purged run's task is gone from task_lookup");
 };
 
-# CRITICAL regression (adversarial review of the EOF-completion + #35 interaction):
+# CRITICAL regression (adversarial review of the EOF-completion + TODO-35 interaction):
 # halting/aborting a run must NOT strand a RUNNING task. halt_run drops PENDING
 # lookups, but a RUNNING task's lookup must survive until its own stop_task (driven
 # by its collector's EOF) runs; and stop_task must release the slot even if the
@@ -141,14 +141,14 @@ subtest halt_does_not_strand_running_tasks => sub {
 
     # J1 is RUNNING; J2 stays pending. A use_preload=0 task buckets under the
     # synthetic 'NOPRELOAD' stage (task_stage), so the dispatch stage _next would pass
-    # is 'NOPRELOAD' -- start_task removes from the bucket it was dequeued from (#115).
+    # is 'NOPRELOAD' -- start_task removes from the bucket it was dequeued from (TODO-115).
     $state->start_task({job_id => 'J1', stage => 'NOPRELOAD', res => {env_vars => {}, args => [], record => {}}});
     is($state->running, 1, "J1 is running");
 
     $state->halt_run('R1');
 
     ok($state->task_lookup->{'J1'},  "a RUNNING task's lookup survives halt_run (stopped by its own EOF)");
-    ok(!$state->task_lookup->{'J2'}, "a PENDING task's lookup is dropped by halt_run (#35)");
+    ok(!$state->task_lookup->{'J2'}, "a PENDING task's lookup is dropped by halt_run (TODO-35)");
     is($state->running, 1, "halt_run did not itself stop the running task");
 
     # J1's collector EOFs -> stop_task. It must succeed and decrement RUNNING.
@@ -167,7 +167,7 @@ subtest stop_task_tolerates_missing_lookup => sub {
     $state->queue_run({run_id => 'R1'});
     $state->start_run('R1');
     $state->queue_task({job_id => 'J1', run_id => 'R1', category => 'general', duration => 'short', stage => 'default', use_preload => 0});
-    # use_preload=0 buckets under 'NOPRELOAD'; dispatch from that bucket (#115).
+    # use_preload=0 buckets under 'NOPRELOAD'; dispatch from that bucket (TODO-115).
     $state->start_task({job_id => 'J1', stage => 'NOPRELOAD', res => {env_vars => {}, args => [], record => {}}});
     is($state->running, 1, "running");
 

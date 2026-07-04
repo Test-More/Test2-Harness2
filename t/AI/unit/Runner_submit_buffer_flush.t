@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #116: submissions buffered while the scheduler is briefly NOT ready must be flushed
+# TODO-116: submissions buffered while the scheduler is briefly NOT ready must be flushed
 # once readiness returns. flush_submit_buffer used to fire exactly ONCE -- right after
 # the initial stage-map wait in run_scheduler_only. Readiness can regress AFTER that
 # (a stage peer drops during a monitor-preloads tree reload, then re-registers): the

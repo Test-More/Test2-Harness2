@@ -8,7 +8,7 @@ use Test2::Harness2::Util qw/mono_time/;
 
 use Role::Tiny;
 
-# Constant-only slots (#17 pattern): grep/typo safety on the runner-hash keys this
+# Constant-only slots (TODO-17 pattern): grep/typo safety on the runner-hash keys this
 # role touches. job_passed/collector_reap are first-written here; job_pids is owned
 # by the runner. Role::Tiny does not share HashBase constants across a composition,
 # so each role declares its own copy.
@@ -117,7 +117,7 @@ sub collector_conn_eof {
     # This EOF is for the CURRENT try (the stale-try guard above already returned
     # otherwise), so retire its current-try marker on ANY outcome -- including a
     # suppressed EOF the watchdog already decided, which returns below. Doing this
-    # BEFORE the fire-once return fixes a latent leak (#135 finding 2/15): a
+    # BEFORE the fire-once return fixes a latent leak (TODO-135 finding 2/15): a
     # watchdog-decided first-try job's later EOF previously returned early and left the
     # marker forever on a persistent runner.
     delete $self->{'collector_current_try'}{$job_id};
@@ -134,7 +134,7 @@ sub collector_conn_eof {
     return;
 }
 
-# The shared fire-once ledger, a two-level map decided_jobs{job_id}{job_try} (#135
+# The shared fire-once ledger, a two-level map decided_jobs{job_id}{job_try} (TODO-135
 # finding 2): the EOF decision and the watchdog both consult/set it so a job completes
 # exactly once even when its EOF and an abort race. A retry is a NEW (job_id, job_try)
 # pair, so it is never blocked by the prior try's entry. The try is normalized `// 1`
@@ -142,7 +142,7 @@ sub collector_conn_eof {
 # watchdog and the connect-timeout pass the raw task->{is_try} (undef on a first
 # attempt), the EOF path the wire job_try (1 on a first attempt), so `// 1` collapses
 # both to the SAME key -- the undef-vs-1 mismatch that re-decided aborted first tries.
-# Two levels also make a per-run prune (#135 finding 3) an O(1) delete of decided_jobs{job_id}.
+# Two levels also make a per-run prune (TODO-135 finding 3) an O(1) delete of decided_jobs{job_id}.
 sub job_already_decided {
     my $self = shift;
     my ($job_id, $job_try) = @_;
@@ -206,7 +206,7 @@ sub decide_collector_outcome {
         # itself stays green and is never reopened (ARCHITECTURE.md §5.4).
         $self->{+JOB_PASSED}{$job_id} = $entry->{run_id} // '';
 
-        # A DETACHED preload collector (ticket #28) is reaped by the runner as an
+        # A DETACHED preload collector (ticket TODO-28) is reaped by the runner as an
         # UNWATCHED pid: at reap the runner has only the pid, not the job_id, and
         # job_pids was already cleared by this collector's EOF (collector_conn_eof,
         # the status map). Record a pid-keyed reap entry HERE, at the pass, that
@@ -254,7 +254,7 @@ sub _collector_stop {
 # retried. A halted run DECLINES the re-queue: State::retry_task stops the job but
 # returns false, so this returns false too and decide_collector_outcome falls
 # through to the done/abort completion path -- the job is a failed completion, not
-# a phantom 'retry' left stranded as "never ran" (#117).
+# a phantom 'retry' left stranded as "never ran" (TODO-117).
 sub _collector_retry_if_tries {
     my $self = shift;
     my ($entry) = @_;
@@ -266,13 +266,13 @@ sub _collector_retry_if_tries {
     my $task    = $running->{$job_id} or return 0;
 
     my $retries = $self->_job_retry_count($task, $entry->{run_id});
-    # Try ordinals are 1-based (R10 / #49): the first attempt is $try == 1, and the
+    # Try ordinals are 1-based (R10 / TODO-49): the first attempt is $try == 1, and the
     # job is allowed $retries retries (so 1 + $retries total attempts). Retry while
     # the current try is within budget: $try <= $retries (equivalently the 0-based
     # attempt index $try - 1 is still < $retries).
     return 0 unless defined($try) && $try <= $retries;
 
-    # #117: retry_task returns a truthy 'actually re-queued' indicator; a halted run
+    # TODO-117: retry_task returns a truthy 'actually re-queued' indicator; a halted run
     # declines (stops the job but does NOT re-queue it) and returns false. Treat that
     # decline -- and any die -- as "not retried" so decide_collector_outcome falls
     # through to _collector_stop + announce_job('done') (a failed completion) rather
@@ -283,7 +283,7 @@ sub _collector_retry_if_tries {
 
     # The re-queued attempt is try+1; mark it current so this attempt's connection
     # (which is about to be forgotten) cannot stop/retry the new one. Skipped on a
-    # declined retry (returned above): there is no new attempt to protect (#117 Step 2).
+    # declined retry (returned above): there is no new attempt to protect (TODO-117 Step 2).
     $self->{'collector_current_try'}{$job_id} = $try + 1;
 
     return 1;
@@ -387,7 +387,7 @@ sub terminate_run_collectors {
     my $intent = $self->{'aborting_runs'}{$run_id} //= {reason => $reason};
     # Interval deadline (compared in _enforce_terminate_grace); monotonic so a
     # wall/NTP step cannot skip or postpone the hard-kill fallback. Pairs with the
-    # mono_time in _enforce_terminate_grace. (#134 finding 104)
+    # mono_time in _enforce_terminate_grace. (TODO-134 finding 104)
     $intent->{deadline} //= mono_time + $self->_terminate_grace;
 
     for my $key (keys %{$self->{'collector_conns'} // {}}) {
@@ -417,10 +417,10 @@ sub _terminate_collector {
     $entry->{terminated}       //= 1;
     $entry->{terminate_reason} //= $reason;
     $entry->{terminate_sent}   //= time;
-    # Per-ENTRY hard-kill deadline (#135 finding 15), the fallback _terminate_collector's
+    # Per-ENTRY hard-kill deadline (TODO-135 finding 15), the fallback _terminate_collector's
     # comment above promises: a collector terminated via a per-job connect-timeout intent
     # (no run-level aborting_runs record) is still hard-killed if it does not comply.
-    # Monotonic to match _enforce_terminate_grace's clock (#134 finding 104); reuses the
+    # Monotonic to match _enforce_terminate_grace's clock (TODO-134 finding 104); reuses the
     # same _terminate_grace as the run-level intent (identical semantics).
     $entry->{terminate_deadline} //= mono_time + $self->_terminate_grace;
 
@@ -442,13 +442,13 @@ sub _terminate_collector {
 sub _enforce_terminate_grace {
     my $self = shift;
 
-    # No early-out on aborting_runs (#135 finding 15): a per-job connect-timeout
+    # No early-out on aborting_runs (TODO-135 finding 15): a per-job connect-timeout
     # terminate has NO run-level intent, so it must still be enforceable via its
     # per-entry deadline. The per-entry `next unless terminate_sent` below keeps the
     # idle-tick cost trivial.
     my $aborting = $self->{'aborting_runs'} // {};
 
-    my $now   = mono_time;    # pairs with the deadline armed in terminate_run_collectors + _terminate_collector (#134 finding 104)
+    my $now   = mono_time;    # pairs with the deadline armed in terminate_run_collectors + _terminate_collector (TODO-134 finding 104)
     my $conns = $self->{'collector_conns'} // {};
 
     for my $key (keys %$conns) {
@@ -458,7 +458,7 @@ sub _enforce_terminate_grace {
 
         # Intent-first fallback: the run-level abort deadline wins when present (so
         # run-level behavior is byte-identical), otherwise the per-entry deadline
-        # (#135 finding 15) governs the per-job connect-timeout terminate.
+        # (TODO-135 finding 15) governs the per-job connect-timeout terminate.
         my $intent = $aborting->{$entry->{run_id} // ''};
         my $deadline = ($intent && defined $intent->{deadline}) ? $intent->{deadline} : $entry->{terminate_deadline};
         next unless defined($deadline) && $now >= $deadline;
@@ -489,7 +489,7 @@ sub _collector_connect_timeout {
 # Per-tick scan (ARCHITECTURE.md §5.4 "The reporter is mandatory"): a job the
 # runner marked dispatched/running whose collector never connected within
 # --collector-connect-timeout is failed/aborted -- it would otherwise never EOF and
-# hang the run. Mirrors the #33 _expire_stale_stages per-tick shape. The job is
+# hang the run. Mirrors the TODO-33 _expire_stale_stages per-tick shape. The job is
 # synthesized as aborted (the no-verdict render mutation) and marked decided in the
 # shared fire-once ledger so a collector that connects after this is a no-op. A
 # per-job termination intent (terminated_jobs) is also recorded so such a late
@@ -503,7 +503,7 @@ sub _enforce_collector_connect_timeout {
     my $watch = $self->{'job_connect_watch'} or return;
     return unless keys %$watch;
 
-    my $now     = mono_time;    # elapsed-since-dispatch interval; pairs with the 'since' writer (#134 finding 104)
+    my $now     = mono_time;    # elapsed-since-dispatch interval; pairs with the 'since' writer (TODO-134 finding 104)
     my $running = $self->state->running_tasks // {};
 
     for my $job_id (keys %$watch) {

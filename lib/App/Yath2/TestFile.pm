@@ -43,7 +43,7 @@ sub directive_error ($self) {
 # number of seconds is coerced into a scheduling label; a label is accepted
 # as-is; anything else warns (naming the test) and is ignored, leaving the
 # scan-derived duration untouched -- advisory scheduling data must never fail a
-# job. (#118)
+# job. (TODO-118)
 sub set_duration ($self, $val) {
     my $dur = $self->_coerce_duration($val);
     return unless defined $dur;
@@ -68,7 +68,7 @@ sub _coerce_duration ($self, $val) {
 
 # Programmatic category setter. A category encodes concurrency-safety intent, so
 # a bad value here is a plugin/code bug, not user data: croak so it attributes
-# the caller rather than silently downgrading an isolation requirement. (#118)
+# the caller rather than silently downgrading an isolation requirement. (TODO-118)
 sub set_category ($self, $val) {
     my $cat = lc($val);
     croak "'$cat' is not a valid category, must be one of: general, isolation, immiscible"
@@ -427,7 +427,7 @@ sub _apply_directives ($self, $dirs, $headers) {
 
     # duration: scheduling label. An inline directive is hand-written grammar --
     # long|medium|short only; a number there is likely a timeout confusion, so
-    # reject it loudly (E1) rather than guess. (#118)
+    # reject it loudly (E1) rather than guess. (TODO-118)
     if (my $list = $dirs->{duration}) {
         if (defined $list->[0]) {
             my $val = lc($list->[0]);
@@ -441,7 +441,7 @@ sub _apply_directives ($self, $dirs, $headers) {
     # real category. A category encodes concurrency-safety intent, so an unknown
     # token (e.g. '# HARNESS-CATEGORY-NETWORK') fails the job (E1) rather than
     # silently downgrading to 'general' and risking a parallel run of a
-    # must-be-serialized test. (#118)
+    # must-be-serialized test. (TODO-118)
     if (my $list = $dirs->{category}) {
         my $val = lc($list->[0] // '');
         if ($val =~ m/^(?:long|medium|short)$/) {
@@ -901,7 +901,7 @@ C<fork>, C<preload>, C<stream>, C<run>, C<isolation>, C<smoke>, or C<io_events>.
 The feature is read from the file's directives -- either the legacy
 C<# HARNESS-NO-NAME> / C<# HARNESS-USE-NAME> / C<# HARNESS-YES-NAME> form or the
 newer HARNESS2 grammar (e.g. C<# HARNESS2: fork @off>); C<NO> / C<@off> yields
-C<0>, and C<YES> / C<USE> / C<@on> yields C<1> (see #58 for the two grammars).
+C<0>, and C<YES> / C<USE> / C<@on> yields C<1> (see TODO-58 for the two grammars).
 
 When the file declares no directive for the feature the returned value is a
 default rather than undef: the optional C<$default> argument if given, otherwise

@@ -5,7 +5,7 @@ use ok $CLASS;
 
 # The base class bridges cli_args (a single usage string) into the
 # doc-generator interface (doc_args), which cli_help/generate_pod render as a
-# [COMMAND ARGUMENTS] section. Regression coverage for #87.
+# [COMMAND ARGUMENTS] section. Regression coverage for TODO-87.
 
 subtest base_defaults => sub {
     is($CLASS->cli_args, '', "cli_args defaults to empty string");

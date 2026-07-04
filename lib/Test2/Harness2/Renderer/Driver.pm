@@ -385,9 +385,9 @@ sub _dispatch_launch ($self, $job_id, $file, $try) {
             abs_file => defined($file) ? File::Spec->rel2abs($file) : undef,
         },
         # `retry` is a BOOLEAN flag the renderer keys the LAUNCH/RETRY tag on, not
-        # the try ordinal. Try ordinals are 1-based (#49), so a first attempt is
+        # the try ordinal. Try ordinals are 1-based (TODO-49), so a first attempt is
         # try==1 and only try>1 is a retry -- emitting the raw ordinal tagged every
-        # first launch as RETRY under -v (#141 finding 99). The ordinal itself
+        # first launch as RETRY under -v (TODO-141 finding 99). The ordinal itself
         # still rides in `is_try` above.
         harness_job_launch => {stamp => $stamp, retry => ($try > 1 ? 1 : 0)},
     );
@@ -422,13 +422,13 @@ sub _render_aborted ($self, $rj) {
     # _dispatch_launch ran)? If so, DO NOT synthesize a second launch and DO NOT
     # re-count it: doing so showed the file 'started' twice, inflated the File
     # Count, and emitted a phantom "Times Run: 2 / Succeeded Eventually? NO"
-    # retried row (#141 finding 4). LAUNCH_RENDERED is keyed by job_id and set by
+    # retried row (TODO-141 finding 4). LAUNCH_RENDERED is keyed by job_id and set by
     # _dispatch_launch, so it is robust even for a job with no JOBS record. Just
     # emit the aborted exit/end below so the verdict rolls up exactly once.
     my $launched = $self->{+LAUNCH_RENDERED}{$job_id} ? 1 : 0;
 
     # Real (1-based) try ordinal rather than the old hardcoded 0, so a first
-    # attempt is not tagged RETRY and a retry of an aborted job IS (#141 finding
+    # attempt is not tagged RETRY and a retry of an aborted job IS (TODO-141 finding
     # 99). A launched job already knows its ordinal from $job->{tries}; an
     # unlaunched abort falls back to the task's is_try.
     my $try = ($job && $job->{tries}) ? $job->{tries} : (($task ? $task->{is_try} : undef) // 1);
@@ -579,7 +579,7 @@ sub _tail_reader ($self, $uuid, $c) {
     # The job's terminal was read: drop its tailing reader so we do not hold an
     # open zstd fd per finished job for the whole run. Under --live with more test
     # files than the fd rlimit this leak hit EMFILE mid-run and broke rendering
-    # (#141 finding 96). JobReader also closes its own reader on done, so the fd is
+    # (TODO-141 finding 96). JobReader also closes its own reader on done, so the fd is
     # freed either way; dropping the entry keeps TAIL_READERS bounded to live jobs.
     delete $self->{+TAIL_READERS}{$uuid} if $entry->{ended};
 
@@ -603,7 +603,7 @@ sub _finalize_live ($self, $monitor) {
         # needs no terminal wait: the runner already made the no-retry decision
         # and there is no events-file terminal coming. Skipping it avoids a full
         # TAIL_TERMINAL_TIMEOUT dead-wait per aborted collector at end-of-run,
-        # serially -- a bounded but real N*5s stall under --live (#141 finding 52).
+        # serially -- a bounded but real N*5s stall under --live (TODO-141 finding 52).
         my $job = $self->job_for($c);
         next if $job && $job->{verdict};
 

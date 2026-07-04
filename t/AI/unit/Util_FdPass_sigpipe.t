@@ -6,7 +6,7 @@ use Socket qw/AF_UNIX SOCK_STREAM PF_UNSPEC/;
 use Test2::Harness2::Util::FdPass qw/send_fds fdpass_available/;
 use Test2::Harness2::Util::FdPass::Control;
 
-# #134 finding 43: a peer that dies mid-handoff turns the write into SIGPIPE,
+# TODO-134 finding 43: a peer that dies mid-handoff turns the write into SIGPIPE,
 # which (without protection) kills the yath command or the supervisor -- orphaning
 # the spawned process group. Control::_send and FdPass::send_fds each guard the
 # write with local $SIG{PIPE} = 'IGNORE', so a vanished peer surfaces as a caught

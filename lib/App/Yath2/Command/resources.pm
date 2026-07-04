@@ -34,7 +34,7 @@ sub runner_resources {
     # re-ran the full find+attach ~5x/second). The first call -- run()'s up-front probe
     # -- does the non-fatal find + kill(0) liveness + attach and caches the pid; every
     # later poll reuses that pid, doing only a cheap kill(0) re-check and a resource
-    # read over the already-attached socket (#91 step 3). Keeps the non-fatal find
+    # read over the already-attached socket (TODO-91 step 3). Keeps the non-fatal find
     # semantics + the custom "No persistent runner..." message (does NOT use pfile_data,
     # which dies and prints a banner the screen-clear would wipe).
     my $pid = $self->{+RUNNER_PID};
@@ -49,7 +49,7 @@ sub runner_resources {
     }
 
     # Runner gone away => stop cleanly: a cheap per-poll liveness re-check on the cached
-    # pid, plus an eval guard so a mid-poll socket death surfaces as undef (#146).
+    # pid, plus an eval guard so a mid-poll socket death surfaces as undef (TODO-146).
     return undef unless kill(0, $pid);
     return eval { $self->client->resources };
 }
@@ -73,8 +73,8 @@ sub run {
 
     while (!$stop) {
         # Runner gone away (pid dead / socket unreachable) => runner_resources returns
-        # undef. Stop instead of clearing the screen forever on an empty view (#146,
-        # cleanup #91 step 3); modeled on ping.pm's runner-gone break.
+        # undef. Stop instead of clearing the screen forever on an empty view (TODO-146,
+        # cleanup TODO-91 step 3); modeled on ping.pm's runner-gone break.
         $resources = $self->runner_resources;
         last unless defined $resources;
 

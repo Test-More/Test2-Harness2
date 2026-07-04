@@ -110,7 +110,7 @@ sub launch_spawn ($class, $runner, $spawn, $label = undef) {
     require Test2::Harness2::Util::FdPass;
     require Test2::Harness2::Util::FdPass::Control;
 
-    # #119: leave the intermediate's process group BEFORE anything else (before the
+    # TODO-119: leave the intermediate's process group BEFORE anything else (before the
     # possibly-blocking dial-back below). The stage host double-forked + setsid'd the
     # intermediate (so pgid == the intermediate's pid), watch_pid's THAT pid, and its
     # wind-down killall TERM/-KILLs `-<intermediate-pid>` -- the whole intermediate
@@ -127,7 +127,7 @@ sub launch_spawn ($class, $runner, $spawn, $label = undef) {
     # detach below; guarded by USE_P_GROUPS like the other launch paths (on platforms
     # with no process groups killall signals bare pids, which never name us anyway).
     #
-    # Consistency with #139's command-EOF escalation (which signals both `-$child` and
+    # Consistency with TODO-139's command-EOF escalation (which signals both `-$child` and
     # `$child`): that targets the SCRIPT CHILD's group (pgid == the child's pid, from
     # the child's own setsid), never this supervisor's -- our pgid is now our own pid,
     # a third, distinct value -- so nothing here is ever double-signaled.
@@ -303,20 +303,20 @@ sub _close_fds ($class, @fds) {
     return;
 }
 
-# NOTE (#73): a single-fork launch_via_fork used to live here (the host's DIRECT
+# NOTE (TODO-73): a single-fork launch_via_fork used to live here (the host's DIRECT
 # child becomes the collector parent, reaped by the host). It had no callers -- the
 # live launchers are launch_via_double_fork (preload test jobs) and launch_spawn
 # (detached spawn workers) -- so it was removed.
 
 # The preload TEST-job launch: double-fork + setsid so the collector detaches from
-# the stage and re-parents to the runner (a child subreaper, ticket #28) on a
+# the stage and re-parents to the runner (a child subreaper, ticket TODO-28) on a
 # supported OS, or to init otherwise -- the preload tree then reaps no collectors.
 # The stage forks a short-lived INTERMEDIATE; the intermediate setsid's (the
 # collector leads its own session/process-group, so the runner's kill(-pid)
 # fallback reaches the whole subtree) and forks the collector PARENT, then exits,
 # orphaning the collector so it re-parents away. The stage reaps ONLY the
 # intermediate (returned here); it never watches the collector. The runner learns
-# the collector's pid from the #27 collector handshake, so no pid is captured or
+# the collector's pid from the TODO-27 collector handshake, so no pid is captured or
 # reported here. The collector body still longjumps $label in its test child --
 # the 'preload-root' setjump frame is copied onto every forked stack, so it is
 # present in the test child and the unwind lands in Preload::launch.

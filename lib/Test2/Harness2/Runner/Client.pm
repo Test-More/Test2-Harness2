@@ -175,11 +175,11 @@ submission becomes a no-op.
 
 Send one one-way request. A no-op once the runner is observed gone before it ever
 accepted (C<connection> returns C<undef>). Once connected the client conn back-
-pressures a slow runner via the bounded-blocking flush (#108); if C<send_request>
+pressures a slow runner via the bounded-blocking flush (TODO-108); if C<send_request>
 still reports the connection closed mid-send (runner gone/wedged), this B<croaks>
 rather than silently dropping the submission -- a dropped one-way frame carries no
 ack, so a lost C<queue_task> would otherwise never run those tests yet report the
-run green (#109).
+run green (TODO-109).
 
 =item $reply = $client->_request($command, %args)
 
@@ -195,7 +195,7 @@ could not be reached. Croaks on a closed connection or timeout.
 # when we cannot otherwise tell the runner is gone. Env-overridable (pure superset:
 # unset => 30s) so `yath stop`/`yath kill` regression tests that drive a fake,
 # never-replying runner do not have to sit through the full 30s reply timeout
-# (ticket #121); production behavior is unchanged.
+# (ticket TODO-121); production behavior is unchanged.
 sub CONNECT_TIMEOUT { $ENV{YATH_RUNNER_CONNECT_TIMEOUT} // 30 }
 
 sub runner_gone ($self) { return $self->{+RUNNER_GONE} ? 1 : 0 }
@@ -220,11 +220,11 @@ sub _send ($self, $command, %args) {
     # One-way submissions (queue_run/queue_task/stop_run/end_queue/halt_run, and
     # stop -- whose reply the client never waits for): want_reply => 0 so no
     # request_id is remembered as PENDING. The acknowledged two-way queries go
-    # through _request (below), which keeps the default. (#134 finding 106)
+    # through _request (below), which keeps the default. (TODO-134 finding 106)
     #
     # send_request returns the request_id on a delivered write and undef when the
     # connection closed during the send. The client connection is NOT owner_flushes,
-    # so send_request already finished with the #108 bounded-blocking flush: a
+    # so send_request already finished with the TODO-108 bounded-blocking flush: a
     # merely-slow runner back-pressures here (the send waits) rather than dropping
     # the frame, so an undef means the runner is genuinely gone or wedged past its
     # stall window (or the queue blew past max_wbuf) -- never a transient EAGAIN. A
@@ -234,7 +234,7 @@ sub _send ($self, $command, %args) {
     # run_done). Croak instead so submission failure is loud, not a green run with
     # missing tests. submit_queue (App::Yath2::Client) runs these without an eval so
     # the croak aborts the run; the eval/alarm-wrapped callers (stop/kill/halt_run)
-    # absorb it. (#109 finding 30)
+    # absorb it. (TODO-109 finding 30)
     my $sent = $conn->send_request($command, %args, want_reply => 0);
     croak "runner connection closed while submitting '$command'; submission not delivered"
         unless defined $sent;
@@ -246,7 +246,7 @@ sub _request ($self, $command, %args) {
     my $conn = $self->connection or return undef;
     my $id   = $conn->send_request($command, %args);
 
-    my $start = mono_time;    # reply window is a pure interval (#134 finding 104)
+    my $start = mono_time;    # reply window is a pure interval (TODO-134 finding 104)
     while (1) {
         for my $event ($conn->drain) {
             next unless $event->{kind} eq 'response';

@@ -545,7 +545,7 @@ in §0-§7** — so some feedback re-litigates settled points; those are marked
 - **R2 (Gemini G3): `Preload::Host` needs a `request_handler_spawn`.** ADD to spec.
   **Verified** — `Preload::Host` composes only `Role::Service` and has
   `run_task`/`reload`/`reload_root` handlers, no spawn (`Preload/Host.pm:80,274-299`);
-  ticket #22 split it from the runner (`AI_DOCS/2026-06-20-ticket22-…`). The handler
+  ticket TODO-22 split it from the runner (`AI_DOCS/2026-06-20-ticket22-…`). The handler
   double-forks the supervisor async and acks `{ok=>1}` without blocking the host.
 - **R3 (GPT 3): preserve raw wait status, not just an exit code.** FIXED inline
   (SP-3): control frame carries raw status / `{exit,signal,core}`; signal-deaths

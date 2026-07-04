@@ -6,7 +6,7 @@ use Fcntl qw/F_GETFL O_NONBLOCK/;
 
 use Test2::Harness2::Util::FdPass::Control;
 
-# Chunk 13 / ticket #39: the dedicated `yath spawn` control mini-protocol that
+# Chunk 13 / ticket TODO-39: the dedicated `yath spawn` control mini-protocol that
 # rides the same socket AFTER the SCM_RIGHTS descriptor pass. It is intentionally
 # NOT Role::Service::Connection (no identity frame to collide with the fd-pass
 # byte). This exercises the framing round-trip over a real socketpair plus the EOF
@@ -88,7 +88,7 @@ subtest nonblocking_read => sub {
     is($msg->{hello}{pid}, 99, "non-blocking read returns a buffered frame");
 };
 
-# Ticket #139 (finding 6+G2): the fast-exit ORDERING crux. The supervisor can send
+# Ticket TODO-139 (finding 6+G2): the fast-exit ORDERING crux. The supervisor can send
 # its exit_status frame and close the socket in one burst, so the frame and EOF
 # arrive together. read_message MUST drain the buffered frame before it ever
 # classifies EOF -- take-before-fill -- or the command would misreport a healthy exit
@@ -152,7 +152,7 @@ subtest vanish_when_no_exit_status => sub {
     ok(!$got_exit, "no exit_status frame -> the command classifies this as a vanish");
 };
 
-# Ticket #139 mandatory vanish companion: _send must restore blocking mode. A prior
+# Ticket TODO-139 mandatory vanish companion: _send must restore blocking mode. A prior
 # read_message_nb leaves the fh O_NONBLOCK; without the restore a subsequent
 # send_exit_status could fail EAGAIN (treated as fatal), dropping the final frame and
 # turning a healthy exit into a spurious vanish.

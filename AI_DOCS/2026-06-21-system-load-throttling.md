@@ -2,7 +2,7 @@
 
 ## Task
 
-Chunk 7 / ticket #43. Give the harness an always-current view of system CPU and
+Chunk 7 / ticket TODO-43. Give the harness an always-current view of system CPU and
 memory load, sampled on a consistent interval, and use it to optionally throttle
 test concurrency. The sampler design was locked with the user (ported in spirit
 from `reference/harness_service`); the throttling-resource model was ported from

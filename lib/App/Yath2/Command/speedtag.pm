@@ -65,7 +65,7 @@ sub init {
     my $self = shift;
 
     # Share the runner's SHORT/MEDIUM thresholds so the tagger and the scheduler
-    # (TestFile.pm, #118) agree on the same second-count cutoffs.
+    # (TestFile.pm, TODO-118) agree on the same second-count cutoffs.
     $self->{+MAX_SHORT}  //= DURATION_MAX_SHORT;
     $self->{+MAX_MEDIUM} //= DURATION_MAX_MEDIUM;
 }

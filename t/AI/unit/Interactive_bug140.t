@@ -18,7 +18,7 @@ skip_all "These tests require forking" if $ENV{T2_NO_FORK} || !CAN_REALLY_FORK;
 
 $ENV{'YATH_SELF_TEST'} = 1;
 
-# Ticket #140. Three fixes to interactive mode, all exercised here:
+# Ticket TODO-140. Three fixes to interactive mode, all exercised here:
 #   (7+G4) the accept loop that the shell waits on must forward the yath child's
 #          real exit status -- a signal death as 128+sig (not a masked 0/green),
 #          and an ECHILD reap as a nonzero exit (not an infinite poll);

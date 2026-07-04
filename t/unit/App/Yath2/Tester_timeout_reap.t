@@ -1,5 +1,5 @@
 use Test2::V0;
-# Regression for ticket #155: App::Yath2::Tester's timeout-recovery reap must not
+# Regression for ticket TODO-155: App::Yath2::Tester's timeout-recovery reap must not
 # hang on a child that ignores/absorbs SIGTERM. _terminate_timed_out_child sends
 # TERM, waits a short grace window, then escalates to SIGKILL so a wedged runner
 # can never turn a timeout into an infinite hang of the calling test file.

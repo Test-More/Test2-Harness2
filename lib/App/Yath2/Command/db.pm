@@ -37,7 +37,7 @@ likewise still stubs until the rewrite lands.
 sub cli_args { "" }
 
 # Stub: the bare `db` SERVER command is part of the old DBIx::Class DB/web layer
-# moved to reference/old_db (ticket #45) and is being rewritten on QuickORM. Keep
+# moved to reference/old_db (ticket TODO-45) and is being rewritten on QuickORM. Keep
 # it visible in `yath help` but error clearly if anyone runs it. NOTE: this is NOT
 # a dispatcher -- `yath db sync` is dispatched to App::Yath2::Command::db::sync by
 # App::Yath2::_command_from_argv (the "<cmd>-<subcmd>" nested-command form), so it

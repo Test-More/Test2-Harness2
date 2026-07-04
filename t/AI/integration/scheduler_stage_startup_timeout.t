@@ -7,8 +7,8 @@ use Test2::Harness2::Runner::State;
 use Test2::Harness2::Runner::Resource::Preload;
 use Test2::Harness2::Runner::Resource::JobCount;
 
-# Ticket #33: --preload-stage-startup-timeout must actually fire in the scheduler.
-# The #21 unit test only drove Resource::Preload::available() in isolation; the
+# Ticket TODO-33: --preload-stage-startup-timeout must actually fire in the scheduler.
+# The TODO-21 unit test only drove Resource::Preload::available() in isolation; the
 # scheduler buckets a task via task_stage and _next only walks 'up' stage buckets,
 # so a require_preload task aimed at a stage stuck 'starting'/'restarting' was never
 # visited and the resource's -1 was never consulted -- it hung forever.

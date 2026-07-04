@@ -103,7 +103,7 @@ sub scheduler_tick {
         last;
     }
 
-    # Announce every run that RETIRED during this advance (#135 finding 28). The state
+    # Announce every run that RETIRED during this advance (TODO-135 finding 28). The state
     # records each retirement as an event (clear_finished_run), so a run activated AND
     # retired within this one loop -- an empty run, a pre-stopped run, an abort -- is
     # still announced; a before/after ACTIVE_RUN slot diff would have missed it,
@@ -128,7 +128,7 @@ sub scheduler_tick {
     $self->_enforce_terminate_grace;
 
     # Live-connection-safe deferred sweep of retired runs' per-job ledgers
-    # (#135 finding 3): a job is swept only once its collector connection has closed
+    # (TODO-135 finding 3): a job is swept only once its collector connection has closed
     # and a grace has elapsed since the run retired, so a late EOF or a
     # post-retirement reap never reads a ledger already gone.
     $self->_flush_run_ledger_sweeps;

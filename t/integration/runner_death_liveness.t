@@ -11,7 +11,7 @@ use Test2::Collector::Recorder::Zstd;
 
 use Test2::Harness2::Util qw/runner_events_file/;
 
-# Codex chunk-4 review #1, end-to-end regression guard (re-expressed for chunk
+# Codex chunk-4 review TODO-1, end-to-end regression guard (re-expressed for chunk
 # 6.1-3, gatherer deleted).
 #
 # SCOPE: the `yath` runner runs as the exec target of a non-test

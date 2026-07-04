@@ -4,7 +4,7 @@ use v5.38;
 use Time::HiRes ();
 use Test2::Harness2::Util qw/mono_time/;
 
-# #134 finding 104: mono_time() is an exported, numeric, monotonically
+# TODO-134 finding 104: mono_time() is an exported, numeric, monotonically
 # non-decreasing interval clock (CLOCK_MONOTONIC where available, wall-clock
 # fallback otherwise). It is used for deadlines/elapsed math, never for event
 # stamps.

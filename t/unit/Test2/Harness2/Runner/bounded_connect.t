@@ -14,7 +14,7 @@ use Test2::Harness2::Util qw/connect_unix_nb/;
 use Test2::Harness2::Runner::Client;
 use Test2::Harness2::Runner::Subscriber;
 
-# Regression coverage for ticket #157: the bounded, NON-BLOCKING unix connect that
+# Regression coverage for ticket TODO-157: the bounded, NON-BLOCKING unix connect that
 # discovery probing and BOTH runner dialers (Runner::Client / Runner::Subscriber)
 # now share. A plain BLOCKING connect() to a bound-but-wedged runner (one whose
 # accept backlog is full) blocks forever in the kernel's unix_wait_for_peer, so the
@@ -63,7 +63,7 @@ subtest connect_unix_nb_primitive => sub {
     my ($sock, $errno) = connect_unix_nb($sock_path, 0.5);
     my $elapsed = time - $start;
 
-    # The whole point of #157: the dial NEVER hangs, it returns within its bound.
+    # The whole point of TODO-157: the dial NEVER hangs, it returns within its bound.
     ok($elapsed < 2, "connect_unix_nb returned within its bounded window (${elapsed}s), no hang");
     ok(!$sock, "a wedged/full-backlog listener yields no connected socket");
     ok($errno, "  ... and reports a failing errno ($errno), not success");
@@ -94,7 +94,7 @@ subtest client_croaks_not_hangs => sub {
     my ($workdir, $sock_path, $listen, $pending) = wedged_listener();
 
     # Shrink the outer connect deadline so the croak is quick; production default is
-    # 30s. This env is the same #121 knob the stop/kill regression uses.
+    # 30s. This env is the same TODO-121 knob the stop/kill regression uses.
     local $ENV{YATH_RUNNER_CONNECT_TIMEOUT} = 1;
 
     my $client = Test2::Harness2::Runner::Client->new(workdir => $workdir);

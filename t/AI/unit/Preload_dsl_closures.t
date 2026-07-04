@@ -6,7 +6,7 @@ use Test2::V0;
 use Test2::Harness2::Runner::Preload();
 use Test2::Harness2::Runner::Preloader();
 
-# Ticket #78. The load-order DSL closures (default/pre_fork/post_fork/pre_launch/
+# Ticket TODO-78. The load-order DSL closures (default/pre_fork/post_fork/pre_launch/
 # preload/reload_remove_check/reload_inplace_check) share a single hoisted
 # $current_stage helper instead of each repeating the
 # `croak "No current stage" unless @{stack}; my $stage = stack->[-1]` preamble.

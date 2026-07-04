@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-LONG
 
-# Integration test for the standalone DB logger process (ticket #50, spec §7).
+# Integration test for the standalone DB logger process (ticket TODO-50, spec §7).
 #
 # Runs a tiny passing+failing suite under `yath test -L=<temp sqlite>`. The
 # command forks one App::Yath2::DB::Logger BEFORE queueing the run (harness ->
@@ -158,7 +158,7 @@ yath(
 );
 
 # ===========================================================================
-# Server matrix (#63): run the same suite under `yath test -L=<server DSN>` for
+# Server matrix (TODO-63): run the same suite under `yath test -L=<server DSN>` for
 # EACH installed (flavor, version) and assert the logger wrote run/job/job_try/
 # collector/artifact rows. The forked logger connects to the ephemeral QuickDB
 # server by DSN; assertions read back through the provision's QuickORM connection

@@ -1,10 +1,10 @@
--- App::Yath2 MariaDB schema (DB layer rewrite, #47 / chunk DB-3).
+-- App::Yath2 MariaDB schema (DB layer rewrite, TODO-47 / chunk DB-3).
 --
 -- SOURCE OF TRUTH: this hand-written DDL is the canonical schema. DBIx::QuickORM
 -- reflects it via autofill (reflect-from-DB); there are no Perl table/result
 -- classes and no codegen. When this DDL changes, every flavor file under
 -- share/schema/ moves together. PostgreSQL/log.sql is the canonical reference
--- (authored first, #46); this is the #47 MariaDB port -- SAME table set,
+-- (authored first, TODO-46); this is the TODO-47 MariaDB port -- SAME table set,
 -- columns, constraints, and CHECK enums, with MariaDB-flavor types.
 --
 -- PER-ENGINE UUID STORAGE (spec §3/§0.2, R8/R9):
@@ -175,7 +175,7 @@ CREATE INDEX job_file_idx ON jobs(test_file_id);
 -- deterministic across loggers, preserves the existing try-uuid URLs. Stored in
 -- the native `uuid` type.
 --
--- VERDICT columns (spec §4/§4.1/R17, survey #5):
+-- VERDICT columns (spec §4/§4.1/R17, survey TODO-5):
 --   result          tri-state verdict: NULL = in-flight / 1 = pass / 0 = fail
 --                   (the top-line "did this try pass", distinct from counts).
 --   assertion_count, pass_count, fail_count -- assertion counts (NOT a pass/fail

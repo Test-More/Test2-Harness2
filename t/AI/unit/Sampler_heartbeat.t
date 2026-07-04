@@ -4,7 +4,7 @@ use v5.38;
 use Test2::Harness2::Service::Sampler;
 use Test2::Harness2::Util qw/mono_time/;
 
-# Ticket #138 finding (39): the 5%-bucket change-gating stopped sending updates
+# Ticket TODO-138 finding (39): the 5%-bucket change-gating stopped sending updates
 # once mem_pct pinned at 100, so a resource reading the raw mem_available (e.g.
 # -R Memory=512mb) saw a FROZEN value while free memory collapsed -- the resource
 # never deferred and the OOM killer fired. The fix is a max-staleness HEARTBEAT:

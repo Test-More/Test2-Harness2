@@ -5,10 +5,10 @@ use App::Yath2::Tester qw/yath/;
 
 skip_all "This test requires forking" unless CAN_REALLY_FORK;
 
-# #118 (ticket Step 4): a single file with an unknown category
+# TODO-118 (ticket Step 4): a single file with an unknown category
 # (# HARNESS-CATEGORY-NETWORK) is a value-domain directive error, not a grammar
 # error. It must fail ONLY that job -- as a synthetic E1 FAILURE that names the
-# bad token -- and let the rest of the run complete. Pre-#118 the runner's
+# bad token -- and let the rest of the run complete. Pre-TODO-118 the runner's
 # task_fields die aborted the ENTIRE run mid-submit (and reaped sibling runs on a
 # persistent daemon). This is the end-to-end guard that one bad directive can no
 # longer abort discovery or the run.

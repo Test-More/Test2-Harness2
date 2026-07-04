@@ -6,8 +6,8 @@ becomes real entries in `ARCHITECTURE.md` + `TODO_STEPS.md` + `TODO_TASKS.md` (t
 doc is the provenance record). We are populating ticket detail now, **not** implementing.
 
 Source: the reference-feature survey (workflow `wkg6c1k4p`). Selected items (user):
-**#1 directives, #3 retry contract, #5 job_try columns, #10 OS-limit resources,
-#11 parse_count_or_pct, #13 ResetTerm, #15 list/ping**. (#3/#5 are DB-schema and may fold
+**TODO-1 directives, TODO-3 retry contract, TODO-5 job_try columns, TODO-10 OS-limit resources,
+TODO-11 parse_count_or_pct, TODO-13 ResetTerm, TODO-15 list/ping**. (TODO-3/TODO-5 are DB-schema and may fold
 into the DB spec rather than stand-alone tickets — pending Q3.3.)
 
 Discussed one at a time; resolutions recorded below as each is settled.
@@ -74,12 +74,12 @@ removed (`Role/Scheduler.pm:97`). The runner keeps owning *when* to retry.
 **Organization (Q3.3 = FOLD):** no new ticket/chunk. Folds into the existing DB work:
 - DB spec §4/§5: add the retry-recording + `jobs.passed = any-try-passed` rule.
 - ARCHITECTURE §4.6.1: extend the schema-model subsection with the finalize rule.
-- TODO ticket **#46** (schema): the `job_tries`/`jobs` column set + finalize rule; ticket
-  **#50** (logger): "fold `jobs.passed` from tries; one `job_tries` row per `is_try`."
-  Labeled `Steps:` bullets cite "survey #3".
+- TODO ticket **TODO-46** (schema): the `job_tries`/`jobs` column set + finalize rule; ticket
+  **TODO-50** (logger): "fold `jobs.passed` from tries; one `job_tries` row per `is_try`."
+  Labeled `Steps:` bullets cite "survey TODO-3".
 
 **Subsystem:** scheduler/db-schema (recording). **DB impact:** significant (folds into
-schema). **Effort:** medium. Pairs with **#5** (verdict columns) — together they define the
+schema). **Effort:** medium. Pairs with **TODO-5** (verdict columns) — together they define the
 `job_tries`/`jobs` recording shape.
 
 ---
@@ -99,16 +99,16 @@ Reconcile the new `job_tries` column set from old4 (`DB/JobTry.pm`) + the t2clib
 - `subtests` (= top_level_subtests count), **`subtests_passed`**, **`subtests_failed`**
   (the split, derived from the auditor's `subtests[]`)
 - `status` enum, `exit_code`, `started`/`finished` (+ `duration`)
-- `params` JSON, **`fields` JSON** (directives, #1)
+- `params` JSON, **`fields` JSON** (directives, TODO-1)
 - **DROP `stdout`/`stderr` columns (Q5.3)** — read on demand from the artifact blob (R6);
   no duplicating large output already in the blob.
 - *Naming cleanup:* counts are `pass_count`/`fail_count` (NOT old4's `passed`/`failed`,
   which collide with the `result` verdict bool).
 
-**jobs:** `passed` = folded "any try passed" (from #3).
+**jobs:** `passed` = folded "any try passed" (from TODO-3).
 
-**Organization:** FOLD (with #3) — amend DB spec §4/§5 + ARCHITECTURE §4.6.1 + tickets #46
-(column set) / #50 (logger writes the folded row). Provenance: "survey #5".
+**Organization:** FOLD (with TODO-3) — amend DB spec §4/§5 + ARCHITECTURE §4.6.1 + tickets TODO-46
+(column set) / TODO-50 (logger writes the folded row). Provenance: "survey TODO-5".
 
 **Subsystem:** db-schema. **DB impact:** significant. **Effort:** small.
 
@@ -120,7 +120,7 @@ Port three resources from old3 into `Test2::Harness2::Runner::Resource::` on the
 `Role::Resource` contract (`available`/`assign` + `tick`/`refresh`/`job_limiter*`/`record`):
 - **PipeLimits** — bound concurrency by pipe FDs / kernel pipe-ring pages
   (`/proc/sys/fs/pipe-*`); knobs `pipes_per_test`/`pipes_per_service`/`service_count`/
-  `pages_per_pipe`/`headroom`. (needs `parse_count_or_pct`, #11)
+  `pages_per_pipe`/`headroom`. (needs `parse_count_or_pct`, TODO-11)
 - **UnixLimits** — cap by RLIMIT `nproc`/`nofile`/`as` (count or %-of-limit).
   (needs `parse_count_or_pct` + `parse_size_or_pct`)
 - **Disk** — throttle/abort on low free space per mount.
@@ -132,8 +132,8 @@ Port three resources from old3 into `Test2::Harness2::Runner::Resource::` on the
 - **(Q10.2 = B) DB-IMPACTING: un-defer the `resources` + `resource_types` tables.** These
   resources persist resource-state rows NOW, so the deferred (d4) `resources`/
   `resource_types` tables come **back into the DB schema scope**. Folds into the DB work:
-  amend DB-spec d4 (un-defer resources/resource_types), tickets **#46/#47** (add the two
-  tables), **#50** (logger records resource-state rows). Benefits all resources (CPU/Memory/
+  amend DB-spec d4 (un-defer resources/resource_types), tickets **TODO-46/TODO-47** (add the two
+  tables), **TODO-50** (logger records resource-state rows). Benefits all resources (CPU/Memory/
   SystemLoad too), not just the OS-limit ones.
 - **(Q10.3) `Filesys::Df` = optional dep**, lazy-required with an actionable error only when
   a disk-% limit is requested (R11 pattern); absolute free-space limits work without it.
@@ -147,8 +147,8 @@ old3's `Utilizer` role + `utilize_percent` with the current `Role::Resource` (+ 
 throttling) during the port.
 
 **Subsystem:** resource. **DB impact:** significant (un-defers resources/resource_types).
-**Effort:** medium. **Depends:** #11. **ARCHITECTURE:** resources subsection + the §4.6
-resources-table un-defer. **TODO:** own ticket(s) for the resources + a fold into #46/#47/#50
+**Effort:** medium. **Depends:** TODO-11. **ARCHITECTURE:** resources subsection + the §4.6
+resources-table un-defer. **TODO:** own ticket(s) for the resources + a fold into TODO-46/TODO-47/TODO-50
 for the table.
 
 ---
@@ -160,12 +160,12 @@ existing `parse_quantity`) and `parse_duration` from `reference/old3/.../Util/Un
 into `lib/Test2/Harness2/Util/Units.pm`, in current's signature style
 (`sub parse_count_or_pct ($raw, %opts)`). Add to `@EXPORT_OK`.
 
-**Why both:** `parse_count_or_pct` is required by the OS-limit resources (#10);
-`parse_duration` is cheap + useful for the `timeout`/`duration` directives (#1).
+**Why both:** `parse_count_or_pct` is required by the OS-limit resources (TODO-10);
+`parse_duration` is cheap + useful for the `timeout`/`duration` directives (TODO-1).
 
-**Subsystem:** options/util. **DB impact:** none. **Effort:** small. **Blocks:** #10.
+**Subsystem:** options/util. **DB impact:** none. **Effort:** small. **Blocks:** TODO-10.
 **ARCHITECTURE:** none (util helper; mention under directives/resources). **TODO:** own
-small ticket (or a sub-step of #10's resource ticket).
+small ticket (or a sub-step of TODO-10's resource ticket).
 
 ---
 
@@ -213,16 +213,16 @@ discovery/commands. **TODO:** own small ticket (list + ping).
 
 | Item | Disposition | DB-impact | Lands as |
 |---|---|---|---|
-| #1 directives | new grammar parser + legacy compat; HARNESS2 wins (silent); parse-error→synthetic failure; meta/feature persistence DEFERRED (E5) | **none** (structural fields already flow) | new ARCH §; own ticket |
-| #3 retry recording | record-only; runner owns retry; jobs.passed folded | significant | **FOLD** into DB schema (#46/#50, §4.6.1) |
-| #5 job_try columns | result tri-state + counts + subtest split; drop stdout/stderr | significant | **FOLD** into DB schema (#46/#50, §4.6.1) |
-| #10 OS-limit resources | **UnixLimits + Disk only (PipeLimits dropped, E3)**; runtime throttling; resource tables RE-DEFERRED (E4); optional Filesys::Df/BSD::Resource | **none** | new ARCH §; own ticket |
-| #11 Units helpers | parse_count_or_pct + parse_duration | none | small ticket (blocks #10) |
-| #13 ResetTerm | default-on when TTY; fire on abnormal exit | none | small ticket |
-| #15 list/ping | persistent-only list (discovery enum API) + ping (needs runner handler) | none | small ticket |
+| TODO-1 directives | new grammar parser + legacy compat; HARNESS2 wins (silent); parse-error→synthetic failure; meta/feature persistence DEFERRED (E5) | **none** (structural fields already flow) | new ARCH §; own ticket |
+| TODO-3 retry recording | record-only; runner owns retry; jobs.passed folded | significant | **FOLD** into DB schema (TODO-46/TODO-50, §4.6.1) |
+| TODO-5 job_try columns | result tri-state + counts + subtest split; drop stdout/stderr | significant | **FOLD** into DB schema (TODO-46/TODO-50, §4.6.1) |
+| TODO-10 OS-limit resources | **UnixLimits + Disk only (PipeLimits dropped, E3)**; runtime throttling; resource tables RE-DEFERRED (E4); optional Filesys::Df/BSD::Resource | **none** | new ARCH §; own ticket |
+| TODO-11 Units helpers | parse_count_or_pct + parse_duration | none | small ticket (blocks TODO-10) |
+| TODO-13 ResetTerm | default-on when TTY; fire on abnormal exit | none | small ticket |
+| TODO-15 list/ping | persistent-only list (discovery enum API) + ping (needs runner handler) | none | small ticket |
 
-**DB-impacting (settle with the DB schema before DB-1 build):** only **#3 + #5**
-(`job_tries`/`jobs` verdict columns + retry-recording fold). #1 and #10 are **no longer
+**DB-impacting (settle with the DB schema before DB-1 build):** only **TODO-3 + TODO-5**
+(`job_tries`/`jobs` verdict columns + retry-recording fold). TODO-1 and TODO-10 are **no longer
 DB-impacting** (E4 re-defer, E5 defer).
 
 ---
@@ -248,7 +248,7 @@ separately).
 - (drop stdout/stderr + the result/assertion_count/subtest-split must be written into the DB
   spec's `job_tries` shape when folding — already decided Q5.)
 
-**Item 3 / logger:** ticket **#50 depends on #49** (1-based producer) [GPT5].
+**Item 3 / logger:** ticket **TODO-50 depends on TODO-49** (1-based producer) [GPT5].
 
 **Item 10 (OS resources):**
 - **`is_supported` hook** [G4]: gracefully deactivate (no constraints / infinite) + verbose
@@ -259,7 +259,7 @@ separately).
 - **`Disk` dep correction** [GPT8]: `Filesys::Df` is required when the **`Disk` resource is
   used at all** (both absolute and percent thresholds need free/total bytes; no portable
   core statvfs) — optional dep, lazy-required when `Disk` is requested, actionable error if
-  missing. *(Supersedes #10.3's "only for percent".)*
+  missing. *(Supersedes TODO-10.3's "only for percent".)*
 
 **Item 11:** scope **`parse_duration` to timeout values** (`timeout.event`/`timeout.postexit`
 → seconds) [GPT9]; the `duration short|medium|long` directive stays a **scheduling label**,
@@ -311,13 +311,13 @@ NOT parsed as seconds.
   a **future spec**. So Item 1 now has **no new DB-schema impact** (structural fields only).
 
 ### Net effect on the items
-- **#1 directives:** parse-error = catch+synthetic-failure (E1); mixed = silent (E2);
+- **TODO-1 directives:** parse-error = catch+synthetic-failure (E1); mixed = silent (E2);
   meta/feature persistence **deferred** (E5) → **no new DB impact**; only structural fields
   flow (already wired). Still a real subsystem (new grammar + legacy compat).
-- **#10 resources:** **drop `PipeLimits`**; keep `UnixLimits` + `Disk` (read metrics
+- **TODO-10 resources:** **drop `PipeLimits`**; keep `UnixLimits` + `Disk` (read metrics
   in-resource, runner-local); resource tables **re-deferred** → **no DB impact**. Needs
-  `parse_count_or_pct` (#11) + optional `Filesys::Df`/`BSD::Resource` + `is_supported`.
+  `parse_count_or_pct` (TODO-11) + optional `Filesys::Df`/`BSD::Resource` + `is_supported`.
 
 ### Revised DB-impacting set (settle with the DB schema before DB-1 build)
-**Only #3 + #5** (the `job_tries`/`jobs` verdict columns + retry-recording fold). #1 and #10
+**Only TODO-3 + TODO-5** (the `job_tries`/`jobs` verdict columns + retry-recording fold). TODO-1 and TODO-10
 are **no longer DB-impacting**.

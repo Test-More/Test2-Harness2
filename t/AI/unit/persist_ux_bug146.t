@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Regression coverage for ticket #146 (persist-command UX bundle), all exercised
+# Regression coverage for ticket TODO-146 (persist-command UX bundle), all exercised
 # WITHOUT starting a real runner by mocking discovery/client/method seams:
 #
 #   (5)   test.pm    -- an interrupted run reports honestly, runs plugin finish()
@@ -255,7 +255,7 @@ subtest ps_na_pid_and_attach => sub {
     }
 
     is($ret, 0, "ps run returns 0");
-    is($client->{attached}[0], 4321, "ps now attaches the client to the discovered pid (#73)");
+    is($client->{attached}[0], 4321, "ps now attaches the client to the discovered pid (TODO-73)");
     my @numeric = grep { /isn't numeric/ } @warn;
     is(scalar(@numeric), 0, "no 'isn't numeric' warnings in the ps pid sort")
         or diag(join("\n", @numeric));

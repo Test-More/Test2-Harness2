@@ -2,10 +2,10 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Ticket #45: the old DBIx::Class DB/web layer (App::Yath2::Schema::*) moved to
+# Ticket TODO-45: the old DBIx::Class DB/web layer (App::Yath2::Schema::*) moved to
 # reference/old_db and is being rewritten on QuickORM. This BEGIN skip_all runs
 # (and exits) before the moved Schema modules are loaded below.
-BEGIN { plan skip_all => "App::Yath2::Schema moved to reference/old_db (ticket #45); DB layer is being rewritten" }
+BEGIN { plan skip_all => "App::Yath2::Schema moved to reference/old_db (ticket TODO-45); DB layer is being rewritten" }
 
 #
 # Exercise the real logic in the inlined Result-class overlays

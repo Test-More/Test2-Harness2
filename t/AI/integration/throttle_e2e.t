@@ -1,7 +1,7 @@
 use Test2::V0;
 use v5.38;
 
-# Chunk 7 / ticket #43: the opt-in throttling resources (-R CPU / -R Memory) wire
+# Chunk 7 / ticket TODO-43: the opt-in throttling resources (-R CPU / -R Memory) wire
 # end to end through the real `yath test` path -- the resource is instantiated in
 # the runner's State with a backref to read the shared system-load snapshot, and a
 # run with these resources still schedules, forks, and passes (the throttling is a

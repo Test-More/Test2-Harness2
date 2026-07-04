@@ -7,7 +7,7 @@ use Test2::Util qw/CAN_REALLY_FORK/;
 
 use Test2::Harness2::Util::IPC qw/run_cmd/;
 
-# #134 finding 14 (guard G1): a run_cmd fork-child must NEVER unwind into the
+# TODO-134 finding 14 (guard G1): a run_cmd fork-child must NEVER unwind into the
 # parent's inherited stack. A failure anywhere in the child body (the command
 # coderef, a run_in_child callback, chdir, dup, exec) must be caught and turned
 # into POSIX::_exit(127) -- the child may only ever exec() or _exit(). If it

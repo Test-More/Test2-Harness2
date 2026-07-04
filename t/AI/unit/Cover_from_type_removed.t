@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #150 (81): --cover-from-type was never read (the
+# Regression coverage for ticket TODO-150 (81): --cover-from-type was never read (the
 # type hint was dropped for --cover-from, which auto-detects by file extension),
 # so the option was a misleading dead knob. It has been deleted. The functional
 # --cover-maybe-from-type option (read by get_coverage_tests) still works.

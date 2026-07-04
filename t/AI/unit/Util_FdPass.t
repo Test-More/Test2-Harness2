@@ -166,7 +166,7 @@ subtest command_listen_target_dial_choreography => sub {
     is($? >> 8, 0, "target child completed cleanly");
 };
 
-# Ticket #139 (finding G3): IO::FDPass::recv returns -1 on peer EOF WITHOUT setting
+# Ticket TODO-139 (finding G3): IO::FDPass::recv returns -1 on peer EOF WITHOUT setting
 # errno. With a STALE EINTR in $! (inherited across fork from the stage host's
 # signal-handling IPC) the old `next if $! == EINTR` retry spun forever at 100% CPU
 # in a detached supervisor. recv_fds now clears errno before each recv, so an EOF
@@ -201,7 +201,7 @@ subtest send_fds_dead_peer_croaks_no_spin => sub {
     my ($a, $b) = _make_socketpair();
     close($b);    # peer gone
 
-    # This ticket does NOT yet add the SIGPIPE guard to send_fds (#134 owns that), so
+    # This ticket does NOT yet add the SIGPIPE guard to send_fds (TODO-134 owns that), so
     # ignore SIGPIPE here to keep the dead-peer send from killing the test; the send
     # then surfaces as EPIPE in errno (!= EINTR) -> a clean croak, not a spin.
     local $SIG{PIPE} = 'IGNORE';

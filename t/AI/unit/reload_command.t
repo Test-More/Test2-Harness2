@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Unit coverage for ticket #114 (fork A): `yath reload`'s no-preload gate and its
+# Unit coverage for ticket TODO-114 (fork A): `yath reload`'s no-preload gate and its
 # exit-code contract, exercised WITHOUT starting a real runner. `run` is driven with
 # a mocked App::Yath2::Discovery::find pointing at a temp workdir whose settings.json
 # we control, so each exit code is reached deterministically:

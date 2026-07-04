@@ -71,7 +71,7 @@ sub run {
         if (!$reply) {
             # No reply means the runner is dead/unresponsive -- exit non-zero so
             # `yath ping && ...` health checks do NOT proceed on a dead runner, and
-            # do not print the clean-stop "Stopped." banner (#146). This is distinct
+            # do not print the clean-stop "Stopped." banner (TODO-146). This is distinct
             # from the SIGINT/TERM `$stop` paths below, which are a clean user stop.
             my $why = $err ? " ($err)" : '';
             print "ping: no response from runner -- it may have stopped$why\n";

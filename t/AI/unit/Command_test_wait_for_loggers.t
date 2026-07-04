@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Ticket #133: -L DB loggers were silently SIGTERM'd at the teardown timeout and
+# Ticket TODO-133: -L DB loggers were silently SIGTERM'd at the teardown timeout and
 # their exit status was never checked, so a truncated (or outright failed) DB
 # import left yath exiting 0 with no word to the user.
 #
@@ -9,7 +9,7 @@ use Test2::V0;
 #     window -- the failed/partial import is surfaced, not swallowed;
 #   * on the timeout, warns the import may be truncated, TERMs the straggler, and
 #     BLOCKING-reaps it so no zombie is left behind.
-# (#132 owns the logger-SIDE 'broken' DB marking; this drives only the command
+# (TODO-132 owns the logger-SIDE 'broken' DB marking; this drives only the command
 # side, so no DB deps are needed here.)
 
 use POSIX ();
@@ -155,7 +155,7 @@ subtest 'start_loggers records a pid->target map for teardown' => sub {
 }
     if eval { require Test2::Harness2::Util::IPC; require Cwd; 1 };
 
-# #152 finding 8: the -L config tempfiles (written UNLINK => 0) were never removed.
+# TODO-152 finding 8: the -L config tempfiles (written UNLINK => 0) were never removed.
 # The logger now unlinks its own after reading it, and wait_for_loggers sweeps any
 # a logger died/was-TERM'd before reading -- so TMPDIR no longer accumulates one
 # ~200-byte yath-logger-*.json per -L target per run.

@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Regression tests for ticket #153 (web-client command bundle; web-parked,
+# Regression tests for ticket TODO-153 (web-client command bundle; web-parked,
 # reworked in place):
 #   91 (P2) client-recent: --max was parsed but the count was never appended to
 #           the request URL, so the server's default count silently overrode it.
@@ -96,7 +96,7 @@ subtest recent_run_honors_max => sub {
 
 # ---------------------------------------------------------------------------
 # publish helpers: build a command wired to a canned HTTP::Tiny response
-# (ticket #94 ported client-publish off LWP::UserAgent onto HTTP::Tiny +
+# (ticket TODO-94 ported client-publish off LWP::UserAgent onto HTTP::Tiny +
 # HTTP::Tiny::Multipart, so the transport is now mocked at post_multipart and
 # responses are HTTP::Tiny-style {success,status,reason,content} hashrefs). An
 # optional \%capture receives the request url + multipart form for parity checks.

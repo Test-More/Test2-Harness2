@@ -1,14 +1,14 @@
 use Test2::V0;
 
 # Schema round-trip for the DB-layer rewrite, driven over the FULL flavor x
-# version matrix (#63, step DB-3). For each engine: load the hand-written
+# version matrix (TODO-63, step DB-3). For each engine: load the hand-written
 # share/schema/<Flavor>/log.sql, attach the App::Yath2::Schema ORM (DBIx::QuickORM
 # autofill / reflect-from-DB), and exercise an insert+read on the core tables --
 # the per-engine UUID PK storage, the lowercase *_uuid_string mirror (where the
 # engine lacks a native uuid type), the JSON columns, the verdict columns, and the
 # collectors hub.
 #
-#   * SQLite  -- always run (a temp file, no server). The #47 baseline.
+#   * SQLite  -- always run (a temp file, no server). The TODO-47 baseline.
 #   * PostgreSQL / MySQL / MariaDB / Percona -- EVERY version installed under
 #               ~/dbs (plus a system install when ~/dbs lacks the flavor), spun up
 #               ephemerally via DBIx::QuickDB. Gated on AUTHOR_TESTING; a single

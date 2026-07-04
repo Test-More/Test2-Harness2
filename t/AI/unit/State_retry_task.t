@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #117: State::retry_task must report whether it ACTUALLY re-queued the
+# TODO-117: State::retry_task must report whether it ACTUALLY re-queued the
 # job, so the completion decision (Completion::_collector_retry_if_tries) can tell a
 # real retry from a declined one. A halted run stops the current try (releases the
 # slot and resources) but MUST NOT re-queue it and MUST report the decline (return
@@ -38,7 +38,7 @@ sub mk_task {
         category    => 'general',
         duration    => 'medium',
         use_preload => 1,
-        is_try      => 1,    # 1-based first try (R10 / #49)
+        is_try      => 1,    # 1-based first try (R10 / TODO-49)
         %over,
     };
 }

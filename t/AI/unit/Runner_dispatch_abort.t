@@ -9,7 +9,7 @@ use Test2::V0;
 # + resources consumed) but NEVER accepted by a stage (it never received the task,
 # never forked the job), so it is owed a run -- not a failure.
 #
-# bloat #3: dispatch_pending now REQUEUES (not aborts) a job whose send was a no-op:
+# bloat TODO-3: dispatch_pending now REQUEUES (not aborts) a job whose send was a no-op:
 # State::requeue_task releases the slot / resources and puts it back PENDING (no
 # retry consumed) to be re-resolved on a later tick. This drives the real
 # Runner::dispatch_pending against a minimal fake runner whose service_send reports
@@ -170,7 +170,7 @@ subtest successful_dispatch_announces_dispatched => sub {
 };
 
 subtest no_preload_run_forks_locally => sub {
-    # On a no-preload run (#29) there is no stage to dispatch to: dispatch_pending
+    # On a no-preload run (TODO-29) there is no stage to dispatch to: dispatch_pending
     # forks the test's collector in this runner via _launch_local_job instead of
     # service_send, for every task take_dispatch_tasks yields.
     my $task = {job_id => 'JOB-C', stage => 'default', file => 't/c.t', run_id => 'R1'};

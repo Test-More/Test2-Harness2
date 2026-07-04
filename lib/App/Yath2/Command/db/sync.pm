@@ -126,7 +126,7 @@ App::Yath2::Command::db::sync - Sync runs and associated data from one db to ano
 
 =head1 DESCRIPTION
 
-Implements C<yath db sync> (spec §8, ticket #53). A thin command wrapper over the
+Implements C<yath db sync> (spec §8, ticket TODO-53). A thin command wrapper over the
 L<App::Yath2::DB::Sync> engine. See that module for the key/FK-remap/attribution
 rules.
 

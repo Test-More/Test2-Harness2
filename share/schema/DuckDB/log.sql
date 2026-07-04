@@ -204,7 +204,7 @@ CREATE INDEX job_file_idx ON jobs(test_file_id);
 -- a single DERIVED uuid = derive(job_uuid, try_ord) (v7-preserving, spec §3.1) --
 -- deterministic across loggers, preserves the existing try-uuid URLs.
 --
--- VERDICT columns (spec §4/§4.1/R17, survey #5):
+-- VERDICT columns (spec §4/§4.1/R17, survey TODO-5):
 --   result          tri-state verdict: NULL = in-flight / TRUE = pass / FALSE =
 --                   fail (the top-line "did this try pass", distinct from counts).
 --   assertion_count, pass_count, fail_count -- assertion counts (NOT a pass/fail

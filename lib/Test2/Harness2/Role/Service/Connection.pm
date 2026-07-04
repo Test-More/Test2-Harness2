@@ -255,7 +255,7 @@ sub init ($self) {
     # identity is always read before this can fire -- this only catches a genuinely
     # silent / stuck peer, never a busy-loop timing gap.
     # Interval deadline: monotonic so a wall-clock/NTP step cannot spuriously
-    # expire (or freeze) a pending identity. (#134 finding 104)
+    # expire (or freeze) a pending identity. (TODO-134 finding 104)
     $self->{+DEADLINE} = mono_time + ($self->{+IDENTITY_TIMEOUT} // 5);
 
     # The outbound buffer must exist before send_identity below queues through it.
@@ -298,7 +298,7 @@ sub send_request ($self, $command, %args) {
     # request_id would accumulate forever on a daemon-lifetime connection
     # (unbounded sender-side memory). delete it BEFORE %args is spliced into the
     # wire frame. A peer that replies anyway is discarded safely by the
-    # unmatched-response branch in _classify. (#134 finding 106)
+    # unmatched-response branch in _classify. (TODO-134 finding 106)
     my $want_reply = delete $args{want_reply} // 1;
 
     my $request_id = gen_uuid();
@@ -423,7 +423,7 @@ sub drain ($self) {
     # bytes on the socket. An uncaught croak here would kill the whole service,
     # aborting every connected client's run. A desynced zstd stream can never
     # resync, so the policy is close-this-connection-immediately (no 3-strike),
-    # while STILL returning the valid frames decoded before the croak. (#134
+    # while STILL returning the valid frames decoded before the croak. (TODO-134
     # finding 13)
     while (1) {
         my $rec;

@@ -14,7 +14,7 @@ use Test2::Harness2::Runner::Subscriber;
 
 skip_all "This test requires forking" if $ENV{T2_NO_FORK} || !CAN_REALLY_FORK;
 
-# Chunk 7 / ticket #43: the runner stores the sampler's system_load snapshot and
+# Chunk 7 / ticket TODO-43: the runner stores the sampler's system_load snapshot and
 # announces a harness_system transition that is BROADCAST GLOBALLY to every
 # subscriber (latest retained for late subscribers). This drives a real Subscriber
 # against a Role::Service hub that mirrors the runner's announce_system_load

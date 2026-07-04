@@ -2,17 +2,17 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Ticket #45: App::Yath2::Options::DB moved to reference/old_db with the retired
+# Ticket TODO-45: App::Yath2::Options::DB moved to reference/old_db with the retired
 # DBIx::Class DB/web layer (being rewritten on QuickORM). This test loads it (and
 # the other UI option modules) at compile time, so skip until the rewrite lands.
 # BEGIN skip_all runs (and exits) before the moved module is loaded below.
-BEGIN { plan skip_all => "App::Yath2::Options::DB moved to reference/old_db (ticket #45); DB layer is being rewritten" }
+BEGIN { plan skip_all => "App::Yath2::Options::DB moved to reference/old_db (ticket TODO-45); DB layer is being rewritten" }
 
 #
 # Coverage for the inlined UI option modules:
 #   App::Yath2::Options::{DB,WebClient,Publish,Yath}
 # (Options::WebServer and Options::Server were parked to reference/old_db by
-#  ticket #98 for the deferred web/DB rework; their coverage will be re-authored
+#  ticket TODO-98 for the deferred web/DB rework; their coverage will be re-authored
 #  alongside the rewrite.)
 #
 # For each module we assert the expected option group/fields exist with the

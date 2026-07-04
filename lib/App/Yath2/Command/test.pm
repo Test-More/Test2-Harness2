@@ -140,7 +140,7 @@ sub run {
         # honestly with whatever partial results render() harvested, run the plugin
         # finish() hooks, then re-raise the signal so we exit with the conventional
         # 128+signum status -- NOT the internal-looking "Final data never received"
-        # die + exit 255 (#146). _finish_interrupted() does not return.
+        # die + exit 255 (TODO-146). _finish_interrupted() does not return.
         return $self->_finish_interrupted($self->signal, $plugins)
             if $self->signal;
 
@@ -168,7 +168,7 @@ sub run {
     return 1;
 }
 
-# The caught-signal tail of run() (#146). The run was interrupted (Ctrl-C etc.):
+# The caught-signal tail of run() (TODO-146). The run was interrupted (Ctrl-C etc.):
 # print an honest interrupted banner, run the plugin finish() hooks with whatever
 # partial results render() harvested (so a signal no longer skips them), then
 # re-raise the signal so the process exits 128+signum. Does not return.
@@ -195,7 +195,7 @@ sub _finish_interrupted {
 }
 
 # Restore the signal's default disposition and re-raise it so we terminate with the
-# conventional 128+signum wait-status instead of a plain exit code (#146). Falls
+# conventional 128+signum wait-status instead of a plain exit code (TODO-146). Falls
 # back to an explicit exit(128+signum) if the signal is blocked/ignored and so does
 # not actually terminate us.
 sub _reraise_signal {
@@ -277,7 +277,7 @@ sub start_loggers {
     my @dev_libs = grep { -d $_ } @{($settings->check_group('harness') ? $settings->harness->dev_libs : []) // []};
 
     # Attribute the run to the caller's --project (spec PreCommand); when it is
-    # unset the DB logger falls back to the launch cwd's basename (#128). Resolve
+    # unset the DB logger falls back to the launch cwd's basename (TODO-128). Resolve
     # the launch cwd HERE -- the command runs in the launch dir, whereas the forked
     # logger only inherits it -- and thread both through the config so attribution
     # never depends on the workdir (a random 'yath-<pid>-XXXXXX' tempdir).
@@ -286,7 +286,7 @@ sub start_loggers {
     my $launch_dir = Cwd::getcwd();
 
     my @pids;
-    my %target_for;    # pid => -L target, so teardown can name a failed import (#133)
+    my %target_for;    # pid => -L target, so teardown can name a failed import (TODO-133)
     my %config_for;    # pid => temp config path, so teardown can sweep any the logger never removed (finding 8)
     for my $target (@$targets) {
         my ($fh, $cfg_file) = File::Temp::tempfile("yath-logger-$$-XXXXXX", TMPDIR => 1, SUFFIX => '.json', UNLINK => 0);
@@ -329,7 +329,7 @@ sub start_loggers {
 }
 
 # Bounded-wait for the spawned DB logger(s) on teardown: each logger stays
-# subscribed (and so keeps the runner's workdir-cleanup deferred, #51) until its
+# subscribed (and so keeps the runner's workdir-cleanup deferred, TODO-51) until its
 # imports finish, then exits. We wait up to logger_wait_timeout for a clean exit
 # before giving up so a wedged logger cannot hang the command forever.
 sub LOGGER_WAIT_TIMEOUT() { 120 }
@@ -338,7 +338,7 @@ sub LOGGER_WAIT_TIMEOUT() { 120 }
 # rebuilding a real slow logger; production returns the constant.
 sub logger_wait_timeout { LOGGER_WAIT_TIMEOUT }
 
-# Teardown reporting for the -L DB logger(s) (#133). A DB import that outruns the
+# Teardown reporting for the -L DB logger(s) (TODO-133). A DB import that outruns the
 # teardown window used to be SIGTERM'd with no message while yath exited 0, leaving
 # a truncated run silently in the database; a logger that died mid-import (bad DSN,
 # a DB error) exited nonzero and that status was never checked either. We now:
@@ -346,7 +346,7 @@ sub logger_wait_timeout { LOGGER_WAIT_TIMEOUT }
 #     window -- a failed/partial import surfaced instead of swallowed;
 #   * on the timeout, warn that the import may be truncated, TERM the stragglers,
 #     and BLOCKING-waitpid them so they cannot linger as zombies at command tail.
-# The logger-SIDE 'broken' run marking in the database is #132's job; this is the
+# The logger-SIDE 'broken' run marking in the database is TODO-132's job; this is the
 # command-side warn/reap/exit-check only. Returns the count of failed loggers.
 #
 # Exit code: we deliberately do NOT fail an otherwise-passing test command here --
@@ -390,7 +390,7 @@ sub wait_for_loggers {
 
     # Anything still running after the timeout is TERM'd so it cannot orphan -- but
     # that also means its import was cut short. Name it loudly, then BLOCKING-reap
-    # so we do not leave a zombie behind (#133).
+    # so we do not leave a zombie behind (TODO-133).
     for my $pid (@left) {
         $failed++;
         warn $self->_logger_teardown_msg($pid, $targets->{$pid}, timeout => $self->logger_wait_timeout);
@@ -539,7 +539,7 @@ sub render {
     # (the loop checks its own signalled flag, set via the client's on_signal hook).
     $loop->start(sub { $self->reap_runner });
 
-    # Harvest whatever the loop gathered BEFORE returning on a signal (#146): an
+    # Harvest whatever the loop gathered BEFORE returning on a signal (TODO-146): an
     # interrupted run still has a partial tests_seen (and possibly partial
     # final_data), and recording it here is what keeps a Ctrl-C'd run from printing a
     # false "No tests were seen!" in stop() and lets the interrupted path report
@@ -585,7 +585,7 @@ sub stop {
     $self->wait_for_runner;
 
     # Bounded-wait for the DB logger(s) to finish their imports and disconnect
-    # (they keep the runner's workdir-cleanup deferred until then, #51). A no-op
+    # (they keep the runner's workdir-cleanup deferred until then, TODO-51). A no-op
     # unless -L was given.
     $self->wait_for_loggers;
 

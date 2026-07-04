@@ -2,7 +2,7 @@ use Test2::V0;
 use v5.38;
 # HARNESS-DURATION-LONG
 
-# Chunk 20 / ticket #40: interactive mode shares ONLY the command's STDIN with the
+# Chunk 20 / ticket TODO-40: interactive mode shares ONLY the command's STDIN with the
 # one running test (-j1), by passing the real STDIN descriptor over a Unix socket
 # (SCM_RIGHTS) instead of proxying bytes through a FIFO. STDOUT/STDERR stay with
 # the collector and render normally (ARCHITECTURE.md §4.10).

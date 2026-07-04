@@ -2,7 +2,7 @@ use Test2::V0 -target => 'App::Yath2::Plugin::Git';
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #107 (P0):
+# Regression coverage for ticket TODO-107 (P0):
 #   _changed_diff($base) looped `git merge-base --is-ancestor $from $base`
 #   appending "^" without ever checking $?. A typo'd/nonexistent change base,
 #   an orphan/unrelated branch, or a shallow clone (HEAD^..^ past the shallow

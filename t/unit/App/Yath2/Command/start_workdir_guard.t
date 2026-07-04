@@ -5,7 +5,7 @@ use File::Spec;
 
 use App::Yath2::Command::start;
 
-# Ticket #145, finding 64: the already-running / not-responding abort path in
+# Ticket TODO-145, finding 64: the already-running / not-responding abort path in
 # `yath start` must remove_tree the workdir ONLY when it was freshly created for
 # THIS invocation, is not the found runner's own workdir, and holds neither a
 # runner.socket nor a PID file. The old unguarded remove_tree deleted ANY pinned

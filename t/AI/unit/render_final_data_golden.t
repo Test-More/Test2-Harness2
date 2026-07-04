@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Ticket #89: golden-output guard for App::Yath2::Command render_final_data in
+# Ticket TODO-89: golden-output guard for App::Yath2::Command render_final_data in
 # both TABLE and PLAIN (--no-final-table) modes. The final-data renderer was
 # unified (one section spec drives both formats) and hoisted from the test
 # command into the App::Yath2::Command base; this pins the exact byte output of

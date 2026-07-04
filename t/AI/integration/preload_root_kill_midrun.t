@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-LONG
 
-# bloat #3 (ARCHITECTURE.md §4.2): the preload-root PROCESS crashing mid-run is
+# bloat TODO-3 (ARCHITECTURE.md §4.2): the preload-root PROCESS crashing mid-run is
 # FATAL -- on a persistent runner an unexpected preload-root exit TERMINATES the
 # runner. The runner does NOT respawn it. This is the case that has no in-process
 # user hook to trigger (named stages fork; nothing user-controlled runs in the

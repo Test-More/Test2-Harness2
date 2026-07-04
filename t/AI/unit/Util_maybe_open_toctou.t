@@ -3,7 +3,7 @@ use File::Temp qw/tempfile tempdir/;
 
 use Test2::Harness2::Util qw/maybe_open_file maybe_read_file/;
 
-# Regression coverage for #154 finding 47: maybe_open_file / maybe_read_file must
+# Regression coverage for TODO-154 finding 47: maybe_open_file / maybe_read_file must
 # return undef (not confess) when the target does not exist or vanishes in the
 # race between the decision to open and the open itself (ENOENT/ESTALE), so a
 # teardown-racing poller degrades gracefully. Any OTHER open failure still throws.

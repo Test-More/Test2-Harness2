@@ -209,7 +209,7 @@ sub find ($class, $settings = undef, %params) {
     # protocol (flock + readlink-compare + PID-liveness re-check). Every NOT-LIVE
     # outcome -- boot window, wedged, full accept backlog, another user's runner --
     # KEEPS the link so a still-alive-but-unresponsive runner stays discoverable for
-    # #121's signal-based escalation.
+    # TODO-121's signal-based escalation.
     $self->clean_if_owned($probe) if $state eq 'dead' && !$no_clean;
 
     # any_state callers (stop/kill escalation, start's already-running guard) get the
@@ -338,7 +338,7 @@ sub _read_pid ($pidfile) {
 =item $bool = $disco->resolves
 
 True when L</probe> classifies the link as C<live> (a socket that accepts a
-connection). Folds #96 step 2: this is exactly C<< $self->probe->{state} eq 'live' >>.
+connection). Folds TODO-96 step 2: this is exactly C<< $self->probe->{state} eq 'live' >>.
 
 =cut
 
@@ -403,7 +403,7 @@ sub probe ($self) {
     $self->{+SOCKET} = $target;
 
     # Pure path math off the link target: available with the socket dead, no connect
-    # required (this is what feeds #121's PID-file fallback).
+    # required (this is what feeds TODO-121's PID-file fallback).
     my ($vol, $dir, undef) = File::Spec->splitpath($target);
     my $workdir = $self->{+WORKDIR} //= clean_path(File::Spec->catpath($vol, $dir, ''));
     $self->{+PID_FILE} //= File::Spec->catfile($workdir, 'PID');
@@ -417,7 +417,7 @@ sub probe ($self) {
         if ($verdict eq 'refused') {
             # ECONNREFUSED: a socket file with no listener. Only an unambiguously
             # dead (or absent) pid makes this DEAD; a live/inaccessible pid means a
-            # shutdown-in-flight or bind->listen microgap -- keep the link for #121.
+            # shutdown-in-flight or bind->listen microgap -- keep the link for TODO-121.
             my ($pstate) = $self->_pid_status;
             return $self->_verdict('dead', undef) if $pstate eq 'dead' || $pstate eq 'absent';
             return $self->_verdict('not_live', 'wedged');
@@ -467,7 +467,7 @@ sub _probe_target_missing ($self, $workdir) {
 
 # Stamp state/reason (and cached pid/pid_live) onto $self and return the record
 # hashref shared by find()/list(). The record carries the full not-live interface
-# #121 consumes.
+# TODO-121 consumes.
 sub _verdict ($self, $state, $reason) {
     $self->{+STATE}  = $state;
     $self->{+REASON} = $reason;
@@ -513,7 +513,7 @@ sub _pid_status ($self) {
 # A bounded, NON-BLOCKING unix connect used ONLY as a liveness probe (never for
 # real I/O). The connect mechanism is the shared connect_unix_nb primitive
 # (Test2::Harness2::Util) reused by the Runner::Client / Runner::Subscriber dialers
-# (ticket #157) -- here we only want liveness, so a connected socket is closed at
+# (ticket TODO-157) -- here we only want liveness, so a connected socket is closed at
 # once and its outcome mapped to the not-live taxonomy. Returns ($verdict, $errno)
 # where $verdict is one of: 'live', 'refused' (ECONNREFUSED), 'backlog'
 # (EAGAIN/EWOULDBLOCK, an EINPROGRESS that never completes within the bounded
@@ -555,7 +555,7 @@ sub _classify_connect_errno ($self, $errno) {
 =item $disco->clean_if_owned($probe)
 
 Remove a B<dead> discovery link through the shared mutator protocol (the crux of
-ticket #145's race closure): (1) take the C<"$link.lock"> exclusive lock
+ticket TODO-145's race closure): (1) take the C<"$link.lock"> exclusive lock
 non-blocking -- on failure SKIP entirely (fail-safe: a skipped clean costs
 tidiness, never a runner); (2) re-C<readlink> and abort unless it still points at
 the target this caller probed as dead (a republish to a different target aborts);

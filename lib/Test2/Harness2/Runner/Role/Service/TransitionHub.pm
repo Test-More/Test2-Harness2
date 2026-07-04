@@ -13,7 +13,7 @@ use Test2::Harness2::Runner::Monitor();
 
 use Role::Tiny;
 
-# Constant-only slots (#17 pattern): grep/typo safety on the runner-hash keys this
+# Constant-only slots (TODO-17 pattern): grep/typo safety on the runner-hash keys this
 # role touches. monitor is the lazily-built Monitor mirror declared here; job_passed
 # and collector_reap are shared with Completion. Role::Tiny does not share HashBase
 # constants across a composition, so each role declares its own copy.
@@ -106,7 +106,7 @@ exits non-zero, and prints the error to harness output.
 # records to its own events file only; the runner is the hub, not its own peer.
 sub monitor {
     my $self = shift;
-    # track_pending => 0 (#135 finding 3): the hub only feeds + snapshots; the
+    # track_pending => 0 (TODO-135 finding 3): the hub only feeds + snapshots; the
     # PENDING_* drain-on-call lists are consumed exclusively by subscriber-side mirrors
     # (Renderer::Driver / Renderer::Base), never here, and snapshot/apply_snapshot never
     # carry them -- so populating them hub-side is unbounded dead weight.
@@ -202,7 +202,7 @@ sub announce_job {
     if ($state eq 'dispatched' || $state eq 'running') {
         # 'since' is read ONLY by _enforce_collector_connect_timeout's interval
         # math -- never reported or persisted -- so it is monotonic and pairs with
-        # the mono_time there. (#134 finding 104)
+        # the mono_time there. (TODO-134 finding 104)
         $self->{'job_connect_watch'}{$job_id} //= {since => mono_time, run_id => $extra{run_id}};
     }
     elsif ($state eq 'done' || $state eq 'aborted' || $state eq 'requeued') {
@@ -278,7 +278,7 @@ sub announce_run {
         delete $tj->{$_} for grep { ($tj->{$_}{run_id} // '') eq $run_id } keys %$tj;
     }
 
-    # Bound the post-pass reap map (ticket #28 C2): a detached collector that is never
+    # Bound the post-pass reap map (ticket TODO-28 C2): a detached collector that is never
     # reaped (e.g. on a platform without subreaper support, an accepted loss) would
     # otherwise leak its entry on a persistent runner. Drop this run's entries at run
     # end; a still-pending reap on a supported platform has already fired by now.
@@ -288,7 +288,7 @@ sub announce_run {
 
     $self->_announce({harness_run_end => {run_id => $run_id, stamp => time}}, $run_id);
 
-    # (#135 finding 3) The run is retired and its end frame forwarded: prune all
+    # (TODO-135 finding 3) The run is retired and its end frame forwarded: prune all
     # O(tests) hub-monitor state for it. Existing run subscribers already received the
     # forwarded run_end; a late/reconnecting run-scoped subscriber keys completion on
     # the retained RUNS marker (kept below) -> run_done fires instead of hanging.
@@ -308,7 +308,7 @@ sub announce_run {
     $self->monitor->prune_run($run_id);
 
     # 'since' is interval math read only by _flush_run_ledger_sweeps -- monotonic,
-    # pairs with the mono_time there (#134 finding 104).
+    # pairs with the mono_time there (TODO-134 finding 104).
     push @{$self->{'ledger_sweep'}} => {run_id => $run_id, job_ids => [keys %job_ids], since => mono_time};
 
     # Retain ONLY the O(1)-per-run end marker (the monitor RUNS entry + the
@@ -326,7 +326,7 @@ sub announce_run {
     # ledger entries whose grace has elapsed and whose collector connections have closed.
     $self->_flush_run_ledger_sweeps;
 
-    # Ticket #12 / ARCHITECTURE.md §4.2: a finished run is retained (queryable) only
+    # Ticket TODO-12 / ARCHITECTURE.md §4.2: a finished run is retained (queryable) only
     # while its owner connection is live. A run with NO owner record -- e.g. one queued
     # by an internal/non-socket path -- can never be queried, so purge it the moment it
     # completes rather than retaining it forever. A run whose owner is still connected
@@ -338,17 +338,17 @@ sub announce_run {
 }
 
 # The number of retired-run end markers retained for a late/reconnecting run-scoped
-# subscriber of a recent run (#135 finding 3). OWNER-OVERRIDABLE: raising it trades a
+# subscriber of a recent run (TODO-135 finding 3). OWNER-OVERRIDABLE: raising it trades a
 # few hundred bytes/run for a longer late-subscribe window; 0 restores "hang on late
 # subscribe to a finished run".
 sub _run_marker_retention { 100 }
 
 # The grace (seconds) a retired run's job ledgers are held before sweeping, so a
-# post-retirement reap (job_passed -> A3) or a straggler EOF has fired first (#135
+# post-retirement reap (job_passed -> A3) or a straggler EOF has fired first (TODO-135
 # finding 3). Reuses the terminate-grace family of intervals.
 sub _ledger_sweep_grace { 30 }
 
-# Deferred, live-connection-safe sweep of retired runs' per-job ledgers (#135
+# Deferred, live-connection-safe sweep of retired runs' per-job ledgers (TODO-135
 # finding 3). Called from announce_run and once per scheduler_tick. Immediate deletion
 # at retirement is UNSAFE two ways: (i) a watchdog-aborted job's collector connection
 # can still be OPEN at retirement, and its later EOF -- with decided_jobs already gone
@@ -364,7 +364,7 @@ sub _flush_run_ledger_sweeps {
     my $queue = $self->{'ledger_sweep'} or return;
     return unless @$queue;
 
-    my $now   = mono_time;    # pairs with the 'since' stamp in announce_run (#134 finding 104)
+    my $now   = mono_time;    # pairs with the 'since' stamp in announce_run (TODO-134 finding 104)
     my $grace = $self->_ledger_sweep_grace;
     my $conns = $self->{'collector_conns'} // {};
 

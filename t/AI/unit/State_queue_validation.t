@@ -3,10 +3,10 @@ use Test2::V0;
 
 use Test2::Harness2::Runner::State;
 
-# #118 ingress backstop. queue_task is the one funnel every task passes through
+# TODO-118 ingress backstop. queue_task is the one funnel every task passes through
 # (queue_task / retry_task / requeue_task all reach it), including the un-eval'd
-# flush_submit_buffer replay path #110's dispatch eval cannot see. task_fields
-# dies on an out-of-domain category/duration, which -- pre-#118 -- aborted the
+# flush_submit_buffer replay path TODO-110's dispatch eval cannot see. task_fields
+# dies on an out-of-domain category/duration, which -- pre-TODO-118 -- aborted the
 # whole run (and, on a persistent daemon, reaped sibling runs). The backstop
 # normalizes an invalid category/duration IN PLACE (warn + default) so a bad
 # task becomes a survivable task, never a run abort.

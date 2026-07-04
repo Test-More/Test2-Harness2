@@ -3,10 +3,10 @@ use v5.38;
 
 our $VERSION = '2.000000';
 
-# DB layer rewrite (#46 / chunk DB-2). All DB code lives under App::Yath2; the
+# DB layer rewrite (TODO-46 / chunk DB-2). All DB code lives under App::Yath2; the
 # backend Test2::Harness2 layer accesses no DB in either direction (spec §0.1/§2).
 #
-# This is a thin stable-name delegator (ticket #93). The live ORM builder -- the
+# This is a thin stable-name delegator (ticket TODO-93). The live ORM builder -- the
 # single `autofill` definition (JSON/UUID/DateTime autotypes + the dumb autorow)
 # -- lives in L<App::Yath2::DB::ORM>, which every connection is built through
 # (a DBIx::QuickORM ORM's `db` is write-once, so a shared singleton could never be
@@ -34,7 +34,7 @@ Historically this module registered the App::Yath2 database's L<DBIx::QuickORM>
 ORM (named C<yath>). That singleton was never fetched -- every live connection is
 built by L<App::Yath2::DB::Connect> through L<App::Yath2::DB::ORM>, which builds a
 B<fresh> ORM per connection (a C<DBIx::QuickORM::ORM>'s C<db> is write-once, so a
-shared singleton cannot be re-attached). Ticket #93 collapsed the duplicated
+shared singleton cannot be re-attached). Ticket TODO-93 collapsed the duplicated
 C<autofill> block onto that one builder and reduced this module to a thin
 delegator that C<require>s L<App::Yath2::DB::ORM>, retained as a stable public
 name for the DB-touching entry points (the logger, the C<db> commands,

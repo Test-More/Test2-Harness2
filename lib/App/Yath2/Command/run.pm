@@ -229,7 +229,7 @@ sub pfile_data {
     };
 
     # Print the discovery banner exactly once (on first read of the data). The pid
-    # can be unknown here (a not-live runner with no/garbled PID file -- #121).
+    # can be unknown here (a not-live runner with no/garbled PID file -- TODO-121).
     unless ($self->{+BANNER_PRINTED}++) {
         print "\nFound: $data->{pfile_path}\n";
         print "  PID: " . ($data->{pid} // 'unknown') . "\n";
@@ -255,7 +255,7 @@ sub start_runner {
 }
 
 # ---------------------------------------------------------------------------
-# Shutdown/termination helpers shared by `stop` and `kill` (ticket #121).
+# Shutdown/termination helpers shared by `stop` and `kill` (ticket TODO-121).
 #
 # These are the ONLY place the persistent-runner termination timing and the
 # KILL-safety corroboration predicate live. Every helper takes an explicit
@@ -299,7 +299,7 @@ sub _read_pid_file {
 # Bounded wait for a pid to leave the process table. Returns 1 once kill(0) is
 # false (ESRCH / no-longer-signalable => the process is GONE), 0 if it was still
 # alive when $seconds elapsed. When handed no pid it re-reads a fresh pid from the
-# workdir PID file each poll (#145 contract (c): a booting runner may not have
+# workdir PID file each poll (TODO-145 contract (c): a booting runner may not have
 # written it yet); no pid at all means nothing to wait for => gone.
 sub wait_for_runner_exit {
     my ($self, $disco, $pid, $seconds) = @_;
@@ -413,7 +413,7 @@ sub escalate_kill_runner {
 
 # Remove the remains of a runner that has been CONFIRMED gone (ESRCH) -- reachable
 # only after a deadness observation (see the ticket's cleanup-not-racing-live
-# proof). The discovery link is removed through #145's flock mutator protocol
+# proof). The discovery link is removed through TODO-145's flock mutator protocol
 # (clean_if_mine: re-readlink + successor-pid guard + euid check + -l-guarded
 # unlink); the workdir remove_tree is then gated on a FRESH re-read of workdir/PID:
 # absent, our (now-dead) pid, or a dead pid => remove; a DIFFERENT LIVE pid means a

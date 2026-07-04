@@ -3,7 +3,7 @@ use Test2::V0;
 
 use Test2::Harness2::Runner::State;
 
-# bloat #3: requeue_task puts a RUNNING task back into the PENDING queue to be
+# bloat TODO-3: requeue_task puts a RUNNING task back into the PENDING queue to be
 # re-resolved on a later tick WITHOUT consuming a retry -- the safe path for a job
 # that was started (slot/resources consumed) but never accepted by a stage (the
 # assign->launch race). Distinct from retry_task (consumes a try) and abort_job
@@ -30,7 +30,7 @@ sub mk_task {
         category => 'general',
         duration => 'medium',
         use_preload => 1,
-        is_try   => 1,    # 1-based first try (R10 / #49)
+        is_try   => 1,    # 1-based first try (R10 / TODO-49)
         %over,
     };
 }

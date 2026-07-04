@@ -9,7 +9,7 @@ use Test2::Collector::Util::Socket qw/connect_unix/;
 use Test2::Harness2::Role::Service::Connection();
 use Test2::Harness2::Runner::State();
 
-# #110: an unguarded request-handler dispatch let ONE malformed, duplicate, or
+# TODO-110: an unguarded request-handler dispatch let ONE malformed, duplicate, or
 # misdirected request frame die out of the service loop -- on a persistent runner that
 # outer unwind tears down every stage and aborts every in-flight run from every
 # terminal. The fix guards the dispatch in three layers:

@@ -5,7 +5,7 @@ use File::Temp qw/tempfile/;
 use App::Yath2::Tester qw/yath/;
 use Test2::Harness2::Util::JSON qw/encode_json/;
 
-# Regression for #124: `yath failed` on a log from an interrupted run (Ctrl-C,
+# Regression for TODO-124: `yath failed` on a log from an interrupted run (Ctrl-C,
 # CI cancellation, OOM kill) where a failing job recorded a failing subtest but
 # never emitted a harness_job_end. Before the fix, reaching $ends->[-1]->{...}
 # on the empty ends array died with "Modification of non-creatable array value

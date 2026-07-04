@@ -159,7 +159,7 @@ subtest three_bad_frames_after_ready => sub {
     ok($a->closed, "three consecutive bad frames close the connection");
 };
 
-# #134 finding 13: a zstd framing croak from FrameBuffer (garbage bytes on the
+# TODO-134 finding 13: a zstd framing croak from FrameBuffer (garbage bytes on the
 # socket) must NOT escape drain and kill the whole service. drain closes the
 # desynced connection immediately (no 3-strike -- a corrupt zstd stream can never
 # resync) while STILL returning the valid frames it decoded before the croak.
@@ -200,7 +200,7 @@ subtest garbage_bytes_as_first_frame => sub {
     ok($a->closed, "the connection was dropped as bad");
 };
 
-# #134 finding 106: a one-way request (want_reply => 0) must not leave a PENDING
+# TODO-134 finding 106: a one-way request (want_reply => 0) must not leave a PENDING
 # request-id behind, or a daemon-lifetime connection leaks sender-side memory. A
 # default (two-way) request registers exactly one PENDING entry, cleared when its
 # reply is drained.

@@ -14,7 +14,7 @@ use Test2::Harness2::Renderer::Driver;
 
 use App::Yath2::RenderLoop::LiveProducer;
 
-# Regression bundle for ticket #141 (renderer Driver / live-pipeline). Each
+# Regression bundle for ticket TODO-141 (renderer Driver / live-pipeline). Each
 # subtest pins one of the audited defects.
 
 my $settings = mock {} => (add => [check_group => sub { 0 }]);
@@ -64,7 +64,7 @@ subtest aborted_after_launch_not_double_counted => sub {
     is($final->{pass}, 0, "run rollup is a failure");
 };
 
-# (#65) Same guard, but the watchdog abort lands a TICK LATER than the launch:
+# (TODO-65) Same guard, but the watchdog abort lands a TICK LATER than the launch:
 # the LAUNCH_RENDERED flag (keyed by job_id, set by _dispatch_launch) must persist
 # across step() calls so the second tick's _render_aborted still skips the launch +
 # bookkeeping. Exercises the shared _dispatch_launch choke point across ticks.
@@ -276,7 +276,7 @@ subtest jobreader_closes_reader_on_done => sub {
 };
 
 # ---------------------------------------------------------------------------
-# (17 / TIER-10 #160) With runner output hidden, runner_output_done reports done
+# (17 / TIER-10 TODO-160) With runner output hidden, runner_output_done reports done
 # immediately (nothing to drain) so the finalize drain does not dead-wait the
 # full DRAIN_RUNNER_OUTPUT_TIMEOUT, and the pipeline finalizes promptly.
 # ---------------------------------------------------------------------------

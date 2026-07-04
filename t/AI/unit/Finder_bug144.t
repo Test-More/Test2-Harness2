@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Regression tests for ticket #144 (Finder/test-selection bundle):
+# Regression tests for ticket TODO-144 (Finder/test-selection bundle):
 #   58  - unchecked chdir in multi-project search (typo'd/deleted project dir)
 #   G12 - File::Find follow (symlinked test SUBDIRs now discovered)
 #   G13 - exclude-list raw-string mismatch (./, whitespace, .., symlink alias)

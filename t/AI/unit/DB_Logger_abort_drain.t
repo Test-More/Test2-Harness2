@@ -1,19 +1,19 @@
 use Test2::V0;
 
-# Ticket #158: a watchdog-aborted run must finalize PROMPTLY, not after the full
+# Ticket TODO-158: a watchdog-aborted run must finalize PROMPTLY, not after the full
 # ~30s DRAIN_TIMEOUT.
 #
 # After the run is announced done (run_done) the DB logger keeps draining until
 # _all_finalized_imported goes true, so it can catch trailing finalize transitions
 # + their blobs. But a watchdog-aborted job's collector never sends its
-# finalize/EOF (the abort tears it down -- #131), so its status is frozen below
+# finalize/EOF (the abort tears it down -- TODO-131), so its status is frozen below
 # 'finalized' forever and _all_finalized_imported can NEVER go true for it. Before
-# #158 the drain therefore burned the whole DRAIN_TIMEOUT (~30s) on every aborted
-# '-L' run before the timeout escape fired. #158 short-circuits that wait
+# TODO-158 the drain therefore burned the whole DRAIN_TIMEOUT (~30s) on every aborted
+# '-L' run before the timeout escape fired. TODO-158 short-circuits that wait
 # (_drain_complete): once the only laggards are aborted jobs, the drain ends.
 #
 # This changes only the drain TIMING -- the run is still classified 'broken' (its
-# aborted collector never finalized) and #131's abort fold still records the job
+# aborted collector never finalized) and TODO-131's abort fold still records the job
 # as failed. This exercises the fix directly (real Runner::Monitor fed synthetic
 # payloads via a stub subscriber, an ephemeral SQLite DB the logger bootstraps),
 # mirroring DB_Logger_global_collectors.t / DB_Logger_abort_fold.t.
@@ -134,7 +134,7 @@ subtest '_drain_complete short-circuits an unfinalized collector on an aborted j
     ok(!$log->_all_finalized_imported,
         "the aborted job's un-finalized collector still blocks _all_finalized_imported (status classification unchanged)");
     ok($log->_drain_complete,
-        "_drain_complete short-circuits: the only laggard is an aborted job, no EOF is coming (#158)");
+        "_drain_complete short-circuits: the only laggard is an aborted job, no EOF is coming (TODO-158)");
 };
 
 # --------------------------------------------------------------------------- #
@@ -181,14 +181,14 @@ subtest 'the full poll loop finalizes an aborted run promptly, not after DRAIN_T
             . App::Yath2::DB::Logger::DRAIN_TIMEOUT() . "s)",
     ) or diag("elapsed=${elapsed}s -- the aborted collector likely stalled the drain");
 
-    # #158 changed only the TIMING: the run is still 'broken' (its aborted
-    # collector never finalized) and #131's fold still recorded the abort.
+    # TODO-158 changed only the TIMING: the run is still 'broken' (its aborted
+    # collector never finalized) and TODO-131's fold still recorded the abort.
     is($exit, 1, "logger exited non-zero (the run did not finish cleanly)");
 
     my ($run) = $log->con->handle('runs')->all;
     is($run->field('status'), 'broken', "run row finalized 'broken' (aborted == incomplete)");
     is($run->field('passed'), 1,        "the clean job counted passed");
-    is($run->field('failed'), 1,        "the aborted job counted failed exactly once (#131 fold survives)");
+    is($run->field('failed'), 1,        "the aborted job counted failed exactly once (TODO-131 fold survives)");
 
     my %jobs = map { lc($_->field('job_uuid')) => $_ } $log->con->handle('jobs')->all;
     is($jobs{lc $ajob}->field('failed'), 1, "aborted job's row folded failed=1");

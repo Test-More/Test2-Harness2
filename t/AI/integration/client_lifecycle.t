@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-LONG
 
-# Ticket #41 / chunk 30: the runner lifecycle is a mode on App::Yath2::Client.
+# Ticket TODO-41 / chunk 30: the runner lifecycle is a mode on App::Yath2::Client.
 # This drives all three modes end to end through App::Yath2::Tester:
 #
 #   * transient -- `yath test` spawns + owns + reaps its own runner, renders the

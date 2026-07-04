@@ -5,7 +5,7 @@ use Test2::Formatter::Test2::Composer;
 
 my $C = 'Test2::Formatter::Test2::Composer';
 
-# Cleanup #64 step 3: the Tier-2 deliberate output changes to the Composer.
+# Cleanup TODO-64 step 3: the Tier-2 deliberate output changes to the Composer.
 # These were latent upstream bugs where a rendered string was computed but the
 # raw value was emitted instead.
 
@@ -28,7 +28,7 @@ subtest 'render_info still forwards a table and honors peek in render_brief' => 
     my ($line) = $C->render_info({info => [{tag => 'X', details => 'd', table => {t => 1}}]});
     is($line->[3], {t => 1}, "table passes through");
 
-    # #64 step 1 port: peek info items now render in brief mode.
+    # TODO-64 step 1 port: peek info items now render in brief mode.
     my $brief = $C->render_brief({info => [{tag => 'P', details => 'peeked', peek => 1}]});
     is(scalar(@$brief), 1, "peek info item is included in the brief render");
     is($brief->[0][2], 'peeked', "peek item details rendered");
@@ -71,7 +71,7 @@ subtest 'render_amnesty de-dups without warning on undef tag/details' => sub {
 };
 
 subtest 'render_one_line no longer dispatches a phantom times renderer' => sub {
-    # Before #64, 'times' was in the dispatch list and would call the
+    # Before TODO-64, 'times' was in the dispatch list and would call the
     # nonexistent render_times; a bare times facet must now just be ignored.
     my $out;
     my $ok = eval { $out = $C->render_one_line({times => {total => 1}}); 1 };

@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression guard for ticket #99 step 1: the slack/email notification paths in
+# Regression guard for ticket TODO-99 step 1: the slack/email notification paths in
 # App::Yath2::Plugin::Notify were de-duplicated behind a per-service spec plus
 # shared _send_*/_gen_* builders, with the five gen_*_text names kept as thin
 # delegators. These tests pin the exact text and dispatch behavior so the
@@ -170,7 +170,7 @@ subtest '_send_run_notification routes per service, honors no_batch gate + owner
     is($emf->[0]{to}, ['e@x', 'owner@example.com'], "email run recipients include owner meta");
     is($emf->[0]{subject}, "Tests failed on $HOST", "email run subject on fail");
 
-    # Ticket #126: a failing run with ONLY --notify-email-fail configured (no
+    # Ticket TODO-126: a failing run with ONLY --notify-email-fail configured (no
     # --notify-email / --notify-email-owner) must still fire the fail email.
     my $failonly = capture(sub {
         $_[0]->_send_run_notification('email', {pass => 0, failed => []}, settings(no_batch_email => 0, email_fail => ['dev@example.com']));

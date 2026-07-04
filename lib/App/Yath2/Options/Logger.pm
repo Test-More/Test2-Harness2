@@ -18,7 +18,7 @@ use Getopt::Yath;
 =head1 NAME
 
 App::Yath2::Options::Logger - the C<-L> / C<--logger> DB-logging option (spec
-§7/R16, ticket #50).
+§7/R16, ticket TODO-50).
 
 =head1 DESCRIPTION
 
@@ -45,7 +45,7 @@ Connect to another database via DSN (postgres/mariadb/...).
 
 Logging is B<opt-in> (default OFF, R11); SQLite is only the default I<target>
 once enabled. The DB modules are loaded lazily by the logger, not here. C<-L> was
-freed from the old jsonl logger (now a renderer, #55) for exactly this (R16); the
+freed from the old jsonl logger (now a renderer, TODO-55) for exactly this (R16); the
 jsonl renderer keeps long-form C<--bzip2>/C<--gzip> only.
 
 B<DuckDB is NOT a logging target>: a C<.duckdb> file is single-writer and a live

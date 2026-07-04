@@ -10,7 +10,7 @@ use Test2::Harness2::Util::File::JSONL;
 use App::Yath2::RenderLoop;
 use App::Yath2::RenderLoop::JSONLFileProducer;
 
-# Regression coverage for #147 (replay bundle):
+# Regression coverage for TODO-147 (replay bundle):
 #   * finding 53: a job-filtered replay must not treat a batch that read events
 #     off disk but filtered them all out as an idle poll (no backoff sleep).
 #   * G7: replaying a truncated .jsonl.gz (killed writer) must not crash with the

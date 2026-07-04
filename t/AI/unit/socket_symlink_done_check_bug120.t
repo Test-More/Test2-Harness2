@@ -2,7 +2,7 @@ use Test2::V0;
 use Test2::Tools::Spec;
 # HARNESS-DURATION-SHORT
 
-# Ticket #120: `yath watch` (and, for hygiene, `yath stop`/`yath kill`) must
+# Ticket TODO-120: `yath watch` (and, for hygiene, `yath stop`/`yath kill`) must
 # detect a persistent runner via the discovery SYMLINK, which points at the
 # runner's unix SOCKET -- NOT via `-f` on that symlink.
 #
@@ -63,7 +63,7 @@ tests live_runner_stays_attached => sub {
     # resolves to a socket (not a regular file). This is exactly what broke watch.
     ok(-l $link, "the discovery path is a symlink");
     ok(-e $link, "the discovery path exists (follows to the socket)");
-    ok(!-f $link, "-f is FALSE on a symlink-to-socket -- the #120 root cause");
+    ok(!-f $link, "-f is FALSE on a symlink-to-socket -- the TODO-120 root cause");
 
     my $disco = App::Yath2::Discovery->new(link => $link);
     ok($disco->resolves, "Discovery::resolves is TRUE for a live socket");

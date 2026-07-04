@@ -18,7 +18,7 @@ sub group       { "server" }
 
 sub cli_args { "[log1.jsonl[.gz|.bz2] [log2.jsonl[.gz|.bz2]]]" }
 
-# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket #45)
+# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket TODO-45)
 # and is being rewritten on QuickORM. Keep the command visible in `yath help`
 # but error clearly if anyone tries to run it.
 sub run {

@@ -41,7 +41,7 @@ yath(
 
 # A no-preload runner does not self-restart, so there is nothing to reload. Rather
 # than falsely report success, `yath reload` detects this and exits 2 with a warning
-# (ticket #114) WITHOUT signalling the runner, so the runner keeps serving unchanged.
+# (ticket TODO-114) WITHOUT signalling the runner, so the runner keeps serving unchanged.
 yath(
     command => 'reload',
     test    => sub {

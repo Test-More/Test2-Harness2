@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Ticket #130: the DB logger must NOT wait on global/service collectors.
+# Ticket TODO-130: the DB logger must NOT wait on global/service collectors.
 #
 # A persistent runner serves a single runner.socket for every run; besides a
 # run's own test collectors it also owns GLOBAL/service collectors -- the runner's
@@ -10,7 +10,7 @@ use Test2::V0;
 # old _all_finalized_imported required *every* collector the mirror knew about to
 # be finalized+imported, so it could never return true while a daemon collector sat
 # at 'running' -- and the drain loop polled the full 30s DRAIN_TIMEOUT after every
-# single '-L' run before giving up. This exercises the fix (#130): the per-run
+# single '-L' run before giving up. This exercises the fix (TODO-130): the per-run
 # fold + drain checks skip collectors whose run_uuid != RUN_ID.
 #
 # Drives App::Yath2::DB::Logger's _sync / _all_finalized_imported / run directly
@@ -129,7 +129,7 @@ subtest 'a running global service collector does not block _all_finalized_import
     $log->_sync;    # imports the finalized run-scoped collector -> ARTIFACTS_DONE
 
     ok($log->_all_finalized_imported,
-        "drain ends early: the never-finalizing global service collector is ignored (#130)");
+        "drain ends early: the never-finalizing global service collector is ignored (TODO-130)");
 };
 
 # --------------------------------------------------------------------------- #

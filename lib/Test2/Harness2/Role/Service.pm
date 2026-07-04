@@ -14,7 +14,7 @@ use Test2::Harness2::Role::Service::Connection();
 
 use Role::Tiny;
 
-# Constant-only slots (#17 pattern): this role owns the service socket bookkeeping
+# Constant-only slots (TODO-17 pattern): this role owns the service socket bookkeeping
 # on the consumer's shared hashref. Declaring the keys as HashBase constants gives
 # grep/typo safety on the bare-string accesses; the value is the lowercased name,
 # and every consumer (Runner, Preload::Host, Sampler) reads them through the same
@@ -285,7 +285,7 @@ sub handle_request ($self, $payload, $conn) {
     return {ok => 0, error => 'missing command'} unless defined $command;
 
     # 'stop' needs no special case: the generic dispatch below resolves it to
-    # request_handler_stop with the same args, honoring subclass overrides (#82).
+    # request_handler_stop with the same args, honoring subclass overrides (TODO-82).
     my $handler = "request_handler_$command";
     return {ok => 0, error => "invalid command: $command"} unless $self->can($handler);
 
@@ -388,7 +388,7 @@ sub service_io ($self) {
     # readable, starving every live peer and wedging the whole service (a persistent
     # runner goes permanently deaf). The write pass below sweeps closed conns too,
     # but only AFTER this can_read, so it cannot protect this tick's read from a
-    # between-tick close -- this sweep is what closes that window. (#106)
+    # between-tick close -- this sweep is what closes that window. (TODO-106)
     for my $conn (values %{$self->{service_conns}}) {
         $self->_drop_conn($conn) if $conn->closed;
     }
@@ -442,7 +442,7 @@ sub _handle_events ($self, $conn, @events) {
         }
 
         if ($kind eq 'request') {
-            # #110: guard the handler dispatch. A malformed, duplicate, or misdirected
+            # TODO-110: guard the handler dispatch. A malformed, duplicate, or misdirected
             # request frame must NOT unwind the service loop -- on a persistent runner
             # that outer unwind tears down every stage and aborts every in-flight run
             # from every terminal. Catch a handler die HERE and reply {ok=>0, error=>...}
@@ -486,7 +486,7 @@ sub _drop_conn ($self, $conn) {
     $self->{+SERVICE_SELECT}->remove($fh) if $self->{+SERVICE_SELECT};
     $conn->close;
 
-    # Optional consumer hook (ticket #12 / ARCHITECTURE.md §4.2): a closing peer may
+    # Optional consumer hook (ticket TODO-12 / ARCHITECTURE.md §4.2): a closing peer may
     # be the connection that queued a run. The runner uses this to sweep the runs that
     # connection owned -- aborting a still-running run, purging a finished one -- so
     # in-memory run state is bounded by live owner connections.
@@ -505,7 +505,7 @@ sub _teardown_service ($self, %opts) {
         # (a still-referenced conn then reports ->closed). Connection->close shuts
         # each conn fd, so only the listen socket remains to close -- raw-closing the
         # conn fds again via the select sweep would just be a harmless double close,
-        # which this branch deliberately avoids (#82).
+        # which this branch deliberately avoids (TODO-82).
         $_->close for $conns ? values %$conns : ();
         eval { CORE::close($listen); 1 } if $listen;
         $sel->remove($_) for $sel ? $sel->handles : ();
@@ -513,7 +513,7 @@ sub _teardown_service ($self, %opts) {
     elsif ($sel) {
         # reset_service: raw-close every inherited fd (listen + conns) and
         # deliberately DO NOT call Connection->close, leaving the Connection objects
-        # unmarked. Preload::Host's reset->reuse flow relies on this -- see #82 and
+        # unmarked. Preload::Host's reset->reuse flow relies on this -- see TODO-82 and
         # t/AI/unit/Role_Service_fd_hygiene.t. Do not "unify" this onto ->close.
         for my $fh ($sel->handles) {
             $sel->remove($fh);

@@ -13,7 +13,7 @@ use Test2::Harness2::Util::JSON qw/encode_json decode_json/;
 
 use Test2::Harness2::Role::Service::Connection;
 
-# #108: Role::Service must not treat EAGAIN as fatal. A slow subscriber/logger/
+# TODO-108: Role::Service must not treat EAGAIN as fatal. A slow subscriber/logger/
 # stage under sustained frame traffic must NOT be dropped and must lose NO frames
 # (they queue in the per-connection outbound buffer and are finished by a later
 # non-blocking flush); only a genuinely-gone peer (EPIPE/ECONNRESET), a full

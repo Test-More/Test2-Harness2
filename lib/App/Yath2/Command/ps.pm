@@ -28,7 +28,7 @@ sub run {
     # Attach the client to the live persistent runner (kill(0) liveness, no reap)
     # before asking for status, matching status.pm/abort.pm. Without this the client
     # has no connect-retry tolerance, so a transient connect failure silently printed
-    # an empty process list and exited 0 (#146).
+    # an empty process list and exited 0 (TODO-146).
     $self->client->attach_runner($data->{pid});
 
     # Ask the runner for its live process list over runner.socket.

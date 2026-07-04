@@ -29,7 +29,7 @@ reporting success.
     EOT
 }
 
-# NOTE (deferred fork B, gated on #113 -- see also the #159 premise conflict about
+# NOTE (deferred fork B, gated on TODO-113 -- see also the TODO-159 premise conflict about
 # _preload_root_stage_identity's pid comparison): the truthful "which stages
 # actually reloaded" fix must route through the runner socket as a two-way
 # request/response instead of the raw kill('HUP') below, tighten exit 0 to ">=1
@@ -49,7 +49,7 @@ sub run {
     # A live socket with a missing/garbled workdir PID file (external deletion or
     # corruption only -- the PID is written before the socket binds, so this is not a
     # boot race) used to crash with "Can't kill a non-numeric process ID" after
-    # printing "Sending SIGHUP to <blank>". Guard it with an actionable message (#146).
+    # printing "Sending SIGHUP to <blank>". Guard it with an actionable message (TODO-146).
     my $pid = $disco->pid
         // die "Runner found at $workdir but its PID file is missing/unreadable; restart the runner.\n";
 

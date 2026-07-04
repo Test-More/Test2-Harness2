@@ -76,12 +76,12 @@ tests signal_handler_install_scope => sub {
     $transient->remove_signal_handlers;
     ok(!ref($SIG{INT}), "remove cleared the INT handler");
 
-    # #122: attach mode (yath run) MUST also install handlers so Ctrl-C is graceful
+    # TODO-122: attach mode (yath run) MUST also install handlers so Ctrl-C is graceful
     # (flush renderers/logs, reset the terminal) instead of an instant fatal death.
     my $attach = App::Yath2::Client->new(workdir => '/tmp/wd', mode => 'attach');
     delete $SIG{INT};
     $attach->install_signal_handlers;
-    ok(ref($SIG{INT}) eq 'CODE', "attach mode installs signal handlers (#122)");
+    ok(ref($SIG{INT}) eq 'CODE', "attach mode installs signal handlers (TODO-122)");
     $attach->remove_signal_handlers;
     ok(!ref($SIG{INT}), "attach remove cleared the INT handler");
 

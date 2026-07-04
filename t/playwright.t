@@ -21,9 +21,9 @@ use Cwd qw/abs_path/;
 use File::Basename qw/dirname/;
 
 # The web UI + `yath server` (with --ephemeral) were moved to reference/old_db
-# in DB-1 (ticket #45); the webapp is being rebuilt on the new QuickORM layer as
+# in DB-1 (ticket TODO-45); the webapp is being rebuilt on the new QuickORM layer as
 # a deferred effort. Until then this front-end suite cannot run.
-plan skip_all => "web UI / yath server moved to reference/old_db (DB-1, #45); webapp rebuild is deferred";
+plan skip_all => "web UI / yath server moved to reference/old_db (DB-1, TODO-45); webapp rebuild is deferred";
 
 my $root     = abs_path(File::Spec->catdir(dirname(__FILE__), File::Spec->updir));
 my $js_tests = File::Spec->catdir($root, 'js-tests');

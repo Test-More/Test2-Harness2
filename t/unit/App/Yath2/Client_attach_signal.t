@@ -3,7 +3,7 @@ use Test2::Tools::Spec;
 
 use App::Yath2::Client;
 
-# Regression: #122 -- Ctrl-C on `yath run` (attach mode) was unhandled, so the
+# Regression: TODO-122 -- Ctrl-C on `yath run` (attach mode) was unhandled, so the
 # command died instantly: the terminal-reset renderer never ran (dirty terminal),
 # a `-F` log was left without its `null` terminator, and the DB loggers died
 # mid-import. attach mode must now INSTALL signal handlers and, on a caught signal,

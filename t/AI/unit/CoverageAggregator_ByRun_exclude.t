@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 #
-# Ticket #151 (finding 49): CoverageAggregator::ByRun::get_coverage_tests had
+# Ticket TODO-151 (finding 49): CoverageAggregator::ByRun::get_coverage_tests had
 # its --changes-exclude-loads / --changes-exclude-opens guards SWAPPED relative
 # to ByTest and the option docs. On run-level (JSON) coverage each flag then had
 # the mirror-image wrong effect, so the two coverage formats produced

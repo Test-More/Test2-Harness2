@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Ticket #131: watchdog-aborted jobs are folded into DB rows.
+# Ticket TODO-131: watchdog-aborted jobs are folded into DB rows.
 #
 # An aborted job's collector may never finalize (dispatch to a dead stage,
 # owner-drop, wind-down/truncate, or a pid hard-kill grace fallback), so the
@@ -254,7 +254,7 @@ subtest 'second logger over the same DB re-folds onto the same rows (rule 1)' =>
 
 # --------------------------------------------------------------------------- #
 subtest 'finalize with no subscriber slot returns cleanly (no fold attempted)' => sub {
-    # The #132 failure-path shape: _finalize_run_row may be called with no
+    # The TODO-132 failure-path shape: _finalize_run_row may be called with no
     # subscriber ever built. The if-guard must skip the fold, not crash / create one.
     my $db  = "$tmp_root/no-sub.sqlite";
     my $log = App::Yath2::DB::Logger->new(

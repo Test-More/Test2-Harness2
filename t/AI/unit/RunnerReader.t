@@ -205,7 +205,7 @@ subtest restart_boundary => sub {
     ok($reader->done, "the later harness_process_exit -- not the restart -- ends the stream");
 };
 
-# Ticket #141 (107): each record's OWN stamp is harvested (refreshing LAST_STAMP),
+# Ticket TODO-141 (107): each record's OWN stamp is harvested (refreshing LAST_STAMP),
 # so a stamp-bearing record uses its own time and, crucially, output after a
 # harness_process_restart is no longer frozen at the restart instant -- a later
 # stamp-bearing record advances the clock for the stampless output that follows.

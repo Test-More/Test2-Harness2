@@ -7,7 +7,7 @@ use Time::HiRes qw/sleep/;
 use Test2::Collector::Util::Socket qw/connect_unix/;
 use Test2::Harness2::Role::Service::Connection();
 
-# #106: a connection closed by a BETWEEN-TICK consumer write (service_send /
+# TODO-106: a connection closed by a BETWEEN-TICK consumer write (service_send /
 # send_control failing EPIPE to a vanished peer -- runner -> dead stage 'run_task',
 # runner -> dead collector 'terminate', sampler -> runner 'system_load') marks the
 # conn and shuts its fh, but the close path cannot pull the fh out of the select
@@ -16,7 +16,7 @@ use Test2::Harness2::Role::Service::Connection();
 # is starved and the whole service goes deaf. service_io must drop such a conn
 # BEFORE it polls, so no dead fd is ever handed to select().
 #
-# (#108's write pass sweeps closed conns too, but only AFTER can_read within a
+# (TODO-108's write pass sweeps closed conns too, but only AFTER can_read within a
 # tick, so it cannot protect the FIRST can_read of the tick that follows a
 # between-tick close -- this test asserts a SINGLE service_io recovers, which
 # distinguishes the pre-read sweep from the after-read one.)
@@ -110,7 +110,7 @@ ok(in_select($svc, $svictim->fh), "dead fh still registered in the select set (t
 # before the next poll, so a single healthy service_io must read and dispatch it.
 my $req_id = $survivor->send_request('echo', msg => 'survivor-lives');
 
-# EXACTLY ONE service_io. Without the #106 pre-read sweep, can_read(0) hits the
+# EXACTLY ONE service_io. Without the TODO-106 pre-read sweep, can_read(0) hits the
 # poisoned fd -> EBADF -> empty -> the survivor's request is never read this tick.
 $svc->service_io;
 

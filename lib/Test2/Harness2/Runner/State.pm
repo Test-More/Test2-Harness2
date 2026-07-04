@@ -151,7 +151,7 @@ sub run {
     return $self->{+RUN};
 }
 
-# Classify a run for the runner's owner-drop sweep (ticket #12 / ARCHITECTURE.md
+# Classify a run for the runner's owner-drop sweep (ticket TODO-12 / ARCHITECTURE.md
 # §4.2): 'running' if it is the active run or still pending/queued, 'finished' if it
 # has already been retained as complete, or undef if the state knows nothing of it
 # (already purged). A 'running' run whose owner drops is aborted-or-detached; a
@@ -203,7 +203,7 @@ sub resource_timeout {
 
     # Idle interval since the last job activity; monotonic so a wall/NTP step
     # cannot spuriously satisfy (or reset) the idle timeout. Pairs with the
-    # LAST_JOB_ACTIVITY writers. (#134 finding 104)
+    # LAST_JOB_ACTIVITY writers. (TODO-134 finding 104)
     my $idle = mono_time - ($self->{+LAST_JOB_ACTIVITY} // mono_time);
 
     return 0 unless $idle >= $timeout;
@@ -267,7 +267,7 @@ sub queue_run {
     # rebuilds its own Runner::Run from this item rather than from a serialized live
     # object. Folding it onto the Run (rather than a parallel run_items hash) means it
     # is auto-pruned the moment the run object is dropped -- no leak on a persistent
-    # runner (ticket #12 / ARCHITECTURE.md §4.2).
+    # runner (ticket TODO-12 / ARCHITECTURE.md §4.2).
     push @{$self->{+PENDING_RUNS}} => Test2::Harness2::Runner::Run->new(
         %$run,
         raw_item => {%$run},
@@ -312,7 +312,7 @@ sub stop_run {
     return;
 }
 
-# #110: is a job already queued (pending in TASK_LOOKUP)? request_handler_queue_task
+# TODO-110: is a job already queued (pending in TASK_LOOKUP)? request_handler_queue_task
 # uses this to reject a duplicate submission with a per-request error reply instead of
 # letting the duplicate reach (and be silently dropped by) the queue_task funnel. A
 # read-only predicate; it touches no scheduling state.
@@ -330,15 +330,15 @@ sub queue_task {
     my $job_id = $task->{job_id} or die "Task missing job_id";
     my $run_id = $task->{run_id} or die "Task missing run_id";
 
-    # #110: a duplicate queue_task (a client retry after a timed-out ack is a plausible,
+    # TODO-110: a duplicate queue_task (a client retry after a timed-out ack is a plausible,
     # non-buggy event) must NOT die. On the direct dispatch path request_handler_queue_task
     # rejects it with an error reply before it reaches here; but queue_task is the one
     # funnel every task passes through, INCLUDING the un-eval'd flush_submit_buffer replay
-    # (two copies buffered before the scheduler was ready) that #110's dispatch eval cannot
+    # (two copies buffered before the scheduler was ready) that TODO-110's dispatch eval cannot
     # see -- a die there would unwind the scheduler loop and reap every sibling run. The job
     # is already queued and re-queuing would double-dispatch it, so warn and skip: a duplicate
     # is a survivable no-op on every path. (retry/requeue reach queue_task only after
-    # stop_task drops TASK_LOOKUP, so they never trip this guard.) Mirrors #118's funnel
+    # stop_task drops TASK_LOOKUP, so they never trip this guard.) Mirrors TODO-118's funnel
     # backstop philosophy.
     if ($self->{+TASK_LOOKUP}->{$job_id}) {
         warn "Task for job '$job_id' is already queued; ignoring the duplicate queue request.\n";
@@ -347,7 +347,7 @@ sub queue_task {
 
     return if $self->{+HALTED_RUNS}->{$run_id};
 
-    # #118 ingress backstop: category/duration reach State from the validated
+    # TODO-118 ingress backstop: category/duration reach State from the validated
     # producer, but ALSO from raw third-party queue_task socket frames and the
     # QUEUE_ARGS/%inject splice -- neither producer-validatable. task_fields
     # dies on an out-of-domain value, and queue_task is the one funnel every
@@ -391,7 +391,7 @@ sub start_task {
 
     my $task = $self->{+TASK_LOOKUP}->{$job_id} or die "Could not find task to start";
 
-    # #115: bucket the PENDING_TASKS removal by $run_stage ($spec->{stage}) -- the
+    # TODO-115: bucket the PENDING_TASKS removal by $run_stage ($spec->{stage}) -- the
     # stage _next/_stage_order actually DEQUEUED this task from -- NOT by re-resolving
     # the stage via task_fields here. task_stage is volatile across queue->start: a
     # task whose preload_list is [A, B] buckets under B while A is still
@@ -412,7 +412,7 @@ sub start_task {
 
     $self->prune_hash($self->{+PENDING_TASKS}, $run_id, $smoke, $run_stage, $cat, $dur);
 
-    # A fresh, fully-owned task hashref for the running copy (#135 finding 29). The
+    # A fresh, fully-owned task hashref for the running copy (TODO-135 finding 29). The
     # env_vars hash and test_args array are 1-level-copied too -- that IS the full deep
     # copy here: env_vars values are plain strings and test_args elements are plain
     # strings (App/Yath2/TestFile directive/inject merge + the Resource API only ever
@@ -447,7 +447,7 @@ sub start_task {
 
     push @{$self->{+TASK_LIST}} => $task;
 
-    $self->{+LAST_JOB_ACTIVITY} = mono_time;    # monotonic; pairs with the idle interval read (#134 finding 104)
+    $self->{+LAST_JOB_ACTIVITY} = mono_time;    # monotonic; pairs with the idle interval read (TODO-134 finding 104)
     $self->{+TOTAL_STARTED}++;
     $self->{+RUNNING}++;
     $self->{+RUNNING_CATEGORIES}->{$cat}++;
@@ -481,7 +481,7 @@ sub stop_task {
     $_->release($job_id) for @{$self->{+RESOURCES}};
 
     my ($run_id, $smoke, $stage, $cat, $dur) = $self->task_fields($task);
-    $self->{+LAST_JOB_ACTIVITY} = mono_time;    # monotonic; pairs with the idle interval read (#134 finding 104)
+    $self->{+LAST_JOB_ACTIVITY} = mono_time;    # monotonic; pairs with the idle interval read (TODO-134 finding 104)
     $self->{+RUNNING}--;
     $self->{+RUNNING_CATEGORIES}->{$cat}--;
     $self->{+RUNNING_DURATIONS}->{$dur}--;
@@ -500,7 +500,7 @@ sub retry_task {
 
     $self->stop_task($job_id);
 
-    # #117: a halted run DECLINES the retry -- the current try is stopped (slot and
+    # TODO-117: a halted run DECLINES the retry -- the current try is stopped (slot and
     # resources released above) but the job is NOT re-queued. Report the decline with
     # a false return so the caller (Completion::_collector_retry_if_tries) can tell a
     # real retry from a declined one and fall through to the done/abort completion
@@ -508,7 +508,7 @@ sub retry_task {
     # job and reports it under "the following jobs never ran").
     return 0 if $self->{+HALTED_RUNS}->{$task->{run_id}};
 
-    # Try ordinals are 1-based (R10 / #49): the first attempt is is_try == 1, so a
+    # Try ordinals are 1-based (R10 / TODO-49): the first attempt is is_try == 1, so a
     # task that has never been tried (no is_try yet) seeds at 1 and increments to 2
     # for its first retry. A task that already carries an is_try (a later retry)
     # keeps its value via %$task and just increments from there.
@@ -518,11 +518,11 @@ sub retry_task {
 
     $self->queue_task($task);
 
-    # #117: truthy 'actually re-queued' indicator (see the halted-run decline above).
+    # TODO-117: truthy 'actually re-queued' indicator (see the halted-run decline above).
     return 1;
 }
 
-# bloat #3: put a RUNNING task back into the PENDING queue to be re-resolved and
+# bloat TODO-3: put a RUNNING task back into the PENDING queue to be re-resolved and
 # re-dispatched on a later tick -- WITHOUT consuming a retry. Used when a job was
 # started (slot + resources consumed, RUNNING) but never actually accepted by a
 # stage: the assigned stage went down/restarting between available/assign and the
@@ -538,7 +538,7 @@ sub retry_task {
 # none) rather than 'done'/'aborted'.
 #
 # TASK_LOOKUP holds the ORIGINAL task, genuinely pristine: start_task ALWAYS makes
-# a fresh copy with its OWN env_vars/test_args (#135 finding 29), so the resolved-stage
+# a fresh copy with its OWN env_vars/test_args (TODO-135 finding 29), so the resolved-stage
 # copy -- which carries the per-attempt resource env_vars/test_args -- lives only in
 # RUNNING_TASKS and is dropped by stop_task. So re-queuing TASK_LOOKUP's task
 # re-resolves the run stage (from the task's preload directives) against the CURRENT
@@ -585,7 +585,7 @@ sub requeue_task {
 # Stale-incarnation reports are rejected by connection-currency in the runner's
 # stage-report handlers (a report is honored only from the connection currently
 # registered as that stage's `preload-<stage>` peer), NOT by a wire generation
-# counter -- so the lifecycle record carries no generation (bloat #3).
+# counter -- so the lifecycle record carries no generation (bloat TODO-3).
 sub _set_stage_lifecycle {
     my $self = shift;
     my ($stage, $state) = @_;
@@ -595,7 +595,7 @@ sub _set_stage_lifecycle {
         # 'stamp' is MONOTONIC and OPAQUE cross-process: it is consumed only by
         # stage_state_age's interval math (Resource/Preload.pm), never reported or
         # compared against a wall clock. StatusReport passes the raw hash through,
-        # but the status/ps readers use only 'state', never 'stamp'. (#134 finding 104)
+        # but the status/ps readers use only 'state', never 'stamp'. (TODO-134 finding 104)
         stamp => mono_time,
     };
 
@@ -641,7 +641,7 @@ sub stage_state_age {
     my ($stage) = @_;
 
     my $life = ($self->{+STAGE_LIFECYCLE} //= {})->{$stage} or return undef;
-    return mono_time - $life->{stamp};    # pairs with the monotonic 'stamp' writer (#134 finding 104)
+    return mono_time - $life->{stamp};    # pairs with the monotonic 'stamp' writer (TODO-134 finding 104)
 }
 
 sub stage_ready {
@@ -655,7 +655,7 @@ sub stage_down {
     my $self = shift;
     my ($stage) = @_;
 
-    # Demote first, THEN rebucket (#135 finding 27): _rebucket_stage_tasks re-resolves
+    # Demote first, THEN rebucket (TODO-135 finding 27): _rebucket_stage_tasks re-resolves
     # each parked task through task_stage, which must already see this stage as 'down'
     # (task_stage skips a 'down' stage) so a task never re-parks in the bucket we are
     # draining. _next only walks 'up' buckets, so a task left in a demoted stage would
@@ -715,7 +715,7 @@ sub _expire_stale_stages {
         my $age = $self->stage_state_age($stage);
         next unless defined($age) && $age > $timeout;
 
-        # stage_down now rebuckets the stage's parked tasks itself (#135 finding 27).
+        # stage_down now rebuckets the stage's parked tasks itself (TODO-135 finding 27).
         # Per-stage rebucketing inside this multi-stage pass stays convergent: a task
         # re-parked into a stage demoted later in the same pass is drained again by
         # THAT stage's rebucket, and 'down' is monotone within the pass.
@@ -781,7 +781,7 @@ sub set_stage_map {
 
     # Stages we tracked that are no longer in the map: permanently 'down'. Route
     # through stage_down so the demoted stage's parked tasks are rebucketed and
-    # re-resolved (#135 finding 27) -- STAGE_MAP was assigned above, so the
+    # re-resolved (TODO-135 finding 27) -- STAGE_MAP was assigned above, so the
     # re-resolution sees the new (stage-removed) map.
     for my $stage (keys %$life) {
         next if $map->{$stage};
@@ -925,7 +925,7 @@ sub task_pending_lookup {
     # priority traversal, so _next walks them in priority order by iterating the
     # index in place rather than filtering a flat list each dispatch. Do not
     # flatten it (that would push the partitioning into the hot loop); prune_hash
-    # GCs empty sub-keys. (bloat ticket #14)
+    # GCs empty sub-keys. (bloat ticket TODO-14)
     my ($run_id, $smoke, $stage, $cat, $dur) = $self->task_fields($task);
 
     return $self->{+PENDING_TASKS}->{$run_id}->{$smoke}->{$stage}->{$cat}->{$dur} //= [];
@@ -1001,12 +1001,12 @@ sub clear_finished_run {
     # run_id rather than discarding it outright, so the queuing client may still
     # query it. The runner purges it (purge_run) when that owner connection drops;
     # a run whose owner is already gone is purged immediately by the runner's
-    # owner-drop sweep (ticket #12 / ARCHITECTURE.md §4.2).
+    # owner-drop sweep (ticket TODO-12 / ARCHITECTURE.md §4.2).
     $self->{+RETAINED_RUNS}->{$run->run_id} = $run;
 
     delete $self->{+RUN};
 
-    # Record the retirement as an EVENT, not a slot-diff (#135 finding 28): the
+    # Record the retirement as an EVENT, not a slot-diff (TODO-135 finding 28): the
     # scheduler drains this after its advance loop and announces every retired run.
     # A run activated AND retired within one advance loop (an empty run, a pre-stopped
     # run, an abort) never occupies the +RUN slot across two ticks, so a before/after
@@ -1019,7 +1019,7 @@ sub clear_finished_run {
     return 1;
 }
 
-# Drain the retired-run event queue (#135 finding 28): return the run_ids that left
+# Drain the retired-run event queue (TODO-135 finding 28): return the run_ids that left
 # the active slot since the last drain and reset the queue, so the scheduler can
 # announce each one's end exactly once. Destructive: each retirement is returned once.
 sub take_retired_runs {

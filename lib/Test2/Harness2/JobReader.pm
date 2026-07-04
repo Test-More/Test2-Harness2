@@ -86,7 +86,7 @@ sub poll ($self, $max = undef) {
     # Once done, close and drop the underlying zstd reader so a finished job does
     # not hold an open fd for the rest of the run. Under a live tail with more
     # files than the fd rlimit, keeping every finished reader open hit EMFILE
-    # mid-run (#141 finding 96). done short-circuits poll(), so nothing reopens it.
+    # mid-run (TODO-141 finding 96). done short-circuits poll(), so nothing reopens it.
     if ($self->{+DONE} && $self->{+READER}) {
         my $reader = delete $self->{+READER};
         $reader->close if $reader->can('close');

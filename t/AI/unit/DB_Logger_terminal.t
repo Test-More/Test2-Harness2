@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Unit coverage for the DB logger's terminal-error handling (#50 / spec §7e):
+# Unit coverage for the DB logger's terminal-error handling (TODO-50 / spec §7e):
 #   * a logger whose connection can't be built reports a terminal error and
 #     returns a non-zero exit (rather than hanging / dying uncaught),
 #   * the _terminal_error helper records the "incomplete / possibly corrupt"

@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-# Mock git command for t/AI/unit/Git_bug107.t (#107). The change base always
+# Mock git command for t/AI/unit/Git_bug107.t (TODO-107). The change base always
 # resolves (rev-parse --verify succeeds) so we exercise the merge-base loop
 # itself. BUG107_MODE selects the failure the loop must survive:
 #   badrev  -> merge-base exits 128 (bad revision, e.g. a shallow boundary)

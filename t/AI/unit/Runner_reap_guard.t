@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #135 finding 16: a sampler/aux process reaped by the runner's subreaper sweep was
+# TODO-135 finding 16: a sampler/aux process reaped by the runner's subreaper sweep was
 # invisible to stop_sampler/stop_aux (only PRELOAD_ROOT had a sweep-side guard), so
 # shutdown TERM/KILLed a possibly-RECYCLED pid and stalled 5s+2s after a sampler crash.
 # Two layers, exercised here against the REAL Runner methods:
@@ -143,8 +143,8 @@ subtest stop_aux_reaps_a_live_child_without_kill0 => sub {
     is(waitpid($pid, POSIX::WNOHANG), -1, "it was reaped (no lingering zombie)");
 };
 
-# ticket #67: the stop_sampler/stop_preload_root reap loop factored into _reap_poll,
-# which must EXPOSE #135's tri-state so callers only ever signal on a 0 (still-live)
+# ticket TODO-67: the stop_sampler/stop_preload_root reap loop factored into _reap_poll,
+# which must EXPOSE TODO-135's tri-state so callers only ever signal on a 0 (still-live)
 # status. These assert the three return values directly against the real method.
 subtest reap_poll_already_reaped_returns_minus_one => sub {
     my $pid    = already_reaped_pid();
@@ -184,7 +184,7 @@ subtest reap_poll_live_child_returns_zero => sub {
     waitpid($pid, 0);
 };
 
-# ticket #67: the four preload-root wind-down sites collapse onto _fail_preload.
+# ticket TODO-67: the four preload-root wind-down sites collapse onto _fail_preload.
 subtest fail_preload_marks_shutdown_and_emits => sub {
     # Pre-set SIGNAL survives (//=) and no warn without an argument.
     my $r    = FakeFailRunner->new(signal => 'HUP');

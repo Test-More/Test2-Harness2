@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #149 (findings 70, 74, 100, 72):
+# Regression coverage for ticket TODO-149 (findings 70, 74, 100, 72):
 #   70  - times sort_compare must honor a 'file' primary sort (the field lives on
 #         the job, not in its per-phase 'time' hash) instead of silently no-op'ing.
 #   74  - speedtag rewrites the source file atomically (tempfile + rename); an

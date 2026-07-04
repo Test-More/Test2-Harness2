@@ -2,11 +2,11 @@ use Test2::V0;
 # HARNESS-DURATION-LONG
 
 # Integration test for the DB->DB sync engine + the `yath db sync` and top-level
-# `import` commands (tickets #53 / #54, spec §8).
+# `import` commands (tickets TODO-53 / TODO-54, spec §8).
 #
 # Flow (sqlite -> sqlite, DBD::SQLite only -- no external server):
 #   1. Populate a SOURCE sqlite DB by running a tiny pass+fail suite under the
-#      #50 DB logger (`yath test -L=<source.sqlite>`). This gives us a real run
+#      TODO-50 DB logger (`yath test -L=<source.sqlite>`). This gives us a real run
 #      with jobs / job_tries / artifacts + the natural-key entities (hosts,
 #      machine_users, projects, test_files) the logger created.
 #   2. PRE-SEED the destination sqlite DB with UNRELATED natural-key rows so its
@@ -362,7 +362,7 @@ subtest only_run_uuid_guard => sub {
 
 # ===========================================================================
 # 6. Cross-flavor sync: the sqlite log source -> EACH server (flavor, version)
-#    destination (#63 Q2). Proves the sync engine carries UUID PKs + remaps the
+#    destination (TODO-63 Q2). Proves the sync engine carries UUID PKs + remaps the
 #    natural keys + copies the blobs ACROSS engines (e.g. sqlite BLOB(16) uuid ->
 #    PostgreSQL native uuid -> MySQL BINARY(16)). AUTHOR_TESTING gates server
 #    spin-up; the sqlite->sqlite subtests above already cover the same-engine path.

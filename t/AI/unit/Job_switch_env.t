@@ -2,7 +2,7 @@ use Test2::V0 -target => 'Test2::Harness2::Runner::Job';
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression tests for ticket #137 -- Runner::Job env/switch handling bundle:
+# Regression tests for ticket TODO-137 -- Runner::Job env/switch handling bundle:
 #   (31) a leading-space HARNESS_PERL_SWITCHES (e.g. " -w") must not split to an
 #        empty-string switch (which perl would treat as its program, so the test
 #        body never runs).

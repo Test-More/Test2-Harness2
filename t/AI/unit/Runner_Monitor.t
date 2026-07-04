@@ -385,13 +385,13 @@ subtest service_forward_routing => sub {
     $svc->close_service;
 };
 
-# --- #135 finding 3: track_pending gate + run-scoped pruning ---
+# --- TODO-135 finding 3: track_pending gate + run-scoped pruning ---
 
 sub feed_run_end ($mon, $rid) { $mon->feed({facet_data => {harness_run_end   => {run_id => $rid, stamp => 1}}}) }
 sub feed_health  ($mon, $rid) { $mon->feed({facet_data => {harness_run_health => {run_id => $rid, reason => 'x'}}}) }
 
 subtest track_pending_off_accumulates_nothing => sub {
-    # The hub monitor is built track_pending => 0 (#135 finding 3): it feeds + snapshots
+    # The hub monitor is built track_pending => 0 (TODO-135 finding 3): it feeds + snapshots
     # only, so the drain-on-call PENDING_* lists must stay empty even across a full
     # lifecycle -- while a default mirror still tracks every delta.
     my $hub = Test2::Harness2::Runner::Monitor->new(track_pending => 0);

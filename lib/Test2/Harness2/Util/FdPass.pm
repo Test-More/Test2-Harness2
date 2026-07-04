@@ -143,7 +143,7 @@ sub send_fds {
     # would kill the yath command (spawn's 2nd/3rd fd) or the supervisor at
     # send_hello -- orphaning the spawned process group. Ignore it so the failure
     # surfaces as an errno the croak below reports (matches write_frame's
-    # convention). (#134 finding 43)
+    # convention). (TODO-134 finding 43)
     local $SIG{PIPE} = 'IGNORE';
 
     my $sockfd = fileno($sock);

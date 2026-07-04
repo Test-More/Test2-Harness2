@@ -323,7 +323,7 @@ sub request_handler_spawn {
     # which dials the command, receives its fds, forks the script child, and reports
     # the child's raw wait status over the control channel.
     #
-    # NOTE (#119): the intermediate's setsid makes its pgid == its own pid, and the
+    # NOTE (TODO-119): the intermediate's setsid makes its pgid == its own pid, and the
     # host watch_pid's that pid, so the wind-down killall on stage stop/`yath reload`
     # targets `-<intermediate-pid>` -- the intermediate's whole group. launch_spawn's
     # FIRST act is therefore setpgrp(0,0) into the supervisor's OWN group, so it leaves
@@ -390,7 +390,7 @@ sub request_handler_reload_root {
 }
 
 # check_timeouts, stop, and handle_sig are the generic process-management machinery
-# hoisted into the shared base Test2::Harness2::IPC (ticket #67). Only the die-message
+# hoisted into the shared base Test2::Harness2::IPC (ticket TODO-67). Only the die-message
 # prefix differs per class, so we override just that.
 sub sig_prefix { 'Preload::Host' }
 
@@ -551,12 +551,12 @@ sub _announce_stage_ready {
         $self->service_send('runner', 'set_stage_data', stage_data => $self->stage_data);
 
         if (my $warnings = $self->{+PRELOAD_WARNINGS}) {
-            $self->service_send('runner', 'preload_warnings', warnings => [@$warnings], want_reply => 0)    # one-way (#134 finding 106)
+            $self->service_send('runner', 'preload_warnings', warnings => [@$warnings], want_reply => 0)    # one-way (TODO-134 finding 106)
                 if @$warnings;
         }
     }
 
-    $self->service_send('runner', 'stage_ready', stage => $stage, want_reply => 0);    # one-way (#134 finding 106)
+    $self->service_send('runner', 'stage_ready', stage => $stage, want_reply => 0);    # one-way (TODO-134 finding 106)
 
     return;
 }
@@ -570,7 +570,7 @@ sub run_stage {
     # STAGE is always set to a non-empty stage name above, so every Preload::Host
     # run_stage runs as a socket-dispatch service (is_stage_service is always true).
     # Assert the invariant -- it documents the STAGE-always-set contract and protects
-    # #8's future in-runner Host collapse.
+    # TODO-8's future in-runner Host collapse.
     croak "run_stage requires a stage service (STAGE must be set)"
         unless $self->is_stage_service;
 
@@ -602,7 +602,7 @@ sub run_stage {
     # §6.8 (§4.7/§4.7a): a stage that exits while it is still in the stage map is
     # "coming back" -- the preload-root respawns it and the fresh incarnation
     # re-readies -- so it reports 'restarting', not 'down'.
-    eval { $self->service_send('runner', 'stage_restarting', stage => $stage, want_reply => 0); 1 };    # one-way (#134 finding 106)
+    eval { $self->service_send('runner', 'stage_restarting', stage => $stage, want_reply => 0); 1 };    # one-way (TODO-134 finding 106)
     $self->close_service;
 
     # Child stages register their service channel with the RUNNER, not with this
@@ -622,7 +622,7 @@ sub run_stage {
     # frame; named child stages are FORKS -- they inherited a copy of that frame but
     # must NOT take it. A named stage that took the respawn would exec its own
     # duplicate preload-root tree (clobbering the peer registry, re-binding the stage
-    # sockets, and hanging the real base in its wait(all=>1) -- #111). Guard the
+    # sockets, and hanging the real base in its wait(all=>1) -- TODO-111). Guard the
     # respawn with the same base/default identity check the exit below already uses:
     # only the process actually hosting the base/default stage IS the preload-root, so
     # named stages fall through to exit 0 and are relaunched by the respawned tree.
@@ -668,7 +668,7 @@ sub run_job {
     if ($via) {
         require(mod2file($1)) if !defined(&{$via}) && $via =~ m/^(.+)::[^:]+$/;
 
-        # The test-job launch double-forks + detaches the collector (ticket #28): it
+        # The test-job launch double-forks + detaches the collector (ticket TODO-28): it
         # returns the SHORT-LIVED INTERMEDIATE's pid, not the collector's. The stage
         # reaps ONLY the intermediate (pure zombie cleanup) and does NOT watch the
         # detached collector -- that re-parents to the runner subreaper (or init) and
@@ -684,7 +684,7 @@ sub run_job {
 
         # The spawn path is the stage's direct child; report its pid so the runner's
         # status/abort map has it. The detached test-job collector reports its own
-        # pid to the runner over its handshake (ticket #28), so it is not reported
+        # pid to the runner over its handshake (ticket TODO-28), so it is not reported
         # here.
         eval { $self->state->job_pid($task->{job_id}, $pid); 1 };
     }
@@ -726,10 +726,10 @@ sub end_test_loop {
         # sets for `yath reload`. Without it the base stage merely ends its loop and
         # winds down WITHOUT respawning: it has already killed its child stages, so the
         # preload tree is gone while the preload-root parent stays alive, the runner
-        # never sees the root die, and every stage stays 'restarting' forever (#112).
+        # never sees the root die, and every stage stays 'restarting' forever (TODO-112).
         # Named stages must NOT set it -- they do not own the jump frame and already
         # relaunch via their exit-0 path, and taking the respawn would duplicate the
-        # tree (#111).
+        # tree (TODO-111).
         my $stage = $self->{+STAGE};
         $self->{+PENDING_RELOAD} //= 1
             if defined($stage) && ($stage eq 'base' || $stage eq 'default');
@@ -754,7 +754,7 @@ sub set_proc_exit {
         # connection EOF on runner.socket (ARCHITECTURE.md §5.4), not from this reaped
         # exit code. The stage therefore reports NO verdict back to the runner --
         # doing so would double-decide -- and keeps no job-pid bookkeeping of its own:
-        # the job's pid reaches the runner via the collector handshake (#28). Nothing
+        # the job's pid reaches the runner via the collector handshake (TODO-28). Nothing
         # to do here beyond the base reap below.
     }
     elsif ($proc->isa('Test2::Harness2::Runner::StageProcess')) {

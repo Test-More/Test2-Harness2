@@ -51,7 +51,7 @@ subtest already_signalled => sub {
 };
 
 # Note: the orphaned()-drives-shutdown wiring (end_test_loop) was inlined into
-# run_scheduler_only's no-preload loop in the run-path collapse (#29); orphaned()
+# run_scheduler_only's no-preload loop in the run-path collapse (TODO-29); orphaned()
 # itself is the unit-tested primitive above.
 
 done_testing;

@@ -11,7 +11,7 @@ use Test2::Collector::Util::Socket qw/open_unix_listen/;
 use App::Yath2::Tester qw/yath/;
 use App::Yath2::Util();
 
-# Ticket #121: `yath stop` / `yath kill` must never busy-wait unbounded on a wedged
+# Ticket TODO-121: `yath stop` / `yath kill` must never busy-wait unbounded on a wedged
 # runner, and `yath kill` must ESCALATE (TERM -> bounded wait -> KILL) while NEVER
 # signalling a pid it cannot corroborate as the runner (the recycled-pid safety).
 #

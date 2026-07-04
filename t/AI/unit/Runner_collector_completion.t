@@ -38,7 +38,7 @@ use Test2::Harness2::Runner::Role::Service::TransitionHub;
         push @{$self->{retried}} => $job_id;
         # Mirror State::retry_task: stop the current try (release the slot), then either
         # re-queue (implicit here) and report true, or -- on a halted run -- decline the
-        # re-queue and report false (#117).
+        # re-queue and report false (TODO-117).
         delete $self->{running}{$job_id} or die "Could not find task to retry ($job_id)";
         return 0 if $self->{decline_retry};
         return 1;
@@ -132,7 +132,7 @@ subtest eof_with_fail_retries_then_fails => sub {
     my $runner = mk_runner(running => {J1 => {file => 'a.t', retry => 1}});
     my $conn0  = FakeConn->new;
 
-    # First attempt (try 1, 1-based per R10/#49) fails -> retry (one try remains).
+    # First attempt (try 1, 1-based per R10/TODO-49) fails -> retry (one try remains).
     identify($runner, $conn0, job_id => 'J1', job_try => 1, run_id => 'R1');
     feed_transition($runner, $conn0, {harness_collector => {uuid => 'C1'}, harness_final_state => {pass => 0}});
     $runner->collector_conn_eof($conn0);
@@ -152,7 +152,7 @@ subtest eof_with_fail_retries_then_fails => sub {
 };
 
 subtest declined_retry_falls_through_to_done => sub {
-    # #117: a job fails with a try still left, but its run has HALTED (e.g. a sibling
+    # TODO-117: a job fails with a try still left, but its run has HALTED (e.g. a sibling
     # bailed under --no-abort-on-bail, or a caught-signal halt raced the failing EOF).
     # State::retry_task stops the job but DECLINES to re-queue it on a halted run
     # (returns false). The completion decision must see the decline and fall through to
@@ -175,7 +175,7 @@ subtest declined_retry_falls_through_to_done => sub {
     ok(!(grep { $_->{state} eq 'retry' } @{$runner->{announced}}), "no phantom 'retry' was announced");
 
     ok(!$runner->state->running_tasks->{J1}, "no dangling RUNNING entry after a declined retry");
-    ok(!$runner->{'collector_current_try'}{J1}, "the current-try marker was NOT advanced on decline (#117 Step 2)");
+    ok(!$runner->{'collector_current_try'}{J1}, "the current-try marker was NOT advanced on decline (TODO-117 Step 2)");
 };
 
 subtest eof_without_final_state_fails => sub {

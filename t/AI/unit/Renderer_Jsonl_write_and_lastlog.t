@@ -10,7 +10,7 @@ use File::Temp qw/tempdir/;
 use App::Yath2::Renderer::Jsonl;
 use App::Yath2::Options::Logger;
 
-# Regression coverage for ticket #143 (Jsonl renderer / lastlog bundle):
+# Regression coverage for ticket TODO-143 (Jsonl renderer / lastlog bundle):
 #   * finish() must CHECK close() -- a failed flush/close (disk full mid-run)
 #     means the log is corrupt/truncated, so it warns and MUST NOT print the
 #     falsely-reassuring "Wrote log file" success line (audit finding 57).

@@ -173,7 +173,7 @@ is **not** execution order here — dependencies are noted inline:
 14. **Split `Test2::Harness2::TestFile`** (§1) — move file-reading/decision logic
     into `App::Yath2` (alongside `App::Yath2::RunPlan`); leave a state-only
     object in `Test2::Harness2`; queue jobs carrying the pre-computed state.
-15. **Final renderer ordering** — pinned (#44): per-job chronological order only,
+15. **Final renderer ordering** — pinned (TODO-44): per-job chronological order only,
     not cross-job. `Renderer::Driver` keeps the default (transitions live, a job's
     events fed at completion) and adds a `--live` tail mode (every job's events
     file tailed as it appears, interleaved across jobs). See §4.5.
@@ -503,7 +503,7 @@ no preload-root and the runner forks each test-job collector itself directly
   A run's data — its raw queue item, its job states, its lifecycle — lives **on the
   one canonical `Run` object** (no parallel `run_items` hash). Each run records the
   **connection that queued it** (the command's peer connection + its `peer_pid` from
-  the §5.2 identity handshake, bloat #1) and an **`abort_on_disconnect` flag
+  the §5.2 identity handshake, bloat TODO-1) and an **`abort_on_disconnect` flag
   (default true)**. Retention and teardown are gated on that owner connection,
   **not** on completion:
   - **Finished + owner connected** → retained (the command may still query it).
@@ -525,7 +525,7 @@ no preload-root and the runner forks each test-job collector itself directly
   not only the owner — only *retention/abort* is tied to the owner.
 - **Preload-root crash terminates a persistent runner.** If the preload-root exits
   unexpectedly (a crash, not a clean stop) the runner cannot host preloaded runs and
-  does **not** respawn it (bloat #3) — the persistent runner **terminates**
+  does **not** respawn it (bloat TODO-3) — the persistent runner **terminates**
   (active runs fail; this is not a per-run condition the runner papers over). This is
   deliberate: it prevents accidentally recreating respawn-like behavior. The narrower
   resilience that *is* wanted lives in the stages: when **reload is enabled**, a
@@ -590,7 +590,7 @@ older rule that an emit-only auxiliary service has *no socket of its own* is
 superseded by the unified connection model (§5.2): every service has one listen
 socket, and reaching out vs being reached are the same channel.
 
-**§4.4 addendum — gating policy and realized implementation (chunk 7 / #43,
+**§4.4 addendum — gating policy and realized implementation (chunk 7 / TODO-43,
 `[landed]`).** The previously-undefined gating policy is now pinned, and the
 sampler half is landed:
 
@@ -609,7 +609,7 @@ sampler half is landed:
   **decrease only after the lower value holds `decrease_delay` (1.0s ≈ 5 ticks)**,
   an unchanged value reports nothing. A message carries the current rounded value of
   both metrics (plus the load average). Change-gating is bounded by a
-  **max-staleness heartbeat** (#138): if no message has gone out for `heartbeat`
+  **max-staleness heartbeat** (TODO-138): if no message has gone out for `heartbeat`
   seconds (default **2.0s**) the sampler sends the current snapshot unconditionally,
   so a consumer of the raw fields (e.g. `Resource::Memory`'s absolute free-byte
   floor) never acts on data older than the heartbeat even while a rounded bucket
@@ -630,7 +630,7 @@ sampler half is landed:
   == 0 / a fatal read error as connection-closed and drops the connection.)
 
 **Gating policy = opt-in throttling resources (not a scheduler check).** Throttling
-is modeled as scheduler **resources** composing the #24 Resource Role plus a new
+is modeled as scheduler **resources** composing the TODO-24 Resource Role plus a new
 `Test2::Harness2::Role::Resource::Utilizer`, reading the runner's shared
 `system_load` snapshot (via a `State` backref) rather than sampling `/proc` inline —
 so they are cross-platform (Linux + BSD):
@@ -658,7 +658,7 @@ the same `Test2::Harness2::Role::Resource` contract
 pipe-ring pages), was **dropped** for now:
 
 - **`UnixLimits`** — caps by RLIMIT `nofile` / `as` (each a raw count or a
-  percent-of-limit). There is deliberately **no `nproc` dimension** (#138):
+  percent-of-limit). There is deliberately **no `nproc` dimension** (TODO-138):
   `RLIMIT_NPROC` is enforced by the kernel **per real UID** across every task the
   user owns, so a single runner cannot measure current usage against it without a
   full `/proc` scan on the scheduler hot path — a percentage gate could never fire
@@ -691,7 +691,7 @@ Key decisions:
   querying uses **optional `BSD::Resource`** (lazy-required, disable + warn if
   requested and missing); Linux reads RLIMIT from `/proc` with no dep. Count /
   percent / size knobs parse via `parse_count_or_pct` / `parse_size_or_pct`
-  (`Test2::Harness2::Util::Units`, survey #11).
+  (`Test2::Harness2::Util::Units`, survey TODO-11).
 - **No DB persistence (deferred).** The `resources` / `resource_types` telemetry
   tables **remain deferred** — these resources are **pure runtime throttling with
   no DB impact**; resource-state persistence rides the later deferred
@@ -735,7 +735,7 @@ archived runs after the fact. A rewrite of 1.0's renderers.
   archived rendering. The driving loop and the live/archive sources are the §4.12
   render-loop library. *(Forward-looking; the archive half lands with the DB-layer
   rewrite.)*
-- **`ResetTerm` is a default-on-when-TTY terminal-reset renderer (survey #13).**
+- **`ResetTerm` is a default-on-when-TTY terminal-reset renderer (survey TODO-13).**
   `App::Yath2::Renderer::ResetTerm` is a no-op `render_event` renderer whose
   `finish` prints a terminal reset (`\e[0m` for attributes, `\e[?25h` to restore
   the cursor — avoid `\e[=l`) **only when STDOUT is a TTY** (`-t STDOUT`), undoing
@@ -763,7 +763,7 @@ in favor of a jsonl renderer + a separate DB logger process, and the
 `Renderer::{DB,Server}` sinks move to `reference/old_db` with the old DB layer —
 see the renderer/options bullets above and §4.6.)*
 
-**Ordering contract (pinned, chunk 15 / #44).** The guarantee is **per-job
+**Ordering contract (pinned, chunk 15 / TODO-44).** The guarantee is **per-job
 chronological order only**: a single job's own events always render in the order
 that job produced them; events from **different** jobs may interleave. Cross-job
 chronological ordering is explicitly **not** a guarantee. The per-job ordering
@@ -902,7 +902,7 @@ uppercase via `Test2::Util::UUID`. Derivation math (§4.6.2) operates on the 128
 integer, so it is case-irrelevant.
 
 **`job_tries` folded-verdict columns + the retry-recording contract (survey
-#3 / #5).** Each *try* of a job is one `job_tries` row. The runner owns *when*
+TODO-3 / TODO-5).** Each *try* of a job is one `job_tries` row. The runner owns *when*
 to retry (in-memory, DB-free — `Runner/State.pm` re-dispatches with `is_try++`
 on a real failure; the separate-process/DB-driven retry was deliberately removed,
 §4.7); recording is **record-only** — the logger writes **one row per `is_try`**
@@ -922,12 +922,12 @@ persisted column**; `retry_limit` is **input** and lives in the row's
 - **`status`** enum, **`exit_code`**, **`started`** / **`finished`** (+
   **`duration`**).
 - **`parameters`** JSON (per-try input, incl. `retry_limit`), **`fields`** JSON
-  (directive-derived field shapes, #1).
+  (directive-derived field shapes, TODO-1).
 - **No `stdout` / `stderr` columns.** They are read on demand from the events
   artifact blob (§4.6.4); the blob already holds the full output, so they are not
   duplicated into row state.
 
-**Finalize / fold rule (survey #3).** A job is **resolved** once its tries are
+**Finalize / fold rule (survey TODO-3).** A job is **resolved** once its tries are
 done. Then **`jobs.passed` = any-try-passed** (some `job_tries.result` is true),
 **`jobs.failed` = resolved && !passed**, and the run aggregates over its resolved
 jobs: **`runs.passed` / `runs.failed` / `runs.retried`** (retried = a job with
@@ -1046,7 +1046,7 @@ renderer (§4.5) — those are separate concerns. It is the *write* side of the 
   `events.jsonl.zst` **whole** as an artifact blob (§4.6.4), importing each blob as
   that collector finalizes (not batched at run-end) to shrink the cleanup race.
   Binary-extraction (§4.6.3) happens here. **Retry recording is record-only**
-  (survey #3): the logger writes **one `job_tries` row per `is_try`** and, when a
+  (survey TODO-3): the logger writes **one `job_tries` row per `is_try`** and, when a
   job resolves, folds `jobs.passed = any-try-passed` / `jobs.failed = resolved &&
   !passed` and the `runs.passed/failed/retried` aggregate (§4.6.1) — the runner
   owns *when* to retry; the logger only records the verdict.
@@ -1251,7 +1251,7 @@ service class):
   `down` enum is in place — see `TODO_STEPS.md` chunk 10. **Stale-incarnation reports are
   rejected by connection-currency** — a report is honored only from the connection
   currently registered for that stage identity — **not** by a wire generation
-  counter; the earlier per-report `generation` is removed, bloat #3.)
+  counter; the earlier per-report `generation` is removed, bloat TODO-3.)
 - **Restart is stage-initiated; respawned by the preload-root.** On its own
   restart trigger the stage reloads **in-place** (churn) when it can; otherwise it
   closes its channel and **exits**, and the **preload-root** (the stage's parent
@@ -1347,7 +1347,7 @@ communication with the preloads to make the decision:
   **not** absent. A map refresh (reload) decides per stage whether a now-missing
   stage is dropped from the map (→ treated absent/permanent for new resolutions) or
   explicitly marked `down`. So `down`/absent is the concrete permanent-unavailable
-  signal #2 reserved.
+  signal TODO-2 reserved.
 - **`assign($task, $state)` records the chosen stage on the job** (the first
   available listed stage, or `default` for an advisory miss), so dispatch sends it to
   the right `preload-<stage>` channel. A `no_preload` task gets no stage and is not
@@ -1359,13 +1359,13 @@ communication with the preloads to make the decision:
   dispatch to the assigned stage finds it gone, the job is **put back in the queue**
   to be re-resolved and re-assigned on a later tick — *not* aborted, and *not*
   counted as a retry. This requeue primitive is required by the scheduler
-  regardless (a stage that self-restarts mid-run, §4.7/#3, must not fail its
+  regardless (a stage that self-restarts mid-run, §4.7/TODO-3, must not fail its
   in-flight-but-unlaunched jobs); the resource just makes it the normal path.
 - **Startup-wait is the resource's job, with a configurable safeguard.** A stage may
   legitimately take minutes to preload, so there is **no fixed startup timeout** —
   tasks for a `starting`/`restarting` stage simply wait (`available` = `0`), and
   `done()` will not complete a run while tasks are pending. A *crashed* stage is
-  detected by its socket EOF (§4.7/#3), so it never hangs the run. The remaining
+  detected by its socket EOF (§4.7/TODO-3), so it never hangs the run. The remaining
   gap is a stage that is **alive but never reports ready** (hangs during preload **or
   during a `restarting`/reload**): to bound that, the resource enforces an
   **optional, configurable per-stage startup timeout** — generous and off-by-default
@@ -1657,10 +1657,10 @@ understood flat `HARNESS-…` lines).
 - **Structural fields flow to the task.** The structural directives —
   `retry` / `timeout` / `category` / `duration` / `stage` / `conflicts` / slots —
   map onto dedicated job fields or the job `parameters` JSON and drive scheduling
-  (they already do; #4.7a's preload-stage directives are part of this set). Timeout
+  (they already do; TODO-4.7a's preload-stage directives are part of this set). Timeout
   values parse to seconds via `parse_duration` (`timeout.event` /
   `timeout.postexit`); the `duration short|medium|long` directive stays a
-  **scheduling label**, not parsed as seconds (survey #11).
+  **scheduling label**, not parsed as seconds (survey TODO-11).
 - **Arbitrary `meta.*` / `feature.*` persistence is DEFERRED (E5).** The free-form
   `meta.*` / `feature.*` nested subtrees parse fine, but durably persisting them
   (task-payload + snapshot + logger plumbing into the `fields` JSON columns) is a
@@ -1800,7 +1800,7 @@ from there the available `preload-<stage>.socket`s). This replaces the
   queries liveness/PID **over the socket** in normal operation, and resolves the
   workdir via the symlink and **reads the `PID` file** as the fallback for
   signal-based termination when the socket is unresponsive.
-- **Failure semantics (probe taxonomy, hardened #145).** Discovery does not treat
+- **Failure semantics (probe taxonomy, hardened TODO-145).** Discovery does not treat
   every non-connecting link as absent-and-cleanable. `probe()` classifies a link as
   **LIVE** (the socket accepts a connection), **NOT-LIVE** (a transient/ambiguous
   state — a wedged runner whose `connect` is refused but whose `PID` is still alive,
@@ -1813,13 +1813,13 @@ from there the available `preload-<stage>.socket`s). This replaces the
   fallback above stays available — and the probe uses a non-blocking connect so it
   never blocks on a wedged socket.
 
-**Implemented (chunk 12; discovery hardened, #95/#145).** `App::Yath2::Discovery`
+**Implemented (chunk 12; discovery hardened, TODO-95/TODO-145).** `App::Yath2::Discovery`
 owns the symlink end to end — publish on `start`, resolve/`probe` on
 `run`/`which`/`status`/`stop`/`reload`/etc. — and exposes the command surface
 (`pid`/`workdir`/`describe`) **directly**; the interim `App::Yath2::Pfile` shim is
 **removed** (the `PID` file itself still exists as the workdir marker, read via
 Discovery, §5.3 above). The runner publishes the link **from itself, immediately
-after binding `runner.socket`** (publish-after-bind, #145), so a client resolving a
+after binding `runner.socket`** (publish-after-bind, TODO-145), so a client resolving a
 link finds a socket already bound — or a runner whose live `PID` proves a
 boot-in-flight — never a link that promises a runner that has not yet bound.
 `App::Yath2::Util::find_runner_link` resolves the symlink path, reusing the legacy
@@ -2075,42 +2075,42 @@ carried by collectors + sockets.
   reap becomes zombie + local bookkeeping only (and on a subreaper-supported OS the
   stage's detached collectors re-parent away, so it has none to reap).
 
-- **Net structural result (landed, #29).** No-preload and preload runs both reduce
+- **Net structural result (landed, TODO-29).** No-preload and preload runs both reduce
   to "fork a collector → decide from its transitions/EOF → the runner owns reaping,"
   so `run_scheduler_only` is the runner's **only** run path; the in-runner
   `run_tests`/`run_stage`/`run_job`/`end_test_loop` stage machinery is removed (the
-  #22 residual and #4 Part 4 / #8 Part 4 folded into this). `dispatch_pending` branches
+  TODO-22 residual and TODO-4 Part 4 / TODO-8 Part 4 folded into this). `dispatch_pending` branches
   once on `_preload_root_hosts_stages` (kept; still the preload-vs-no-preload
   discriminator — NOT live-peer presence, so a transiently-disconnected preload stage
   still requeues): preload → `service_send` to the stage; no-preload → the runner forks
   the test collector itself (`_launch_local_job`). A no-preload collector stays a
   **watched** runner child (reaped via `set_proc_exit`, job_id known) -- completion
-  still rides EOF; only preload collectors detach and re-parent (#28). Spawn requires a
+  still rides EOF; only preload collectors detach and re-parent (TODO-28). Spawn requires a
   preload stage (rejected at queue time on a no-preload runner).
 - **The `IPC` controller base class is slimmed, not dismantled.** The original plan
-  (ticket #8) was to delete the base class outright, on the premise that only **2**
+  (ticket TODO-8) was to delete the base class outright, on the premise that only **2**
   consumers ever used it: the Runner and the `yath test` command. That premise no
-  longer holds. The #22 split created a **third** co-equal consumer,
+  longer holds. The TODO-22 split created a **third** co-equal consumer,
   `Test2::Harness2::Preload::Host` (`use parent 'Test2::Harness2::IPC'`): the
   in-preload-tree stage host runs its **own** `run_stage`/`run_job` loop and is still
   a genuine multi-child controller — it forks stages + jobs, calls `wait()`, and reaps
   them through `set_proc_exit` (its Job branch is zombie-only, but its `StageProcess`
-  branch performs live monitor-relaunch of named stages via `longjump`). #29 scoped
+  branch performs live monitor-relaunch of named stages via `longjump`). TODO-29 scoped
   `Preload::Host` explicitly **out of scope** ("the Host, with its OWN
   run_tests/run_stage/run_job, is OUT OF SCOPE"). So the shared three-pass reaper
   (`_bring_out_yer_dead` / `_check_if_dead_yet` group-wait / `_ex_parrots`
   vanished-sweep) inside `wait()`, plus `killall`, `check_for_fork`, `watch`, `spawn`,
   and the `category` slot, **remain** — `Preload::Host` depends on all of them. What
   *was* removed is real but narrower than the original framing:
-  - **`cat`/`all_cat`/`block` waits + `PROCS_BY_CAT`** — gone (ticket #6). `wait()`
+  - **`cat`/`all_cat`/`block` waits + `PROCS_BY_CAT`** — gone (ticket TODO-6). `wait()`
     takes only `all`/`timeout`.
-  - **Reap-driven verdicts** — gone (#27/#28/#29). Both `Runner::set_proc_exit` and
+  - **Reap-driven verdicts** — gone (TODO-27/TODO-28/TODO-29). Both `Runner::set_proc_exit` and
     `Preload::Host::set_proc_exit` Job branches are now pure zombie cleanup + local
     bookkeeping; completion rides EOF + transitions.
-  - **die-on-unmonitored** — gone (#8 Part 1): an unmonitored pid reaped here is
+  - **die-on-unmonitored** — gone (TODO-8 Part 1): an unmonitored pid reaped here is
     benign and skipped, never fatal.
   - **In-runner stage machinery + `run_tests`/`run_stage`/`run_job`/`end_test_loop`**
-    — gone from the *Runner* (#29); they live only in `Preload::Host` now.
+    — gone from the *Runner* (TODO-29); they live only in `Preload::Host` now.
   - **`set_sig_handler`** — gone (chunk 21): zero callers; Runner/Host populate
     `{+HANDLERS}` directly.
 - **What stays (and why).** `Test2::Harness2::Util::IPC`

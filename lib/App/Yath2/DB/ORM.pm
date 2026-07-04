@@ -29,7 +29,7 @@ Builds a B<fresh> L<DBIx::QuickORM> ORM with the C<autofill> block defined here 
 the single definition (JSON/UUID/DateTime autotypes + the dumb autorow) -- attaches
 a db, and returns the live connection. A fresh ORM per call is required because a
 C<DBIx::QuickORM::ORM>'s C<db> is write-once, so a shared ORM singleton could never
-be re-attached (ticket #93 collapsed the old duplicated definition in
+be re-attached (ticket TODO-93 collapsed the old duplicated definition in
 L<App::Yath2::Schema> onto this one; that module is now a thin stable-name
 delegator to this builder).
 

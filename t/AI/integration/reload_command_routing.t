@@ -2,7 +2,7 @@ use Test2::V0;
 use Test2::Require::AuthorTesting;
 # HARNESS-DURATION-MEDIUM
 
-# TRUE reload-ROUTING regression (#113 step 3). `yath reload` SIGHUPs the persistent
+# TRUE reload-ROUTING regression (TODO-113 step 3). `yath reload` SIGHUPs the persistent
 # runner; the runner must translate that into a 'reload_root' delivered to the
 # base/default stage's LIVE channel, which respawns the whole preload tree from a
 # clean interpreter. The buggy runner looked the base stage up by PRELOAD_ROOT_PID
@@ -97,7 +97,7 @@ yath(command => 'reload', exit => 0);
 sleep 3;
 
 # A run AFTER the reload must still dispatch -- proves the runner did not wedge/hang and
-# the stage came back (the #111/#112 guards keep the respawn from duplicating the tree
+# the stage came back (the TODO-111/TODO-112 guards keep the respawn from duplicating the tree
 # or wedging the base).
 yath(
     command => 'run',

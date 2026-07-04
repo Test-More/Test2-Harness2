@@ -1,7 +1,7 @@
 use Test2::V0;
 use v5.38;
 
-# Ticket #139 (finding 6+G2): App::Yath2::Command::spawn::bridge_io must NOT report a
+# Ticket TODO-139 (finding 6+G2): App::Yath2::Command::spawn::bridge_io must NOT report a
 # clean exit 0 when the supervisor's control channel closes WITHOUT an exit_status
 # frame (an OOM/crash between hello and exit_status leaves the setsid'd script running
 # detached). This drives the REAL bridge_io against a forked "supervisor" that dials

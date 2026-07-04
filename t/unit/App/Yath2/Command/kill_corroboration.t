@@ -6,7 +6,7 @@ use Time::HiRes qw/time/;
 
 use Test2::Util qw/CAN_REALLY_FORK/;
 
-# Unit coverage for ticket #121's KILL-safety corroboration predicate and its
+# Unit coverage for ticket TODO-121's KILL-safety corroboration predicate and its
 # helpers on the shared base App::Yath2::Command::run. These are the guarantees the
 # "recycled pid can NEVER be signaled" proof rests on, exercised WITHOUT starting a
 # real runner: the predicate is pure over ($disco, $pid) plus a `ps` identity probe.

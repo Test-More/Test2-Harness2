@@ -3,7 +3,7 @@ use v5.38;
 
 use Test2::Harness2::Service::Sampler;
 
-# Ticket #43 / DB-rewrite: the sampler records each snapshot into its own
+# Ticket TODO-43 / DB-rewrite: the sampler records each snapshot into its own
 # collector event stream as a DURABLE record. It must do so as a structured
 # harness_system FACET event (which the default renderer has no render path for),
 # NOT as a raw `print STDOUT '{"system_load":...}'` line -- a captured raw line is

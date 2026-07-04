@@ -4,7 +4,7 @@ use File::Temp qw/tempfile/;
 use Test2::Harness2::Util::Directives::Legacy;
 use App::Yath2::TestFile;
 
-# Regression coverage for #154 findings 45 (bare-directive corruption) and 46
+# Regression coverage for TODO-154 findings 45 (bare-directive corruption) and 46
 # (wrong warning line numbers). A bare legacy directive used to corrupt the
 # result tree and later die 'Not a HASH reference'; it must now warn once with a
 # clear message + _at() location and leave the tree unpolluted.

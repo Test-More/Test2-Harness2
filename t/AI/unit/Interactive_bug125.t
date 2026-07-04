@@ -15,7 +15,7 @@ skip_all "These tests require forking" if $ENV{T2_NO_FORK} || !CAN_REALLY_FORK;
 
 $ENV{'YATH_SELF_TEST'} = 1;
 
-# Ticket #125. On Ctrl-C the interactive accept-loop parent used to fire its
+# Ticket TODO-125. On Ctrl-C the interactive accept-loop parent used to fire its
 # INT/TERM handler straight into exit(), which ran File::Temp's END cleanup for
 # the workdir tempdir while the yath child, runner, and collectors were still
 # mid-shutdown and writing into it -- events files vanished under them. The parent
@@ -74,7 +74,7 @@ if (!$wrapper) {
         # The yath child's graceful shutdown: on the forwarded signal, keep
         # writing "events" into the workdir for a spell, recording whether the
         # directory stayed intact the whole time. If the parent had cleaned the
-        # workdir out from under us (the #125 bug), these writes would ENOENT.
+        # workdir out from under us (the TODO-125 bug), these writes would ENOENT.
         my $shutdown = sub {
             my $ok = 1;
             for my $i (1 .. 5) {
@@ -135,10 +135,10 @@ my $result  = _slurp($result_file);
 my $workdir = _slurp($wdpath_file);
 
 is($result, 'ok',
-    "victim finished its shutdown writes into an INTACT workdir -- cleanup was deferred until reap (#125)");
+    "victim finished its shutdown writes into an INTACT workdir -- cleanup was deferred until reap (TODO-125)");
 
 is($status & 127, 0, "the wrapper exited normally (was not itself signaled to death)");
-is($status >> 8,  0, "the reaped child's clean exit was forwarded (routed through the #140 status expression)");
+is($status >> 8,  0, "the reaped child's clean exit was forwarded (routed through the TODO-140 status expression)");
 
 ok(defined($workdir) && length($workdir), "wrapper advertised its workdir path");
 ok(!-e $workdir, "the workdir WAS cleaned -- deferred, not disabled (File::Temp END still fired at wrapper exit)")

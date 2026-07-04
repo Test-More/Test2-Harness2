@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #115: task_stage is RE-RESOLVED at start time and can diverge from the queue-time
+# TODO-115: task_stage is RE-RESOLVED at start time and can diverge from the queue-time
 # bucket. A task whose preload_list is [alpha, beta] buckets under 'beta' while
 # 'alpha' is still 'starting' ('first up wins' -> beta). If 'alpha' readies before
 # the task is dispatched, _next still pulls the task from the 'beta' bucket (it was

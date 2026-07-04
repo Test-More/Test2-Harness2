@@ -6,7 +6,7 @@ use Time::HiRes qw/time/;
 
 use Test2::Harness2::Runner::Subscriber;
 
-# #134 finding 108: a runner that dies after binding (or before binding) its
+# TODO-134 finding 108: a runner that dies after binding (or before binding) its
 # socket must not cost a subscriber a flat CONNECT_TIMEOUT (30s) stall in
 # _connect. A liveness_check coderef that reports the runner gone makes subscribe
 # fail fast.

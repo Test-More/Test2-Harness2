@@ -30,11 +30,11 @@ This command will stop a persistent instance, and output any log contents.
 }
 
 # any_state: we want the Discovery object in EVERY state (live/not_live/dead) so we
-# can route off #145's probe taxonomy and reach the workdir PID file with the socket
+# can route off TODO-145's probe taxonomy and reach the workdir PID file with the socket
 # dead.
 sub pfile_params { (any_state => 1) }
 
-# Stop the persistent runner, driven by #145's discovery taxonomy (ticket #121):
+# Stop the persistent runner, driven by TODO-145's discovery taxonomy (ticket TODO-121):
 #
 #   LIVE      -> graceful 'stop'+end_queue over the socket, drain teardown, then a
 #                BOUNDED wait for the pid to exit (shared 30s deadline). Gone =>
@@ -69,7 +69,7 @@ sub _stop_live {
     # A live socket with a missing/garbled workdir PID file (external deletion or
     # corruption only -- the PID is written before the socket binds) leaves
     # $disco->pid undef; attaching/kill(0)-ing on an undef pid used to misbehave.
-    # Fail fast with an actionable message instead (#146).
+    # Fail fast with an actionable message instead (TODO-146).
     my $pid = $disco->pid
         // die "Runner found at " . $disco->workdir . " but its PID file is missing/unreadable; restart the runner.\n";
 
@@ -96,10 +96,10 @@ sub _stop_live {
     $deadline = time + $self->STOP_DEADLINE;
 
     # Graceful 'stop' (the runner translates it into its own TERM teardown) + the
-    # end_queue fallback. The eval guard alone now suffices: since #157 gave the
+    # end_queue fallback. The eval guard alone now suffices: since TODO-157 gave the
     # client dialer a bounded non-blocking connect, a wedged / full-backlog socket
     # makes the client croak at its CONNECT_TIMEOUT instead of blocking forever, so
-    # the croak always dies into the eval here -- retiring #121's alarm backstop
+    # the croak always dies into the eval here -- retiring TODO-121's alarm backstop
     # (whose sole purpose was to unwedge that never-returning blocking connect).
     $ok  = eval { $self->client->submitter->stop; 1 };
     $err = $@;

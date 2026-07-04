@@ -17,7 +17,7 @@ sub summary     { "Start an importer process (temporarily unavailable)" }
 sub description { "Start an importer process that will wait for uploaded logs to import. NOTE: the DB/web layer is being rewritten; this command is temporarily unavailable." }
 sub group       { "database" }
 
-# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket #45)
+# Stub: the old DBIx::Class DB/web layer moved to reference/old_db (ticket TODO-45)
 # and is being rewritten on QuickORM. Keep the command visible in `yath help`
 # but error clearly if anyone tries to run it.
 sub run {

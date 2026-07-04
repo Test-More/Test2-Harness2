@@ -109,7 +109,7 @@ subtest connect_stdin_installs_passed_fd_on_fd0 => sub {
         "the test read the command's STDIN after connect_stdin dup2'd it onto fd 0");
 };
 
-# (G6, ticket #140) connect_stdin scrubs $ENV{YATH_INTERACTIVE} from the live env
+# (G6, ticket TODO-140) connect_stdin scrubs $ENV{YATH_INTERACTIVE} from the live env
 # immediately after installing STDIN (before any test-body code), so no user code
 # runs with the socket path visible -- every interactive re-dial path is gated on
 # that variable. Drive a child through the handshake for BOTH call forms and have

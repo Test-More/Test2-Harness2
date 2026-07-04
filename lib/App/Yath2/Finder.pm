@@ -401,7 +401,7 @@ sub add_rerun_to_search {
                     $ref->{$type}++;
 
                     $ref->{$data->{fail} ? 'fail' : 'pass'}++ if $type eq 'end';
-                    # Try ordinals are 1-based (R10 / #49): the first attempt is
+                    # Try ordinals are 1-based (R10 / TODO-49): the first attempt is
                     # is_try == 1, so a job was actually retried only when is_try
                     # exceeds 1 (a 2nd-or-later attempt).
                     $ref->{retry}++                           if ($data->{is_try} // 0) > 1;

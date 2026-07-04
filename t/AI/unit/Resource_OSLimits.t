@@ -4,7 +4,7 @@ use v5.38;
 use Test2::Harness2::Runner::Resource::UnixLimits;
 use Test2::Harness2::Runner::Resource::Disk;
 
-# The OS-limit throttle resources (#59) read their metrics IN-RESOURCE,
+# The OS-limit throttle resources (TODO-59) read their metrics IN-RESOURCE,
 # runner-local (NOT via the shared system-load sampler): UnixLimits reads
 # /proc/self/{limits,status,fd}; Disk samples each mount via Filesys::Df. A defer
 # is a transient wait (available => 0); a permanently broken mount is a skip
@@ -31,7 +31,7 @@ subtest unixlimits_inline_parse => sub {
     is($r->as, undef, "as off by default");
 };
 
-# #138: the nproc dimension was DROPPED (RLIMIT_NPROC is per-real-UID and cannot
+# TODO-138: the nproc dimension was DROPPED (RLIMIT_NPROC is per-real-UID and cannot
 # be measured cheaply/correctly from the runner). An explicit nproc= must be a
 # hard error, NEVER silently ignored -- that would be the gate-that-cannot-fire
 # defect in a new costume.
@@ -110,7 +110,7 @@ subtest unixlimits_unsupported_is_infinite => sub {
     is($r->available({job_id => 'j2'}), 1, "unsupported -> always available (no throttle)");
 };
 
-# #138 verify line: cover REAL semantics, not just mocks. On Linux the real
+# TODO-138 verify line: cover REAL semantics, not just mocks. On Linux the real
 # resource must be supported and read a live nofile dimension from /proc, with no
 # nproc dimension present.
 subtest unixlimits_real_proc_smoke => sub {

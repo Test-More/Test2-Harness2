@@ -1,6 +1,6 @@
 use Test2::V0;
 
-# Unit test for the DB logger's binary-extraction path (#50 / spec §5):
+# Unit test for the DB logger's binary-extraction path (TODO-50 / spec §5):
 # while storing a collector's events.jsonl.zst as an artifact blob, any event
 # carrying an embedded `binary` facet has that binary split into its OWN binary
 # artifact row (artifact_uuid = derive(collector_uuid, idx>=1)) and the event's

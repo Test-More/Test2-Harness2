@@ -392,8 +392,8 @@ sub runner_output_done ($self) {
     # terminal can never be read. There is nothing to drain, so report done
     # immediately -- otherwise the finalize drain
     # (App::Yath2::RenderLoop::LiveProducer::_drain_runner_output) dead-waits the
-    # full DRAIN_RUNNER_OUTPUT_TIMEOUT on EVERY hidden run (#141 finding 17; also
-    # the observable symptom behind TIER-10 #160, where the hidden-output finalize
+    # full DRAIN_RUNNER_OUTPUT_TIMEOUT on EVERY hidden run (TODO-141 finding 17; also
+    # the observable symptom behind TIER-10 TODO-160, where the hidden-output finalize
     # never completed promptly / renderer finish was delayed by the dead-wait).
     return 1 unless $self->{+SHOW_RUNNER_OUTPUT};
 
@@ -417,7 +417,7 @@ collector's rel_file name.
 =item $self->dispatch($event)
 
 Hand one harness event to the C<dispatch_cb> coderef. This is the pure-source
-seam (#42): L<App::Yath2::RenderLoop::LiveProducer> installs a C<dispatch_cb>
+seam (TODO-42): L<App::Yath2::RenderLoop::LiveProducer> installs a C<dispatch_cb>
 that collects the ordered events into its queue, so the loop -- not this engine --
 owns the actual sink fan-out (renderers + plugins + the assertion tally). The
 callback is B<required>: dispatching before one is installed is a programming
@@ -477,7 +477,7 @@ sub note_verdict ($self, $job, $try, $end) {
     my $task         = $self->task_for($job->{job_id});
     my $retry_budget = ($task ? $task->{retry} : undef) // ($self->{+RUN} ? $self->{+RUN}->retry : 0) // 0;
 
-    # Try ordinals are 1-based (R10 / #49): the first attempt is $try == 1 and the
+    # Try ordinals are 1-based (R10 / TODO-49): the first attempt is $try == 1 and the
     # job is allowed $retry_budget retries, so it will retry while $try <=
     # $retry_budget -- mirroring the runner's _collector_retry_if_tries decision. An
     # aborted end is terminal: the runner already made the no-retry decision, so it

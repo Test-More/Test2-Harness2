@@ -15,7 +15,7 @@ use Test2::Harness2::Renderer::Base;
 #   * read it BY PATH and fan its recorded events out to a render_event sink
 #   * compute the run-level harness_final rollup from per-job verdicts
 #
-# The base is now a pure source: it hands every event to its dispatch_cb (the #42
+# The base is now a pure source: it hands every event to its dispatch_cb (the TODO-42
 # seam the render loop uses to collect events and own the actual fan-out). A
 # minimal capture cb stands in for the loop, collecting every dispatched event.
 
@@ -44,7 +44,7 @@ write_events_file($ffile, 0);
 my $mon = Test2::Harness2::Runner::Monitor->new;
 
 my %starts = (
-    # Try ordinals are 1-based (R10 / #49): the first attempt is try == 1.
+    # Try ordinals are 1-based (R10 / TODO-49): the first attempt is try == 1.
     'UUID-PASS' => {name => 't/pass.t', events_file => $pfile, run_uuid => 'RUN-1', try => 1},
     'UUID-FAIL' => {name => 't/fail.t', events_file => $ffile, run_uuid => 'RUN-1', try => 1},
 );
@@ -90,7 +90,7 @@ subtest locate_and_read => sub {
         );
 
         # The held event is the synthesized job_end; record the verdict from it.
-        # Try ordinals are 1-based (R10 / #49): the first attempt is try == 1.
+        # Try ordinals are 1-based (R10 / TODO-49): the first attempt is try == 1.
         $base->note_verdict($job, 1, $held[0]->{facet_data}{harness_job_end}) if @held;
     }
 

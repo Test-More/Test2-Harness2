@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-LONG
 
-# Regression test for #129: `yath db sync` is not transactional -- an interrupted
+# Regression test for TODO-129: `yath db sync` is not transactional -- an interrupted
 # sync (Ctrl-C, network drop, a constraint error on one artifact) after the runs
 # row was inserted but before jobs/tries/collectors/artifacts finished used to
 # leave the destination PERMANENTLY incomplete: the run-level short-circuit skipped
@@ -20,7 +20,7 @@ use Test2::V0;
 #     natural-key PK cache (its dest PKs were rolled back).
 #
 # This test drives the App::Yath2::DB::Sync engine directly (fault injection via a
-# `local`-overridden child sync that dies) across the #63 DBMatrix -- a fixed
+# `local`-overridden child sync that dies) across the TODO-63 DBMatrix -- a fixed
 # sqlite SOURCE into each (flavor, version) DEST cell, including duckdb (whose
 # dialect issues the txn via raw BEGIN/COMMIT/ROLLBACK) and, under AUTHOR_TESTING,
 # every server flavor.
@@ -199,7 +199,7 @@ for_each_db_set(sub {
     ok($run2 && $dest->handle('hosts', where => {host_id => $run2->field('host_id')})->first,
         "[$label] (e) run2's host FK resolves on the dest (no dangling PK from a stale cache)");
 
-    # -- LEGACY-PARTIAL SETUP: hand-insert a pre-#129-fix partial for run3 ------
+    # -- LEGACY-PARTIAL SETUP: hand-insert a pre-TODO-129-fix partial for run3 ------
     #    (a runs row + a job, but no tries/collectors/artifacts).
     my $lh = $dest->handle('hosts')->insert({hostname => "legacy.host.$label"});
     my $lp = $dest->handle('projects')->insert({name => "legacy.proj.$label"});
@@ -226,7 +226,7 @@ for_each_db_set(sub {
     my $s2 = App::Yath2::DB::Sync->new(source => $scon, dest => $dest);
     my %in_delta = map { ($_ => 1) } $s2->run_delta;
     ok($in_delta{$R1->{run_uuid}},
-        "[$label] (f) the default delta re-selects the interrupted run1 (fork-A-alone would MISS it -- the txn is what closes #129)");
+        "[$label] (f) the default delta re-selects the interrupted run1 (fork-A-alone would MISS it -- the txn is what closes TODO-129)");
     ok(!$in_delta{$R2->{run_uuid}}, "[$label] (f) delta excludes run2 (already complete on the dest)");
     ok(!$in_delta{$R3->{run_uuid}},
         "[$label] (f) delta EXCLUDES the dest-present legacy partial run3 (this is the any-status gap the per-run txn works around)");

@@ -64,7 +64,7 @@ our @EXPORT_OK = qw{
 # timeout). Degrades to Time::HiRes::time -- the historical behavior -- when
 # CLOCK_MONOTONIC is unavailable.
 #
-# RULES (#134 finding 104): NEVER compare a mono_time() value against a
+# RULES (TODO-134 finding 104): NEVER compare a mono_time() value against a
 # wall-clock time, and NEVER persist or report a mono_time() value as a
 # timestamp. It is an opaque, process-local, monotonically-non-decreasing count
 # of seconds with an arbitrary epoch -- meaningful only in differences. Event
@@ -85,7 +85,7 @@ BEGIN {
 # connect() to a unix SOCK_STREAM socket blocks in the kernel's unix_wait_for_peer
 # once the listener's accept backlog is full (a wedged / uninterruptibly-asleep
 # runner that has bound but stopped accept()ing), so no wall-clock connect timeout
-# could ever fire and the dialer hangs forever (ticket #157). This does the
+# could ever fire and the dialer hangs forever (ticket TODO-157). This does the
 # non-blocking dance instead: connect -> EINPROGRESS -> select-for-writable with a
 # bounded deadline -> getsockopt(SO_ERROR).
 #
@@ -561,7 +561,7 @@ sub write_link_atomic {
 # Publish the discovery symlink under the shared publisher/cleaner lock so it
 # serializes against a concurrent cleaner (App::Yath2::Discovery's clean_if_owned /
 # clean_if_mine take the same "$link.lock" with LOCK_NB). Ordering-invariant for the
-# #145 race closure: a cleaner that decides a link is dead re-checks liveness while
+# TODO-145 race closure: a cleaner that decides a link is dead re-checks liveness while
 # holding this lock, so a publish landing before that re-check flips it to keep, and
 # a publish landing after a cleaner's unlink simply recreates the link.
 #

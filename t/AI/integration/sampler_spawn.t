@@ -14,7 +14,7 @@ use Test2::Collector ();
 use Test2::Collector::Recorder::Zstd ();
 use Test2::Harness2::Service::Sampler;
 
-# Chunk 7 / ticket #43: the runner spawns the system-load sampler as a global
+# Chunk 7 / ticket TODO-43: the runner spawns the system-load sampler as a global
 # helper process under a collector (watch_parent_pid = runner) -- the same shape
 # as spawn_preload_root -- and the sampler dials the runner's socket and pushes a
 # one-way system_load report. This test exercises that REAL process path: a real

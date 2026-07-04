@@ -8,7 +8,7 @@ use Time::HiRes qw/time sleep/;
 use Test2::Harness2::Runner::Client;
 use Test2::Harness2::Role::Service::Connection();
 
-# #109: Test2::Harness2::Runner::Client::_send must CHECK send_request's result.
+# TODO-109: Test2::Harness2::Runner::Client::_send must CHECK send_request's result.
 #
 # Before the fix _send ignored the return: when a one-way submission
 # (queue_run/queue_task/stop_run/end_queue/halt_run) hit a runner whose socket
@@ -16,7 +16,7 @@ use Test2::Harness2::Role::Service::Connection();
 # dropped and the client reconnected and carried on. A dropped queue_task means
 # those test files are never run yet the run still reports GREEN -- silent loss.
 #
-# #108 already gave client connections a bounded-blocking flush (they are not
+# TODO-108 already gave client connections a bounded-blocking flush (they are not
 # owner_flushes), so a merely-slow runner back-pressures rather than losing frames.
 # So the contract is now: every queued task is delivered (backpressure) OR the
 # client dies loudly -- never a silent green run with missing tasks.
@@ -104,7 +104,7 @@ subtest send_result_is_checked => sub {
 # ---------------------------------------------------------------------------
 # 2. Backpressure delivers everything: a burst far larger than the socket buffer
 #    against a reader that starts draining late still lands EVERY task (no loss),
-#    and the client never croaks. Proves the #108 blocking flush + this check
+#    and the client never croaks. Proves the TODO-108 blocking flush + this check
 #    give backpressure, not silent drops.
 # ---------------------------------------------------------------------------
 subtest every_task_arrives_under_backpressure => sub {

@@ -9,7 +9,7 @@ use Test2::Collector::Util::Socket qw/connect_unix/;
 use Test2::Harness2::Util::IPC qw/set_cloexec/;
 use Test2::Harness2::Role::Service::Connection();
 
-# Ticket #32: harness/collector sockets are FD_CLOEXEC, and the no-exec forks
+# Ticket TODO-32: harness/collector sockets are FD_CLOEXEC, and the no-exec forks
 # (collector parent + preload goto::file test launch) explicitly close-sweep
 # every inherited connection + the listen socket so a dead collector's
 # connection still EOFs promptly (ARCHITECTURE.md §5.4 "FD ownership").

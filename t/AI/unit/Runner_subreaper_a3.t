@@ -1,11 +1,11 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# Ticket #28: the runner is a child subreaper, so it reaps re-parented detached
+# Ticket TODO-28: the runner is a child subreaper, so it reaps re-parented detached
 # preload collectors it never watched. _bring_out_yer_dead routes such an unwatched
 # pid through _reaped_unwatched_pid, which maps it to a job via the pid-keyed
 # collector_reap map (recorded when the job reported a pass, and kept alive past the
-# collector's EOF -- ticket #28 C2 -- because job_pids, the status map, is cleared at
+# collector's EOF -- ticket TODO-28 C2 -- because job_pids, the status map, is cleared at
 # that EOF) and runs the A3 post-pass health escalation. We drive the helper directly
 # against the REAL Runner methods via a tiny subclass that captures announce_run_health.
 

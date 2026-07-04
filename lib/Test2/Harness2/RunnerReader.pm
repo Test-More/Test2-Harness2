@@ -167,7 +167,7 @@ sub _wrap ($self, $fd) {
 # The prior code only read stamps off the terminal process-exit / restart records
 # and used LAST_STAMP for everything else, so a stamp-bearing record's own time was
 # ignored and, after a harness_process_restart set LAST_STAMP, hours of subsequent
-# stage output all froze onto the restart instant in renderers/DB (#141 finding 107).
+# stage output all froze onto the restart instant in renderers/DB (TODO-141 finding 107).
 sub _stamp_for ($self, $fd) {
     for my $f (qw/harness_process_exit harness_process_restart harness_final_state harness_state_transition harness_timeout harness_orphan harness_parent_exit/) {
         return $self->{+LAST_STAMP} = $fd->{$f}{stamp} if $fd->{$f} && defined $fd->{$f}{stamp};

@@ -310,7 +310,7 @@ sub _dir_category ($self, $dir, $args) {
     }
     $name = lc($name);
     # The long/medium/short -> duration remap is intentional 1.0 compat and
-    # stays here; category value LEGALITY belongs to the producer (#118).
+    # stays here; category value LEGALITY belongs to the producer (TODO-118).
     if ($name =~ m/^(long|medium|short)$/) {
         $self->_set('duration', [$name]);
     }
@@ -365,7 +365,7 @@ sub _loc ($self) {
 # 'feature.') would silently corrupt the nested tree and later surface as a
 # stripped-location 'Not a HASH reference' die -- croak clearly instead. The
 # per-directive arg validation in _record should prevent this; this is the
-# belt-and-braces backstop (and the guard that survives #85's rework).
+# belt-and-braces backstop (and the guard that survives TODO-85's rework).
 sub _split_key ($self, $key) {
     my @parts = split /\./, $key, -1;
     croak "Internal error: empty segment in directive key path '$key'"

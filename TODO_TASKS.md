@@ -27,35 +27,35 @@ do **not** re-fix it.
   sockets (collector transition reports); reaping is mere zombie cleanup, not a
   scheduling signal.**
 - **Foundational mechanism (review as a set): connection identity = source of
-  truth.** #1 adds **`pid` to the identity handshake** (every peer's pid via
-  `$conn->peer_pid`). #3 replaces generation-stamping with **connection-currency** (a
+  truth.** TODO-1 adds **`pid` to the identity handshake** (every peer's pid via
+  `$conn->peer_pid`). TODO-3 replaces generation-stamping with **connection-currency** (a
   report is honored only from the connection currently registered for that identity).
-  This underpins #1, #2 (real stage pid in status), #3 (stale-incarnation race), #9
-  (reporter args), #12 (run owner connection).
-- **`requeue_task` (introduced in #3) is a prerequisite** for stages self-restarting
-  and for the preload resource's assign→launch race. Specified in #3.
+  This underpins TODO-1, TODO-2 (real stage pid in status), TODO-3 (stale-incarnation race), TODO-9
+  (reporter args), TODO-12 (run owner connection).
+- **`requeue_task` (introduced in TODO-3) is a prerequisite** for stages self-restarting
+  and for the preload resource's assign→launch race. Specified in TODO-3.
 - **Real-world context that drove the big calls:** the 1.0 preload-side `file_stage`
   auto-assignment + `eager` stages were added but never effectively used; people use
-  the harness directive + a custom plugin to assign stages at queue time (#10/#23
+  the harness directive + a custom plugin to assign stages at queue time (TODO-10/TODO-23
   codify that, stages **advisory** unless `REQUIRE`). At least one deployment has
   preload stages that take **2+ minutes** to start (root <1 min) → no fixed
-  named-stage startup timeout, configurable deadlines, generous/off-by-default hung safeguard (#21). A vanished `run`/`test` command = crash/user-kill → **abort the run
-  by default**, flag to detach (#12).
+  named-stage startup timeout, configurable deadlines, generous/off-by-default hung safeguard (TODO-21). A vanished `run`/`test` command = crash/user-kill → **abort the run
+  by default**, flag to detach (TODO-12).
 
 ## Dependency / ordering
 
-- **Early, independent, behavior-preserving:** #1, #6, #7(a,d), #19, #24.
-- **#1 → #2 → #3** in order: peer_pid → 4-state lifecycle → self-termination +
+- **Early, independent, behavior-preserving:** TODO-1, TODO-6, TODO-7(a,d), TODO-19, TODO-24.
+- **TODO-1 → TODO-2 → TODO-3** in order: peer_pid → 4-state lifecycle → self-termination +
   connection-currency (introduces `requeue_task`).
-- **#5 first among SharedJobSlots-touching items** — it deletes the subsystem,
-  mooting parts of #7 and #25.
-- **#6 before #8** — `cat`-waits go, then the IPC controller collapses.
-- **#4 / #8 / #20 / #23 reshape the Runner**, so **#15, #22, #23(rename)** defer until
+- **TODO-5 first among SharedJobSlots-touching items** — it deletes the subsystem,
+  mooting parts of TODO-7 and TODO-25.
+- **TODO-6 before TODO-8** — `cat`-waits go, then the IPC controller collapses.
+- **TODO-4 / TODO-8 / TODO-20 / TODO-23 reshape the Runner**, so **TODO-15, TODO-22, TODO-23(rename)** defer until
   after them.
-- **#23(resolver elimination) supersedes #10/#20/#21's resolver discussion** — the
+- **TODO-23(resolver elimination) supersedes TODO-10/TODO-20/TODO-21's resolver discussion** — the
   resolver is deleted, not fixed.
 
-> Numbering note: ticket numbers (#1-#25) are stable identifiers from the audit
+> Numbering note: ticket numbers (TODO-1-TODO-25) are stable identifiers from the audit
 > consolidation; they are **not** the same as TODO_STEPS chunk numbers. Each ticket's
 > `Step:` line names its parent chunk.
 
@@ -63,7 +63,7 @@ do **not** re-fix it.
 
 ## TIER 1 — High-consensus, behavior-preserving
 
-### #1 — Remove `poll`/`_enqueue`/`%ACTIONS` + bogus `$$`; pid via handshake
+### TODO-1 — Remove `poll`/`_enqueue`/`%ACTIONS` + bogus `$$`; pid via handshake
 **Status:** ✅ DONE (batch 3, `9a1196e14`) — see TODO_DONE.md · **Step:** 10/19 · **Depends:** —
 
 **Problem:** `sub poll {return}` (State.pm) is a dispatch.jsonl fossil called from ~6
@@ -80,15 +80,15 @@ pid" (and `_set_stage_lifecycle` gets the same bogus `$$`).
   sends `{identity => {name, pid => $$}}`; receive stores `IDENTITY_PID`; add a
   `peer_pid` accessor. The runner knows every peer's pid via `service_peers` →
   `$conn->peer_pid`. `no_reply` collector reporters carry `pid => $$` in the recorder
-  preamble (do it in the #9 helper).
+  preamble (do it in the TODO-9 helper).
 - `yath status`/`ps` show each **connected** stage's real pid from its
   `preload-<stage>` peer (`StatusReport`/`request_handler_status`/`ps` build the map
   from `service_peers`). A down/restarting stage has no connection → no pid (correct).
 - Fold-in: `truncate`'s real work is the `halt_run` loop; delete the empty
   `_truncate` + its enqueue.
 
-### #2 — Converge stage state into one 4-state lifecycle
-**Status:** ✅ DONE (batch 4, `a86f0273e`) — see TODO_DONE.md (kept generation for #3) · **Step:** 10 · **Depends:** #1
+### TODO-2 — Converge stage state into one 4-state lifecycle
+**Status:** ✅ DONE (batch 4, `a86f0273e`) — see TODO_DONE.md (kept generation for TODO-3) · **Step:** 10 · **Depends:** TODO-1
 
 **Problem:** `STAGE_READINESS` (`{stage=>pid}`) and `STAGE_LIFECYCLE`
 (`{state,generation,pid,stamp}`) are redundant; every transition writes both.
@@ -97,22 +97,22 @@ pid" (and `_set_stage_lifecycle` gets the same bogus `$$`).
 - Converge on the single richer structure; delete `STAGE_READINESS`. Scheduler gate
   (`_stage_order`, `spawn_stage_ready`) reads `state eq 'up'`.
 - **No pid/generation in State.** Lifecycle = `{state, stamp}`. Status pid comes from
-  the connection (`peer_pid`, #1); stale-incarnation rejection is connection-currency
-  (#3), **not** a wire generation.
+  the connection (`peer_pid`, TODO-1); stale-incarnation rejection is connection-currency
+  (TODO-3), **not** a wire generation.
 - **State machine (implement all four now):** `starting` (committed/known, not yet
   reported — set from the reported stage map), `up` (reported ready, dispatchable),
   `restarting` (temporarily down, coming back), `down` (permanent — **setter =
   "absent from the stage map"**: never configured, misspelled, or removed by a
   refresh). The current non-reload exit maps to `restarting`.
-- These states feed the future preload resource (#11/§4.7a): `available()` maps
+- These states feed the future preload resource (TODO-11/§4.7a): `available()` maps
   up→1, starting/restarting→0, down/absent→-1.
 - `StatusReport` drops `stage_readiness`, returns `stage_lifecycle` + peer pids;
   `status.pm`/`ps.pm` read lifecycle. Status output need not be byte-preserved.
-- Free fold-in (after #1): stage methods take plain `($stage)` args; delete
+- Free fold-in (after TODO-1): stage methods take plain `($stage)` args; delete
   `_stage_action_parts` (the dead bare-string branch).
 
-### #3 — Collector self-termination + connection-currency; `requeue_task`
-**Status:** ✅ DONE core (batch 6, `4d83fb849` + Test2-Collector `680e751`) — see TODO_DONE.md; 2 residuals: harness preload-root-watch wiring + Part-5 explicit-ack · **Step:** 10/11 · **Depends:** #1, #2
+### TODO-3 — Collector self-termination + connection-currency; `requeue_task`
+**Status:** ✅ DONE core (batch 6, `4d83fb849` + Test2-Collector `680e751`) — see TODO_DONE.md; 2 residuals: harness preload-root-watch wiring + Part-5 explicit-ack · **Step:** 10/11 · **Depends:** TODO-1, TODO-2
 
 **Problem:** chunk-19 grew three overlapping defenses against "reports from a
 dead/replaced preload-root incarnation": generation stamping, `%busy` busy-channel
@@ -154,13 +154,13 @@ eagerly drops channels of stages that are themselves still alive.
   - **State contract:** reuse the same `job_id`/try number; clear the assigned
     `stage`; delete any `job_pids` entry; call resource `release` (fresh
     `assign`/`record` on re-dispatch); emit no terminal subscriber transition (a
-    `requeued` mutation or none); clear the task's `%SORTED` bucket memo (#13).
+    `requeued` mutation or none); clear the task's `%SORTED` bucket memo (TODO-13).
 - **Repo-side (same chunk as the collector change):** bump `dist.ini`/`cpanfile`/
   generated `Makefile.PL` floors off `Test2::Collector = 0.000001`; update
   `agent_scripts/audit-collector-watch-parent` for scalar-vs-list.
 
-### #4 — Dual preload architecture + lying "DORMANT" comments; delete runner self-restart
-**Status:** ✅ DONE — Parts 1-4 (`5dacdf749`) + Part 5 satisfied by #22 (`4fa8f9a3a`); see TODO_DONE.md
+### TODO-4 — Dual preload architecture + lying "DORMANT" comments; delete runner self-restart
+**Status:** ✅ DONE — Parts 1-4 (`5dacdf749`) + Part 5 satisfied by TODO-22 (`4fa8f9a3a`); see TODO_DONE.md
 
 **Problem:** stale comments in `Runner.pm` claim certain paths are "DORMANT" when
 they are actually **live** (the chunk-19.3 flip already happened — `_preload_root_hosts_stages`
@@ -184,13 +184,13 @@ preloads, and post-flip no preloaded state lives in the runner.
   no-preload.)
 - **HUP becomes a pure forward:** on SIGHUP the runner only `service_send('preload-root',
   'reload')` and continues — no `SIGNAL`, no winddown, no exec. The preload-root owns
-  reload (it re-execs itself, #3). No-preload run → HUP is a no-op.
+  reload (it re-execs itself, TODO-3). No-preload run → HUP is a no-op.
 - Then resolve the **dead in-runner named-stage path** (the `else` branches in
   `dispatch_pending`, `set_proc_exit`'s stage branch, `launch_stage` forking named
   stages, `_stage_transition_reporter`) — unreachable for preload runs; delete (keeps
   the no-preload base job path).
 
-### #5 — Delete SharedJobSlots
+### TODO-5 — Delete SharedJobSlots
 **Status:** ✅ DONE (batch 1, `6bd15d6b6`) — see TODO_DONE.md · **Step:** 11-area · **Depends:** —
 
 **Problem:** the cross-runner shared-slot coordinator has dead internals + a real
@@ -204,7 +204,7 @@ mentions (`Runner.pm:219` comment, `test.pm`/`projects.pm`/`start.pm`/
 unaffected (that's `JobCount`, kept). Removes multi-runner slot coordination until
 the system-usage resource lands.
 
-### #6 — Delete dead `wait()` params (`cat`/`all_cat`/`block`)
+### TODO-6 — Delete dead `wait()` params (`cat`/`all_cat`/`block`)
 **Status:** ✅ DONE (batch 1, `d6f3135fb`) — see TODO_DONE.md · **Step:** 21 · **Depends:** —
 
 **Problem:** `wait()` accepts `cat`/`all_cat`/`block`/`all`/`timeout`; the four call
@@ -216,12 +216,12 @@ reports; reaping is now zombie cleanup.
 and `PROCS_BY_CAT` (if `cat` was its only consumer). `_wait_done` collapses to:
 nothing-left / timeout / `all`-mode-remains / default-single-pass.
 
-### #7 — Misc dead lines / fossils
-**Status:** ✅ 7a/7d/7e/7f DONE (batch 1) — see TODO_DONE.md; 7b → chunk 20; 7c moot via #5 · **Step:** various · **Depends:** —
+### TODO-7 — Misc dead lines / fossils
+**Status:** ✅ 7a/7d/7e/7f DONE (batch 1) — see TODO_DONE.md; 7b → chunk 20; 7c moot via TODO-5 · **Step:** various · **Depends:** —
 
 - **7a — delete:** Reloader.pm dup `$MASK |= IN_MOVE_SELF()` line.
 - **7d — delete:** unused `use Atomic::Pipe` in `Renderer/DB.pm`.
-- **7c — moot:** the unread `$c` counter lives in SharedJobSlots (#5 deletes).
+- **7c — moot:** the unread `$c` counter lives in SharedJobSlots (TODO-5 deletes).
 - **7b — replace (→ chunk 20):** the broken FIFO open-retry is part of interactive
   mode; do **not** patch it — the whole FIFO proxy is replaced by socket-shared IO
   (§4.10 / TODO_STEPS chunk 20).
@@ -234,30 +234,30 @@ nothing-left / timeout / `all`-mode-remains / default-single-pass.
   implementers), are a dead chunk-9/harness-service-MVP artifact. Keep `service_tick`
   (live, called from the Runner loop).
 
-### #8 — Collapse the `Test2::Harness2::IPC` controller
+### TODO-8 — Collapse the `Test2::Harness2::IPC` controller
 **Status:** ✅ DONE (the substantive collapse). Parts 1-3 (`280720efb`); Part 4 (the
-no-preload completion→socket / reap-driven verdict removal) was completed by #29
-(`f7e836182` etc.) — that ticket states it "Completes #8 Part 4". Chunk 21 re-audit
+no-preload completion→socket / reap-driven verdict removal) was completed by TODO-29
+(`f7e836182` etc.) — that ticket states it "Completes TODO-8 Part 4". Chunk 21 re-audit
 (2026-06-21) closed the residual: deleted the dead `set_sig_handler` (`bc2cb3379`) and
 corrected the §5.4 framing. **The base class is NOT dismantled** — `Preload::Host`
-(created by #22) is a third co-equal multi-child consumer (its `run_stage`/`run_job`
-loop), explicitly OUT OF SCOPE per #29, so the shared three-pass reaper +
+(created by TODO-22) is a third co-equal multi-child consumer (its `run_stage`/`run_job`
+loop), explicitly OUT OF SCOPE per TODO-29, so the shared three-pass reaper +
 `category`/`spawn`/`watch`/`killall`/`wait` all stay. See TODO_DONE.md.
 
 **Problem (original framing — see Status for what actually happened):** the IPC
 controller does spawn + zombie-reap + category tracking + reap-driven scheduling. Only
 the first two should survive. The original audit assumed only two consumers — the
-Runner and `test.pm` (one child — the runner) — but the #22 split added a third,
+Runner and `test.pm` (one child — the runner) — but the TODO-22 split added a third,
 `Preload::Host`, which is still a genuine multi-child controller. `Job::set_exit` says
 results already come from the collector, not the reap.
 
 **Steps (outcome annotated):**
 - ✅ Migrate **no-preload** job completion onto the collector socket report (like the
   preload path), then strip the reap-driven verdict from `Runner::set_proc_exit` — done
-  by #29. (Its Job branch is now zombie cleanup + A3 health; the dead in-runner
-  named-stage branch was removed in #4/#22, and the live named-stage relaunch lives in
+  by TODO-29. (Its Job branch is now zombie cleanup + A3 health; the dead in-runner
+  named-stage branch was removed in TODO-4/TODO-22, and the live named-stage relaunch lives in
   `Preload::Host::set_proc_exit`.)
-- ✅ Delete `PROCS_BY_CAT`/`cat`-waits — done by #6. ❌ **NOT** removing the
+- ✅ Delete `PROCS_BY_CAT`/`cat`-waits — done by TODO-6. ❌ **NOT** removing the
   `_check_if_dead_yet` process-group wait or `_ex_parrots`: they are load-bearing for
   the watched no-preload reap (group-exit gate) and for `Preload::Host`'s `wait()` loop.
   ✅ die-on-unmonitored removed (Part 1, `f0c84daa9`).
@@ -268,7 +268,7 @@ results already come from the collector, not the reap.
   **Dismantling the base class is deferred** until `Preload::Host` collapses its own
   `run_stage`/`run_job` machinery (a separate, larger piece).
 
-### #9 — Factor the collector-reporter boilerplate into `Util::socket_reporter`
+### TODO-9 — Factor the collector-reporter boilerplate into `Util::socket_reporter`
 **Status:** ✅ DONE (batch 2, `fca4f3e42`) — see TODO_DONE.md · **Step:** foundation · **Depends:** —
 
 **Problem:** 4 identical `Recorder::Socket->new(... no_reply, drain_input ...)`
@@ -278,37 +278,37 @@ Job.pm:319, Preloader.pm:293, **Plugin.pm:59** — the non-runner site).
 **Steps:** keep the `no_reply`/`drain_input` fix (load-bearing). Add **standalone**
 `Test2::Harness2::Util::socket_reporter($identity, $socket)` (not a Runner method —
 `Plugin` is runner-decoupled, derives the socket from `$ENV{T2_HARNESS_WORKDIR}`)
-that builds the reporter with `no_reply`, `drain_input`, **and `pid => $$`** (the #1
+that builds the reporter with `no_reply`, `drain_input`, **and `pid => $$`** (the TODO-1
 handshake pid). The 4 sites call it. Mark `identity_timeout` a fallback; don't grow it.
 
 ---
 
 ## TIER 2 — Consolidate / over-built
 
-### #10 — Resolver retry → resolver ELIMINATED
+### TODO-10 — Resolver retry → resolver ELIMINATED
 **Status:** ✅ DONE (`af8153696`) — resolver/file_stage/eager eliminated; client-side 3-field assignment; full §4.7a preload Resource (= chunk 11). See TODO_DONE.md
 
 **Problem:** the scheduler-only runner resolves file→stage by a blocking per-file
 round-trip to the base stage, retry-bounded by `preload_root_respawn_limit` (wrong
-dimension; #3 deletes that limit). `_drop_preload_peers` busy-retention → see #3.
+dimension; TODO-3 deletes that limit). `_drop_preload_peers` busy-retention → see TODO-3.
 
 **Decision:** the resolver is **eliminated**, not fixed (chunk 23 — client-side stage
 assignment). Delete `resolve_file_stage`, `resolve_file_stages`, `request_preload_sync`
 (resolver use), `_resolver_identity`, the `file_stage` callbacks, and `eager`. Stage
-choice is decided client-side at queue time (see #23 / §4.7a).
+choice is decided client-side at queue time (see TODO-23 / §4.7a).
 
-### #11 — Overlapping terminate/reap/timeout layers
-**Status:** ✅ DONE — subsumed by #3/#4/#22 (single teardown path, watchdog narrowed); see TODO_DONE.md
+### TODO-11 — Overlapping terminate/reap/timeout layers
+**Status:** ✅ DONE — subsumed by TODO-3/TODO-4/TODO-22 (single teardown path, watchdog narrowed); see TODO_DONE.md
 
-**Decision:** after #3/#4/#8 the four "layers" become distinct: ChildMonitor multi-pid
-self-termination (#3), a minimal zombie-reaper (#8), `Watchdog` narrowed to wind-down
-abort (stage-gone → `requeue_task`, #3), and `check_timeouts` kept as a **thin,
+**Decision:** after TODO-3/TODO-4/TODO-8 the four "layers" become distinct: ChildMonitor multi-pid
+self-termination (TODO-3), a minimal zombie-reaper (TODO-8), `Watchdog` narrowed to wind-down
+abort (stage-gone → `requeue_task`, TODO-3), and `check_timeouts` kept as a **thin,
 debug-logged fallback** (TERM→KILL a reaped collector whose group lingers). Two
-teardown paths → one: `stop_stages` (in-runner `Preloader::Stage`) is deleted by #4;
+teardown paths → one: `stop_stages` (in-runner `Preloader::Stage`) is deleted by TODO-4;
 `stop_preload_stages` (socket peers) survives.
 
-### #12 — Run state lifecycle: fold onto `Run`, connection-gated retention
-**Status:** ✅ DONE (batch 5, `5ac411700`) — see TODO_DONE.md · **Step:** 22 · **Depends:** #1
+### TODO-12 — Run state lifecycle: fold onto `Run`, connection-gated retention
+**Status:** ✅ DONE (batch 5, `5ac411700`) — see TODO_DONE.md · **Step:** 22 · **Depends:** TODO-1
 
 **Problem:** `RUN_ITEMS` keeps a raw copy of every queued run forever (leak;
 unbounded on a persistent runner); `run_item` returns only the active one.
@@ -317,7 +317,7 @@ unbounded on a persistent runner); `run_item` returns only the active one.
 - Store the raw queue hash **on the `Run` object** (`$run->raw_item`); `run_item`
   returns `$RUN->raw_item`. One structure, auto-pruned with the run.
 - **Retention gated on the queuing client connection** (recorded at `queue_run` from
-  `$conn` + its `peer_pid`, #1) + an `abort_on_disconnect` flag (default true):
+  `$conn` + its `peer_pid`, TODO-1) + an `abort_on_disconnect` flag (default true):
   finished+owner-connected → retain; finished+owner-gone → purge; running+owner-drops
   & flag true → **abort** (halt pending, kill jobs via watchdog `abort_remaining`,
   advance); running+owner-drops & flag false → detach, purge on completion (future
@@ -325,7 +325,7 @@ unbounded on a persistent runner); `run_item` returns only the active one.
 - `queue_task`/`stop_run` are accepted from **any** command connection; only
   retention/abort is owner-gated.
 
-### #13 — `%SORTED` → instance field, stable key, pruned
+### TODO-13 — `%SORTED` → instance field, stable key, pruned
 **Status:** ✅ DONE (batch 5, `44d4f1aa1`) — see TODO_DONE.md · **Step:** 16 · **Depends:** —
 
 **Problem:** package-global `%SORTED` (sort memo keyed by arrayref address) leaks
@@ -338,7 +338,7 @@ big single bucket), so keep it.
 `_queue_task`; clear keys matching `^<run_id>\0` in `_stop_run`. Comment the clear
 sites: assumes a single active run — revisit for concurrent multi-run (chunk 16).
 
-### #14 — Deep task partitioning + `prune_hash`
+### TODO-14 — Deep task partitioning + `prune_hash`
 **Status:** ✅ DONE (rejected-keep + comment added, `next commit`) — the nesting is the priority index
 
 The 5-level `PENDING_TASKS` nesting **is the scheduler's priority index** — it mirrors
@@ -347,16 +347,16 @@ hot loop. `prune_hash` is justified GC. Keep as-is; add a comment that the nesti
 the priority index so it isn't re-flagged. (`run_id` outer key is already multi-run
 forward-compatible.)
 
-### #15 — Chunk-comment archaeology
+### TODO-15 — Chunk-comment archaeology
 **Status:** ✅ DONE (`97f51134a`) — 109 chunk-comments → 0; per-comment judgment (strip-current / delete-historical). See TODO_DONE.md
 
 127 `# Chunk N.M` comments (Runner.pm 47, Handlers.pm 32). **Defer the bulk sweep**
-until #1-#13 rewrite the heavily-commented code (sweep the final code). **Not a
+until TODO-1-TODO-13 rewrite the heavily-commented code (sweep the final code). **Not a
 blanket delete** — keep current-invariant explanations (strip the chunk prefix),
 delete purely-historical ones. The lying `DORMANT` comments are fixed **now** as step
-1 of #4.
+1 of TODO-4.
 
-### #16 — `run_ord` → rename `run_id` (keep the seam)
+### TODO-16 — `run_ord` → rename `run_id` (keep the seam)
 **Status:** ✅ DONE (batch 2, `212aca276`) — see TODO_DONE.md · **Step:** 16 · **Depends:** —
 
 **Problem:** `run_ord` is the dormant socket-naming seam for run-scoped preload stages
@@ -369,7 +369,7 @@ UX/DB.
 comment. The value is always the run's UUID (never an integer); global preloads leave
 it undefined (flat socket). Only used in Role/Service.pm + Runner.pm (clean rename).
 
-### #17 — `scheduler_tick` fixes
+### TODO-17 — `scheduler_tick` fixes
 **Status:** ✅ DONE (batch 3, `bb3830e96`) — see TODO_DONE.md · **Step:** 21-area · **Depends:** —
 
 - **Bare hash keys:** `scheduler_tick`/`service_tick`/`check_timeouts` use
@@ -378,29 +378,29 @@ it undefined (flat socket). Only used in Role/Service.pm + Runner.pm (clean rena
   (`{+ROOTPID}` etc.) for compile-time/grep safety.
 - **Retry-5 → fail-fast:** drop `SCHEDULER_MAX_ERRORS`; a `poll`/`advance`/
   `dispatch_pending` throw is a real in-process bug (the separate-process retry
-  rationale died with the IPC model, #8). Resources own their own transient-error
+  rationale died with the IPC model, TODO-8). Resources own their own transient-error
   resilience inside `tick()`.
 - **Reject** the two-level `service_tick`→`scheduler_tick` merge — `service_tick` has
   real logic (signal on `service_stopped`).
 
-### #18 — Handler boilerplate + duplicated stale-generation guard
-**Status:** ✅ DONE — guard-dup dissolved via #3 (connection-currency replaced _stale_stage_generation); factory rejected (kept explicit handlers)
+### TODO-18 — Handler boilerplate + duplicated stale-generation guard
+**Status:** ✅ DONE — guard-dup dissolved via TODO-3 (connection-currency replaced _stale_stage_generation); factory rejected (kept explicit handlers)
 
-The duplicated `_stale_stage_generation` guard dissolves via #3 (connection-currency,
+The duplicated `_stale_stage_generation` guard dissolves via TODO-3 (connection-currency,
 one check). **Reject** the generic `action_handler` factory — it re-introduces the
-command-string→method dispatch-table indirection #1 deletes; the thin explicit
+command-string→method dispatch-table indirection TODO-1 deletes; the thin explicit
 decode-then-forward handlers are the right RPC surface (`submit_action` also isn't a
 passthrough — it buffers until the base stage is ready).
 
-### #19 — Delete stale stage-report methods from `Runner::Client`
+### TODO-19 — Delete stale stage-report methods from `Runner::Client`
 **Status:** ✅ DONE (batch 1, `3d3e28d61`) — see TODO_DONE.md · **Step:** — · **Depends:** —
 
 `Stage->_report` uses `service_send` directly, so `Runner::Client`'s `stop_task`/
 `retry_task`/`reload`/`stage_ready`/`stage_down`/`job_pid` have **0 callers**. Delete
 them; keep `Client` a command/query/subscription client. Fix the stale comment at
-Runner.pm:333 (folds into #15).
+Runner.pm:333 (folds into TODO-15).
 
-### #20 — Preload `require` happens outside the guard
+### TODO-20 — Preload `require` happens outside the guard
 **Status:** ✅ DONE (`91afaac78`) — lightweight handshake; preloads load once under the guard; map+warnings reported from the stage host. See TODO_DONE.md · **Step:** 19/23 · **Depends:** —
 
 **Problem:** `Preload::_load_preloads` does a full `require` of preload modules at the
@@ -413,13 +413,13 @@ only (no `_load_preloads`, no `set_stage_data`). Load preloads **once under the
 `staged` meta); report `set_stage_data` + preload warnings **after** the guarded load.
 The runner already blocks scheduling until the map arrives (`_ready_to_schedule`) — no
 runner change. Deletes `Preload::_load_preloads` + the duplicate load; moves warning
-capture to the single guarded load (shrinks #21).
+capture to the single guarded load (shrinks TODO-21).
 
-### #21 — Preload failure: detection (done) vs diagnostics (simplify)
-**Status:** ✅ DONE (`419571793`) — zstd scrape deleted; `--preload-map-timeout` + off-by-default `--preload-stage-startup-timeout` (§4.7a safeguard). See TODO_DONE.md · **Step:** 11/23 · **Depends:** #3, #20
+### TODO-21 — Preload failure: detection (done) vs diagnostics (simplify)
+**Status:** ✅ DONE (`419571793`) — zstd scrape deleted; `--preload-map-timeout` + off-by-default `--preload-stage-startup-timeout` (§4.7a safeguard). See TODO_DONE.md · **Step:** 11/23 · **Depends:** TODO-3, TODO-20
 
 **Reframe — two concerns:**
-- **Detection ("don't wait forever") — solved.** A crashed stage EOFs its socket (#3);
+- **Detection ("don't wait forever") — solved.** A crashed stage EOFs its socket (TODO-3);
   `done()` stays 0 while tasks pend, so a legitimately slow (2+ min) named stage just
   waits — **no per-named-stage timeout**. Fixes: make the **map/base-stage readiness
   deadline configurable** (it's hardcoded 60s); add an **optional, configurable,
@@ -436,8 +436,8 @@ capture to the single guarded load (shrinks #21).
 
 ## TIER 3 — Lower priority / deferred / rejected
 
-### #22 — Fully untangle the runner from the preload-root (two independent classes)
-**Status:** ✅ CORE DONE (`f23ceb44c`+`b628a3728`); setjump-loop flatten DONE (`7e6ed23f8`) — Preload::Host extracted, runner has ZERO rootpid guards; remaining residual: run_scheduler_only-as-only-path (coupled with #8 Part 4 — see TODO_DONE). Unblocks #4 P5, #8, #23
+### TODO-22 — Fully untangle the runner from the preload-root (two independent classes)
+**Status:** ✅ CORE DONE (`f23ceb44c`+`b628a3728`); setjump-loop flatten DONE (`7e6ed23f8`) — Preload::Host extracted, runner has ZERO rootpid guards; remaining residual: run_scheduler_only-as-only-path (coupled with TODO-8 Part 4 — see TODO_DONE). Unblocks TODO-4 P5, TODO-8, TODO-23
 
 **Owner directive (2026-06-20):** the runner and the preload-root are **completely
 different concepts** entangled into one `Runner` class only because 1.0 grew organically.
@@ -450,7 +450,7 @@ stage machinery is exactly what to remove).
 
 - **The runner** = the harness **scheduler** + primary server/socket. Schedules, owns
   canonical state, serves clients/stages, launches tests **only as clean-slate fork+exec**
-  (the no-preload path, #4 P4). No preloading, hosts no stage in-process.
+  (the no-preload path, TODO-4 P4). No preloading, hosts no stage in-process.
 - **The preload-root + stages** = preload + launch tests. **No scheduler**, no canonical
   run state — they preload, fork/host stages, and launch tests (goto::file) on dispatch.
   The stage-host machinery currently reused out of `Runner.pm` (`run_tests` staged loop,
@@ -459,24 +459,24 @@ stage machinery is exactly what to remove).
   moves into this independent preload-host class.
 
 After this the runner carries **only** scheduler + server + clean-slate exec; the
-`ROOTPID==$$` role guards disappear. **Unblocks** #4 P5, #8's full `set_proc_exit`
-removal, and #23. Big structural refactor of the most-depended-on file — green-first,
+`ROOTPID==$$` role guards disappear. **Unblocks** TODO-4 P5, TODO-8's full `set_proc_exit`
+removal, and TODO-23. Big structural refactor of the most-depended-on file — green-first,
 expect iteration.
 
-### #23 — Three classes named "Stage" — rename
-**Status:** ✅ DONE (`2de1be5d3`) — StageDelegate/StageProcess/StageConfig; `done` kept (live caller post-#22). See TODO_DONE.md
+### TODO-23 — Three classes named "Stage" — rename
+**Status:** ✅ DONE (`2de1be5d3`) — StageDelegate/StageProcess/StageConfig; `done` kept (live caller post-TODO-22). See TODO_DONE.md
 
 `Runner::Stage` (in-stage delegate), `Runner::Preloader::Stage` (`IPC::Process` proc
 tracker), `Runner::Preload::Stage` (DSL config) collide (two differ by one letter).
-All thin under #4/#8/chunk23 (eager/file_stage removed). **Defer; then rename** →
-`StageDelegate` / `StageProcess` / `StageConfig`; coordinate with #22's split. Plus:
+All thin under TODO-4/TODO-8/chunk23 (eager/file_stage removed). **Defer; then rename** →
+`StageDelegate` / `StageProcess` / `StageConfig`; coordinate with TODO-22's split. Plus:
 `Runner::Stage::done` always returns 0 → `die "impossible"` or drop.
 
-### #24 — Resource base → Role with `requires available, assign`
-**Status:** ✅ DONE (batch 2, `38f6b00a9`) — see TODO_DONE.md · **Step:** 11 · **Depends:** #5
+### TODO-24 — Resource base → Role with `requires available, assign`
+**Status:** ✅ DONE (batch 2, `38f6b00a9`) — see TODO_DONE.md · **Step:** 11 · **Depends:** TODO-5
 
 **Problem:** the Resource base has 9 no-op methods; `available` defaults to `-1`
-(forgetting it silently all-skips). `scope_global/host/run` are dead after #5 (only
+(forgetting it silently all-skips). `scope_global/host/run` are dead after TODO-5 (only
 SharedJobSlots overrode them) — remove.
 
 **Steps:** make `Runner::Resource` a **`Role::Tiny` role that `use`s Object::HashBase**
@@ -488,12 +488,12 @@ first-class Role::Tiny integration — consumers compose via
 update POD away from inheritance. Implementers: `JobCount` + the future preload
 resource (both define `available`+`assign`).
 
-### #25 — Smaller notes (triage)
-**Status:** ✅ DONE (batch 3, quick+verify fixes) — see TODO_DONE.md; moot items via #5/#8 · **Step:** various · **Depends:** —
+### TODO-25 — Smaller notes (triage)
+**Status:** ✅ DONE (batch 3, quick+verify fixes) — see TODO_DONE.md; moot items via TODO-5/TODO-8 · **Step:** various · **Depends:** —
 
-- **Moot via #5/#8:** `_runner_todo` sentinel + `_redistribute_fair` "Yikes!" comment
-  (SharedJobSlots, #5); `check_timeouts` base stub + `set_sig_handler` (IPC controller,
-  #8); `min(grep)` clamp (only `JobCount` copies remain after #5 — leave).
+- **Moot via TODO-5/TODO-8:** `_runner_todo` sentinel + `_redistribute_fair` "Yikes!" comment
+  (SharedJobSlots, TODO-5); `check_timeouts` base stub + `set_sig_handler` (IPC controller,
+  TODO-8); `min(grep)` clamp (only `JobCount` copies remain after TODO-5 — leave).
 - **Quick fixes:** `_drain_transitions` 50× spin → drain-until-deadline
   (`Time::HiRes`); `Preloader::_monitor` `Carp::longmess` → plain `die`;
   `Job::bailed_out` legacy out_file scan (dead since chunk 3) → delete; dead
@@ -504,7 +504,7 @@ resource (both define `available`+`assign`).
 - **Keep (decided):** bad-frame tolerance of 3 (`Connection.pm`); DepTracer dual hook
   (`@INC` + `CORE::GLOBAL::require` — useful belt-and-suspenders).
 
-### #26 — Simplify `App::Yath::Script::V2`: drop the BEGIN hack, refactor into subs
+### TODO-26 — Simplify `App::Yath::Script::V2`: drop the BEGIN hack, refactor into subs
 **Status:** ✅ DONE (`12e20db92`) — see TODO_DONE.md
 
 **Problem:** `do_begin` runs in the `yath` script's **BEGIN** phase, and its body is a
@@ -536,14 +536,14 @@ environment — and `App::Yath::Script::V2` is a proper module, not `main`.
 
 ## TIER 4 — Transition-driven completion + subreaper (designed 2026-06-21, reviewed)
 
-> Replaces the old #8-Part-4 framing. Design context + rationale + the two-reviewer
+> Replaces the old TODO-8-Part-4 framing. Design context + rationale + the two-reviewer
 > findings we resolved: `AI_DOCS/2026-06-21-transition-driven-completion-and-subreaper.md`
 > (read it first). Authoritative spec: ARCHITECTURE.md §5.4 (+ §4.1/§4.7).
-> Active sequence **#32 → #27 → #28 → #29**; deferred follow-ups #30/#31. They span the
+> Active sequence **TODO-32 → TODO-27 → TODO-28 → TODO-29**; deferred follow-ups TODO-30/TODO-31. They span the
 > local `Test2-Collector` checkout (no version bump — unreleased). Review-driven
-> standalone fixes: #33–#37.
+> standalone fixes: TODO-33–TODO-37.
 
-### #27 — Transition-driven test completion; collector exit = health-only
+### TODO-27 — Transition-driven test completion; collector exit = health-only
 **Status:** ✅ DONE — Phase 1 collector (`5c3ada3b` in Test2-Collector) + Phase 2a (`472946279`..`13c6f8b00`) + Phase 2b (`dba86899e`..`5dbfab743`). See TODO_DONE.md · **Step:** 24
 
 **Problem:** the runner decides a test's outcome from the **reaped collector exit
@@ -561,7 +561,7 @@ it (the stage reaps). The audited result is already on the wire (`harness_final_
   (keep `final_state.halt`).
 - **Child-fd hygiene:** the collector closes its reporter/recorder sockets in the test
   child (and the no-exec `goto::file` preload launch closes them + inherited runner
-  conns) — see #32; sockets created `FD_CLOEXEC`.
+  conns) — see TODO-32; sockets created `FD_CLOEXEC`.
 - **Bidirectional connection:** the test-collector connection must **read inbound
   control messages** from the runner (the bail/terminate message) between events —
   today's reporters are one-way (`no_reply`); that changes.
@@ -596,18 +596,18 @@ it (the stage reaps). The audited result is already on the wire (`harness_final_
   `pass` keeps the test green; on a **supported** platform the reaped non-zero health
   exit ⇒ report to harness output + **mark the suite failed** at `test`/`run` exit; on
   unsupported it may be lost (accepted). Mandatory reporter + `--collector-connect-timeout`
-  (#32). Retry policy stays runner-side (`--retry` + existing directives).
+  (TODO-32). Retry policy stays runner-side (`--retry` + existing directives).
 
-### #28 — Runner child-subreaper + detached preload collectors
+### TODO-28 — Runner child-subreaper + detached preload collectors
 **Status:** ✅ DONE. Original code (`7952029e6`..`ab1a95865`) was DEAD on the preload
 path (re-audit 2026-06-21); the two defects are now fixed standalone (no longer folded
-into #29): **C2** — pid-keyed `collector_reap` map populated at the pass decision,
+into TODO-29): **C2** — pid-keyed `collector_reap` map populated at the pass decision,
 survives the collector's EOF, consumed by `_reaped_unwatched_pid` (`def11c2fe`);
 **C1** — `run_scheduler_only` now calls `_bring_out_yer_dead`/`_check_if_dead_yet`
 each tick + at wind-down, with a `PRELOAD_ROOT_REAPED` guard so the sweep's
 `waitpid(-1)` can't hide a mid-run preload-root crash (`f03ff402c`); **M3** —
 `t/AI/integration/Runner_scheduler_reap_a3.t` drives the REAL loop (`7e5394bc0`).
-Both runners green. · **Step:** 25 · **Depends:** #27
+Both runners green. · **Step:** 25 · **Depends:** TODO-27
 
 **Problem:** to make the runner the sole reaper (and free the preload tree from any
 reaping logic), preload-spawned collectors must detach and re-parent to the runner.
@@ -623,27 +623,27 @@ reaping logic), preload-spawned collectors must detach and re-parent to the runn
 - Runner acquires subreaper at startup. **Preload-spawned collectors double-fork +
   detach** (`setsid` ⇒ own process-group leader, so `kill(-pid)` reaches the subtree;
   re-parent to runner on supported OS, init otherwise). Preload tree reaps no
-  collectors. **Runner learns pids from the collector handshake** (#27), so the stage
+  collectors. **Runner learns pids from the collector handshake** (TODO-27), so the stage
   tracks none — moots any double-fork pid-pipe. `job_pids` cleared on EOF. Decision
   rides EOF regardless of who reaps. ARCHITECTURE §4.1/§5.4.
 
-### #29 — Collapse to one run path (run_scheduler_only only)
+### TODO-29 — Collapse to one run path (run_scheduler_only only)
 **Status:** ✅ DONE (`5729726d9` extract _launch_local_job + no-preload spawn reject;
 `2f186de4d` port the no-preload run-loop duties; `371c82eab` no-preload e2e guard;
 `f7e836182` the collapse — run_scheduler_only is the only loop, run_tests/run_stage/
 run_job/end_test_loop deleted). Kept the flag name `_preload_root_hosts_stages` (still
 accurate; the cosmetic `_has_preload_root` rename was skipped to avoid churning the
 just-stabilized file). No-preload collectors stay WATCHED. Verified both runners 3×.
-· **Step:** 26 · **Depends:** #27, #28
+· **Step:** 26 · **Depends:** TODO-27, TODO-28
 
 **Problem:** with completion + reaping off the reap, the in-runner stage machinery is
 vestigial. **Steps:** make `run_scheduler_only` the runner's only run loop; the
 no-preload dispatch forks a collector child and decides via transitions/EOF like the
 preload path; delete `run_tests`/`run_stage`/`run_job` in-runner stage machinery and
-`_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes the **#22 residual**,
-**#4 Part 4**, **#8 Part 4**. ARCHITECTURE §5.4.
+`_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS`. Completes the **TODO-22 residual**,
+**TODO-4 Part 4**, **TODO-8 Part 4**. ARCHITECTURE §5.4.
 
-**Note:** the #28 C1/C2 reap defects are already fixed standalone (see #28 above), so
+**Note:** the TODO-28 C1/C2 reap defects are already fixed standalone (see TODO-28 above), so
 the per-tick reap is ALREADY in `run_scheduler_only` and is NOT part of this chunk.
 
 **Vetted design (workflow map+design+adversarial-review, 2026-06-21 — the naive plan
@@ -681,28 +681,28 @@ had real blockers; these are the corrected requirements):**
   delegates to `_launch_local_job` first; do `take_dispatch_tasks(undef)` + the
   discriminator + deletions + ports all in the LAST commit (single rollback point).
   Verify both runners 3× (flake) + `ps` zombie-free on a no-preload AND a `--preload` run.
-- Completes the **#22 residual**, **#4 Part 4**, **#8 Part 4**. Host (`Preload::Host`, a
+- Completes the **TODO-22 residual**, **TODO-4 Part 4**, **TODO-8 Part 4**. Host (`Preload::Host`, a
   sibling `IPC` subclass with its OWN run_tests/run_stage/run_job) is OUT OF SCOPE.
 
-### #30 — Generic `collector_transition` facet + plugin hook
-**Status:** Deferred · **Step:** 27 · **Depends:** #27
+### TODO-30 — Generic `collector_transition` facet + plugin hook
+**Status:** Deferred · **Step:** 27 · **Depends:** TODO-27
 
 A test emits an event with a `collector_transition` facet; the collector forwards it
 verbatim as a transition; the runner routes **non-builtin** transitions to a **plugin
 hook**. Extensible substrate for custom harness-significant signals.
 
-### #31 — Runtime retry-request helper
-**Status:** Deferred · **Step:** 28 · **Depends:** #27, #30
+### TODO-31 — Runtime retry-request helper
+**Status:** Deferred · **Step:** 28 · **Depends:** TODO-27, TODO-30
 
 A test-facing helper a test calls to request a retry at runtime; emits an event the
 collector turns into a `retry` transition (generic facet or `control.retry`); the
 runner retries via the normal re-queue path. Count/no-retry directive already exists;
 this adds the runtime channel.
 
-### #32 — FD hygiene: no socket-fd leaks across forks (prerequisite for EOF)
-**Status:** ✅ DONE (`3dde68850`) — fd-hygiene core; mandatory-reporter + connect-timeout deferred to #27. See TODO_DONE.md · **Step:** 24 · **Gates:** #27
+### TODO-32 — FD hygiene: no socket-fd leaks across forks (prerequisite for EOF)
+**Status:** ✅ DONE (`3dde68850`) — fd-hygiene core; mandatory-reporter + connect-timeout deferred to TODO-27. See TODO_DONE.md · **Step:** 24 · **Gates:** TODO-27
 
-**Problem:** the EOF-as-gone-signal model (#27/§5.4) is only sound if **no other
+**Problem:** the EOF-as-gone-signal model (TODO-27/§5.4) is only sound if **no other
 process holds a dup** of a collector's connection fd — a UNIX socket EOFs only once
 *all* holders close it. The runner forks a collector parent **without exec** (inherits
 the listen socket + every other live collector's connection); the test child and its
@@ -716,19 +716,19 @@ false "still running".
   all inherited runner connections + the listen socket; the **preload test-launch
   (`goto::file`)** path closes the collector's reporter/recorder sockets + any inherited
   runner connections before becoming the test.
-- Make the **reporter mandatory** (#27): connect-failure ⇒ synchronously fail/abort the
+- Make the **reporter mandatory** (TODO-27): connect-failure ⇒ synchronously fail/abort the
   job (runner-visible), never silent recorder-only degrade. Add **`--collector-connect-timeout`**
   (on by default, ~30s) for "dispatched but no `starting` transition arrived".
 - **Regression:** a preload test forks a long-lived descendant that outlives it ⇒ the
   runner still sees the collector's EOF promptly. ARCHITECTURE §5.4.
 
-### #33 — Enforce `preload_stage_startup_timeout` in the scheduler (it is currently inert)
+### TODO-33 — Enforce `preload_stage_startup_timeout` in the scheduler (it is currently inert)
 **Status:** ✅ DONE (`1b0a1312b`) — per-tick scan demotes timed-out stage to down + rebuckets; integration test. See TODO_DONE.md · **Step:** 11
 
-**Problem:** the #21 safeguard never fires. The scheduler buckets a task via
+**Problem:** the TODO-21 safeguard never fires. The scheduler buckets a task via
 `State::task_stage()` (no timeout) and `_stage_order`/`_next` only traverse **`up`**
 stage buckets, so a task aimed at a stage stuck `starting`/`restarting` is never
-visited and `Resource::Preload::available()`'s `-1` is never consulted. The #21 unit
+visited and `Resource::Preload::available()`'s `-1` is never consulted. The TODO-21 unit
 test only drove `available()` in isolation.
 
 **Steps (approach A):** a per-tick stage scan transitions a `starting`/`restarting`
@@ -737,7 +737,7 @@ stage that exceeds `preload_stage_startup_timeout` to **`down`** — which makes
 to default if advisory, or the require path fails). Add an **integration test driving
 the full scheduler path** (not just `available()`).
 
-### #34 — `yath reload` ineffective during a persistent preload run
+### TODO-34 — `yath reload` ineffective during a persistent preload run
 **Status:** ✅ DONE (`0b659a90f`) — reload routed to live base-stage channel; stop drops pending reload. See TODO_DONE.md · **Step:** 19
 
 **Problem:** the runner forwards `reload` as a socket message to the **`preload-root`**
@@ -750,7 +750,7 @@ base-stage connection (`preload-base`) owned by `Preload::Host`, which translate
 into its existing in-run respawn path (`SIGNAL=HUP` → end-loop → respawn the tree).
 Make it idempotent/ordered so a pending reload is dropped once `stop` is queued.
 
-### #35 — `halt_run`/`purge_run` leave stale tasks in `TASK_LOOKUP`
+### TODO-35 — `halt_run`/`purge_run` leave stale tasks in `TASK_LOOKUP`
 **Status:** ✅ DONE (`e4e64f6b8`) — clear TASK_LOOKUP on halt_run+purge_run + test. See TODO_DONE.md · **Step:** 22
 
 **Problem:** `halt_run`/`purge_run` delete the run's buckets but not its `TASK_LOOKUP`
@@ -761,17 +761,17 @@ retains task hashes indefinitely after aborts/truncates.
 **Steps:** clear the run's `TASK_LOOKUP` entries in `halt_run` **and** `purge_run`. Add
 a test assertion that the run's tasks are gone from `task_lookup` after abort/purge.
 
-### #36 — Delete dead `reset_stage_readiness`
+### TODO-36 — Delete dead `reset_stage_readiness`
 **Status:** ✅ DONE (`4403aa4c0`) — verified zero callers, deleted sub + test. See TODO_DONE.md · **Step:** 10
 
 **Problem:** `State::reset_stage_readiness` was for a respawned crashed preload-root,
-but preload-root crashes are fatal/never respawned (#3) — verified zero production
+but preload-root crashes are fatal/never respawned (TODO-3) — verified zero production
 callers (only `t/AI/unit/State_stage_lifecycle.t:62`).
 
 **Steps:** **re-verify no consumers**, then delete the sub + the test subtest that
 exercises it.
 
-### #37 — Document the resource-skip `-e` executor assumption
+### TODO-37 — Document the resource-skip `-e` executor assumption
 **Status:** ✅ DONE (`e29259adc`) — comment added. · **Step:** 11 · **Doc-only**
 
 **Problem:** the permanent `resource_skip` path runs a dummy via `perl -e '...'`,
@@ -790,16 +790,16 @@ representation. No behavior change.
 > `AI_DOCS/2026-06-21-spawn-interactive-client-render-spec.md` (read it first).
 > Authoritative spec: ARCHITECTURE.md §4.8 (spawn), §4.10 (interactive), §4.11
 > (harness-client), §4.12 (render-loop), with §4.5/§4.6 amendments. Sequence
-> **#38 → #39 → #40** (fd-pass primitive, then spawn, then interactive); **#41** and
-> **#42** (client + render-loop refactors) are independent of the IO work. Steps
+> **TODO-38 → TODO-39 → TODO-40** (fd-pass primitive, then spawn, then interactive); **TODO-41** and
+> **TODO-42** (client + render-loop refactors) are independent of the IO work. Steps
 > 29/13/20/30/31.
 
-### #38 — Socket FD-pass primitive `Test2::Harness2::Util::FdPass`
+### TODO-38 — Socket FD-pass primitive `Test2::Harness2::Util::FdPass`
 **Status:** ✅ DONE (`2feed5304` + `59dd29a05`) — `Test2::Harness2::Util::FdPass`
 (SCM_RIGHTS `send_fds`/`recv_fds` + `command_listen`/`target_connect`; optional
 `IO::FDPass`, actionable die when absent) + unit test (round-trip gated on the module;
-the guard/absent path is always exercised). No consumers yet (#39 spawn / #40
-interactive). · **Step:** 29 · **Gates:** #39, #40
+the guard/absent path is always exercised). No consumers yet (TODO-39 spawn / TODO-40
+interactive). · **Step:** 29 · **Gates:** TODO-39, TODO-40
 
 **Problem:** spawn + interactive need to give a child the user's *real* terminal fd
 (single keystrokes, raw mode, debugger-correct), not a byte proxy. The 1.0 `/proc`
@@ -826,10 +826,10 @@ middle process.
   accept; created `FD_CLOEXEC`; the received dup fds are closed after `dup2`.
   ARCHITECTURE §4.8/§4.10, §5.2/§5.3.
 
-### #39 — `spawn` redesign: direct-to-stage, fd-pass, supervisor (no exec)
+### TODO-39 — `spawn` redesign: direct-to-stage, fd-pass, supervisor (no exec)
 **Status:** ✅ DONE (`680c6d9c5` harness-side supervisor + `Test2::Harness2::Util::FdPass::Control`;
 `f5b85aca6` command direct-to-stage + retired the runner-routed `queue_spawn` path;
-`fa751c2df` end-to-end tests) · **Step:** 13 · **Depends:** #38, #12 (discovery), `Preload::Host`
+`fa751c2df` end-to-end tests) · **Step:** 13 · **Depends:** TODO-38, TODO-12 (discovery), `Preload::Host`
 
 `yath spawn` now `require_fdpass('yath spawn')`s up front, discovers the workdir via
 the §5.3 symlink, connects **directly** to a live `preload-<stage>.socket` (bypassing
@@ -880,7 +880,7 @@ the real terminal fds, preserve the preload, deliver real wait status.
 - **Cleanup:** retire the `/proc/<pid>/fd` proxy + `ipcfile`; `spawn` no longer routes
   through `runner.socket`. ARCHITECTURE §4.8.
 
-### #40 — interactive redesign: STDIN-only fd-pass, per-test accept
+### TODO-40 — interactive redesign: STDIN-only fd-pass, per-test accept
 **Status:** ✅ DONE — interactive shares only the command's real STDIN, passed over
 a Unix socket (`SCM_RIGHTS`, via `Test2::Harness2::Util::FdPass`) instead of a FIFO.
 The command (`App::Yath2::Options::Debug::_post_process_interactive`) opens a listen
@@ -896,8 +896,8 @@ collector (rendered normally); `--live`/`-v` default on. No control channel (a n
 collected job). The FIFO machinery (`POSIX::mkfifo`, the open-retry loop) is removed.
 Tty/controlling-terminal limitation documented (no `/dev/tty`, job control, or
 terminal-generated signals without forwarding; run `reset` after an abrupt raw-mode
-death). · **Step:** 20 · **Depends:** #38, #39 (shares the primitive) · **Note:**
-supersedes the old #7 (7b)
+death). · **Step:** 20 · **Depends:** TODO-38, TODO-39 (shares the primitive) · **Note:**
+supersedes the old TODO-7 (7b)
 
 **Problem:** the 1.0 FIFO STDIN-proxy (`POSIX::mkfifo`, `$ENV{YATH_INTERACTIVE}`,
 `goto::file` re-open) is clunky and has a broken open-retry loop.
@@ -918,7 +918,7 @@ supersedes the old #7 (7b)
   as §4.8 (no `/dev/tty`/job-control without forwarding). Add tests: `perl -d`, raw
   mode, `/dev/tty`, Ctrl-C, Ctrl-Z, WINCH. Remove the FIFO patch. ARCHITECTURE §4.10.
 
-### #41 — Harness-client library (grow `App::Yath2::Client`, Option A)
+### TODO-41 — Harness-client library (grow `App::Yath2::Client`, Option A)
 **Status:** ✅ DONE (`d3f4800e8` + `8e23cd887`) — `App::Yath2::Client` owns the
 runner-lifecycle mode enum (transient/attach/start), absorbs `RunPlan` (finders +
 job-spec), exposes state queries over the mirrored Monitor; `test`/`run`/`start`/`watch`/
@@ -941,10 +941,10 @@ dropped from run/start (ch21 follow-up). No backend changes needed. · **Step:**
 - **Thin the commands:** `test` = client *transient* + render loop; `run` = client
   *attach* + render loop; `start` = client *start*, no render loop. Delete the
   `run extends test` override pile + the inline runner lifecycle in `test.pm`.
-- Does **NOT** own renderers (#42). `spawn` uses the client only for stage discovery.
+- Does **NOT** own renderers (TODO-42). `spawn` uses the client only for stage discovery.
   ARCHITECTURE §4.11.
 
-### #42 — Render-loop library (`RenderLoop` + `Producer`, Option A)
+### TODO-42 — Render-loop library (`RenderLoop` + `Producer`, Option A)
 **Status:** ✅ DONE (`33f5a59ec` + `7a2e6bf9b`) — `App::Yath2::RenderLoop` (owns dispatch
 fan-out + sink lifecycle + rollup; `iterate()`/`start()`) + pure `Producer` role;
 `LiveProducer` (Driver in collect mode — per-job ordering + bounded-terminal false-FAIL
@@ -975,9 +975,9 @@ the draft were internally inconsistent about who owns the `Driver` (reviewer fla
 - Sinks fed only self-contained `Event` objects, so a slow sink can later run in its
   own process (not built now). ARCHITECTURE §4.12 (+ §4.5/§4.6).
 
-### #43 — System-load service + throttling resources (chunk 7)
+### TODO-43 — System-load service + throttling resources (chunk 7)
 **Status:** ✅ DONE (2026-06-21) — built & green · **Step:** 7 ·
-**Depends:** #24 (Resource Role, done), chunk 9 (done)
+**Depends:** TODO-24 (Resource Role, done), chunk 9 (done)
 
 **Landed:** `Test2::Harness2::SystemLoad` (sampling primitive) +
 `Test2::Harness2::Service::Sampler` (always-on dedicated sampler the runner spawns
@@ -985,7 +985,7 @@ under a collector with `watch_parent_pid`, change-gated 0.2s reporting, one-way
 `system_load` over `runner.socket`); runner-side `request_handler_system_load` →
 `State::set_system_load` + `announce_system_load` (`harness_system` broadcast
 globally, latest retained in `Runner::Monitor`); throttling resources
-`Resource::CPU` / `Resource::Memory` composing the #24 Resource Role +
+`Resource::CPU` / `Resource::Memory` composing the TODO-24 Resource Role +
 `Role::Resource::Utilizer` (min_concurrent floor), reading the shared snapshot
 (cross-platform Linux+BSD); `--utilize`/`-U` + `-R CPU[=70]` / `-R Memory[=20%|512mb]`
 wiring; reap-at-stop handled (`Runner::stop_sampler`). See
@@ -1012,7 +1012,7 @@ resource-consumption half was deferred there.)
   resource is requested) — its transitions are logged so the rendered/archived run shows
   system load at each point, independent of gating. (User decision.)
 - **Throttling = Resource classes** (the model — resources, NOT an ad-hoc scheduler
-  check; needs only the #24 Resource Role, NOT chunk 11), ported from `reference/old3`
+  check; needs only the TODO-24 Resource Role, NOT chunk 11), ported from `reference/old3`
   via a `Role::Resource::Utilizer`, but reading the sampler's `system_load` snapshot
   (cross-platform: Linux+BSD) instead of inline `/proc` sampling (drops old3's Linux-only
   limit):
@@ -1031,10 +1031,10 @@ resource-consumption half was deferred there.)
 - Record an ARCHITECTURE §4.4 addendum (fill the previously-undefined gating policy) +
   an AI_DOC.
 
-### #44 — Final renderer ordering + `--live` feeder (chunk 15)
+### TODO-44 — Final renderer ordering + `--live` feeder (chunk 15)
 **Status:** ✅ DONE (2026-06-21) — contract pinned (ARCHITECTURE §4.5), `--live` flag
 + LiveProducer tail mode landed; `Renderer::Driver` "interim" framing flipped · **Step:** 15 ·
-**Depends:** #42 (render-loop, done)
+**Depends:** TODO-42 (render-loop, done)
 
 **Decided contract (the previously-undefined §4.5 "final ordering guarantees"):**
 - **Ordering guarantee = per-JOB chronological only, NOT cross-job.** A job's own events
@@ -1050,9 +1050,9 @@ resource-consumption half was deferred there.)
   this **interleaves** job output; that is fine because every event already carries its
   job / process / collector identity, so a renderer that cares marks them distinctly
   (the default renderer already shows a per-output-item **job index** — verify + reuse).
-- **Interactive mode** (chunk 20 / #40, separate) by nature needs live event feeding +
+- **Interactive mode** (chunk 20 / TODO-40, separate) by nature needs live event feeding +
   `-v` + `-j1`; it therefore turns `--live` ON and, being single-job, never interleaves.
-  Wire the interactive⇒`--live` default as a hook now even though #40 lands later.
+  Wire the interactive⇒`--live` default as a hook now even though TODO-40 lands later.
 
 **Implementation:** add the `--live` option; give `App::Yath2::RenderLoop::LiveProducer`
 a live/tail mode (poll + tail every appearing `events.jsonl.zst`, emit events as read,
@@ -1075,13 +1075,13 @@ unchanged. Record an ARCHITECTURE §4.5 addendum (the now-pinned contract) + fli
 > **no transitions table** (R6). DB chunks: **DB-1** (retire old layer) → **DB-2** (PostgreSQL
 > schema) → **DB-3** (port flavors) → **DB-Jsonl** (jsonl renderer + renderer-owned options,
 > lands **before** DB-4 to free the "logger" concept) → **DB-4** (DB logger process) → **DB-5**
-> (sync + import). Suggested sequence **#45 → #46 → #47 → #48 → #50 → #51 → #53 → #54**, with
-> **#49/#52** (backend producer changes) independent, **#55 → #56** (DB-Jsonl) independent and
-> landing before #50, and **#57** deferred (optional). **DB layer is OPTIONAL** — core
+> (sync + import). Suggested sequence **TODO-45 → TODO-46 → TODO-47 → TODO-48 → TODO-50 → TODO-51 → TODO-53 → TODO-54**, with
+> **TODO-49/TODO-52** (backend producer changes) independent, **TODO-55 → TODO-56** (DB-Jsonl) independent and
+> landing before TODO-50, and **TODO-57** deferred (optional). **DB layer is OPTIONAL** — core
 > `yath test` (no logging) loads zero DB modules (R11).
 
-### #57 — (OPTIONAL) try-uuid start-stamp
-**Status:** Deferred · **Step:** DB-4 · **Depends:** #48
+### TODO-57 — (OPTIONAL) try-uuid start-stamp
+**Status:** Deferred · **Step:** DB-4 · **Depends:** TODO-48
 
 **Problem:** nice-to-have time-sortability — overwrite the derived `job_try_uuid`'s
 high-48-bit timestamp with the **try's start time** (the first collector transition's
@@ -1094,8 +1094,8 @@ Steps:
   **verify first**): overwrite the derived `job_try_uuid`'s high-48-bit timestamp with the
   try's start stamp. Reproducibility holds iff that stamp is stable across loggers.
 
-### #63 — Multi-flavor / multi-version DB test matrix via DBIx::QuickDB
-**Status:** DONE · **Step:** DB-3 · **Depends:** #47
+### TODO-63 — Multi-flavor / multi-version DB test matrix via DBIx::QuickDB
+**Status:** DONE · **Step:** DB-3 · **Depends:** TODO-47
 
 **Landed:** shared helper `t/AI/lib/App/Yath2/Test/DBMatrix.pm` discovers every
 `~/dbs/<engine>-<version>` install (+ a system fallback when `~/dbs` lacks a
@@ -1137,7 +1137,7 @@ Steps:
   ready connection per (flavor, version), and tears it down after. Fall back to a
   system install if `~/dbs` lacks that flavor.
 - Drive every DB test over that matrix: load the flavor's DDL, run the existing
-  assertions per (flavor, version). The cross-DB sync test (#53) should also cover
+  assertions per (flavor, version). The cross-DB sync test (TODO-53) should also cover
   **cross-flavor** pairs (e.g. sqlite-log → each server flavor).
 - **Skip granularity:** skip a single (flavor, version) cell only when QuickDB cannot
   provide it AND no system binary is found — never skip the whole flavor blanket.
@@ -1155,6 +1155,6 @@ Steps:
 Load-bearing, all auditors agree: the unified `Role::Service`/`Connection` framing
 layer; `Runner::Subscriber` parking deltas until after the snapshot;
 `Runner::Monitor`'s render mirror; `stop_preload_root` not killing the collector
-parent (the ChildMonitor fallback); the `no_reply`/`drain_input` fix (#9 — dedup, not
+parent (the ChildMonitor fallback); the `no_reply`/`drain_input` fix (TODO-9 — dedup, not
 delete). Known migration gaps (not bloat): pfile discovery (ch12), `yath spawn`
 (ch13), system-load (ch7), run-scoped stages.

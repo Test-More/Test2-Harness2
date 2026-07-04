@@ -3,7 +3,7 @@ use v5.38;
 
 use Test2::Formatter::Test2;
 
-# Chunk 7 / ticket #43 rendering contract: a system-load snapshot
+# Chunk 7 / ticket TODO-43 rendering contract: a system-load snapshot
 # (harness_system facet) is a global signal, NOT a test event. The terminal
 # formatter must:
 #   * never render it as a line (it used to leak as an INTERNAL json dump), and

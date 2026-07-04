@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #150 (83): YATH_JOB_COUNT=8:2 arrives via the
+# Regression coverage for ticket TODO-150 (83): YATH_JOB_COUNT=8:2 arrives via the
 # option's from_env_vars, which triggers with action 'initialize' (not 'set').
 # The ':' reshape trigger previously bailed unless action eq 'set', so the colon
 # form leaked through as a raw "8:2" job_count (numeric-compare warnings, 1 slot

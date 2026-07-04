@@ -13,140 +13,140 @@ The 2026-07-01 cleanup + bug audits produced two adversarially-verified finding 
 (`AI_DOCS/2026-07-01-cleanup-audit-findings.json`, `AI_DOCS/2026-07-02-bug-audit-findings.json`).
 A Fable/Opus resolution pass wrote per-ticket decision specs flipping **20** of the higher-risk
 audit tickets from **Proposed → Decided** (`b5a4e0264`). That pass surfaced **6 latent findings**
-absent from the 126-finding audit, filed as **TIER 10 / BUG-15 (#157–#162)** (`3e2587b40`). All
+absent from the 126-finding audit, filed as **TIER 10 / BUG-15 (TODO-157–TODO-162)** (`3e2587b40`). All
 were then implemented — see the two batches below. Session narrative (if generated):
 `AI_DOCS/2026-07-03-bugfix-resume.md`.
 
-## TIER-8 maintainability cleanup (CLEAN-1..14, #64–#105) — DONE (`2.0d-bugfix`)
+## TIER-8 maintainability cleanup (CLEAN-1..14, TODO-64–TODO-105) — DONE (`2.0d-bugfix`)
 
 Full-lib cleanup audit (177 raw → 136 confirmed; provenance in
 `AI_DOCS/2026-07-01-cleanup-audit-findings.json`) implemented on `2.0d-bugfix`. **Owner
 directive honored: web-framework code is parked, not deleted** — web/DB-web surface `git mv`'d
-to `reference/old_db`, never hard-deleted (web-parked §9 deferrals in #93/#94/#98/#100/#102).
+to `reference/old_db`, never hard-deleted (web-parked §9 deferrals in TODO-93/TODO-94/TODO-98/TODO-100/TODO-102).
 Per ticket (commit):
 
-- #64 (`3000cea99`) orphan Composer + dead render plumbing + Formatter vestiges.
-- #65 (`2265b397c`) Driver sweep/finalize, Formatter ctor args, status-bar dance dedup.
-- #66 (`734e71c23`+`729daf977`) sink fan-out → RenderLoop; stop.pm onto LiveProducer; Base sink dropped.
-- #67 (`5a9489dd4`) Runner/Preload::Host process-management de-dup.
-- #68 (`4ef56f7e1`) State wrapper-pair merge, dead next_task, single stage_startup_timeout.
-- #69 (`98a7856a0`) dead Runner imports/slots, constant-key sweep, HashBase prereq.
-- #70 (`2c58e0859`) split oversized Handlers.pm → Completion + TransitionHub roles.
-- #71 (`7814dbcb1`) shared SocketClient connect role + announce_* fold.
-- #72 (`134bf55b9`+`0bcef35be`) Watchdog/Monitor + Handlers/Completion dead code & stale comments.
-- #73 (`d21ffde11`) dead launch_via_fork, update_io fallback, out/err_file, prof_file.
-- #74 (`6ea97f540`) dead Event/Run/reader attrs, use_stream plumbing, Job set_exit/weaken.
-- #75 (`0dd600a35`) switches() dedup + shared -w predicate, run_dir via Run.
-- #76 (`0fbb5f0ad`) TestFile POD hygiene, shared _task_base, dead no-op removal.
-- #77 (`36d2e9192`) dead run_stage else-branches, StageDelegate stubs, unused persist/@fails.
-- #78 (`f51a8dfaf`) hoist Preload $current_stage, drop launch_stage re-resolve.
-- #79 (`7f1674f19`) hoist throttle contract into Utilizer, drop custom new().
-- #80 (`e891012a4`) Resource family → v5.38 + signatures.
-- #81 (`96f1a8a32`) IPC die-closure + byte-pump dedup, reuse set_cloexec.
-- #82 (`a921ce081`) unify Role::Service teardown + drop dead IPC::spawn form.
-- #83 (`1271251f3`+`a4c2e0cd5`) delete dead Util::Queue + fix Stream seek (**folds #156**); remaining Util/File dead members.
-- #84 (`29362263f`) unify gen_uuid onto Test2::Util::UUID v7, drop Data::UUID.
-- #85 (`5983a4146`) share directive drivers via Base; dispatch-table _record.
-- #86 (`5882c6635`) CoverageAggregator bug-fix pass (scope A).
-- #87 (`c988b48da`) bridge cli_args into help/POD doc_args.
-- #88 (`ab38e9d2f`) drop dead command-base + test.pm code.
-- #89 (`d872d50fc`) hoist shared render methods into Command base + unify final-data.
-- #90 (`666a779c4`) dedup log-file arg, JSONL scan, reload-issue render; split speedtag.
-- #91 (`baffaaeb9`) resources per-poll discovery+attach once; drop dead persist imports.
-- #92 (`aa37cbfdc`) sweep unused imports from command files.
-- #93 (`75c4911c8`) dedup DB connect/find_or_create, drop dead Schema/imports/slots (**web-parked**).
-- #94 (`b19da5989`) client-publish → HTTP::Tiny, drop AI_DOCS die refs (**web-parked**).
-- #95 (`dbdd53375`) migrate Pfile consumers to Discovery, remove shim.
-- #96 (`49382076d`) drop dead Util exports; share one _walk_updirs walk.
-- #97 (`99c53094e`) Tester yath() split, Finder JSONL require, V2 POD.
-- #98 (`0f5bf8c6b`) park Options::Server/WebServer to reference/old_db (**web-parked**).
-- #99 (`5ecb4dd2a`) dedup changes_applicable + parameterize Notify slack/email.
-- #100 (`95823d1bd`) drop stale plugin-options guard TODO (**YathUI sub-item web-parked**).
-- #101 (`d67efba23`) v5.38 + signatures for Options/Yath, Plugin, SysInfo, Git.
-- #102 (`b2219c65f`) drop dead Command::collector + isolate_stdout, link Converting POD (**Log.pm sub-item web-parked**).
-- #103 (`90e5143b1`) stale POD/comment sweep (dangling links, wrong fds, retired refs).
-- #105 (`63e9dbd75`) die-message newlines + stop.pm eval-return capture.
-- #104 = the doc status-sync ticket itself — satisfied by this reconciliation (see the DB/REF-PORT note below).
+- TODO-64 (`3000cea99`) orphan Composer + dead render plumbing + Formatter vestiges.
+- TODO-65 (`2265b397c`) Driver sweep/finalize, Formatter ctor args, status-bar dance dedup.
+- TODO-66 (`734e71c23`+`729daf977`) sink fan-out → RenderLoop; stop.pm onto LiveProducer; Base sink dropped.
+- TODO-67 (`5a9489dd4`) Runner/Preload::Host process-management de-dup.
+- TODO-68 (`4ef56f7e1`) State wrapper-pair merge, dead next_task, single stage_startup_timeout.
+- TODO-69 (`98a7856a0`) dead Runner imports/slots, constant-key sweep, HashBase prereq.
+- TODO-70 (`2c58e0859`) split oversized Handlers.pm → Completion + TransitionHub roles.
+- TODO-71 (`7814dbcb1`) shared SocketClient connect role + announce_* fold.
+- TODO-72 (`134bf55b9`+`0bcef35be`) Watchdog/Monitor + Handlers/Completion dead code & stale comments.
+- TODO-73 (`d21ffde11`) dead launch_via_fork, update_io fallback, out/err_file, prof_file.
+- TODO-74 (`6ea97f540`) dead Event/Run/reader attrs, use_stream plumbing, Job set_exit/weaken.
+- TODO-75 (`0dd600a35`) switches() dedup + shared -w predicate, run_dir via Run.
+- TODO-76 (`0fbb5f0ad`) TestFile POD hygiene, shared _task_base, dead no-op removal.
+- TODO-77 (`36d2e9192`) dead run_stage else-branches, StageDelegate stubs, unused persist/@fails.
+- TODO-78 (`f51a8dfaf`) hoist Preload $current_stage, drop launch_stage re-resolve.
+- TODO-79 (`7f1674f19`) hoist throttle contract into Utilizer, drop custom new().
+- TODO-80 (`e891012a4`) Resource family → v5.38 + signatures.
+- TODO-81 (`96f1a8a32`) IPC die-closure + byte-pump dedup, reuse set_cloexec.
+- TODO-82 (`a921ce081`) unify Role::Service teardown + drop dead IPC::spawn form.
+- TODO-83 (`1271251f3`+`a4c2e0cd5`) delete dead Util::Queue + fix Stream seek (**folds TODO-156**); remaining Util/File dead members.
+- TODO-84 (`29362263f`) unify gen_uuid onto Test2::Util::UUID v7, drop Data::UUID.
+- TODO-85 (`5983a4146`) share directive drivers via Base; dispatch-table _record.
+- TODO-86 (`5882c6635`) CoverageAggregator bug-fix pass (scope A).
+- TODO-87 (`c988b48da`) bridge cli_args into help/POD doc_args.
+- TODO-88 (`ab38e9d2f`) drop dead command-base + test.pm code.
+- TODO-89 (`d872d50fc`) hoist shared render methods into Command base + unify final-data.
+- TODO-90 (`666a779c4`) dedup log-file arg, JSONL scan, reload-issue render; split speedtag.
+- TODO-91 (`baffaaeb9`) resources per-poll discovery+attach once; drop dead persist imports.
+- TODO-92 (`aa37cbfdc`) sweep unused imports from command files.
+- TODO-93 (`75c4911c8`) dedup DB connect/find_or_create, drop dead Schema/imports/slots (**web-parked**).
+- TODO-94 (`b19da5989`) client-publish → HTTP::Tiny, drop AI_DOCS die refs (**web-parked**).
+- TODO-95 (`dbdd53375`) migrate Pfile consumers to Discovery, remove shim.
+- TODO-96 (`49382076d`) drop dead Util exports; share one _walk_updirs walk.
+- TODO-97 (`99c53094e`) Tester yath() split, Finder JSONL require, V2 POD.
+- TODO-98 (`0f5bf8c6b`) park Options::Server/WebServer to reference/old_db (**web-parked**).
+- TODO-99 (`5ecb4dd2a`) dedup changes_applicable + parameterize Notify slack/email.
+- TODO-100 (`95823d1bd`) drop stale plugin-options guard TODO (**YathUI sub-item web-parked**).
+- TODO-101 (`d67efba23`) v5.38 + signatures for Options/Yath, Plugin, SysInfo, Git.
+- TODO-102 (`b2219c65f`) drop dead Command::collector + isolate_stdout, link Converting POD (**Log.pm sub-item web-parked**).
+- TODO-103 (`90e5143b1`) stale POD/comment sweep (dangling links, wrong fds, retired refs).
+- TODO-105 (`63e9dbd75`) die-message newlines + stop.pm eval-return capture.
+- TODO-104 = the doc status-sync ticket itself — satisfied by this reconciliation (see the DB/REF-PORT note below).
 
-## TIER-9/10 bug fixes (BUG-1..15, #106–#162) — DONE (`2.0d-bugfix`)
+## TIER-9/10 bug fixes (BUG-1..15, TODO-106–TODO-162) — DONE (`2.0d-bugfix`)
 
 Full-lib bug audit (126 confirmed findings; `AI_DOCS/2026-07-02-bug-audit-findings.json`) plus
 the 6 spec-resolution latent findings (TIER 10). Implemented on `2.0d-bugfix`. Per ticket (commit):
 
-- #106 (`ffc76c8d4`) **P0** — write-failed conns now leave the IO::Select set (poisoned-select wedge).
-- #107 (`7780e0826`) **P0** — bound git merge-base loop; validate change base.
-- #108 (`ce9831a34`) buffer service outbound writes — EAGAIN no longer a false EOF.
-- #109 (`f89d8165b`) check Client::_send result; backpressure not silent loss.
-- #110 (`78381ac33`) guard request-handler dispatch; one bad frame no longer kills the daemon.
-- #111 (`c37a79129`) guard preload respawn longjump.
-- #112 (`c7d91f08b`) base-stage PENDING_RELOAD set on monitor-detected change.
-- #113 (`83178a92f`) route reload identity via preload-root peer_pid.
-- #114 (`43fa99379`) reload no longer fire-and-forget on no-preload runners. **#114-B (full ack handshake) DEFERRED.**
-- #115 (`0103a9f11`) use spec stage for PENDING_TASKS lookup (no runner crash).
-- #116 (`ea2d78659`) flush submit buffer when ready_to_schedule (no client hang).
-- #117 (`121712838`) retry declined by a halted run falls through to done/abort.
-- #118 (`9354c4da4`) validate category/duration; E1 producer + State ingress backstop.
-- #119 (`9cba8a4cd`) detach spawn supervisor into its own pgroup.
-- #120 (`706944851`) watch done-check on -l + Discovery::resolves, not -f on the socket symlink.
-- #121 (`6083cfc05`) bounded stop/kill escalation with recycled-pid-safe corroboration.
-- #122 (`bea16dd1d`) handle Ctrl-C in attach mode.
-- #123 (`dba0edb5f`) bounded liveness gate before `yath start` success banner.
-- #124 (`76ff8cc5a`) guard failed.pm -1 deref for jobs missing harness_job_end.
-- #125 (`0f6070f5b`) defer interactive tempdir cleanup until child releases.
-- #126 (`fe175347d`) honor --notify-email-fail.
-- #127 (`c269c90ab`) anchor -f name:details regex (URLs/host:port survive).
-- #128 (`337242ca5`) thread --project into DB logger attribution.
-- #129 (`632a01e4e`) make run sync transactional.
-- #130 (`c87c29401`) skip non-run collectors in logger drain finalize.
-- #131 (`afda4f17b`+`88d9fac52`; fragile e2e parked `84d9ca6e1`) fold watchdog-aborted jobs into DB rows; don't fold aborted jobs with a terminal try.
-- #132 (`9914fe8f2`) mark runs broken on mid-run death / drain timeout.
-- #133 (`5fdd54ef9`) report -L logger teardown-timeout + nonzero exit.
-- #134 (`af0db47b5`) Service/IPC hardening bundle.
-- #135 (`903fec17c`) runner state/scheduler bundle.
-- #136 (`b43b2e46d`+`579fe29ba`) preload subsystem bundle + reload transitive blacklist.
-- #137 (`3fbe05942`) empty env switch, -w predicate anchor, spawn tmpdir/markers.
-- #138 (`126fd8f82`+`a68539062`) Resources/sampler bundle + Sampler.t heartbeat reconcile.
-- #139 (`cbb8781f3`) yath spawn robustness bundle.
-- #140 (`9a713168c`) interactive-mode bundle.
-- #141 (`8237a75e4`) renderer driver/live-pipeline bundle (**also resolves #160 --hide-runner-output**).
-- #142 (`51d8a548f`) QVF ECOUNT double-count, retry counters, non-color DESTROY reset.
-- #143 (`044531ac5`) check jsonl close()/symlink returns, sweep dangling lastlog.
-- #144 (`f34f5322e`+`180c9bbb0`) Finder/test-selection bundle + symlinked-FILES dedup.
-- #145 (`5ecfc22fc`) Discovery/start lifecycle bundle (**supersedes #162**).
-- #146 (`df06a727c`) persist-command UX bundle.
-- #147 (`b4fd2e190`) harden replay (idle inflation, truncated-gz, bad filters, corrupt lines).
-- #148 (`81f3160e3`) rc section-header comments, safe glob shell-out, anchored APP_PATH.
-- #149 (`aa5a92dc5`) speedtag atomic rewrite + DUR alias; times sort-by-file; medium die msg.
-- #150 (`2575d6dfa`) Plugin/options bundle.
-- #151 (`3fbc786f7`) un-swap ByRun exclude-loads/opens guards.
-- #152 (`219be7ca5`) DB layer P2/P3 bundle.
-- #153 (`e6efc37b0`) client-recent --max + client-publish non-JSON guard (**web-parked, reworked in place**).
-- #154 (`90100ac1b`) Util/directives bundle (partial-line, bare-directive, TOCTOU, SubReaper). **DragonFly procctl syscall numbers DEFERRED.**
-- #155 (`244d678ba`) Tester wait loop sub-second sleep + KILL escalation.
-- #156 folded into #83 (`1271251f3`).
-- #157 (`01ebb8520`) bounded non-blocking connect for Client/Subscriber.
-- #158 (`0289550ea`) short-circuit drain for watchdog-aborted runs.
-- #159 investigation only — verdict recorded: covered by the #111/#112/#113 reload-cluster fix; no separate change (filed `3e2587b40`).
-- #160 covered by #141 (`8237a75e4`).
-- #161 (`92a16689e`) route runner.pm discovery-link unlink through ownership check.
-- #162 superseded by #145 (`5ecfc22fc`).
+- TODO-106 (`ffc76c8d4`) **P0** — write-failed conns now leave the IO::Select set (poisoned-select wedge).
+- TODO-107 (`7780e0826`) **P0** — bound git merge-base loop; validate change base.
+- TODO-108 (`ce9831a34`) buffer service outbound writes — EAGAIN no longer a false EOF.
+- TODO-109 (`f89d8165b`) check Client::_send result; backpressure not silent loss.
+- TODO-110 (`78381ac33`) guard request-handler dispatch; one bad frame no longer kills the daemon.
+- TODO-111 (`c37a79129`) guard preload respawn longjump.
+- TODO-112 (`c7d91f08b`) base-stage PENDING_RELOAD set on monitor-detected change.
+- TODO-113 (`83178a92f`) route reload identity via preload-root peer_pid.
+- TODO-114 (`43fa99379`) reload no longer fire-and-forget on no-preload runners. **TODO-114-B (full ack handshake) DEFERRED.**
+- TODO-115 (`0103a9f11`) use spec stage for PENDING_TASKS lookup (no runner crash).
+- TODO-116 (`ea2d78659`) flush submit buffer when ready_to_schedule (no client hang).
+- TODO-117 (`121712838`) retry declined by a halted run falls through to done/abort.
+- TODO-118 (`9354c4da4`) validate category/duration; E1 producer + State ingress backstop.
+- TODO-119 (`9cba8a4cd`) detach spawn supervisor into its own pgroup.
+- TODO-120 (`706944851`) watch done-check on -l + Discovery::resolves, not -f on the socket symlink.
+- TODO-121 (`6083cfc05`) bounded stop/kill escalation with recycled-pid-safe corroboration.
+- TODO-122 (`bea16dd1d`) handle Ctrl-C in attach mode.
+- TODO-123 (`dba0edb5f`) bounded liveness gate before `yath start` success banner.
+- TODO-124 (`76ff8cc5a`) guard failed.pm -1 deref for jobs missing harness_job_end.
+- TODO-125 (`0f6070f5b`) defer interactive tempdir cleanup until child releases.
+- TODO-126 (`fe175347d`) honor --notify-email-fail.
+- TODO-127 (`c269c90ab`) anchor -f name:details regex (URLs/host:port survive).
+- TODO-128 (`337242ca5`) thread --project into DB logger attribution.
+- TODO-129 (`632a01e4e`) make run sync transactional.
+- TODO-130 (`c87c29401`) skip non-run collectors in logger drain finalize.
+- TODO-131 (`afda4f17b`+`88d9fac52`; fragile e2e parked `84d9ca6e1`) fold watchdog-aborted jobs into DB rows; don't fold aborted jobs with a terminal try.
+- TODO-132 (`9914fe8f2`) mark runs broken on mid-run death / drain timeout.
+- TODO-133 (`5fdd54ef9`) report -L logger teardown-timeout + nonzero exit.
+- TODO-134 (`af0db47b5`) Service/IPC hardening bundle.
+- TODO-135 (`903fec17c`) runner state/scheduler bundle.
+- TODO-136 (`b43b2e46d`+`579fe29ba`) preload subsystem bundle + reload transitive blacklist.
+- TODO-137 (`3fbe05942`) empty env switch, -w predicate anchor, spawn tmpdir/markers.
+- TODO-138 (`126fd8f82`+`a68539062`) Resources/sampler bundle + Sampler.t heartbeat reconcile.
+- TODO-139 (`cbb8781f3`) yath spawn robustness bundle.
+- TODO-140 (`9a713168c`) interactive-mode bundle.
+- TODO-141 (`8237a75e4`) renderer driver/live-pipeline bundle (**also resolves TODO-160 --hide-runner-output**).
+- TODO-142 (`51d8a548f`) QVF ECOUNT double-count, retry counters, non-color DESTROY reset.
+- TODO-143 (`044531ac5`) check jsonl close()/symlink returns, sweep dangling lastlog.
+- TODO-144 (`f34f5322e`+`180c9bbb0`) Finder/test-selection bundle + symlinked-FILES dedup.
+- TODO-145 (`5ecfc22fc`) Discovery/start lifecycle bundle (**supersedes TODO-162**).
+- TODO-146 (`df06a727c`) persist-command UX bundle.
+- TODO-147 (`b4fd2e190`) harden replay (idle inflation, truncated-gz, bad filters, corrupt lines).
+- TODO-148 (`81f3160e3`) rc section-header comments, safe glob shell-out, anchored APP_PATH.
+- TODO-149 (`aa5a92dc5`) speedtag atomic rewrite + DUR alias; times sort-by-file; medium die msg.
+- TODO-150 (`2575d6dfa`) Plugin/options bundle.
+- TODO-151 (`3fbc786f7`) un-swap ByRun exclude-loads/opens guards.
+- TODO-152 (`219be7ca5`) DB layer P2/P3 bundle.
+- TODO-153 (`e6efc37b0`) client-recent --max + client-publish non-JSON guard (**web-parked, reworked in place**).
+- TODO-154 (`90100ac1b`) Util/directives bundle (partial-line, bare-directive, TOCTOU, SubReaper). **DragonFly procctl syscall numbers DEFERRED.**
+- TODO-155 (`244d678ba`) Tester wait loop sub-second sleep + KILL escalation.
+- TODO-156 folded into TODO-83 (`1271251f3`).
+- TODO-157 (`01ebb8520`) bounded non-blocking connect for Client/Subscriber.
+- TODO-158 (`0289550ea`) short-circuit drain for watchdog-aborted runs.
+- TODO-159 investigation only — verdict recorded: covered by the TODO-111/TODO-112/TODO-113 reload-cluster fix; no separate change (filed `3e2587b40`).
+- TODO-160 covered by TODO-141 (`8237a75e4`).
+- TODO-161 (`92a16689e`) route runner.pm discovery-link unlink through ownership check.
+- TODO-162 superseded by TODO-145 (`5ecfc22fc`).
 
-## DB/REF-PORT status sync (#104) — DONE
+## DB/REF-PORT status sync (TODO-104) — DONE
 
-Doc reconciliation (ticket #104). The DB-layer rewrite chunks and the reference-port features
+Doc reconciliation (ticket TODO-104). The DB-layer rewrite chunks and the reference-port features
 were implemented and merged on `2.0d` **before** this bug-audit branch (landing commits from
-#104's Problem text), but their `TODO_STEPS.md` rows + `TODO_TASKS.md` tickets were never flipped.
-Now reconciled — steps DB-1..DB-5/DB-Jsonl/REF-PORT flipped ✅, tickets #45–#56 / #58–#62 moved out:
+TODO-104's Problem text), but their `TODO_STEPS.md` rows + `TODO_TASKS.md` tickets were never flipped.
+Now reconciled — steps DB-1..DB-5/DB-Jsonl/REF-PORT flipped ✅, tickets TODO-45–TODO-56 / TODO-58–TODO-62 moved out:
 
-- DB-1 (`647b55466`) old DBIC/web → `reference/old_db`; db/server/recent stubs. (#45)
-- DB-2 (`966eb6516`) PostgreSQL-first QuickORM `autofill` schema. (#46)
-- DB-3 (`e6ec83c61`) SQLite/MySQL/MariaDB/Percona port. (#47)
-- DB-Jsonl (`597a86e9b`/`03ac4243c`) jsonl renderer + `mod_adds_options`. (#55/#56)
-- DB-4 (`bf75f888c`..`a8b5dab7c`) opt-in `-L` DB-logger process + derived UUIDs. (#48/#49/#50/#51/#52)
-- DB-5 (`df7b8863a`/`c05e9b8d9`) `yath db sync` + `import`. (#53/#54)
-- REF-PORT (`b756025da`/`0e93506b0`/`fdec15e72`/`d5baf0e0b`/`409f4fc8c`) directives parser, UnixLimits+Disk, Units, ResetTerm, list/ping. (#58–#62)
+- DB-1 (`647b55466`) old DBIC/web → `reference/old_db`; db/server/recent stubs. (TODO-45)
+- DB-2 (`966eb6516`) PostgreSQL-first QuickORM `autofill` schema. (TODO-46)
+- DB-3 (`e6ec83c61`) SQLite/MySQL/MariaDB/Percona port. (TODO-47)
+- DB-Jsonl (`597a86e9b`/`03ac4243c`) jsonl renderer + `mod_adds_options`. (TODO-55/TODO-56)
+- DB-4 (`bf75f888c`..`a8b5dab7c`) opt-in `-L` DB-logger process + derived UUIDs. (TODO-48/TODO-49/TODO-50/TODO-51/TODO-52)
+- DB-5 (`df7b8863a`/`c05e9b8d9`) `yath db sync` + `import`. (TODO-53/TODO-54)
+- REF-PORT (`b756025da`/`0e93506b0`/`fdec15e72`/`d5baf0e0b`/`409f4fc8c`) directives parser, UnixLimits+Disk, Units, ResetTerm, list/ping. (TODO-58–TODO-62)
 
-**Left pending (unchanged):** #57 (optional try-uuid start-stamp, Deferred). **#63** (multi-flavor
+**Left pending (unchanged):** TODO-57 (optional try-uuid start-stamp, Deferred). **TODO-63** (multi-flavor
 DB test matrix, `t/AI/lib/App/Yath2/Test/DBMatrix.pm`) was **already** `Status: DONE` in
 `TODO_TASKS.md` and landed pre-checkpoint — left in place (out of this reconciliation's delete set).
 
@@ -155,24 +155,24 @@ as of `1ce783832`; finding-level provenance lives in the two `AI_DOCS/2026-07-0{
 
 ---
 
-## TIER 5 batch (2026-06-21) — #38 / #41 / #42 built in parallel (worktree sub-agents)
+## TIER 5 batch (2026-06-21) — TODO-38 / TODO-41 / TODO-42 built in parallel (worktree sub-agents)
 
 Three TIER-5 chunks implemented concurrently by isolated worktree sub-agents and
 integrated onto `2.0d` one at a time, full suite green after each. (ch21 ran in the
 same batch — its own entry below.)
 
-- **#38 / chunk 29 — FdPass primitive — DONE (`2feed5304` + `59dd29a05`).**
+- **TODO-38 / chunk 29 — FdPass primitive — DONE (`2feed5304` + `59dd29a05`).**
   `Test2::Harness2::Util::FdPass`: SCM_RIGHTS `send_fds`/`recv_fds` (per-fd loop,
   EINTR-retried) + `command_listen`/`target_connect` (private `0700` dir, `0600`
   random-named socket under the `sun_path` cap, `FD_CLOEXEC`) + `fdpass_available`/
   `require_fdpass` guards over an OPTIONAL `IO::FDPass` (Recommends in `dist.ini`;
   actionable die when absent; the lean test/run/start path never loads it). Foundational
-  — no consumers yet (#39 spawn, #40 interactive). Integration notes: the agent's
+  — no consumers yet (TODO-39 spawn, TODO-40 interactive). Integration notes: the agent's
   worktree had a STALE base, so the 2 commits were cherry-picked (resolved the `dist.ini`
   Suggests block by hand); and a real test bug was fixed on integration — the unit test
   did `skip_all` *after* running guard assertions ("planned 0 ran 3") when `IO::FDPass`
   is absent (the CI reality); restructured to end cleanly after the absent-path guards.
-- **#41 / chunk 30 — Harness-client library — DONE (`d3f4800e8` + `8e23cd887`).**
+- **TODO-41 / chunk 30 — Harness-client library — DONE (`d3f4800e8` + `8e23cd887`).**
   `App::Yath2::Client` grown into the single `runner.socket` bridge (§4.11, Option A):
   runner-lifecycle mode enum (transient = spawn/own/reap + trap-forward signals; attach =
   discover + `kill(0)` liveness; start = spawn daemon), `RunPlan` absorbed (finders +
@@ -181,7 +181,7 @@ same batch — its own entry below.)
   `resources` thinned onto it; the `run extends test` override pile + inline runner
   spawn/reap/signal removed (~250 lines). Folded in the ch21 follow-up (dead
   `use Test2::Harness2::IPC;` dropped from run/start). No backend changes needed.
-- **#42 / chunk 31 — Render-loop library — DONE (`33f5a59ec` + `7a2e6bf9b`).**
+- **TODO-42 / chunk 31 — Render-loop library — DONE (`33f5a59ec` + `7a2e6bf9b`).**
   `App::Yath2::RenderLoop` owns dispatch fan-out + sink lifecycle (`step`/`finish`/
   `signal`) + run rollup, driving a swappable pure `Producer` (`poll`/`done`):
   `LiveProducer` (reuses `Renderer::Driver` in a new collect mode — per-job ordering +
@@ -197,33 +197,33 @@ silence-timeouts) + `yath test -D` (124) green.
 
 ---
 
-## Chunk 21 / #8 — IPC controller collapse re-audit — DONE (`bc2cb3379` + docs)
+## Chunk 21 / TODO-8 — IPC controller collapse re-audit — DONE (`bc2cb3379` + docs)
 
 Chunk 21 ("collapse the `Test2::Harness2::IPC` controller to spawn + zombie-reap on
 `Util::IPC`") was re-audited 2026-06-21. **Finding: the substantive collapse had
-already landed across #6, #8 P1-3, and #27/#28/#29** — by the time #29 made
-`run_scheduler_only` the runner's only loop, it explicitly "Completes #8 Part 4".
+already landed across TODO-6, TODO-8 P1-3, and TODO-27/TODO-28/TODO-29** — by the time TODO-29 made
+`run_scheduler_only` the runner's only loop, it explicitly "Completes TODO-8 Part 4".
 What actually remained for chunk 21 was small, and the original ticket's end goal
 ("dismantle the IPC base class") is **no longer achievable as scoped**.
 
-- **Why the base class stays.** The #22 split created a **third** consumer of
+- **Why the base class stays.** The TODO-22 split created a **third** consumer of
   `Test2::Harness2::IPC`: `Test2::Harness2::Preload::Host` (`use parent
   'Test2::Harness2::IPC'`). It runs its own `run_stage`/`run_job` loop and is still a
   genuine multi-child controller — forks stages + jobs, calls the base `wait()`, and
   reaps via `set_proc_exit` (Job branch = zombie cleanup; **StageProcess branch =
-  live named-stage monitor-relaunch via `longjump`**). #29 scoped `Preload::Host`
+  live named-stage monitor-relaunch via `longjump`**). TODO-29 scoped `Preload::Host`
   explicitly OUT OF SCOPE. So the shared three-pass reaper (`_bring_out_yer_dead` /
   `_check_if_dead_yet` group-wait / `_ex_parrots` vanished-sweep) inside `wait()`,
   plus `killall`/`check_for_fork`/`watch`/`spawn` and the `category` slot, are all
-  **load-bearing for Host** and must remain. The ticket-#8 / ARCHITECTURE-§5.4 claim
-  "Only 2 real consumers ever used it" was written pre-#22 and is now stale.
+  **load-bearing for Host** and must remain. The ticket-TODO-8 / ARCHITECTURE-§5.4 claim
+  "Only 2 real consumers ever used it" was written pre-TODO-22 and is now stale.
 - **What this re-audit changed:**
   - **`bc2cb3379`** — deleted the dead `IPC::set_sig_handler` (+ POD). Zero callers:
     `Runner.pm`/`Preload::Host` populate `{+HANDLERS}` directly and `init()` seeds the
-    CHLD entry. (The #25 "moot via #8" item for this stub.)
+    CHLD entry. (The TODO-25 "moot via TODO-8" item for this stub.)
   - Corrected ARCHITECTURE.md §5.4 (the "base class is dismantled" / "only 2
     consumers" bullets → "slimmed, not dismantled," enumerating what was removed by
-    #6/#8/#29 vs what stays and why), and updated TODO_TASKS #8 + TODO_STEPS chunk 21
+    TODO-6/TODO-8/TODO-29 vs what stays and why), and updated TODO_TASKS TODO-8 + TODO_STEPS chunk 21
     status. IPC.md §4 already correctly named Host as a co-equal consumer — unchanged.
 - **Verified not removable** (confirmed live readers / Host dependence): `wait()`,
   `_check_if_dead_yet`, `_ex_parrots`, `killall`, `watch`, `spawn`, `check_timeouts`,
@@ -241,7 +241,7 @@ Verified: audits (methods/readonly/watch-parent) clean; `prove -Ilib` on
 
 ---
 
-## #29 — Collapse to one run path; run_scheduler_only is the runner's only loop — DONE
+## TODO-29 — Collapse to one run path; run_scheduler_only is the runner's only loop — DONE
 
 The runner's no-preload and preload runs converge onto a single loop. Designed via a
 map+design+adversarial-review workflow (the naive plan had real blockers -- deleting
@@ -267,13 +267,13 @@ ported). Landed green-first in 4 commits:
 
 **Key decision:** a no-preload collector stays a WATCHED runner child (reaped via
 `set_proc_exit` with job_id known) rather than detaching -- simpler, and completion
-still rides EOF; only preload collectors detach (#28). The discriminator keys on the
+still rides EOF; only preload collectors detach (TODO-28). The discriminator keys on the
 preload flag (NOT live-peer presence) so a transiently-disconnected preload stage still
 requeues (§4.7a). The cosmetic `_has_preload_root` rename was deliberately SKIPPED
 (`_preload_root_hosts_stages` is still accurate; not worth churning the file). Updated
 tests: `Runner_dispatch_abort.t` (preload + new no-preload arm), `Runner_orphan.t`
 (end_test_loop subtest dropped; orphaned() still unit-tested), `Runner_queue_spawn_handler.t`
-(no-preload reject). Completes the #22 residual + #4 Part 4 + #8 Part 4.
+(no-preload reject). Completes the TODO-22 residual + TODO-4 Part 4 + TODO-8 Part 4.
 
 Verified: prove -j16 3× (119 files, 1803 tests, 0 silence-timeouts) + yath test -D (120)
 green; no leaked/zombie runner/collector processes after a no-preload AND a preload run.
@@ -281,9 +281,9 @@ Preload::Host (a sibling IPC class with its OWN run_tests/run_stage/run_job) unt
 
 ---
 
-## #28 — Runner child-subreaper + detached collector reap, now WORKING (C1/C2/M3) — DONE
+## TODO-28 — Runner child-subreaper + detached collector reap, now WORKING (C1/C2/M3) — DONE
 
-The original #28 code (subreaper + double-fork/detach, `7952029e6`..`ab1a95865`) was
+The original TODO-28 code (subreaper + double-fork/detach, `7952029e6`..`ab1a95865`) was
 DEAD on the preload path (re-audit finding). Fixed standalone — `run_scheduler_only`
 now actually reaps the detached collectors and runs A3:
 - **C2 (`def11c2fe`)** — pid-keyed `collector_reap` map set at the pass decision
@@ -301,8 +301,8 @@ now actually reaps the detached collectors and runs A3:
   the prior helper-only unit test lacked (it green-lit code that never ran).
 
 Both runners green (`prove` 118 files / 1801 tests, `yath test -D` 119). The decision
-to keep no-preload collectors WATCHED (not detached) is recorded in #29's design — the
-chunk-26 collapse no longer carries any #28 work.
+to keep no-preload collectors WATCHED (not detached) is recorded in TODO-29's design — the
+chunk-26 collapse no longer carries any TODO-28 work.
 
 ---
 
@@ -312,15 +312,15 @@ A multi-agent re-audit (the user raised the effort level mid-session and asked f
 recheck of all of today's commits) plus a clean bisect. Most of the day's work verified
 correct at HEAD; the findings that needed action:
 
-- **#27 silence-timeout flake — FIXED (`6827decca`).** Bisected to the first #27 commit
+- **TODO-27 silence-timeout flake — FIXED (`6827decca`).** Bisected to the first TODO-27 commit
   (`472946279`): it flipped `no_reply` OFF for `read_control` reporters, so the runner
   echoed its identity back to every test-job collector. Under `prove -j16` the write-back
   to a collector busy draining its child stalls the runner's single-threaded loop ⇒ a 60s
   collector silence-timeout kills an otherwise-instant preloaded test (`preload/slow.tx`),
-  ~60% of full runs. Pre-#27 (`5edf2ab20`) 3/3 clean; fixed HEAD 6/6 clean. Fix: `no_reply`
+  ~60% of full runs. Pre-TODO-27 (`5edf2ab20`) 3/3 clean; fixed HEAD 6/6 clean. Fix: `no_reply`
   and `read_control` are orthogonal — set `no_reply` always; terminate rides the separate
   `send_control`. `IPC.md` reconciled.
-- **#27-2b late-connect orphan — FIXED (`fb8496c86`).** `_enforce_collector_connect_timeout`
+- **TODO-27-2b late-connect orphan — FIXED (`fb8496c86`).** `_enforce_collector_connect_timeout`
   failed a never-connected job but recorded no intent, so a collector that connected
   *after* its slot was reclaimed orphaned its test child (the block comment falsely claimed
   it was torn down). Added a per-job `terminated_jobs` intent; `service_identified` tears
@@ -329,16 +329,16 @@ correct at HEAD; the findings that needed action:
 - **style-purge `backstop` survivor — FIXED (`fc9904e98`).** `954f6476d` banned the term
   but left `startup_timeout_backstop` at `Resource_Preload.t:91`; renamed `_safeguard`.
 
-**#28 (chunk 25) — code landed but DEAD on the preload path; NOT done; fix folded into
-#29.** The runner's `_bring_out_yer_dead` override is unreachable on the preload path
+**TODO-28 (chunk 25) — code landed but DEAD on the preload path; NOT done; fix folded into
+TODO-29.** The runner's `_bring_out_yer_dead` override is unreachable on the preload path
 (`run_scheduler_only` never calls `wait()`; PROCS empty) ⇒ detached collectors are never
 reaped and A3 never fires (C1); and `collector_conn_eof` deletes `job_pids` before the
 reap so the A3 reverse-map can't match (C2). The unit test only drives the helper, masking
-both. SubReaper.pm itself is correct. Fix plan: TODO_TASKS #28/#29.
+both. SubReaper.pm itself is correct. Fix plan: TODO_TASKS TODO-28/TODO-29.
 
 ---
 
-## #27 — Transition-driven test completion (the §5.4 core) — DONE (3 agent phases)
+## TODO-27 — Transition-driven test completion (the §5.4 core) — DONE (3 agent phases)
 
 The crux rewrite: a test's verdict now comes from its collector's socket transitions
 + connection EOF, never the reaped exit code. Three phases, each integrated on 2.0d
@@ -377,47 +377,47 @@ fails the job if the required reporter can't connect; new `--collector-connect-t
 enforced per scheduler tick. Post-pass collector failure (A3): a non-zero **health** exit
 after a recorded pass keeps the test green but emits `announce_run_health` → the suite
 is flagged failed at command exit (runner-reaped/no-preload path now; preload covered
-once #28 reparents).
+once TODO-28 reparents).
 
-**Notes for #28/#29:** the `kill(-pid)` hard-kill fallback needs detached preload
-collectors to `setsid` (#28). A3 currently only fires on the runner-reaped path; #28's
+**Notes for TODO-28/TODO-29:** the `kill(-pid)` hard-kill fallback needs detached preload
+collectors to `setsid` (TODO-28). A3 currently only fires on the runner-reaped path; TODO-28's
 subreaper reparenting will extend it to preload collectors (the `job_passed` ledger +
 `announce_run_health` are path-agnostic). **Correction (2026-06-21 re-audit):** the
 `-j16` silence-timeout flake first dismissed as concurrent-machine-load was in fact a
-**#27 code regression** (the `read_control` reporter dropped `no_reply`, so the runner's
+**TODO-27 code regression** (the `read_control` reporter dropped `no_reply`, so the runner's
 identity echo wedged its single-threaded loop) — fixed in `6827decca`; see the re-audit
 section at the top of this file.
 
 ---
 
-## Batch (2026-06-21) — review-driven fixes #32–#37 (parallel agents, integrated on 2.0d)
+## Batch (2026-06-21) — review-driven fixes TODO-32–TODO-37 (parallel agents, integrated on 2.0d)
 
 Six tickets from the two-reviewer pass, run as 3 parallel worktree agents and
 cherry-picked onto 2.0d; combined suite green at each integration (final: `prove`
 1769, `yath test -D` PASSED). All AGENTS.md audits + `podchecker` clean per agent.
 
-- **#32 (`3dde68850`) — fd hygiene (core).** `Util::IPC::set_cloexec`; `FD_CLOEXEC`
+- **TODO-32 (`3dde68850`) — fd hygiene (core).** `Util::IPC::set_cloexec`; `FD_CLOEXEC`
   on every harness socket (listen, peer connect, accepted, collector reporter via the
   recorder's `connections` accessor); `Role::Service::close_all_connections`
   post-fork close-sweep wired into both no-exec forks (`JobLauncher::launch_via_fork`
   collector parent + `cleanup_process` goto::file child, which also closes the
   inherited reporter sockets stashed on the job). Test `Role_Service_fd_hygiene.t`.
   **No Test2-Collector change needed.** Mandatory-reporter + `--collector-connect-timeout`
-  deferred to #27.
-- **#37 (`e29259adc`) — doc.** Comment at the resource-skip `-e` assembly in
+  deferred to TODO-27.
+- **TODO-37 (`e29259adc`) — doc.** Comment at the resource-skip `-e` assembly in
   `Job::collector_target`.
-- **#36 (`4403aa4c0`) — delete dead `reset_stage_readiness`** + its test subtest
+- **TODO-36 (`4403aa4c0`) — delete dead `reset_stage_readiness`** + its test subtest
   (re-verified zero production callers).
-- **#35 (`e4e64f6b8`) — `TASK_LOOKUP` leak.** `_drop_run_task_lookup` from `halt_run`
+- **TODO-35 (`e4e64f6b8`) — `TASK_LOOKUP` leak.** `_drop_run_task_lookup` from `halt_run`
   + `purge_run`; `State_run_retention.t` asserts removal.
-- **#33 (`1b0a1312b`) — enforce `preload_stage_startup_timeout`.** Per-tick
+- **TODO-33 (`1b0a1312b`) — enforce `preload_stage_startup_timeout`.** Per-tick
   `_expire_stale_stages` in `advance` demotes a timed-out `starting`/`restarting`
   stage to `down`, **plus `_rebucket_stage_tasks`** (demotion alone strands tasks
   already bucketed under the stage — `_next` only walks `up` buckets) drains the
   bucket back through `task_pending_lookup` so `task_stage` re-resolves (advisory→default,
   required→`resource_skip`). Integration test `scheduler_stage_startup_timeout.t`.
-  (Fixes the inert #21 safeguard.)
-- **#34 (`0b659a90f`) — `yath reload` during a preload run.** HUP routes a
+  (Fixes the inert TODO-21 safeguard.)
+- **TODO-34 (`0b659a90f`) — `yath reload` during a preload run.** HUP routes a
   `reload_root` request to the base/default stage's **live** channel (peer matched by
   `peer_pid == PRELOAD_ROOT_PID`); `Preload::Host::request_handler_reload_root` sets a
   `pending_reload` → `longjump 'preload-root' 'respawn'` at stage end; a queued `stop`
@@ -429,32 +429,32 @@ cherry-picked onto 2.0d; combined suite green at each integration (final: `prove
 93 lines (over thresholds); `Runner.pm` 1296 LOC + `run_scheduler_only` 79 lines.
 `reload_command_respawn.t` uses a fixed `sleep 3` for the async respawn (possible slow-CI
 flake). The fd-hygiene regression is the close-sweep unit test (a true EOF regression
-lands with #27's EOF-decision logic).
+lands with TODO-27's EOF-decision logic).
 
 ---
 
-## #22 residual — flatten the vestigial no-preload Stage-Runner loop — DONE (`7e6ed23f8`)
+## TODO-22 residual — flatten the vestigial no-preload Stage-Runner loop — DONE (`7e6ed23f8`)
 
 Done directly on 2.0d (no worktree). Both suites green (`prove` 1748 · `yath test -D`
 1754). The runner only reaches `run_tests`'s in-runner path on a no-preload run, and
-since #22 moved all stage hosting to `Preload::Host` the runner never relaunches a stage
+since TODO-22 moved all stage hosting to `Preload::Host` the runner never relaunches a stage
 — so nothing ever longjumps `"Stage-Runner"`. Replaced the single-pass setjump/relaunch
 loop with a direct `run_stage('default')` call and removed the now-dead `reset_stage`
 method, the write-only `can_stage` slot, and the unused `Long::Jump` import. Also fixed
 the stale `Scheduler.pm` comment that described dispatch as a dial to
 `preload-<stage>.socket` (it is `service_send` over the registered channel).
 
-**Remaining #22 residual — `run_scheduler_only` as the runner's ONLY run path** — is
-coupled with #8 Part 4 (the no-preload fork path can only collapse into the
+**Remaining TODO-22 residual — `run_scheduler_only` as the runner's ONLY run path** — is
+coupled with TODO-8 Part 4 (the no-preload fork path can only collapse into the
 scheduler-only loop once no-preload completion no longer drives scheduling off the local
-reap). See the #8 Part 4 note below.
+reap). See the TODO-8 Part 4 note below.
 
-**Finding on #8 Part 4 (recorded for whoever picks it up):** `Runner::Job::_collector_exit_code`
+**Finding on TODO-8 Part 4 (recorded for whoever picks it up):** `Runner::Job::_collector_exit_code`
 shows the no-preload collector deliberately encodes the **audited** `harness_final_state`
 (pass/fail, audit-only failures, and the bail `halt`) into its **OS exit code** before
 exiting — and persists the bail reason to `bail_file`. So the runner's reap-driven
 `set_proc_exit` decision already acts on the audited verdict; the exit status *is* the
-collector's report, not a lossy waitpid status. That makes #8 Part 4 a lateral
+collector's report, not a lossy waitpid status. That makes TODO-8 Part 4 a lateral
 architectural move (drive the same decision off the `harness_final_state` transition
 instead of the exit code) rather than a correctness fix, and it carries real
 fire-exactly-once race risk on the hottest path (the transition and the reap both signal
@@ -464,9 +464,9 @@ not a blind cleanup. NOT attempted this session.
 
 ---
 
-## #21 — Preload failure: diagnostics simplify + configurable timeouts — DONE (`419571793`)
+## TODO-21 — Preload failure: diagnostics simplify + configurable timeouts — DONE (`419571793`)
 
-Depends #20 (landed first). Done directly on 2.0d (no worktree). Both suites green
+Depends TODO-20 (landed first). Done directly on 2.0d (no worktree). Both suites green
 (`prove` 1748 · `yath test -D` 1754). Conforms code to the already-written
 ARCHITECTURE.md §4.7a (no doc change needed).
 
@@ -500,7 +500,7 @@ into two settings is trivial if the owner prefers.
 
 ---
 
-## #20 — Preload `require` happens outside the guard — DONE (`91afaac78`)
+## TODO-20 — Preload `require` happens outside the guard — DONE (`91afaac78`)
 
 Done directly on 2.0d (no worktree). Both suites green (`prove` 1747 · `yath test -D`
 1753). Conforms code to the already-written ARCHITECTURE.md §4.7 (no doc change needed).
@@ -530,7 +530,7 @@ but the crash now fires during the guarded load instead — same observable outc
 
 ---
 
-## #10 / chunk 23 + chunk 11 — Client-side stage assignment + §4.7a preload Resource — DONE (`af8153696`)
+## TODO-10 / chunk 23 + chunk 11 — Client-side stage assignment + §4.7a preload Resource — DONE (`af8153696`)
 
 Two sequential agents, all parts green. Net resolver/file_stage/eager elimination
 (-559 lines) + the preload Resource (+362).
@@ -560,7 +560,7 @@ gained accessors.
   `stage_map`/`stage_is_up`/`stage_state`. `available($task)` tri-state: `up`→1;
   `starting`/`restarting`→0 (wait); all absent-from-map/`down` → `-1` if `require_preload`
   (skip/fail), else advisory→`default`. `assign` records the chosen stage; `release` no-op
-  (unbounded). assign→launch race already requeues via `dispatch_pending`→`requeue_task` (#3).
+  (unbounded). assign→launch race already requeues via `dispatch_pending`→`requeue_task` (TODO-3).
 - **Legacy `stage` field KEPT** (producer sets `stage //= preload_list->[0]`; consumer
   reads `preload_list` first, falls back) — removing it touches every producer for no gain.
 - **Tests:** deleted `stage_dispatch.t`/`preload_crash_midrun.t` + file_stage fixtures;
@@ -575,7 +575,7 @@ signal 9" teardown line — normal SIGKILL stage teardown at winddown; run PASSE
 
 ---
 
-## #15 — Chunk-comment archaeology sweep — DONE (`97f51134a`, 7 commits)
+## TODO-15 — Chunk-comment archaeology sweep — DONE (`97f51134a`, 7 commits)
 
 Suite green: `prove` Files=108 Tests=1731 · `yath test` PASSED 109/1736. Comments
 only. **`grep '# *[Cc]hunk [0-9]' lib/` → 0** (and a broader inline/POD `chunk N`
@@ -590,7 +590,7 @@ only, left as-is.
 
 ---
 
-## #8 — Collapse the IPC controller (simplify) — Parts 1-3 DONE; Part 4 DEFERRED (`280720efb`)
+## TODO-8 — Collapse the IPC controller (simplify) — Parts 1-3 DONE; Part 4 DEFERRED (`280720efb`)
 
 Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED.
 - **P1 (`f0c84daa9`):** `IPC::_bring_out_yer_dead` die-on-unmonitored-waitpid → `next`
@@ -622,7 +622,7 @@ Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED.
 
 ---
 
-## #23 — Rename the three colliding "Stage" classes — DONE (`2de1be5d3`)
+## TODO-23 — Rename the three colliding "Stage" classes — DONE (`2de1be5d3`)
 
 Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED 109/1736. All via
 `git mv` (history preserved); zero stale refs.
@@ -631,14 +631,14 @@ Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED 109/1736. All vi
 - `Runner::Preload::Stage` → **`Runner::StageConfig`** (preload DSL config)
 
 **`StageDelegate::done` KEPT** (not died/deleted — the audit's "always returns 0 =
-dead" was pre-#22): post-#22 it has a live polymorphic caller —
+dead" was pre-TODO-22): post-TODO-22 it has a live polymorphic caller —
 `Preload::Host::end_test_loop` calls `$state->done` where `state` is the stage
 delegate; the constant `return 0` keeps the stage serving dispatches until the runner
 stops it. A `die` would crash every stage loop.
 
 ---
 
-## #22 — Untangle runner / preload-root into two independent classes — CORE DONE (residuals)
+## TODO-22 — Untangle runner / preload-root into two independent classes — CORE DONE (residuals)
 
 Suite green: `prove` Files=108 Tests=1730 · `yath test` PASSED. Commits `f23ceb44c`
 (the 3 agent commits `48b55e4ae`/`0331e86e5`/`5a5f77a67`) + `b628a3728` (dead-guard
@@ -673,19 +673,19 @@ no-preload fork path into it and deleting `_preload_root_hosts_stages`/`PRELOAD_
 — deferred (larger, green-first). `preload.t` remains `-j16`-contention-flaky (pre-existing
 de-flake theme); clean in isolation + both full suites at each commit.
 
-**This unblocks #4 Part 5, #8 (full set_proc_exit removal), #23 (Stage rename).**
+**This unblocks TODO-4 Part 5, TODO-8 (full set_proc_exit removal), TODO-23 (Stage rename).**
 
 **Follow-on cleanups landed (`4fa8f9a3a`):** removed 3 dead imports from Runner.pm
 (`Preload`/`Preloader::Stage`/`DepTracer` — no longer referenced after the split).
-This + #22 **completes #4 Part 5** (no in-runner named-stage path remains; Runner's
-`set_proc_exit` is job-only, the stage branch lives in `Preload::Host`) and **#11**
-(only `stop_preload_stages` remains; `_drop_preload_peers` gone via #3; watchdog
-narrowed). **#14** — added the priority-index comment to `task_pending_lookup`
+This + TODO-22 **completes TODO-4 Part 5** (no in-runner named-stage path remains; Runner's
+`set_proc_exit` is job-only, the stage branch lives in `Preload::Host`) and **TODO-11**
+(only `stop_preload_stages` remains; `_drop_preload_peers` gone via TODO-3; watchdog
+narrowed). **TODO-14** — added the priority-index comment to `task_pending_lookup`
 (rejected-keep: the 5-level nesting mirrors `_next`'s traversal; don't flatten).
 
 ---
 
-## #26 — Simplify App::Yath::Script::V2 — DONE (`12e20db92`, orig `50f86d212`)
+## TODO-26 — Simplify App::Yath::Script::V2 — DONE (`12e20db92`, orig `50f86d212`)
 
 Suite green: `prove` Files=108 Tests=1722 · `yath test` PASSED 109/1728.
 
@@ -702,17 +702,17 @@ public method beside `do_begin`; trivial to inline if you'd rather drop it.
 
 ---
 
-## Batch 7 (2026-06-19) — runner self-restart removed (#4 Parts 3-4)
+## Batch 7 (2026-06-19) — runner self-restart removed (TODO-4 Parts 3-4)
 
 Combined suite green: `prove` Files=108 Tests=1740 · `yath test` PASSED 109/1746.
 
-### #4 — Parts 3 & 4 DONE (Part 5 deferred → needs the #22 role-split)
+### TODO-4 — Parts 3 & 4 DONE (Part 5 deferred → needs the TODO-22 role-split)
 Decided resolution "delete entirely" (no-preload `yath reload` dropped).
 - **Part 3 (`7dcb243db`) — runner self-restart deleted.** Removed the `'respawn'` exec
   branch + `respawn_runner_callback` (`runner.pm` command), the `RESPAWN_RUNNER_CALLBACK`
   plumbing + the `end_test_loop` respawn trigger (`Runner.pm`), and the stage-host's
   `respawn_runner_callback` (`Preload.pm`). HUP: preload runner forwards `reload` to the
-  preload-root (landed in #4 P2); the no-preload root runner is a **no-op** on HUP.
+  preload-root (landed in TODO-4 P2); the no-preload root runner is a **no-op** on HUP.
   Updated `persist.t` + `watch_socket.t` to drop the no-preload-reload assertions
   (no-preload daemons no longer `yath reload`).
 - **Part 4 (`8c375b53f`) — no-preload job launch is plain fork+exec under a collector.**
@@ -724,16 +724,16 @@ Decided resolution "delete entirely" (no-preload `yath reload` dropped).
   chdirs before exec) — `yath projects` was broken without it. Updated `plugin/test.tx`
   (child no longer inherits the runner's `%INC`). **Interactive mode not preserved** (its
   FIFO patch lived in the goto-file launcher) — no test runs a test in interactive mode, so
-  nothing needed skipping; the rewrite is the deferred #20 / chunk-13 conversation.
+  nothing needed skipping; the rewrite is the deferred TODO-20 / chunk-13 conversation.
 - **Part 5 (delete dead in-runner named-stage path) — DEFERRED, premise is wrong.** The
   targeted code is **NOT dead**: the **preload-root's stage-host** (`Preload::_run_stage_host`)
   is an ordinary `Runner` with `rootpid != $$`, so `_preload_root_hosts_stages` is **false**
   for it → it runs the full `run_tests`/`Preloader::launch_stage`/`_stage_transition_reporter`/
   `set_proc_exit`-stage-relaunch path to host + reload its stages (`reload.t` exercises it).
-  Removing it requires the **role-split (#22)** — lift the stage machinery out of `Runner.pm`
+  Removing it requires the **role-split (TODO-22)** — lift the stage machinery out of `Runner.pm`
   into a stage-host class so the scheduler-only root no longer carries it. **This same fact
-  blocks the full `set_proc_exit` removal in #8.** So: do #22 (role-split) to unblock #4 P5 +
-  #8's set_proc_exit-stage removal.
+  blocks the full `set_proc_exit` removal in TODO-8.** So: do TODO-22 (role-split) to unblock TODO-4 P5 +
+  TODO-8's set_proc_exit-stage removal.
 - **Follow-ups:** base/default-stage mid-run reload now flows through the preload-root's
   `request_handler_reload` (no `end_test_loop` self-re-exec) — worth a confirming test;
   `watch_socket.t`'s events-file check was relaxed (no-preload runner is silent on reload).
@@ -744,11 +744,11 @@ Decided resolution "delete entirely" (no-preload `yath reload` dropped).
 
 Combined suite green: `prove` Files=108 Tests=1740 · `yath test` PASSED.
 
-### #9 follow-up — restore connect-failure warn — DONE (`74ee07d8e`)
+### TODO-9 follow-up — restore connect-failure warn — DONE (`74ee07d8e`)
 Per review: `Util::socket_reporter` now `warn`s on a connect failure (the file recorder
 still captures the full stream) so a silently-non-connecting reporter is visible.
 
-### #3 — Collector self-termination + connection-currency; `requeue_task` — DONE (core; 2 deferrals)
+### TODO-3 — Collector self-termination + connection-currency; `requeue_task` — DONE (core; 2 deferrals)
 Cross-repo. **Test2-Collector** commit `680e751` (`ChildMonitor` `watch_parent_pid` accepts
 a scalar OR list — any gone pid → terminate; version-bumped). **Harness** (`4d83fb849` and
 the 4 before it):
@@ -762,7 +762,7 @@ the 4 before it):
   report's `$conn` against the registered `preload-<stage>` peer; deleted `_stale_stage_generation`,
   the per-report `generation`, `PRELOAD_ROOT_GENERATION`/`PRELOAD_GENERATION` (slots + handshake
   field + Preload capture), and the `generation` field from `STAGE_LIFECYCLE` (now `{state, stamp}`
-  — completing #2's deferral).
+  — completing TODO-2's deferral).
 - **Part 3 DONE** — deleted `_drop_preload_peers` + `%busy`.
 - **Part 4 DONE** — preload-root crash is **fatal** (persistent runner terminates); deleted
   `preload_root_respawn_limit`, the respawn branch, the `'respawn'` paths, the respawns slot;
@@ -789,10 +789,10 @@ the 4 before it):
 
 Combined suite green: `prove` Files=107 Tests=1740 · `yath test` PASSED.
 
-### #12 — Run state lifecycle: fold onto `Run`, connection-gated retention — DONE (`5ac411700`, orig `215336f6e`/`248212d0b`)
+### TODO-12 — Run state lifecycle: fold onto `Run`, connection-gated retention — DONE (`5ac411700`, orig `215336f6e`/`248212d0b`)
 Part 1: added `raw_item` to the `Run` object (`{%$run}` at queue); `run_item` returns
 `$RUN->raw_item`; deleted the leaking `RUN_ITEMS` hash. Part 2: owner-gated retention —
-`request_handler_queue_run` records `run_owners{run_id} => {conn, peer_pid (#1),
+`request_handler_queue_run` records `run_owners{run_id} => {conn, peer_pid (TODO-1),
 abort_on_disconnect (default true)}`; a new `Role::Service::service_conn_closed($conn)`
 hook (called from the single `_drop_conn` path) sweeps owned runs on disconnect:
 finished→`purge_run`; running+flag→run-scoped `Watchdog::abort_remaining(run_id=>…)` +
@@ -803,7 +803,7 @@ Added `State_run_retention.t` (8 subtests). **Notes:** abort-on-disconnect defau
 (transient `yath test` relies on it — green); the detach path (flag false) is implemented
 + unit-tested but not exercised e2e (no `yath queue` command sets the flag yet).
 
-### #13 — `%SORTED` → instance field, stable key, pruned — DONE (`44d4f1aa1`, orig `bd011cfe5`)
+### TODO-13 — `%SORTED` → instance field, stable key, pruned — DONE (`44d4f1aa1`, orig `bd011cfe5`)
 Made `%SORTED` an instance `{+SORTED}` slot keyed by the stable path tuple
 `join("\0", run_id, smoke, stage, cat, dur)` (was the arrayref address → leak +
 ref-reuse bug). Clears the bucket key on add (`_queue_task`) and all `^<run_id>\0` keys
@@ -816,17 +816,17 @@ priority sort verified still once-per-bucket.
 
 Combined suite green: `prove` Files=106 Tests=1732 · `yath test` PASSED.
 
-### #2 — Converge stage state into one 4-state lifecycle — DONE (`a86f0273e`, orig `ce391d9cc`)
+### TODO-2 — Converge stage state into one 4-state lifecycle — DONE (`a86f0273e`, orig `ce391d9cc`)
 Deleted `STAGE_READINESS`; `STAGE_LIFECYCLE` is the single source (`stage_is_up` helper;
 scheduler gate reads `state eq 'up'`). 4 states wired in State.pm: `starting` (from
 `set_stage_map` — mapped-but-not-up), `up` (`stage_ready`), `restarting` (stage exit
 while still mapped — both reload + non-reload), **`down` = absent-from-map** (a refresh
 that drops a previously-tracked stage marks it `down` — fully reached, tested). Status
-drops `stage_readiness`, returns `stage_lifecycle` + `stage_pids` (#1). **Kept
-`generation` + `_stale_stage_generation` guard** (scope: #3 removes them with
+drops `stage_readiness`, returns `stage_lifecycle` + `stage_pids` (TODO-1). **Kept
+`generation` + `_stale_stage_generation` guard** (scope: TODO-3 removes them with
 connection-currency). Updated `State_stage_lifecycle.t`.
 
-### #4 — Runner rework — PARTIAL (Parts 1+2 done; 3/4/5 DEFERRED — NEEDS A PRODUCT DECISION)
+### TODO-4 — Runner rework — PARTIAL (Parts 1+2 done; 3/4/5 DEFERRED — NEEDS A PRODUCT DECISION)
 - **Part 1 DONE (`4f4898a09`):** fixed the lying DORMANT comments in `Runner.pm`
   (`_preload_root_hosts_stages`/`dispatch_pending`/`run_tests`/`run_scheduler_only`) →
   state the gate is LIVE for preload runs, in-runner paths are the no-preload fallback.
@@ -839,7 +839,7 @@ connection-currency). Updated `State_stage_lifecycle.t`.
 - **Parts 3 (delete runner self-restart), 4 (no-preload fork+exec, remove goto::file/Long::Jump
   from runner), 5 (delete dead in-runner named-stage path) — DEFERRED.**
 
-> ⚠️ **NEEDS YOUR DECISION (#4 — blocks Parts 3/4/5, and tickets #8, #26).** The ticket's
+> ⚠️ **NEEDS YOUR DECISION (TODO-4 — blocks Parts 3/4/5, and tickets TODO-8, TODO-26).** The ticket's
 > premise that the runner self-restart is "vestigial for no-preload" is **false against the
 > suite.** `t/integration/persist.t` and `t/AI/integration/watch_socket.t` `yath start` a
 > **no-preload** persistent runner, `yath reload` it, and assert it reloads via exactly the
@@ -848,7 +848,7 @@ connection-currency). Updated `State_stage_lifecycle.t`.
 > persistent `yath reload` is a **tested, user-facing feature**, not vestigial. Pick one:
 > **(a)** accept that a no-preload persistent runner loses `yath reload` self-restart (update/
 > retire those two tests) → Parts 3/4/5 proceed as written; or **(b)** keep the no-preload
-> self-restart and rescope #4 (HUP-forward stays preload-only, as landed; the runner's
+> self-restart and rescope TODO-4 (HUP-forward stays preload-only, as landed; the runner's
 > `setjump`/goto::file stays for the no-preload path). This is a product call I should not make
 > unilaterally — it changes a human-authored test's asserted behavior.
 > Also (minor): the socket `reload` forward in Part 2 is best-effort — the preload-root also
@@ -864,18 +864,18 @@ connection-currency). Updated `State_stage_lifecycle.t`.
 Three parallel tickets onto 2.0d. Combined suite green: `prove` Files=106 Tests=1731 ·
 `yath test` PASSED (both `AUTHOR_TESTING=1 -j16`).
 
-### #1 — Remove `poll`/`_enqueue`/`%ACTIONS` + bogus `$$`; pid via handshake — DONE (`9a1196e14`, orig `defeb8dda`/`376aedf54`/`8e2adada7`)
+### TODO-1 — Remove `poll`/`_enqueue`/`%ACTIONS` + bogus `$$`; pid via handshake — DONE (`9a1196e14`, orig `defeb8dda`/`376aedf54`/`8e2adada7`)
 Deleted `poll` + its 6 call sites, `_enqueue`+`%ACTIONS`, the bogus `$$` arg (State stores
 no pid; readiness is a truthy gate); folded `truncate`/`_halt_run`/`_end_queue`.
 `Connection::send_identity` now carries `pid => $$`, stores `IDENTITY_PID` on receive,
 added `peer_pid`. New `Runner::stage_peer_pids` builds `{stage=>pid}` from `service_peers`;
 `StatusReport`/`status`/`ps` show each connected stage's real pid (down/restarting → N/A).
-Did **not** converge READINESS/LIFECYCLE (ticket #2). Updated IPC.md + added `peer_pid`
+Did **not** converge READINESS/LIFECYCLE (ticket TODO-2). Updated IPC.md + added `peer_pid`
 assertions. **Integration note:** the State `poll`-call removal in `scheduler_tick`
-conflicted with #17's fail-fast rewrite of the same method — resolved by keeping #17's
+conflicted with TODO-17's fail-fast rewrite of the same method — resolved by keeping TODO-17's
 fail-fast structure and dropping the `poll` call.
 
-### #17 — `scheduler_tick` fixes — DONE (`5525f532f`,`bb3830e96`, orig `4cc1a1a4f`/`5f8336cb6`)
+### TODO-17 — `scheduler_tick` fixes — DONE (`5525f532f`,`bb3830e96`, orig `4cc1a1a4f`/`5f8336cb6`)
 Bare hash keys → HashBase constants (`{+ROOTPID}`/`{+SIGNAL}`/`{+ACTIVE_RUN}`/
 `{+RESOURCE_TIMEOUT}`/`{+RUN_REACHED_TIMEOUT}`; declared the constants on the Scheduler
 role). Dropped `SCHEDULER_MAX_ERRORS` + the eval-retry + the `scheduler_errors` slot →
@@ -883,7 +883,7 @@ role). Dropped `SCHEDULER_MAX_ERRORS` + the eval-retry + the `scheduler_errors` 
 separate (rejected the merge). Updated `scheduler_death.t`: crash → fail-fast; the recover
 case re-modeled so the resource absorbs its own transient error inside `tick()`.
 
-### #25 — Smaller notes (quick fixes + verify-then-fix) — DONE (`1acb653b5`,`babce0e64`,`72fb81211`,`b52823f51`,`ac4274db9`)
+### TODO-25 — Smaller notes (quick fixes + verify-then-fix) — DONE (`1acb653b5`,`babce0e64`,`72fb81211`,`b52823f51`,`ac4274db9`)
 Quick fixes: `_drain_transitions` → deadline-based drain (early-exit on a quiet
 `can_read(0)`, ~0.5s cap); `Preloader::_monitor` longmess → plain `die`; `Job::bailed_out`
 legacy out_file scan deleted (structured bail kept); dead `Reloader::_can_reload`/
@@ -901,7 +901,7 @@ left (decided keep).
 Three parallel tickets, integrated onto 2.0d. Combined suite green: `prove` Files=106
 Tests=1731 · `yath test` PASSED (both `AUTHOR_TESTING=1 -j16`).
 
-### #24 — Resource base → Role::Tiny role (`requires available, assign`) — DONE (`38f6b00a9`, orig `0a979a4093`)
+### TODO-24 — Resource base → Role::Tiny role (`requires available, assign`) — DONE (`38f6b00a9`, orig `0a979a4093`)
 Converted `Runner::Resource` to a **Role::Tiny role that `use`s Object::HashBase**
 (`use Role::Tiny;` before `use Object::HashBase;` so HashBase suppresses `new` for the
 role; then `requires 'available','assign'`). Consumers compose via the `&` prefix
@@ -917,17 +917,17 @@ resources satisfy it, so moot in practice; flag if fatal enforcement was wanted.
 methods-not-functions audit now that the file `use`s Object::HashBase. (3) kept the
 existing `strict/warnings` headers (v5.38 is for new modules only).
 
-### #16 — `run_ord` → rename `run_id` (keep the seam) — DONE (`212aca276`, orig `9369a5f22`)
+### TODO-16 — `run_ord` → rename `run_id` (keep the seam) — DONE (`212aca276`, orig `9369a5f22`)
 Renamed the dormant socket-naming seam everywhere (`Role/Service.pm` `->can`/POD/
 `service_socket_path`, `Runner.pm` seam comment, and the `Role_Service.t` consumer
 test). `grep run_ord lib/ t/` → zero hits. Fixed the doc ("per-run numeric subdir" →
 "the run's run_id (UUID) subdir"). Seam intact, behavior identical (no consumer defines
 the hook). The unrelated real `run_id` run-identifier API was untouched.
 
-### #9 — Factor collector-reporter boilerplate → `Util::socket_reporter` — DONE (`fca4f3e42`, orig `beb44ecd5`)
+### TODO-9 — Factor collector-reporter boilerplate → `Util::socket_reporter` — DONE (`fca4f3e42`, orig `beb44ecd5`)
 Added exportable `Test2::Harness2::Util::socket_reporter($identity, $socket)` (returns
 undef unless `-S $socket`; builds `Recorder::Socket` with `no_reply`, `drain_input`,
-**`pid => $$`** — the #1 handshake pid; eval-guarded). Swapped the 4 sites (Runner.pm
+**`pid => $$`** — the TODO-1 handshake pid; eval-guarded). Swapped the 4 sites (Runner.pm
 preload-root, Job.pm, Preloader.pm, Plugin.pm), identity strings preserved. **Review
 note:** Job.pm/Preloader.pm previously `warn`ed on connect failure; the helper swallows
 the error + returns undef (the file recorder still produces a complete stream), so those
@@ -942,7 +942,7 @@ Four independent tickets, each implemented by a fresh agent in an isolated workt
 integrated onto 2.0d. Combined suite green: `prove` Files=106 Tests=1731 · `yath test`
 PASSED 107 files / 1737 assertions (both `AUTHOR_TESTING=1 -j16`).
 
-### #5 — Delete SharedJobSlots — DONE (`6bd15d6b6`, orig `5a999eeae`)
+### TODO-5 — Delete SharedJobSlots — DONE (`6bd15d6b6`, orig `5a999eeae`)
 Deleted the 3 modules + their unit tests/fixture, the `--shared-jobs-config` option +
 `fix_job_resources` SharedJobSlots logic in `Options/Runner.pm` (kept JobCount
 default-add + slot defaulting/clamp), the `resources.pm` `shared_resources` branch, and
@@ -953,15 +953,15 @@ and `Makefile.PL` (auto-generated; its stale `Test2/Harness/.../SharedJobSlots/*
 now match nothing) untouched — both intentional/out-of-scope. POD was surgically removed,
 not regenerated (a future full POD regen is consistent either way).
 
-### #6 — Delete dead `wait()` params (`cat`/`all_cat`/`block`) — DONE (`d6f3135fb`, orig `ed1317240`)
+### TODO-6 — Delete dead `wait()` params (`cat`/`all_cat`/`block`) — DONE (`d6f3135fb`, orig `ed1317240`)
 Removed the 3 dead params + POD from `IPC.pm::wait`, the `$cat_total` bookkeeping, the
 `cat`-delta branch, and collapsed `_wait_done` to its 4 real cases (dropped its unused
 `$found` arg). **Dropped `PROCS_BY_CAT` entirely** — verified `cat`/`all_cat` were its
 sole consumers (all refs were inside IPC.pm). Kept the `category` method on
-`IPC::Process`/`Job`/`Preloader::Stage` (public, used by Monitor/Renderer; #8 may revisit).
+`IPC::Process`/`Job`/`Preloader::Stage` (public, used by Monitor/Renderer; TODO-8 may revisit).
 Behavior-preserving (no caller used the removed params).
 
-### #7 — Misc dead lines (7a/7d/7e/7f) — DONE (`9b4a96252`,`0aed56cf3`,`662e073f3`,`88bf6e12a`)
+### TODO-7 — Misc dead lines (7a/7d/7e/7f) — DONE (`9b4a96252`,`0aed56cf3`,`662e073f3`,`88bf6e12a`)
 - 7a: removed the duplicate `IN_MOVE_SELF` inotify-mask line in `Reloader.pm`.
 - 7d: removed unused `use Atomic::Pipe` in `Renderer/DB.pm` (verified unused).
 - 7e: kept `DepTracer::add_callback`; added a comment pointing at its consumer
@@ -973,7 +973,7 @@ Behavior-preserving (no caller used the removed params).
   public `service_io`/`service_tick`/`service_stopped`/`close_service` primitives
   (faithful to `run()`'s former body), consistent with the ticket's intent.
 
-### #19 — Delete dead `Runner::Client` stage-report methods — DONE (`3d3e28d61`, orig `cce2eb191`)
+### TODO-19 — Delete dead `Runner::Client` stage-report methods — DONE (`3d3e28d61`, orig `cce2eb191`)
 Deleted the 6 dead stage-report methods (`stop_task`/`retry_task`/`reload`/`stage_ready`/
 `stage_down`/`job_pid`) + POD from `Runner/Client.pm` (zero callers confirmed — only the
 POD `=item`s referenced them; `reload_state` is distinct and kept). Fixed the stale

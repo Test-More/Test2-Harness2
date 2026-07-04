@@ -2,7 +2,7 @@ use Test2::V0;
 # HARNESS-DURATION-SHORT
 # HARNESS-NO-PRELOAD
 
-# Regression coverage for ticket #148 (CLI script/rc parsing bundle):
+# Regression coverage for ticket TODO-148 (CLI script/rc parsing bundle):
 #   (60) A .yath.rc section header with trailing whitespace or a trailing
 #        ;comment must still be recognized as a section header (previously
 #        '[test]' leaked through as a bogus global arg and every option under

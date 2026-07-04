@@ -8,7 +8,7 @@ use Scalar::Util qw/blessed/;
 use Test2::Harness2::Runner::Preload();
 use Test2::Harness2::Runner::Preloader();
 
-# Ticket #136. Two behaviors are exercised here (the two P2 items):
+# Ticket TODO-136. Two behaviors are exercised here (the two P2 items):
 #   (37) Runner::Preload::default_stage must return a stage NAME (string), and the
 #        merge cache must only propagate an EXPLICIT default() -- so a no-default
 #        lib never masks a later lib's explicit default (first-wins), and a stage

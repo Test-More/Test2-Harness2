@@ -69,7 +69,7 @@ sub generate_run_sub {
 
     my $exit = $runner->process();
 
-    # G3 (#134 finding 14, defense-in-depth): if a run_cmd fork-child unwound all
+    # G3 (TODO-134 finding 14, defense-in-depth): if a run_cmd fork-child unwound all
     # the way back here (past G1 in Util::IPC and G2 in Runner::process), $$ is the
     # transient child's pid, not the runner's. It must NOT finalize the run: the
     # 'complete' marker write below (unguarded) would tell the transient command
@@ -99,7 +99,7 @@ sub cleanup {
         return unless $pid == $$;
 
         # Remove OUR OWN discovery link on clean shutdown, but only through the
-        # mutator protocol (ticket #145): a successor runner that claimed the same
+        # mutator protocol (ticket TODO-145): a successor runner that claimed the same
         # pinned workdir republishes this link and writes its own live PID, so
         # clean_if_mine's identity + successor-liveness re-check leaves the new link
         # in place instead of orphaning the successor.

@@ -211,7 +211,7 @@ sub run_driver ($self) {
         # past that wait, so this is a harmless late note. Hand over our captured
         # warnings so the runner can surface a broken-preload diagnostic.
         warn "$$ $0 preload-root could not report stage_host_exited: $@"
-            unless eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // []), want_reply => 0); 1 };    # one-way (#134 finding 106)
+            unless eval { $self->service_send('runner', 'stage_host_exited', errors => ($self->{+WARNINGS} // []), want_reply => 0); 1 };    # one-way (TODO-134 finding 106)
     }
 
     # Idle until the runner sends 'stop'. We reach here after the stage host returns
@@ -242,7 +242,7 @@ sub settings ($self) {
 
 # Build and run the stage host in this (the preload-root) process. It is a
 # Test2::Harness2::Preload::Host -- an independent class from the runner (ticket
-# #22): it preloads, forks/hosts the stages, and launches dispatched tests, but
+# TODO-22): it preloads, forks/hosts the stages, and launches dispatched tests, but
 # it has NO scheduler and holds NO canonical run State. Its rootpid is the REAL
 # runner's pid: the base/default stage is hosted in THIS process and dials the
 # real runner over runner.socket (binding preload-base.socket), and preload_stages
@@ -268,7 +268,7 @@ sub _run_stage_host ($self) {
         monitor_preloads => $self->{+MONITOR_PRELOADS},
 
         # Preload TEST jobs double-fork + detach so the collector re-parents to the
-        # runner subreaper (or init) instead of being stage-reaped (ticket #28). The
+        # runner subreaper (or init) instead of being stage-reaped (ticket TODO-28). The
         # returned pid is the short-lived intermediate, which the stage reaps; the
         # detached collector self-reports its pid to the runner over its handshake.
         fork_job_callback => sub { Test2::Harness2::Runner::JobLauncher->launch_via_double_fork(@_, 'preload-root') },
@@ -348,11 +348,11 @@ sub _request_sync ($self, $identity, $command, %args) {
     # runner is wedged. Best-effort: before settings.json is readable (a bare
     # preload-root with no run), fall back to a 30s floor.
     my $timeout  = eval { $self->settings->runner->preload_map_timeout } || 30;
-    my $deadline = mono_time + $timeout;    # pure interval -> monotonic (#134 finding 104)
+    my $deadline = mono_time + $timeout;    # pure interval -> monotonic (TODO-134 finding 104)
     until (exists $self->{+RESPONSES}{$request_id}) {
         # If the runner connection dropped mid-wait, $conn is marked closed by
         # drain on EOF during service_io. Fail fast instead of idling out the full
-        # preload_map_timeout (then stalling until the process is reaped). (#134
+        # preload_map_timeout (then stalling until the process is reaped). (TODO-134
         # finding 94)
         croak "connection to '$identity' closed while waiting for '$command' response"
             if $conn->closed;

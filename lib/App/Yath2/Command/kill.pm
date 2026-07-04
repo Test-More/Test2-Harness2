@@ -25,13 +25,13 @@ This command will kill the active yath runner and any running or pending tests.
 # workdir PID file for signal-based escalation.
 sub pfile_params { (any_state => 1) }
 
-# Kill the persistent runner, driven by #145's discovery taxonomy (ticket #121).
+# Kill the persistent runner, driven by TODO-145's discovery taxonomy (ticket TODO-121).
 # "Unconditional" (ticket Step 2) governs WHEN a signal is sent (after the graceful
 # attempt, never gated on socket reachability); the corroboration predicate governs
 # WHOM (the pfile pid is a CLAIM of identity that a recycled pid can satisfy but not
 # prove -- so every signal is gated on re-proven identity, never blind):
 #
-#   LIVE      -> end_queue + truncate over the socket (eval-guarded, and #157's
+#   LIVE      -> end_queue + truncate over the socket (eval-guarded, and TODO-157's
 #                bounded connect means a wedged socket croaks instead of hanging, so
 #                it can't abort kill), a best-effort ping for exact identity, one
 #                KILL_GRACE graceful wait, then the escalation ladder.
@@ -64,10 +64,10 @@ sub _kill_live {
 
     # End the global queue (unblocks a runner mid-run) and truncate its queue (the
     # abort superclass' run). Both are socket steps that can hit un-eval'd croaks
-    # (Runner/Client.pm truncate/connect); the eval guard catches them. Since #157
+    # (Runner/Client.pm truncate/connect); the eval guard catches them. Since TODO-157
     # gave the client dialer a bounded non-blocking connect, a wedged / full-backlog
     # socket now croaks at CONNECT_TIMEOUT rather than blocking forever, so the eval
-    # catches every case -- retiring #121's alarm backstop, whose sole purpose was to
+    # catches every case -- retiring TODO-121's alarm backstop, whose sole purpose was to
     # unwedge that never-returning blocking connect. A wedged socket must NEVER abort
     # the kill.
     my $ok  = eval { $self->client->submitter->end_queue; 1 };
@@ -114,7 +114,7 @@ sub _kill_not_live {
         return 2;
     }
 
-    # boot/wedged/backlog with a live pid: #145's contract is NOT-LIVE => go straight
+    # boot/wedged/backlog with a live pid: TODO-145's contract is NOT-LIVE => go straight
     # to PID-file escalation (no socket attempt -- also avoids the blocking-connect hang).
     return $self->_kill_escalate($disco, $pid, undef);
 }

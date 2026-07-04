@@ -2,7 +2,7 @@ use Test2::V0;
 use v5.38;
 # HARNESS-DURATION-LONG
 
-# Chunk 13 / ticket #39: `yath spawn` redesign -- direct-to-stage, SCM_RIGHTS
+# Chunk 13 / ticket TODO-39: `yath spawn` redesign -- direct-to-stage, SCM_RIGHTS
 # fd-pass, detached supervisor (no exec), dedicated control protocol
 # (ARCHITECTURE.md §4.8). End to end through App::Yath2::Tester against a real
 # `yath start -P<Preload>` persistent runner.
@@ -111,7 +111,7 @@ yath(
     test    => sub {
         my $out = shift;
         like($out->{output}, qr/SPAWN-ABOUT-TO-DIE/, "signal-death script ran and produced output");
-        # Ticket #139 (finding 67): the message names the signal ($Config{sig_name}),
+        # Ticket TODO-139 (finding 67): the message names the signal ($Config{sig_name}),
         # it is no longer the raw number, and there is no 'No such signal' warning.
         like($out->{output}, qr/Terminated with signal: TERM\./,
             "the command reported the child's signal death by NAME (SIGTERM)");

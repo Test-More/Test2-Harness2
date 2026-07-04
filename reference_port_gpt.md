@@ -59,7 +59,7 @@ run.
 
 Severity: high
 
-Items 3 and 5 fold into DB tickets `#46` and `#50`, but the current DB spec still
+Items 3 and 5 fold into DB tickets `TODO-46` and `TODO-50`, but the current DB spec still
 has a different `job_tries` shape in places:
 
 - `AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md` still lists
@@ -86,12 +86,12 @@ Severity: high
 The reference-port spec correctly says `try_ord` is 1-based, but the live
 producer still emits try `0`: `Runner::Job->is_try` defaults to `0`, the
 collector identity carries that value, and retry increments from there. The DB
-plan has ticket `#49` for the producer change, but `#50` (DB logger process) does
-not list `#49` as a dependency.
+plan has ticket `TODO-49` for the producer change, but `TODO-50` (DB logger process) does
+not list `TODO-49` as a dependency.
 
-Action: make `#49` an explicit prerequisite for `#50`, or state that the logger
+Action: make `TODO-49` an explicit prerequisite for `TODO-50`, or state that the logger
 temporarily maps wire `0` to DB `1`. The current design prefers changing the
-producer, so the simpler action is to add `#49` to `#50`'s dependency list and
+producer, so the simpler action is to add `TODO-49` to `TODO-50`'s dependency list and
 add an integration test that the first collector identity for a job carries
 try `1`.
 

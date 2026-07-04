@@ -133,7 +133,7 @@ sub run {
     # A runner already publishing this symlink blocks a fresh start. Probe it in
     # EVERY state (any_state): a LIVE runner is already running; a NOT-LIVE one
     # (booting, wedged, full accept backlog, another user's) must NOT be silently
-    # replaced -- it stays discoverable so `yath kill` can reach it (ticket #145). A
+    # replaced -- it stays discoverable so `yath kill` can reach it (ticket TODO-145). A
     # truly DEAD stale link is cleaned by find() (via the locked owned protocol) and
     # we fall through to start fresh.
     if (my $found = App::Yath2::Discovery->find($settings, any_state => 1)) {
@@ -164,7 +164,7 @@ sub run {
 
     # The RUNNER self-publishes the discovery symlink (link -> $dir/runner.socket)
     # from inside its own process, immediately after it binds runner.socket -- see
-    # Test2::Harness2::Runner (fork A of ticket #145). start no longer publishes:
+    # Test2::Harness2::Runner (fork A of ticket TODO-145). start no longer publishes:
     # publishing here (before the socket is bound) is exactly the race that let a
     # concurrent discovery command unlink the not-yet-live link. We only build the
     # read-side object to poll $dir/PID for the banner (pid() reads the workdir PID
@@ -176,14 +176,14 @@ sub run {
     # parent pid run_cmd returned if the file has not appeared yet.
     my $runner_pid = $self->wait_for_runner_pid($disco);
 
-    # #123: gate the "started!" banner on a bounded LIVENESS check. A PID file proves
+    # TODO-123: gate the "started!" banner on a bounded LIVENESS check. A PID file proves
     # only that the runner forked -- it is written BEFORE runner.socket is bound and
     # BEFORE the preload tree is spawned, so a broken -P module still takes the
     # fail-fast path (Runner::_handle_dead_preload_root) and exits after writing PID.
     # The old daemon branch printed success + exited 0 here regardless, so
     # `yath start -d -PBroken && yath run` proceeded on a false success and then failed
     # with an unexplained 'No persistent harness was found'. Confirm the runner is
-    # actually SERVING (runner.socket resolves live -- #145's probe) before the banner,
+    # actually SERVING (runner.socket resolves live -- TODO-145's probe) before the banner,
     # and report honestly + exit nonzero if it exited or never came up.
     unless (defined $runner_pid) {
         return $self->_report_start_failure($dir, $pid, "it exited before writing its PID file");
@@ -231,7 +231,7 @@ sub run {
 }
 
 # Guarded cleanup of the workdir on the already-running / not-responding abort path
-# (ticket #145, finding 64). The unguarded remove_tree here used to delete ANY
+# (ticket TODO-145, finding 64). The unguarded remove_tree here used to delete ANY
 # user-pinned workdir -- including the LIVE runner's own when YATH_WORKDIR was reused
 # -- orphaning an unstoppable daemon. Remove $dir ONLY when it was freshly created
 # for THIS invocation (Workspace's created_workdir flag), is NOT the found runner's
@@ -258,13 +258,13 @@ sub _maybe_remove_workdir {
 # Bounded window (seconds) for both boot waits below. Env-overridable (pure
 # superset: unset => the documented default) so the regression tests can shrink the
 # window instead of sitting through the full boot budget. Bounded so a runner that
-# forks but never comes up can never hang `yath start` (#123).
+# forks but never comes up can never hang `yath start` (TODO-123).
 sub LIVENESS_TIMEOUT { $ENV{YATH_START_LIVENESS_TIMEOUT} // 30 }
 
 # Poll for the runner's own pid, which the runner writes to $dir/PID as it boots
 # (Test2::Harness2::Runner::process) and which survives the exec across a
 # reload-respawn. Discovery reads this PID file as the signal fallback; here it
-# gates the #123 liveness wait and feeds the start banner. Returns the pid, or undef
+# gates the TODO-123 liveness wait and feeds the start banner. Returns the pid, or undef
 # if the runner exits before writing it (an early boot crash) or the window elapses
 # -- the caller then reports an honest failure instead of a false success.
 sub wait_for_runner_pid {
@@ -279,7 +279,7 @@ sub wait_for_runner_pid {
 
         # The runner (its collector-wrapped child) is already reaped: it died before
         # it could write its PID. Stop now rather than stalling the whole window --
-        # the old `for (1 .. 600)` sat here in silence for ~30s on a boot crash (#123).
+        # the old `for (1 .. 600)` sat here in silence for ~30s on a boot crash (TODO-123).
         return undef if $self->client->runner_gone;
         return undef if Time::HiRes::time() >= $deadline;
 
@@ -287,8 +287,8 @@ sub wait_for_runner_pid {
     }
 }
 
-# The #123 readiness gate: after the PID file appears, confirm the runner is actually
-# SERVING before the success banner. Poll #145's probe() until runner.socket resolves
+# The TODO-123 readiness gate: after the PID file appears, confirm the runner is actually
+# SERVING before the success banner. Poll TODO-145's probe() until runner.socket resolves
 # LIVE (accepts a connection -- the runner self-publishes the discovery link only
 # AFTER it binds the socket, so a live probe proves the socket is up), or bail the
 # moment the runner process is gone (its collector child reaped -- the deterministic
@@ -310,7 +310,7 @@ sub wait_for_runner_live {
     }
 }
 
-# Honest failure on the start path (#123). The runner forked but never came up to
+# Honest failure on the start path (TODO-123). The runner forked but never came up to
 # serve, so instead of the old silent exit-0 (which let a later `yath run` fail with
 # an unexplained 'No persistent harness was found') point the user at the runner's
 # own recorded output (runner-events.jsonl.zst, surfaced by `yath watch`) and return

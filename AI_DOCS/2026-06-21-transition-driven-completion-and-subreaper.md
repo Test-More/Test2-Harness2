@@ -5,17 +5,17 @@ This doc is the context for a review pass — read it, then critique the design 
 the ticket breakdown before implementation starts.
 
 Spec lives in `ARCHITECTURE.md` §4.1 / §4.7 / §5.4 (rewritten this session).
-Steps: `TODO_STEPS.md` chunks **24–28**. Tickets: `TODO_TASKS.md` **#27–#31**.
+Steps: `TODO_STEPS.md` chunks **24–28**. Tickets: `TODO_TASKS.md` **TODO-27–TODO-31**.
 
 ## What triggered this
 
 The session was working the `TODO_TASKS` cleanup backlog. The last substantive
-item was **#8 Part 4** — "migrate no-preload job completion onto the collector
+item was **TODO-8 Part 4** — "migrate no-preload job completion onto the collector
 socket report + delete `Runner::set_proc_exit`'s job branch (§5.4)." It had been
 deferred as "a rewrite, not a cleanup." Discussing it with the owner turned it
 into a larger, coherent redesign of how the harness learns a test's outcome and
-who owns the process tree. The old #8-Part-4 framing is superseded by the five
-tickets #27–#31.
+who owns the process tree. The old TODO-8-Part-4 framing is superseded by the five
+tickets TODO-27–TODO-31.
 
 ## The problem with the current code
 
@@ -96,7 +96,7 @@ code (seen only when the runner reaps) is extra diagnostic, never a decision inp
 → decide from transitions/EOF → runner owns reaping," so `run_scheduler_only`
 becomes the runner's **only** run loop and the in-runner `run_tests`/`run_stage`/
 `run_job` machinery + `_preload_root_hosts_stages`/`PRELOAD_ROOT_HOSTS` are deleted.
-This absorbs the **#22 residual**, **#4 Part 4**, and **#8 Part 4**.
+This absorbs the **TODO-22 residual**, **TODO-4 Part 4**, and **TODO-8 Part 4**.
 
 ## Decisions made + alternatives rejected
 
@@ -138,7 +138,7 @@ This absorbs the **#22 residual**, **#4 Part 4**, and **#8 Part 4**.
    change + reinstall, **no version bump** (unreleased).
 3. The EOF→job mapping needs the test collector's transition connection to carry
    `job_id`+`job_try` in its handshake/preamble; verify the current `Recorder::Socket`
-   reporter preamble (#9's `socket_reporter`) and extend.
+   reporter preamble (TODO-9's `socket_reporter`) and extend.
 4. Fire-once / ordering: the decision keys on EOF (drain frames first); the reap
    (when it happens) must be pure zombie cleanup. Make sure a reparented collector's
    reap cannot double-fire a decision.
@@ -146,14 +146,14 @@ This absorbs the **#22 residual**, **#4 Part 4**, and **#8 Part 4**.
 ## Review outcomes (resolved with the owner, 2026-06-21)
 
 Two reviews (`review_gemini.md`, `review_gpt.md`) were discussed item-by-item and
-folded into ARCHITECTURE §5.4 + tickets #27/#28/#32–#37. Resolutions:
+folded into ARCHITECTURE §5.4 + tickets TODO-27/TODO-28/TODO-32–TODO-37. Resolutions:
 
-- **EOF soundness needs fd hygiene (both reviewers, P1) → new prerequisite #32.** A
+- **EOF soundness needs fd hygiene (both reviewers, P1) → new prerequisite TODO-32.** A
   forked-no-exec collector inherits other collectors' connection fds; the test child
   can inherit the reporter socket (esp. no-exec `goto::file`). Decision: `FD_CLOEXEC`
   at creation **plus** an explicit post-fork close-sweep (collector parent closes
   inherited runner conns + listen socket; the preload test-launch closes the
-  collector's reporter/recorder sockets too). #32 gates #27. The reporter is mandatory;
+  collector's reporter/recorder sockets too). TODO-32 gates TODO-27. The reporter is mandatory;
   add `--collector-connect-timeout`.
 - **Collector-exit-health-only — yes, but the work is harness-side (A8).** The local
   Test2-Collector is already health-only (`Runner->spawn_exit_code`); the harness
@@ -180,20 +180,20 @@ folded into ARCHITECTURE §5.4 + tickets #27/#28/#32–#37. Resolutions:
 - **`halt` transition — `state => 'halt'` on `harness_state_transition`** carrying
   `details` (no new facet).
 - **Cross-repo sequencing:** order matters — the harness must stop deciding on the exit
-  code **before** anything relies on health-only — handled within #27's harness-side
-  steps; #32 lands first (fd hygiene), then #27, #28, #29.
+  code **before** anything relies on health-only — handled within TODO-27's harness-side
+  steps; TODO-32 lands first (fd hygiene), then TODO-27, TODO-28, TODO-29.
 
 ### Review-driven standalone fixes (separate tickets, per owner: ticket-not-fix-now)
 
-- **#33** — `preload_stage_startup_timeout` is inert in the scheduler (the #21
+- **TODO-33** — `preload_stage_startup_timeout` is inert in the scheduler (the TODO-21
   safeguard never fires; `_next` never visits non-`up` buckets). Approach A: per-tick
   scan marks a timed-out stage `down` to re-resolve buckets. *(This is a real gap in
-  the #21 work just landed.)*
-- **#34** — `yath reload` ineffective during a persistent preload run (routed to the
+  the TODO-21 work just landed.)*
+- **TODO-34** — `yath reload` ineffective during a persistent preload run (routed to the
   dormant `preload-root` peer). Approach A: route to the live base-stage connection.
-- **#35** — `halt_run`/`purge_run` leak `TASK_LOOKUP` entries.
-- **#36** — delete dead `reset_stage_readiness` (re-verify no consumers first).
-- **#37** — document the resource-skip `-e` executor assumption (doc-only).
+- **TODO-35** — `halt_run`/`purge_run` leak `TASK_LOOKUP` entries.
+- **TODO-36** — delete dead `reset_stage_readiness` (re-verify no consumers first).
+- **TODO-37** — document the resource-skip `-e` executor assumption (doc-only).
 
 The reviews' praise/verification of already-landed work (SharedJobSlots deletion, the
 Stage-class rename, client-side stage assignment, the Runner/Preload::Host split,

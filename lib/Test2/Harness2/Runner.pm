@@ -81,7 +81,7 @@ use Test2::Harness2::Util::HashBase(
     # Role-shared slots: hashref keys owned/first-written by composed roles
     # (Role::Service: service_*; Completion: job_passed/collector_reap) or by
     # this runner (submit_buffer). Declaring the constants here (grep-safe,
-    # typo-proof #17 pattern) lets Runner read them as {+CONST}; each owning
+    # typo-proof TODO-17 pattern) lets Runner read them as {+CONST}; each owning
     # role declares its own copy because Role::Tiny does not share HashBase
     # constants across a composition.
     qw{
@@ -96,8 +96,8 @@ use Test2::Harness2::Util::HashBase(
 
 # Stale-incarnation stage reports are rejected by connection-currency in the
 # runner's stage-report handlers (the registered `preload-<stage>` peer connection
-# IS the live incarnation), so there is no wire-generation counter (bloat #3). A
-# preload-root crash is fatal -- the runner does not respawn it (bloat #3, §4.2) --
+# IS the live incarnation), so there is no wire-generation counter (bloat TODO-3). A
+# preload-root crash is fatal -- the runner does not respawn it (bloat TODO-3, §4.2) --
 # so there is no respawn counter either.
 
 use Role::Tiny::With;
@@ -161,14 +161,14 @@ sub workdir { my $self = shift; return $self->{+DIR} }
 # The runner is the canonical 'runner' service (runner.socket); Role::Service's
 # default service_name (== name) already returns 'runner', so there is nothing to
 # override. A preload stage's own service_name ('preload-<stage>') lives in
-# Test2::Harness2::Preload::Host, the independent stage-host class (ticket #22).
+# Test2::Harness2::Preload::Host, the independent stage-host class (ticket TODO-22).
 
 our $RUNNER_PID;
 
 sub init {
     my $self = shift;
 
-    # The runner is always the root scheduler process (ticket #22: the stage host
+    # The runner is always the root scheduler process (ticket TODO-22: the stage host
     # is now a separate class, Test2::Harness2::Preload::Host, so a Runner is never
     # built with rootpid != $$). rootpid is therefore this process; it is conveyed
     # down as runner_pid / watch_parent_pid so resource accounting and the
@@ -206,7 +206,7 @@ sub init {
         if ($self->{+PRELOAD_ROOT_PID}) {
             my $id = $self->_preload_root_stage_identity or return;
             # One-way: reload_root's handler returns undef (no reply), so skip the
-            # PENDING insert to avoid a daemon-lifetime leak. (#134 finding 106)
+            # PENDING insert to avoid a daemon-lifetime leak. (TODO-134 finding 106)
             $self->service_send($id, 'reload_root', want_reply => 0);
             return;
         }
@@ -294,7 +294,7 @@ sub state {
 }
 
 # check_timeouts, stop, and handle_sig are the generic process-management machinery
-# hoisted into the shared base Test2::Harness2::IPC (ticket #67). Only the die-message
+# hoisted into the shared base Test2::Harness2::IPC (ticket TODO-67). Only the die-message
 # prefix differs per class, so we override just that.
 sub sig_prefix { 'Runner' }
 
@@ -374,7 +374,7 @@ sub process {
     $self->start_service;
 
     # Publish the discovery symlink LAST, from the runner itself, immediately after
-    # runner.socket is bound (fork A of ticket #145). The ordering invariant is
+    # runner.socket is bound (fork A of ticket TODO-145). The ordering invariant is
     # load-bearing for the race proof: the PID file (438) happens-before the socket
     # bind (454) happens-before this publish, all in this one process -- so any
     # racing cleaner's locked deadness re-check sees this runner's live PID and never
@@ -410,7 +410,7 @@ sub process {
 
     warn $err unless $ok;
 
-    # G2 (#134 finding 14, defense-in-depth): if a run_cmd fork-child somehow
+    # G2 (TODO-134 finding 14, defense-in-depth): if a run_cmd fork-child somehow
     # unwound past its G1 eval and into THIS eval, $$ is the transient child's pid,
     # not the runner's. It must NOT execute the wind-down below (stop the real
     # preload-root/sampler, kill the real aux pids, unlink runner.socket, wait on
@@ -477,7 +477,7 @@ sub _drain_transitions {
     # readable (no pending connection on the listener, no data on any conn) the
     # in-flight frames are folded and we stop early rather than spinning out the
     # whole budget.
-    my $deadline = mono_time + 0.5;    # pure interval -> monotonic (#134 finding 104)
+    my $deadline = mono_time + 0.5;    # pure interval -> monotonic (TODO-134 finding 104)
     while (1) {
         $self->service_io;
 
@@ -537,7 +537,7 @@ sub _wait_for_run_subscribers {
     # immediately).
     return unless $self->_run_scoped_subscriber_count;
 
-    my $deadline = mono_time + $SUBSCRIBER_DRAIN_TIMEOUT;    # pure interval -> monotonic (#134 finding 104)
+    my $deadline = mono_time + $SUBSCRIBER_DRAIN_TIMEOUT;    # pure interval -> monotonic (TODO-134 finding 104)
     while (1) {
         # Service IO so a subscriber that just closed its end is drained + dropped
         # from service_subs this pass, and so any final frames still reach it.
@@ -629,7 +629,7 @@ sub stop_aux {
     my $pids = $self->{+AUX_PIDS} or return;
     return unless @$pids;
 
-    # G2/G3 (#135 finding 16): waitpid-only liveness. Keep only pids whose
+    # G2/G3 (TODO-135 finding 16): waitpid-only liveness. Keep only pids whose
     # waitpid(WNOHANG) returns 0 (still our live child) BEFORE any signal -- a pid that
     # returns itself (reaped here) or -1 (ECHILD: reaped by the subreaper sweep / never
     # ours) is dropped, never signaled. kill(0) is REMOVED: it matches recycled pids and
@@ -710,7 +710,7 @@ sub _has_live_stage_peer {
 # collector PARENT while the preload tree (launch() -> run_driver) runs in the exec'd
 # GRANDCHILD; the base stage's socket therefore announces the GRANDCHILD's pid, NOT
 # PRELOAD_ROOT_PID. The 'preload-root' handshake peer dials the runner from that same
-# grandchild, so its peer_pid is the pid to match against (#113 -- matching against
+# grandchild, so its peer_pid is the pid to match against (TODO-113 -- matching against
 # PRELOAD_ROOT_PID never hit and silently dropped every HUP reload). The base stage is
 # the only stage that owns the preload-root respawn jump frame and the only one whose
 # channel the runner services for the whole run, so it is the reload target. Returns
@@ -740,7 +740,7 @@ sub _preload_root_stage_identity {
 }
 
 # A connected preload stage's real pid comes from its 'preload-<stage>' peer
-# connection (the pid it announced in the identity handshake -- ticket #1), not
+# connection (the pid it announced in the identity handshake -- ticket TODO-1), not
 # from the scheduler State (which stores no pid). Build a { stage => pid } map for
 # status/ps from the live stage peers; a down/restarting stage has no live
 # connection (or never announced a pid) and so gets no entry -- correctly absent.
@@ -796,7 +796,7 @@ sub _preload_root_dead {
     return 1;
 }
 
-# Preload-root death is fatal -- the runner does NOT respawn it (bloat #3,
+# Preload-root death is fatal -- the runner does NOT respawn it (bloat TODO-3,
 # ARCHITECTURE.md §4.2). An unexpected exit terminates the runner (active runs
 # fail). This is deliberate: it prevents accidentally recreating respawn-like
 # behavior. HUP reload is the only restart path and the preload-root re-execs
@@ -837,7 +837,7 @@ sub _emit_preload_failure_output {
 # The one preload-root wind-down: optionally warn, surface the captured preload
 # failure output, and mark the runner for shutdown (TERM unless a signal was already
 # captured -- //= preserves an in-flight HUP). Collapses the four wind-down sites
-# (ticket #67): the dead-root handler and the three run_scheduler_only bail-outs.
+# (ticket TODO-67): the dead-root handler and the three run_scheduler_only bail-outs.
 # Returns 1 so callers can `last if $self->_fail_preload(...)`.
 sub _fail_preload {
     my $self = shift;
@@ -864,7 +864,7 @@ sub submit_action {
 
     # We are ready. Readiness can regress and recover mid-run (a stage peer drops --
     # e.g. a monitor-preloads tree reload -- then re-registers), which strands earlier
-    # frames in the buffer after the one-time flush in run_scheduler_only (#116). Drain
+    # frames in the buffer after the one-time flush in run_scheduler_only (TODO-116). Drain
     # the buffer in order BEFORE applying this newly-arriving action, so a frame that
     # arrives once the window has reclosed can never apply ahead of frames buffered
     # while it was open (the partial-buffer hazard). A no-op when the buffer is empty.
@@ -882,7 +882,7 @@ sub flush_submit_buffer {
     my $buf = delete $self->{+SUBMIT_BUFFER} or return;
     for my $item (@$buf) {
         my ($method, @args) = @$item;
-        # #110: a buffered submission replays OUTSIDE the service-loop dispatch eval; a
+        # TODO-110: a buffered submission replays OUTSIDE the service-loop dispatch eval; a
         # die here (e.g. a duplicate queue_task whose two copies were both buffered before
         # the scheduler was ready) would unwind the scheduler and reap every in-flight run.
         # Guard each replay: on failure warn and drop that one action, keeping the daemon
@@ -901,7 +901,7 @@ sub flush_submit_buffer {
 # stage-downtime window is applied even when no new action arrives to trigger the
 # per-action flush in submit_action -- a lone buffered end_queue would otherwise hang
 # the runner (State::done requires QUEUE_ENDED). A no-op while the buffer is empty or
-# readiness is still regressed (submissions stay buffered until a stage is live). (#116)
+# readiness is still regressed (submissions stay buffered until a stage is live). (TODO-116)
 sub _flush_submit_buffer_if_ready {
     my $self = shift;
 
@@ -978,8 +978,8 @@ sub spawn_preload_root {
 
 # Poll for $pid to be reaped, pumping the service socket each try so a graceful
 # 'stop' is delivered and any in-flight frames are folded. Returns the LAST
-# waitpid(WNOHANG) status -- the tri-state the #135 finding-16 guard requires the
-# callers to see (this is that G2-rewritten loop body factored out, ticket #67):
+# waitpid(WNOHANG) status -- the tri-state the TODO-135 finding-16 guard requires the
+# callers to see (this is that G2-rewritten loop body factored out, ticket TODO-67):
 #   $pid -- reaped HERE this call
 #   0    -- still our live child after $tries polls; the ONLY value that licenses a
 #           signal (kill sits inside a `$status == 0` branch guarded by this waitpid)
@@ -1104,7 +1104,7 @@ sub stop_sampler {
 
     my $pid = $self->{+SAMPLER_PID} or return;
 
-    # G2/G3 (#135 finding 16): every kill below sits inside a `$status == 0` branch
+    # G2/G3 (TODO-135 finding 16): every kill below sits inside a `$status == 0` branch
     # guarded by the immediately-preceding waitpid in _reap_poll (still our live
     # child); a status of $pid (reaped here) or -1 (ECHILD) is terminal and never
     # signals. No kill(0) liveness test -- the full rationale lives in _reap_poll's
@@ -1161,7 +1161,7 @@ sub dispatch_pending {
 
             # One-way per-test dispatch: run_task's handler returns undef (no
             # reply), so skip the PENDING insert -- otherwise a request_id would
-            # leak per test on a daemon-lifetime channel. (#134 finding 106)
+            # leak per test on a daemon-lifetime channel. (TODO-134 finding 106)
             my $sent = $self->service_send("preload-$stage", 'run_task', task => $task, run => $run_item, want_reply => 0);
 
             # service_send returns false when the stage's channel is gone (no peer, or
@@ -1169,7 +1169,7 @@ sub dispatch_pending {
             # received the task, so it never forked the job and never took ownership of
             # its completion. This is the assign->launch race (§4.7a) / a self-restarting
             # stage taking its channel: the job is owed a run, not a failure. REQUEUE it
-            # (bloat #3) -- release its slot / resources and put it back PENDING (no retry
+            # (bloat TODO-3) -- release its slot / resources and put it back PENDING (no retry
             # consumed) to be re-resolved on a later tick. Requeuing is safe ONLY because
             # no stage accepted it; once a stage forks the job its collector owns
             # completion and requeuing would duplicate-run.
@@ -1196,7 +1196,7 @@ sub dispatch_pending {
     return;
 }
 
-# The runner's ONE run loop (#29). It services runner.socket (stage registrations +
+# The runner's ONE run loop (TODO-29). It services runner.socket (stage registrations +
 # transitions + client requests) and ticks the in-process scheduler, which dispatches
 # every started task (see dispatch_pending). On a PRELOAD run the preload-root hosts
 # the stages and each task is dispatched out to its stage's registered channel; on a
@@ -1225,7 +1225,7 @@ sub run_scheduler_only {
         }
 
         # The preload-root dying (a crash without that announcement, or a broken
-        # preload) is fatal -- the runner does NOT respawn it (bloat #3); terminate.
+        # preload) is fatal -- the runner does NOT respawn it (bloat TODO-3); terminate.
         last if $self->_handle_dead_preload_root;
 
         if (time > $deadline) {
@@ -1268,12 +1268,12 @@ sub run_scheduler_only {
         # that land in that downtime window are buffered by submit_action; drain them here
         # every tick once readiness is restored, even if no new action arrives to trigger
         # the flush -- a buffered end_queue alone would otherwise hang the runner forever,
-        # since State::done requires QUEUE_ENDED (#116).
+        # since State::done requires QUEUE_ENDED (TODO-116).
         $self->_flush_submit_buffer_if_ready;
 
         $self->service_tick;
 
-        # Reap re-parented detached preload collectors each tick (ticket #28 C1: the
+        # Reap re-parented detached preload collectors each tick (ticket TODO-28 C1: the
         # runner is their child subreaper, so nobody else reaps them). Pure zombie
         # cleanup + the A3 post-pass health escalation -- the completion decision
         # always rides EOF. Must run BEFORE the dead-preload-root check below: this
@@ -1297,7 +1297,7 @@ sub run_scheduler_only {
 
         # The preload-root dying mid-run (a crash without a clean stage_host_exited)
         # is fatal: the runner cannot host preloaded runs and does NOT respawn it
-        # (bloat #3, ARCHITECTURE.md §4.2). It sets SIGNAL so the runner winds down;
+        # (bloat TODO-3, ARCHITECTURE.md §4.2). It sets SIGNAL so the runner winds down;
         # active runs fail. In-flight test jobs detect their vanished ancestors via
         # their own collectors (watch_parent_pid) independently.
         last if $self->_handle_dead_preload_root;
@@ -1306,7 +1306,7 @@ sub run_scheduler_only {
         # end_test_loop -- a persistent runner whose workdir/pfile vanished self-shuts
         # down (orphaned), and a reload request winds down for a HUP respawn. The
         # preload path winds down on stage-host signals instead, so this is
-        # no-preload-scoped. (Goes live when the no-preload run is routed here -- #29.)
+        # no-preload-scoped. (Goes live when the no-preload run is routed here -- TODO-29.)
         unless ($self->_preload_root_hosts_stages) {
             if ($self->orphaned) {
                 $self->{+SIGNAL} //= 'TERM';
@@ -1345,7 +1345,7 @@ sub run_scheduler_only {
     }
 
     # Final best-effort reap of any detached collector that has already exited by
-    # wind-down (ticket #28 C1); ones still finishing re-parent to init on exit (an
+    # wind-down (ticket TODO-28 C1); ones still finishing re-parent to init on exit (an
     # accepted loss -- the run is over and every verdict already rode EOF).
     $self->_bring_out_yer_dead;
     $self->_check_if_dead_yet;
@@ -1474,7 +1474,7 @@ sub set_proc_exit {
 
     # A preload stage exiting (reload/monitor relaunch, or death) is handled by the
     # stage host (Test2::Harness2::Preload::Host), not the runner: the runner forks
-    # no preload stages (ticket #22). The runner only reaps its own test jobs and
+    # no preload stages (ticket TODO-22). The runner only reaps its own test jobs and
     # the no-preload path's nothing-else.
 
     $self->SUPER::set_proc_exit($proc, $exit, $time, @args);
@@ -1508,10 +1508,10 @@ sub _check_post_pass_health {
     return;
 }
 
-# The runner is a child subreaper (ticket #28), so it reaps every re-parented
+# The runner is a child subreaper (ticket TODO-28), so it reaps every re-parented
 # detached preload test collector here even though it never watched them. The base
 # reaper discards an unwatched pid; the runner additionally maps it back to its job
-# (via the pid-keyed collector_reap map, #28 C2) and runs the A3 post-pass health
+# (via the pid-keyed collector_reap map, TODO-28 C2) and runs the A3 post-pass health
 # escalation so a detached collector that failed AFTER reporting a pass still flags
 # the suite (ARCHITECTURE.md §5.4). Watched pids (no-preload children) go to WAITING
 # for set_proc_exit as before; the decision itself always rides EOF, so this reap is
@@ -1537,7 +1537,7 @@ sub _bring_out_yer_dead {
             next;
         }
 
-        # G1 (#135 finding 16): the sampler and aux processes are tracked OUTSIDE
+        # G1 (TODO-135 finding 16): the sampler and aux processes are tracked OUTSIDE
         # {+PROCS}. If this subreaper sweep reaps one, clear its slot HERE -- before the
         # $procs branch and the _reaped_unwatched_pid fall-through -- so (a) it is not
         # misread as a detached-collector reap, and (b) stop_sampler/stop_aux never read

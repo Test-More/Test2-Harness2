@@ -2,7 +2,7 @@ use Test2::V0;
 use v5.38;
 # HARNESS-DURATION-LONG
 
-# Chunk 13 / ticket #39: the two `yath spawn` behaviors the captured-output tester
+# Chunk 13 / ticket TODO-39: the two `yath spawn` behaviors the captured-output tester
 # cannot exercise (ARCHITECTURE.md §4.8):
 #
 #   (b) STDIN round-trip -- the spawned child reads the command's REAL stdin

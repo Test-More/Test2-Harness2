@@ -118,7 +118,7 @@ sub abort_remaining ($self, $reason = undef, %params) {
     my $runner = $self->{+RUNNER};
     return unless $runner->rootpid == $$;
 
-    # Optionally scope to one run: the owner-drop abort path (ticket #12 /
+    # Optionally scope to one run: the owner-drop abort path (ticket TODO-12 /
     # ARCHITECTURE.md §4.2) aborts only the dropped run's jobs, leaving other runs on
     # a persistent runner untouched. Wind-down passes no run_id and aborts them all.
     my $only_run = $params{run_id};

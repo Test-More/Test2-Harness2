@@ -53,7 +53,7 @@ sub run {
     # Lazily require the HTTP stack (mirrors Plugin/YathUI.pm's upload path):
     # every other HTTP consumer in the dist requires HTTP::Tiny on demand, and
     # HTTP::Tiny::Multipart is an optional (RuntimeSuggests) dep, so error
-    # clearly if it is missing rather than failing at compile time (ticket #94).
+    # clearly if it is missing rather than failing at compile time (ticket TODO-94).
     require HTTP::Tiny;
     eval { require HTTP::Tiny::Multipart; 1 } or die "To use `client-publish` you must install HTTP::Tiny::Multipart.\n";
 
@@ -83,7 +83,7 @@ sub run {
         # A 200 does not guarantee a JSON body: proxies/maintenance pages return
         # HTML, and (with allow_nonref) a bare-scalar JSON body decodes to a
         # non-hashref. Guard both so we surface a clean error instead of a
-        # decode_json longmess or a 'Not a HASH reference' deref (ticket #153).
+        # decode_json longmess or a 'Not a HASH reference' deref (ticket TODO-153).
         my $data;
         my $ok = eval { $data = decode_json($body); 1 };
 

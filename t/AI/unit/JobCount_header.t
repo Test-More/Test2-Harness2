@@ -3,7 +3,7 @@ use v5.38;
 
 use Test2::Harness2::Runner::Resource::JobCount;
 
-# Ticket #138 finding (40) / cleanup #80 step 1: JobCount's status_data used the
+# Ticket TODO-138 finding (40) / cleanup TODO-80 step 1: JobCount's status_data used the
 # key 'headers', but the base renderer (Resource::status_lines) reads only
 # 'header' -- so the `yath resources` slot table rendered with NO header row. The
 # fix renames 'headers' -> 'header'.

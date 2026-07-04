@@ -80,7 +80,7 @@ yath(
 # (To pick up code changes a no-preload persistent runner must be stopped and
 # started again; reload only does work when a preload-root is hosting stages,
 # which re-execs the preload tree.) Rather than falsely report success, `yath
-# reload` detects the no-preload runner and exits 2 with a warning (ticket #114);
+# reload` detects the no-preload runner and exits 2 with a warning (ticket TODO-114);
 # it does NOT signal the runner, so the runner keeps serving unchanged.
 yath(
     command => 'reload',

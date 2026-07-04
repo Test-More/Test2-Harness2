@@ -2,7 +2,7 @@ use Test2::V0;
 use Test2::Require::AuthorTesting;
 # HARNESS-DURATION-MEDIUM
 
-# Ticket #114 (fork A): `yath reload` against a persistent runner started with NO
+# Ticket TODO-114 (fork A): `yath reload` against a persistent runner started with NO
 # preload stages must NOT falsely report success. On such a runner the SIGHUP handler
 # is an explicit no-op -- there is nothing to reload -- so the command warns and exits
 # 2 instead of the pre-fix behavior of printing "Sending SIGHUP" and exiting 0.

@@ -79,7 +79,7 @@ subtest rerun_conflicting_logs => sub {
     is($settings->finder->rerun, 'a.jsonl', "rerun set to the shared log path");
 };
 
-# Ticket #99 step 3: changes_applicable is now a single copy exported from
+# Ticket TODO-99 step 3: changes_applicable is now a single copy exported from
 # App::Yath2::Util and imported by both Options::Finder and Plugin::Cover
 # (the two byte-identical local copies were deleted).
 subtest changes_applicable_deduped => sub {

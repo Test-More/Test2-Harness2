@@ -30,7 +30,7 @@ our @EXPORT_OK = qw{
 =head1 NAME
 
 App::Yath2::Test::DBMatrix - Test-only helper that drives the DB tests over every
-installed flavor B<and> version (DB-3 / ticket #63).
+installed flavor B<and> version (DB-3 / ticket TODO-63).
 
 =head1 DESCRIPTION
 

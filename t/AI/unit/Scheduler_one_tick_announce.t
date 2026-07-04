@@ -1,7 +1,7 @@
 use Test2::V0;
 # HARNESS-DURATION-SHORT
 
-# #135 finding 28: a run activated AND retired within a single advance loop was never
+# TODO-135 finding 28: a run activated AND retired within a single advance loop was never
 # announced -- the old before/after ACTIVE_RUN slot diff only saw a run that occupied
 # the +RUN slot ACROSS the tick. Its harness_run_end was lost (hanging a run-scoped
 # subscriber) and, on the owner-drop leg, it leaked in state. The fix records each

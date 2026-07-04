@@ -97,7 +97,7 @@ sub _changed_diff ($class, $base) {
     my $from = 'HEAD';
 
     if ($base) {
-        # #107: validate the change base and bound the merge-base walk so a
+        # TODO-107: validate the change base and bound the merge-base walk so a
         # typo'd/nonexistent ref, an orphan/unrelated branch, or a shallow clone
         # (HEAD^..^ past the shallow boundary is a bad revision -> exit 128) can
         # never fork `git merge-base` in an unbounded loop. The old
@@ -166,7 +166,7 @@ sub _diff_from ($class, $from) {
 }
 
 # Number of commits reachable from HEAD, or undef if git can't answer. Used to
-# bound the #107 merge-base walk; bounded even in a shallow clone.
+# bound the TODO-107 merge-base walk; bounded even in a shallow clone.
 sub _commit_count ($class) {
     my $cmd = $class->git_cmd or return undef;
 

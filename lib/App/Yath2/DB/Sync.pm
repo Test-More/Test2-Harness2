@@ -23,7 +23,7 @@ use Test2::Harness2::Util::HashBase qw{
 =head1 NAME
 
 App::Yath2::DB::Sync - From-scratch QuickORM DB->DB run sync engine (spec §8,
-ticket #53).
+ticket TODO-53).
 
 =head1 DESCRIPTION
 
@@ -199,9 +199,9 @@ sub run_delta ($self) {
 
 # Every run_uuid on a connection, regardless of status. The any-status exclusion
 # is now safe because every sync-created run lands inside a per-run destination
-# transaction (#129): an interrupted sync rolls back to no trace, so a run present
+# transaction (TODO-129): an interrupted sync rolls back to no trace, so a run present
 # on the dest is never a sync-created partial, and the delta will re-select any run
-# it does not yet hold. Legacy partials created BEFORE the #129 fix are not
+# it does not yet hold. Legacy partials created BEFORE the TODO-129 fix are not
 # re-selected by the delta (they are already present); repair them via an explicit
 # `--run-uuid`, which now always descends into the child syncs and fills the gaps.
 sub _all_run_uuids ($self, $con) {
@@ -212,7 +212,7 @@ sub _all_run_uuids ($self, $con) {
 
 Return the C<run_uuid> of the B<single> run the source contains, croaking if the
 source holds zero or more than one run. This is the C<import> auto-select case
-(spec §8 / ticket #54): a sqlite log file holds exactly one run, so no
+(spec §8 / ticket TODO-54): a sqlite log file holds exactly one run, so no
 C<run_uuid> need be supplied.
 
 =cut
@@ -243,7 +243,7 @@ verified/repaired via their per-UUID exists-checks, so a partially-synced run is
 completed and a fully-present run copies nothing. Returns the C<stats> hashref
 (counts of rows written per table, plus C<skipped_runs>).
 
-=head2 TRANSACTIONALITY (#129)
+=head2 TRANSACTIONALITY (TODO-129)
 
 Each per-run copy runs inside a single B<top-level destination transaction>
 (C<< $dest->txn(sub {...}) >>) wrapping the whole run body -- the runs row, the
@@ -292,7 +292,7 @@ sub _sync_one_run ($self, $run_uuid) {
 
     # One top-level destination transaction per run: an interrupted sync leaves NO
     # trace on the dest (the runs row rolls back too), so run_delta re-selects the
-    # run next time (#129). Top-level only -- nested txns use savepoints, which
+    # run next time (TODO-129). Top-level only -- nested txns use savepoints, which
     # DuckDB lacks. Insert-only body: DuckDB's referenced-row-update block cannot fire.
     my %stats_snap = %{$self->{+STATS}};
     my $ok  = eval { $dest->txn(sub { $self->_copy_run($src_run, $run_uuid) }); 1 };
@@ -308,7 +308,7 @@ sub _copy_run ($self, $src_run, $run_uuid) {
     my $src  = $self->{+SOURCE};
     my $dest = $self->{+DEST};
 
-    # Idempotency/repair (#129): a present runs row only skips the runs-row INSERT
+    # Idempotency/repair (TODO-129): a present runs row only skips the runs-row INSERT
     # (skipped_runs counts that outcome alone); the child syncs ALWAYS run -- their
     # per-UUID exists-checks make a complete run a no-op and a partial run a repair.
     if ($dest->handle('runs', where => {run_uuid => $run_uuid})->first) {
@@ -330,7 +330,7 @@ sub _copy_run ($self, $src_run, $run_uuid) {
     # --- jobs (+ test_file remap) & their tries, then collectors, then
     # artifacts (FK order: artifacts -> collectors -> job_tries). Always descend:
     # the per-UUID exists-checks make this a no-op for a complete run and a repair
-    # for a partial one (#129). ---
+    # for a partial one (TODO-129). ---
     $self->_sync_jobs($run_uuid);
     $self->_sync_collectors($run_uuid);
     $self->_sync_artifacts($run_uuid);
