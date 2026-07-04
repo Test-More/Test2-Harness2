@@ -47,13 +47,13 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 6 | Renderer: interim → §4.5 base-renderer rewrite | ✅ | — |
 | 7 | System-load service (own process, reliable tick → reports load) + opt-in CPU/memory throttling resources — needs 9 | ✅ DONE | #43 |
 | 8a | Database + UI inline (interim DBIx::Class, SQLite logs) | ✅ | — |
-| DB-1 | Move old DBIC DB/web layer → `reference/old_db` (`git mv`); db/server/recent commands → error stubs + tests `SKIP_ALL`; dist.ini `exclude_match = ^reference` + drop DBIx::Class prereqs | ⬜ | #45 |
-| DB-2 | New schema PostgreSQL-first (hand-written DDL + QuickORM autofill + Flavor; `App::Yath2` namespace); add optional DBIx::QuickORM/QuickDB deps; needs ARCHITECTURE §2.4 reword | ⬜ | #46 |
-| DB-3 | Port schema to SQLite/MySQL/MariaDB/Percona (per-engine UUID storage; MariaDB 10.7+) — needs DB-2 | ⬜ | #47 |
-| DB-Jsonl | Convert current jsonl logger → a renderer + renderer-owned options (`mod_adds_options`); lands before DB-4 (frees the "logger" concept) | ⬜ | #55, #56 |
-| DB-4 | DB logger process (own Client+Subscriber; folds transitions into run/job/job_try rows; whole-blob artifact import; SQLite-first; optional DB deps) — needs DB-3 | ⬜ | #48, #49, #50, #51, #52 |
-| DB-5 | DB→DB sync (`yath db sync`) + `import` command — needs DB-4 | ⬜ | #53, #54 |
-| REF-PORT | Reference-port features (directives, UnixLimits+Disk resources, Units helpers, ResetTerm, list/ping) | ⬜ | #58, #59, #60, #61, #62 |
+| DB-1 | Move old DBIC DB/web layer → `reference/old_db` (`git mv`); db/server/recent commands → error stubs + tests `SKIP_ALL`; dist.ini `exclude_match = ^reference` + drop DBIx::Class prereqs | ✅ (647b55466) | #45 |
+| DB-2 | New schema PostgreSQL-first (hand-written DDL + QuickORM autofill + Flavor; `App::Yath2` namespace); add optional DBIx::QuickORM/QuickDB deps; needs ARCHITECTURE §2.4 reword | ✅ (966eb6516) | #46 |
+| DB-3 | Port schema to SQLite/MySQL/MariaDB/Percona (per-engine UUID storage; MariaDB 10.7+) — needs DB-2 | ✅ (e6ec83c61) | #47 |
+| DB-Jsonl | Convert current jsonl logger → a renderer + renderer-owned options (`mod_adds_options`); lands before DB-4 (frees the "logger" concept) | ✅ (597a86e9b/03ac4243c) | #55, #56 |
+| DB-4 | DB logger process (own Client+Subscriber; folds transitions into run/job/job_try rows; whole-blob artifact import; SQLite-first; optional DB deps) — needs DB-3 | ✅ (bf75f888c..a8b5dab7c) | #48, #49, #50, #51, #52 |
+| DB-5 | DB→DB sync (`yath db sync`) + `import` command — needs DB-4 | ✅ (df7b8863a/c05e9b8d9) | #53, #54 |
+| REF-PORT | Reference-port features (directives, UnixLimits+Disk resources, Units helpers, ResetTerm, list/ping) | ✅ (b756025da,0e93506b0,fdec15e72,d5baf0e0b,409f4fc8c) | #58, #59, #60, #61, #62 |
 | 9 | Unified service channel — full bidirectional RPC (§5.2) | ✅ | — |
 | 10 | Preload stage lifecycle states + stage-owned restart (§4.7) — needs 9 | ✅ | #2, #3 |
 | 11 | Preload as a scheduler resource (§4.7a) — needs 10, 23 | ⬜ | #24 (resource iface), #2, #3 |
@@ -77,35 +77,35 @@ dependencies are per row. Status: ✅ done · 🚧 in progress · ⬜ not starte
 | 29 | Socket FD-pass primitive `Test2::Harness2::Util::FdPass` (SCM_RIGHTS; optional `IO::FDPass`; command-listens) — shared by spawn (13) + interactive (20) | ✅ (primitive only; consumers 13/20 separate) | #38 |
 | 30 | Harness-client library: grow `App::Yath2::Client` to own runner-lifecycle modes + finders/specs + state queries; thin `test`/`run`/`start` (§4.11) | ✅ | #41 |
 | 31 | Render-loop library: `RenderLoop` (owns dispatch+rollup) + pure-source `Producer`; `LiveProducer` + `JSONLFileProducer` now, `ArchiveProducer` deferred to DB rewrite (§4.12) | ✅ (ArchiveProducer deferred) | #42 |
-| CLEAN-1 | Cleanup audit (2026-07-01): renderer/formatter stack — dead Composer/Formatter/RenderLoop plumbing, Driver & status-bar duplication, fan-out consolidation | ⬜ | #64, #65, #66 |
-| CLEAN-2 | Cleanup audit: Runner core (State/Scheduler/process-mgmt) — dead code, duplication, key & HashBase consistency | ⬜ | #67, #68, #69 |
-| CLEAN-3 | Cleanup audit: Runner service — split oversized Handlers.pm, Client/Subscriber & announce_* duplication, Watchdog/Monitor dead code + stale comments | ⬜ | #70, #71, #72 |
-| CLEAN-4 | Cleanup audit: job execution, event/reader & TestFile — dead exec paths, dead attributes, internal duplication, POD hygiene | ⬜ | #73, #74, #75, #76 |
-| CLEAN-5 | Cleanup audit: preload subsystem — dead stubs/attributes, DEFAULT_STAGE type fix, closure/resolve duplication | ⬜ | #77, #78 |
-| CLEAN-6 | Cleanup audit: resource classes — boilerplate/constructor consolidation, JobCount header fix, v5.38/signature normalization | ⬜ | #79, #80 |
-| CLEAN-7 | Cleanup audit: IPC / Role::Service / Util-core — die-closure & byte-pump duplication, dead teardown/dispatch/spawn forms | ⬜ | #81, #82 |
-| CLEAN-8 | Cleanup audit: Util modules, Directives & UUID — dead modules/members, gen_uuid unification, Directives duplication + oversized _record | ⬜ | #83, #84, #85 |
-| CLEAN-9 | Cleanup audit: Log/CoverageAggregator — duplication, finalize-shape bug, eval-error, POD | ⬜ | #86 |
-| CLEAN-10 | Cleanup audit: command layer — cli_args/doc_args wiring, base+test.pm dead code, render/helper duplication, persist-family fixes, import sweep | ⬜ | #87, #88, #89, #90, #91, #92 |
-| CLEAN-11 | Cleanup audit: DB layer — dead Schema/imports/slots, sync/import & _find_or_create duplication, command-surface stubs & HTTP stack | ⬜ | #93, #94 |
-| CLEAN-12 | Cleanup audit: client-lib/Discovery/Util — Pfile shim removal, walk/probe duplication, Tester/Finder/Script fixes | ⬜ | #95, #96, #97 |
-| CLEAN-13 | Cleanup audit: options & plugins — retire web/DB option modules, duplication helpers, dead options/markers, v5.38 sweep | ⬜ | #98, #99, #100, #101 |
-| CLEAN-14 | Cleanup audit: standalone dead modules, stale docs & doc-status sync | ⬜ | #102, #103, #104, #105 |
-| BUG-1 | Bug audit: P0 fixes — service select-set poisoning wedges the runner; Git plugin infinite merge-base loop | ⬜ | #106, #107 |
-| BUG-2 | Bug audit: P1 service/IPC core — EAGAIN false EOF, silent client submission loss, unguarded handler dispatch | ⬜ | #108, #109, #110 |
-| BUG-3 | Bug audit: P1 runner/preload/reload — reload duplication/wedges, scheduler crash & hangs, retry misreport, directive validation | ⬜ | #111, #112, #113, #114, #115, #116, #117, #118 |
-| BUG-4 | Bug audit: P1 spawn — supervisor pgroup leak kills detached sessions on stage stop/reload | ⬜ | #119 |
-| BUG-5 | Bug audit: P1 command lifecycle — watch/stop/kill/run/start/failed/interactive Ctrl-C | ⬜ | #120, #121, #122, #123, #124, #125 |
-| BUG-6 | Bug audit: P1 options/plugins — dead --notify-email-fail, -f fields truncation | ⬜ | #126, #127 |
-| BUG-7 | Bug audit: P1 DB logger/sync correctness — project attribution, non-transactional sync, drain stall, aborted-job & failure finalization, teardown reporting | ⬜ | #128, #129, #130, #131, #132, #133 |
-| BUG-8 | Bug audit: P2/P3 service + runner-core bundles — IPC hardening, state/scheduler, preload, job env, resources/sampler | ⬜ | #134, #135, #136, #137, #138 |
-| BUG-9 | Bug audit: P2/P3 spawn + interactive bundles | ⬜ | #139, #140 |
-| BUG-10 | Bug audit: P2/P3 renderer/formatter/log-renderer bundles | ⬜ | #141, #142, #143 |
-| BUG-11 | Bug audit: P2/P3 finder + command-surface bundles — selection, discovery/start races, persist-command UX, replay, rc parsing, speedtag/times | ⬜ | #144, #145, #146, #147, #148, #149 |
-| BUG-12 | Bug audit: P2/P3 plugins + coverage bundles | ⬜ | #150, #151 |
-| BUG-13 | Bug audit: P2/P3 DB layer + web-client commands (web-parked; rework in place) | ⬜ | #152, #153 |
-| BUG-14 | Bug audit: P2/P3 util/tester fixes + dead-seam cross-refs | ⬜ | #154, #155, #156 |
-| BUG-15 | Latent findings surfaced during 2026-07-02 Fable/Opus spec resolution (new, not in the 126-finding audit) — blocking-connect timeout, aborted-run drain, #113 premise conflict, hidden-output renderers, discovery-link unlinks | ⬜ | #157, #158, #159, #160, #161, #162 |
+| CLEAN-1 | Cleanup audit (2026-07-01): renderer/formatter stack — dead Composer/Formatter/RenderLoop plumbing, Driver & status-bar duplication, fan-out consolidation | ✅ (2.0d-bugfix) | #64, #65, #66 |
+| CLEAN-2 | Cleanup audit: Runner core (State/Scheduler/process-mgmt) — dead code, duplication, key & HashBase consistency | ✅ (2.0d-bugfix) | #67, #68, #69 |
+| CLEAN-3 | Cleanup audit: Runner service — split oversized Handlers.pm, Client/Subscriber & announce_* duplication, Watchdog/Monitor dead code + stale comments | ✅ (2.0d-bugfix) | #70, #71, #72 |
+| CLEAN-4 | Cleanup audit: job execution, event/reader & TestFile — dead exec paths, dead attributes, internal duplication, POD hygiene | ✅ (2.0d-bugfix) | #73, #74, #75, #76 |
+| CLEAN-5 | Cleanup audit: preload subsystem — dead stubs/attributes, DEFAULT_STAGE type fix, closure/resolve duplication | ✅ (2.0d-bugfix) | #77, #78 |
+| CLEAN-6 | Cleanup audit: resource classes — boilerplate/constructor consolidation, JobCount header fix, v5.38/signature normalization | ✅ (2.0d-bugfix) | #79, #80 |
+| CLEAN-7 | Cleanup audit: IPC / Role::Service / Util-core — die-closure & byte-pump duplication, dead teardown/dispatch/spawn forms | ✅ (2.0d-bugfix) | #81, #82 |
+| CLEAN-8 | Cleanup audit: Util modules, Directives & UUID — dead modules/members, gen_uuid unification, Directives duplication + oversized _record | ✅ (2.0d-bugfix) | #83, #84, #85 |
+| CLEAN-9 | Cleanup audit: Log/CoverageAggregator — duplication, finalize-shape bug, eval-error, POD | ✅ (2.0d-bugfix) | #86 |
+| CLEAN-10 | Cleanup audit: command layer — cli_args/doc_args wiring, base+test.pm dead code, render/helper duplication, persist-family fixes, import sweep | ✅ (2.0d-bugfix) | #87, #88, #89, #90, #91, #92 |
+| CLEAN-11 | Cleanup audit: DB layer — dead Schema/imports/slots, sync/import & _find_or_create duplication, command-surface stubs & HTTP stack | ✅ (2.0d-bugfix) | #93, #94 |
+| CLEAN-12 | Cleanup audit: client-lib/Discovery/Util — Pfile shim removal, walk/probe duplication, Tester/Finder/Script fixes | ✅ (2.0d-bugfix) | #95, #96, #97 |
+| CLEAN-13 | Cleanup audit: options & plugins — retire web/DB option modules, duplication helpers, dead options/markers, v5.38 sweep | ✅ (2.0d-bugfix) | #98, #99, #100, #101 |
+| CLEAN-14 | Cleanup audit: standalone dead modules, stale docs & doc-status sync | ✅ (2.0d-bugfix) | #102, #103, #104, #105 |
+| BUG-1 | Bug audit: P0 fixes — service select-set poisoning wedges the runner; Git plugin infinite merge-base loop | ✅ (2.0d-bugfix) | #106, #107 |
+| BUG-2 | Bug audit: P1 service/IPC core — EAGAIN false EOF, silent client submission loss, unguarded handler dispatch | ✅ (2.0d-bugfix) | #108, #109, #110 |
+| BUG-3 | Bug audit: P1 runner/preload/reload — reload duplication/wedges, scheduler crash & hangs, retry misreport, directive validation | ✅ (2.0d-bugfix) | #111, #112, #113, #114, #115, #116, #117, #118 |
+| BUG-4 | Bug audit: P1 spawn — supervisor pgroup leak kills detached sessions on stage stop/reload | ✅ (2.0d-bugfix) | #119 |
+| BUG-5 | Bug audit: P1 command lifecycle — watch/stop/kill/run/start/failed/interactive Ctrl-C | ✅ (2.0d-bugfix) | #120, #121, #122, #123, #124, #125 |
+| BUG-6 | Bug audit: P1 options/plugins — dead --notify-email-fail, -f fields truncation | ✅ (2.0d-bugfix) | #126, #127 |
+| BUG-7 | Bug audit: P1 DB logger/sync correctness — project attribution, non-transactional sync, drain stall, aborted-job & failure finalization, teardown reporting | ✅ (2.0d-bugfix) | #128, #129, #130, #131, #132, #133 |
+| BUG-8 | Bug audit: P2/P3 service + runner-core bundles — IPC hardening, state/scheduler, preload, job env, resources/sampler | ✅ (2.0d-bugfix) | #134, #135, #136, #137, #138 |
+| BUG-9 | Bug audit: P2/P3 spawn + interactive bundles | ✅ (2.0d-bugfix) | #139, #140 |
+| BUG-10 | Bug audit: P2/P3 renderer/formatter/log-renderer bundles | ✅ (2.0d-bugfix) | #141, #142, #143 |
+| BUG-11 | Bug audit: P2/P3 finder + command-surface bundles — selection, discovery/start races, persist-command UX, replay, rc parsing, speedtag/times | ✅ (2.0d-bugfix) | #144, #145, #146, #147, #148, #149 |
+| BUG-12 | Bug audit: P2/P3 plugins + coverage bundles | ✅ (2.0d-bugfix) | #150, #151 |
+| BUG-13 | Bug audit: P2/P3 DB layer + web-client commands (web-parked; rework in place) | ✅ (2.0d-bugfix) | #152, #153 |
+| BUG-14 | Bug audit: P2/P3 util/tester fixes + dead-seam cross-refs | ✅ (2.0d-bugfix) | #154, #155, #156 |
+| BUG-15 | Latent findings surfaced during 2026-07-02 Fable/Opus spec resolution (new, not in the 126-finding audit) — blocking-connect timeout, aborted-run drain, #113 premise conflict, hidden-output renderers, discovery-link unlinks | ✅ (2.0d-bugfix) | #157, #158, #159, #160, #161, #162 |
 
 The **Tasks** column points at the well-defined tickets in `TODO_TASKS.md` that
 implement (part of) a step. A step is "broad"; its tickets are "specific."
@@ -144,6 +144,20 @@ Compact record of what landed:
   stamping, busy-channel retention, lifecycle enum) — **this is the chunk-19 residue
   that TODO_TASKS now cleans up and supersedes** (connection-currency replaces
   generation, etc.).
+- **DB-1..DB-5 + DB-Jsonl** — the from-scratch DB-layer rewrite (DBIx::QuickORM `autofill`;
+  artifact-blob + folded-row canonical record, **no transitions table**) landed on `2.0d`:
+  DB-1 old DBIC/web layer → `reference/old_db`, `db`/`server`/`recent` stubs (`647b55466`);
+  DB-2 PostgreSQL-first schema (`966eb6516`); DB-3 SQLite/MySQL/MariaDB/Percona port
+  (`e6ec83c61`); DB-Jsonl jsonl-renderer + `mod_adds_options` (`597a86e9b`/`03ac4243c`);
+  DB-4 opt-in `-L` DB-logger process + derived UUIDs (`bf75f888c`..`a8b5dab7c`); DB-5
+  `yath db sync` + `import` (`df7b8863a`/`c05e9b8d9`). Multi-flavor test matrix = ticket #63
+  (`t/AI/lib/App/Yath2/Test/DBMatrix.pm`). **#57 (try-uuid start-stamp) stays optional/deferred.**
+- **REF-PORT** — five reference-port features (`b756025da`/`0e93506b0`/`fdec15e72`/`d5baf0e0b`/
+  `409f4fc8c`): HARNESS2 directives parser + legacy compat (#58), UnixLimits+Disk resources
+  (#59), Units helpers (#60), ResetTerm renderer (#61), `yath list`/`ping` (#62).
+- **CLEAN-1..14 + BUG-1..15** — the 2026-07-01 maintainability cleanup audit (tickets #64–#105)
+  and bug audit (#106–#162) all landed on `2.0d-bugfix`; per-ticket detail + commit shas
+  are in `TODO_DONE.md`.
 
 ## Pending steps (detail)
 
@@ -159,119 +173,6 @@ carry the specifics.
   `--utilize`) compose the #24 Resource Role + a new `Role::Resource::Utilizer` and
   read the runner's shared snapshot (cross-platform). See ticket #43,
   `AI_DOCS/2026-06-21-system-load-throttling.md`, and the ARCHITECTURE.md §4.4 addendum.
-
-- **Chunk DB-1 — move old DB/web layer to `reference/old_db`.** Retire the chunk-8a
-  interim DBIx::Class stack: `git mv` the ~210 `App::Yath2::Schema/Server/Renderer::DB`
-  files (+ `share/schema/*.sql` + `regen_schema.pl`) into `reference/old_db/` preserving
-  relative paths (history-preserving move, not a copy). The `db`/`server`/`recent`
-  commands (and the DB renderer/plugin) become **stubs that error if used**; their tests
-  become `SKIP_ALL` until the rewrite lands — the command surface stays visible but inert.
-  Add `exclude_match = ^reference` to `dist.ini [GatherDir]` (the 3744 already-shipping
-  `reference/` files are pre-existing bloat) and drop the `DBIx::Class*` prereqs +
-  **demote `DBD::SQLite` from Requires** (DB layer is opt-in, R11). The runner / `yath
-  test` path imports zero DB code today, so the move keeps the suite green. TODO_TASKS
-  **#45**; spec `AI_DOCS/2026-06-21-db-layer-rewrite-quickorm-spec.md` §1 / R14 / R15.
-
-- **Chunk DB-2 — new schema, PostgreSQL-first.** Build the new DB layer from scratch
-  (not a DBIC refactor): hand-written per-flavor DDL is the **source of truth**, and
-  DBIx::QuickORM `autofill` reflects the schema **from the live DB** — no table/result
-  classes, no `Schema::Loader`-style codegen. All DB code lives under **`App::Yath2`**;
-  the backend `Test2::Harness2` layer touches no DB in either direction. Tables:
-  `runs/jobs/job_tries/artifacts` + `users/machine_users/projects/test_files/hosts/
-  schema_meta` — **no transitions table** (transitions fold into run/job/job_try rows and
-  live in the artifact blobs, R6); artifacts are the blob source-of-truth; run-data uses
-  derived v7-preserving UUIDs (§3.1). Add `DBIx::QuickORM` + `DBIx::QuickDB` to
-  RuntimeRecommends/Suggests (never Requires; lazy-require with an actionable error, R11).
-  **Needs the ARCHITECTURE §2.4 reword** (schema-as-Perl → hand-written DDL + autofill,
-  R13). TODO_TASKS **#46**; spec §2 / §3 / §4 / §5 / R6 / R13.
-
-- **Chunk DB-3 — port schema to the other flavors — needs DB-2.** Carry the PostgreSQL
-  DDL across SQLite/MySQL/MariaDB/Percona via the per-flavor Flavor registry, honoring
-  per-engine UUID storage: native `uuid` on PostgreSQL + MariaDB (**MariaDB 10.7+
-  required**, R8), `BINARY(16)` on MySQL/Percona, `BLOB(16)` on SQLite, with a STORED
-  generated **lowercase** string mirror on the `run`+`job` tables where there is no native
-  type. UUID lowercasing is normalized centrally at the boundary, not via scattered
-  `lc()` (R9). TODO_TASKS **#47**; spec §3 / §3.1 / R8 / R9 / R12.
-
-- **Chunk DB-Jsonl — convert the current logger → jsonl renderer + renderer-owned
-  options.** **Lands before DB-4** — the new DB logger takes over the "logger" concept, so
-  the old jsonl logger must become a plain renderer to free the name. Wrap the existing
-  `test.pm::logger()`/`dispatch_to_sinks` `as_json` logic into a proper renderer
-  (`render_event` writes, `start` opens the FH + compression, `finish` writes the `null`
-  terminator + `lastlog` symlink), promote it into the renderers list, delete the inline
-  `Renderer::Base` `logger` sink, and rewire implicit-enable to inject the renderer. Give
-  it its own `option_group` (`--jsonl-file/dir/format` + `--bzip2`/`--gzip`, long-form
-  only) and make renderers/plugins **auto-contribute options** via `mod_adds_options` on
-  the renderers Map option (the pre_ai_2.0 model), auditing the other pluggable sources to
-  the same standard. TODO_TASKS **#55**, **#56**; spec §10 a/b.
-
-- **Chunk DB-4 — DB logger process — needs DB-3.** The largest net-new component: an
-  independent App-side process owning its own `App::Yath2::Client` + `Subscriber` on
-  `runner.socket` (run-scoped), spawned **early** (harness → logger → queue run). It
-  **folds wire transitions into run/job/job_try ROW STATE** from the Monitor's
-  snapshot-seeded folded state (no transitions table, R6) and imports each collector's
-  `events.jsonl.zst` **whole** as an artifact blob (the blob already holds the full
-  transition detail; no per-event rows). Binary extraction splits embedded binary facets
-  into their own artifact rows with deterministic `artifact_uuid = derive(collector_uuid,
-  idx)` (§3.1). **SQLite-first** for dev; logging is **opt-in** (default OFF, R11) via
-  **`-L`/`--logger`** — repeatable and value-polymorphic (bare = default sqlite, `=path` =
-  sqlite file, `=$DSN` = remote DB; N `-L` → N loggers/N DBs). The runner defers workdir
-  cleanup until subscribers disconnect. TODO_TASKS **#48**, **#49**, **#50** (logger —
-  folds `jobs.passed` from tries + one `job_tries` row per `is_try`; depends on **#49**'s
-  1-based producer), **#51**, **#52**; spec §6 / §7 / §3.1 / §5 / R2 / R6 / R10 / R16.
-
-- **Chunk DB-5 — DB→DB sync + `import` command — needs DB-4.** A from-scratch QuickORM
-  sync engine (DCI module, reusable by the command): `yath db sync` moves a run + all its
-  jobs/tries/artifacts as a unit, per-run uuid-upsert idempotency (run-data UUID PKs copy
-  verbatim; transition detail rides inside the artifact blobs, so it syncs automatically).
-  Natural-key FK columns are host-local integers and are **remapped on the destination**
-  via `find_or_create` on their natural key (`users`→username, `machine_users`→(host,
-  username), `projects`→name, `hosts`→hostname, `test_files`→path; R5/R7), with a
-  `submitted_by` attribution flag (carry-original vs `--as-user`/`--override-user`).
-  Artifacts copy the `data` blob and skip the host-local `local_path`. Plus a simple
-  `import` command that imports the single run in one sqlite log file into another DB,
-  auto-selecting the only run. TODO_TASKS **#53**, **#54**; spec §8 / R5 / R7.
-
-  *(Webapp UX-migration port (§9) and the junit renderer import (§10c) are **DEFERRED to
-  separate efforts** — not chunks in this set; the `/artifact/<uuid>.<ext>` download
-  controller lands with the future webapp spec.)*
-
-- **Chunk REF-PORT — reference-port features.** Five features carried over from the
-  reference-feature survey, each a small/medium self-contained port. **(1) Structured
-  directives parser** (TODO_TASKS **#58**): new `Test2::Harness2::Util::Directives` — a
-  field-agnostic `HARNESS2:` grammar parser (block form, boolean sigils, dotted nested keys,
-  quoted values) ported from `reference/harness_service`, plus a separate `::Legacy` compat
-  module that converts 1.0 `HARNESS-…` lines into the same internal representation. **HARNESS2
-  wins silently** — any `HARNESS2:` directive in a file makes us ignore all legacy `HARNESS-`
-  (no mixed-mode warning, E2); a file with no `HARNESS2:` runs the compat parser. Only
-  `App::Yath2::TestFile` (the file reader) loads the scanner, preserving the O(1)
-  early-terminating header scan; `Test2::Harness2::TestFile` stays file-free/state-only. A
-  **parse error → `croak` caught by `App::Yath2::TestFile` → the broken file queues as a
-  synthetic harness-visible test failure** (run continues, E1). Only structural fields
-  (retry/timeout/category/duration/stage/conflicts/slots) flow to the task; **`meta.*`/
-  `feature.*` persistence is DEFERRED** (E5) → no new DB impact. **(2) OS-limit resources**
-  (TODO_TASKS **#59**): port **`UnixLimits` (RLIMIT nproc/nofile/as) + `Disk` (free-space)
-  only** onto the current `Role::Resource` contract — **`PipeLimits` is dropped** (E3).
-  Pure runtime throttling, metrics read **in-resource / runner-local** on tick (not via the
-  system-load sampler, E3); **resource tables stay deferred** (E4) → no DB impact. Adds an
-  `is_supported` hook (graceful no-op on `/proc`-less OSes), optional `Filesys::Df` (Disk,
-  any threshold) + optional `BSD::Resource` (off-Linux RLIMIT), both lazy-required with an
-  actionable error (R11). Needs **#60**. **(3) Units helpers** (TODO_TASKS **#60**, blocks
-  **#59**): port `parse_count_or_pct` (`N`→count / `N%`→pct, on `parse_quantity`) +
-  `parse_duration` into `lib/Test2/Harness2/Util/Units.pm` (`@EXPORT_OK`); `parse_duration`
-  scopes to timeout values only (the `duration` directive stays a scheduling label). **(4)
-  ResetTerm renderer** (TODO_TASKS **#61**): port old3's `ResetTerm` as
-  `App::Yath2::Renderer::ResetTerm` (parent `Test2::Harness2::Renderer`, no `desired_filters`)
-  whose `finish` prints `\e[0m`+`\e[?25h` **only when STDOUT is a TTY**; **default-injected
-  LAST** in the renderer list, fires on abnormal exit (harness teardown calls `finish` + an
-  `END`-block fallback). **(5) `yath list` + `yath ping`** (TODO_TASKS **#62**): two
-  commands under `App::Yath2::Command` — `list` enumerates live **persistent** runners via a
-  new Discovery enumeration API (reuses `find_runner_link`'s dir/name rules; multi-user-safe,
-  cleans only current-UID dangling links); `ping` loops on `App::Yath2::Client` round-tripping
-  a new no-side-effect runner-side ping handler, printing latency. See the spec
-  `AI_DOCS/2026-06-22-reference-port-features-spec.md`. *(Survey #3/#5 — `job_try` verdict
-  columns + retry recording — are **NOT** part of REF-PORT; they FOLD into the existing DB
-  chunks DB-2/DB-4, tickets **#46**/**#50**.)*
 
 - **Chunk 10 — preload stage lifecycle states + stage-owned restart (§4.7). DONE.**
   Registration + dispatch-over-registered-channel landed in 9. The explicit

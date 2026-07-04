@@ -608,7 +608,12 @@ sampler half is landed:
   tracked independently with the same policy: an **increase reports immediately**, a
   **decrease only after the lower value holds `decrease_delay` (1.0s ≈ 5 ticks)**,
   an unchanged value reports nothing. A message carries the current rounded value of
-  both metrics (plus the load average).
+  both metrics (plus the load average). Change-gating is bounded by a
+  **max-staleness heartbeat** (#138): if no message has gone out for `heartbeat`
+  seconds (default **2.0s**) the sampler sends the current snapshot unconditionally,
+  so a consumer of the raw fields (e.g. `Resource::Memory`'s absolute free-byte
+  floor) never acts on data older than the heartbeat even while a rounded bucket
+  stays pinned.
 - **One-way `system_load` reports to `runner.socket`.** The sampler dials the runner
   as a service peer (identity handshake) and sends one-way `system_load` requests.
   The runner's `request_handler_system_load` stores the snapshot in its canonical
@@ -652,9 +657,15 @@ the same `Test2::Harness2::Role::Resource` contract
 — a third candidate, `PipeLimits` (bound concurrency by pipe FDs / kernel
 pipe-ring pages), was **dropped** for now:
 
-- **`UnixLimits`** — caps by RLIMIT `nproc` / `nofile` / `as` (each a raw count
-  or a percent-of-limit). Static kernel caps are read **once**; the volatile
-  current usage (e.g. `/proc/self/fd`) is read on `tick`.
+- **`UnixLimits`** — caps by RLIMIT `nofile` / `as` (each a raw count or a
+  percent-of-limit). There is deliberately **no `nproc` dimension** (#138):
+  `RLIMIT_NPROC` is enforced by the kernel **per real UID** across every task the
+  user owns, so a single runner cannot measure current usage against it without a
+  full `/proc` scan on the scheduler hot path — a percentage gate could never fire
+  and an absolute one would silently throttle every run to `min_concurrent`, so the
+  dimension is dropped and an explicit `-R UnixLimits=nproc=...` is a hard error.
+  Static kernel caps are read **once**; the volatile current usage (e.g.
+  `/proc/self/fd`) is read on `tick`.
 - **`Disk`** — throttles / aborts on low free space per mount (absolute free
   bytes or percent-of-total).
 
@@ -1789,15 +1800,30 @@ from there the available `preload-<stage>.socket`s). This replaces the
   queries liveness/PID **over the socket** in normal operation, and resolves the
   workdir via the symlink and **reads the `PID` file** as the fallback for
   signal-based termination when the socket is unresponsive.
-- **Failure semantics.** A dangling symlink (or one whose `connect` fails) means
-  no live runner: the client treats the harness as absent and cleans the stale
-  symlink, rather than blocking.
+- **Failure semantics (probe taxonomy, hardened #145).** Discovery does not treat
+  every non-connecting link as absent-and-cleanable. `probe()` classifies a link as
+  **LIVE** (the socket accepts a connection), **NOT-LIVE** (a transient/ambiguous
+  state — a wedged runner whose `connect` is refused but whose `PID` is still alive,
+  a bind→listen microgap, or an inaccessible other-user link), or **DEAD** (an
+  unambiguously gone runner: a dangling link with the workdir/`PID` gone). The client
+  **auto-cleans only on DEAD**, and only through an **ownership-checked** protocol
+  (take the shared publisher `flock`, re-`readlink` to confirm the target is
+  unchanged, and re-check PID liveness), so it never unlinks a link a live or
+  just-restarted runner published. A NOT-LIVE link is kept — the `PID`-file signal
+  fallback above stays available — and the probe uses a non-blocking connect so it
+  never blocks on a wedged socket.
 
-**Implemented (chunk 12).** `App::Yath2::Discovery` owns the symlink (publish on
-`start`, resolve on `run`/`which`/`status`/`stop`/`reload`/etc.), wrapped by
-`App::Yath2::Pfile` so the command surface (`pid`/`workdir`/`describe`) is
-unchanged. `App::Yath2::Util::find_runner_link` resolves the symlink path, reusing
-the legacy pfile path algorithm. The caveated sub-items were settled as follows:
+**Implemented (chunk 12; discovery hardened, #95/#145).** `App::Yath2::Discovery`
+owns the symlink end to end — publish on `start`, resolve/`probe` on
+`run`/`which`/`status`/`stop`/`reload`/etc. — and exposes the command surface
+(`pid`/`workdir`/`describe`) **directly**; the interim `App::Yath2::Pfile` shim is
+**removed** (the `PID` file itself still exists as the workdir marker, read via
+Discovery, §5.3 above). The runner publishes the link **from itself, immediately
+after binding `runner.socket`** (publish-after-bind, #145), so a client resolving a
+link finds a socket already bound — or a runner whose live `PID` proves a
+boot-in-flight — never a link that promises a runner that has not yet bound.
+`App::Yath2::Util::find_runner_link` resolves the symlink path, reusing the legacy
+pfile path algorithm. The caveated sub-items were settled as follows:
 
 - **Naming / multiple-harness-per-project.** The symlink basename is
   `.<user>-<host>-<project>-yath-runner.sock` under the persist dir

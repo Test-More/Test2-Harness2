@@ -7,6 +7,154 @@ Newest first.
 
 ---
 
+## Fable/Opus spec resolution — 20 audit tickets Proposed→Decided — DONE (`b5a4e0264`)
+
+The 2026-07-01 cleanup + bug audits produced two adversarially-verified finding sets
+(`AI_DOCS/2026-07-01-cleanup-audit-findings.json`, `AI_DOCS/2026-07-02-bug-audit-findings.json`).
+A Fable/Opus resolution pass wrote per-ticket decision specs flipping **20** of the higher-risk
+audit tickets from **Proposed → Decided** (`b5a4e0264`). That pass surfaced **6 latent findings**
+absent from the 126-finding audit, filed as **TIER 10 / BUG-15 (#157–#162)** (`3e2587b40`). All
+were then implemented — see the two batches below. Session narrative (if generated):
+`AI_DOCS/2026-07-03-bugfix-resume.md`.
+
+## TIER-8 maintainability cleanup (CLEAN-1..14, #64–#105) — DONE (`2.0d-bugfix`)
+
+Full-lib cleanup audit (177 raw → 136 confirmed; provenance in
+`AI_DOCS/2026-07-01-cleanup-audit-findings.json`) implemented on `2.0d-bugfix`. **Owner
+directive honored: web-framework code is parked, not deleted** — web/DB-web surface `git mv`'d
+to `reference/old_db`, never hard-deleted (web-parked §9 deferrals in #93/#94/#98/#100/#102).
+Per ticket (commit):
+
+- #64 (`3000cea99`) orphan Composer + dead render plumbing + Formatter vestiges.
+- #65 (`2265b397c`) Driver sweep/finalize, Formatter ctor args, status-bar dance dedup.
+- #66 (`734e71c23`+`729daf977`) sink fan-out → RenderLoop; stop.pm onto LiveProducer; Base sink dropped.
+- #67 (`5a9489dd4`) Runner/Preload::Host process-management de-dup.
+- #68 (`4ef56f7e1`) State wrapper-pair merge, dead next_task, single stage_startup_timeout.
+- #69 (`98a7856a0`) dead Runner imports/slots, constant-key sweep, HashBase prereq.
+- #70 (`2c58e0859`) split oversized Handlers.pm → Completion + TransitionHub roles.
+- #71 (`7814dbcb1`) shared SocketClient connect role + announce_* fold.
+- #72 (`134bf55b9`+`0bcef35be`) Watchdog/Monitor + Handlers/Completion dead code & stale comments.
+- #73 (`d21ffde11`) dead launch_via_fork, update_io fallback, out/err_file, prof_file.
+- #74 (`6ea97f540`) dead Event/Run/reader attrs, use_stream plumbing, Job set_exit/weaken.
+- #75 (`0dd600a35`) switches() dedup + shared -w predicate, run_dir via Run.
+- #76 (`0fbb5f0ad`) TestFile POD hygiene, shared _task_base, dead no-op removal.
+- #77 (`36d2e9192`) dead run_stage else-branches, StageDelegate stubs, unused persist/@fails.
+- #78 (`f51a8dfaf`) hoist Preload $current_stage, drop launch_stage re-resolve.
+- #79 (`7f1674f19`) hoist throttle contract into Utilizer, drop custom new().
+- #80 (`e891012a4`) Resource family → v5.38 + signatures.
+- #81 (`96f1a8a32`) IPC die-closure + byte-pump dedup, reuse set_cloexec.
+- #82 (`a921ce081`) unify Role::Service teardown + drop dead IPC::spawn form.
+- #83 (`1271251f3`+`a4c2e0cd5`) delete dead Util::Queue + fix Stream seek (**folds #156**); remaining Util/File dead members.
+- #84 (`29362263f`) unify gen_uuid onto Test2::Util::UUID v7, drop Data::UUID.
+- #85 (`5983a4146`) share directive drivers via Base; dispatch-table _record.
+- #86 (`5882c6635`) CoverageAggregator bug-fix pass (scope A).
+- #87 (`c988b48da`) bridge cli_args into help/POD doc_args.
+- #88 (`ab38e9d2f`) drop dead command-base + test.pm code.
+- #89 (`d872d50fc`) hoist shared render methods into Command base + unify final-data.
+- #90 (`666a779c4`) dedup log-file arg, JSONL scan, reload-issue render; split speedtag.
+- #91 (`baffaaeb9`) resources per-poll discovery+attach once; drop dead persist imports.
+- #92 (`aa37cbfdc`) sweep unused imports from command files.
+- #93 (`75c4911c8`) dedup DB connect/find_or_create, drop dead Schema/imports/slots (**web-parked**).
+- #94 (`b19da5989`) client-publish → HTTP::Tiny, drop AI_DOCS die refs (**web-parked**).
+- #95 (`dbdd53375`) migrate Pfile consumers to Discovery, remove shim.
+- #96 (`49382076d`) drop dead Util exports; share one _walk_updirs walk.
+- #97 (`99c53094e`) Tester yath() split, Finder JSONL require, V2 POD.
+- #98 (`0f5bf8c6b`) park Options::Server/WebServer to reference/old_db (**web-parked**).
+- #99 (`5ecb4dd2a`) dedup changes_applicable + parameterize Notify slack/email.
+- #100 (`95823d1bd`) drop stale plugin-options guard TODO (**YathUI sub-item web-parked**).
+- #101 (`d67efba23`) v5.38 + signatures for Options/Yath, Plugin, SysInfo, Git.
+- #102 (`b2219c65f`) drop dead Command::collector + isolate_stdout, link Converting POD (**Log.pm sub-item web-parked**).
+- #103 (`90e5143b1`) stale POD/comment sweep (dangling links, wrong fds, retired refs).
+- #105 (`63e9dbd75`) die-message newlines + stop.pm eval-return capture.
+- #104 = the doc status-sync ticket itself — satisfied by this reconciliation (see the DB/REF-PORT note below).
+
+## TIER-9/10 bug fixes (BUG-1..15, #106–#162) — DONE (`2.0d-bugfix`)
+
+Full-lib bug audit (126 confirmed findings; `AI_DOCS/2026-07-02-bug-audit-findings.json`) plus
+the 6 spec-resolution latent findings (TIER 10). Implemented on `2.0d-bugfix`. Per ticket (commit):
+
+- #106 (`ffc76c8d4`) **P0** — write-failed conns now leave the IO::Select set (poisoned-select wedge).
+- #107 (`7780e0826`) **P0** — bound git merge-base loop; validate change base.
+- #108 (`ce9831a34`) buffer service outbound writes — EAGAIN no longer a false EOF.
+- #109 (`f89d8165b`) check Client::_send result; backpressure not silent loss.
+- #110 (`78381ac33`) guard request-handler dispatch; one bad frame no longer kills the daemon.
+- #111 (`c37a79129`) guard preload respawn longjump.
+- #112 (`c7d91f08b`) base-stage PENDING_RELOAD set on monitor-detected change.
+- #113 (`83178a92f`) route reload identity via preload-root peer_pid.
+- #114 (`43fa99379`) reload no longer fire-and-forget on no-preload runners. **#114-B (full ack handshake) DEFERRED.**
+- #115 (`0103a9f11`) use spec stage for PENDING_TASKS lookup (no runner crash).
+- #116 (`ea2d78659`) flush submit buffer when ready_to_schedule (no client hang).
+- #117 (`121712838`) retry declined by a halted run falls through to done/abort.
+- #118 (`9354c4da4`) validate category/duration; E1 producer + State ingress backstop.
+- #119 (`9cba8a4cd`) detach spawn supervisor into its own pgroup.
+- #120 (`706944851`) watch done-check on -l + Discovery::resolves, not -f on the socket symlink.
+- #121 (`6083cfc05`) bounded stop/kill escalation with recycled-pid-safe corroboration.
+- #122 (`bea16dd1d`) handle Ctrl-C in attach mode.
+- #123 (`dba0edb5f`) bounded liveness gate before `yath start` success banner.
+- #124 (`76ff8cc5a`) guard failed.pm -1 deref for jobs missing harness_job_end.
+- #125 (`0f6070f5b`) defer interactive tempdir cleanup until child releases.
+- #126 (`fe175347d`) honor --notify-email-fail.
+- #127 (`c269c90ab`) anchor -f name:details regex (URLs/host:port survive).
+- #128 (`337242ca5`) thread --project into DB logger attribution.
+- #129 (`632a01e4e`) make run sync transactional.
+- #130 (`c87c29401`) skip non-run collectors in logger drain finalize.
+- #131 (`afda4f17b`+`88d9fac52`; fragile e2e parked `84d9ca6e1`) fold watchdog-aborted jobs into DB rows; don't fold aborted jobs with a terminal try.
+- #132 (`9914fe8f2`) mark runs broken on mid-run death / drain timeout.
+- #133 (`5fdd54ef9`) report -L logger teardown-timeout + nonzero exit.
+- #134 (`af0db47b5`) Service/IPC hardening bundle.
+- #135 (`903fec17c`) runner state/scheduler bundle.
+- #136 (`b43b2e46d`+`579fe29ba`) preload subsystem bundle + reload transitive blacklist.
+- #137 (`3fbe05942`) empty env switch, -w predicate anchor, spawn tmpdir/markers.
+- #138 (`126fd8f82`+`a68539062`) Resources/sampler bundle + Sampler.t heartbeat reconcile.
+- #139 (`cbb8781f3`) yath spawn robustness bundle.
+- #140 (`9a713168c`) interactive-mode bundle.
+- #141 (`8237a75e4`) renderer driver/live-pipeline bundle (**also resolves #160 --hide-runner-output**).
+- #142 (`51d8a548f`) QVF ECOUNT double-count, retry counters, non-color DESTROY reset.
+- #143 (`044531ac5`) check jsonl close()/symlink returns, sweep dangling lastlog.
+- #144 (`f34f5322e`+`180c9bbb0`) Finder/test-selection bundle + symlinked-FILES dedup.
+- #145 (`5ecfc22fc`) Discovery/start lifecycle bundle (**supersedes #162**).
+- #146 (`df06a727c`) persist-command UX bundle.
+- #147 (`b4fd2e190`) harden replay (idle inflation, truncated-gz, bad filters, corrupt lines).
+- #148 (`81f3160e3`) rc section-header comments, safe glob shell-out, anchored APP_PATH.
+- #149 (`aa5a92dc5`) speedtag atomic rewrite + DUR alias; times sort-by-file; medium die msg.
+- #150 (`2575d6dfa`) Plugin/options bundle.
+- #151 (`3fbc786f7`) un-swap ByRun exclude-loads/opens guards.
+- #152 (`219be7ca5`) DB layer P2/P3 bundle.
+- #153 (`e6efc37b0`) client-recent --max + client-publish non-JSON guard (**web-parked, reworked in place**).
+- #154 (`90100ac1b`) Util/directives bundle (partial-line, bare-directive, TOCTOU, SubReaper). **DragonFly procctl syscall numbers DEFERRED.**
+- #155 (`244d678ba`) Tester wait loop sub-second sleep + KILL escalation.
+- #156 folded into #83 (`1271251f3`).
+- #157 (`01ebb8520`) bounded non-blocking connect for Client/Subscriber.
+- #158 (`0289550ea`) short-circuit drain for watchdog-aborted runs.
+- #159 investigation only — verdict recorded: covered by the #111/#112/#113 reload-cluster fix; no separate change (filed `3e2587b40`).
+- #160 covered by #141 (`8237a75e4`).
+- #161 (`92a16689e`) route runner.pm discovery-link unlink through ownership check.
+- #162 superseded by #145 (`5ecfc22fc`).
+
+## DB/REF-PORT status sync (#104) — DONE
+
+Doc reconciliation (ticket #104). The DB-layer rewrite chunks and the reference-port features
+were implemented and merged on `2.0d` **before** this bug-audit branch (landing commits from
+#104's Problem text), but their `TODO_STEPS.md` rows + `TODO_TASKS.md` tickets were never flipped.
+Now reconciled — steps DB-1..DB-5/DB-Jsonl/REF-PORT flipped ✅, tickets #45–#56 / #58–#62 moved out:
+
+- DB-1 (`647b55466`) old DBIC/web → `reference/old_db`; db/server/recent stubs. (#45)
+- DB-2 (`966eb6516`) PostgreSQL-first QuickORM `autofill` schema. (#46)
+- DB-3 (`e6ec83c61`) SQLite/MySQL/MariaDB/Percona port. (#47)
+- DB-Jsonl (`597a86e9b`/`03ac4243c`) jsonl renderer + `mod_adds_options`. (#55/#56)
+- DB-4 (`bf75f888c`..`a8b5dab7c`) opt-in `-L` DB-logger process + derived UUIDs. (#48/#49/#50/#51/#52)
+- DB-5 (`df7b8863a`/`c05e9b8d9`) `yath db sync` + `import`. (#53/#54)
+- REF-PORT (`b756025da`/`0e93506b0`/`fdec15e72`/`d5baf0e0b`/`409f4fc8c`) directives parser, UnixLimits+Disk, Units, ResetTerm, list/ping. (#58–#62)
+
+**Left pending (unchanged):** #57 (optional try-uuid start-stamp, Deferred). **#63** (multi-flavor
+DB test matrix, `t/AI/lib/App/Yath2/Test/DBMatrix.pm`) was **already** `Status: DONE` in
+`TODO_TASKS.md` and landed pre-checkpoint — left in place (out of this reconciliation's delete set).
+
+Full ticket bodies (RESOLUTION detail) remain recoverable from git history at `TODO_TASKS.md`
+as of `1ce783832`; finding-level provenance lives in the two `AI_DOCS/2026-07-0{1,2}-*.json` audit files.
+
+---
+
 ## TIER 5 batch (2026-06-21) — #38 / #41 / #42 built in parallel (worktree sub-agents)
 
 Three TIER-5 chunks implemented concurrently by isolated worktree sub-agents and
