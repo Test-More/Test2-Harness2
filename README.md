@@ -513,7 +513,7 @@ App::Yath does not provide many methods to use externally.
 # SOURCE
 
 The source code repository for Test2-Harness can be found at
-`http://github.com/Test-More/Test2-Harness/`.
+`http://github.com/Test-More/Test2-Harness2/`.
 
 # MAINTAINERS
 

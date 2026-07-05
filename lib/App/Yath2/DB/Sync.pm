@@ -580,7 +580,7 @@ Builds the source/dest QuickORM connections from a C<-L>-style target.
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
-F<http://github.com/Test-More/Test2-Harness/>.
+F<http://github.com/Test-More/Test2-Harness2/>.
 
 =head1 MAINTAINERS
 

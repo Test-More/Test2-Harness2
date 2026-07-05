@@ -81,7 +81,7 @@ mainly useful if you intend to view the log in L<Test2::Harness2::UI>.
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
-F<http://github.com/Test-More/Test2-Harness/>.
+F<http://github.com/Test-More/Test2-Harness2/>.
 
 =head1 MAINTAINERS
 

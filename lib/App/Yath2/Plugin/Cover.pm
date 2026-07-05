@@ -591,7 +591,7 @@ Create a json or jsonl file of all coverage data seen during the run (This impli
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
-F<http://github.com/Test-More/Test2-Harness/>.
+F<http://github.com/Test-More/Test2-Harness2/>.
 
 =head1 MAINTAINERS
 

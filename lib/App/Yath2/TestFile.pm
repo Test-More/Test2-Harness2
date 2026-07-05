@@ -971,7 +971,7 @@ A list of switches passed to perl, usually from the shbang line.
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
-F<http://github.com/Test-More/Test2-Harness/>.
+F<http://github.com/Test-More/Test2-Harness2/>.
 
 =head1 MAINTAINERS
 

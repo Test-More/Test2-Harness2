@@ -149,7 +149,7 @@ Gets the queue item that represents this object.
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
-F<http://github.com/Test-More/Test2-Harness/>.
+F<http://github.com/Test-More/Test2-Harness2/>.
 
 =head1 MAINTAINERS
 

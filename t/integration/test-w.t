@@ -8,7 +8,7 @@ $dir =~ s{^\./}{};
 
 # assert that, regardless of order, the `perl -w` shebang only applies
 # to the test file it appears in; see
-# https://github.com/Test-More/Test2-Harness/issues/266
+# https://github.com/Test-More/Test2-Harness2/issues/266
 
 yath(
     command => 'test',

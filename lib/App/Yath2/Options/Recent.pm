@@ -40,7 +40,7 @@ App::Yath2::Options::Recent - Options for viewing recent activity.
 =head1 SOURCE
 
 The source code repository for Test2-Harness can be found at
-L<http://github.com/Test-More/Test2-Harness/>.
+L<http://github.com/Test-More/Test2-Harness2/>.
 
 =head1 MAINTAINERS
 
