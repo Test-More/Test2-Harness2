@@ -6,7 +6,19 @@ use Test2::Harness2::Util::SubReaper qw/
     release_subreaper
     subreaper_supported
     subreaper_mechanism
+    subreaper_backend
 /;
+
+# Default backend: prefer the optional XS module (Test2::Harness2::ChildSubReaper)
+# when installed, otherwise the pure-Perl fallback. This run exercises whichever
+# is the real default here; the forced pure-Perl path is covered by
+# Util_SubReaper_pp.t.
+my $xs_avail = eval { require Test2::Harness2::ChildSubReaper; 1 } ? 1 : 0;
+is(
+    subreaper_backend(),
+    $xs_avail ? 'xs' : 'perl',
+    "default backend is '" . ($xs_avail ? 'xs' : 'perl') . "' (XS module " . ($xs_avail ? 'installed' : 'absent') . ")",
+);
 
 # Invariant: support flag and mechanism string agree.
 is(

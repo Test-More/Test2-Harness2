@@ -7,7 +7,7 @@ use POSIX();
 
 use Importer Importer => 'import';
 
-our @EXPORT_OK = qw/acquire_subreaper release_subreaper subreaper_supported subreaper_mechanism/;
+our @EXPORT_OK = qw/acquire_subreaper release_subreaper subreaper_supported subreaper_mechanism subreaper_backend/;
 
 # Linux: prctl(PR_SET_CHILD_SUBREAPER, 1). PR_SET_CHILD_SUBREAPER is a constant
 # (36) across architectures; only the prctl syscall number varies by arch.
@@ -45,6 +45,11 @@ my %LINUX_SYS_PRCTL = (
 # ABI is the same regardless of caller, so a module-level cache is correct.
 my ($MECHANISM, $SYS_NUM, @ACQUIRE_ARGS, @RELEASE_ARGS);
 
+# Which implementation is in force after resolve: 'xs' (the optional
+# Test2::Harness2::ChildSubReaper module) or 'perl' (the syscall table below).
+# $XS_SET holds that module's set_child_subreaper coderef when $BACKEND is 'xs'.
+my ($BACKEND, $XS_SET);
+
 # Resolved once at first use (lazily, so it runs after the lexical tables above
 # are initialized rather than at BEGIN time). All callers funnel through here.
 my $RESOLVED;
@@ -52,6 +57,31 @@ my $RESOLVED;
 sub _ensure_resolved {
     return if $RESOLVED;
     $RESOLVED = 1;
+
+    # Prefer the optional XS module Test2::Harness2::ChildSubReaper when it is
+    # installed: it resolves the primitive at compile time via the system headers,
+    # so it covers every Linux architecture plus DragonFly BSD and 32-bit BSD --
+    # a strict superset of the pure-Perl syscall table below. The pure-Perl path is
+    # the fallback so the distribution needs no XS/compiler to install and still
+    # works on Linux (tabled archs) and 64-bit FreeBSD. Set the environment variable
+    # T2_HARNESS_SUBREAPER_NO_XS to force the pure-Perl path even when the module is
+    # installed (the test suite uses this to exercise the fallback everywhere).
+    unless ($ENV{T2_HARNESS_SUBREAPER_NO_XS}) {
+        if (eval { require Test2::Harness2::ChildSubReaper; 1 }) {
+            my $set  = Test2::Harness2::ChildSubReaper->can('set_child_subreaper');
+            my $have = Test2::Harness2::ChildSubReaper->can('have_subreaper_support');
+            my $mech = Test2::Harness2::ChildSubReaper->can('subreaper_mechanism');
+            if ($set && $have && $mech) {
+                $BACKEND   = 'xs';
+                $XS_SET    = $set;
+                $MECHANISM = $have->() ? $mech->() : undef;
+                return;
+            }
+        }
+    }
+
+    # Pure-Perl fallback.
+    $BACKEND = 'perl';
     ($MECHANISM, $SYS_NUM, my $acq, my $rel) = _resolve_platform();
     @ACQUIRE_ARGS = $acq ? @$acq : ();
     @RELEASE_ARGS = $rel ? @$rel : ();
@@ -115,7 +145,7 @@ sub _resolve_platform {
 =head1 NAME
 
 Test2::Harness2::Util::SubReaper - Mark the current process as a child subreaper
-(pure-Perl, no XS).
+(prefers the optional XS L<Test2::Harness2::ChildSubReaper>, falls back to pure-Perl).
 
 =head1 DESCRIPTION
 
@@ -130,15 +160,35 @@ the runner acquires the subreaper flag at startup, and preload-spawned test
 collectors double-fork and detach so they reparent up to the runner (on a
 supported platform) instead of being reaped by the preload tree.
 
-This is a pure-Perl reimplementation that issues the native primitive through
-C<syscall()> with a per-(OS, arch) number table, so the distribution needs no XS
-and no compiler at install. It supports Linux
-(C<prctl(PR_SET_CHILD_SUBREAPER)>) and 64-bit FreeBSD
-(C<procctl(..., PROC_REAP_ACQUIRE)>). DragonFly BSD is deliberately unsupported
-(its C<procctl> syscall number and C<PROC_REAP_*> constants differ from
-FreeBSD's and are unverified). Every other platform, and any unknown
-architecture, is a graceful no-op reported as "unsupported"; the caller falls
-back to C<init> owning the orphans.
+This module has two backends and picks one automatically on first use:
+
+=over 4
+
+=item * XS (preferred)
+
+If the optional L<Test2::Harness2::ChildSubReaper> module is installed, it is
+used. That module resolves the native primitive at compile time from the system
+headers, so it covers B<every> Linux architecture, plus FreeBSD B<and> DragonFly
+BSD (32- and 64-bit) -- a strict superset of the pure-Perl backend. It is listed
+in the distribution's C<recommends> prereqs.
+
+=item * pure-Perl (fallback)
+
+When the XS module is absent, this module issues the native primitive itself
+through C<syscall()> with a per-(OS, arch) number table, so the distribution
+needs no XS and no compiler at install. The pure-Perl backend supports Linux
+(C<prctl(PR_SET_CHILD_SUBREAPER)>) on a tabled architecture and 64-bit FreeBSD
+(C<procctl(..., PROC_REAP_ACQUIRE)>). DragonFly BSD and 32-bit BSD are
+deliberately unsupported here (their C<procctl> syscall numbers / C<PROC_REAP_*>
+constants differ and are unverified) -- install the XS module to cover them.
+
+=back
+
+Set the C<T2_HARNESS_SUBREAPER_NO_XS> environment variable to force the pure-Perl
+backend even when the XS module is installed. Either way, every other platform
+and any unknown architecture is a graceful no-op reported as "unsupported"; the
+caller falls back to C<init> owning the orphans. The public API below is
+identical regardless of which backend is active.
 
 =head1 SYNOPSIS
 
@@ -163,8 +213,15 @@ syscall; safe on any platform.
 =item $name = subreaper_mechanism()
 
 A short string naming the mechanism (C<"prctl"> on Linux, C<"procctl"> on
-64-bit FreeBSD) or C<undef> when unsupported. Invariant:
+FreeBSD/DragonFly) or C<undef> when unsupported. Invariant:
 C<< !!subreaper_supported() == defined(subreaper_mechanism()) >>.
+
+=item $name = subreaper_backend()
+
+Which backend was selected: C<"xs"> when the optional
+L<Test2::Harness2::ChildSubReaper> module is in use, or C<"perl"> when the
+pure-Perl fallback is. Resolved once on first use. Mainly for startup logging and
+diagnostics; the behaviour of the other functions does not depend on it.
 
 =item $bool = acquire_subreaper()
 
@@ -185,9 +242,29 @@ C<prctl(PR_SET_CHILD_SUBREAPER, 0)>; on BSD it is C<PROC_REAP_RELEASE>.
 
 sub subreaper_supported { _ensure_resolved(); $MECHANISM ? 1 : 0 }
 sub subreaper_mechanism { _ensure_resolved(); $MECHANISM }
+sub subreaper_backend   { _ensure_resolved(); $BACKEND }
 
-sub acquire_subreaper { _ensure_resolved(); return _do_syscall(@ACQUIRE_ARGS) }
-sub release_subreaper { _ensure_resolved(); return _do_syscall(@RELEASE_ARGS) }
+sub acquire_subreaper {
+    _ensure_resolved();
+    return _xs_set(1) if $BACKEND eq 'xs';
+    return _do_syscall(@ACQUIRE_ARGS);
+}
+
+sub release_subreaper {
+    _ensure_resolved();
+    return _xs_set(0) if $BACKEND eq 'xs';
+    return _do_syscall(@RELEASE_ARGS);
+}
+
+# Delegate to the XS module's set_child_subreaper, keeping this module's
+# never-throws contract even if a broken build of the XS were to die.
+sub _xs_set {
+    my ($on) = @_;
+    my $rv;
+    my $ok = eval { $rv = $XS_SET->($on ? 1 : 0); 1 };
+    return 0 unless $ok;
+    return $rv ? 1 : 0;
+}
 
 =pod
 
